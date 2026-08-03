@@ -1069,7 +1069,7 @@ mod proptests {
     // above). Every hard-reserved keyword must appear here or proptest
     // can generate it into an identifier position and red the case.
     const KEYWORDS: &[&str] = &[
-        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "pub", "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
         "module", "return", "ref", "if", "match", "else", "while", "for", "in", "until", "break",
         "continue", "as", "or", "true", "false", "END", "DONE",
     ];

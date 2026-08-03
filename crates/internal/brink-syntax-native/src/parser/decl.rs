@@ -16,10 +16,10 @@
 
 use crate::SyntaxKind::{
     COLON, COMMA, CONST_DECL, EOF, EQ, EXTERN_DECL, FLAGS_DECL, FLAGS_MEMBER, FLAGS_MEMBER_LIST,
-    FLOW_DECL, FN_DECL, GT, HASH, IDENT, IMPORT_DECL, KW_AS, KW_EXTERN, KW_FLAGS, KW_FLOW, KW_FN,
-    KW_MODULE, KW_REF, KW_STRUCT, L_BRACE, L_PAREN, MODULE_DECL, NEWLINE, PARAM, PARAM_LIST,
-    R_BRACE, R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE, USE_DECL, USE_TREE, USE_TREE_LIST,
-    VAR_DECL,
+    FLOW_DECL, FN_DECL, GT, HASH, IDENT, IMPORT_DECL, KW_AS, KW_CONST, KW_EXTERN, KW_FLAGS,
+    KW_FLOW, KW_FN, KW_MODULE, KW_PUB, KW_REF, KW_STRUCT, KW_VAR, L_BRACE, L_PAREN, MODULE_DECL,
+    NEWLINE, PARAM, PARAM_LIST, R_BRACE, R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE, USE_DECL,
+    USE_TREE, USE_TREE_LIST, VAR_DECL,
 };
 
 use super::Parser;
@@ -40,11 +40,18 @@ use super::Parser;
 /// the same "positive lookahead all the way to the token that must
 /// follow" discipline the paren/brace forms already get for free.
 pub(crate) fn at_flow_decl(p: &Parser<'_, '_>) -> bool {
-    p.at(KW_FLOW)
-        && p.nth(1) == IDENT
-        && match p.nth(2) {
+    at_flow_decl_at(p, 0)
+}
+
+/// [`at_flow_decl`], shifted by `base` non-trivia tokens — `base == 1` is
+/// the shape a leading `pub` (already seen but not yet consumed) commits
+/// to (see [`at_pub_decl`]).
+fn at_flow_decl_at(p: &Parser<'_, '_>, base: usize) -> bool {
+    p.nth(base) == KW_FLOW
+        && p.nth(base + 1) == IDENT
+        && match p.nth(base + 2) {
             L_PAREN | L_BRACE => true,
-            HASH => header_tags_precede_a_body(p, 2),
+            HASH => header_tags_precede_a_body(p, base + 2),
             _ => false,
         }
 }
@@ -80,7 +87,12 @@ fn header_tags_precede_a_body(p: &Parser<'_, '_>, n: usize) -> bool {
 }
 
 pub(crate) fn at_fn_decl(p: &Parser<'_, '_>) -> bool {
-    p.at(KW_FN) && p.nth(1) == IDENT && matches!(p.nth(2), L_PAREN | L_BRACE)
+    at_fn_decl_at(p, 0)
+}
+
+/// [`at_fn_decl`], shifted — see [`at_flow_decl_at`]'s doc.
+fn at_fn_decl_at(p: &Parser<'_, '_>, base: usize) -> bool {
+    p.nth(base) == KW_FN && p.nth(base + 1) == IDENT && matches!(p.nth(base + 2), L_PAREN | L_BRACE)
 }
 
 /// Shared guard for `var`/`const` — the caller has already checked
@@ -93,19 +105,95 @@ pub(crate) fn at_fn_decl(p: &Parser<'_, '_>) -> bool {
 /// character — neither `var` nor `const` is an English word a content line
 /// plausibly opens with.
 pub(crate) fn at_binding_decl(p: &Parser<'_, '_>) -> bool {
-    p.nth(1) == IDENT && matches!(p.nth(2), EQ | COLON)
+    at_binding_decl_at(p, 0)
+}
+
+/// [`at_binding_decl`], shifted — see [`at_flow_decl_at`]'s doc. The
+/// caller still checks the `var`/`const` keyword itself at `base`
+/// separately (this helper never did, even unshifted).
+fn at_binding_decl_at(p: &Parser<'_, '_>, base: usize) -> bool {
+    p.nth(base + 1) == IDENT && matches!(p.nth(base + 2), EQ | COLON)
 }
 
 pub(crate) fn at_flags_decl(p: &Parser<'_, '_>) -> bool {
-    p.at(KW_FLAGS) && p.nth(1) == IDENT && p.nth(2) == EQ
+    at_flags_decl_at(p, 0)
+}
+
+/// [`at_flags_decl`], shifted — see [`at_flow_decl_at`]'s doc.
+fn at_flags_decl_at(p: &Parser<'_, '_>, base: usize) -> bool {
+    p.nth(base) == KW_FLAGS && p.nth(base + 1) == IDENT && p.nth(base + 2) == EQ
 }
 
 pub(crate) fn at_struct_decl(p: &Parser<'_, '_>) -> bool {
-    p.at(KW_STRUCT) && p.nth(1) == IDENT && p.nth(2) == L_BRACE
+    at_struct_decl_at(p, 0)
+}
+
+/// [`at_struct_decl`], shifted — see [`at_flow_decl_at`]'s doc.
+fn at_struct_decl_at(p: &Parser<'_, '_>, base: usize) -> bool {
+    p.nth(base) == KW_STRUCT && p.nth(base + 1) == IDENT && p.nth(base + 2) == L_BRACE
 }
 
 pub(crate) fn at_extern_decl(p: &Parser<'_, '_>) -> bool {
-    p.at(KW_EXTERN) && p.nth(1) == IDENT && p.nth(2) == L_PAREN
+    at_extern_decl_at(p, 0)
+}
+
+/// [`at_extern_decl`], shifted — see [`at_flow_decl_at`]'s doc.
+fn at_extern_decl_at(p: &Parser<'_, '_>, base: usize) -> bool {
+    p.nth(base) == KW_EXTERN && p.nth(base + 1) == IDENT && p.nth(base + 2) == L_PAREN
+}
+
+// ── `pub`-prefixed lookaheads (issue #1582, RULED 2026-08-03) ────────
+//
+// One per-kind guard per form, each `p.at(KW_PUB) && <shifted shape check>`
+// — mirrors every other declaration head's discipline (Finding #5): `pub`
+// is now a hard-reserved keyword (tokenizes as `KW_PUB` regardless of
+// position), so a prose line that happens to start with the bare word
+// "pub" must not be swallowed unless a legal declaration shape actually
+// follows it. `block::try_declaration` ORs each of these alongside its
+// unprefixed sibling in the same routing check — `pub` itself is never
+// bumped here or in `try_declaration`; each decl fn below consumes its own
+// optional leading `pub` via `p.eat(KW_PUB)` right after opening its node,
+// so the token lands as an ordinary child, never inside the `///`
+// doc-comment wrap `doc_comment::open_with_doc` produces (`pub` and a doc
+// run are two independent leading-position channels — combining their
+// checkpoints would have doc-wrapped `pub` right along with the doc
+// tokens, which is wrong whenever a doc comment is ALSO present).
+//
+/// Only the seven forms the ruling names carry a [`crate::VisibilityMark`]
+/// slot to begin with: `flow`, `fn`, `var`, `const`, `flags`, `struct`,
+/// `extern`. `import`/`use`/`module` are deliberately excluded — none of
+/// their HIR shapes has a `visibility` field. `flow` covers both a
+/// top-level container (lowers to `Knot`) and a nested one (lowers to
+/// `Stitch`) — both carry `visibility` already, so `pub flow` reaches
+/// either shape; only the ink dialect's own `===knot===`/`=stitch=`
+/// grammar (a different crate, `brink-syntax`) is out of scope (the
+/// decision log's "OWED" item 2).
+pub(crate) fn at_pub_flow_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && at_flow_decl_at(p, 1)
+}
+
+pub(crate) fn at_pub_fn_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && at_fn_decl_at(p, 1)
+}
+
+pub(crate) fn at_pub_var_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && p.nth(1) == KW_VAR && at_binding_decl_at(p, 1)
+}
+
+pub(crate) fn at_pub_const_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && p.nth(1) == KW_CONST && at_binding_decl_at(p, 1)
+}
+
+pub(crate) fn at_pub_flags_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && at_flags_decl_at(p, 1)
+}
+
+pub(crate) fn at_pub_struct_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && at_struct_decl_at(p, 1)
+}
+
+pub(crate) fn at_pub_extern_decl(p: &Parser<'_, '_>) -> bool {
+    p.at(KW_PUB) && at_extern_decl_at(p, 1)
 }
 
 /// Caller has already checked `p.at(KW_IMPORT)`. Weaker check (Finding
@@ -127,6 +215,24 @@ pub(crate) fn at_module_decl(p: &Parser<'_, '_>) -> bool {
     p.at(KW_MODULE) && p.nth(1) == IDENT && p.nth(2) == L_BRACE
 }
 
+/// Consume an optional leading `pub` (issue #1582) as the next child of
+/// whichever decl node is currently open — a no-op (nothing bumped, no
+/// trivia disturbed) when it isn't there. Called by each of the seven
+/// `pub`-eligible decl fns immediately after `doc_comment::open_with_doc`,
+/// so `KW_PUB` lands as an ordinary child of the declaration node, never
+/// inside the `DOC_COMMENT` wrap (which `open_with_doc` has already
+/// closed by the time this runs, if a doc run preceded).
+///
+/// `p.eat` flushes trivia before checking but not after consuming — the
+/// caller's very next step is always a raw `p.bump()` for its own leading
+/// keyword (safe only with zero pending trivia at that point, exactly like
+/// `decl_body`'s `~`/`>` body-dialect selector consumption), so the
+/// trailing `skip_ws` here is required, not cosmetic.
+fn eat_pub(p: &mut Parser<'_, '_>) {
+    p.eat(KW_PUB);
+    p.skip_ws();
+}
+
 // ── flow / fn ─────────────────────────────────────────────────────────
 
 /// `flow name(params) { … }` — nested `flow` = a stitch (charter §4). `doc`
@@ -138,6 +244,7 @@ pub(crate) fn at_module_decl(p: &Parser<'_, '_>) -> bool {
 /// prose-ground — see [`decl_body`].
 pub(crate) fn flow_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, FLOW_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_FLOW
     p.expect(IDENT);
     if p.at(L_PAREN) {
@@ -175,6 +282,7 @@ fn header_tags(p: &mut Parser<'_, '_>) {
 /// code-ground — see [`decl_body`].
 pub(crate) fn fn_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, FN_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_FN
     p.expect(IDENT);
     if p.at(L_PAREN) {
@@ -289,6 +397,7 @@ fn param(p: &mut Parser<'_, '_>) {
 /// and the initializer (NG-B, issue #1488), the same slot `let` uses.
 pub(crate) fn var_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, VAR_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_VAR
     p.expect(IDENT);
     binding_annotation(p);
@@ -301,6 +410,7 @@ pub(crate) fn var_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
 /// `const name = expr` / `const name: type = expr`.
 pub(crate) fn const_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, CONST_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_CONST
     p.expect(IDENT);
     binding_annotation(p);
@@ -324,6 +434,7 @@ pub(super) fn binding_annotation(p: &mut Parser<'_, '_>) {
 /// `flags Name = (member), member, …` (charter §11: renamed `LIST`).
 pub(crate) fn flags_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, FLAGS_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_FLAGS
     p.expect(IDENT);
     p.expect(crate::SyntaxKind::EQ);
@@ -388,6 +499,7 @@ fn flags_member(p: &mut Parser<'_, '_>) {
 /// `struct Name { field: Type, … }`.
 pub(crate) fn struct_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, STRUCT_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_STRUCT
     p.expect(IDENT);
     p.expect(L_BRACE);
@@ -431,6 +543,7 @@ fn struct_field(p: &mut Parser<'_, '_>) {
 /// `extern name(params)` — no body, ever (kept from ink's `EXTERNAL`).
 pub(crate) fn extern_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, EXTERN_DECL, doc);
+    eat_pub(p);
     p.bump(); // KW_EXTERN
     p.expect(IDENT);
     if p.at(L_PAREN) {

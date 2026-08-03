@@ -1518,6 +1518,175 @@ fn a_type_annotation_with_no_type_after_it_records_an_error() {
     );
 }
 
+// ── `pub` — the native visibility marker (issue #1582, RULED 2026-08-03) ──
+
+#[test]
+fn pub_prefixes_every_visibility_bearing_declaration() {
+    for (src, kind) in [
+        ("pub flow greet() {\n}\n", SyntaxKind::FLOW_DECL),
+        ("pub fn heal() {\n}\n", SyntaxKind::FN_DECL),
+        ("pub var hp = 10\n", SyntaxKind::VAR_DECL),
+        ("pub const MAX = 100\n", SyntaxKind::CONST_DECL),
+        ("pub flags Mood = calm, wary\n", SyntaxKind::FLAGS_DECL),
+        ("pub struct Npc {\n  hp: int\n}\n", SyntaxKind::STRUCT_DECL),
+        ("pub extern log_msg(msg)\n", SyntaxKind::EXTERN_DECL),
+    ] {
+        let p = assert_lossless(src);
+        assert!(p.errors().is_empty(), "{src:?} errors: {:?}", p.errors());
+        let decl = p
+            .syntax()
+            .children()
+            .find(|n| n.kind() == kind)
+            .expect("declaration kind not found");
+        assert!(
+            decl.children_with_tokens()
+                .filter_map(rowan::NodeOrToken::into_token)
+                .any(|t| t.kind() == SyntaxKind::KW_PUB),
+            "{src:?}: expected a KW_PUB child of {kind:?}, tree: {decl:#?}"
+        );
+    }
+}
+
+#[test]
+fn nested_pub_flow_stitch_also_carries_the_marker() {
+    let src = "flow garden() {\n  pub flow gate() {\n    Creak.\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let outer: ast::FlowDecl = find_child(&p.syntax()).expect("outer flow decl");
+    assert!(!outer.is_pub(), "the outer flow was not marked pub");
+    let inner = outer.stitches().next().expect("nested flow (stitch)");
+    assert!(inner.is_pub(), "the nested `pub flow` must report is_pub()");
+}
+
+#[test]
+fn absent_pub_means_not_pub() {
+    let p = assert_lossless("flow greet() {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert!(!flow.is_pub());
+}
+
+#[test]
+fn pub_not_followed_by_a_declaration_falls_back_to_prose() {
+    // "pub" is now a hard-reserved keyword (tokenizes as `KW_PUB`
+    // regardless of position, mirroring every other declaration keyword —
+    // Finding #1/#5), so a prose line that happens to start with the bare
+    // word must still fall through to ordinary content, not half-parse or
+    // error. `at_pub_decl`'s lookahead only commits when one of the seven
+    // legal shapes actually follows.
+    let src = "pub is a nice place to eat.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL)
+            && !has_node_kind(&p.syntax(), SyntaxKind::FN_DECL)
+            && !has_node_kind(&p.syntax(), SyntaxKind::VAR_DECL),
+        "must not be mis-parsed as any declaration: {:#?}",
+        p.syntax()
+    );
+    let content = p
+        .syntax()
+        .children()
+        .find(|n| n.kind() == SyntaxKind::CONTENT_LINE);
+    assert!(content.is_some(), "expected a plain CONTENT_LINE fallback");
+}
+
+#[test]
+fn pub_is_not_recognized_before_import_use_or_module() {
+    // `import`/`use`/`module` carry no `VisibilityMark` slot at all (their
+    // HIR shapes have no `visibility` field) — deliberately excluded from
+    // the ruling's seven forms. `pub use a::b;` therefore does not commit
+    // to any declaration; the whole line folds into ordinary prose, the
+    // same fallback the previous test proves for a bare `pub`.
+    for src in [
+        "pub use story::a;\n",
+        "pub import story::a\n",
+        // Deliberately brace-free: an actual `module inner { }` body would
+        // trip `content_items_until`'s bare-`{}`-as-interpolation fallback
+        // (a pre-existing, unrelated prose-collision rule — the same one
+        // `decl.rs`'s own module doc flags for `flow gently #1 …`), which
+        // would fail this test for a reason that has nothing to do with
+        // `pub`. Plain trailing prose isolates the one thing under test:
+        // that `pub` does not get consumed ahead of `module`.
+        "pub module thing entirely.\n",
+    ] {
+        let p = assert_lossless(src);
+        assert!(p.errors().is_empty(), "{src:?} errors: {:?}", p.errors());
+        assert!(
+            !has_node_kind(&p.syntax(), SyntaxKind::USE_DECL)
+                && !has_node_kind(&p.syntax(), SyntaxKind::IMPORT_DECL)
+                && !has_node_kind(&p.syntax(), SyntaxKind::MODULE_DECL),
+            "{src:?}: `pub` must not be consumed ahead of use/import/module: {:#?}",
+            p.syntax()
+        );
+    }
+}
+
+#[test]
+fn doc_comment_still_attaches_when_pub_sits_between_it_and_the_keyword() {
+    // This is the regression the checkpoint bug this issue introduced (and
+    // fixed) actually covers: a naive "reuse the same checkpoint for `pub`
+    // as for `doc`" implementation wrapped `KW_PUB` INSIDE the
+    // `DOC_COMMENT` node instead of as the declaration's own next child.
+    // `doc()` must still resolve, `is_pub()` must still be `true`, and the
+    // two must be siblings, not nested.
+    let src = "/// Heals.\npub fn heal() {\n  return 1;\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let fn_decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert!(fn_decl.is_pub());
+    let doc = fn_decl.doc().expect("doc attached");
+    assert_eq!(doc.lines().len(), 1);
+    // `KW_PUB` must be a direct child TOKEN of `FN_DECL`, sitting beside
+    // (not inside) the `DOC_COMMENT` node.
+    assert!(
+        fn_decl
+            .syntax()
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+            .any(|t| t.kind() == SyntaxKind::KW_PUB),
+        "expected KW_PUB as a direct FN_DECL child, tree: {:#?}",
+        fn_decl.syntax()
+    );
+    assert_eq!(
+        count_node_kind(fn_decl.syntax(), SyntaxKind::DOC_COMMENT),
+        1,
+        "exactly one DOC_COMMENT, not a spurious nested wrap: {:#?}",
+        fn_decl.syntax()
+    );
+}
+
+#[test]
+fn an_annotation_line_precedes_a_pub_prefixed_declaration() {
+    // OWED (decision-log "Native visibility marker: a `pub` keyword", item
+    // 1, not separately ruled): this pins the grammar's answer — `@[…]`
+    // then `pub fn`, mirroring Rust's `#[derive(…)] pub struct`. The
+    // annotation line is its own sibling node (parsed by
+    // `annotation::annotation_line`, never a child of the declaration it
+    // precedes — see `SyntaxKind::ANNOTATION_LINE`'s doc), so this is a
+    // parse-order fact, not a nesting one: the annotation line is left as
+    // a preceding sibling for `hir::lower_native::annotation` to attach
+    // positionally, exactly as it already does today for a bare `fn`
+    // (issue #1563).
+    let src = "@[effects(pure)]\npub fn heal() {\n  return 1;\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let fn_decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert!(fn_decl.is_pub());
+    // The annotation line is a sibling of FN_DECL at the source-file
+    // level, immediately preceding it — not a child.
+    let siblings: Vec<_> = p.syntax().children().map(|n| n.kind()).collect();
+    let fn_pos = siblings
+        .iter()
+        .position(|k| *k == SyntaxKind::FN_DECL)
+        .expect("fn decl among top-level children");
+    assert_eq!(
+        siblings.get(fn_pos.wrapping_sub(1)),
+        Some(&SyntaxKind::ANNOTATION_LINE),
+        "expected the ANNOTATION_LINE immediately before FN_DECL: {siblings:?}"
+    );
+}
+
 // ── Adversarial: property-based coverage scoped to declarations ───────
 //
 // Mirrors `tests/proptest_native.rs`'s generator style (studied from that
@@ -1532,7 +1701,7 @@ mod prop {
     const NUM_CASES: u32 = 256;
 
     const KEYWORDS: &[&str] = &[
-        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "pub", "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
         "module", "return", "ref", "if", "match", "else", "while", "for", "in", "until", "break",
         "continue", "as", "or", "true", "false", "END", "DONE",
     ];

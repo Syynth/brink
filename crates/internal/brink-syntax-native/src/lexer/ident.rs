@@ -33,10 +33,11 @@ pub fn classify_keyword(text: &str) -> SyntaxKind {
     use SyntaxKind::{
         IDENT, KW_AS, KW_BREAK, KW_CONST, KW_CONTINUE, KW_DONE, KW_ELSE, KW_END, KW_EXTERN,
         KW_FALSE, KW_FLAGS, KW_FLOW, KW_FN, KW_FOR, KW_IF, KW_IMPORT, KW_IN, KW_LET, KW_MATCH,
-        KW_MODULE, KW_OR, KW_REF, KW_RETURN, KW_STRUCT, KW_TRUE, KW_UNTIL, KW_USE, KW_VAR,
+        KW_MODULE, KW_OR, KW_PUB, KW_REF, KW_RETURN, KW_STRUCT, KW_TRUE, KW_UNTIL, KW_USE, KW_VAR,
         KW_WHILE,
     };
     match text {
+        "pub" => KW_PUB,
         "flow" => KW_FLOW,
         "fn" => KW_FN,
         "var" => KW_VAR,

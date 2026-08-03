@@ -3,11 +3,15 @@
 //!
 //! The directive channels that *do* have native syntax are wired elsewhere:
 //! the `@[…]` annotation channel in [`super::annotation`] (`@[effects(…)]`
-//! → `effects_assertion` on a `flow`/`fn`, issue #1563) and the file-level
-//! `@[was]` module-rename record in [`super::module`]. Neither has a ruled
-//! meaning on the `var`/`const`/`flags`/`struct`/`extern` declarations this
-//! module owns, so every decl node below carries `is_local`/`visibility`/
-//! `was` as their empty default (`None`/`false`) — honest (no syntax exists
+//! → `effects_assertion` on a `flow`/`fn`, issue #1563), the file-level
+//! `@[was]` module-rename record in [`super::module`], and the leading
+//! `pub` keyword (issue #1582, RULED 2026-08-03,
+//! `docs/decision-log.md` "Native visibility marker: a `pub` keyword"):
+//! `node.is_pub()` → `Some(VisibilityMark::Public)`, absent → `None` (the
+//! ratified 2026-07-23 Private default, read downstream by
+//! `brink-analyzer::manifest::effective_visibility`, is unchanged either
+//! way). `was` is the sole remaining field with no ruled native syntax, so
+//! it still carries its empty default (`None`) — honest (no syntax exists
 //! to consume) rather than fabricated. `///` docs ARE wired (B0.6b,
 //! `docs/decision-log.md` 2026-07-20) — see [`super::doc_comment`].
 
@@ -15,6 +19,7 @@ use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
 use brink_syntax_native::{SyntaxNode, SyntaxToken};
 
+use crate::VisibilityMark;
 use crate::hir::FileId;
 use crate::hir::doc_block::DocPolicy;
 use crate::provenance::NodeClass;
@@ -22,6 +27,16 @@ use crate::{
     ConstDecl, Diagnostic, DiagnosticCode, ExternalDecl, ListDecl, ListMember, Name, ParamInfo,
     StructDecl, StructFieldDecl, TypeExpr, VarDecl,
 };
+
+/// `pub`-flag → `VisibilityMark`, shared by every decl lowering below
+/// (issue #1582). `None` (not `Private`) when absent — matching
+/// `Knot`/`Stitch`/every existing HIR shape's convention that "no mark
+/// written" and "explicitly marked Private" are different facts, even
+/// though `effective_visibility` currently treats them the same for a
+/// declared module.
+fn visibility_mark(is_pub: bool) -> Option<VisibilityMark> {
+    is_pub.then_some(VisibilityMark::Public)
+}
 
 use super::doc_comment::lower_doc_comment;
 use super::expr::{lower_expr, lower_path};
@@ -77,7 +92,7 @@ pub(super) fn lower_var_decl(
         is_local: false,
         annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
-        visibility: None,
+        visibility: visibility_mark(node.is_pub()),
         was: None,
     })
 }
@@ -105,7 +120,7 @@ pub(super) fn lower_const_decl(
         value,
         annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
-        visibility: None,
+        visibility: visibility_mark(node.is_pub()),
         was: None,
     })
 }
@@ -147,7 +162,7 @@ pub(super) fn lower_flags_decl(
         name,
         members,
         doc,
-        visibility: None,
+        visibility: visibility_mark(node.is_pub()),
         was: None,
     })
 }
@@ -192,7 +207,7 @@ pub(super) fn lower_struct_decl(
         name,
         fields,
         doc,
-        visibility: None,
+        visibility: visibility_mark(node.is_pub()),
     })
 }
 
@@ -252,7 +267,7 @@ pub(super) fn lower_extern_decl(
         param_count,
         params,
         doc,
-        visibility: None,
+        visibility: visibility_mark(node.is_pub()),
         was: None,
     })
 }

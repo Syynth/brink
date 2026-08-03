@@ -165,6 +165,89 @@ fn undocumented_declarations_have_no_doc_native() {
     assert!(hir.knots[0].doc.is_none());
 }
 
+// ── `pub` — the native visibility marker (issue #1582, RULED 2026-08-03) ──
+
+#[test]
+fn pub_flow_and_fn_lower_with_public_visibility() {
+    let (hir, _manifest, diags) =
+        lower_src("pub flow greet() {\n}\npub fn heal() {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.knots.len(), 2);
+    assert_eq!(hir.knots[0].visibility, Some(crate::VisibilityMark::Public));
+    assert_eq!(hir.knots[1].visibility, Some(crate::VisibilityMark::Public));
+}
+
+#[test]
+fn pub_nested_flow_stitch_lowers_with_public_visibility() {
+    let (hir, _manifest, diags) =
+        lower_src("flow garden() {\n  pub flow gate() {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.knots[0].visibility, None,
+        "outer flow was not marked pub"
+    );
+    assert_eq!(
+        hir.knots[0].stitches[0].visibility,
+        Some(crate::VisibilityMark::Public)
+    );
+}
+
+#[test]
+fn pub_var_const_flags_struct_extern_lower_with_public_visibility() {
+    let src = "\
+pub var hp = 10
+pub const MAX = 100
+pub flags Mood = calm, wary
+pub struct Npc {\n  hp: int\n}
+pub extern log_msg(msg)
+";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.variables[0].visibility,
+        Some(crate::VisibilityMark::Public)
+    );
+    assert_eq!(
+        hir.constants[0].visibility,
+        Some(crate::VisibilityMark::Public)
+    );
+    assert_eq!(hir.lists[0].visibility, Some(crate::VisibilityMark::Public));
+    assert_eq!(
+        hir.structs[0].visibility,
+        Some(crate::VisibilityMark::Public)
+    );
+    assert_eq!(
+        hir.externals[0].visibility,
+        Some(crate::VisibilityMark::Public)
+    );
+}
+
+#[test]
+fn absent_pub_leaves_visibility_none_native() {
+    // The ratified 2026-07-23 default is untouched by this issue: absent
+    // `pub`, every one of the seven forms still lowers with
+    // `visibility: None` (not `Some(Private)`) — `effective_visibility`
+    // treats `None` under a declared module as `Private` regardless.
+    let src = "\
+flow greet() {\n}
+fn heal() {\n  return 1;\n}
+var hp = 10
+const MAX = 100
+flags Mood = calm, wary
+struct Npc {\n  hp: int\n}
+extern log_msg(msg)
+";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.knots[0].visibility, None);
+    assert_eq!(hir.knots[1].visibility, None);
+    assert_eq!(hir.variables[0].visibility, None);
+    assert_eq!(hir.constants[0].visibility, None);
+    assert_eq!(hir.lists[0].visibility, None);
+    assert_eq!(hir.structs[0].visibility, None);
+    assert_eq!(hir.externals[0].visibility, None);
+}
+
 #[test]
 fn depth_three_nesting_is_rejected_loudly() {
     let (hir, _manifest, diags) =
