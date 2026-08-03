@@ -341,6 +341,14 @@ pub enum DiagnosticCode {
     /// real, reachable, non-suppressible diagnostic authors can hit by
     /// writing ordinary (if currently unsupported) ink, not a defensive
     /// backstop for a suppressed analysis diagnostic.
+    ///
+    /// Also covers a write ending in an *index* rather than a field, whose
+    /// index chain's root is itself a struct-field projection or a mixed
+    /// index/field access — `p.field[i] = v`, `p.a[i].b[j] = v`, or the
+    /// mutator spelling (`push(p.field[i], v)`) — same T1e boundary,
+    /// reached via `reject_field_projection_index_root` (issue #2121) from
+    /// `lower_indexed_assignment`/`lower_lvalue_container_chain` rather than
+    /// `try_lower_field_assignment`.
     E074,
 
     // ── decls constant-folding backstops (#673) ───────────────────────

@@ -403,12 +403,24 @@ fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerC
 /// option — a targeted hard-reject closes the silent-misroute hole without
 /// it.
 ///
-/// Returns `true` (diagnosed, caller must stop and lower nothing) only when
-/// `root_expr` is this exact shape — a multi-segment `Path` that resolves to
-/// an assignable root (`Variable`/`Constant`/`Param`/`Temp`); `false`
-/// otherwise (a bare single-segment `Path`, or one that doesn't resolve to
-/// an assignable root at all — the analyzer's `E025` handles that case, same
-/// as every other call site in this module).
+/// Also catches the one-level-deeper variant of the same hole (review
+/// finding on #2171): an index chain whose root is not a bare `Path` at all
+/// but a `hir::Expr::FieldAccess` — `arr[0].items[1] = v`/`push(arr[0].items,
+/// v)`, the #674 grammar's Index-then-field target with one more trailing
+/// index. `flatten_index_chain` stops unwinding as soon as it hits a
+/// non-`Index` base, so this root reaches here as a `FieldAccess` node, not
+/// a `Path` — the `Path` arm above never matches it, and without this arm it
+/// fell through to `lower_assign_target`, silently resolving to whatever
+/// root symbol the `FieldAccess`'s own base resolves to. Mirrors
+/// `try_lower_field_assignment`'s existing `hir::Expr::FieldAccess` arm
+/// exactly (same diagnostic, same non-suppressible `E074`).
+///
+/// Returns `true` (diagnosed, caller must stop and lower nothing) when
+/// `root_expr` is either of these shapes — a multi-segment `Path` that
+/// resolves to an assignable root (`Variable`/`Constant`/`Param`/`Temp`), or
+/// a `FieldAccess`; `false` otherwise (a bare single-segment `Path`, or one
+/// that doesn't resolve to an assignable root at all — the analyzer's
+/// `E025` handles that case, same as every other call site in this module).
 fn reject_field_projection_index_root(root_expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> bool {
     if let hir::Expr::Path(path) = root_expr
         && path.segments.len() > 1
@@ -419,6 +431,10 @@ fn reject_field_projection_index_root(root_expr: &hir::Expr, ctx: &mut LowerCtx<
         )
     {
         emit_chained_field_write_diagnostic(path.range, ctx);
+        return true;
+    }
+    if let hir::Expr::FieldAccess(fa) = root_expr {
+        emit_chained_field_write_diagnostic(fa.ptr.text_range(), ctx);
         return true;
     }
     false

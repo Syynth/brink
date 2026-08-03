@@ -284,6 +284,39 @@ a is {a.items}.
     );
 }
 
+/// Review finding on #2171: `reject_field_projection_index_root` only
+/// matched a `Path` root, so an index chain rooted in a `hir::Expr::FieldAccess`
+/// (`arr[0].items[1] = v` — the #674 grammar one level deeper: the target is
+/// `Index(FieldAccess(Index(arr, 0), items), 1)`) fell through to
+/// `lower_assign_target` and silently misrouted, exactly like the two
+/// `Path`-rooted cases above. Confirmed to fail with the guard's
+/// `hir::Expr::FieldAccess` arm reverted (rule 20a).
+#[test]
+fn field_access_then_index_root_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<int>,
+}
+VAR arr = 0
+~ {
+    arr = #[Bag#{items: #[1, 2]}]
+    arr[0].items[1] = 99
+}
+arr is {arr}.
+-> END
+";
+    let err = compile_brink(source).expect_err(
+        "an index chain rooted in a field-access projection must still be a compile error",
+    );
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject
