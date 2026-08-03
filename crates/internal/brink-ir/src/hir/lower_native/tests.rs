@@ -1058,21 +1058,53 @@ fn divert_and_tunnel_lower() {
 }
 
 #[test]
-fn divert_target_call_args_are_diagnosed_not_silently_dropped() {
-    // brink-syntax-native's parser now captures `-> knot(args)` call args as
-    // an `ARG_LIST` under `DIVERT_TARGET` (bug #1196). This HIR pass doesn't
-    // wire them through yet, so the present-but-unlowered args must surface
-    // as E129 rather than vanish silently.
+fn divert_target_call_args_are_wired_through_not_dropped() {
+    // Issue #2136: brink-syntax-native's parser captures `-> knot(args)`
+    // call args as an `ARG_LIST` under `DIVERT_TARGET` (bug #1196), but this
+    // HIR pass used to discard them entirely and emit E129 ("parses but has
+    // no HIR lowering yet") instead of wiring them into `DivertTarget::args`
+    // — pre-#2136, this exact fixture asserted `d.target.args.is_empty()`
+    // alongside an E129 diagnostic. Now the arg lowers cleanly into
+    // `DivertTarget::args`, mirroring the ink-dialect path
+    // (`hir::lower::divert::lower_divert_target_with_args`), and E129 must
+    // not fire for this construct at all.
     let (hir, _m, diags) = lower_src("flow b(x) {\n  Bye.\n}\nflow a() {\n  -> b(1)\n}\n");
-    assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E129),
-        "expected E129 for dropped divert-target call args, got: {diags:?}"
-    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let a_body = &hir.knots[1].body;
     let Stmt::Divert(d) = &a_body.stmts[0] else {
         panic!("expected Divert, got {:?}", a_body.stmts[0]);
     };
-    assert!(d.target.args.is_empty(), "args aren't wired through yet");
+    assert_eq!(
+        d.target.args.len(),
+        1,
+        "the call arg must survive lowering into DivertTarget::args: {:?}",
+        d.target.args
+    );
+    assert!(
+        matches!(&d.target.args[0], Expr::Int(1)),
+        "expected the literal `1` argument to lower to Expr::Int(1), got: {:?}",
+        d.target.args[0]
+    );
+}
+
+#[test]
+fn tunnel_call_target_args_are_wired_through_not_dropped() {
+    // The same `lower_divert_target` helper backs `TUNNEL_CALL` targets
+    // (`-> b(1) ->`), not just plain `DIVERT_STMT` — this pins that the
+    // fix applies uniformly rather than only to the bare-divert call site.
+    let (hir, _m, diags) = lower_src("flow b(x) {\n  Bye.\n}\nflow a() {\n  -> b(1) ->\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a_body = &hir.knots[1].body;
+    let Stmt::TunnelCall(t) = &a_body.stmts[0] else {
+        panic!("expected TunnelCall, got {:?}", a_body.stmts[0]);
+    };
+    assert_eq!(t.targets.len(), 1);
+    assert_eq!(
+        t.targets[0].args.len(),
+        1,
+        "the tunnel-call target's arg must survive lowering: {:?}",
+        t.targets[0].args
+    );
 }
 
 #[test]

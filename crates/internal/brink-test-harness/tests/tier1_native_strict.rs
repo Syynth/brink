@@ -310,6 +310,39 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E065",
         "`absent`'s temp `n` escapes strict inference as Unknown — annotate or restructure",
     ),
+    // Group H (divert-target-args, issue #2136): `scale`/`combine`'s params
+    // are deliberately left untyped — the fixture's whole point is proving
+    // #2136's args-survive-lowering fix, not exercising annotation
+    // coverage — so each param escapes strict inference as `Unknown`, the
+    // same pre-existing checker gap `fn-value-bare-name`'s `add`/`apply`
+    // rows below already document (unannotated params always escape
+    // Unknown under `types = strict` regardless of dialect). Not a
+    // regression from this PR: an annotated variant of the same fixture
+    // (see `strict.rs::tests::divert_target_ref_param_widening_is_
+    // rejected_under_strict_on_native`) produces zero `E065` noise and
+    // instead reaches the real signal, `E063` — proof that #2127/#2128's
+    // ref-position check now fires on native once args are wired through.
+    (
+        "divert-target-args",
+        "E065",
+        "`combine`'s parameter `a` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "divert-target-args",
+        "E065",
+        "`combine`'s parameter `b` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "divert-target-args",
+        "E065",
+        "`scale`'s parameter `factor` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "divert-target-args",
+        "E065",
+        "`scale`'s parameter `x` escapes strict inference as Unknown — annotate or restructure",
+    ),
     // Group F (fn-value-bare-name)
     (
         "fn-value-bare-name",

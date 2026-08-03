@@ -802,6 +802,38 @@ fn prose_line_escape_shares_scope_across_the_split() {
     assert_case("prose-line-escape-scope");
 }
 
+/// Issue #2136: `hir::lower_native::body::lower_divert_target` used to
+/// discard `-> knot(args)` call args entirely and emit a hard `E129`
+/// ("parses but has no HIR lowering yet") instead of wiring them into
+/// `DivertTarget::args` — so a native `.brink` divert or tunnel call with
+/// arguments could not compile at all. Now the args survive lowering and
+/// reach the target's params, exactly like the ink-dialect path already
+/// did.
+///
+/// This exercises **both** call sites `lower_divert_target` backs: a plain
+/// `DIVERT_STMT` with args (`-> scale(6, 7)`, `scale`'s `x`/`factor` bind
+/// to `6`/`7`, and `{x * factor}` proves the value — not just the
+/// presence — of the bound arg reaches the transcript) and a `TUNNEL_CALL`
+/// with args (`-> combine(x, factor) ->`, `combine`'s `a`/`b` bind to the
+/// *forwarded* values `x`/`factor` rather than fresh literals, so this
+/// also proves an argument expression, not only an integer literal,
+/// lowers correctly) followed by a bare `return` (native's tunnel-return
+/// spelling) back into `scale`, whose own trailing `All done.` line then
+/// proves control actually returned rather than falling off the end.
+///
+/// Confirmed to fail without the fix (rule 20a): reverting
+/// `lower_divert_target` to `origin/main`'s discard-and-`E129` behavior
+/// and recompiling this exact fixture reproduces two `E129` diagnostics
+/// ("native: construct parses but has no HIR lowering yet"), one for
+/// each call site above — the source could not even reach
+/// `run_native_transcript`, let alone produce a wrong transcript. Fix
+/// restored afterward; both diagnostics disappear and the transcript
+/// matches `expected.txt`.
+#[test]
+fn divert_target_args_reach_the_target_knots_params() {
+    assert_case("divert-target-args");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -817,6 +849,7 @@ fn every_case_directory_has_a_test() {
         "construction-literal",
         "conventions-screenplay-preset",
         "directive-like-tag",
+        "divert-target-args",
         "fn-value-bare-name",
         "for-k-v",
         "inline-markup-hyphenated-name",
