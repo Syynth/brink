@@ -479,6 +479,17 @@ fn lower_single_level_field_write(
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return;
             };
+            // Issue #2122: `if get(bag) as b { b.field = v }` — `b`'s slot
+            // is an immutable `as` binding. This root-cell resolution
+            // never went through `stmts::lower_assign_target` (see this
+            // function's own header doc), so the E148 refusal that guards
+            // every *other* write path silently didn't apply here; see
+            // `stmts::reject_as_binding_write`'s doc for why that shared
+            // helper — not a direct call to `lower_assign_target` — is the
+            // right fix.
+            if super::stmts::reject_as_binding_write(slot, &head_name, path.range, ctx) {
+                return;
+            }
             let name_id = ctx.names.intern(&head_name);
             (
                 lir::AssignTarget::Temp(slot, name_id),
@@ -1769,6 +1780,13 @@ fn lower_field_mutator(
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return;
             };
+            // Issue #2122: `if get(bag) as b { push(b.items, 1) }` — same
+            // hole and same fix as `lower_single_level_field_write`'s
+            // identical arm; see that function's comment and
+            // `stmts::reject_as_binding_write`'s doc.
+            if super::stmts::reject_as_binding_write(slot, &head_name, path.range, ctx) {
+                return;
+            }
             let name_id = ctx.names.intern(&head_name);
             (
                 lir::AssignTarget::Temp(slot, name_id),

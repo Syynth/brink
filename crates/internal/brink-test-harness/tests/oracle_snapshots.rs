@@ -51,7 +51,18 @@ fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
 
 /// Ratchet: minimum number of oracle episodes that must pass.
 /// Bump this as compiler coverage improves.
-const RATCHET_EPISODE_COUNT: usize = 5607;
+///
+/// Raised 5607 -> 5608 on 2026-08-03. The measured count had been 5608 while
+/// this floor still read 5607, so a real conformance gain sat unprotected —
+/// any change could have regressed it back to 5607 with the gate still green.
+/// Measured on a *freshly cleaned* `CARGO_TARGET_DIR` (issue #2054: worktrees
+/// sharing one target can serve stale test binaries, so a corpus number taken
+/// without a clean is not trustworthy): CASES 366 pass / 8 fail / 398 total,
+/// EPISODES 5608 pass / 1010 mismatch / 2 missing. Which fix earned the extra
+/// episode is not attributed — 391 merges landed between this constant last
+/// being set (2026-07-26) and the measurement, and bisecting that range was
+/// not worth the compute.
+const RATCHET_EPISODE_COUNT: usize = 5608;
 
 #[test]
 #[expect(clippy::too_many_lines)]
