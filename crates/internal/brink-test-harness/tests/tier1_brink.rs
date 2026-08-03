@@ -135,6 +135,77 @@ fn struct_construct_read_write() {
     assert_case("struct-construct-read-write");
 }
 
+/// Issue #1495: `push`/`insert`/`remove_at` on a struct-field lvalue
+/// (`a.items`, `a: Bag`, `Bag.items: Array<int>`) used to silently misroute
+/// — a bare `ident.ident` chain always parses as one multi-segment
+/// `hir::Expr::Path` (never `hir::Expr::FieldAccess`), and
+/// `try_lower_mutator_stmt`'s bare-variable fast path resolved that whole
+/// path's range to the **root** variable (the TM-4b resolution-fallback
+/// shape), applying the mutator to `a` itself (a `Record`) instead of
+/// `a.items` (the `Array`) — a runtime `NotIndexable("record")` fault,
+/// reproduced against a real compile+run before this fix landed (`brink
+/// play` on this exact fixture printed `cannot index into a record value`
+/// instead of a line at all). This exercises all three mutators the issue
+/// names in one straight-line program: `push(a.items, 3)` (`[1, 2] ->
+/// [1, 2, 3]`), `insert(a.items, 0, 0)` (`-> [0, 1, 2, 3]`), and
+/// `remove_at(a.items, 2)` (`-> [0, 1, 3]`) — proving the fix's routing
+/// (`lower_field_mutator`, shared by every `MutatorKind`) rather than one
+/// verb in isolation. Confirmed to fail with `lower_mutator_call`'s
+/// `path.segments.len() > 1` split reverted (rule 20a): the bare-variable
+/// path is taken again and the case faults at runtime instead of matching
+/// `expected.txt`.
+///
+/// Two more shapes were added on review: `b = a` before any mutation, then
+/// asserting `b.items` is still `[1, 2]` after — the `let y = x` aliasing
+/// guarantee (`struct-copy-isolation`, `rmw-mutator-shared-nested-lvalue`'s
+/// precedent) that motivated the `Value`-layer isolation test this issue
+/// descends from (`nested_array_inside_record_field_is_isolated_after_copy`
+/// in `brink-format::value`); and a `Temp`-rooted case (`~ temp c = Bag#{…}`)
+/// exercising `lower_field_mutator`'s `SymbolKind::Param | Temp` arm, which
+/// the `VAR`-only original left uncovered — that arm is precisely the one
+/// whose historical symptom, before this fix, was a link-time `unresolved
+/// global` fault rather than `NotIndexable("record")` (see
+/// `tests/tier1-brink/algorithms/quadtree/story.ink`'s "actual arena-
+/// mutation friction" finding for that pre-fix repro).
+#[test]
+fn struct_field_mutator_lvalue_targets_the_field_not_the_root() {
+    assert_case("struct-field-mutator-lvalue");
+}
+
+/// Issue #1495 review scope: a **chained** struct-field mutator lvalue
+/// (`push(o.inner.items, v)`, 3+ segments) must not fall into the same
+/// silent-misroute hole the 2-segment case had — `lower_mutator_call`'s new
+/// split treats it exactly like `try_lower_field_assignment`'s own chained
+/// case, raising the same non-suppressible `E074` rather than reaching
+/// codegen at all.
+#[test]
+fn chained_struct_field_mutator_lvalue_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Inner = #{
+    items: Array<int>,
+}
+STRUCT Outer = #{
+    inner: Inner,
+}
+VAR o = 0
+~ {
+    o = Outer#{inner: Inner#{items: #[1, 2]}}
+    push(o.inner.items, 3)
+}
+o is {o.inner.items}.
+-> END
+";
+    let err = compile_brink(source)
+        .expect_err("a chained struct-field mutator lvalue must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject
@@ -433,6 +504,7 @@ fn every_case_directory_has_a_test() {
         "struct-display-default",
         "struct-through-function-call",
         "struct-copy-isolation",
+        "struct-field-mutator-lvalue",
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",
