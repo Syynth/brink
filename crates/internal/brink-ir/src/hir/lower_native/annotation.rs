@@ -324,7 +324,10 @@ pub(super) fn handle_line(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Di
         return;
     };
     let range = node.text_range();
-    if !matches!(name.text(), EFFECTS | WAS | ALLOW | ELEMENT | CONVENTION | STYLE) {
+    if !matches!(
+        name.text(),
+        EFFECTS | WAS | ALLOW | ELEMENT | CONVENTION | STYLE
+    ) {
         diags.push(diag(file_id, range, DiagnosticCode::E111));
     } else if !is_consumed_position(name.text(), node) {
         diags.push(diag(file_id, range, DiagnosticCode::E112));
@@ -964,7 +967,8 @@ fn parse_convention(
     // it to a call with an argument that could never match its declared
     // type.
     if let Some(p) = params.iter().find(|p| {
-        captures.contains(&p.name.text) && !is_satisfiable_by_a_string_capture(p.annotation.as_ref())
+        captures.contains(&p.name.text)
+            && !is_satisfiable_by_a_string_capture(p.annotation.as_ref())
     }) {
         let range = p.annotation.as_ref().map_or(p.name.range, TypeExpr::range);
         diags.push(diag(file_id, range, DiagnosticCode::E171));

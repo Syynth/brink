@@ -537,16 +537,18 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E160`](diagnostics/E160.md) | An `@[element(args = "…")]` pattern's named capture group does not match the name of any parameter... |
 | [`E161`](diagnostics/E161.md) | An `@[style(…)]` clause that is not a `key = "value"` pair, or an `@[style(…)]` argument list that... |
 | [`E162`](diagnostics/E162.md) | An `@[style(…)]` clause's key is neither `line`, `dispatch`, nor the name of a named capture group... |
-| [`E163`](diagnostics/E163.md) | An `@[style(…)]` annotation with no paired `@[element(…)]` on the same declaration. |
+| [`E163`](diagnostics/E163.md) | An `@[style(…)]` annotation with no paired `@[element(…)]` or `@[convention(…)]` on the same declaration. |
 | [`E164`](diagnostics/E164.md) | An inline markup span (`<name>…</name>`) whose tag name is not declared in the host manifest's markup vocabulary. |
 | [`E165`](diagnostics/E165.md) | An inline markup span carries an attribute the host manifest does not declare for that span kind. |
-| [`E166`](diagnostics/E166.md) | A `block`-flagged `@[element(…, block)]` annotation whose declaration has no trailing `content`-typed parameter to receive the captured run, or whose would-be receiver is also one of the pattern's own named captures. |
-| [`E167`](diagnostics/E167.md) | A natural-notation `@[element(claims = "…")]` handler declares a parameter that its pattern never captures, so a claimed line has nothing to bind it to. |
-| [`E168`](diagnostics/E168.md) | Two `@[element(claims = "…")]` handlers declare byte-identical patterns, so the later-declared one can never claim anything the earlier one didn't already claim first. |
-| [`E169`](diagnostics/E169.md) | A top-level `fn` carries a pattern-claiming `@[element(claims = "…")]` annotation, but this file is not the project's configured conventions module (`brink.toml`'s `[project] elements`). |
-| [`E170`](diagnostics/E170.md) | Two `@[element(claims = "…")]` handlers declare textually different patterns that provably overlap, so the later-declared one can never claim anything in this file (under the interim first-match-wins dispatch order). |
-| [`E171`](diagnostics/E171.md) | A `@[element(claims = "…")]` handler's captured parameter declares a type other than `string`/untyped/`content`, but every capture binds as a plain string literal — numeric capture coercion is deferred. |
+| [`E166`](diagnostics/E166.md) | A `block`-flagged `@[element(…, block)]` / `@[convention(…, block)]` annotation whose declaration has no trailing `content`-typed parameter to receive the captured run, or whose would-be receiver is also one of the pattern's own named captures. |
+| [`E167`](diagnostics/E167.md) | A `@[convention(claims = "…", order = N)]` handler declares a parameter that its pattern never captures, so a claimed line has nothing to bind it to. |
+| [`E168`](diagnostics/E168.md) | Two `@[convention(claims = "…", order = N)]` handlers declare byte-identical patterns, so the later-declared one can never claim anything the earlier one didn't already claim first. |
+| [`E169`](diagnostics/E169.md) | A top-level `fn` carries a pattern-claiming `@[convention(claims = "…", order = N)]` annotation, but this file is not the project's configured conventions module (`brink.toml`'s `[project] elements`). |
+| [`E170`](diagnostics/E170.md) | Two `@[convention(claims = "…", order = N)]` handlers declare textually different patterns that provably overlap, so the later-declared (higher-`order`) one can never claim anything in this file. |
+| [`E171`](diagnostics/E171.md) | A `@[convention(claims = "…", order = N)]` handler's captured parameter declares a type other than `string`/untyped/`content`, but every capture binds as a plain string literal — numeric capture coercion is deferred. |
 | [`E172`](diagnostics/E172.md) | A native `#…` tag begins with `@` — the ink-dialect directive-tag shape (`#@private`/`#@was`/`#@local`/…) — but native has no directive channel, so it lowers as an ordinary runtime tag. |
+| [`E178`](diagnostics/E178.md) | A `@[convention(claims = "…")]` annotation has no `order` clause — required, with no default. |
+| [`E179`](diagnostics/E179.md) | Two `@[convention(…)]` declarations in the same module carry the same `order` — reported against both declarations. |
 
 ## Known limitations
 

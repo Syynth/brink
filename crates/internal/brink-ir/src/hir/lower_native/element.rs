@@ -371,8 +371,7 @@ pub(super) fn collect(
         // are attempted on every top-level `fn`; a declaration carrying
         // neither contributes nothing to either table.
         let mut scratch: Vec<Diagnostic> = Vec::new();
-        let element =
-            super::annotation::element_annotation(file_id, &node, &params, &mut scratch);
+        let element = super::annotation::element_annotation(file_id, &node, &params, &mut scratch);
         let convention =
             super::annotation::convention_annotation(file_id, &node, &params, &mut scratch);
         let param_names: Vec<String> = params.into_iter().map(|p| p.name.text).collect();

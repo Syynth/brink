@@ -239,45 +239,60 @@ nodes:
   annotation lines allowed to intervene. Ink's top-of-body placement
   exists because a tag line above a knot header structurally belongs to
   the previous scope; native has no such problem.
-- **The recognized name set is `effects`, `was`, `allow`, `element`, and
-  `style`.** `@[effects(…)]` attaches to a `flow`/`fn` head at either
-  container level (top-level → `Knot.effects_assertion`, nested →
-  `Stitch.effects_assertion`) and is checked by the same
+- **The recognized name set is `effects`, `was`, `allow`, `element`,
+  `convention`, and `style`.** `@[effects(…)]` attaches to a `flow`/`fn`
+  head at either container level (top-level → `Knot.effects_assertion`,
+  nested → `Stitch.effects_assertion`) and is checked by the same
   frontend-agnostic exceedance pass (`E103`/`E108`/`E109`) that judges
   ink assertions. `@[was("old::module::path")]` is the **file-level**
   module-rename record (§5 of `modules-spec`, issues #1286/#1355) and is
   recognized only as a direct child of the file. `@[allow(…)]` is
-  source-level diagnostic suppression — §5d. `@[element(…)]` (issue
-  #1719) declares the prose-dispatch pattern on a `flow`/`fn` head, in one
-  of two spellings that fill the same slot: `args = "…"` (the `!name`-
-  dispatched form) or `claims = "…"` (issue #1838's natural-notation form —
-  a pattern that claims a prose line carrying no `!name` sigil). Either
-  spelling must compile as a portable regex (`E159`), and its named
-  captures must each bind a real parameter on the declaration (`E160`); a
-  `claims` pattern additionally requires the *converse* — every parameter
-  must be bound by some named capture (`E167`), since a claimed line's
-  rewritten call has no other source of arguments — except a
-  `block`-flagged handler's trailing `content`-typed receiver (see below),
-  which binds the captured run rather than a named group and is exempt
-  from this check. A `claims` parameter's
+  source-level diagnostic suppression — §5d.
+
+  `@[element(args = "…", block)]` (issue #1719, #2004) declares the
+  `!name`-dispatched pattern on a `flow`/`fn` head: self-announcing,
+  legal anywhere, carrying no `order` (a handler that names itself never
+  competes for a line). `@[convention(claims = "…", order = N, block)]`
+  (issue #1838, split out of `@[element]` into its own name by issue
+  #2164's 2026-08-03 ruling) declares the natural-notation *claiming*
+  pattern instead — a prose line carrying no `!name` sigil, reinterpreted
+  as a call. Both must compile as a portable regex (`E159`), and both
+  patterns' named captures must each bind a real parameter on the
+  declaration (`E160`); `@[convention]` additionally requires the
+  *converse* — every parameter must be bound by some named capture
+  (`E167`), since a claimed line's rewritten call has no other source of
+  arguments — except a `block`-flagged handler's trailing `content`-typed
+  receiver (see below), which binds the captured run rather than a named
+  group and is exempt from this check. A `@[convention]` parameter's
   declared type must be `string`, absent, or `content`, not `int`/`float`/
   `bool` or a struct — claiming always binds captures as strings, so a
   mismatched type makes the parameter unreachable (`E171`, issue #1849).
-  A `block`-flagged `@[element(…, block)]` annotation requires a trailing
-  `content`-typed parameter on the declaration to receive the captured run
-  (`E166`, issue #1839). Two claiming handlers declaring byte-identical
-  `claims` patterns is `E168` (issue #1848) — the narrow, sound slice of
-  "these two patterns compete for the same line" this surface detects; see
-  that code's own doc for what it does and does not catch. Two claiming
-  handlers' patterns overlap, with the later one provably subsumed by the
-  earlier, is `E170` (issue #1859) — a silent race where the earlier
-  pattern always wins, leaving the later handler dead code. `@[style(key =
-  "value", …)]` (issue #1719) is a companion annotation requiring a
-  paired `@[element]` on the same declaration (`E163`); each key must be
-  `line`, `dispatch`, or one of `element`'s captures (`E162`), and a
-  malformed clause list is `E161`. `@[effects]`, `@[style]`, and the
-  `args`-spelled `@[element]` attach and lower at either container level,
-  the same as each other — but a `claims`-spelled `@[element]` is legal
+  A `block`-flagged `@[element(…, block)]` / `@[convention(…, block)]`
+  annotation requires a trailing `content`-typed parameter on the
+  declaration to receive the captured run (`E166`, issue #1839).
+
+  **`order` is a required bare integer on `@[convention]`** (issue #2164,
+  `docs/decision-log.md` 2026-08-03) — no default (`E178` if absent), no
+  tie-break (`E179`, naming both declarations, if two handlers in one
+  module share a value). It replaces the retired issue #1848 interim
+  rule (top-level declaration order) as the claiming dispatch's
+  precedence: the walk tries a module's claiming handlers in ascending
+  `order`, first-match-wins. `@[element]` carries no `order` at all.
+
+  Two claiming handlers declaring byte-identical `claims` patterns is
+  `E168` (issue #1848) — the narrow, sound slice of "these two patterns
+  compete for the same line" this surface detects; see that code's own
+  doc for what it does and does not catch. Two claiming handlers'
+  patterns overlap, with the higher-`order` one provably subsumed by the
+  lower, is `E170` (issue #1859) — a silent race where the lower-`order`
+  pattern always wins, leaving the other handler dead code. `@[style(key
+  = "value", …)]` (issue #1719) is a companion annotation requiring a
+  paired `@[element]` or `@[convention]` on the same declaration
+  (`E163`); each key must be `line`, `dispatch`, or one of the paired
+  annotation's captures (`E162`), and a malformed clause list is `E161`.
+
+  `@[effects]`, `@[style]`, and `@[element]` attach and lower at either
+  container level, the same as each other — but `@[convention]` is legal
   only above a **top-level `fn`** (`E112` otherwise): the rewrite is an
   expression call, and a `flow`/nested `Stitch` is not callable as one.
   "Top-level" means a direct child of the file — a `fn` declared inside a
@@ -286,11 +301,11 @@ nodes:
   pass that builds the claim dispatch table only ever scans the file's
   direct declarations, so admitting a module-nested claim there would
   validate and then silently register nothing to claim with. Even a
-  validly-placed top-level `claims`-spelled handler is further confined to
+  validly-placed top-level `@[convention]` handler is further confined to
   **one file**: the conventions module `brink.toml`'s `[project] elements`
   key names. A claiming handler declared anywhere else is `E169` (issue
   #1844, the 2026-07-31 §9.1 ruling's item 4) — `!name`-dispatched
-  (`args`-spelled) handlers have no such restriction, since they
+  (`@[element]`) handlers have no such restriction, since they
   self-announce at the call site instead of silently reinterpreting prose.
 
 Everything else is the reserved-namespace rule (§1.1) doing its job: an

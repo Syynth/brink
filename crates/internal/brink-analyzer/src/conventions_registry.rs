@@ -171,8 +171,7 @@ mod tests {
     const CONVENTIONS_SRC: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
         fn interior(place: content) {\n  return place;\n}\n";
 
-    const BLOCK_CONVENTIONS_SRC: &str =
-        "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, block)]\n\
+    const BLOCK_CONVENTIONS_SRC: &str = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, block)]\n\
         fn cue(name: string, body: content) {\n  return name;\n}\n";
 
     #[test]

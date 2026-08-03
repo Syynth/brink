@@ -2272,9 +2272,7 @@ impl DiagnosticCode {
                 "`register` is a comptime-only intrinsic — legal only inside the project's configured conventions module's `fn conventions()`"
             }
             Self::E178 => "`@[convention(…)]` needs a required `order = N` clause",
-            Self::E179 => {
-                "two `@[convention]` declarations in this module carry the same `order`"
-            }
+            Self::E179 => "two `@[convention]` declarations in this module carry the same `order`",
         }
     }
 

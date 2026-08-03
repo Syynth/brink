@@ -3000,8 +3000,9 @@ fn a_claiming_handler_string_typed_param_does_not_diagnose_e171() {
 
 #[test]
 fn a_claiming_handler_untyped_param_does_not_diagnose_e171() {
-    let (hir, _m, diags) =
-        lower_src("@[convention(claims = \"^Take (?<n>\\\\d+)$\", order = 180)]\nfn take(n) {\n  return n;\n}\n");
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^Take (?<n>\\\\d+)$\", order = 180)]\nfn take(n) {\n  return n;\n}\n",
+    );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E171),
         "an untyped captured param must not raise E171: {diags:?}"
@@ -3200,7 +3201,10 @@ fn a_convention_with_an_order_does_not_diagnose_e178() {
         !diags.iter().any(|d| d.code == DiagnosticCode::E178),
         "a @[convention] with an order clause must not raise E178: {diags:?}"
     );
-    let convention = hir.knots[0].convention_annotation.as_ref().expect("present");
+    let convention = hir.knots[0]
+        .convention_annotation
+        .as_ref()
+        .expect("present");
     assert_eq!(convention.order, 10);
 }
 
@@ -3209,7 +3213,10 @@ fn two_conventions_sharing_an_order_diagnose_e179_on_both() {
     let (_hir, _m, diags) = lower_src(
         "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\n@[convention(claims = \"^B$\", order = 10)]\nfn b() {\n  return \"b\";\n}\n",
     );
-    let e179s: Vec<_> = diags.iter().filter(|d| d.code == DiagnosticCode::E179).collect();
+    let e179s: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E179)
+        .collect();
     assert_eq!(
         e179s.len(),
         2,

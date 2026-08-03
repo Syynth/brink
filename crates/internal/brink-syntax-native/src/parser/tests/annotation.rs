@@ -248,7 +248,10 @@ fn annotation_arg_key_value_integer() {
     let args = line.args().expect("ANNOTATION_ARGS");
     let arg = args.args().next().expect("ANNOTATION_ARG");
     assert_eq!(arg.name_token().unwrap().text(), "order");
-    assert!(arg.eq_value().is_none(), "must not be read as a string value");
+    assert!(
+        arg.eq_value().is_none(),
+        "must not be read as a string value"
+    );
     let int_lit = arg.eq_int_value().expect("eq_int_value");
     assert_eq!(int_lit.value(), Some(30));
 }
@@ -263,7 +266,10 @@ fn annotation_arg_key_value_integer() {
 fn annotation_arg_key_value_negative_integer_is_a_parse_error() {
     let src = "@[convention(order = -5)]\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty(), "expected a parse error for `order = -5`");
+    assert!(
+        !p.errors().is_empty(),
+        "expected a parse error for `order = -5`"
+    );
 }
 
 /// Two key/value clauses in one annotation, the `@[style(...)]` shape from
