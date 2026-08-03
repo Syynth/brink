@@ -112,6 +112,15 @@ defaults **public** (`#@private` overrides). Declaring a module is
 the single deliberate gesture that opts into encapsulation; casual
 ink stays open.
 
+**This section describes the ink dialect's directive spelling.** The
+native surface (`docs/native-surface-charter.md` §13.2) is always a
+*declared* module (identity is filesystem-derived) and therefore
+always defaults private, with no undeclared-stem-module case; it
+opts a declaration into public with a `pub` keyword rather than an
+`#@public` tag directive (issue #1582, RULED 2026-08-03). Both
+spellings produce the identical `VisibilityMark::Public` this
+section's `effective_visibility` logic consumes.
+
 **Boundary rules** (keeping the axes from leaking):
 
 1. **`#@private` hides the name, not the cell.** A private

@@ -2624,3 +2624,45 @@
 - **WHAT (item 2, DELIVERED by issue #2178):** `@[convention]` gains an optional `attach = StructName` clause — the handler's declared **output schema**. The governing split: **declared** (this clause: which keys, what types — static, editor-readable, cacheable) vs. **computed** (the handler body: the actual values). The schema is a plain `struct` name, not a new declarative sub-language — a `struct` is already declarative, statically known, serialized, and understood by compiler + editor + host. A handler may never attach a *computed key name*: dynamic key names would destroy the static projection both the editor and the load-time host-binding check depend on. Checked at the declaration (`E180`): the handler's own `: Type` return annotation must name the same struct `attach` does.
 - **WHAT (item 3, NOT BUILT — tracked as #2179):** a convention handler may call pure fns and commands, but may never read world state, enforceable now (no comptime needed) because: if classification depended on game state, the editor could never display it, the projection could never be cached, and explain-match would depend on a save file. The original comment's instruction was to wire the *existing* capability-manifest/effect-row join (`compute_container_access` in `crates/bevy-brink/src/capability.rs`) rather than write a new analysis. Investigating for #2178/#2179 found that mechanism does not fit: it lives in `bevy-brink`, which `brink-ir`'s own `host_manifest.rs` module doc says must never be depended on by the compiler (and the reverse edge is equally unwanted); it operates on already-codegen'd `Program`/`EffectRowEntry` data with no source spans at all (needed for "diagnostic must point at the offending call"); and it requires a live, host-registered `CapabilityRegistry<M>` that does not exist at `brink compile` time. The other same-repo "capability manifest" (`brink_ir::host_manifest::ExternalKind`/`HostManifest`, `Query`/`Effect`/`Presentation`/`Plain`) is compile-time and IDE-facing but is explicitly documented as advisory-only ("never consumed by the runtime or by codegen... only enriches") and defaults to `Plain` (unclassified) at nearly every call site in the analyzer — neither a "trust it" nor a "distrust it" default is sound as a hard compile-time gate built from that data. Building the fence therefore needs either a new default-classification policy for unclassified externals (exactly the kind of undetermined default the parent ruling's own "do not invent it" caution warns against) or a new analysis outright — both out of scope for a "wire the existing join" instruction. Left for #2179 to design properly rather than force a wrong wiring.
 - **WHY:** Both items are independently justified in the original comment: the schema-as-struct design keeps the projection static and cacheable without inventing a sub-language; the no-world-reads fence keeps a convention handler's classification independent of game state so the editor/projection/explain-match tooling can all treat it as a pure function of source text. Item 3's investigation is recorded here so the next agent does not re-discover the same architectural mismatch from scratch. Recorded late: this entry transcribes items 2–3 of issue #2164's 2026-08-03 "design backport" comment, which stated both rulings but never itself landed in this log (PR #2176 only logged the `order` ruling above via #2160; these two items were left as comment-only rulings until this entry). Item 1 of that same comment (the attach-vs-wrap attachment MODE ruling) is **not** transcribed here — it is tracked separately at icebox issue #2169. Per the "a ruling lands in a spec, not only in the log" discipline, both items above also have a spec home: item 2 (`attach`) is documented in `docs/prose-dialect-spec.md` §3.5b and `docs/directive-annotations-spec.md`; item 3 (no-world-reads) has none yet, since it is not built.
+
+## Stdlib mounts into `Environment`'s manifest at the producer, as plain source (#2080)
+- **WHEN:** 2026-08-03
+- **PROJECT:** brink
+- **SYSTEM:** compiler (`crates/internal/brink-environment`) — the `std::` mount
+- **SCOPE:** minor/local (implements an already-ruled mechanism; no new design)
+- **WHAT:** `Project::load` mounts the `std/` stdlib source tree (currently just
+  `std/conventions/screenplay.brink`) into every `Environment`'s manifest,
+  embedded at compile time via `include_str!` (so it mounts identically on
+  hosts with no filesystem, e.g. `@brink-lang/web`'s wasm build). No new
+  resolution mechanism was built: #2080's 2026-08-03 issue ruling found
+  `Environment` (#1306) already generalizes `the-tree-is-the-universe` to
+  `the-environment-is-the-universe` (`{ local module tree } + { resolved
+  external module set }`), and native module identity is a pure function of
+  a source's string key — so the stdlib needs no virtual module tree, no
+  second `FileId` space, and no bespoke preset registry. It joins the
+  manifest exactly like any project file, under the same root-relative,
+  forward-slash key convention; `brink_db::modules::native_module_path`
+  mints its identity the same way it would for a project file at that path.
+  A project source already present at the same key wins over the embedded
+  copy rather than being silently clobbered. The stdlib ships as **source**
+  in the manifest, not as a `resolved_deps` entry — that slot stays reserved
+  for #1093's compiled per-module artifacts.
+- **WHY:** The issue's own original framing (a virtual/embedded module tree
+  distinct from tree-is-universe discovery) assumed a problem that the
+  `Environment` seam had already solved by design; building a second
+  mechanism would have reopened exactly the parallel-universe surface
+  `external_conventions` is being deleted for (#2165). Embedding via
+  `include_str!` (rather than a real on-disk path) is required because the
+  compiler must run in wasm with no filesystem — the same constraint that
+  already keeps `brink-conventions export`/host I/O injected rather than
+  baked in.
+- **SCOPE FENCE (explicit, not an oversight):** this is the *mount* only —
+  the stdlib source is now present in every compiled environment's db, but
+  nothing in it is marked `pub` and no confinement rule scopes what a
+  project's own `use` may reach into it. A real `use std::…` importing an
+  item out of the mounted module still needs #1582's pub marker and #2167's
+  closure-scoped confinement — both ruled, neither built here. Also
+  untouched: the `[project] elements` → `conventions` rename the same
+  2026-08-03 ruling records as owed (a breaking config change needing its
+  own deprecation path and reader sweep) — a separate, larger piece of work
+  from the mount itself.

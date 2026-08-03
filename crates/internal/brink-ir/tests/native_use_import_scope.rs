@@ -13,14 +13,20 @@
 //!
 //! **Why the two defining modules are `.ink` files.** The referencing side
 //! is the real native `use` under test. The defining side needs *public*
-//! symbols in *declared* modules, and native has no visibility syntax yet —
-//! `lower_native` leaves every declaration's `visibility` at `None`, and a
-//! declared module defaults `Private` (decision-log 2026-07-23, "Native
-//! visibility: top-level flows default to Private"), which `E087` blocks
-//! from crossing a module boundary at all. `#@public` is the only spelling
-//! of "public in a declared module" the compiler currently has, so the
-//! fixture uses it. See the issue #1581 thread: giving native its own
-//! public-visibility marker is tracked separately.
+//! symbols in *declared* modules; at the time this fixture was written,
+//! native had no visibility syntax of its own — `lower_native` left every
+//! declaration's `visibility` at `None`, and a declared module defaults
+//! `Private` (decision-log 2026-07-23, "Native visibility: top-level flows
+//! default to Private"), which `E087` blocks from crossing a module
+//! boundary at all — so `#@public` (the brink-dialect tag directive) was
+//! the only spelling of "public in a declared module" the compiler had,
+//! and the fixture used it. **That gap has since closed** (issue #1582,
+//! RULED 2026-08-03: native gained its own `pub` keyword —
+//! `crates/internal/brink-ir/tests/native_pub_visibility.rs` is the
+//! fully-native two-file regression this fixture's own doc used to flag as
+//! missing). The ink-defining-module shape here is kept anyway: it is
+//! ALSO exercising the cross-*dialect* case (an ink module referenced by a
+//! native `use`), which a fully-native fixture cannot cover.
 
 use std::collections::BTreeMap;
 

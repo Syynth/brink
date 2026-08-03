@@ -358,6 +358,28 @@ jobs:
             exit 1
           fi
 
+      # #2080 review finding: `brink-environment` embeds
+      # `std/conventions/screenplay.brink` via `include_str!(concat!(
+      # env!("CARGO_MANIFEST_DIR"), ...))`. `include_str!` cannot reach
+      # outside its own package root, so that path — and any future one
+      # like it — must resolve to a file `cargo package` actually ships;
+      # an out-of-package path builds and tests fine locally (cargo runs
+      # from the workspace checkout, where the path still resolves) but
+      # breaks for every consumer once published, because the packaged
+      # tarball never contained the file. `cargo package`'s own verify
+      # build doesn't catch this either — it happens to unpack to
+      # `target/package/<pkg>-<ver>/`, where a `../../..`-shaped path can
+      # accidentally resolve back into the surrounding checkout and still
+      # find the file. Listing the tarball's real contents and grepping
+      # for the mounted file is the only way to catch this before
+      # release-plz does.
+      - name: brink-environment package contains its embedded stdlib source
+        id: environment_package_list
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          cargo package -p brink-environment --locked --list \
+            | grep -F 'std/conventions/screenplay.brink'
 
   deny:
     name: cargo-deny

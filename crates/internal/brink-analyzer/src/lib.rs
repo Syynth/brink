@@ -330,9 +330,13 @@ impl AnalysisOptions {
                         // Issue #1720 review finding: recognizing a preset
                         // name in `BUILTIN_ELEMENT_PRESETS` is validation-
                         // only — nothing downstream injects its handlers
-                        // into a project's dispatch table yet (no
-                        // `std::`-namespaced module resolution, #2080; no
-                        // `fn conventions()` registration/comptime, #1840).
+                        // into a project's dispatch table yet. #2080
+                        // (landed) mounts the preset's source into every
+                        // compiled `Environment`'s manifest, but a
+                        // project's own `use` still cannot resolve into it
+                        // (needs #1582's pub marker + #2167's confinement),
+                        // and `fn conventions()` registration/comptime
+                        // (#1840) hasn't landed either.
                         // Silently accepting the name here would leave an
                         // author writing `elements = "screenplay"` with
                         // zero diagnostics and zero behavior — the exact
@@ -456,9 +460,11 @@ fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
 /// the pointer is consumed downstream yet. Nothing reads `self.elements`
 /// to actually inject the preset's handlers into a project's dispatch
 /// table: `std::conventions::screenplay` has no real `use`-importable
-/// module path (no `std::`-namespaced resolution exists in the compiler
-/// at all — see #2080), and `fn conventions()` registration/comptime
-/// (#1840) hasn't landed either. `brink-db`'s
+/// module path. #2080 (landed) mounts the preset's source into every
+/// compiled `Environment`'s manifest, but a project's own `use` still
+/// cannot resolve into it — that needs #1582's pub marker and #2167's
+/// closure-scoped confinement, neither built yet — and `fn conventions()`
+/// registration/comptime (#1840) hasn't landed either. `brink-db`'s
 /// `conventions_confinement_diagnostics_query` still explicitly skips the
 /// `E169` confinement check for a preset-shaped pointer, per its own doc,
 /// unchanged by this addition.

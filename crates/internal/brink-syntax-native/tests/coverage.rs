@@ -71,7 +71,8 @@ fn classify(kind: SyntaxKind) -> Coverage {
         | SyntaxKind::DOC_COMMENT_INNER => Exercised,
 
         // ── Keyword tokens ───────────────────────────────────────
-        SyntaxKind::KW_FLOW
+        SyntaxKind::KW_PUB
+        | SyntaxKind::KW_FLOW
         | SyntaxKind::KW_FN
         | SyntaxKind::KW_VAR
         | SyntaxKind::KW_CONST

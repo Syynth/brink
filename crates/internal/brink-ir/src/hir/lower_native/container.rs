@@ -270,7 +270,13 @@ pub(super) fn lower_top_level_container(
         style_annotation,
         return_type,
         doc,
-        visibility: None,
+        // The leading `pub` keyword (issue #1582, RULED 2026-08-03): reuses
+        // the same `VisibilityMark` the brink dialect's `#@public` tag
+        // directive already produces, so `effective_visibility` and every
+        // downstream cross-module gate (`brink-analyzer::modules`) are
+        // unchanged. Absent, stays `None` — the ratified 2026-07-23
+        // Private-by-default posture.
+        visibility: node.is_pub().then_some(crate::VisibilityMark::Public),
         was: None,
     })
 }
@@ -386,7 +392,9 @@ fn lower_stitch(
         style_annotation,
         return_type,
         doc,
-        visibility: None,
+        // Same marker channel as the top-level container — see
+        // `lower_top_level_container`'s parallel comment (issue #1582).
+        visibility: node.is_pub().then_some(crate::VisibilityMark::Public),
         was: None,
     })
 }

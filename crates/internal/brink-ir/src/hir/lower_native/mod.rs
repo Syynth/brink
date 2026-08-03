@@ -91,11 +91,13 @@
 //!    diagnostic-suppression channel. [`annotation`] also owns the
 //!    channel's erasure/diagnosis
 //!    chokepoint so an unknown (`E111`) or misplaced (`E112`) annotation is
-//!    loud instead of blanket-`E129`. Still `None`/`false` on every decl
-//!    node: `is_local` and per-declaration `visibility` — those are
-//!    *keyword* channels on the native surface and no keyword syntax exists
-//!    yet (no `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens), so there is nothing
-//!    to read. `///`/`//!` docs ARE
+//!    loud instead of blanket-`E129`. `visibility` is now wired too (issue
+//!    #1582, RULED 2026-08-03): a leading `pub` keyword (`decl::eat_pub`,
+//!    `ast::FlowDecl::is_pub` and its six siblings) sets
+//!    `Some(VisibilityMark::Public)`; absent, `None` — the ratified
+//!    2026-07-23 Private default, unchanged. `is_local` remains `false` on
+//!    every decl node: no native syntax exists for it yet. `///`/`//!` docs
+//!    ARE
 //!    wired (B0.6b, `docs/decision-log.md` 2026-07-20, `doc_comment`) —
 //!    they were judgment call 5 in the B0.6 report but shipped as their
 //!    own ruled slice rather than staying deferred alongside the rest. The
@@ -326,7 +328,15 @@ pub fn lower_with_conventions(
         // record (name left empty — see judgment call #7 and [`module`]).
         module,
         imports: top.imports,
-        // No visibility-keyword syntax wired yet (judgment call #5); `@[was]`
+        // This is the TAG-DIRECTIVE occurrence list the dialect gate uses
+        // to flag brink-only `#@private`/`#@public` syntax (M-2,
+        // `docs/modules-spec.md` §4) — native never produces a directive
+        // TAG_LINE for visibility, so this correctly stays empty forever,
+        // independent of the `pub` KEYWORD channel (issue #1582, RULED
+        // 2026-08-03): `pub` is real grammar, not a directive, and is
+        // consumed straight into each declaration's own `visibility` field
+        // (`decl::visibility_mark`, `container::lower_top_level_container`/
+        // `lower_stitch`), never through this per-occurrence vec. `@[was]`
         // now flows through `module.was` above.
         visibility: Vec::new(),
         was_directives: Vec::new(),
@@ -590,6 +600,15 @@ impl FlowOrFn {
         match self {
             Self::Flow(f) => f.doc(),
             Self::Fn(f) => f.doc(),
+        }
+    }
+
+    /// `true` if a leading `pub` keyword marks this declaration public
+    /// (issue #1582, RULED 2026-08-03). See `ast::FlowDecl::is_pub`'s doc.
+    fn is_pub(&self) -> bool {
+        match self {
+            Self::Flow(f) => f.is_pub(),
+            Self::Fn(f) => f.is_pub(),
         }
     }
 }

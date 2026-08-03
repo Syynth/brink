@@ -593,10 +593,14 @@ fn radio(chan: string, text: content) {
 - **Staging**: v1 = built-in screenplay preset + `!`-dispatched
   annotations (zero comptime); the §3.5 conventions-module evaluation
   arrives later for authoring full custom presets. **The preset itself
-  landed, issue #1720** (`std/conventions/screenplay.brink`) — but only as
-  authored source, not as anything a project can `use` yet: no
-  `std::`-namespaced module resolution exists in the compiler (native
-  discovery is tree-is-universe, with no importable stdlib path), and
+  landed, issue #1720** (`std/conventions/screenplay.brink`), and **#2080
+  (ruled 2026-08-03) mounts its source into every compiled project's
+  `Environment` manifest** — the same string-keyed home every project
+  source lives in (no bespoke `std::`-namespace resolution mechanism; see
+  `crates/internal/brink-environment`). What's still missing before a
+  project can `use` an item out of it: nothing in the mounted module is
+  marked `pub` and no confinement rule scopes what a project's `use` may
+  reach (#1582's pub marker, #2167's closure-scoped confinement), and
   `fn conventions()` registration/comptime (issue #1840) hasn't landed
   either. The preset's handlers are proven end to end only via a project
   that inlines the same declarations directly (`tests/tier1-native/
