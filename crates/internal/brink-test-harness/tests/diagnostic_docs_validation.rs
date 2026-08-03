@@ -155,6 +155,14 @@ fn diagnostic_codes_are_unique() {
         collisions.join("\n  ")
     );
 
+    // Codes reserved for an issue that has not landed a variant yet. #2156 claimed
+    // E176/E177 but has not started (still queued as of this writing); #2164's slice
+    // took E178/E179 instead per its own explicit instruction not to take E176/E177.
+    // This leaves a transient, expected gap in the contiguity check below. Delete this
+    // allowlist entry (and this comment) once #2156 lands and defines E176/E177 for
+    // real — at that point the gap closes on its own and the entry becomes redundant.
+    const RESERVED_CODES: &[&str] = &["E176", "E177"];
+
     // Verify no gaps in the numeric sequence: if E001 exists and E167 exists,
     // every code E001..=E167 must also exist. (Gaps are allowed *before* E001
     // or *after* the max, but not in the middle.) Codes are never reused once
@@ -182,7 +190,9 @@ fn diagnostic_codes_are_unique() {
         let mut gaps = Vec::new();
         for num in first_num..=last_num {
             let code_str = format!("E{num:03}");
-            if !code_to_variants.contains_key(code_str.as_str()) {
+            if !code_to_variants.contains_key(code_str.as_str())
+                && !RESERVED_CODES.contains(&code_str.as_str())
+            {
                 gaps.push(code_str);
             }
         }
