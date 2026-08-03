@@ -52,18 +52,34 @@
 // # Element inventory covered (docs/prose-dialect-spec.md §8, §8b, §8d)
 //
 // - `heading` — scene headings (`INT.`/`EXT.` prefix, §3.3/§8b.7). Scene
-//   entry is ruled a lowered host call (`scene_entered(title, slug)`),
-//   but no such extern exists to call yet (this preset does not invent
-//   one) — this handler emits the announcement as plain text instead,
-//   which is as far as "elements reach runtime output" goes before
-//   #1683/#1684 (`Line`/`Step` carry no structured element metadata, only
-//   text a handler body emits). **Only claims a heading with NO explicit
-//   `[slug]` and no trailing tags** — `hir::lower_native::element::
-//   candidate`'s literalness rule declines a heading carrying either,
-//   the same way it declines a `CONTENT_LINE` carrying interpolation;
-//   every worked-page heading in the spec (`[market]`, `[chapel_found]`,
-//   `[alley_escape]`) uses an explicit slug and so is NOT claimable by
-//   this handler as written. Promoting a heading to a real HIR stitch (a
+//   entry is ruled a lowered host call (issue #2092; `docs/decision-
+//   log.md`'s 2026-07-31 "Conventions are annotated handlers" §9.1
+//   entry, item 6: "an engine listening for `scene_entered` against a
+//   module that never calls it is a *host-manifest* mismatch" — the
+//   manifest owns that boundary, not a second registry) — the handler
+//   now declares `extern scene_entered(title, slug)` and calls it as an
+//   ordinary logic-line statement
+//   before returning its display text, riding the existing Track-A
+//   bind-by-name + `Value` external-call machinery
+//   (`docs/host-capability-manifest.md`'s "Runtime relationship"
+//   section — the manifest itself is tooling/author-time only and never
+//   gates this call). A no-op `fn scene_entered(title: string, slug:
+//   string) { }` fallback ships alongside the `extern` so a project with
+//   no host `ExternalFnHandler` bound (bare `brink play`, this preset's
+//   own golden fixture) still runs cleanly — a real host's handler
+//   intercepts the call before that empty body ever executes. **Only
+//   claims a heading with NO explicit `[slug]` and no trailing tags** —
+//   `hir::lower_native::element::candidate`'s literalness rule declines
+//   a heading carrying either, the same way it declines a `CONTENT_LINE`
+//   carrying interpolation; every worked-page heading in the spec
+//   (`[market]`, `[chapel_found]`, `[alley_escape]`) uses an explicit
+//   slug and so is NOT claimable by this handler as written — that gap
+//   (slug-claiming) is tracked separately as #2077/#2078, not this
+//   issue. Because no slug ever reaches this handler today, `slug` is
+//   passed through as an empty string — a deliberate non-choice, not a
+//   derived/materialized value (slug materialization on fmt is #1718,
+//   blocked on #1730's missing `.brink` fmt pipeline; this preset does
+//   not build that here). Promoting a heading to a real HIR stitch (a
 //   genuine divert target, §3.2/§3.3's "a scene heading may declare a
 //   stitch") is not built anywhere in the compiler — issue #1717, which
 //   would have owned that, was closed as superseded by the §9.1 ruling
@@ -162,8 +178,26 @@
 // that lies about what it does. Left off entirely rather than shipping
 // a half-working one; add it once multi-token values land.
 
+// The host-facing scene-entry notification (issue #2092). No fallback
+// body is written inline on the `extern` itself — native `extern`
+// declarations never carry one (`brink-syntax-native`'s own
+// `extern_decl` doc: "no body, ever"). Instead a same-named `fn` below
+// supplies the ink-side fallback the linker binds when no host
+// `ExternalFnHandler` resolves the call (mirrors ink's own
+// `EXTERNAL`+matching-knot fallback idiom, `lir::lower::decls::
+// collect_externals`).
+extern scene_entered(title, slug)
+
+/// No-op fallback for `scene_entered` — runs only when nothing bound a
+/// real host handler. Keeps this preset (and its own golden fixture)
+/// playable standalone; a real host's `ExternalFnHandler` intercepts the
+/// call before this body ever executes.
+fn scene_entered(title: string, slug: string) {
+}
+
 @[element(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$")]
 fn heading(kind: string, title: string) {
+  scene_entered(title, "");
   return "-- {kind}. {title} --";
 }
 

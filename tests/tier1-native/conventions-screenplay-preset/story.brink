@@ -5,10 +5,23 @@
 // this fixture inlines the SAME four handler declarations the shipped
 // preset ships, proving the preset's own bodies dispatch correctly via the
 // mechanism that IS landed today (single-file `@[element(claims = …)]` +
-// `block` capture, issues #1838/#1839).
+// `block` capture, issues #1838/#1839). Also inlines the `scene_entered`
+// host extern + no-op fallback (issue #2092) `heading` now calls — this
+// fixture is driven with the default `FallbackHandler`
+// (`brink_test_harness::corpus::run_native_transcript`, no host bound), so
+// the no-op fallback is what actually runs here; the extern firing with the
+// right args against a REAL bound handler is proven separately in
+// `crates/internal/brink-test-harness/tests/issue_2092_scene_entered_
+// extern.rs`.
+
+extern scene_entered(title, slug)
+
+fn scene_entered(title: string, slug: string) {
+}
 
 @[element(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$")]
 fn heading(kind: string, title: string) {
+  scene_entered(title, "");
   return "-- {kind}. {title} --";
 }
 
