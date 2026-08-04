@@ -2693,8 +2693,14 @@ fn a_claimed_parenthetical_lowers_to_a_call() {
 #[test]
 fn a_cue_block_capture_stops_at_a_following_parenthetical_and_the_parenthetical_claims_separately()
 {
-    // The screenplay preset's actual chaining shape (§8, "the complement-
-    // pass page"): `@VENDOR` / `(hushed)` / dialogue. `capture_block`'s
+    // Exercises `block`'s general terminator rule in isolation using a
+    // cue/parenthetical-shaped example (§8, "the complement-pass page"):
+    // `@VENDOR` / `(hushed)` / dialogue. ⚠ This is no longer the shipped
+    // screenplay preset's own shape — issue #2166 migrated the real
+    // `std/conventions/screenplay.brink` `cue`/`parenthetical` off `block`
+    // entirely, onto attach mode (`attach = StructName`, issue #2178), so
+    // neither handler captures anything today. This test still pins the
+    // general `block` terminator mechanism `capture_block` implements: the
     // ruled terminator ends a run at "any element-level line", and a
     // `PARENTHETICAL` is explicitly one of those (`element.rs`'s own
     // doc) — so a `block`-declared cue captures ZERO lines here (the very
