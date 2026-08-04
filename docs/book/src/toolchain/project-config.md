@@ -26,6 +26,12 @@ unprune-dirs = ["node_modules"]  # directory names a native (.brink) compile
                                  # the default target/.git/node_modules list
                                  # — see "Directory discovery pruning" below
                                  # (issue #1407)
+conventions = "conventions.brink"  # a project-relative path, or a bare
+                                   # built-in preset name (e.g.
+                                   # "screenplay"), pointing at the
+                                   # project's conventions module (issue
+                                   # #1844; see the dialect spec's
+                                   # "Where conventions live" section)
 
 [lints]
 deny-warnings = true   # promote every Warning-severity diagnostic to
@@ -35,6 +41,10 @@ E014 = "deny"          # per-code severity override:
                        # ("info"/"hint" down-level to an advisory tier below
                        # Warning — issue #1162)
 ```
+
+`[project] elements` is a deprecated alias for `conventions` (issue #2180):
+it still sets the same value, but emits a `ConfigWarning` naming the
+rename — migrate to `conventions` at your own pace.
 
 All keys are optional. An empty or absent `[project]`/`[lints]` table — or
 no `brink.toml` at all — changes nothing on a *first* apply: **a missing

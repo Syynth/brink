@@ -26,8 +26,9 @@
 //! module runs no brink code and reads no comptime evaluator.
 //!
 //! Resolving *which file* is the project's conventions module (the
-//! `[project] elements` pointer against `module_map_query`) is
-//! `brink-db`'s job, exactly as `conventions_confinement.rs`'s own doc
+//! `[project] conventions` pointer, renamed from `elements` by issue
+//! #2180, against `module_map_query`) is `brink-db`'s job, exactly as
+//! `conventions_confinement.rs`'s own doc
 //! explains for the sibling #1844 check — this module takes the resolved
 //! `conventions_file: FileId` as a plain argument, the same posture.
 
