@@ -141,18 +141,44 @@ std-mounted candidate for a file that is itself part of
 excludes that same candidate unconditionally — stricter than
 `lookup_by_name` for exactly that referrer.
 
-**A third participant (issue #2238):** LIR struct-shape resolution
-(`brink-ir::lir::lower::structs::ShapeTable::resolve`, via
-`decls::lookup_global`) joined the std-invisibility gate so that a
+**A third participant (issue #2238), narrowed by issue #2246:** LIR
+struct-shape resolution joined the std-invisibility gate so that a
 project's own struct and a mounted std preset's same-named struct can
-coexist without one silently claiming the other's shape id. It carries
-the identical asymmetry: `lookup_global`'s fallback excludes every
-std-declared candidate unconditionally, with **no** referrer-inside-std
-carve-out — unlike `lookup_by_name_direct`'s `InScope` tier, a std file
-referencing a same-named shape it does not itself declare resolves to
-`None` rather than a std sibling. Not yet reconciled with the other two
-lookups' referrer-inside-std handling (tracked alongside issue #2233's
-`lookup_unique_by_name` asymmetry).
+coexist without one silently claiming the other's shape id. Issue #2246
+found that **a struct construction literal's shape name is a HIR
+reference the analyzer already resolves** (`resolve::resolve_struct_ref`,
+full `Candidacy`/module-scope semantics, into the same `ResolutionMap`
+every other reference kind uses) — lowering (`expr::lower_struct_literal`,
+`decls::eval_const_struct_literal`) was re-deriving the answer instead of
+consuming it. For a construction literal, then, the coexistence guarantee
+above is now delivered by `brink-analyzer::resolve::lookup_by_name_direct`
+itself, the same lookup the rest of this section describes — **not** by
+`ShapeTable::resolve`/`decls::lookup_global`, which construction literals
+no longer call at all.
+
+`ShapeTable::resolve` (via `decls::lookup_global`) remains the resolution
+path for the cases with no HIR reference to consume — a struct field's
+declared type, and a `VAR`/`CONST`/`temp` TM-2 type annotation (`project.rs`'s
+own doc: "Field `TypeExpr`s never register unresolved refs… a nominal-only
+grammar, resolved later by a different mechanism"). It carries the
+identical asymmetry described above for those callers only: `lookup_global`'s
+fallback excludes every std-declared candidate unconditionally, with
+**no** referrer-inside-std carve-out — unlike `lookup_by_name_direct`'s
+`InScope` tier, a std file referencing a same-named shape it does not
+itself declare resolves to `None` rather than a std sibling. Not yet
+reconciled with the other two lookups' referrer-inside-std handling
+(tracked alongside issue #2233's `lookup_unique_by_name` asymmetry).
+
+**Correction to the record:** `docs/decision-log.md`'s 2026-08-04 "peer
+roots" entry lists `ShapeTable::resolve`'s fast path among five sites
+"each independently taught to skip std" — issue #2246 found this false for
+that one site. The fast path (`if ids.len() <= 1 { return ids.first()...
+}`) returned a bucket's sole candidate unconditionally and **never called
+`lookup_global` at all**, so a struct name only a mounted std module
+declared, with no project-side homonym, resolved straight through with no
+import — the fast path had not, in fact, been taught to skip std. #2246
+fixed it to always route through `lookup_global`, whether the bucket holds
+one candidate or many.
 
 **Boundary rules** (keeping the axes from leaking):
 

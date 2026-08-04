@@ -457,12 +457,24 @@ fn is_std_module(module: &str) -> bool {
 /// different *declared* modules coexist in `index.by_name` — which is
 /// exactly what happens once `brink_environment`'s stdlib mount (#2080)
 /// puts, say, a project's own `extern scene_entered` alongside
-/// `std/conventions/screenplay.brink`'s own same-named extern. Every call
-/// site here is a **self-declaration** lookup — "what id did the analyzer
-/// already assign to the definition *this file itself* just declared" —
-/// never a cross-file reference (those go through `resolve.rs`'s
-/// `ImportScope`-aware `lookup_by_name` instead), so the entry declared in
-/// `file` is always the right answer whenever one exists.
+/// `std/conventions/screenplay.brink`'s own same-named extern. Almost every
+/// call site here is a **self-declaration** lookup — "what id did the
+/// analyzer already assign to the definition *this file itself* just
+/// declared" — never a cross-file reference (those go through
+/// `resolve.rs`'s `ImportScope`-aware `lookup_by_name` instead), so the
+/// entry declared in `file` is always the right answer whenever one exists.
+///
+/// **Exception (issue #2246):** `ShapeTable::resolve`'s own two production
+/// callers — `structs::record_global_annotation` and
+/// `context::record_temp_annotation`, a `VAR`/`CONST`/`temp` TM-2 struct
+/// annotation — pass a **referrer** file that did not itself declare the
+/// annotated shape; that *is* a cross-file reference, routed through this
+/// file-scoped fallback rather than `resolve.rs`'s full-`Candidacy`
+/// machinery because it has no analyzer-recorded resolution to consume (no
+/// HIR reference is walked for a `TypeExpr` annotation at all — see
+/// `project.rs`'s own doc). The unscoped-fallback std-exclusion below is
+/// exactly what keeps that one caller from silently reaching into a
+/// mounted std shape it never imported.
 ///
 /// The unscoped fallback (no same-file entry) **excludes any candidate
 /// declared in a mounted `story::std…` module** (review finding on #2197):

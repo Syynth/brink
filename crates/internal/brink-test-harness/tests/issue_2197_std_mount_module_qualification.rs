@@ -208,3 +208,62 @@ fn stdlib_mount_no_longer_collides_with_a_projects_own_scene_entered() {
          compilation succeeded"
     );
 }
+
+/// Issue #2246 review (test-gap finding): the PR's headline scenario — a
+/// `Name#{…}`/`Name { … }` construction literal silently reaching into a
+/// std-only struct with no project-side homonym or import — had zero
+/// end-to-end coverage. `std/conventions/screenplay.brink` itself declares
+/// `struct Cue { speaker: string }` (used by its own `cue` convention
+/// handler, `attach = Cue`); this fixture deliberately declares **no**
+/// `Cue` of its own, so the mounted std module is the only source of that
+/// name anywhere in the compiled tree.
+///
+/// The analyzer's own `resolve_struct_ref` (`E068`) already rejects this at
+/// the HIR stage regardless of any LIR behavior, so asserting only "some
+/// diagnostic fires" would be vacuous — `compile` fails on `E068` alone
+/// whether or not the LIR bug this PR fixes exists. `// brink-disable-all`
+/// suppresses `E068` (mirrors `e0xx_diagnostics.rs`'s own
+/// `e073_unresolved_shape_reaches_lir_when_e068_suppressed`), forcing the
+/// literal through to LIR lowering — exactly where the non-suppressible
+/// `E073` backstop must catch it instead of silently emitting `RecordNew`
+/// against std's shape id.
+///
+/// Rule 20a: verified this assertion fails — no diagnostic at all, `compile`
+/// returns `Ok`, the literal reaches `RecordNew` against std's own `Cue`
+/// shape id — with `expr::lower_struct_literal` reverted to call
+/// `structs.shapes.resolve(&sl.shape.text, file, structs.index)` directly
+/// (in place of `ctx.resolutions.resolve(file, sl.shape.range)`), **with
+/// `ShapeTable::resolve`'s fast-path fix (`structs.rs`) still in place** —
+/// reverting only the LIR call site does not, by itself, reproduce the red
+/// state, because a *sole*-candidate std bucket like this one is also
+/// caught by that separately-fixed, separately-unit-tested fast path
+/// (`resolve_excludes_a_sole_std_declared_shape_with_no_project_homonym`);
+/// this end-to-end case only goes red when both hunks are reverted
+/// together, which is the actual pre-#2246 baseline.
+#[test]
+fn construction_literal_naming_a_std_only_struct_with_no_project_homonym_is_unresolved() {
+    let tree = InMemory::new(BTreeMap::from([(
+        "story.brink".to_string(),
+        "// brink-disable-all\nflow main() {\n  ~ let p = Cue { speaker: \"A\" }\n  Hi\n  -> \
+         END\n}\n"
+            .to_string(),
+    )]));
+    let env = Project::load(&tree, "story.brink", &OptionOverrides::default())
+        .expect("Environment::load must succeed for a plain native project");
+    let err = brink_environment::compile(&env).expect_err(
+        "a construction literal naming a struct only the mounted std module declares, with no \
+         project-side `Cue` declaration or import anywhere, must fail to compile even with \
+         `E068` suppressed — succeeding means the literal silently reached into std's shape id \
+         with no import",
+    );
+    let brink_compiler::CompileError::Diagnostics(diags) = err else {
+        panic!("expected CompileError::Diagnostics, got {err:?}");
+    };
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_ir::DiagnosticCode::E073),
+        "expected the non-suppressible E073 backstop among the diagnostics for `Cue {{...}}` \
+         naming only the mounted std module's `Cue` (with E068 suppressed), got: {diags:?}"
+    );
+}
