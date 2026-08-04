@@ -17,12 +17,13 @@ use crate::determinism::LookupMap;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    diagnostics_query, effects_query, harvest_index_query, has_errors_query, include_graph_query,
-    infer_body_query, inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query,
-    lir_query, local_signature_query, lowered_query, module_map_query, parse_native_query,
-    parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
-    signature_query, story_data_query, suppressions_query, symbol_index_query,
-    type_diagnostics_query, type_inference_query, ufcs_resolution_query, value_meta_query,
+    conventions_projection_query, diagnostics_query, effects_query, harvest_index_query,
+    has_errors_query, include_graph_query, infer_body_query, inferred_signature_query,
+    lir_knot_chunk_query, lir_prelude_decls_query, lir_query, local_signature_query, lowered_query,
+    module_map_query, parse_native_query, parse_query, per_file_diagnostics_query,
+    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
+    symbol_index_query, type_diagnostics_query, type_inference_query, ufcs_resolution_query,
+    value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -534,6 +535,24 @@ impl ProjectDb {
     /// doc for the full dependency set).
     pub fn harvest_index(&self) -> Arc<HarvestIndex> {
         Arc::clone(harvest_index_query(&self.salsa, self.project))
+    }
+
+    /// The conventions projection (issue #2111, NS-T seam 1/6): every
+    /// `@[convention]` handler declared in the project's one configured
+    /// conventions module, ascending by `order` — "THE SOLE EDITOR
+    /// INTERCHANGE" the design-backport comment on #2111 names
+    /// (`docs/decision-log.md` 2026-08-03). Reads the `[project] conventions`
+    /// pointer, the project module map, the resolved conventions module's
+    /// transitive `IMPORT` closure (`import_closure_query`, issue #2111
+    /// finding 3), and every file in that closure's own `lowered_query`
+    /// output — see `conventions_projection_query`'s doc for the exact
+    /// dependency set, and `brink_ir::ConventionsProjection`'s doc for the
+    /// one part of #2111 this still does not deliver: it is not yet
+    /// serialized into `.inkb`/`StoryData` (the attach schema IS now
+    /// resolved to its fields and types, not merely a struct name — that
+    /// gap closed in the 2026-08-04 continuation).
+    pub fn conventions_projection(&self) -> Arc<brink_ir::ConventionsProjection> {
+        Arc::clone(conventions_projection_query(&self.salsa, self.project))
     }
 
     /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) — the

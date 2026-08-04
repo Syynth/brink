@@ -399,6 +399,39 @@ pub(crate) fn await_purity_diagnostics_query(
     ))
 }
 
+/// The module name the project's `[project] conventions` pointer names, or
+/// `None` when there is nothing to resolve.
+///
+/// The ONE place the `conventions` pointer is turned into a module name, so
+/// the two consumers that need it — [`conventions_confinement_diagnostics_query`]
+/// (which asks "is *this* file that module?") and
+/// [`conventions_projection_query`] (which asks "*which* file is that
+/// module?") — cannot drift apart on the answer. Both must agree exactly:
+/// a projection built from a file that confinement does not consider the
+/// conventions module would report handlers the compiler is simultaneously
+/// diagnosing as misplaced.
+///
+/// `None` covers the two cases both consumers treat identically and
+/// silently (see `brink_analyzer::conventions_module_diagnostics`'s own
+/// module doc): an unset `conventions` key, and a **bare preset name**
+/// (`conventions = "screenplay"`), which names a `std::conventions::*` module
+/// rather than a project file — `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s
+/// own doc records that nothing resolves a preset name to its mounted
+/// source yet (it needs #1582's pub marker and #2167's closure-scoped
+/// confinement, neither built). `Some` does NOT mean a file with that
+/// module name exists; each caller checks that against
+/// [`module_map_query`] itself, because they warn differently about it.
+fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) -> Option<String> {
+    let opts = project.analysis_options(db);
+    let pointer = opts.conventions.as_deref()?;
+    if !brink_analyzer::is_path_shaped_conventions_pointer(pointer) {
+        return None;
+    }
+    Some(crate::modules::native_module_path(
+        &crate::modules::root_relative_key(project.native_root(db).as_deref(), pointer),
+    ))
+}
+
 /// One file's conventions-module confinement diagnostics (`E169`, issue
 /// #1844 — the MODULE half of the 2026-07-31 §9.1 ruling's item (4); #1838/
 /// #1847 cover the *placement* half, `E112`). A pattern-claiming
@@ -446,19 +479,19 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     let Some(pointer) = opts.conventions.as_deref() else {
         return Arc::new(Vec::new());
     };
-    if !brink_analyzer::is_path_shaped_conventions_pointer(pointer) {
+    // Shared with `conventions_projection_query` so the two cannot disagree
+    // about which module the pointer names — see the helper's own doc. The
+    // path-shape check `origin/main` renamed (`is_path_shaped_elements_pointer`
+    // -> `is_path_shaped_conventions_pointer`, #2180) lives inside that helper
+    // now, so this call site subsumes it rather than duplicating it.
+    let Some(expected_module) = expected_conventions_module(db, project) else {
         return Arc::new(Vec::new());
-    }
+    };
     let file_id = file.file_id(db);
     let (module_map, _module_diags) = module_map_query(db, project);
     let Some(this_module) = module_map.get(&file_id).map(|m| m.name.as_str()) else {
         return Arc::new(Vec::new());
     };
-    let native_root = project.native_root(db).as_deref();
-    let expected_module = crate::modules::native_module_path(&crate::modules::root_relative_key(
-        native_root,
-        pointer,
-    ));
     // The pointer must resolve against a REAL file in the project before it
     // can confine anything. A typo'd `conventions` value, a moved/deleted
     // target, or an `.ink`-suffixed path all produce an `expected_module`
@@ -487,6 +520,225 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         is_conventions_module,
         pointer,
     ))
+}
+
+/// The transitive `IMPORT` closure of `entry`: `entry` itself plus every
+/// module reachable by following native `IMPORT` statements outward,
+/// breadth over the module-name → file reverse index [`module_map_query`]
+/// already builds. Issue #2111 finding 3: built in a **reusable** shape,
+/// generic over any entry file rather than conventions-specific, so #2167's
+/// `E169` confinement relaxation (legalizing a claim handler that delegates
+/// to an imported preset) can call this exact query instead of re-deriving
+/// its own closure walk.
+///
+/// Ink files have no `IMPORT` (only `INCLUDE`, which
+/// [`super::compilation_closure_files`]/`IncludeGraph` already cover) — an
+/// ink `entry` simply has no imports to walk and the closure is `[entry]`.
+///
+/// Sorted ascending by path (not discovery/traversal order) before
+/// returning: two callers that both need "first file wins on a name
+/// collision" (this module's own [`conventions_projection_query`], and any
+/// future #2167 use) get the same deterministic tie-break without each
+/// having to re-sort, and the order can never depend on `project.files`'
+/// incoming order or on which import statement happened to be visited
+/// first.
+///
+/// The same path-sorted, first-wins rule governs name resolution *while
+/// walking imports*, too: when two files in the project declare the same
+/// module name, the import-target lookup resolves to the lowest-path file,
+/// deterministically — never whichever one `project.files` happened to
+/// iterate over last. Both the closure's final **order** and its
+/// **membership** (which file a duplicate name resolves to) are therefore
+/// independent of `project.files`' incoming order.
+///
+/// A named-but-unresolvable import (a typo, a module that doesn't exist)
+/// is simply not followed — this query only ever widens by real, resolved
+/// files, never by a dangling name a diagnostic elsewhere already reports.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn import_closure_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    entry: SourceFile,
+) -> Arc<Vec<SourceFile>> {
+    let (module_map, _module_diags) = module_map_query(db, project);
+    // First-wins on a duplicate module name, over a path-sorted iteration —
+    // not the `.collect()`-into-map last-write-wins this replaced. A plain
+    // `.collect()` made a duplicate name's WINNER (not just its resolution
+    // order) depend on `project.files`' incoming order, contradicting this
+    // query's own "the order can never depend on `project.files`' incoming
+    // order" doc and the `min_by_key` determinism this same file applies
+    // ~30 lines below for the conventions file itself.
+    let mut files_by_path: Vec<SourceFile> = project.files(db).clone();
+    files_by_path.sort_by_key(|f| f.path(db).clone());
+    let mut by_name: BTreeMap<&str, SourceFile> = BTreeMap::new();
+    for f in &files_by_path {
+        if let Some(m) = module_map.get(&f.file_id(db)) {
+            by_name.entry(m.name.as_str()).or_insert(*f);
+        }
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(entry.file_id(db));
+    let mut stack = vec![entry];
+    let mut closure = Vec::new();
+    while let Some(file) = stack.pop() {
+        closure.push(file);
+        let hir = &lowered_query(db, file).hir;
+        for import in &hir.imports {
+            if let Some(target) = by_name.get(import.module.as_str()).copied()
+                && seen.insert(target.file_id(db))
+            {
+                stack.push(target);
+            }
+        }
+    }
+    closure.sort_by_key(|f| f.path(db).clone());
+    Arc::new(closure)
+}
+
+/// The project's conventions projection (issue #2111, NS-T seam 1/6):
+/// every `@[convention]` handler declared in the project's one configured
+/// conventions module, ascending by `order` — the editor-facing artifact
+/// the design-backport comment on #2111 (`docs/decision-log.md`
+/// 2026-08-03) calls "THE SOLE EDITOR INTERCHANGE": claims pattern, order,
+/// mode (attach/wrap), resulting disposition, and the `attach = StructName`
+/// schema, now RESOLVED to its fields and their types (issue #2111
+/// continuation, finding 1). Schema, never values — see
+/// [`ConventionsProjection`]'s own doc for that boundary, for why no
+/// comptime-fault/last-good case exists here (the mechanism that would have
+/// needed one, `fn conventions()` registration, is dissolved), and for the
+/// one part of #2111 this query still does not deliver (wire emission into
+/// `.inkb`/`StoryData` — see that type's doc).
+///
+/// # Resolution (shared with [`conventions_confinement_diagnostics_query`])
+///
+/// Both queries route the `[project] conventions` pointer through the same
+/// [`expected_conventions_module`] helper, so "which module is the
+/// conventions module" has exactly one answer:
+///
+/// - No `conventions` configured at all → empty projection. There is no
+///   conventions module to project.
+/// - A **bare preset name** (`conventions = "screenplay"`, not path-shaped) →
+///   ALSO empty, for now. `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s own
+///   doc states plainly that nothing resolves a preset name to its mounted
+///   source yet: "`std::conventions::screenplay` has no real
+///   `use`-importable module path… that needs #1582's pub marker and
+///   #2167's closure-scoped confinement, neither built yet." Minting a
+///   bespoke resolution here (bypassing that stated dependency) would be
+///   exactly the kind of undetermined-default invention the parent ruling's
+///   own "do not invent it" caution warns against — the issue's own
+///   "pre-frozen preset" note describes a *destination*, not something
+///   this slice can honestly claim to deliver ahead of #1582/#2167.
+/// - A path-shaped pointer that resolves to a real project file → that
+///   file's own [`ClaimHandlerDecl`]s, projected, with each `attach` name
+///   resolved against every struct visible from that file's [`import_closure_query`]
+///   (finding 3).
+/// - A path-shaped pointer that resolves to no real file → empty, with the
+///   same `tracing::warn!` this query's confinement sibling emits (never a
+///   silent drop).
+///
+/// # Invalidation
+///
+/// Reads: `project.analysis_options(db)` (for the `conventions` pointer and
+/// the native root), [`module_map_query`] (to find which file carries the
+/// expected module name, and to resolve `IMPORT` targets), the resolved
+/// conventions module's own [`import_closure_query`] (finding 3 — widened
+/// from the pre-continuation "conventions module alone" footprint), and
+/// every file in that closure's own [`lowered_query`] output (for their
+/// `structs`, to resolve `attach` names). `module_map_query` and
+/// `import_closure_query` are whole-project-shaped, so an edit elsewhere
+/// can *reach* this query — but only through a changed module map or a
+/// changed closure, both of which salsa backdates when their value is
+/// unchanged, so an ordinary edit to a file **outside** the closure never
+/// re-executes this query's closure (proven by
+/// `tests/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` cases,
+/// including the new one for an edit to an *imported* struct file). See
+/// [`ConventionsProjection`]'s own doc for why this is now the ruled "the
+/// conventions module and its import closure" invalidation contract exactly,
+/// not the narrower "conventions module alone" reading the pre-continuation
+/// slice used (load-bearing on the un-resolved-schema shape that slice
+/// carried, and no longer true now that `attach` is resolved).
+#[salsa::tracked(returns(ref))]
+pub(crate) fn conventions_projection_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<brink_ir::ConventionsProjection> {
+    let opts = project.analysis_options(db);
+    let Some(pointer) = opts.conventions.as_deref() else {
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+    // `None` here = a bare preset name — see the helper's own doc for why
+    // that does not resolve to a projectable file yet.
+    let Some(expected_module) = expected_conventions_module(db, project) else {
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+    let (module_map, _module_diags) = module_map_query(db, project);
+    // `min_by_key` on the path, not `find`: unlike the confinement
+    // sibling's `any` (which only asks *whether* some file matches), this
+    // query has to pick *which* one, and a pick that depended on
+    // `project.files`' incoming order would be exactly the nondeterminism
+    // the house rule forbids. A collision should be impossible — a native
+    // file's module name is a pure function of its path — but "impossible"
+    // is not a reason to leave the tie-break to iteration order.
+    let Some(conventions_file) = project
+        .files(db)
+        .iter()
+        .filter(|f| {
+            module_map
+                .get(&f.file_id(db))
+                .is_some_and(|m| m.name == expected_module)
+        })
+        .min_by_key(|f| f.path(db).clone())
+    else {
+        // Same "warn, never silently drop" channel
+        // `conventions_confinement_diagnostics_query` uses for the
+        // identical unresolvable-pointer case.
+        tracing::warn!(
+            "[project] conventions = \"{pointer}\" does not match any file in the project \
+             (expected module `{expected_module}`) — the conventions projection is empty \
+             until this is fixed"
+        );
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+
+    // Issue #2111 finding 3: every struct visible from the conventions
+    // module's own file plus its transitive `IMPORT` closure, keyed by bare
+    // name. `import_closure_query` already returns files sorted ascending
+    // by path, and `entry(...).or_insert_with` is first-write-wins, so a
+    // name collision across two imported files resolves to the
+    // lexicographically-first path deterministically — the same tie-break
+    // posture `min_by_key` above uses for the conventions file itself.
+    let closure = import_closure_query(db, project, *conventions_file);
+    let mut structs: BTreeMap<String, Vec<brink_ir::ConventionAttachField>> = BTreeMap::new();
+    for file in closure.iter() {
+        let hir = &lowered_query(db, *file).hir;
+        for s in &hir.structs {
+            structs.entry(s.name.text.clone()).or_insert_with(|| {
+                s.fields
+                    .iter()
+                    .map(|f| brink_ir::ConventionAttachField {
+                        name: f.name.text.clone(),
+                        ty: brink_ir::SchemaTypeShape::from(&f.ty),
+                    })
+                    .collect()
+            });
+        }
+    }
+
+    let hir = &lowered_query(db, *conventions_file).hir;
+    let projection = brink_ir::ConventionsProjection::from_decls(&hir.claim_handlers, &structs);
+    for entry in &projection.entries {
+        if let Some(brink_ir::ConventionAttachSchema::Unresolved(name)) = &entry.attach {
+            tracing::warn!(
+                "`@[convention(…, attach = {name})]` on `{}` does not resolve to any struct \
+                 declared in the conventions module `{expected_module}` or its import closure \
+                 — the projection carries this attach clause as `Unresolved` rather than \
+                 dropping it",
+                entry.name.text
+            );
+        }
+    }
+    Arc::new(projection)
 }
 
 /// One file's `register`-intrinsic confinement diagnostics (`E175`, issue
