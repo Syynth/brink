@@ -156,9 +156,11 @@ impl ShapeTable {
     /// `lookup_by_name_direct`, whose `InScope` tier lets a referrer that is
     /// itself part of `std…` resolve a std-mounted sibling. A std
     /// file here that references a same-named shape it does not itself
-    /// declare therefore resolves to `None` rather than a std sibling (see
-    /// issue #2233 for the analogous `lookup_unique_by_name` asymmetry;
-    /// this call path has the same gap and needs its own follow-up).
+    /// declare therefore resolves to `None` rather than a std sibling.
+    /// `brink-analyzer::resolve::lookup_unique_by_name`'s own analogous
+    /// asymmetry was fixed by issue #2233 (a `referrer_module` hint); this
+    /// `decls::lookup_global`/`ShapeTable::resolve` half is unfixed and
+    /// tracked separately by issues #2249/#2246.
     ///
     /// Always routes through [`lookup_global`], even when `name`'s bucket
     /// holds exactly one candidate (issue #2246 review): a prior "fast

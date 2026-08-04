@@ -184,9 +184,10 @@ identical asymmetry described above for those callers only: `lookup_global`'s
 fallback excludes every std-declared candidate unconditionally, with
 **no** referrer-inside-std carve-out — unlike `lookup_by_name_direct`'s
 `InScope` tier, a std file referencing a same-named shape it does not
-itself declare resolves to `None` rather than a std sibling. Not yet
-reconciled with the other two lookups' referrer-inside-std handling
-(tracked alongside issue #2233's `lookup_unique_by_name` asymmetry).
+itself declare resolves to `None` rather than a std sibling. `resolve::
+lookup_unique_by_name`'s own analogous asymmetry was fixed by issue #2233
+(a `referrer_module` hint); this `decls::lookup_global`/`ShapeTable::resolve`
+half is not yet reconciled and is tracked separately by issues #2249/#2246.
 
 **Correction to the record:** `docs/decision-log.md`'s 2026-08-04 "peer
 roots" entry lists `ShapeTable::resolve`'s fast path among five sites
