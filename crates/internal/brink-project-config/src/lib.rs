@@ -590,17 +590,6 @@ fn parse_dialect(path: &str, key: &str, value: &Value) -> Result<Dialect, Config
     }
 }
 
-/// Parse `[project] conventions` (§3.4's pointer mechanism; also called for
-/// its deprecated `elements` alias, issue #2180 — the raw string shape is
-/// identical for either key): any non-empty string, since this crate
-/// doesn't know the closed set of built-in preset names and can't check a
-/// project path exists (kept dependency-free, #1234) — [`parse_str_at`]'s
-/// caller flags an empty string as a warning; this only enforces the TOML
-/// shape (a string, full stop). Checking a bare (preset-shaped) value
-/// against the real closed preset-name set is
-/// `brink-analyzer::AnalysisOptions::apply_project_config`'s job (issue
-/// #1874), the same "this crate stays dependency-free; the crate that owns
-/// the closed set validates" split `[lints]`'s `validate_lint_code` uses.
 /// Reconcile `[project] conventions` against its deprecated `elements`
 /// alias (issue #2180) into the one value [`ProjectConfig::conventions`]
 /// carries, pushing whatever [`ConfigWarning`]s the reconciliation itself
@@ -641,6 +630,17 @@ fn resolve_conventions_key(
     }
 }
 
+/// Parse `[project] conventions` (§3.4's pointer mechanism; also called for
+/// its deprecated `elements` alias, issue #2180 — the raw string shape is
+/// identical for either key): any non-empty string, since this crate
+/// doesn't know the closed set of built-in preset names and can't check a
+/// project path exists (kept dependency-free, #1234) — [`parse_str_at`]'s
+/// caller flags an empty string as a warning; this only enforces the TOML
+/// shape (a string, full stop). Checking a bare (preset-shaped) value
+/// against the real closed preset-name set is
+/// `brink-analyzer::AnalysisOptions::apply_project_config`'s job (issue
+/// #1874), the same "this crate stays dependency-free; the crate that owns
+/// the closed set validates" split `[lints]`'s `validate_lint_code` uses.
 fn parse_conventions(path: &str, key: &str, value: &Value) -> Result<String, ConfigError> {
     value
         .as_str()

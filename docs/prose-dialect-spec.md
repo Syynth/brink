@@ -150,11 +150,13 @@ elements serving as *spellings of structure that already exists*:
   conventions too).
   > **2026-08-02 caveat:** issue #1874 landed validation of a bare
   > preset-shaped `conventions` value against the closed built-in-preset set
-  > (`brink-analyzer::AnalysisOptions::apply_project_config`). That set is
-  > empty until #1720 ships a real built-in preset, so today `conventions =
-  > "screenplay"` — the exact form this section names as an example — is
-  > unrecognized and produces a `ConfigWarning`. A project-relative path
-  > pointer is unaffected.
+  > (`brink-analyzer::AnalysisOptions::apply_project_config`). Since issue
+  > #1720, `"screenplay"` — the exact form this section names as an
+  > example — is a recognized name in that set
+  > (`BUILTIN_CONVENTION_PRESETS`), but recognition is validation-only:
+  > nothing downstream injects the preset's handlers yet (needs #2080/#1840),
+  > so a recognized-but-not-yet-injectable name still produces a
+  > `ConfigWarning`. A project-relative path pointer is unaffected.
 - **Markup vocabulary is host-authored** → it lives in the **host
   capability manifest**, same author as the externals section, and can
   be *generated* from engine code (a text-effect plugin auto-declaring
