@@ -65,14 +65,17 @@
 //!   between the two roads. Root cause, traced by hand
 //!   (`tier1/includes/root-weave-in-entry-and-included-file`): every call
 //!   site here passes `compile_path` an **absolute** entry path (derived
-//!   from `CARGO_MANIFEST_DIR`); `compile_path` has no root concept, so it
-//!   keys an `INCLUDE`d file by literally joining the entry's absolute
-//!   directory with the included filename, baking the checkout's absolute
-//!   filesystem path into that file's containers' content-addressed
-//!   identity and into `LineEntry::source_location`. `Environment` instead
-//!   roots at the case directory and keys every file (entry and included)
-//!   root-relative, so its identity/`source_location` are clean and
-//!   portable. This is a real quirk of `compile_path` (test-only tooling,
+//!   from `CARGO_MANIFEST_DIR`); `discover` registers every file — the
+//!   entry and each `INCLUDE`d file — under the caller's raw spelling, so
+//!   an absolute entry keeps every included file's container identity and
+//!   `LineEntry::source_location` keyed by that absolute filesystem path.
+//!   `compile_path` *does* register a root (`#1696`'s `ProjectDb::
+//!   set_ink_root`), but that root is consumed only by
+//!   `hir::root_content_scope_path`'s qualifier, not for keying discovered
+//!   files — so it does not clean up this absolute-path baking. `Environment`
+//!   instead roots at the case directory and keys every file (entry and
+//!   included) root-relative, so its identity/`source_location` are clean
+//!   and portable. This is a real quirk of `compile_path` (test-only tooling,
 //!   gated behind `test-util`) — not a production-path bug — and it does
 //!   not change any executed output (verified: episode-for-episode
 //!   equality holds on every one of these cases, see below). Because it
@@ -101,12 +104,13 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use brink_test_harness::ExploreConfig;
 use brink_test_harness::corpus::{
     collect_oracle_cases, compile_and_explore_from_ink, compile_and_explore_via_environment,
-    run_native_transcript, run_native_transcript_via_environment,
+    has_empty_source, is_compile_error_case, native_case_names, run_native_transcript,
+    run_native_transcript_via_environment,
 };
 
 fn tests_dir() -> PathBuf {
@@ -115,26 +119,6 @@ fn tests_dir() -> PathBuf {
         .join("..")
         .join("..")
         .join("tests")
-}
-
-/// Same skip rule `oracle_snapshots.rs` applies before comparing to the
-/// oracle: a case whose fixture is *deliberately* a compile-error probe, or
-/// whose `story.ink` is empty, is not one this gate can usefully compare —
-/// both roads are expected to disagree with "success," not with each
-/// other's diagnostics.
-fn is_compile_error_case(case_dir: &Path) -> bool {
-    let meta_path = case_dir.join("metadata.toml");
-    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
-        s.lines()
-            .any(|line| line.trim() == r#"mode = "compile_error""#)
-    })
-}
-
-fn has_empty_source(case_dir: &Path) -> bool {
-    let ink_path = case_dir.join("story.ink");
-    std::fs::read_to_string(ink_path)
-        .ok()
-        .is_some_and(|s| s.trim().is_empty())
 }
 
 #[test]
@@ -154,7 +138,15 @@ fn oracle_corpus_agrees_between_compile_path_and_environment() {
     };
 
     let mut divergences: Vec<String> = Vec::new();
+    // Both `(Ok, Ok)` (episodes actually diffed) and `(Err, Err)` (both
+    // roads agree the case doesn't compile) count as "compared" for the
+    // divergence-report denominator below. Neither, on its own, proves the
+    // episode-diff branch ever ran — a rename or layout change that routed
+    // every case through the `(Err, Err)` arm would still leave `compared`
+    // looking healthy. `episodes_compared` counts only the `(Ok, Ok)` arm,
+    // so the floor assertion below can catch that failure mode directly.
     let mut compared = 0usize;
+    let mut episodes_compared = 0usize;
     let mut skipped = 0usize;
 
     for case_dir in &cases {
@@ -175,11 +167,12 @@ fn oracle_corpus_agrees_between_compile_path_and_environment() {
         match (via_path, via_env) {
             (Ok((_, episodes_path)), Ok((_, episodes_env))) => {
                 compared += 1;
+                episodes_compared += 1;
                 if episodes_path != episodes_env {
-                    divergences.push(format!(
-                        "{rel}: episodes diverge ({} via compile_path, {} via Environment)",
-                        episodes_path.len(),
-                        episodes_env.len()
+                    divergences.push(describe_episode_divergence(
+                        &rel,
+                        &episodes_path,
+                        &episodes_env,
                     ));
                 }
             }
@@ -204,10 +197,23 @@ fn oracle_corpus_agrees_between_compile_path_and_environment() {
         }
     }
 
+    // A floor on `episodes_compared` specifically (not just `compared`):
+    // this is what proves the episode-equality check actually ran across
+    // the bulk of the corpus, rather than every case silently taking the
+    // skip branch or the `(Err, Err)` "both failed to compile" branch.
+    assert!(
+        episodes_compared >= 300,
+        "sanity check: only {episodes_compared} case(s) reached the (Ok, Ok) episode-comparison \
+         arm (expected >= 300) — {compared} total compared, {skipped} skipped. If `story.ink` \
+         was renamed or the corpus layout moved, every case would take the `!ink_path.exists()` \
+         skip branch and this gate would report green while comparing nothing."
+    );
+
     assert!(
         divergences.is_empty(),
         "found {} divergence(s) between compile_path and brink_environment::compile across {} \
-         compared oracle-derived cases ({} skipped as compile-error/empty-source fixtures):\n{}",
+         compared oracle-derived cases ({episodes_compared} episode-compared, {} skipped as \
+         compile-error/empty-source fixtures):\n{}",
         divergences.len(),
         compared,
         skipped,
@@ -215,27 +221,52 @@ fn oracle_corpus_agrees_between_compile_path_and_environment() {
     );
 }
 
+/// Describe an episode-sequence divergence between the two compile roads:
+/// the episode counts (a same-length-but-different-content divergence is
+/// the likely real case), plus the first differing index with both
+/// episodes rendered — mirroring the native sweep's own dump of both
+/// transcripts, so a triager isn't left with only `episodes diverge (5 via
+/// compile_path, 5 via Environment)` when the counts already matched.
+fn describe_episode_divergence(
+    rel: &str,
+    episodes_path: &[brink_test_harness::Episode],
+    episodes_env: &[brink_test_harness::Episode],
+) -> String {
+    let first_diff = episodes_path
+        .iter()
+        .zip(episodes_env.iter())
+        .position(|(p, e)| p != e);
+
+    match first_diff {
+        Some(idx) => {
+            let path_json = serde_json::to_string_pretty(&episodes_path[idx])
+                .unwrap_or_else(|e| format!("<failed to serialize: {e}>"));
+            let env_json = serde_json::to_string_pretty(&episodes_env[idx])
+                .unwrap_or_else(|e| format!("<failed to serialize: {e}>"));
+            format!(
+                "{rel}: episodes diverge ({} via compile_path, {} via Environment); first \
+                 differing episode at index {idx}:\n--- compile_path ---\n{path_json}\n--- \
+                 environment ---\n{env_json}",
+                episodes_path.len(),
+                episodes_env.len()
+            )
+        }
+        None => format!(
+            "{rel}: episodes diverge ({} via compile_path, {} via Environment) — the shared \
+             prefix matches, so the divergence is a length mismatch past the shorter sequence",
+            episodes_path.len(),
+            episodes_env.len()
+        ),
+    }
+}
+
 fn native_corpus_dir() -> PathBuf {
     tests_dir().join("tier1-native")
 }
 
-/// Every case directory under `tests/tier1-native/`, sorted — mirrors
-/// `tier1_native_strict.rs`'s own `case_names()` so a newly-added case is
-/// swept here automatically.
-fn native_case_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(native_corpus_dir())
-        .expect("read tests/tier1-native")
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
 #[test]
 fn native_corpus_transcripts_agree_between_compile_path_and_environment() {
-    let names = native_case_names();
+    let names = native_case_names(&native_corpus_dir());
     assert!(
         names.len() > 10,
         "sanity check: expected tests/tier1-native/ to hold more than a handful of cases, got {}",
@@ -243,11 +274,17 @@ fn native_corpus_transcripts_agree_between_compile_path_and_environment() {
     );
 
     let mut divergences: Vec<String> = Vec::new();
+    // Same two-counter split as the ink sweep above: `compared` includes
+    // the `(Err, Err)` "both failed to compile" arm, `transcripts_compared`
+    // counts only the `(Ok, Ok)` arm that actually diffed a transcript.
     let mut compared = 0usize;
+    let mut transcripts_compared = 0usize;
+    let mut skipped = 0usize;
 
     for name in &names {
         let brink_path = native_corpus_dir().join(name).join("story.brink");
         if !brink_path.exists() {
+            skipped += 1;
             continue;
         }
 
@@ -257,6 +294,7 @@ fn native_corpus_transcripts_agree_between_compile_path_and_environment() {
         match (via_path, via_env) {
             (Ok(path_out), Ok(env_out)) => {
                 compared += 1;
+                transcripts_compared += 1;
                 if path_out != env_out {
                     divergences.push(format!(
                         "{name}: transcript diverges\n--- compile_path ---\n{path_out}\n--- \
@@ -282,10 +320,23 @@ fn native_corpus_transcripts_agree_between_compile_path_and_environment() {
         }
     }
 
+    // Mirrors the ink sweep's floor: proves the transcript-equality check
+    // actually ran, not just that discovery found cases. Without this, a
+    // `story.brink` rename would route every case through the
+    // `!brink_path.exists()` skip and the gate would report green having
+    // compared nothing.
+    assert!(
+        transcripts_compared >= 20,
+        "sanity check: only {transcripts_compared} case(s) reached the (Ok, Ok) \
+         transcript-comparison arm (expected >= 20) — {compared} total compared, {skipped} \
+         skipped as missing story.brink."
+    );
+
     assert!(
         divergences.is_empty(),
         "found {} divergence(s) between compile_path and brink_environment::compile across {} \
-         compared tier1-native cases:\n{}",
+         compared tier1-native cases ({transcripts_compared} transcript-compared, {skipped} \
+         skipped as missing story.brink):\n{}",
         divergences.len(),
         compared,
         divergences.join("\n")

@@ -37,6 +37,51 @@ pub fn collect_oracle_cases(root: &Path) -> Vec<PathBuf> {
     result
 }
 
+/// True for a case whose fixture is *deliberately* a compile-error probe
+/// (`metadata.toml` sets `mode = "compile_error"`). Such a case is expected
+/// to disagree with "success", not with a golden or with another compile
+/// road's diagnostics — `oracle_snapshots.rs` and the #2223 parallel gate
+/// (`environment_parallel_gate.rs`) both skip it before comparing, via this
+/// one definition, so the skip rule cannot drift between the two.
+pub fn is_compile_error_case(case_dir: &Path) -> bool {
+    let meta_path = case_dir.join("metadata.toml");
+    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
+        s.lines()
+            .any(|line| line.trim() == r#"mode = "compile_error""#)
+    })
+}
+
+/// True when `case_dir`'s `story.ink` is missing or empty/whitespace-only —
+/// a case with nothing to compile, skipped for the same reason as
+/// [`is_compile_error_case`] and by the same callers.
+pub fn has_empty_source(case_dir: &Path) -> bool {
+    let ink_path = case_dir.join("story.ink");
+    std::fs::read_to_string(ink_path)
+        .ok()
+        .is_some_and(|s| s.trim().is_empty())
+}
+
+/// Every immediate subdirectory of `root` (e.g. `tests/tier1-native/`),
+/// sorted — walked rather than listed, so a newly-added corpus case is
+/// swept automatically by every caller (`tier1_native_strict.rs`'s strict
+/// sweep and the #2223 parallel gate's native sweep) with no `known`-list to
+/// drift. Returns an empty `Vec` if `root` cannot be read; callers that
+/// expect a nonempty corpus already assert a floor on the result, so an
+/// unreadable root fails loudly there instead of panicking here.
+pub fn native_case_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
 /// Push every directory at or below `dir` that satisfies `predicate` onto
 /// `out`. The descent is the shared [`Walk`], so it prunes the standing
 /// ignored-directory policy as well as [`CASE_DATA_DIRS`]; `dir` itself is

@@ -14,7 +14,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use brink_test_harness::corpus::{collect_oracle_cases, compile_and_explore_from_ink};
+use brink_test_harness::corpus::{
+    collect_oracle_cases, compile_and_explore_from_ink, has_empty_source, is_compile_error_case,
+};
 use brink_test_harness::oracle;
 use brink_test_harness::snapshot_fmt::{CaseResult, CaseStatus};
 use brink_test_harness::{Episode, ExploreConfig};
@@ -25,21 +27,6 @@ fn tests_dir() -> PathBuf {
         .join("..")
         .join("..")
         .join("tests")
-}
-
-fn is_compile_error_case(case_dir: &std::path::Path) -> bool {
-    let meta_path = case_dir.join("metadata.toml");
-    std::fs::read_to_string(meta_path).ok().is_some_and(|s| {
-        s.lines()
-            .any(|line| line.trim() == r#"mode = "compile_error""#)
-    })
-}
-
-fn has_empty_source(case_dir: &std::path::Path) -> bool {
-    let ink_path = case_dir.join("story.ink");
-    std::fs::read_to_string(ink_path)
-        .ok()
-        .is_some_and(|s| s.trim().is_empty())
 }
 
 fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
