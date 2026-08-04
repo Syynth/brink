@@ -9,15 +9,22 @@
 //! #1838 (and #1847's follow-up) enforce the *placement* half — a claiming
 //! `fn` must be a direct top-level child of its own file (`E112`). This
 //! module enforces the other half: that file must be **the one** file
-//! `brink.toml`'s `[project] elements` key names. The asymmetry is the
+//! `brink.toml`'s `[project] conventions` key names. The asymmetry is the
 //! whole point: a `!name`-dispatched line self-announces at the call site,
 //! while a claiming pattern can silently reinterpret ordinary prose as a
 //! call — so the auditability the ruling protects depends on every claim
 //! living in one file a reader already knows to open.
 //!
+//! (Issue #2180: this key was named `elements` until the 2026-08-03
+//! `@[element]`/`@[convention]` split ruling — `brink-project-config`
+//! still accepts `elements` as a deprecated alias, but by the time a
+//! `ProjectConfig` reaches this crate the two keys have already been
+//! reconciled into one value, so this module never sees `elements`
+//! specifically.)
+//!
 //! # Why this is a pure, caller-fed function
 //!
-//! Resolving `elements` against real project/module identity is
+//! Resolving `conventions` against real project/module identity is
 //! `brink-db`'s job (`native_module_path`, `root_relative_key`,
 //! `module_map_query`) — this crate stays dependency-free of that path
 //! machinery, matching every other project-identity-gated check
@@ -28,17 +35,17 @@
 //!
 //! # What is NOT enforced here, and why
 //!
-//! - **An unset `elements` key.** No conventions module is configured, so
+//! - **An unset `conventions` key.** No conventions module is configured, so
 //!   there is nothing to confine claiming *to* — every existing project
 //!   without this key stays exactly as permissive as it was before this
 //!   check existed. The caller is responsible for skipping this pass
 //!   entirely in that case (never calling it with a meaningless `pointer`).
-//! - **A bare preset name** (`elements = "screenplay"`). A preset points at
-//!   a `std::conventions::*` module, not a project file — there is no path
-//!   in the project tree to compare a claiming handler's own file against,
-//!   and inventing a project-side "no file may claim" rule for this case
-//!   is a bigger decision than this issue's slice covers (see the PR
-//!   description's scope note). The caller skips this pass for a
+//! - **A bare preset name** (`conventions = "screenplay"`). A preset points
+//!   at a `std::conventions::*` module, not a project file — there is no
+//!   path in the project tree to compare a claiming handler's own file
+//!   against, and inventing a project-side "no file may claim" rule for
+//!   this case is a bigger decision than this issue's slice covers (see
+//!   the PR description's scope note). The caller skips this pass for a
 //!   non-path-shaped pointer. This module still stays silent on it either
 //!   way — but as of issue #1874 the bare name itself is no longer silently
 //!   *accepted*: `AnalysisOptions::apply_project_config` (a different crate,
@@ -51,11 +58,12 @@
 
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
-/// Whether a `[project] elements` pointer names a project-relative path to
-/// a `.brink` conventions module, as opposed to a bare built-in preset name
-/// (docs/prose-dialect-spec.md §3.4's "either shape" pointer mechanism). A
-/// path either contains a directory separator or ends in the `.brink`
-/// extension; a bare word (no separator, no extension) is a preset name.
+/// Whether a `[project] conventions` pointer names a project-relative path
+/// to a `.brink` conventions module, as opposed to a bare built-in preset
+/// name (docs/prose-dialect-spec.md §3.4's "either shape" pointer
+/// mechanism). A path either contains a directory separator or ends in the
+/// `.brink` extension; a bare word (no separator, no extension) is a
+/// preset name.
 ///
 /// Shared by two callers so the "is this a path or a preset" classification
 /// can never drift between them: `brink-db`'s
@@ -67,8 +75,10 @@ use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 /// validation (issue #1874) skips its closed-set check entirely for a
 /// path-shaped pointer — rejecting a valid custom-module path here would
 /// break the exact case #1844's confinement rule is built around.
+///
+/// Renamed from `is_path_shaped_elements_pointer` by issue #2180.
 #[must_use]
-pub fn is_path_shaped_elements_pointer(pointer: &str) -> bool {
+pub fn is_path_shaped_conventions_pointer(pointer: &str) -> bool {
     pointer.contains('/')
         || pointer.contains('\\')
         || std::path::Path::new(pointer)
@@ -79,7 +89,7 @@ pub fn is_path_shaped_elements_pointer(pointer: &str) -> bool {
 /// Diagnose every claiming handler declared in `hir` when this file is not
 /// the project's configured conventions module.
 ///
-/// `pointer` is the raw `[project] elements` string as written in
+/// `pointer` is the raw `[project] conventions` string as written in
 /// `brink.toml` (already established by the caller to be path-shaped, not
 /// a preset name) — used only to name the expected file in the diagnostic
 /// message, per the issue's own instruction: "enforce it with a diagnostic
@@ -103,7 +113,7 @@ pub fn conventions_module_diagnostics(
             message: format!(
                 "`{name}` claims prose with `@[convention(claims = \"…\", order = …)]`, but \
                  pattern-claiming handlers may only be declared in the project's configured \
-                 conventions module (`brink.toml`'s `[project] elements = \"{pointer}\"`) — move \
+                 conventions module (`brink.toml`'s `[project] conventions = \"{pointer}\"`) — move \
                  `{name}` there",
                 name = handler.name.text,
             ),

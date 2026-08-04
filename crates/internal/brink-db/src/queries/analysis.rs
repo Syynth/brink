@@ -423,8 +423,8 @@ pub(crate) fn await_purity_diagnostics_query(
 /// [`module_map_query`] itself, because they warn differently about it.
 fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) -> Option<String> {
     let opts = project.analysis_options(db);
-    let pointer = opts.elements.as_deref()?;
-    if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
+    let pointer = opts.conventions.as_deref()?;
+    if !brink_analyzer::is_path_shaped_conventions_pointer(pointer) {
         return None;
     }
     Some(crate::modules::native_module_path(
@@ -436,8 +436,9 @@ fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) 
 /// #1844 — the MODULE half of the 2026-07-31 §9.1 ruling's item (4); #1838/
 /// #1847 cover the *placement* half, `E112`). A pattern-claiming
 /// `@[convention(claims = "…", order = N)]` handler is legal only in the project's
-/// configured conventions module (`brink.toml`'s `[project] elements`);
-/// this is the one seam that has both a file's real module identity
+/// configured conventions module (`brink.toml`'s `[project] conventions`,
+/// renamed from `elements` by issue #2180); this is the one seam that has
+/// both a file's real module identity
 /// ([`module_map_query`]'s native branch, `crate::modules::
 /// native_module_path`) and the resolved `AnalysisOptions` the pointer
 /// travels on — `brink_analyzer::analyze_with_modules` is not it, since
@@ -448,8 +449,8 @@ fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) 
 /// handler never even reads [`module_map_query`]. Three more cases are
 /// intentionally silent, not merely lazy — see
 /// `brink_analyzer::conventions_module_diagnostics`'s own module doc for
-/// why: an unset `elements` key (nothing configured to confine against
-/// yet), a bare preset name (`elements = "screenplay"`, which names a
+/// why: an unset `conventions` key (nothing configured to confine against
+/// yet), a bare preset name (`conventions = "screenplay"`, which names a
 /// `std::conventions::*` module rather than a project file — no path in
 /// the tree to compare against without a preset registry this slice
 /// doesn't build), and a path-shaped pointer that resolves to no file that
@@ -475,11 +476,14 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         return Arc::new(Vec::new());
     }
     let opts = project.analysis_options(db);
-    let Some(pointer) = opts.elements.as_deref() else {
+    let Some(pointer) = opts.conventions.as_deref() else {
         return Arc::new(Vec::new());
     };
     // Shared with `conventions_projection_query` so the two cannot disagree
-    // about which module the pointer names — see the helper's own doc.
+    // about which module the pointer names — see the helper's own doc. The
+    // path-shape check `origin/main` renamed (`is_path_shaped_elements_pointer`
+    // -> `is_path_shaped_conventions_pointer`, #2180) lives inside that helper
+    // now, so this call site subsumes it rather than duplicating it.
     let Some(expected_module) = expected_conventions_module(db, project) else {
         return Arc::new(Vec::new());
     };
@@ -489,7 +493,7 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         return Arc::new(Vec::new());
     };
     // The pointer must resolve against a REAL file in the project before it
-    // can confine anything. A typo'd `elements` value, a moved/deleted
+    // can confine anything. A typo'd `conventions` value, a moved/deleted
     // target, or an `.ink`-suffixed path all produce an `expected_module`
     // no file actually has — without this check, every claiming handler in
     // the project (including the one in the real intended conventions
@@ -503,7 +507,7 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         // surfaced, just not as an `E169` storm against files that were
         // never the ones at fault.
         tracing::warn!(
-            "[project] elements = \"{pointer}\" does not match any file in the project \
+            "[project] conventions = \"{pointer}\" does not match any file in the project \
              (expected module `{expected_module}`) — conventions-module confinement (E169) \
              is skipped until this is fixed"
         );
@@ -576,7 +580,7 @@ pub(crate) fn conventions_projection_query(
     project: ProjectInput,
 ) -> Arc<brink_ir::ConventionsProjection> {
     let opts = project.analysis_options(db);
-    let Some(pointer) = opts.elements.as_deref() else {
+    let Some(pointer) = opts.conventions.as_deref() else {
         return Arc::new(brink_ir::ConventionsProjection::default());
     };
     // `None` here = a bare preset name — see the helper's own doc for why
@@ -670,14 +674,14 @@ pub(crate) fn register_intrinsic_diagnostics_query(
 
     let opts = project.analysis_options(db);
     let is_conventions_module = 'resolved: {
-        let Some(pointer) = opts.elements.as_deref() else {
+        let Some(pointer) = opts.conventions.as_deref() else {
             // No conventions module configured at all: there is no
             // possible legal placement for `register` anywhere in the
             // project.
             break 'resolved false;
         };
-        if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
-            // A bare preset name (`elements = "screenplay"`) names no
+        if !brink_analyzer::is_path_shaped_conventions_pointer(pointer) {
+            // A bare preset name (`conventions = "screenplay"`) names no
             // project file — same conclusion.
             break 'resolved false;
         }

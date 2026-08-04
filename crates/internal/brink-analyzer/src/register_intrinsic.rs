@@ -16,7 +16,7 @@
 //! "…")]` declarations down to the one confined module on top of a
 //! permissive general resolution. `E175` is this pass's diagnostic.
 //!
-//! # Why this can't reuse `E169`'s "unset `elements`" silence
+//! # Why this can't reuse `E169`'s "unset `conventions`" silence
 //!
 //! `conventions_module_diagnostics` stays silent when no conventions module
 //! is configured at all — nothing is being confined *to* yet, so a project
@@ -85,7 +85,7 @@ const REGISTER_INTRINSIC_NAME: &str = "register";
 /// `is_conventions_module` is caller-fed, matching
 /// [`crate::conventions_module_diagnostics`]'s own shape exactly — this
 /// crate stays project-identity-free (resolving `brink.toml`'s `[project]
-/// elements` against real module identity is `brink-db`'s job). Unlike that
+/// conventions` against real module identity is `brink-db`'s job). Unlike that
 /// function, `is_conventions_module: false` here still means every
 /// `register` call in `hir` is diagnosed — see the module doc for why the
 /// two checks' "unconfigured project" postures differ.

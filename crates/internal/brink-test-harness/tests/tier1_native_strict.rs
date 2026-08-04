@@ -559,15 +559,12 @@ fn strict_options() -> AnalysisOptions {
 /// than listed, so a newly-added corpus case is strict-swept the moment it
 /// lands — the `known`-list drift `tier1_native.rs`'s
 /// `every_case_directory_has_a_test` guards against cannot happen here.
+///
+/// Delegates to [`brink_test_harness::corpus::native_case_names`], the one
+/// definition also used by the #2223 parallel gate
+/// (`environment_parallel_gate.rs`), so the two sweeps cannot drift apart.
 fn case_names() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(corpus_dir())
-        .expect("read tests/tier1-native")
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
+    brink_test_harness::corpus::native_case_names(&corpus_dir())
 }
 
 /// Compile every corpus case under [`strict_options`] and return the

@@ -121,6 +121,26 @@ opts a declaration into public with a `pub` keyword rather than an
 spellings produce the identical `VisibilityMark::Public` this
 section's `effective_visibility` logic consumes.
 
+**Stdlib mount carve-out (issue #2197, per #2080's scope fence):** a
+`story::std…`-mounted module's items are invisible to bare-name
+resolution regardless of any `pub`/`#@public` marking, until an
+explicit `use std::…` import exists (#1582/#2167, not yet built) —
+this is a resolution-layer gate (`brink-analyzer::resolve::
+lookup_by_name_direct`), not a visibility default, and does not
+change once those marks are added. Issue #2216 unified the
+scope-free UFCS-receiver lookup (`resolve::lookup_unique_by_name`,
+which has no `ImportScope` to classify against) onto the same gate,
+so a std-mounted candidate is invisible there too, including as the
+sole match — for any referrer *outside* the std tree, the two
+lookups can no longer disagree about std visibility. A referrer
+*inside* the std tree is the one remaining asymmetry:
+`lookup_by_name_direct`'s `InScope` tier still resolves a
+std-mounted candidate for a file that is itself part of
+`story::std…` (so std's own internal references keep working), but
+`lookup_unique_by_name` has no scope to classify `InScope` under and
+excludes that same candidate unconditionally — stricter than
+`lookup_by_name` for exactly that referrer.
+
 **Boundary rules** (keeping the axes from leaking):
 
 1. **`#@private` hides the name, not the cell.** A private

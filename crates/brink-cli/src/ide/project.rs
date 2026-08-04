@@ -62,6 +62,30 @@ fn severity_str(severity: brink_ir::Severity) -> &'static str {
     }
 }
 
+/// Mount the stdlib source set into `driver`'s db, right after discovery —
+/// the `brink ide`/`brink-lsp` counterpart of `brink_environment::Project::
+/// load`'s own `mount_stdlib` call (issue #2198). Every `brink ide` code path
+/// that builds its own `Driver` from scratch (`Project::load`, the
+/// re-analysis driver in `introduced_diagnostics`, and the git-baseline
+/// driver in `load_git_baseline`) calls this, so a mounted std symbol is
+/// visible to `brink ide`'s own analysis universe exactly as it is to a real
+/// compile through `Environment::load` — before this, none of the three ever
+/// mounted anything, so `brink ide`/`brink-lsp` disagreed with the compiler
+/// the moment a project could actually see into `std/`. Pulls the identical
+/// `(key, text)` pairs `Environment::load` mounts from
+/// `brink_environment::stdlib_sources` (the shared source of truth, #2198) —
+/// not a second, parallel copy of the stdlib. A project file already present
+/// at the same key wins over the mounted copy, mirroring `mount_stdlib`'s own
+/// precedence.
+fn mount_stdlib(driver: &mut Driver) {
+    for (key, text) in brink_environment::stdlib_sources() {
+        if driver.db().file_id(key).is_some() {
+            continue;
+        }
+        driver.db_mut().set_file(key, (*text).to_string());
+    }
+}
+
 /// Discover + apply `brink.toml` (#1005) to a fresh `AnalysisOptions`,
 /// honoring the "explicit flag always wins over the file" precedence rule.
 /// This is the single source every `brink ide` code path that builds its own
@@ -243,6 +267,7 @@ impl Project {
                 .map_err(|e| format!("{e}"))?;
             entry_s
         };
+        mount_stdlib(&mut driver);
 
         let analysis = driver.analyze().clone();
         let entry_id = driver
@@ -497,6 +522,7 @@ impl Project {
                 .map_err(|e| format!("{e}"))?;
             entry_s
         };
+        mount_stdlib(&mut driver);
 
         let new_analysis = driver.analyze().clone();
         let new_entry = driver
@@ -809,6 +835,7 @@ pub(super) fn load_git_baseline(
             .map_err(|e| format!("baseline {rev}: {e}"))?;
         entry_s.clone()
     };
+    mount_stdlib(&mut driver);
 
     let analysis = driver.analyze().clone();
     let entry_id = driver
@@ -1200,7 +1227,15 @@ mod git_baseline_config_tests {
         paths.sort_unstable();
         assert_eq!(
             paths,
-            vec!["main.brink", "other.brink"],
+            // Since issue #2198, `load_git_baseline` mounts the stdlib too
+            // (mirroring `Environment::load`'s own unconditional mount), so
+            // the discovered set is the project's own files plus the
+            // mounted std source.
+            vec![
+                "main.brink",
+                "other.brink",
+                "std/conventions/screenplay.brink"
+            ],
             "git baseline must discover every .brink file at the revision, not just the entry"
         );
 
@@ -1602,6 +1637,118 @@ mod ide_session_project_config_tests {
         assert_eq!(
             *session.lint_policy(),
             brink_analyzer::LintPolicy::default()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Issue #2198: `brink ide`'s `Project` builds its own `Driver`/`ProjectDb`
+/// universe, entirely separate from `brink_environment::Project::load` (the
+/// one real production compile path that mounts the stdlib, #2080/#2190) —
+/// before this fix, none of `brink ide`'s three from-scratch `Driver`
+/// construction sites (`Project::load`, `introduced_diagnostics`,
+/// `load_git_baseline`) ever mounted anything, so `brink ide` disagreed with
+/// a real compile the moment a project could see into `std/`. These tests
+/// prove a symbol the mounted std file declares is actually reachable
+/// through `Project`'s own query surface — not merely that a mount call was
+/// added somewhere.
+#[cfg(test)]
+mod stdlib_mount_tests {
+    use super::*;
+
+    fn temp_native_project(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-stdlib-mount-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("brink.toml"), "[project]\ndialect = \"brink\"\n").unwrap();
+        std::fs::write(dir.join("main.brink"), "flow main() {\n  Hi. -> END\n}\n").unwrap();
+        dir
+    }
+
+    /// `Project::load` (the loader every `brink ide` subcommand uses) must
+    /// mount the same stdlib file `Environment::load` mounts, and a symbol
+    /// it declares (`heading`, from `std/conventions/screenplay.brink`) must
+    /// be visible through `Project`'s own project-wide symbol index —
+    /// reachable by `brink ide outline`/`def`/`references` on that file
+    /// exactly as any other project file is. (`scene_entered` is declared
+    /// twice in that file — an `extern` plus its ink-fallback `fn` — so it
+    /// resolves ambiguously through `resolve_unique`; `heading` has exactly
+    /// one declaration.) Rule 20a verified: with `Project::load`'s
+    /// `mount_stdlib(&mut driver)` call removed, this test fails (`file_id`
+    /// returns `None`, and `resolve_unique` errors "no symbol named
+    /// 'heading'").
+    #[test]
+    fn project_load_mounts_stdlib_and_a_std_symbol_is_visible() {
+        let dir = temp_native_project("load");
+        let entry = dir.join("main.brink");
+
+        let project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
+
+        assert!(
+            project
+                .driver
+                .db()
+                .file_id("std/conventions/screenplay.brink")
+                .is_some(),
+            "the mounted std file must be a registered project file"
+        );
+        assert!(
+            project.resolve_unique("heading", None).is_ok(),
+            "a symbol declared in the mounted std file must resolve through \
+             Project's own symbol index"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Pins `mount_stdlib`'s own precedence contract — the single helper
+    /// `Project::load`, `introduced_diagnostics`, and `load_git_baseline` all
+    /// call (issue #2198) — directly, independent of any one call site: a
+    /// project file already declared at the exact same key
+    /// (`std/conventions/screenplay.brink`, the reserved-by-convention
+    /// mount path) must win over the embedded stdlib copy, mirroring
+    /// `brink_environment::mount_stdlib`'s own "project data always wins"
+    /// rule. Without this, a project that happened to declare a file at
+    /// that path would have its own content silently clobbered by the
+    /// mount.
+    #[test]
+    fn mount_stdlib_lets_a_same_key_project_file_win() {
+        let dir = temp_native_project("precedence");
+        // A project file that collides with the mount's own reserved key.
+        std::fs::create_dir_all(dir.join("std/conventions")).unwrap();
+        std::fs::write(
+            dir.join("std/conventions/screenplay.brink"),
+            "flow project_owned() {\n  Mine. -> END\n}\n",
+        )
+        .unwrap();
+
+        let entry = dir.join("main.brink");
+        let project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
+
+        let src = project
+            .driver
+            .db()
+            .source(
+                project
+                    .driver
+                    .db()
+                    .file_id("std/conventions/screenplay.brink")
+                    .expect("the colliding key is still a registered file"),
+            )
+            .unwrap_or_default();
+        assert!(
+            src.contains("project_owned"),
+            "a project's own file at the mount's key must win over the \
+             embedded stdlib copy, got: {src:?}"
+        );
+        assert!(
+            project.resolve_unique("heading", None).is_err(),
+            "the embedded stdlib copy must not have been merged in when the \
+             project's own file at the same key wins"
         );
 
         std::fs::remove_dir_all(&dir).ok();

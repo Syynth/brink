@@ -16,7 +16,7 @@ use brink_format::{DefinitionId, DefinitionTag};
 use crate::FileId;
 use crate::determinism::LookupMap;
 use crate::hir;
-use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::symbols::{SymbolIndex, SymbolInfo, SymbolKind};
 
 /// The structural scope path every *anonymous* container in `file_path`'s
 /// root-level weave hangs off (#1504).
@@ -95,10 +95,10 @@ pub fn stamp_container_ids(
         // `collect_globals`) — exactly `root_scope` itself, the same
         // qualifier root content's own anonymous containers use.
         for cst in &mut hir_file.constants {
-            stamp_lambdas_in_expr(&mut cst.value, &root_scope, "", index);
+            stamp_lambdas_in_expr(&mut cst.value, *file_id, &root_scope, "", index);
         }
         for var in &mut hir_file.variables {
-            stamp_lambdas_in_expr(&mut var.value, &root_scope, "", index);
+            stamp_lambdas_in_expr(&mut var.value, *file_id, &root_scope, "", index);
         }
 
         for knot in &mut hir_file.knots {
@@ -132,7 +132,7 @@ pub fn stamp_container_ids(
 /// Stamp container IDs on all structural statements in a block.
 fn stamp_block(
     block: &mut hir::Block,
-    _file: FileId,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
@@ -144,6 +144,7 @@ fn stamp_block(
     for stmt in &mut block.stmts {
         stamp_stmt(
             stmt,
+            file,
             scope_path,
             label_scope,
             index,
@@ -155,12 +156,31 @@ fn stamp_block(
 }
 
 /// Stamp container IDs on a single statement and recurse into children.
+///
+/// `file`: the file whose declarations this statement belongs to — see
+/// [`lookup_label_id`]'s doc. Threaded down from [`stamp_block`] for the
+/// primary weave walk and from every lambda-stamping call site (issue
+/// #2215) so a labeled gather/choice/block reached through a
+/// content-embedded inline conditional/sequence
+/// (`stamp_lambdas_in_content_part`'s `InlineConditional`/
+/// `InlineSequence` arms, or transitively via `stamp_lambdas_in_expr`'s
+/// `Fragment` arm when a block-capture's own captured content line
+/// carries one of these mid-line) gets the same same-file-preferred label
+/// lookup the primary walk already gets — every call site has a real
+/// `FileId` in scope, so there is no longer an unscoped case to fall back
+/// to.
 #[expect(
     clippy::too_many_lines,
     reason = "structural match over all statement types"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "issue #2197 added `file` for label self-identity; a context struct isn't worth it \
+              for one more threaded parameter"
+)]
 fn stamp_stmt(
     stmt: &mut hir::Stmt,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
@@ -173,7 +193,7 @@ fn stamp_stmt(
             // Gather container ID — from label lookup or scope path.
             let gather_id = if let Some(ref label) = cs.continuation.label {
                 let label_path = qualify(label_scope, &label.text);
-                lookup_label_id(index, &label_path)
+                lookup_label_id(index, file, &label_path)
                     .unwrap_or_else(|| alloc_address(&format!("{scope_path}.g-{gather_counter}")))
             } else {
                 alloc_address(&format!("{scope_path}.g-{gather_counter}"))
@@ -186,7 +206,7 @@ fn stamp_stmt(
             for choice in &mut cs.choices {
                 let choice_id = if let Some(ref label) = choice.label {
                     let label_path = qualify(label_scope, &label.text);
-                    lookup_label_id(index, &label_path).unwrap_or_else(|| {
+                    lookup_label_id(index, file, &label_path).unwrap_or_else(|| {
                         alloc_address(&format!("{scope_path}.c{choice_counter}"))
                     })
                 } else {
@@ -203,7 +223,7 @@ fn stamp_stmt(
                 // below gets the narrowed `.c{n}` scope) — so these stamp
                 // at the parent `scope_path`, not `child_scope`.
                 if let Some(cond) = &mut choice.condition {
-                    stamp_lambdas_in_expr(cond, scope_path, label_scope, index);
+                    stamp_lambdas_in_expr(cond, file, scope_path, label_scope, index);
                 }
                 for c in [
                     &mut choice.start_content,
@@ -213,11 +233,11 @@ fn stamp_stmt(
                 .into_iter()
                 .flatten()
                 {
-                    stamp_lambdas_in_content(c, scope_path, label_scope, index);
+                    stamp_lambdas_in_content(c, file, scope_path, label_scope, index);
                 }
                 for tag in &mut choice.tags {
                     for part in &mut tag.parts {
-                        stamp_lambdas_in_content_part(part, scope_path, label_scope, index);
+                        stamp_lambdas_in_content_part(part, file, scope_path, label_scope, index);
                     }
                 }
 
@@ -228,6 +248,7 @@ fn stamp_stmt(
                 for body_stmt in &mut choice.body.stmts {
                     stamp_stmt(
                         body_stmt,
+                        file,
                         &child_scope,
                         label_scope,
                         index,
@@ -242,6 +263,7 @@ fn stamp_stmt(
             for cont_stmt in &mut cs.continuation.stmts {
                 stamp_stmt(
                     cont_stmt,
+                    file,
                     scope_path,
                     label_scope,
                     index,
@@ -259,7 +281,7 @@ fn stamp_stmt(
                     .as_ref()
                     .map(|l| qualify(label_scope, &l.text))
                     .unwrap_or_default();
-                let label_id = lookup_label_id(index, &label_path)
+                let label_id = lookup_label_id(index, file, &label_path)
                     .unwrap_or_else(|| alloc_address(&label_path));
                 block.container_id = Some(label_id);
 
@@ -270,6 +292,7 @@ fn stamp_stmt(
             for s in &mut block.stmts {
                 stamp_stmt(
                     s,
+                    file,
                     scope_path,
                     label_scope,
                     index,
@@ -292,7 +315,7 @@ fn stamp_stmt(
             // branch_scope` is set) — issue #1727 stamps a lambda there at
             // the parent `scope_path`, matching that order.
             if let hir::CondKind::Switch(e) = &mut cond.kind {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
 
             for (branch_idx, branch) in cond.branches.iter_mut().enumerate() {
@@ -305,13 +328,14 @@ fn stamp_stmt(
                 branch.container_id = Some(branch_id);
 
                 if let Some(bc) = &mut branch.condition {
-                    stamp_lambdas_in_expr(bc, scope_path, label_scope, index);
+                    stamp_lambdas_in_expr(bc, file, scope_path, label_scope, index);
                 }
 
                 // Recurse into branch body — shares parent choice/gather counters.
                 for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
+                        file,
                         &branch_scope,
                         label_scope,
                         index,
@@ -351,6 +375,7 @@ fn stamp_stmt(
                 for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
+                        file,
                         &child_scope,
                         label_scope,
                         index,
@@ -373,46 +398,46 @@ fn stamp_stmt(
         // logic block's statements are exactly where a `let f = |x| …;`
         // most commonly lives, so `LogicBlock` gets the fullest walk below.
         hir::Stmt::Content(content) => {
-            stamp_lambdas_in_content(content, scope_path, label_scope, index);
+            stamp_lambdas_in_content(content, file, scope_path, label_scope, index);
         }
         hir::Stmt::Divert(d) => {
             for a in &mut d.target.args {
-                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
         hir::Stmt::TunnelCall(t) => {
             for target in &mut t.targets {
                 for a in &mut target.args {
-                    stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                    stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
                 }
             }
         }
         hir::Stmt::ThreadStart(t) => {
             for a in &mut t.target.args {
-                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
         hir::Stmt::TempDecl(t) => {
             if let Some(e) = &mut t.value {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
         }
         hir::Stmt::Assignment(a) => {
-            stamp_lambdas_in_expr(&mut a.target, scope_path, label_scope, index);
-            stamp_lambdas_in_expr(&mut a.value, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut a.target, file, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut a.value, file, scope_path, label_scope, index);
         }
         hir::Stmt::Return(r) => {
             if let Some(e) = &mut r.value {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
             for a in &mut r.onwards_args {
-                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
-        hir::Stmt::ExprStmt(e) => stamp_lambdas_in_expr(e, scope_path, label_scope, index),
+        hir::Stmt::ExprStmt(e) => stamp_lambdas_in_expr(e, file, scope_path, label_scope, index),
         hir::Stmt::EndOfLine => {}
         hir::Stmt::LogicBlock(lb) => {
-            stamp_lambdas_in_block_stmts(&mut lb.stmts, scope_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(&mut lb.stmts, file, scope_path, label_scope, index);
         }
         // `await` (docs/flow-suspension-spec.md §3): the resume-container
         // synthesis (§3, a synthetic container id + tunnel-return stack) is
@@ -422,7 +447,7 @@ fn stamp_stmt(
         // embed a lambda, so it still gets scanned.
         hir::Stmt::Await(a) => {
             if let Some(c) = &mut a.condition {
-                stamp_lambdas_in_expr(c, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(c, file, scope_path, label_scope, index);
             }
         }
     }
@@ -455,63 +480,64 @@ fn stamp_stmt(
 /// scheme `IdAllocator::alloc_lambda_address` used to derive independently.
 fn stamp_lambdas_in_expr(
     expr: &mut hir::Expr,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
 ) {
     match expr {
-        hir::Expr::Lambda(l) => stamp_lambda(l, scope_path, label_scope, index),
+        hir::Expr::Lambda(l) => stamp_lambda(l, file, scope_path, label_scope, index),
         hir::Expr::Prefix(_, inner) | hir::Expr::Postfix(inner, _) => {
-            stamp_lambdas_in_expr(inner, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(inner, file, scope_path, label_scope, index);
         }
         hir::Expr::Infix(ie) => {
-            stamp_lambdas_in_expr(&mut ie.lhs, scope_path, label_scope, index);
-            stamp_lambdas_in_expr(&mut ie.rhs, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut ie.lhs, file, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut ie.rhs, file, scope_path, label_scope, index);
         }
         hir::Expr::Call(_, args) => {
             for a in args {
-                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
         hir::Expr::ArrayLiteral(a) => {
             for e in &mut a.elements {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
         }
         hir::Expr::MapLiteral(m) => {
             for (k, v) in &mut m.entries {
-                stamp_lambdas_in_expr(k, scope_path, label_scope, index);
-                stamp_lambdas_in_expr(v, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(k, file, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(v, file, scope_path, label_scope, index);
             }
         }
         hir::Expr::Index(idx) => {
-            stamp_lambdas_in_expr(&mut idx.base, scope_path, label_scope, index);
-            stamp_lambdas_in_expr(&mut idx.index, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut idx.base, file, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut idx.index, file, scope_path, label_scope, index);
         }
         hir::Expr::Range(r) => {
-            stamp_lambdas_in_expr(&mut r.start, scope_path, label_scope, index);
-            stamp_lambdas_in_expr(&mut r.end, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut r.start, file, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut r.end, file, scope_path, label_scope, index);
         }
         hir::Expr::StructLiteral(sl) => {
             for (_, v) in &mut sl.fields {
-                stamp_lambdas_in_expr(v, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(v, file, scope_path, label_scope, index);
             }
         }
         hir::Expr::FieldAccess(fa) => {
-            stamp_lambdas_in_expr(&mut fa.base, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut fa.base, file, scope_path, label_scope, index);
         }
         hir::Expr::FnLiteral(fl) => {
             for a in &mut fl.args {
-                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
         hir::Expr::RefArg(ra) => {
-            stamp_lambdas_in_expr(&mut ra.operand, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut ra.operand, file, scope_path, label_scope, index);
         }
         hir::Expr::String(s) => {
             for part in &mut s.parts {
                 if let hir::StringPart::Interpolation(inner) = part {
-                    stamp_lambdas_in_expr(inner, scope_path, label_scope, index);
+                    stamp_lambdas_in_expr(inner, file, scope_path, label_scope, index);
                 }
             }
         }
@@ -523,6 +549,20 @@ fn stamp_lambdas_in_expr(
         // at this same `scope_path`, with fresh local counters exactly like
         // a choice body gets (this fragment is its own isolated statement
         // list, not sharing the enclosing frame's structural counters).
+        // `file` is threaded through (issue #2215) so that traversal still
+        // gets the same same-file-preferred [`lookup_label_id`] lookup the
+        // primary weave walk gets — see that function's doc for the
+        // collision this closes. Note a top-level labeled
+        // gather/choice/block is never itself one of `stmts` here:
+        // `capture_block`'s terminator (`is_plain_content_line`,
+        // `hir::lower_native::element`) stops the captured run at any
+        // `CONTENT_LINE` bearing a `LABEL`/`CHOICE_POINT`/`DIVERT_STMT`/
+        // `TUNNEL_CALL`, specifically so it can never be absorbed into a
+        // `Stmt::LabeledBlock`/`Stmt::ChoiceSet`. A label only reaches this
+        // arm transitively, through a captured plain content line's own
+        // mid-line inline conditional/sequence — the same
+        // `InlineConditional`/`InlineSequence` shape handled below, just
+        // one level deeper.
         hir::Expr::Fragment(stmts) => {
             let mut seq = 0;
             let mut cc = 0;
@@ -530,6 +570,7 @@ fn stamp_lambdas_in_expr(
             for s in stmts {
                 stamp_stmt(
                     s,
+                    file,
                     scope_path,
                     label_scope,
                     index,
@@ -554,17 +595,23 @@ fn stamp_lambdas_in_expr(
 /// scope path is the qualified path just minted for `l` — matching
 /// `lir::lower::lambda::lower_lambda`'s child `LowerCtx::scope_path`, which
 /// is set to exactly that string before lowering the outer lambda's body.
-fn stamp_lambda(l: &mut hir::LambdaExpr, scope_path: &str, label_scope: &str, index: &SymbolIndex) {
+fn stamp_lambda(
+    l: &mut hir::LambdaExpr,
+    file: FileId,
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
     let offset = u32::from(l.ptr.text_range().start());
     let own_path = qualify(scope_path, &format!("#lambda-{offset}"));
     l.container_id = Some(alloc_address(&own_path));
 
     match &mut l.body {
-        hir::LambdaBody::Expr(e) => stamp_lambdas_in_expr(e, &own_path, label_scope, index),
+        hir::LambdaBody::Expr(e) => stamp_lambdas_in_expr(e, file, &own_path, label_scope, index),
         hir::LambdaBody::Block { stmts, tail } => {
-            stamp_lambdas_in_block_stmts(stmts, &own_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(stmts, file, &own_path, label_scope, index);
             if let Some(t) = tail {
-                stamp_lambdas_in_expr(t, &own_path, label_scope, index);
+                stamp_lambdas_in_expr(t, file, &own_path, label_scope, index);
             }
         }
     }
@@ -577,17 +624,19 @@ fn stamp_lambda(l: &mut hir::LambdaExpr, scope_path: &str, label_scope: &str, in
 /// stamps at the *same* `scope_path` the caller passed in.
 fn stamp_lambdas_in_block_stmts(
     stmts: &mut [hir::BlockStmt],
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
 ) {
     for s in stmts {
-        stamp_lambdas_in_block_stmt(s, scope_path, label_scope, index);
+        stamp_lambdas_in_block_stmt(s, file, scope_path, label_scope, index);
     }
 }
 
 fn stamp_lambdas_in_block_stmt(
     stmt: &mut hir::BlockStmt,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
@@ -595,34 +644,36 @@ fn stamp_lambdas_in_block_stmt(
     match stmt {
         hir::BlockStmt::TempDecl(t) => {
             if let Some(e) = &mut t.value {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
         }
         hir::BlockStmt::Assignment(a) => {
-            stamp_lambdas_in_expr(&mut a.target, scope_path, label_scope, index);
-            stamp_lambdas_in_expr(&mut a.value, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut a.target, file, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut a.value, file, scope_path, label_scope, index);
         }
         hir::BlockStmt::Return(r) => {
             if let Some(e) = &mut r.value {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
             for a in &mut r.onwards_args {
-                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
-        hir::BlockStmt::If(i) => stamp_lambdas_in_if_stmt(i, scope_path, label_scope, index),
+        hir::BlockStmt::If(i) => stamp_lambdas_in_if_stmt(i, file, scope_path, label_scope, index),
         hir::BlockStmt::While(w) => {
-            stamp_lambdas_in_expr(&mut w.condition, scope_path, label_scope, index);
-            stamp_lambdas_in_block_stmts(&mut w.body, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut w.condition, file, scope_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(&mut w.body, file, scope_path, label_scope, index);
         }
         hir::BlockStmt::For(f) => {
-            stamp_lambdas_in_expr(&mut f.iterable, scope_path, label_scope, index);
-            stamp_lambdas_in_block_stmts(&mut f.body, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut f.iterable, file, scope_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(&mut f.body, file, scope_path, label_scope, index);
         }
-        hir::BlockStmt::ExprStmt(e) => stamp_lambdas_in_expr(e, scope_path, label_scope, index),
+        hir::BlockStmt::ExprStmt(e) => {
+            stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
+        }
         hir::BlockStmt::Await(a) => {
             if let Some(c) = &mut a.condition {
-                stamp_lambdas_in_expr(c, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(c, file, scope_path, label_scope, index);
             }
         }
         hir::BlockStmt::Break(_) | hir::BlockStmt::Continue(_) => {}
@@ -631,18 +682,19 @@ fn stamp_lambdas_in_block_stmt(
 
 fn stamp_lambdas_in_if_stmt(
     i: &mut hir::IfStmt,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
 ) {
-    stamp_lambdas_in_expr(&mut i.condition, scope_path, label_scope, index);
-    stamp_lambdas_in_block_stmts(&mut i.body, scope_path, label_scope, index);
+    stamp_lambdas_in_expr(&mut i.condition, file, scope_path, label_scope, index);
+    stamp_lambdas_in_block_stmts(&mut i.body, file, scope_path, label_scope, index);
     match &mut i.else_branch {
         Some(hir::ElseBranch::ElseIf(nested)) => {
-            stamp_lambdas_in_if_stmt(nested, scope_path, label_scope, index);
+            stamp_lambdas_in_if_stmt(nested, file, scope_path, label_scope, index);
         }
         Some(hir::ElseBranch::Else(stmts)) => {
-            stamp_lambdas_in_block_stmts(stmts, scope_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(stmts, file, scope_path, label_scope, index);
         }
         None => {}
     }
@@ -652,16 +704,17 @@ fn stamp_lambdas_in_if_stmt(
 /// sequences/spans and tags for embedded lambdas.
 fn stamp_lambdas_in_content(
     content: &mut hir::Content,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
 ) {
     for part in &mut content.parts {
-        stamp_lambdas_in_content_part(part, scope_path, label_scope, index);
+        stamp_lambdas_in_content_part(part, file, scope_path, label_scope, index);
     }
     for tag in &mut content.tags {
         for part in &mut tag.parts {
-            stamp_lambdas_in_content_part(part, scope_path, label_scope, index);
+            stamp_lambdas_in_content_part(part, file, scope_path, label_scope, index);
         }
     }
 }
@@ -674,23 +727,33 @@ fn stamp_lambdas_in_content(
 /// structs) — so their branch bodies stamp at the *same* `scope_path`,
 /// with fresh local structural counters since these bodies are not part of
 /// the enclosing frame's own folded weave.
+///
+/// `file` is threaded through the branch bodies' `stamp_stmt` calls (issue
+/// #2215): native's annotated-brace family shares one grammar rule for a
+/// `{if …}`/alternation block regardless of whether it sits on its own line
+/// or is embedded mid-line in a `CONTENT_LINE` (`hir::lower_native::cond`'s
+/// module doc), so a branch body reached only through this content-embedded
+/// path can still contain a full `Stmt::ChoiceSet`/`Stmt::LabeledBlock` with
+/// its own `(label)` — collision-prone exactly like the primary weave
+/// walk's, see [`lookup_label_id`]'s doc.
 fn stamp_lambdas_in_content_part(
     part: &mut hir::ContentPart,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
 ) {
     match part {
         hir::ContentPart::Interpolation(e) => {
-            stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
         }
         hir::ContentPart::InlineConditional(cond) => {
             if let hir::CondKind::Switch(e) = &mut cond.kind {
-                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
             }
             for b in &mut cond.branches {
                 if let Some(c) = &mut b.condition {
-                    stamp_lambdas_in_expr(c, scope_path, label_scope, index);
+                    stamp_lambdas_in_expr(c, file, scope_path, label_scope, index);
                 }
                 let mut seq = 0;
                 let mut cc = 0;
@@ -698,6 +761,7 @@ fn stamp_lambdas_in_content_part(
                 for s in &mut b.body.stmts {
                     stamp_stmt(
                         s,
+                        file,
                         scope_path,
                         label_scope,
                         index,
@@ -714,13 +778,22 @@ fn stamp_lambdas_in_content_part(
                 let mut cc = 0;
                 let mut gc = 0;
                 for s in &mut b.body.stmts {
-                    stamp_stmt(s, scope_path, label_scope, index, &mut sc, &mut cc, &mut gc);
+                    stamp_stmt(
+                        s,
+                        file,
+                        scope_path,
+                        label_scope,
+                        index,
+                        &mut sc,
+                        &mut cc,
+                        &mut gc,
+                    );
                 }
             }
         }
         hir::ContentPart::Span(span) => {
             for child in &mut span.children {
-                stamp_lambdas_in_content_part(child, scope_path, label_scope, index);
+                stamp_lambdas_in_content_part(child, file, scope_path, label_scope, index);
             }
         }
         hir::ContentPart::Text(_) | hir::ContentPart::Glue | hir::ContentPart::Spring => {}
@@ -742,17 +815,50 @@ fn alloc_address(path: &str) -> DefinitionId {
 ///
 /// Returns the analyzer-assigned `DefinitionId` for labels so that
 /// diverts resolved by the analyzer point to the same container.
-fn lookup_label_id(index: &SymbolIndex, name: &str) -> Option<DefinitionId> {
+///
+/// **File-scoped** (issue #2197 — see `lir::lower::lookup_container_id`'s
+/// doc for the full collision this mirrors): M-2d
+/// (`is_cross_declared_module_collision`) lets a same-name label/gather/
+/// choice in two different *declared* modules coexist in `index.by_name`,
+/// so an unscoped `.find()` can pick either one for *both* files stamping
+/// a container of that name — silently minting the same `DefinitionId`
+/// for two distinct containers. Preferring the entry declared in `file`
+/// is the correct self-identity semantic regardless of module-visibility
+/// policy.
+///
+/// Every call site (issue #2215) now has a real `FileId` in scope: the
+/// primary weave walk (`stamp_block`/`stamp_stmt`) always did, and the
+/// separate lambda-stamping traversal (`stamp_lambdas_in_expr`'s
+/// `Fragment` arm, `stamp_lambdas_in_content_part`'s `InlineConditional`/
+/// `InlineSequence` arms) now threads one through too — those call sites
+/// share the exact same collision this function's file-scoped lookup
+/// fixes, reachable through an explicitly *labeled* gather/choice/block
+/// nested inside a content-embedded inline conditional/sequence (or, one
+/// level deeper, inside such a construct's own mid-line inline
+/// conditional/sequence when it sits within a block-capture's captured
+/// content line — see the `Fragment` arm's own doc for why a labeled
+/// container can never be a top-level statement of a capture), declared
+/// identically in two *coexisting* declared modules (confirmed live via
+/// the real production compile path, not merely theoretical — see the
+/// `brink-test-harness` regression this issue adds).
+fn lookup_label_id(index: &SymbolIndex, file: FileId, name: &str) -> Option<DefinitionId> {
+    fn is_container(info: &SymbolInfo) -> bool {
+        matches!(
+            info.kind,
+            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+        )
+    }
     index.by_name.get(name).and_then(|ids| {
+        if let Some(id) = ids.iter().find(|&&id| {
+            index
+                .symbols
+                .get(&id)
+                .is_some_and(|info| is_container(info) && info.file == file)
+        }) {
+            return Some(*id);
+        }
         ids.iter()
-            .find(|&&id| {
-                index.symbols.get(&id).is_some_and(|info| {
-                    matches!(
-                        info.kind,
-                        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
-                    )
-                })
-            })
+            .find(|&&id| index.symbols.get(&id).is_some_and(is_container))
             .copied()
     })
 }

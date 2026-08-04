@@ -10,7 +10,7 @@
 //! would have needed one (`fn conventions()` registration, issue #1840) is
 //! dissolved (`docs/decision-log.md` 2026-08-03). What remains testable —
 //! and is tested below — is the query SHAPE, its KEYING against the
-//! `[project] elements` pointer, and its INVALIDATION footprint (exactly
+//! `[project] conventions` pointer, and its INVALIDATION footprint (exactly
 //! the resolved conventions module file, nothing else).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -28,15 +28,15 @@ const BLOCK_CLAIMING_HANDLER: &str = "struct Cue {\n  speaker: string,\n}\n\
     @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
     fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n";
 
-fn opts_with_elements(pointer: &str) -> AnalysisOptions {
+fn opts_with_conventions(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
-        elements: Some(pointer.to_owned()),
+        conventions: Some(pointer.to_owned()),
         ..AnalysisOptions::default()
     }
 }
 
 #[test]
-fn unset_elements_projects_to_empty() {
+fn unset_conventions_projects_to_empty() {
     let mut db = ProjectDb::new();
     db.set_analysis_options(AnalysisOptions::default());
     db.set_file(
@@ -53,7 +53,7 @@ fn a_preset_name_pointer_projects_to_empty_for_now() {
     // (`brink_analyzer`'s own `BUILTIN_ELEMENT_PRESETS` doc — needs #1582's
     // pub marker and #2167's closure-scoped confinement, neither built).
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("screenplay"));
+    db.set_analysis_options(opts_with_conventions("screenplay"));
     db.set_file(
         "scenes/heading.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
@@ -62,9 +62,9 @@ fn a_preset_name_pointer_projects_to_empty_for_now() {
 }
 
 #[test]
-fn an_unresolvable_elements_pointer_projects_to_empty() {
+fn an_unresolvable_conventions_pointer_projects_to_empty() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("typo.brink"));
+    db.set_analysis_options(opts_with_conventions("typo.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
@@ -75,7 +75,7 @@ fn an_unresolvable_elements_pointer_projects_to_empty() {
 #[test]
 fn the_configured_modules_own_handlers_are_projected_in_order() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         format!("{BLOCK_CLAIMING_HANDLER}{CLAIMING_HANDLER}"),
@@ -103,7 +103,7 @@ fn the_configured_modules_own_handlers_are_projected_in_order() {
 #[test]
 fn a_claiming_handler_outside_the_configured_module_is_never_projected() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
     db.set_file(
         "scenes/heading.brink",
@@ -121,7 +121,7 @@ fn a_claiming_handler_outside_the_configured_module_is_never_projected() {
 #[test]
 fn editing_an_unrelated_file_never_reexecutes_the_projection_query() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CLAIMING_HANDLER}flow other() {{\n  hi\n}}\n"),
@@ -150,7 +150,7 @@ fn editing_an_unrelated_file_never_reexecutes_the_projection_query() {
 #[test]
 fn editing_the_conventions_module_itself_updates_the_projection() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CLAIMING_HANDLER}flow other() {{\n  hi\n}}\n"),

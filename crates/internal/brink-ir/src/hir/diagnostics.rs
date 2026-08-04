@@ -1406,12 +1406,13 @@ pub enum DiagnosticCode {
     /// depends on every claim living in the one file an author (or
     /// reviewer) knows to open.
     ///
-    /// Only fires when `brink.toml`'s `[project] elements` key names a
-    /// project-relative `.brink` path (`elements = "conventions.brink"`) —
-    /// a bare built-in preset name (`elements = "screenplay"`) points at a
+    /// Only fires when `brink.toml`'s `[project] conventions` key (renamed
+    /// from `elements` by issue #2180) names a project-relative `.brink`
+    /// path (`conventions = "conventions.brink"`) — a bare built-in preset
+    /// name (`conventions = "screenplay"`) points at a
     /// `std::conventions::*` module with no project file to compare
-    /// against, and an unset `elements` key means no conventions module is
-    /// configured at all, so there is nothing to confine against yet
+    /// against, and an unset `conventions` key means no conventions module
+    /// is configured at all, so there is nothing to confine against yet
     /// (`brink_db::queries::analysis::conventions_confinement_diagnostics_query`'s
     /// own doc). `Error` by default, the same posture as `E112`: a
     /// misplaced claim is not a style nit, it is a claim that violates the
@@ -1585,7 +1586,8 @@ pub enum DiagnosticCode {
     ///
     /// Native-only: the conventions module and `fn conventions()` are both
     /// `.brink`-surface concepts (`@[convention(claims = "…", order = N)]` handlers,
-    /// `brink.toml`'s `[project] elements`), same posture as `E169`.
+    /// `brink.toml`'s `[project] conventions`, renamed from `elements` by
+    /// issue #2180), same posture as `E169`.
     E175,
     /// A divert-with-args site (`-> knot(args)`, `->-> tunnel(args)`, or
     /// `<- thread(args)`) supplies a number of arguments that does not
@@ -2335,7 +2337,7 @@ impl DiagnosticCode {
                 "this `@[convention(claims = \"…\", order = N)]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
             }
             Self::E169 => {
-                "a pattern-claiming `@[convention(claims = \"…\", order = N)]` handler is legal only in the project's configured conventions module (`brink.toml`'s `[project] elements`)"
+                "a pattern-claiming `@[convention(claims = \"…\", order = N)]` handler is legal only in the project's configured conventions module (`brink.toml`'s `[project] conventions`)"
             }
             Self::E170 => {
                 "this `@[convention(claims = \"…\", order = N)]` pattern can overlap with an earlier-declared handler's pattern — they silently race, with the lower-`order` one winning"

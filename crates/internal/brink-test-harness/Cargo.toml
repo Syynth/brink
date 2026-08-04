@@ -39,6 +39,13 @@ brink-analyzer = { workspace = true }
 # #1433) every recursive traversal in the workspace routes through, instead
 # of each one hand-rolling a `read_dir` recursion.
 brink-source-tree = { workspace = true }
+# `corpus::compile_via_environment` (issue #2223's parallel gate): the real
+# production compile entry point (`brink_environment::compile(&Environment)`,
+# #1306) alongside this crate's existing `compile_path`-based helpers, which
+# all bypass `Environment` (and its stdlib mount, #2080) entirely. A normal
+# (non-dev) dependency because `src/corpus.rs` calls it unconditionally, not
+# just from a test target — the same reasoning as `brink-compiler` above.
+brink-environment = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

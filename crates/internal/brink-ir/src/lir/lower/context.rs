@@ -828,14 +828,38 @@ impl<'a> LowerCtx<'a> {
         self.ids.alloc_address(&path)
     }
 
-    /// Look up an address `DefinitionId` by qualifying a label name with the current scope.
+    /// Look up an address `DefinitionId` by qualifying a label name with the
+    /// current scope.
+    ///
+    /// **File-scoped, preferring `self.file`** (issue #2215 review): mirrors
+    /// `lower::lookup_container_id`'s file-scoped lookup for the exact same
+    /// M-2d collision (#2197) — with same-named labels/gathers/knots
+    /// coexisting across two declared modules, an unscoped first-match
+    /// would silently pick whichever candidate happens to sort first for
+    /// *every* file querying that name. Preferring the entry declared in
+    /// `self.file` is the correct self-identity semantic; falling back to
+    /// the first match preserves prior behavior when there is no collision
+    /// (`by_name` holding only one container candidate for the name).
     pub fn lookup_address_id(&self, label: &str) -> Option<DefinitionId> {
+        use crate::symbols::SymbolKind;
+        fn is_container(info: &SymbolInfo) -> bool {
+            matches!(
+                info.kind,
+                SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+            )
+        }
         let qualified = self.qualify_label(label);
-        self.index
-            .by_name
-            .get(&qualified)
-            .and_then(|ids| ids.first())
-            .copied()
+        self.index.by_name.get(&qualified).and_then(|ids| {
+            ids.iter()
+                .find(|&&id| {
+                    self.index
+                        .symbols
+                        .get(&id)
+                        .is_some_and(|info| is_container(info) && info.file == self.file)
+                })
+                .or_else(|| ids.first())
+                .copied()
+        })
     }
 }
 

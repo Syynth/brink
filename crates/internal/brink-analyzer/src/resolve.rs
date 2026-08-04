@@ -187,6 +187,19 @@ enum Candidacy {
     Other,
 }
 
+/// True when `module` names the reserved standard-library namespace
+/// `brink_environment`'s stdlib mount (issue #2080) populates: `story::std`
+/// itself, or any of its submodules (`story::std::conventions::screenplay`,
+/// …) — `native_module_path`'s path-derived scheme applied to a file mounted
+/// at `std/…`. A pure string convention check, not a project-config lookup:
+/// `mount_stdlib`'s own doc already treats `std/` as "a reserved-by-
+/// convention path", and `brink-analyzer` cannot depend on `brink-db` (which
+/// owns `native_module_path`) without a cycle, so this mirrors that
+/// convention locally rather than importing it.
+fn is_std_module(module: &str) -> bool {
+    module == "story::std" || module.starts_with("story::std::")
+}
+
 /// Classify a candidate against the referring file's import scope (M-2d).
 fn classify(scope: &ImportScope, info: &SymbolInfo) -> Candidacy {
     match &info.module {
@@ -1232,7 +1245,11 @@ pub(crate) fn lookup_by_name(
 }
 
 /// The direct (non-alias) name lookup — everything [`lookup_by_name`] did
-/// before issue #1590's alias fallback, byte-identical.
+/// before issue #1590's alias fallback, plus the 2026-08-03 SUBTRACTION
+/// RULING's std-invisibility gate (issue #2197, doc below) — no longer
+/// byte-identical to that description, but byte-identical for every corpus
+/// that never coexists with a `story::std::…` candidate (the whole
+/// pre-stdlib-mount world).
 fn lookup_by_name_direct(
     index: &SymbolIndex,
     scope: &ImportScope,
@@ -1253,22 +1270,62 @@ fn lookup_by_name_direct(
         if !kinds.contains(&info.kind) {
             continue;
         }
+        let candidacy = classify(scope, info);
+        // Issue #2197, per #2080's SCOPE FENCE (`docs/decision-log.md`,
+        // "Stdlib mounts into `Environment`'s manifest at the producer, as
+        // plain source"): the mount puts std source into every project's
+        // manifest, but "nothing in it is marked `pub` and no confinement
+        // rule scopes what a project's own `use` may reach into it" — a
+        // real `use std::…` still needs #1582's `pub` marker and #2167's
+        // confinement, neither built yet. Until then, stdlib symbols are
+        // reachable only via that not-yet-existing explicit import — there
+        // is no implicit inclusion, so `classify` can never answer
+        // `Imported` for a std candidate today (nothing under `story::std`
+        // can be marked public yet) — every std candidate this file does
+        // not itself
+        // belong to (i.e. not `InScope`, which still covers a std file
+        // referencing its own std-declared siblings) is `Other`. Skip it
+        // entirely here, *before* it is counted into `first_match`/
+        // `multiple` below: an `Other`-classified std candidate must never
+        // win the flat-fallback tie-break a few lines down, which would
+        // otherwise let a project silently resolve into the mounted
+        // preset with no import at all — including when it is the *sole*
+        // match, where the `!multiple` fast path below would otherwise
+        // return it unconditionally. This interacts with M-2d's own
+        // coexistence machinery (`is_cross_declared_module_collision`,
+        // which is what lets a std candidate coexist in `by_name` in the
+        // first place) by narrowing exactly one of its three resolution
+        // tiers — `Other` — for the std case only; `InScope` and
+        // `Imported` are untouched, so a std file's own internal
+        // references, and a future real `use std::…` import once #1582/
+        // #2167 ship, keep resolving normally.
+        if candidacy == Candidacy::Other && info.module.as_deref().is_some_and(is_std_module) {
+            continue;
+        }
         if first_match.is_none() {
             first_match = Some(*id);
         } else {
             multiple = true;
         }
-        match classify(scope, info) {
+        match candidacy {
             Candidacy::InScope if first_in_scope.is_none() => first_in_scope = Some(*id),
             Candidacy::Imported if first_imported.is_none() => first_imported = Some(*id),
             _ => {}
         }
     }
 
-    // Fast path (byte-identity guarantee): with zero or one candidate of the
-    // requested kind — the entire strict-ink and single-module world — the
-    // sole match is returned exactly as the pre-M-2d flat lookup did, so the
-    // import scope never changes an existing corpus's resolution.
+    // Fast path (byte-identity guarantee): with zero or one *non-std*
+    // candidate of the requested kind — the entire strict-ink and
+    // single-module world — the sole match is returned exactly as the
+    // pre-M-2d flat lookup did, so the import scope never changes an
+    // existing corpus's resolution. This is no longer quite "zero or one
+    // candidate of the requested kind" (2026-08-03, issue #2197): a std
+    // candidate that classifies `Other` is skipped above *before* it ever
+    // reaches `first_match`/`multiple`, so a name with exactly one ordinary
+    // candidate plus any number of coexisting std ones still takes this
+    // fast path — and a name with std candidates *only* returns `None`
+    // here, not the std candidate, unlike the byte-identical pre-#2197
+    // description this comment used to give.
     if !multiple {
         return first_match;
     }
@@ -1292,14 +1349,34 @@ fn lookup_by_name_direct(
 /// `HirFile`) carries no file imports at all.
 ///
 /// **It is a strict subset of what [`lookup_by_name`] answers, never a
-/// second resolution rule.** [`lookup_by_name_direct`]'s own "byte-identity
-/// guarantee" fast path returns the sole candidate of the requested kinds
-/// *unconditionally, ignoring the import scope*; the scope is consulted only
-/// once `multiple` is set. So whenever this function returns `Some(id)`,
-/// [`lookup_by_name`] returns the same `id` for any scope — pinned by
-/// `unique_lookup_agrees_with_scoped_lookup`. When it returns `None` on an
-/// ambiguous name, the caller must fall back to whatever it did before
-/// rather than guess.
+/// second resolution rule** (issue #2216, unifying it with the
+/// std-invisibility gate [`lookup_by_name_direct`] added for the scoped path
+/// — 2026-08-03, issue #2197). This function has no [`ImportScope`] to
+/// consult, so it cannot classify a candidate `InScope` vs `Other` the way
+/// [`classify`] does — every caller of this function is, in effect, a
+/// "no import scope" caller, so a candidate declared in a mounted
+/// `story::std…` module is unconditionally excluded here, exactly as
+/// [`lookup_by_name`] excludes it under the default (no-import) scope. This
+/// holds even when the std candidate is the function's *sole* match: it is
+/// filtered out before it can ever become `sole`, so the name resolves as
+/// though that candidate did not exist, rather than being returned.
+///
+/// For every other case, [`lookup_by_name_direct`]'s own "byte-identity
+/// guarantee" fast path returns the sole non-std candidate of the requested
+/// kinds *unconditionally, ignoring the import scope*; the scope is
+/// consulted only once `multiple` is set. So whenever this function returns
+/// `Some(id)`, [`lookup_by_name`] returns the same `id` for any scope in
+/// which no coexisting `story::std…` candidate of that name is the
+/// referring file's own module — pinned by
+/// `unique_lookup_agrees_with_scoped_lookup`. That carve-out is not
+/// vacuous: a referrer whose own `file_module` sits inside the std tree is
+/// exactly the scope where [`lookup_by_name_direct`]'s `InScope` tier keeps
+/// resolving a coexisting std candidate (see its own doc) — this function
+/// has no scope to classify `InScope` under, so it excludes that same std
+/// candidate unconditionally, making it **stricter** than [`lookup_by_name`]
+/// for a referrer inside the std tree, not merely a subset of it. When it
+/// returns `None` on an ambiguous name, the caller must fall back to
+/// whatever it did before rather than guess.
 ///
 /// [`BodyCtx`]: crate::infer
 pub(crate) fn lookup_unique_by_name(
@@ -1314,6 +1391,13 @@ pub(crate) fn lookup_unique_by_name(
             continue;
         };
         if !kinds.contains(&info.kind) {
+            continue;
+        }
+        // Issue #2216: this function has no `ImportScope`, so — mirroring
+        // `lookup_by_name_direct`'s std-invisibility gate for the case
+        // where a candidate can never classify `InScope` — a std-mounted
+        // candidate must never win the sole-match count, even alone.
+        if info.module.as_deref().is_some_and(is_std_module) {
             continue;
         }
         if sole.is_some() {
@@ -2337,6 +2421,14 @@ mod tests {
     /// scope**, so the scope-free caller can never disagree with the scoped
     /// one. Both halves are asserted — the sole-candidate name agrees with
     /// two deliberately opposed scopes, and the ambiguous name declines.
+    ///
+    /// This fixture has no std-mounted candidate; the std-mounted case
+    /// (issue #2216, the #2197 follow-up this doc used to flag as an
+    /// un-pinned gap) is covered separately by
+    /// `unique_lookup_excludes_std_mounted_sole_candidate` and
+    /// `unique_lookup_skips_std_candidate_and_returns_the_ordinary_one`
+    /// below, now that [`lookup_unique_by_name`] applies the same
+    /// std-invisibility gate as [`lookup_by_name_direct`].
     #[test]
     fn unique_lookup_agrees_with_scoped_lookup() {
         let (index, a, b) = two_module_ambush_index();
@@ -2405,6 +2497,228 @@ mod tests {
             "own-module definition beats an imported homonym"
         );
         let _ = a;
+    }
+
+    /// Build a `SymbolIndex` with one `Knot` named `ambush` per module in
+    /// `modules`, all `Public` — the shape [`two_module_ambush_index`] hands
+    /// M-2d, generalized so a std-shaped module string can sit alongside an
+    /// ordinary one.
+    fn ambush_index_with_modules(modules: &[&str]) -> (SymbolIndex, Vec<DefinitionId>) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let mut ids = Vec::new();
+        for (i, module) in modules.iter().enumerate() {
+            let id = DefinitionId::new(DefinitionTag::Address, 0xA + i as u64);
+            index.symbols.insert(
+                id,
+                SymbolInfo {
+                    kind: SymbolKind::Knot,
+                    file: FileId(0),
+                    range: TextRange::default(),
+                    id,
+                    name: "ambush".to_string(),
+                    params: Vec::new(),
+                    detail: None,
+                    scope: None,
+                    param_detail: None,
+                    module: Some((*module).to_string()),
+                    visibility: Visibility::Public,
+                },
+            );
+            index
+                .by_name
+                .entry("ambush".to_string())
+                .or_default()
+                .push(id);
+            ids.push(id);
+        }
+        (index, ids)
+    }
+
+    /// Issue #2197, per #2080's SCOPE FENCE (`docs/decision-log.md`,
+    /// "Stdlib mounts into `Environment`'s manifest at the producer, as
+    /// plain source"): a std-mounted candidate must be invisible to
+    /// bare-name resolution — not merely deprioritized — even when it is
+    /// the *sole* candidate. Before this fix, `lookup_by_name_direct`'s
+    /// `!multiple` fast path returned any sole candidate unconditionally
+    /// regardless of scope, which would have let a project silently reach
+    /// into `std::…` with zero imports.
+    #[test]
+    fn std_mounted_sole_candidate_is_invisible_with_no_import() {
+        let (index, _ids) = ambush_index_with_modules(&["story::std::conventions::screenplay"]);
+        assert_eq!(
+            lookup_by_name(
+                &index,
+                &ImportScope::default(),
+                "ambush",
+                &[SymbolKind::Knot]
+            ),
+            None,
+            "a std-mounted definition must not resolve by bare name with no `use std::…` \
+             import — reaching it requires an explicit import, which does not exist yet \
+             (#1582/#2167), so today it must resolve to nothing rather than silently reach std"
+        );
+    }
+
+    /// The E060 collision shape, at the resolution layer rather than the
+    /// LIR-lowering self-identity layer `stdlib_mount_no_longer_collides_
+    /// with_a_projects_own_scene_entered` (brink-test-harness) proves
+    /// end to end: a project's own declared module and the std mount both
+    /// declare `ambush`. A file *inside* the project's own module resolves
+    /// its own `ambush` via the pre-existing `Candidacy::InScope` tier,
+    /// which already wins the tie-break with or without this issue's std
+    /// gate — `project_referencing_a_third_module_still_skips_a_coexisting_
+    /// std_candidate` below is the case that actually distinguishes pre-fix
+    /// from post-fix behavior for the `Other`/`Other` shape this gate
+    /// targets. Kept as its own test because the `InScope` tier is a real,
+    /// separate guarantee worth pinning on its own.
+    #[test]
+    fn project_own_module_wins_over_a_coexisting_std_mount_candidate() {
+        let (index, ids) =
+            ambush_index_with_modules(&["story::story", "story::std::conventions::screenplay"]);
+        let project_id = ids[0];
+        let scope = ImportScope {
+            file_module: Some("story::story".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(project_id),
+            "a file inside `story::story` must resolve its OWN `ambush`, never the coexisting \
+             std mount's same-named one"
+        );
+    }
+
+    /// Review finding on #2197: the test above does **not** actually
+    /// exercise the std-`Other` exclusion — with `file_module ==
+    /// "story::story"`, the project candidate classifies `Candidacy::
+    /// InScope` and wins via `first_in_scope` regardless of whether the std
+    /// gate exists at all (reverting it changes nothing about that test's
+    /// outcome). This test instead puts the referring file in a **third**
+    /// declared module, so *neither* candidate is `InScope`: the project's
+    /// `ambush` classifies `Other` (a real cross-module reference this file
+    /// has no import for) and the std mount's `ambush` also classifies
+    /// `Other`. Without the gate, the flat fallback picks whichever `Other`
+    /// candidate was inserted first in `by_name` — here, the std one,
+    /// listed first — so this test fails with the gate removed and passes
+    /// only because the std candidate is skipped before it can ever become
+    /// `first_match`.
+    #[test]
+    fn project_referencing_a_third_module_still_skips_a_coexisting_std_candidate() {
+        let (index, ids) =
+            ambush_index_with_modules(&["story::std::conventions::screenplay", "story::story"]);
+        let project_id = ids[1];
+        let scope = ImportScope {
+            file_module: Some("story::another_module".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(project_id),
+            "with neither candidate `InScope`, the std `Other` candidate must still be \
+             skipped rather than winning the flat first-inserted tie-break"
+        );
+    }
+
+    /// Issue #2216 (the #2197 follow-up this doc's own "known gap" pointed
+    /// at): [`lookup_unique_by_name`] has no [`ImportScope`] to consult, so
+    /// unlike [`lookup_by_name_direct`] it cannot classify a candidate
+    /// `InScope` vs `Other` — every caller of this function is, in effect,
+    /// a "no import scope" caller. A std-mounted candidate must therefore
+    /// be unconditionally invisible here, exactly as it is to
+    /// [`lookup_by_name`] with the default (no-import) scope, even when it
+    /// is the function's *sole* candidate — the case the old `!multiple`
+    /// style fast path would otherwise return unconditionally.
+    #[test]
+    fn unique_lookup_excludes_std_mounted_sole_candidate() {
+        let (index, _ids) = ambush_index_with_modules(&["story::std::conventions::screenplay"]);
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            None,
+            "a std-mounted sole candidate must not resolve through the scope-free path — \
+             lookup_by_name returns None for it under every scope, so lookup_unique_by_name \
+             must agree rather than silently reaching into std with no import"
+        );
+    }
+
+    /// The unification half of #2216: with a std-mounted candidate
+    /// coexisting alongside one ordinary candidate, [`lookup_unique_by_name`]
+    /// must still resolve the ordinary one (not decline as ambiguous, and
+    /// not pick the std one) — agreeing with [`lookup_by_name`] for a scope
+    /// where neither candidate is `InScope` (asserted below with
+    /// `file_module = "story::another_module"`). That is not the *only*
+    /// scope where the two agree — a scope with `file_module =
+    /// "story::story"` (the ordinary candidate's own module) also agrees,
+    /// since the ordinary candidate then classifies `InScope` and wins
+    /// [`lookup_by_name`]'s own tie-break. The one scope where the two
+    /// *disagree*, asserted last: a referrer whose own `file_module` is the
+    /// std module itself. There, [`lookup_by_name_direct`]'s `InScope` tier
+    /// keeps resolving the std candidate (by design, so std's own internal
+    /// references keep working — see that function's doc), but
+    /// [`lookup_unique_by_name`] has no scope to classify `InScope` under
+    /// and excludes that same std candidate unconditionally, so the two
+    /// functions return different ids — the one deliberate disagreement
+    /// [`lookup_unique_by_name`]'s own doc now calls out.
+    #[test]
+    fn unique_lookup_skips_std_candidate_and_returns_the_ordinary_one() {
+        let (index, ids) =
+            ambush_index_with_modules(&["story::std::conventions::screenplay", "story::story"]);
+        let std_id = ids[0];
+        let project_id = ids[1];
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            Some(project_id),
+            "the std candidate must be excluded from the sole-match count entirely, leaving \
+             the one ordinary candidate as the unique match"
+        );
+        let other_scope = ImportScope {
+            file_module: Some("story::another_module".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_by_name(&index, &other_scope, "ambush", &[SymbolKind::Knot]),
+            "the scope-free answer must agree with the scoped one for a scope where neither \
+             candidate is InScope"
+        );
+        let project_scope = ImportScope {
+            file_module: Some("story::story".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_by_name(&index, &project_scope, "ambush", &[SymbolKind::Knot]),
+            "the scope-free answer must also agree with the scoped one for a scope where the \
+             ordinary candidate (not the std one) is InScope"
+        );
+        let std_scope = ImportScope {
+            file_module: Some("story::std::conventions::screenplay".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &std_scope, "ambush", &[SymbolKind::Knot]),
+            Some(std_id),
+            "a referrer whose own file_module IS the std module keeps resolving the std \
+             candidate via lookup_by_name_direct's InScope tier — std's own internal \
+             references are untouched by the #2197/#2216 gates"
+        );
+        assert_ne!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_by_name(&index, &std_scope, "ambush", &[SymbolKind::Knot]),
+            "…but lookup_unique_by_name has no scope to classify InScope under, so it cannot \
+             reproduce that answer for a referrer inside the std tree — the one deliberate \
+             disagreement between the two lookups"
+        );
     }
 
     #[test]
