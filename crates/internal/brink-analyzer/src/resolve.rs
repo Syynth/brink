@@ -2418,18 +2418,25 @@ mod tests {
     }
 
     /// Issue #1909's fence: [`lookup_unique_by_name`] must only ever answer
-    /// where [`lookup_by_name`] would answer identically **for every
-    /// scope**, so the scope-free caller can never disagree with the scoped
-    /// one. Both halves are asserted — the sole-candidate name agrees with
-    /// two deliberately opposed scopes, and the ambiguous name declines.
+    /// where [`lookup_by_name`] would answer identically **for every scope
+    /// whose `file_module` equals the `referrer_module` hint this function
+    /// was handed** (issue #2233 narrowed the guarantee from "every scope
+    /// unconditionally" to this — a std-mounted candidate's visibility now
+    /// depends on that hint agreeing with the scope's own `file_module`; see
+    /// `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`
+    /// below for the case that distinguishes them). Both halves are
+    /// asserted — the sole-candidate name agrees with two deliberately
+    /// opposed scopes, and the ambiguous name declines.
     ///
     /// This fixture has no std-mounted candidate; the std-mounted case
     /// (issue #2216, the #2197 follow-up this doc used to flag as an
     /// un-pinned gap) is covered separately by
-    /// `unique_lookup_excludes_std_mounted_sole_candidate` and
-    /// `unique_lookup_skips_std_candidate_and_returns_the_ordinary_one`
+    /// `unique_lookup_excludes_std_mounted_sole_candidate`,
+    /// `unique_lookup_skips_std_candidate_and_returns_the_ordinary_one`, and
+    /// `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`
     /// below, now that [`lookup_unique_by_name`] applies the same
-    /// std-invisibility gate as [`lookup_by_name_direct`].
+    /// std-invisibility gate as [`lookup_by_name_direct`], narrowed by a
+    /// `referrer_module` hint (issue #2233).
     #[test]
     fn unique_lookup_agrees_with_scoped_lookup() {
         let (index, a, b) = two_module_ambush_index();

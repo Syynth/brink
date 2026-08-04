@@ -85,8 +85,8 @@ pub(super) struct BodyCtx<'a> {
     /// The declared module of the def whose body this is (`None` for an
     /// undeclared stem-module referrer — the same value
     /// [`crate::resolve::ImportScope::file_module`] would carry for this
-    /// same file, since a def's own [`SymbolInfo::module`] is always its
-    /// declaring file's declared module). Issue #2233: threaded so
+    /// same file, since a def's own [`brink_ir::SymbolInfo::module`] is
+    /// always its declaring file's declared module). Issue #2233: threaded so
     /// [`crate::resolve::lookup_unique_by_name`] — which has no
     /// [`ImportScope`](crate::resolve::ImportScope) to consult — can still
     /// reproduce [`crate::resolve::lookup_by_name`]'s `InScope` tier for the

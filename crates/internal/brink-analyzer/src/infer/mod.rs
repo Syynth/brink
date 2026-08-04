@@ -586,6 +586,42 @@ fn index_resolutions_by_file(
     by_file
 }
 
+/// Every file's own declared module, read off any one symbol the index
+/// already has for it (module is uniform per file — every symbol
+/// `insert_file_symbols` inserts for a given file carries the identical
+/// `SymbolInfo::module`, since it is computed once per file from that
+/// file's own resolved `ModuleMap` entry, not re-derived per symbol). Feeds
+/// [`ProjectCtx::file_modules`] — see that field's own doc for why keying by
+/// [`FileId`] (rather than the def's own [`DefinitionId`], which the
+/// synthetic root-content def never has an index entry for) is required.
+///
+/// A file with zero indexed *global* symbols at all (pure top-level content
+/// with no named declaration) has no entry here and reads as `None` — the
+/// same conservative "absent data reads as empty" default every other
+/// module-blind path in this module already uses; nothing regresses
+/// relative to the pre-#2233 `None`-everywhere behavior for that case.
+///
+/// Skips every **local** (`info.scope.is_some()` — a param/temp) entirely:
+/// `insert_local` always stamps a local's own `SymbolInfo::module` `None`
+/// regardless of its file's real declared status ("locals are never
+/// module-qualified and always module-internal" — `manifest::insert_local`'s
+/// own doc), so folding one in would non-deterministically shadow a file's
+/// real module with `None` depending on `index.symbols`'s (`HashMap`-backed)
+/// iteration order — the exact per-run-flaky bug a first version of this
+/// function had.
+fn index_module_by_file(index: &SymbolIndex) -> BTreeMap<FileId, Option<String>> {
+    let mut by_file: BTreeMap<FileId, Option<String>> = BTreeMap::new();
+    for info in index.symbols.values() {
+        if info.scope.is_some() {
+            continue;
+        }
+        by_file
+            .entry(info.file)
+            .or_insert_with(|| info.module.clone());
+    }
+    by_file
+}
+
 /// Declaration-derived global (VAR/CONST) types — read via `signature()`,
 /// the firewall boundary for every non-callable reference in a body.
 ///
@@ -866,6 +902,25 @@ struct ProjectCtx<'a> {
     /// param/return/temp annotations resolve during body inference too, not
     /// just at the `signature()`/annotation-firewall seam.
     handle_names: BTreeSet<String>,
+    /// Every file's own declared module (`None` for an undeclared
+    /// stem-module or a file with no indexed symbols at all), keyed by
+    /// [`FileId`] rather than [`DefinitionId`] — module is a per-*file*
+    /// fact, not a per-symbol one: every symbol `insert_file_symbols`
+    /// (`brink-analyzer::manifest`) inserts for one file carries the
+    /// identical [`brink_ir::SymbolInfo::module`], derived once from that
+    /// file's own resolved [`crate::ModuleMap`] entry.
+    ///
+    /// Issue #2233 review finding: `body_ctx` used to read this straight off
+    /// `index.symbols.get(&def.id).module`, keyed on the def's own id — which
+    /// always misses for the synthetic root-content def [`collect_defs`]
+    /// mints for `hir.root_content` (issue #1903; that id is "never looked
+    /// up in the symbol table" by its own doc), silently leaving
+    /// `referrer_module: None` for *every* file with non-empty top-level ink
+    /// content, including one declared inside `std…` — exactly the #2233
+    /// disagreement this ctx exists to close. Keying by [`FileId`] instead
+    /// covers both the real and the synthetic def uniformly, since both
+    /// carry [`Def::file`].
+    file_modules: BTreeMap<FileId, Option<String>>,
 }
 
 impl<'a> ProjectCtx<'a> {
@@ -884,6 +939,7 @@ impl<'a> ProjectCtx<'a> {
             list_names: crate::annotations::declared_list_names(index),
             struct_names: crate::annotations::declared_struct_names(index),
             handle_names: crate::annotations::declared_handle_kinds(manifest),
+            file_modules: index_module_by_file(index),
         }
     }
 
@@ -907,19 +963,15 @@ impl<'a> ProjectCtx<'a> {
             // (INCLUDE/IMPORT across surfaces), so the frontend flag must
             // follow the body being walked — issue #1876.
             native: def.native,
-            // Issue #2233: the referring def's own declared module, read
-            // straight off its `SymbolInfo` — the same string
-            // `ImportScope::file_module` would carry for this def's file,
-            // since a def's `module` is always its declaring file's
-            // declared module. `None` when the index has no entry for
-            // `def.id` (never expected in practice — every walked `Def`
-            // came from this same index) or when the def's own module is
-            // the legacy undeclared-stem-module `None`.
+            // Issue #2233 (review finding: keyed by file, not by the def's
+            // own id — see `ProjectCtx::file_modules`'s doc for why the
+            // synthetic root-content def needs this). `None` for a file with
+            // no `file_modules` entry (no indexed symbols at all) or whose
+            // own module is the legacy undeclared-stem-module `None`.
             referrer_module: self
-                .index
-                .symbols
-                .get(&def.id)
-                .and_then(|info| info.module.as_deref()),
+                .file_modules
+                .get(&def.file)
+                .and_then(|module| module.as_deref()),
         }
     }
 }
@@ -1483,6 +1535,36 @@ mod tests {
         (hir, (*index).clone(), (*resolutions).clone())
     }
 
+    /// [`build`], but with `FileId(0)` given an explicit **declared** module
+    /// (issue #2233 review finding: `body_ctx`'s `referrer_module` threading
+    /// was never exercised by any test — every `BodyCtx` literal below and
+    /// every `resolve.rs` test passes the module as a hardcoded literal
+    /// rather than reading it off a real `ProjectCtx::body_ctx` call). Mirrors
+    /// `brink-analyzer::manifest`'s own declared-module test shape
+    /// (`ResolvedModule { declared: true, .. }` inserted into a `ModuleMap`).
+    fn build_with_module(src: &str, module_name: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
+        let parsed = brink_syntax::parse(src);
+        let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
+        let mut modules = crate::ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            crate::ResolvedModule {
+                name: module_name.to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        let (index, _diag) = crate::symbol_index_with_modules(
+            &[(FileId(0), &manifest)],
+            &modules,
+            crate::Dialect::Brink,
+            false,
+        );
+        let scope = crate::ImportScope::new(Some(module_name.to_string()), &hir.imports);
+        let (resolutions, _diag) = crate::resolve(FileId(0), &manifest, &index, &scope);
+        (hir, (*index).clone(), (*resolutions).clone())
+    }
+
     /// [`build`], plus the project-wide merged `///` doc map (issue #805 —
     /// the inline-doc-only `collect_external_sigs` source, mirroring
     /// `whole_project_diagnostics`'s own `collect_inline_docs` call).
@@ -1573,6 +1655,86 @@ mod tests {
             .get(&stitch_a_id)
             .expect("no inferred signature for knot_a.stitch_a");
         assert_eq!(stitch_a_sig.params, vec![Ty::Int]);
+    }
+
+    /// Issue #2233 review finding (rule 19q/20a): `ProjectCtx::body_ctx`'s
+    /// `referrer_module` threading was untested — every `BodyCtx` literal in
+    /// `body.rs`'s own test module and every `resolve.rs` test passes the
+    /// module as a hardcoded literal/argument, so replacing `body_ctx`'s
+    /// computed expression with a hardcoded `None` left the whole suite
+    /// green. This exercises the real `ProjectCtx::new`/`body_ctx` call path
+    /// for an ordinary, indexed def declared inside `std…`.
+    #[test]
+    fn body_ctx_threads_referrer_module_for_a_real_def() {
+        let (hir, index, _res) = build_with_module(
+            "=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n",
+            "std::conventions::screenplay",
+        );
+        let id = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal def indexed");
+        let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+        let by_file: BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>> = BTreeMap::new();
+        let inferable: BTreeSet<DefinitionId> = [id].into_iter().collect();
+        let ctx = ProjectCtx::new(&index, &empty_globals, &by_file, &inferable, None);
+        let defs = collect_defs(&[(FileId(0), &hir)], &index);
+        let def = defs.iter().find(|d| d.id == id).expect("def found");
+        let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+        let body_ctx = ctx.body_ctx(def, &no_sigs);
+        assert_eq!(
+            body_ctx.referrer_module,
+            Some("std::conventions::screenplay"),
+            "a real def's referrer_module must come from its own declared module"
+        );
+    }
+
+    /// Issue #2233 review finding: the synthetic root-content def
+    /// (`collect_defs`, issue #1903 — minted for `hir.root_content`'s own
+    /// walk) has no `SymbolIndex` entry of its own. Before this fix,
+    /// `body_ctx`'s `index.symbols.get(&def.id)` lookup always missed for
+    /// it, silently leaving `referrer_module: None` even for a file declared
+    /// inside `std…` — exactly the #2233 disagreement this PR closes.
+    /// `ProjectCtx::file_modules` keys by `def.file` instead, which this def
+    /// carries just like a real one, so it must resolve too.
+    #[test]
+    fn body_ctx_threads_referrer_module_for_the_synthetic_root_content_def() {
+        // The file also needs at least one *named* declaration (`knot_a`
+        // here) — `ProjectCtx::file_modules` derives a file's module from
+        // any symbol the index already has for it, so a file with zero
+        // indexed symbols at all has no entry to derive from at all (the
+        // same "absent data reads as empty" default every other
+        // module-blind path in this module uses, not a regression this fix
+        // introduces). The overwhelmingly common real-world shape this
+        // fixes — a std file's own top-level weave calling a UFCS free
+        // function — always has at least one such declaration.
+        let (hir, index, _res) = build_with_module(
+            "Hello.\n-> DONE\n=== knot_a ===\nworld\n-> DONE\n",
+            "std::conventions::screenplay",
+        );
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture must have non-empty root content to mint the synthetic def"
+        );
+        let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+        let by_file: BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>> = BTreeMap::new();
+        let inferable: BTreeSet<DefinitionId> = BTreeSet::new();
+        let ctx = ProjectCtx::new(&index, &empty_globals, &by_file, &inferable, None);
+        let defs = collect_defs(&[(FileId(0), &hir)], &index);
+        let synthetic = defs
+            .iter()
+            .find(|d| !index.symbols.contains_key(&d.id))
+            .expect("synthetic root-content def present");
+        let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+        let body_ctx = ctx.body_ctx(synthetic, &no_sigs);
+        assert_eq!(
+            body_ctx.referrer_module,
+            Some("std::conventions::screenplay"),
+            "the synthetic root-content def's referrer_module must still resolve, keyed by \
+             file rather than the def's own (absent) index entry"
+        );
     }
 
     #[test]
