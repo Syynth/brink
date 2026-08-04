@@ -512,7 +512,7 @@ fn lower_single_level_field_write(
     let (root_target, root_shape) = match head_info.kind {
         SymbolKind::Variable | SymbolKind::Constant => (
             lir::AssignTarget::Global(head_info.id),
-            ctx.global_shape(head_info.id).map(str::to_string),
+            ctx.global_shape(head_info.id),
         ),
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
@@ -530,19 +530,17 @@ fn lower_single_level_field_write(
                 return;
             }
             let name_id = ctx.names.intern(&head_name);
-            (
-                lir::AssignTarget::Temp(slot, name_id),
-                ctx.temp_shape(slot).map(str::to_string),
-            )
+            (lir::AssignTarget::Temp(slot, name_id), ctx.temp_shape(slot))
         }
         // `try_lower_field_assignment` only reaches here for these four kinds.
         _ => return,
     };
 
+    // `root_shape` is already a resolved shape `DefinitionId` (issue
+    // #2238) — no referrer needed to look it up.
     let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
         root_shape
-            .as_deref()
-            .and_then(|s| ctx.structs.shapes.get(s))
+            .and_then(|d| ctx.structs.shapes.get_by_def(d))
             .and_then(|shape| shape.field(&field_name))
             .map(|(offset, _)| offset)
     } else {
@@ -1362,7 +1360,7 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
 
     let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
         ctx.temp_shape(root_slot)
-            .and_then(|s| ctx.structs.shapes.get(s))
+            .and_then(|d| ctx.structs.shapes.get_by_def(d))
             .and_then(|shape| shape.field(&field_name))
             .map(|(offset, _)| offset)
     } else {
@@ -1813,7 +1811,7 @@ fn lower_field_mutator(
     let (root_target, root_shape) = match head_info.kind {
         SymbolKind::Variable | SymbolKind::Constant => (
             lir::AssignTarget::Global(head_info.id),
-            ctx.global_shape(head_info.id).map(str::to_string),
+            ctx.global_shape(head_info.id),
         ),
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
@@ -1827,20 +1825,18 @@ fn lower_field_mutator(
                 return;
             }
             let name_id = ctx.names.intern(&head_name);
-            (
-                lir::AssignTarget::Temp(slot, name_id),
-                ctx.temp_shape(slot).map(str::to_string),
-            )
+            (lir::AssignTarget::Temp(slot, name_id), ctx.temp_shape(slot))
         }
         // The caller only reaches here for these four kinds (mirrors
         // `lower_single_level_field_write`'s identical match).
         _ => return,
     };
 
+    // `root_shape` is already a resolved shape `DefinitionId` (issue
+    // #2238) — no referrer needed to look it up.
     let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
         root_shape
-            .as_deref()
-            .and_then(|s| ctx.structs.shapes.get(s))
+            .and_then(|d| ctx.structs.shapes.get_by_def(d))
             .and_then(|shape| shape.field(&field_name))
             .map(|(offset, _)| offset)
     } else {

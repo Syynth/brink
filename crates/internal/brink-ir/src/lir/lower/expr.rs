@@ -1,3 +1,5 @@
+use brink_format::DefinitionId;
+
 use crate::hir;
 use crate::symbols::SymbolKind;
 
@@ -347,7 +349,13 @@ const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
 ///   runtime code needed; see `record_ops::record_new`).
 fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let structs = ctx.structs;
-    let Some(shape) = structs.shapes.get(&sl.shape.text) else {
+    let file = ctx.file;
+    let index = ctx.index;
+    // Referrer-scoped (issue #2238): when the project and a mounted std
+    // preset both declare a `Cue`-shaped struct, this resolves to the one
+    // declared in `file` — the literal's own file — never the other file's
+    // coexisting same-named shape.
+    let Some(shape) = structs.shapes.resolve(&sl.shape.text, file, index) else {
         for (_name, val) in &sl.fields {
             lower_expr(val, ctx);
         }
@@ -432,42 +440,49 @@ fn static_offset_for(base: &hir::Expr, field_name: &str, ctx: &LowerCtx<'_>) -> 
     if ctx.structs.type_mode != crate::lir::TypeMode::Strict {
         return None;
     }
-    let shape_name = known_shape(base, ctx)?;
-    let shape = ctx.structs.shapes.get(&shape_name)?;
+    let shape_def = known_shape(base, ctx)?;
+    let shape = ctx.structs.shapes.get_by_def(shape_def)?;
     shape.field(field_name).map(|(offset, _)| offset)
 }
 
-/// Chase `expr` to a compile-time-known struct shape name, if any — the
-/// entire "known shape" story is: a construction literal (trivially known),
-/// a `Path` naming a struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation,
-/// tracked in `structs::GlobalShapeMap`/`LowerCtx::temp_shapes`), or a
-/// `FieldAccess` whose base has a known shape *and* whose accessed field is
-/// itself declared with a struct-typed annotation (chases through nested
-/// struct fields using only the shape table — never type inference, and
-/// never anything requiring `brink-analyzer`, which `brink-ir` cannot
-/// depend on). Every other expression (a call, an index, a literal-typed
-/// value, …) returns `None` — always safe, just misses the optimization.
-fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<String> {
+/// Chase `expr` to a compile-time-known struct shape's own `DefinitionId`,
+/// if any — the entire "known shape" story is: a construction literal
+/// (resolved via [`ShapeTable::resolve`], referrer = `ctx.file`), a `Path`
+/// naming a struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation, already
+/// resolved to a `DefinitionId` in `structs::GlobalShapeMap`/
+/// `LowerCtx::temp_shapes`), or a `FieldAccess` whose base has a known
+/// shape *and* whose accessed field is itself declared with a struct-typed
+/// annotation (chases through nested struct fields using only the shape
+/// table — never type inference, and never anything requiring
+/// `brink-analyzer`, which `brink-ir` cannot depend on). Every hop already
+/// carries a resolved identity (issue #2238) rather than a bare name, so
+/// there is no re-resolution — and no referrer-file tracking — needed at
+/// any point in the chase. Every other expression (a call, an index, a
+/// literal-typed value, …) returns `None` — always safe, just misses the
+/// optimization.
+///
+/// [`ShapeTable::resolve`]: super::structs::ShapeTable::resolve
+fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<DefinitionId> {
     match expr {
         hir::Expr::StructLiteral(sl) => ctx
             .structs
             .shapes
-            .get(&sl.shape.text)
-            .map(|_| sl.shape.text.clone()),
+            .resolve(&sl.shape.text, ctx.file, ctx.index)
+            .map(|s| s.definition_id),
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {
-                ctx.temp_shape(slot).map(str::to_string)
+                ctx.temp_shape(slot)
             } else {
                 let info = ctx.resolve_path(path.range)?;
-                ctx.global_shape(info.id).map(str::to_string)
+                ctx.global_shape(info.id)
             }
         }
         hir::Expr::FieldAccess(fa) => {
             let base_shape = known_shape(&fa.base, ctx)?;
-            let shape = ctx.structs.shapes.get(&base_shape)?;
+            let shape = ctx.structs.shapes.get_by_def(base_shape)?;
             let (_, nested) = shape.field(&fa.field.text)?;
-            nested.map(str::to_string)
+            nested
         }
         _ => None,
     }
@@ -610,26 +625,23 @@ fn lower_ambiguous_dotted_path(
     let (mut expr, mut current_shape) = match head_info.kind {
         SymbolKind::Variable | SymbolKind::Constant => (
             lir::Expr::GetGlobal(head_info.id),
-            ctx.global_shape(head_info.id).map(str::to_string),
+            ctx.global_shape(head_info.id),
         ),
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return lir::Expr::Null;
             };
             let name_id = ctx.names.intern(&head_name);
-            (
-                lir::Expr::GetTemp(slot, name_id),
-                ctx.temp_shape(slot).map(str::to_string),
-            )
+            (lir::Expr::GetTemp(slot, name_id), ctx.temp_shape(slot))
         }
         // The caller only reaches here for these four kinds.
         _ => return lir::Expr::Null,
     };
 
     for seg in &path.segments[1..] {
-        let shape_info = current_shape
-            .as_deref()
-            .and_then(|s| ctx.structs.shapes.get(s));
+        // `current_shape` is already a resolved `DefinitionId` (issue
+        // #2238) — no referrer needed to look it up.
+        let shape_info = current_shape.and_then(|d| ctx.structs.shapes.get_by_def(d));
         let static_offset = if ctx.structs.type_mode == crate::lir::TypeMode::Strict {
             shape_info.and_then(|s| s.field(&seg.text)).map(|(o, _)| o)
         } else {
@@ -637,7 +649,7 @@ fn lower_ambiguous_dotted_path(
         };
         let nested_shape = shape_info
             .and_then(|s| s.field(&seg.text))
-            .and_then(|(_, nested)| nested.map(str::to_string));
+            .and_then(|(_, nested)| nested);
         let field = ctx.names.intern(&seg.text);
         expr = lir::Expr::RecordGet {
             base: Box::new(expr),
@@ -764,7 +776,7 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 lir::Expr::Null
             }
             SymbolKind::Temp => {
-                use brink_format::{DefinitionId, DefinitionTag};
+                use brink_format::DefinitionTag;
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
