@@ -815,10 +815,19 @@ fn eval_const_struct_literal(
         shapes,
         ..
     } = env;
-    // Referrer-scoped (issue #2238): `file` is the declaration default's
-    // own file, so a project/std name collision resolves to the shape
-    // declared alongside this literal, not a coexisting same-named one.
-    let Some(shape) = shapes.resolve(&sl.shape.text, file, index) else {
+    // Issue #2246: `sl.shape` is a `RefKind::Struct` reference — a VAR/CONST
+    // decl default is walked the same as any other expression
+    // (`symbols::project::project_manifest` walks `v.value`/`c.value`), so
+    // the analyzer already resolved it against `file`'s module scope
+    // (`resolve::resolve_struct_ref`, full `Candidacy`). Consume that
+    // recorded resolution directly rather than re-deriving it through
+    // `ShapeTable::resolve`'s own narrower file-scoped fallback — see
+    // `expr::lower_struct_literal`'s matching doc, the expression-position
+    // twin of this decl-default fold.
+    let shape = resolutions
+        .resolve(file, sl.shape.range)
+        .and_then(|id| shapes.get_by_def(id));
+    let Some(shape) = shape else {
         diagnostics.push(Diagnostic {
             file,
             range: sl.ptr.text_range(),
