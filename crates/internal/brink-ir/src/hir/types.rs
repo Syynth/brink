@@ -117,7 +117,7 @@ pub struct HirFile {
     /// downstream pass that must decide a question the *surface* answers
     /// differently has nowhere else to ask. Today that is exactly one
     /// question — the 2026-08-01 ruling that a statically-named function in
-    /// expression position **is** a fn value in native (`register(scene)`,
+    /// expression position **is** a fn value in native (`handler(scene)`,
     /// no sigil) while the same bare name in ink is a knot's visit count
     /// (`docs/t1c-spec.md` §2a). `lir::lower::expr::lower_path` and
     /// `brink-analyzer`'s `fn_values`/`infer` read this flag; see those
@@ -485,12 +485,12 @@ pub struct ElementMatch {
 /// occur here) is still a declared claim, and still misplaced if this file
 /// isn't the configured conventions module.
 ///
-/// `params`/`pattern` (issue #1863) are the same CST-derived payload
-/// [`crate::hir::lower_native::external_conventions::ExternalClaimHandler`]
-/// carries into another file's lowering — this struct IS the "compiler
-/// reads the conventions module's CST for `ClaimHandler` records" half of
-/// the two-independent-reads join (`docs/decision-log.md`, 2026-08-01
-/// "Conventions comptime", Q1), not a parallel record of the same fact.
+/// `params`/`pattern` are this file's own CST-derived claiming-handler
+/// payload — [`crate::hir::lower_native::element::collect`]'s output,
+/// consumed directly by [`crate::ConventionsProjection::from_decls`] (issue
+/// #2111) now that precedence is a static `order` property rather than a
+/// comptime-evaluated identity list (issue #2165 deleted the cross-file
+/// injection seam this doc used to describe).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimHandlerDecl {
     /// The handler's own name, carrying its declaration-site range.
@@ -511,13 +511,7 @@ pub struct ClaimHandlerDecl {
     /// declared parameter is a `content`-typed block-capture receiver, not
     /// a regex-bound capture — see
     /// [`crate::hir::lower_native::element`]'s `ClaimHandler::block` doc
-    /// for what that changes about argument binding. Carried across this
-    /// struct (issue #2068) so the cross-file injection join
-    /// (`brink_analyzer::conventions_registry`) has it to hand onward to
-    /// [`crate::hir::lower_native::external_conventions::ExternalClaimHandler`]
-    /// — before #2068, this field did not exist at all, so an injected
-    /// handler could never block-capture regardless of how it was
-    /// declared.
+    /// for what that changes about argument binding.
     pub block: bool,
     /// The claiming precedence (`order = N`), issue #2164 — see
     /// [`ConventionAnnotation::order`]'s own doc. Required on every

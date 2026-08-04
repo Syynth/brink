@@ -1572,23 +1572,11 @@ pub enum DiagnosticCode {
     /// `infer::body::InferPass::infer_lambda`, reported by
     /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
     E174,
-    /// `register(…)` used outside the conventions module's `fn conventions()`
-    /// (issue #1840 Q5, `docs/decision-log.md` 2026-08-02 "`register` is a
-    /// comptime-only intrinsic; calling it elsewhere is a diagnostic").
-    /// `register` is a T1b comptime-only intrinsic with no opcode, no
-    /// runtime registry cell, and no bytecode — legal only inside the
-    /// project's configured conventions module's well-known `fn
-    /// conventions()`, where a comptime evaluator (not yet built —
-    /// #1840's remaining slice) intercepts it. Calling it anywhere else —
-    /// a different function, a different file, or a conventions module
-    /// with no confined pointer configured at all — is this compile
-    /// error rather than the silent no-op CLAUDE.md forbids.
-    ///
-    /// Native-only: the conventions module and `fn conventions()` are both
-    /// `.brink`-surface concepts (`@[convention(claims = "…", order = N)]` handlers,
-    /// `brink.toml`'s `[project] conventions`, renamed from `elements` by
-    /// issue #2180), same posture as `E169`.
-    E175,
+    // E175 was `register`'s comptime-only-intrinsic confinement check
+    // (issue #1840 Q5) — dissolved by the 2026-08-03 ruling that removed
+    // `fn conventions()` and `register` from the design entirely (issue
+    // #2165, `docs/decision-log.md`). The code is retired, not reused: no
+    // new diagnostic claims E175.
     /// A divert-with-args site (`-> knot(args)`, `->-> tunnel(args)`, or
     /// `<- thread(args)`) supplies a number of arguments that does not
     /// match its resolved target's declared parameter count (issue #2156).
@@ -1869,7 +1857,6 @@ impl DiagnosticCode {
         Self::E172,
         Self::E173,
         Self::E174,
-        Self::E175,
         Self::E176,
         Self::E178,
         Self::E179,
@@ -2058,7 +2045,6 @@ impl DiagnosticCode {
             Self::E172 => "E172",
             Self::E173 => "E173",
             Self::E174 => "E174",
-            Self::E175 => "E175",
             Self::E176 => "E176",
             Self::E178 => "E178",
             Self::E179 => "E179",
@@ -2354,9 +2340,6 @@ impl DiagnosticCode {
             Self::E174 => {
                 "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
             }
-            Self::E175 => {
-                "`register` is a comptime-only intrinsic — legal only inside the project's configured conventions module's `fn conventions()`"
-            }
             Self::E176 => {
                 "a divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters"
             }
@@ -2614,7 +2597,6 @@ impl DiagnosticCode {
             "E172" => Some(Self::E172),
             "E173" => Some(Self::E173),
             "E174" => Some(Self::E174),
-            "E175" => Some(Self::E175),
             "E176" => Some(Self::E176),
             "E178" => Some(Self::E178),
             "E179" => Some(Self::E179),

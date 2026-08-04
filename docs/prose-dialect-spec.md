@@ -577,30 +577,18 @@ fn radio(chan: string, text: content) {
   `claims` is); dispatching to a `flow` target rather than a top-level
   `fn` (`!name`'s own placement is legal on a `flow` too, but nothing
   scans a `flow`'s declaration into the dispatch table yet); `fn
-  conventions()` registration + comptime (issue #1840 —
-  **RULED 2026-08-01/2026-08-02, sized in
-  `docs/conventions-comptime-sizing.md`**: `docs/decision-log.md`'s
-  2026-08-01 "Conventions comptime: the four blocking rulings (#1840)"
-  entry settles handler identity across the comptime boundary (Q1),
-  comptime fault behavior (Q2, build-hard-fails / editor-keeps-last-good),
-  the diagnostic floor as a v1 name-level stack trace with no ranges (Q3),
-  and `register`'s own effect row (Q4 — a write to a **named registry
-  cell**, correcting the earlier `@[effects(pure)]` framing that failed its
-  own `E103` fence; `register` is neither an `EXTERNAL` nor a bespoke
-  row-exempt intrinsic); the 2026-08-02 "`register` is a comptime-only
-  intrinsic; calling it elsewhere is a diagnostic (#1840 Q5)" entry then
-  settles `register`'s own legality and lowering — a T1b intrinsic, legal
-  only inside the conventions module's `fn conventions()`, enforced by
-  `E175` (`crates/internal/brink-analyzer/src/register_intrinsic.rs`).
-  Q4's ruled effect row is now wired (issue #1840's registration slice,
-  2026-08-02): `brink_analyzer::infer::intrinsics::intrinsic_effects`'s
-  `conventions_write` bit makes every `register(...)` call write
-  `DefinitionId::CONVENTIONS_REGISTRY_CELL`, spelled `conventions_registry`
-  in a `writes(…)` clause — see `register_intrinsic.rs`'s own module doc
-  and `docs/diagnostics/E175.md` for the full history. The comptime
-  evaluator itself (`begin_function_eval` interception,
-  `brink-compiler` taking `brink-runtime` as a real dependency per
-  `docs/decision-log.md`'s #1867 entry) also remains unbuilt); **multi-token
+  conventions()` registration + comptime (issue #1840 — RULED
+  2026-08-01/2026-08-02, sized in `docs/conventions-comptime-sizing.md`,
+  **then DISSOLVED 2026-08-03 and DELETED, issue #2165**: `docs/
+  decision-log.md`'s "`fn conventions()` is DISSOLVED — handler precedence
+  is a property of the `@[element]` annotation" entry found that the
+  entire mechanism's information content was one ordering, and an
+  ordering is expressible declaratively on the annotation itself —
+  `@[convention(…, order = N)]` (issue #2164) — with no comptime evaluator,
+  no registry cell, and no compiler→runtime dependency needed at all.
+  `register`, `E175`, and `DefinitionId::CONVENTIONS_REGISTRY_CELL` are
+  deleted; `register_intrinsic.rs` and `docs/diagnostics/E175.md` no
+  longer exist); **multi-token
   style values** — issue #1719's `@[style(key = "value")]` value is a single
   presentation token today (one `StyleToken` per key), not the
   space-separated list this section's own screenplay preset describes
@@ -616,9 +604,8 @@ fn radio(chan: string, text: content) {
   `crates/internal/brink-environment`). What's still missing before a
   project can `use` an item out of it: nothing in the mounted module is
   marked `pub` and no confinement rule scopes what a project's `use` may
-  reach (#1582's pub marker, #2167's closure-scoped confinement), and
-  `fn conventions()` registration/comptime (issue #1840) hasn't landed
-  either. The preset's handlers are proven end to end only via a project
+  reach (#1582's pub marker, #2167's closure-scoped confinement). The
+  preset's handlers are proven end to end only via a project
   that inlines the same declarations directly (`tests/tier1-native/
   conventions-screenplay-preset/`) — single-file `claims`/`block`
   dispatch, exactly what #1838/#1839 shipped.

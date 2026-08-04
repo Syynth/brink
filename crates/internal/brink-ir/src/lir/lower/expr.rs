@@ -698,7 +698,7 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         }
         // Native bare-name fn value (RULED 2026-08-01, `docs/t1c-spec.md`
         // §2a, issue #1862): on the **native** surface a statically-named
-        // function in expression position *is* a fn value — `register(
+        // function in expression position *is* a fn value — `handler(
         // screenplay::scene)` — with no sigil, because a call keeps its
         // parentheses (`screenplay::scene()`, `lower_call`'s job) and so
         // reference-vs-call is unambiguous. Zero bound args by
@@ -1767,29 +1767,6 @@ fn lower_t1b_stdlib_call(
                 args: supplied,
             })
         }
-        // `register(target)` (issue #1840 Q5, `docs/decision-log.md`
-        // 2026-08-02 "`register` is a comptime-only intrinsic"): a T1b
-        // comptime-only intrinsic. *Placement* legality (inside the
-        // conventions module's `fn conventions()`) is
-        // `brink_analyzer::register_intrinsic_diagnostics`'s job (`E175`),
-        // not this lowering's — this arm only recognizes the call shape so
-        // a legal `register` call never falls through to ordinary
-        // (unresolved-callee) call lowering. Deliberately no new opcode:
-        // the ruling is explicit that `register` has "no opcode, no
-        // runtime registry cell, no bytecode", because the comptime
-        // evaluator that will actually intercept these calls (#1840's
-        // remaining slice) never emits `fn conventions()` to bytecode at
-        // all. Until that evaluator exists, this interim lowering just
-        // evaluates the referenced fn value (so a bad reference still
-        // gets whatever diagnostics evaluating it would produce) and
-        // yields it unchanged — the same discarded-value shape any other
-        // unused expression-statement already has.
-        "register" => {
-            if !arity_ok(ctx, 1) {
-                return Some(lir::Expr::Null);
-            }
-            Some(lower_expr(&args[0], ctx))
-        }
         _ => None,
     }
 }
@@ -1983,10 +1960,6 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "filter_map"
             | "each"
             | "map_each"
-            // `register(target)` (issue #1840 Q5) — kept in sync by hand
-            // with `resolve::is_t1b_stdlib_name`'s own copy; see
-            // `lower_t1b_stdlib_call`'s `"register"` arm for the lowering.
-            | "register"
     )
 }
 

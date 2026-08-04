@@ -6,7 +6,7 @@
 //! - [`check`] — the `#fn(name, args…)` literal, available on both surfaces
 //!   under `dialect = brink`.
 //! - [`check_native_bare_refs`] — the native-only bare-name spelling
-//!   (`register(scene)`, no sigil), unconditional for every native file
+//!   (`handler(scene)`, no sigil), unconditional for every native file
 //!   regardless of `dialect`; see that function's own doc for why.
 //!
 //! "Every static obligation lands at this one marked site" — the creation
@@ -95,7 +95,7 @@ pub fn check(
 /// The **native** half of the same creation-site discipline (RULED
 /// 2026-08-01, `docs/t1c-spec.md` §2a, issue #1862): on the `.brink`
 /// surface a statically-named function in expression position *is* a fn
-/// value, spelled as the bare name (`register(scene)`) with no sigil.
+/// value, spelled as the bare name (`handler(scene)`) with no sigil.
 ///
 /// That spelling can bind **no** arguments — the `#fn(f, a)` partial-
 /// application form deliberately has no native spelling — so exactly one of

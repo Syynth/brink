@@ -35,18 +35,6 @@
 //!   records that write inline. `await_purity` still rejects
 //!   `await int(…)` through this table's fault bit (`int` faults in every
 //!   shape), so the wake gate has no gap.
-//! - **Conventions registry writes** (issue #1840 Q4): `register` — the
-//!   conventions module's comptime-only handler-registration intrinsic —
-//!   writes one cell
-//!   ([`brink_format::DefinitionId::CONVENTIONS_REGISTRY_CELL`])
-//!   unconditionally, on every call, regardless of argument shape. This
-//!   closes the gap `crate::register_intrinsic`'s module doc and
-//!   `docs/effects-spec.md` §14.5 item 3 recorded: before this entry,
-//!   `register` had no arm here at all, so it was a row-exempt intrinsic in
-//!   practice (an empty row) — the exact shape the Q4 ruling rejected in
-//!   favor of the RNG-cell precedent. `register` never faults (its only
-//!   diagnostics are `E175`'s legality confinement and, separately, name
-//!   resolution) and is never RNG-coupled.
 
 /// Effect facts for one intrinsic call shape. `arg_count` participates
 /// because `float` is two different call shapes: the nullary rand draw
@@ -58,11 +46,6 @@ pub(crate) struct IntrinsicEffects {
     pub faults: bool,
     /// The call writes the RNG state cell (NS-A6: draws are writes).
     pub rng_write: bool,
-    /// The call writes the conventions handler registry cell (issue #1840
-    /// Q4: `register(...)` is an ordinary write to a named cell — the same
-    /// shape as the RNG cell — rather than an `EXTERNAL` call or a
-    /// row-exempt intrinsic, the two shapes the ruling rejected).
-    pub conventions_write: bool,
 }
 
 /// The effect facts for an unresolved single-segment call named `name` with
@@ -182,17 +165,7 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "SEED_RANDOM"
                 | "LIST_RANDOM"
         );
-    // Issue #1840 Q4: `register` (the conventions module's comptime-only
-    // handler-registration intrinsic, confined to `fn conventions()` by
-    // `crate::register_intrinsic`'s separate `E175` legality pass) writes
-    // the conventions registry cell unconditionally — every call is a
-    // write, unlike the RNG verbs' arg-count/type-directed splits.
-    let conventions_write = name == "register";
-    IntrinsicEffects {
-        faults,
-        rng_write,
-        conventions_write,
-    }
+    IntrinsicEffects { faults, rng_write }
 }
 
 /// NS-A4 / **F29(a)** (ruled by delegation 2026-07-19, stdlib-spec §4b):

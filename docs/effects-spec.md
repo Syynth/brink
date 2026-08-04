@@ -801,24 +801,17 @@ scheduling sound as content loads.
   conditions. Ink **shuffle sequences** (`{~a|b}`) are unchanged: they
   derive from the seed + visit index without advancing the cell (a cell
   *read*, which rows do not model — the pre-existing posture).
-- **The conventions registry cell (issue #1840 Q4, ruled 2026-08-01;
-  wired 2026-08-02).** `register(...)` — the conventions module's
-  comptime-only handler-registration intrinsic (Q5, `docs/decision-log.md`
-  2026-08-02) — writes a named, compiler-owned cell
-  (`DefinitionId::CONVENTIONS_REGISTRY_CELL`), the same "ordinary write"
-  shape as `rng` above, rather than being modeled as an `EXTERNAL` call
-  (`EffectRow.calls`) or a bespoke row-exempt intrinsic — both shapes the
-  ruling rejected. Unlike the RNG cell, this one has no runtime
-  representation at all (no opcode, no bytecode — `register` is
-  comptime-consumed): the write exists purely so the *static* row can name
-  it. In `writes(…)` clauses the cell is spelled **`conventions_registry`**
-  (`@[effects(writes(conventions_registry))]` covers a `register`-bearing
-  `fn conventions()`); a user-declared `VAR`/`CONST` of that name shadows
-  the spelling, per the general stdlib shadowing rule. Consequence:
-  `@[effects(pure)] fn conventions() { register(x) }` — the ruled
-  example's original spelling — fails `E103` (naming `conventions_registry`),
-  exactly as the ruling's own analysis found; the corrected spelling is
-  `@[effects(writes(conventions_registry))]`.
+- **The conventions registry cell — DISSOLVED, DELETED (issue #2165).**
+  Issue #1840 Q4/Q5 (ruled 2026-08-01/2026-08-02) gave `register(...)` a
+  named-cell write (`DefinitionId::CONVENTIONS_REGISTRY_CELL`, spelled
+  `conventions_registry` in a `writes(…)` clause), described here in the
+  entry this bullet used to carry. The 2026-08-03 ruling (`docs/
+  decision-log.md`, "`fn conventions()` is DISSOLVED") removed
+  `fn conventions()` and `register` from the design entirely — precedence
+  is now `@[convention]`'s `order` clause, computed statically, with no
+  comptime evaluator or registry cell needed at all. `register`,
+  `conventions_registry`, and `DefinitionId::CONVENTIONS_REGISTRY_CELL` no
+  longer exist; §14.5 item 3 below carries the full history.
 - **Default-public entry set.** Every knot/stitch ships its row — no
   `#@entry` marker exists (play-from-here already makes any knot a
   host entry). `#@private` opts out: not an entry point, row stays
@@ -1168,14 +1161,22 @@ writes / calls / emits / suspend defeat fusion).
    (`@[effects(writes(conventions_registry))]`) is the one that passes.
    §10's bullet above is the canonical author-facing description; this
    entry is now historical (kept for the "why" — the ruling's own
-   `pure`-fails-itself finding). `register_intrinsic.rs`'s module doc and
-   `docs/diagnostics/E175.md` are updated to match, no longer describing
-   this as an open gap. Still NOT delivered by this pass, and still #1840's
-   real residual: the comptime evaluator itself (`register`'s ordered
-   identity list is never produced today — the effect row is a static
-   fact, independent of whether anything actually evaluates
+   `pure`-fails-itself finding). Still NOT delivered by this pass, and still
+   #1840's real residual: the comptime evaluator itself (`register`'s
+   ordered identity list is never produced today — the effect row is a
+   static fact, independent of whether anything actually evaluates
    `fn conventions()`), the Q1 registered/declared mismatch diagnostics,
    and stripping `fn conventions()` from emitted `StoryData`.
+
+   ⚠ **DISSOLVED 2026-08-03, DELETED issue #2165.** The 2026-08-03 ruling
+   (`docs/decision-log.md`, "`fn conventions()` is DISSOLVED") removed
+   `fn conventions()` and `register` from the design outright — precedence
+   is now a property of `@[convention]`'s `order` clause, computed
+   statically, with no comptime evaluator ever needed. `register`, `E175`,
+   `DefinitionId::CONVENTIONS_REGISTRY_CELL`, and the `conventions_write`
+   effect-row bit this entry describes are all deleted; nothing above this
+   line describes current behavior. `register_intrinsic.rs` and
+   `docs/diagnostics/E175.md` no longer exist.
 
 ### 14.6 Build posture
 
