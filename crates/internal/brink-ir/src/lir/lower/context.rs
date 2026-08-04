@@ -656,12 +656,14 @@ pub struct LowerCtx<'a> {
     pub structs: &'a StructCtx<'a>,
     /// TM-4c: temp slots (this frame only — reset per `LowerCtx`, exactly
     /// like `visible_temps`) whose declaring `TempDecl`'s TM-2 annotation
-    /// names a declared struct — the temp-local half of the "compile-time
-    /// known shape" story `expr::known_shape` chases (`structs::
-    /// GlobalShapeMap` is the global half). Keyed by slot, not name, so a
-    /// block-scoped shadow of an outer temp of the same name still maps to
-    /// its own (correct) shape.
-    pub temp_shapes: LookupMap<u16, String>,
+    /// names a declared struct, resolved once (issue #2238) to that
+    /// shape's own `DefinitionId` (referrer = this frame's own file, always
+    /// correct since a temp's annotation and every read of it share one
+    /// file) — the temp-local half of the "compile-time known shape" story
+    /// `expr::known_shape` chases (`structs::GlobalShapeMap` is the global
+    /// half). Keyed by slot, not name, so a block-scoped shadow of an outer
+    /// temp of the same name still maps to its own (correct) shape.
+    pub temp_shapes: LookupMap<u16, DefinitionId>,
     /// The analyzer-produced side-tables (B3a UFCS, B1 `or`-coalescing,
     /// issue #1527) — shared, read-only, identical across every `LowerCtx`
     /// in a single `lower_to_program`/incremental-chunk call, the same
@@ -778,35 +780,40 @@ impl<'a> LowerCtx<'a> {
     }
 
     /// TM-4c: record that temp `slot` was declared with a TM-2 annotation
-    /// naming struct shape `shape_name`.
-    pub fn set_temp_shape(&mut self, slot: u16, shape_name: String) {
-        self.temp_shapes.insert(slot, shape_name);
+    /// naming struct `shape_def` (its own `DefinitionId`, issue #2238).
+    pub fn set_temp_shape(&mut self, slot: u16, shape_def: DefinitionId) {
+        self.temp_shapes.insert(slot, shape_def);
     }
 
     /// TM-4c: if `annotation` is a `Named` type naming a declared struct,
-    /// record it as `slot`'s known shape (`set_temp_shape`) — the one call
-    /// every `TempDecl` lowering site (classic and block-scoped) makes right
-    /// after allocating/resolving the temp's own slot, so `expr::known_shape`
-    /// can later chase a struct-typed `temp`'s reads/writes to a static
-    /// offset under `types = strict`.
+    /// resolve it **once, now** — referrer = this frame's own file, always
+    /// correct since a temp's annotation and every read of it share one
+    /// file (issue #2238) — and record it as `slot`'s known shape
+    /// (`set_temp_shape`). The one call every `TempDecl` lowering site
+    /// (classic and block-scoped) makes right after allocating/resolving
+    /// the temp's own slot, so `expr::known_shape` can later chase a
+    /// struct-typed `temp`'s reads/writes to a static offset under `types =
+    /// strict`.
     pub fn record_temp_annotation(&mut self, slot: u16, annotation: Option<&crate::hir::TypeExpr>) {
         if let Some(crate::hir::TypeExpr::Named { name, .. }) = annotation
-            && self.structs.shapes.get(name).is_some()
+            && let Some(shape) = self.structs.shapes.resolve(name, self.file, self.index)
         {
-            self.set_temp_shape(slot, name.clone());
+            self.set_temp_shape(slot, shape.definition_id);
         }
     }
 
-    /// TM-4c: the declared struct shape name for temp `slot`, if its
-    /// `TempDecl` carried a struct-typed TM-2 annotation.
-    pub fn temp_shape(&self, slot: u16) -> Option<&str> {
-        self.temp_shapes.get(&slot).map(String::as_str)
+    /// TM-4c: the declared struct shape's own `DefinitionId` for temp
+    /// `slot`, if its `TempDecl` carried a struct-typed TM-2 annotation.
+    pub fn temp_shape(&self, slot: u16) -> Option<DefinitionId> {
+        self.temp_shapes.get(&slot).copied()
     }
 
-    /// TM-4c: the declared struct shape name for a resolved global `VAR`/
-    /// `CONST`, if its TM-2 annotation named a declared struct.
-    pub fn global_shape(&self, id: DefinitionId) -> Option<&str> {
-        self.structs.global_shapes.get(&id).map(String::as_str)
+    /// TM-4c: the declared struct shape's own `DefinitionId` for a resolved
+    /// global `VAR`/`CONST`, if its TM-2 annotation named a declared struct
+    /// — already resolved once, at declaration time (issue #2238,
+    /// `structs::record_global_annotation`).
+    pub fn global_shape(&self, id: DefinitionId) -> Option<DefinitionId> {
+        self.structs.global_shapes.get(&id).copied()
     }
 
     /// Qualify a label name with the current scope path.
