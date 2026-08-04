@@ -3157,16 +3157,21 @@ mod tests {
         assert!(parsed[0].contains("project.future_key"));
     }
 
-    /// Issue #1874: an unrecognized `[project] elements` preset name reaches
-    /// the wasm-exported `apply_project_config` — proving the closed-set
-    /// check added to `AnalysisOptions::apply_project_config` (`brink-
-    /// analyzer`) is actually wired into `@brink-lang/web`'s editor session,
-    /// not merely covered by an analyzer-crate unit test.
+    /// Issue #1874: an unrecognized `[project] conventions` preset name
+    /// reaches the wasm-exported `apply_project_config` — proving the
+    /// closed-set check added to `AnalysisOptions::apply_project_config`
+    /// (`brink-analyzer`) is actually wired into `@brink-lang/web`'s editor
+    /// session, not merely covered by an analyzer-crate unit test.
+    ///
+    /// Key renamed from `elements` by issue #2180 — see
+    /// `apply_project_config_reports_the_deprecated_elements_alias_as_a_warning`
+    /// below for the back-compat alias path this same wasm entry point
+    /// still accepts.
     #[test]
-    fn apply_project_config_reports_unrecognized_elements_preset_as_a_warning() {
+    fn apply_project_config_reports_unrecognized_conventions_preset_as_a_warning() {
         let mut s = EditorSession::new();
         let warnings = s
-            .apply_project_config("[project]\nelements = \"screnplay\"\n")
+            .apply_project_config("[project]\nconventions = \"screnplay\"\n")
             .expect("an unrecognized preset name is a warning, not a parse error");
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1, "{parsed:?}");
@@ -3178,13 +3183,29 @@ mod tests {
     /// would break the custom-conventions-module case #1844's confinement
     /// rule is built around.
     #[test]
-    fn apply_project_config_accepts_path_shaped_elements_pointer_with_no_warning() {
+    fn apply_project_config_accepts_path_shaped_conventions_pointer_with_no_warning() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[project]\nconventions = \"conventions.brink\"\n")
+            .expect("a path-shaped conventions value is valid");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert!(parsed.is_empty(), "{parsed:?}");
+    }
+
+    /// Issue #2180: the deprecated `[project] elements` alias must still
+    /// reach the wasm-exported `apply_project_config` — an embedder running
+    /// an older `brink.toml` gets a deprecation warning, not a silently
+    /// unconfigured conventions module.
+    #[test]
+    fn apply_project_config_reports_the_deprecated_elements_alias_as_a_warning() {
         let mut s = EditorSession::new();
         let warnings = s
             .apply_project_config("[project]\nelements = \"conventions.brink\"\n")
-            .expect("a path-shaped elements value is valid");
+            .expect("the deprecated `elements` key must still parse, not hard-error");
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
-        assert!(parsed.is_empty(), "{parsed:?}");
+        assert_eq!(parsed.len(), 1, "{parsed:?}");
+        assert!(parsed[0].contains("project.elements"));
+        assert!(parsed[0].contains("deprecated"));
     }
 
     // ── Issue #1414: `discover_project_config` (SourceTree seam, no ────────

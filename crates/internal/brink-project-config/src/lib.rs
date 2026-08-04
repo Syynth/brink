@@ -70,16 +70,29 @@
 //!
 //! ```toml
 //! [project]
-//! elements = "conventions.brink"  # docs/prose-dialect-spec.md §3.4: a
-//!                                 # built-in preset name ("screenplay") or
-//!                                 # a project-relative path to a `.brink`
-//!                                 # conventions module. Names the ONE file
-//!                                 # a pattern-claiming `@[convention(claims =
-//!                                 # "…", order = N)]` handler may be declared in
-//!                                 # (issue #1844's confinement rule, `E169`
-//!                                 # elsewhere) — unset means no conventions
-//!                                 # module is configured, so nothing is
-//!                                 # enforced yet.
+//! conventions = "conventions.brink"  # docs/prose-dialect-spec.md §3.4: a
+//!                                    # built-in preset name ("screenplay")
+//!                                    # or a project-relative path to a
+//!                                    # `.brink` conventions module. Names
+//!                                    # the ONE file a pattern-claiming
+//!                                    # `@[convention(claims = "…", order =
+//!                                    # N)]` handler may be declared in
+//!                                    # (issue #1844's confinement rule,
+//!                                    # `E169` elsewhere) — unset means no
+//!                                    # conventions module is configured, so
+//!                                    # nothing is enforced yet.
+//!                                    #
+//!                                    # `elements` is a DEPRECATED alias for
+//!                                    # this key (issue #2180: the key
+//!                                    # predates the split of `@[element]`
+//!                                    # from `@[convention]` and now names a
+//!                                    # module of the latter, not the
+//!                                    # former). Setting `elements` still
+//!                                    # works but warns; setting both keys
+//!                                    # prefers `conventions` and warns
+//!                                    # about the conflict. The alias will
+//!                                    # be removed in a future release —
+//!                                    # migrate to `conventions`.
 //! ```
 //!
 //! (`E014` — a plainly `Warning`-by-default code — is used here rather than
@@ -230,7 +243,7 @@ pub struct ProjectConfig {
     /// warns about it rather than silently accepting a likely typo (e.g.
     /// `"node-modules"` instead of `"node_modules"`).
     pub unprune_dirs: Vec<String>,
-    /// `[project] elements`, if set (docs/prose-dialect-spec.md §3.4's
+    /// `[project] conventions`, if set (docs/prose-dialect-spec.md §3.4's
     /// pointer mechanism): either a built-in preset name (`"screenplay"`)
     /// or a project-relative path to a `.brink` conventions module
     /// (`"conventions.brink"`, `"scenes/conventions.brink"`). This crate
@@ -240,7 +253,16 @@ pub struct ProjectConfig {
     /// it names a project path, checking that pattern-claiming handlers
     /// only live in that one file, issue #1844's confinement rule) is
     /// `brink-analyzer`/`brink-db`'s job.
-    pub elements: Option<String>,
+    ///
+    /// Renamed from `elements` by issue #2180 (the key predates the split
+    /// of `@[element]` from `@[convention]`, docs/decision-log.md's
+    /// 2026-08-03 ruling, and now names a module of the latter, not the
+    /// former). [`parse_str_at`] still accepts the old `[project] elements`
+    /// spelling as a deprecated alias — see its own doc comment for the
+    /// precedence/warning rules — but every in-memory representation past
+    /// parsing uses only this field; there is no separate `elements` field
+    /// to keep in sync.
+    pub conventions: Option<String>,
 }
 
 impl ProjectConfig {
@@ -253,7 +275,7 @@ impl ProjectConfig {
             && self.lints.is_empty()
             && self.deny_warnings.is_none()
             && self.unprune_dirs.is_empty()
-            && self.elements.is_none()
+            && self.conventions.is_none()
     }
 }
 
@@ -447,40 +469,7 @@ pub fn parse_str_at(
                     });
                 }
             };
-            for (pkey, pvalue) in project {
-                match pkey.as_str() {
-                    "dialect" => config.dialect = Some(parse_dialect(&path, pkey, pvalue)?),
-                    "types" => config.types = Some(parse_types(&path, pkey, pvalue)?),
-                    "unprune-dirs" => {
-                        let dirs = parse_string_list(&path, pkey, pvalue)?;
-                        for dir in &dirs {
-                            if !IGNORED_DIR_NAMES.contains(&dir.as_str()) {
-                                warnings.push(ConfigWarning(format!(
-                                    "`project.unprune-dirs` entry `{dir}` in {CONFIG_FILE_NAME} \
-                                     is not one of {IGNORED_DIR_NAMES:?} — it was never pruned, \
-                                     so this has no effect (check for a typo)"
-                                )));
-                            }
-                        }
-                        config.unprune_dirs = dirs;
-                    }
-                    "elements" => {
-                        let s = parse_elements(&path, pkey, pvalue)?;
-                        if s.is_empty() {
-                            warnings.push(ConfigWarning(format!(
-                                "`project.elements` in {CONFIG_FILE_NAME} is an empty string \
-                                 (ignored) — expected a built-in preset name (e.g. \"screenplay\") \
-                                 or a path to a conventions module (e.g. \"conventions.brink\")"
-                            )));
-                        } else {
-                            config.elements = Some(s);
-                        }
-                    }
-                    _ => warnings.push(ConfigWarning(format!(
-                        "unknown key `project.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
-                    ))),
-                }
-            }
+            parse_project_table(&path, project, &mut config, &mut warnings)?;
         } else if key == "lints" {
             let lints = match value {
                 Value::Table(t) => t,
@@ -511,6 +500,78 @@ pub fn parse_str_at(
     Ok((config, warnings))
 }
 
+/// Parse the `[project]` table's keys into `config`/`warnings` — the body
+/// [`parse_str_at`] used to inline directly before it grew too long
+/// (clippy's `too_many_lines`) once `conventions`/`elements` reconciliation
+/// (issue #2180) was added.
+fn parse_project_table(
+    path: &str,
+    project: &toml::map::Map<String, Value>,
+    config: &mut ProjectConfig,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<(), ConfigError> {
+    // `conventions` (issue #2180) and its deprecated `elements` alias are
+    // collected separately, rather than writing straight into
+    // `config.conventions` inside the match arm below, and reconciled only
+    // after the whole `[project]` table has been walked. `toml::Table`'s
+    // iteration order is not "as written in the file" in general, so
+    // resolving "both keys set" precedence arm-by-arm as each key is
+    // visited would make the outcome depend on iteration order —
+    // collecting both first and resolving once afterward keeps it
+    // deterministic regardless of which key the file happens to list
+    // first.
+    let mut conventions_value: Option<String> = None;
+    let mut elements_value: Option<String> = None;
+    for (pkey, pvalue) in project {
+        match pkey.as_str() {
+            "dialect" => config.dialect = Some(parse_dialect(path, pkey, pvalue)?),
+            "types" => config.types = Some(parse_types(path, pkey, pvalue)?),
+            "unprune-dirs" => {
+                let dirs = parse_string_list(path, pkey, pvalue)?;
+                for dir in &dirs {
+                    if !IGNORED_DIR_NAMES.contains(&dir.as_str()) {
+                        warnings.push(ConfigWarning(format!(
+                            "`project.unprune-dirs` entry `{dir}` in {CONFIG_FILE_NAME} is not \
+                             one of {IGNORED_DIR_NAMES:?} — it was never pruned, so this has no \
+                             effect (check for a typo)"
+                        )));
+                    }
+                }
+                config.unprune_dirs = dirs;
+            }
+            "conventions" => {
+                let s = parse_conventions(path, pkey, pvalue)?;
+                if s.is_empty() {
+                    warnings.push(ConfigWarning(format!(
+                        "`project.conventions` in {CONFIG_FILE_NAME} is an empty string \
+                         (ignored) — expected a built-in preset name (e.g. \"screenplay\") or a \
+                         path to a conventions module (e.g. \"conventions.brink\")"
+                    )));
+                } else {
+                    conventions_value = Some(s);
+                }
+            }
+            "elements" => {
+                let s = parse_conventions(path, pkey, pvalue)?;
+                if s.is_empty() {
+                    warnings.push(ConfigWarning(format!(
+                        "`project.elements` in {CONFIG_FILE_NAME} is an empty string (ignored) \
+                         — expected a built-in preset name (e.g. \"screenplay\") or a path to a \
+                         conventions module (e.g. \"conventions.brink\")"
+                    )));
+                } else {
+                    elements_value = Some(s);
+                }
+            }
+            _ => warnings.push(ConfigWarning(format!(
+                "unknown key `project.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
+            ))),
+        }
+    }
+    config.conventions = resolve_conventions_key(conventions_value, elements_value, warnings);
+    Ok(())
+}
+
 fn parse_dialect(path: &str, key: &str, value: &Value) -> Result<Dialect, ConfigError> {
     let s = value.as_str().ok_or_else(|| ConfigError::WrongType {
         path: path.to_owned(),
@@ -529,16 +590,58 @@ fn parse_dialect(path: &str, key: &str, value: &Value) -> Result<Dialect, Config
     }
 }
 
-/// Parse `[project] elements` (§3.4's pointer mechanism): any non-empty
-/// string, since this crate doesn't know the closed set of built-in preset
-/// names and can't check a project path exists (kept dependency-free,
-/// #1234) — [`parse_str_at`]'s caller flags an empty string as a warning;
-/// this only enforces the TOML shape (a string, full stop). Checking a
-/// bare (preset-shaped) value against the real closed preset-name set is
+/// Parse `[project] conventions` (§3.4's pointer mechanism; also called for
+/// its deprecated `elements` alias, issue #2180 — the raw string shape is
+/// identical for either key): any non-empty string, since this crate
+/// doesn't know the closed set of built-in preset names and can't check a
+/// project path exists (kept dependency-free, #1234) — [`parse_str_at`]'s
+/// caller flags an empty string as a warning; this only enforces the TOML
+/// shape (a string, full stop). Checking a bare (preset-shaped) value
+/// against the real closed preset-name set is
 /// `brink-analyzer::AnalysisOptions::apply_project_config`'s job (issue
 /// #1874), the same "this crate stays dependency-free; the crate that owns
 /// the closed set validates" split `[lints]`'s `validate_lint_code` uses.
-fn parse_elements(path: &str, key: &str, value: &Value) -> Result<String, ConfigError> {
+/// Reconcile `[project] conventions` against its deprecated `elements`
+/// alias (issue #2180) into the one value [`ProjectConfig::conventions`]
+/// carries, pushing whatever [`ConfigWarning`]s the reconciliation itself
+/// warrants onto `warnings`.
+///
+/// `elements` is `conventions`'s deprecated predecessor (renamed post the
+/// `@[element]`/`@[convention]` split, docs/decision-log.md's 2026-08-03
+/// ruling) — accepted for a deprecation window rather than hard-broken,
+/// since it's a silent-misconfiguration risk otherwise (an existing
+/// project's `brink.toml` would stop configuring its conventions module
+/// with no error at all, just quietly-disabled `E169` enforcement).
+/// `conventions` always wins when both are set.
+fn resolve_conventions_key(
+    conventions_value: Option<String>,
+    elements_value: Option<String>,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Option<String> {
+    match (conventions_value, elements_value) {
+        (Some(c), Some(_)) => {
+            warnings.push(ConfigWarning(format!(
+                "`project.elements` and `project.conventions` are both set in \
+                 {CONFIG_FILE_NAME} — `project.elements` is deprecated (renamed to \
+                 `project.conventions`, issue #2180) and was ignored in favor of \
+                 `project.conventions`"
+            )));
+            Some(c)
+        }
+        (Some(c), None) => Some(c),
+        (None, Some(e)) => {
+            warnings.push(ConfigWarning(format!(
+                "`project.elements` in {CONFIG_FILE_NAME} is deprecated — rename to \
+                 `project.conventions` (issue #2180: the key now names a module of \
+                 `@[convention]` declarations, not `@[element]` ones)"
+            )));
+            Some(e)
+        }
+        (None, None) => None,
+    }
+}
+
+fn parse_conventions(path: &str, key: &str, value: &Value) -> Result<String, ConfigError> {
     value
         .as_str()
         .map(str::to_owned)
@@ -1084,47 +1187,101 @@ mod tests {
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
     }
 
-    // ── elements (issue #1844) ───────────────────────────────────────────
+    // ── conventions (issue #1844, renamed from `elements` by #2180) ──────
 
     #[test]
-    fn parses_elements_as_a_path() {
+    fn parses_conventions_as_a_path() {
         let (config, warnings) = parse_str(
             r#"
             [project]
-            elements = "conventions.brink"
+            conventions = "conventions.brink"
             "#,
         )
         .unwrap();
-        assert_eq!(config.elements.as_deref(), Some("conventions.brink"));
+        assert_eq!(config.conventions.as_deref(), Some("conventions.brink"));
         assert!(!config.is_empty());
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
-    fn parses_elements_as_a_preset_name() {
-        let (config, _warnings) = parse_str("[project]\nelements = \"screenplay\"\n").unwrap();
-        assert_eq!(config.elements.as_deref(), Some("screenplay"));
+    fn parses_conventions_as_a_preset_name() {
+        let (config, _warnings) = parse_str("[project]\nconventions = \"screenplay\"\n").unwrap();
+        assert_eq!(config.conventions.as_deref(), Some("screenplay"));
     }
 
     #[test]
-    fn empty_elements_string_warns_and_is_not_set() {
-        let (config, warnings) = parse_str("[project]\nelements = \"\"\n").unwrap();
-        assert_eq!(config.elements, None);
+    fn empty_conventions_string_warns_and_is_not_set() {
+        let (config, warnings) = parse_str("[project]\nconventions = \"\"\n").unwrap();
+        assert_eq!(config.conventions, None);
         assert!(config.is_empty());
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].0.contains("elements"));
+        assert!(warnings[0].0.contains("conventions"));
     }
 
     #[test]
-    fn elements_wrong_type_is_an_error() {
-        let err = parse_str("[project]\nelements = 1\n").unwrap_err();
+    fn conventions_wrong_type_is_an_error() {
+        let err = parse_str("[project]\nconventions = 1\n").unwrap_err();
         assert!(matches!(err, ConfigError::WrongType { .. }));
     }
 
     #[test]
-    fn unset_elements_leaves_config_empty_by_itself() {
+    fn unset_conventions_leaves_config_empty_by_itself() {
         let (config, _warnings) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
-        assert_eq!(config.elements, None);
+        assert_eq!(config.conventions, None);
+    }
+
+    // ── `elements` deprecated alias (issue #2180) ────────────────────────
+
+    /// The old key still works — a hard break would silently un-configure
+    /// every existing project's conventions module (and its `E169`
+    /// enforcement) the moment it upgrades, with no error at all.
+    #[test]
+    fn elements_alias_still_sets_conventions_but_warns() {
+        let (config, warnings) = parse_str("[project]\nelements = \"conventions.brink\"\n")
+            .expect("deprecated `elements` key must still parse, not hard-error");
+        assert_eq!(config.conventions.as_deref(), Some("conventions.brink"));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("project.elements"));
+        assert!(warnings[0].0.contains("deprecated"));
+        assert!(warnings[0].0.contains("project.conventions"));
+    }
+
+    #[test]
+    fn empty_elements_alias_string_warns_and_is_not_set() {
+        let (config, warnings) = parse_str("[project]\nelements = \"\"\n").unwrap();
+        assert_eq!(config.conventions, None);
+        assert!(config.is_empty());
+        // Only the empty-string warning fires — an empty value never
+        // reaches `elements_value`, so there is nothing to also warn as a
+        // deprecated-but-set alias.
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("elements"));
+    }
+
+    #[test]
+    fn elements_alias_wrong_type_is_an_error() {
+        let err = parse_str("[project]\nelements = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    /// `conventions` always wins when both keys are set — and the conflict
+    /// itself is warned about, so an author isn't left guessing which value
+    /// took effect.
+    #[test]
+    fn both_conventions_and_elements_set_prefers_conventions_and_warns() {
+        let (config, warnings) = parse_str(
+            r#"
+            [project]
+            conventions = "new.brink"
+            elements = "old.brink"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.conventions.as_deref(), Some("new.brink"));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("project.elements"));
+        assert!(warnings[0].0.contains("project.conventions"));
+        assert!(warnings[0].0.contains("both set"));
     }
 
     #[test]

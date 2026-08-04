@@ -93,7 +93,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Comptime evaluation of conventions | — | — | — | — | **DEFERRED, not blocked** — moot for conventions specifically since ordering no longer needs it; comptime as a general capability remains wanted but undesigned, to be decided when something genuinely needs it |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
 | Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **SHIPS** as `std/conventions/screenplay.brink` (#1720/PR #2081) + `scene_entered` extern (#2092), and **#2080 mounts its source into every compiled `Environment`** — **but still not importable**: nothing in it is `pub` and no confinement rule scopes a `use` into it yet (needs #1582's pub marker + #2167's confinement) |
-| `[project] elements` name validation | ✅ | ✅ | ✅ | — | **LANDED #1874** |
+| `[project] conventions` name validation | ✅ | ✅ | ✅ | — | **LANDED #1874**; key renamed from `elements` by **#2180** (deprecated alias still accepted, warns) |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
 ## Editor side — how the author interrogates a claimed line

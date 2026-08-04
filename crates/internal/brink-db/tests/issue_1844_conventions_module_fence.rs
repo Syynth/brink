@@ -2,7 +2,8 @@
 //! (`docs/decision-log.md` "Conventions are annotated handlers", item 4):
 //! a pattern-claiming `@[convention(claims = "…", order = N)]` handler is legal only in
 //! the project's configured conventions module (`brink.toml`'s `[project]
-//! elements`). Exercised end-to-end through `ProjectDb`'s salsa query layer
+//! conventions`, renamed from `elements` by issue #2180). Exercised
+//! end-to-end through `ProjectDb`'s salsa query layer
 //! — the same `db.analysis()` path `brink compile`/`brink check` and
 //! `@brink-lang/web` run (the `t2_2_effects_assertions.rs` precedent for
 //! why this is the right test level for a project-config-gated diagnostic).
@@ -21,9 +22,9 @@ use brink_ir::DiagnosticCode;
 const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
     fn interior(place: content) {\n  return place;\n}\n";
 
-fn opts_with_elements(pointer: &str) -> AnalysisOptions {
+fn opts_with_conventions(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
-        elements: Some(pointer.to_owned()),
+        conventions: Some(pointer.to_owned()),
         ..AnalysisOptions::default()
     }
 }
@@ -35,7 +36,7 @@ fn codes(diags: &[brink_ir::Diagnostic]) -> Vec<DiagnosticCode> {
 #[test]
 fn claim_handler_in_the_configured_module_is_silent() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
@@ -50,10 +51,10 @@ fn claim_handler_in_the_configured_module_is_silent() {
 #[test]
 fn claim_handler_outside_the_configured_module_is_e169() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     // `conventions.brink` must actually exist in the project — an
-    // `elements` pointer that resolves to no real file is a *different*
-    // silent case (see `an_unresolvable_elements_pointer_never_fires_
+    // `conventions` pointer that resolves to no real file is a *different*
+    // silent case (see `an_unresolvable_conventions_pointer_never_fires_
     // even_against_the_real_module` below), not this one, which is
     // specifically "the configured module exists, but this handler isn't
     // in it".
@@ -76,7 +77,7 @@ fn claim_handler_outside_the_configured_module_is_e169() {
 #[test]
 fn only_the_non_configured_file_is_flagged_among_siblings() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\
@@ -91,11 +92,11 @@ fn only_the_non_configured_file_is_flagged_among_siblings() {
     assert_eq!(codes(&diags), vec![DiagnosticCode::E169], "{diags:?}");
 }
 
-/// Unset `elements` means no conventions module is configured at all —
+/// Unset `conventions` means no conventions module is configured at all —
 /// nothing to confine claiming to, so every project without this key opted
 /// in stays exactly as permissive as it was before `E169` existed.
 #[test]
-fn unset_elements_never_fires() {
+fn unset_conventions_never_fires() {
     let mut db = ProjectDb::new();
     db.set_analysis_options(AnalysisOptions::default());
     db.set_file(
@@ -109,14 +110,14 @@ fn unset_elements_never_fires() {
     );
 }
 
-/// A bare preset name (`elements = "screenplay"`) points at a built-in
+/// A bare preset name (`conventions = "screenplay"`) points at a built-in
 /// `std::conventions::*` module, not a project file — there is no project
 /// path to compare a claiming handler's own module against, so this stays
 /// silent rather than flagging every claiming handler in the project.
 #[test]
 fn a_preset_name_pointer_never_fires() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("screenplay"));
+    db.set_analysis_options(opts_with_conventions("screenplay"));
     db.set_file(
         "scenes/heading.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
@@ -134,7 +135,7 @@ fn a_preset_name_pointer_never_fires() {
 #[test]
 fn a_nested_conventions_module_path_resolves_correctly() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("scenes/conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("scenes/conventions.brink"));
     db.set_file(
         "scenes/conventions.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
@@ -146,7 +147,7 @@ fn a_nested_conventions_module_path_resolves_correctly() {
     );
 }
 
-/// A typo'd `elements` pointer (`"typo.brink"`, no such file in the
+/// A typo'd `conventions` pointer (`"typo.brink"`, no such file in the
 /// project) must never flag the real `conventions.brink`'s own claiming
 /// handler — nor anyone else's. Before the fix, `expected_module` was
 /// compared against every file's module WITHOUT ever checking that some
@@ -155,9 +156,9 @@ fn a_nested_conventions_module_path_resolves_correctly() {
 /// one in the real conventions module — telling the author to move it into
 /// a file that does not exist.
 #[test]
-fn an_unresolvable_elements_pointer_never_fires_even_against_the_real_module() {
+fn an_unresolvable_conventions_pointer_never_fires_even_against_the_real_module() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("typo.brink"));
+    db.set_analysis_options(opts_with_conventions("typo.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),

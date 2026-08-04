@@ -263,9 +263,11 @@ tracked:
 3. ~~**`brink.toml` has no conventions pointer.**~~ **RESOLVED** (issue
    #1844, PR #1872). `ProjectConfig`
    (`crates/internal/brink-project-config/src/lib.rs`) now carries
-   `[project] elements` (a preset name or a project-relative `.brink`
-   path), threaded through `AnalysisOptions::apply_project_config` and
-   resolved against `module_map_query` by `brink-db`'s
+   `[project] conventions` (renamed from `elements` by issue #2180 — a
+   deprecated, warning-emitting alias for the old key is still accepted; a
+   preset name or a project-relative `.brink` path), threaded through
+   `AnalysisOptions::apply_project_config` and resolved against
+   `module_map_query` by `brink-db`'s
    `conventions_confinement_diagnostics_query` (`E169`).
 4. ~~**Element dispatch has no project-level injection point.**~~ **THE
    SEAM IS BUILT** (issue #1863). `element::collect` and
