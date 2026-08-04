@@ -837,7 +837,7 @@ fn lower_knot(
     lifted: &mut Vec<lir::Container>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
-    let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
+    let knot_id = lookup_container_id(index, file_id, knot_name).unwrap_or(root_id);
 
     let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
     for stitch in &knot.stitches {
@@ -950,7 +950,7 @@ fn lower_stitch(
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
-    let stitch_id = lookup_container_id(index, &stitch_path).unwrap_or(root_id);
+    let stitch_id = lookup_container_id(index, file_id, &stitch_path).unwrap_or(root_id);
     let params = lower_params(&stitch.params, names, temp_map);
 
     let stitch_param_names: Vec<&str> =
@@ -1769,21 +1769,54 @@ fn lower_params(
         .collect()
 }
 
-/// Look up a container `DefinitionId` by name in the symbol index.
+/// Look up a container's own `DefinitionId` by name in the symbol index —
+/// "what id did the analyzer already assign to the knot/stitch/label THIS
+/// FILE is lowering right now."
 ///
 /// Checks for knot, stitch, or label symbols — the same container
 /// types the analyzer registers.
-fn lookup_container_id(index: &SymbolIndex, name: &str) -> Option<brink_format::DefinitionId> {
+///
+/// **File-scoped, not project-flat** (issue #2197): with M-2d
+/// (`is_cross_declared_module_collision`) letting same-name definitions in
+/// different *declared* modules coexist in `index.by_name`, a bare
+/// unscoped `.find()` here would pick whichever candidate happens to sort
+/// first for *every* file lowering a container of that name — so two
+/// distinctly-hashed, distinctly-declared knots (e.g. a project's own
+/// `scene_entered` and `brink_environment`'s mounted
+/// `std/conventions/screenplay.brink`'s own `scene_entered`) both mint the
+/// SAME container id, which trips the `#1673` duplicate-`DefinitionId`
+/// codegen guard (`E060`) the moment both are walked into the container
+/// tree. Preferring the entry declared in `file` is the correct semantic
+/// regardless of module visibility policy — a container's own identity is
+/// always the one *this file* declared — and it is what actually resolves
+/// the collision, since the two files' own entries are already correctly
+/// distinct per-module hashes (`brink_analyzer::manifest::insert_symbol`).
+/// Falling back to the unscoped first match preserves byte-identical
+/// behavior for every pre-#2197 call, where `by_name` never held more than
+/// one Knot/Stitch/Label candidate for a given name.
+fn lookup_container_id(
+    index: &SymbolIndex,
+    file: FileId,
+    name: &str,
+) -> Option<brink_format::DefinitionId> {
     use crate::symbols::SymbolKind;
+    fn is_container(info: &crate::symbols::SymbolInfo) -> bool {
+        matches!(
+            info.kind,
+            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+        )
+    }
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
             .find(|&&id| {
-                index.symbols.get(&id).is_some_and(|info| {
-                    matches!(
-                        info.kind,
-                        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
-                    )
-                })
+                index
+                    .symbols
+                    .get(&id)
+                    .is_some_and(|info| is_container(info) && info.file == file)
+            })
+            .or_else(|| {
+                ids.iter()
+                    .find(|&&id| index.symbols.get(&id).is_some_and(is_container))
             })
             .copied()
     })

@@ -16,7 +16,7 @@ use brink_format::{DefinitionId, DefinitionTag};
 use crate::FileId;
 use crate::determinism::LookupMap;
 use crate::hir;
-use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::symbols::{SymbolIndex, SymbolInfo, SymbolKind};
 
 /// The structural scope path every *anonymous* container in `file_path`'s
 /// root-level weave hangs off (#1504).
@@ -132,7 +132,7 @@ pub fn stamp_container_ids(
 /// Stamp container IDs on all structural statements in a block.
 fn stamp_block(
     block: &mut hir::Block,
-    _file: FileId,
+    file: FileId,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
@@ -144,6 +144,7 @@ fn stamp_block(
     for stmt in &mut block.stmts {
         stamp_stmt(
             stmt,
+            Some(file),
             scope_path,
             label_scope,
             index,
@@ -155,12 +156,24 @@ fn stamp_block(
 }
 
 /// Stamp container IDs on a single statement and recurse into children.
+///
+/// `file`: see [`lookup_label_id`]'s doc — `Some` for the primary weave
+/// walk (threaded down from [`stamp_block`]), `None` when called from the
+/// separate lambda-stamping traversal (`stamp_lambdas_in_expr`'s `Fragment`
+/// arm, `stamp_lambdas_in_content_part`'s `InlineConditional`/
+/// `InlineSequence` arms), which does not carry a file id of its own.
 #[expect(
     clippy::too_many_lines,
     reason = "structural match over all statement types"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "issue #2197 added `file` for label self-identity; a context struct isn't worth it \
+              for one more threaded parameter"
+)]
 fn stamp_stmt(
     stmt: &mut hir::Stmt,
+    file: Option<FileId>,
     scope_path: &str,
     label_scope: &str,
     index: &SymbolIndex,
@@ -173,7 +186,7 @@ fn stamp_stmt(
             // Gather container ID — from label lookup or scope path.
             let gather_id = if let Some(ref label) = cs.continuation.label {
                 let label_path = qualify(label_scope, &label.text);
-                lookup_label_id(index, &label_path)
+                lookup_label_id(index, file, &label_path)
                     .unwrap_or_else(|| alloc_address(&format!("{scope_path}.g-{gather_counter}")))
             } else {
                 alloc_address(&format!("{scope_path}.g-{gather_counter}"))
@@ -186,7 +199,7 @@ fn stamp_stmt(
             for choice in &mut cs.choices {
                 let choice_id = if let Some(ref label) = choice.label {
                     let label_path = qualify(label_scope, &label.text);
-                    lookup_label_id(index, &label_path).unwrap_or_else(|| {
+                    lookup_label_id(index, file, &label_path).unwrap_or_else(|| {
                         alloc_address(&format!("{scope_path}.c{choice_counter}"))
                     })
                 } else {
@@ -228,6 +241,7 @@ fn stamp_stmt(
                 for body_stmt in &mut choice.body.stmts {
                     stamp_stmt(
                         body_stmt,
+                        file,
                         &child_scope,
                         label_scope,
                         index,
@@ -242,6 +256,7 @@ fn stamp_stmt(
             for cont_stmt in &mut cs.continuation.stmts {
                 stamp_stmt(
                     cont_stmt,
+                    file,
                     scope_path,
                     label_scope,
                     index,
@@ -259,7 +274,7 @@ fn stamp_stmt(
                     .as_ref()
                     .map(|l| qualify(label_scope, &l.text))
                     .unwrap_or_default();
-                let label_id = lookup_label_id(index, &label_path)
+                let label_id = lookup_label_id(index, file, &label_path)
                     .unwrap_or_else(|| alloc_address(&label_path));
                 block.container_id = Some(label_id);
 
@@ -270,6 +285,7 @@ fn stamp_stmt(
             for s in &mut block.stmts {
                 stamp_stmt(
                     s,
+                    file,
                     scope_path,
                     label_scope,
                     index,
@@ -312,6 +328,7 @@ fn stamp_stmt(
                 for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
+                        file,
                         &branch_scope,
                         label_scope,
                         index,
@@ -351,6 +368,7 @@ fn stamp_stmt(
                 for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
+                        file,
                         &child_scope,
                         label_scope,
                         index,
@@ -530,6 +548,7 @@ fn stamp_lambdas_in_expr(
             for s in stmts {
                 stamp_stmt(
                     s,
+                    None,
                     scope_path,
                     label_scope,
                     index,
@@ -698,6 +717,7 @@ fn stamp_lambdas_in_content_part(
                 for s in &mut b.body.stmts {
                     stamp_stmt(
                         s,
+                        None,
                         scope_path,
                         label_scope,
                         index,
@@ -714,7 +734,16 @@ fn stamp_lambdas_in_content_part(
                 let mut cc = 0;
                 let mut gc = 0;
                 for s in &mut b.body.stmts {
-                    stamp_stmt(s, scope_path, label_scope, index, &mut sc, &mut cc, &mut gc);
+                    stamp_stmt(
+                        s,
+                        None,
+                        scope_path,
+                        label_scope,
+                        index,
+                        &mut sc,
+                        &mut cc,
+                        &mut gc,
+                    );
                 }
             }
         }
@@ -742,17 +771,50 @@ fn alloc_address(path: &str) -> DefinitionId {
 ///
 /// Returns the analyzer-assigned `DefinitionId` for labels so that
 /// diverts resolved by the analyzer point to the same container.
-fn lookup_label_id(index: &SymbolIndex, name: &str) -> Option<DefinitionId> {
+///
+/// **File-scoped when `file` is given** (issue #2197 — see
+/// `lir::lower::lookup_container_id`'s doc for the full collision this
+/// mirrors): M-2d (`is_cross_declared_module_collision`) lets a same-name
+/// label/gather/choice in two different *declared* modules coexist in
+/// `index.by_name`, so an unscoped `.find()` can pick either one for
+/// *both* files stamping a container of that name — silently minting the
+/// same `DefinitionId` for two distinct containers. Preferring the entry
+/// declared in `file` is the correct self-identity semantic regardless of
+/// module-visibility policy.
+///
+/// `file: None` preserves the pre-#2197 unscoped lookup exactly — used by
+/// the separate lambda-stamping walk (`stamp_lambdas_in_expr`'s `Fragment`
+/// arm, `stamp_lambdas_in_content_part`'s `InlineConditional`/
+/// `InlineSequence` arms), which does not thread a file id through its own
+/// traversal. Those call sites share the same theoretical collision risk
+/// this function's `Some` branch fixes for the primary weave walk above,
+/// but reaching it needs an explicitly *labeled* gather/choice/block nested
+/// inside a block-capture or inline conditional/sequence, declared
+/// identically in two *coexisting* declared modules — not exercised by the
+/// #2197 repro (`tests/tier1-native/conventions-screenplay-preset/
+/// story.brink` declares no labels at all). Left as a known, tracked gap
+/// (issue #2197's PR discussion) rather than threading `FileId` through
+/// that entire second traversal in this same change.
+fn lookup_label_id(index: &SymbolIndex, file: Option<FileId>, name: &str) -> Option<DefinitionId> {
+    fn is_container(info: &SymbolInfo) -> bool {
+        matches!(
+            info.kind,
+            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+        )
+    }
     index.by_name.get(name).and_then(|ids| {
-        ids.iter()
-            .find(|&&id| {
-                index.symbols.get(&id).is_some_and(|info| {
-                    matches!(
-                        info.kind,
-                        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
-                    )
-                })
+        if let Some(file) = file
+            && let Some(id) = ids.iter().find(|&&id| {
+                index
+                    .symbols
+                    .get(&id)
+                    .is_some_and(|info| is_container(info) && info.file == file)
             })
+        {
+            return Some(*id);
+        }
+        ids.iter()
+            .find(|&&id| index.symbols.get(&id).is_some_and(is_container))
             .copied()
     })
 }

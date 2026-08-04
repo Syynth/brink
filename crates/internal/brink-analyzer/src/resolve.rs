@@ -187,6 +187,19 @@ enum Candidacy {
     Other,
 }
 
+/// True when `module` names the reserved standard-library namespace
+/// `brink_environment`'s stdlib mount (issue #2080) populates: `story::std`
+/// itself, or any of its submodules (`story::std::conventions::screenplay`,
+/// …) — `native_module_path`'s path-derived scheme applied to a file mounted
+/// at `std/…`. A pure string convention check, not a project-config lookup:
+/// `mount_stdlib`'s own doc already treats `std/` as "a reserved-by-
+/// convention path", and `brink-analyzer` cannot depend on `brink-db` (which
+/// owns `native_module_path`) without a cycle, so this mirrors that
+/// convention locally rather than importing it.
+fn is_std_module(module: &str) -> bool {
+    module == "story::std" || module.starts_with("story::std::")
+}
+
 /// Classify a candidate against the referring file's import scope (M-2d).
 fn classify(scope: &ImportScope, info: &SymbolInfo) -> Candidacy {
     match &info.module {
@@ -1232,7 +1245,11 @@ pub(crate) fn lookup_by_name(
 }
 
 /// The direct (non-alias) name lookup — everything [`lookup_by_name`] did
-/// before issue #1590's alias fallback, byte-identical.
+/// before issue #1590's alias fallback, plus the 2026-08-03 SUBTRACTION
+/// RULING's std-invisibility gate (issue #2197, doc below) — no longer
+/// byte-identical to that description, but byte-identical for every corpus
+/// that never coexists with a `story::std::…` candidate (the whole
+/// pre-stdlib-mount world).
 fn lookup_by_name_direct(
     index: &SymbolIndex,
     scope: &ImportScope,
@@ -1253,12 +1270,39 @@ fn lookup_by_name_direct(
         if !kinds.contains(&info.kind) {
             continue;
         }
+        let candidacy = classify(scope, info);
+        // 2026-08-03 SUBTRACTION RULING (`docs/decision-log.md`, issue
+        // #2197): stdlib symbols are reachable only via an explicit `use
+        // std::…` — there is no implicit inclusion. That import mechanism
+        // does not exist yet (#1582's `pub` marker / #2167's confinement
+        // haven't landed), so `classify` can never answer `Imported` for a
+        // std candidate today (nothing under `story::std` can be marked
+        // public yet) — every std candidate this file does not itself
+        // belong to (i.e. not `InScope`, which still covers a std file
+        // referencing its own std-declared siblings) is `Other`. Skip it
+        // entirely here, *before* it is counted into `first_match`/
+        // `multiple` below: an `Other`-classified std candidate must never
+        // win the flat-fallback tie-break a few lines down, which would
+        // otherwise let a project silently resolve into the mounted
+        // preset with no import at all — including when it is the *sole*
+        // match, where the `!multiple` fast path below would otherwise
+        // return it unconditionally. This interacts with M-2d's own
+        // coexistence machinery (`is_cross_declared_module_collision`,
+        // which is what lets a std candidate coexist in `by_name` in the
+        // first place) by narrowing exactly one of its three resolution
+        // tiers — `Other` — for the std case only; `InScope` and
+        // `Imported` are untouched, so a std file's own internal
+        // references, and a future real `use std::…` import once #1582/
+        // #2167 ship, keep resolving normally.
+        if candidacy == Candidacy::Other && info.module.as_deref().is_some_and(is_std_module) {
+            continue;
+        }
         if first_match.is_none() {
             first_match = Some(*id);
         } else {
             multiple = true;
         }
-        match classify(scope, info) {
+        match candidacy {
             Candidacy::InScope if first_in_scope.is_none() => first_in_scope = Some(*id),
             Candidacy::Imported if first_imported.is_none() => first_imported = Some(*id),
             _ => {}
@@ -2405,6 +2449,92 @@ mod tests {
             "own-module definition beats an imported homonym"
         );
         let _ = a;
+    }
+
+    /// Build a `SymbolIndex` with one `Knot` named `ambush` per module in
+    /// `modules`, all `Public` — the shape [`two_module_ambush_index`] hands
+    /// M-2d, generalized so a std-shaped module string can sit alongside an
+    /// ordinary one.
+    fn ambush_index_with_modules(modules: &[&str]) -> (SymbolIndex, Vec<DefinitionId>) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let mut ids = Vec::new();
+        for (i, module) in modules.iter().enumerate() {
+            let id = DefinitionId::new(DefinitionTag::Address, 0xA + i as u64);
+            index.symbols.insert(
+                id,
+                SymbolInfo {
+                    kind: SymbolKind::Knot,
+                    file: FileId(0),
+                    range: TextRange::default(),
+                    id,
+                    name: "ambush".to_string(),
+                    params: Vec::new(),
+                    detail: None,
+                    scope: None,
+                    param_detail: None,
+                    module: Some((*module).to_string()),
+                    visibility: Visibility::Public,
+                },
+            );
+            index
+                .by_name
+                .entry("ambush".to_string())
+                .or_default()
+                .push(id);
+            ids.push(id);
+        }
+        (index, ids)
+    }
+
+    /// Issue #2197, the 2026-08-03 SUBTRACTION RULING: a std-mounted
+    /// candidate must be invisible to bare-name resolution — not merely
+    /// deprioritized — even when it is the *sole* candidate. Before this
+    /// fix, `lookup_by_name_direct`'s `!multiple` fast path returned any
+    /// sole candidate unconditionally regardless of scope, which would have
+    /// let a project silently reach into `std::…` with zero imports.
+    #[test]
+    fn std_mounted_sole_candidate_is_invisible_with_no_import() {
+        let (index, _ids) = ambush_index_with_modules(&["story::std::conventions::screenplay"]);
+        assert_eq!(
+            lookup_by_name(
+                &index,
+                &ImportScope::default(),
+                "ambush",
+                &[SymbolKind::Knot]
+            ),
+            None,
+            "a std-mounted definition must not resolve by bare name with no `use std::…` \
+             import — reaching it requires an explicit import, which does not exist yet \
+             (#1582/#2167), so today it must resolve to nothing rather than silently reach std"
+        );
+    }
+
+    /// The E060 collision shape, at the resolution layer rather than the
+    /// LIR-lowering self-identity layer `stdlib_mount_no_longer_collides_
+    /// with_a_projects_own_scene_entered` (brink-test-harness) proves
+    /// end to end: a project's own declared module and the std mount both
+    /// declare `ambush`. A file *inside* the project's own module resolves
+    /// its own `ambush` — the pre-existing `Candidacy::InScope` tier — and
+    /// the std candidate never even enters the ambiguity tie-break, because
+    /// it is filtered out before `multiple` is computed.
+    #[test]
+    fn project_own_module_wins_over_a_coexisting_std_mount_candidate() {
+        let (index, ids) =
+            ambush_index_with_modules(&["story::story", "story::std::conventions::screenplay"]);
+        let project_id = ids[0];
+        let scope = ImportScope {
+            file_module: Some("story::story".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(project_id),
+            "a file inside `story::story` must resolve its OWN `ambush`, never the coexisting \
+             std mount's same-named one"
+        );
     }
 
     #[test]

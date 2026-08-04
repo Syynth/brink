@@ -51,7 +51,7 @@ pub fn collect_globals(
             lambda_ctx.file_paths.get(&file_id).map(String::as_str),
         ));
         for cst in &hir_file.constants {
-            if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
+            if let Some(id) = lookup_global(index, file_id, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
                 // #692: a bare non-constant reference/call as the *whole*
                 // default (not nested inside a collection/struct/fn literal,
@@ -106,7 +106,7 @@ pub fn collect_globals(
             lambda_ctx.file_paths.get(&file_id).map(String::as_str),
         ));
         for var in &hir_file.variables {
-            if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
+            if let Some(id) = lookup_global(index, file_id, &var.name.text, SymbolKind::Variable) {
                 let name = names.intern(&var.name.text);
                 // #692: same top-level constness check as the CONST pass
                 // above.
@@ -327,9 +327,11 @@ pub fn collect_lists(
     let mut items = Vec::new();
     let mut list_globals = Vec::new();
 
-    for &(_file_id, hir_file) in files {
+    for &(file_id, hir_file) in files {
         for list_decl in &hir_file.lists {
-            let Some(list_id) = lookup_global(index, &list_decl.name.text, SymbolKind::List) else {
+            let Some(list_id) =
+                lookup_global(index, file_id, &list_decl.name.text, SymbolKind::List)
+            else {
                 continue;
             };
             let list_name = names.intern(&list_decl.name.text);
@@ -345,7 +347,9 @@ pub fn collect_lists(
                 let qualified = format!("{}.{}", list_decl.name.text, member.name.text);
                 let item_name = names.intern(&qualified);
 
-                if let Some(item_id) = lookup_global(index, &qualified, SymbolKind::ListItem) {
+                if let Some(item_id) =
+                    lookup_global(index, file_id, &qualified, SymbolKind::ListItem)
+                {
                     list_items.push((item_name, ordinal));
                     items.push(lir::ListItemDef {
                         id: item_id,
@@ -399,12 +403,17 @@ pub fn collect_externals(
 ) -> Vec<lir::ExternalDef> {
     let mut externals = Vec::new();
 
-    for &(_file_id, hir_file) in files {
+    for &(file_id, hir_file) in files {
         for ext in &hir_file.externals {
-            if let Some(id) = lookup_global(index, &ext.name.text, SymbolKind::External) {
+            if let Some(id) = lookup_global(index, file_id, &ext.name.text, SymbolKind::External) {
                 let name = names.intern(&ext.name.text);
-                // Look for an ink-defined function with the same name to use as fallback.
-                let fallback = lookup_global(index, &ext.name.text, SymbolKind::Knot);
+                // Look for an ink-defined function with the same name, IN
+                // THIS SAME FILE, to use as fallback (issue #2197: a
+                // project's own `extern foo` + `fn foo` fallback pair must
+                // never cross-wire to some *other* file's same-named
+                // fallback — e.g. the stdlib mount's own `extern
+                // scene_entered` + `fn scene_entered` pair).
+                let fallback = lookup_global(index, file_id, &ext.name.text, SymbolKind::Knot);
                 externals.push(lir::ExternalDef {
                     id,
                     name,
@@ -418,14 +427,43 @@ pub fn collect_externals(
     externals
 }
 
+/// Look up a project-wide global by name, preferring the entry declared in
+/// `file`.
+///
+/// **File-scoped, not project-flat** (issue #2197): a bare `(name, kind)`
+/// can have more than one coexisting candidate once M-2d
+/// (`is_cross_declared_module_collision`) lets same-name definitions in
+/// different *declared* modules coexist in `index.by_name` — which is
+/// exactly what happens once `brink_environment`'s stdlib mount (#2080)
+/// puts, say, a project's own `extern scene_entered` alongside
+/// `std/conventions/screenplay.brink`'s own same-named extern. Every call
+/// site here is a **self-declaration** lookup — "what id did the analyzer
+/// already assign to the definition *this file itself* just declared" —
+/// never a cross-file reference (those go through `resolve.rs`'s
+/// `ImportScope`-aware `lookup_by_name` instead), so the entry declared in
+/// `file` is always the right answer whenever one exists. Falling back to
+/// the first (unscoped) match when no same-file entry exists preserves
+/// byte-identical behavior for every pre-#2197 caller, where `by_name` never
+/// held more than one candidate for a given `(name, kind)` in the first
+/// place.
 pub(super) fn lookup_global(
     index: &SymbolIndex,
+    file: FileId,
     name: &str,
     kind: SymbolKind,
 ) -> Option<DefinitionId> {
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
-            .find(|&&id| index.symbols.get(&id).is_some_and(|info| info.kind == kind))
+            .find(|&&id| {
+                index
+                    .symbols
+                    .get(&id)
+                    .is_some_and(|info| info.kind == kind && info.file == file)
+            })
+            .or_else(|| {
+                ids.iter()
+                    .find(|&&id| index.symbols.get(&id).is_some_and(|info| info.kind == kind))
+            })
             .copied()
     })
 }
