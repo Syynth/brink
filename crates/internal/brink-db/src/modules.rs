@@ -285,7 +285,9 @@ mod tests {
     #[test]
     fn native_module_path_derives_purely_from_relative_path() {
         // Charter §13.2: path on disk = path in language; `story::` is the
-        // absolute root, `::` crosses walls, the file is the leaf module.
+        // project tree's own root (a peer of `std::` and any other mounted
+        // library root, not the universe's absolute root), `::` crosses
+        // walls, the file is the leaf module.
         assert_eq!(native_module_path("barter.brink"), "story::barter");
         assert_eq!(
             native_module_path("market/barter.brink"),

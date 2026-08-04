@@ -1,6 +1,6 @@
 //! Module-namespace **root identity** (docs/decision-log.md 2026-08-04
 //! "`std::` and libraries are PEER ROOTS of `story::`, not children of it";
-//! docs/modules-spec.md §1/§4; issue #2245).
+//! docs/modules-spec.md §4; issue #2245).
 //!
 //! `story::*` is the universe of what the project *author* provided.
 //! `std::*` — and every future mounted library — is a top-level **peer**
