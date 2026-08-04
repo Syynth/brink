@@ -131,8 +131,15 @@ change once those marks are added. Issue #2216 unified the
 scope-free UFCS-receiver lookup (`resolve::lookup_unique_by_name`,
 which has no `ImportScope` to classify against) onto the same gate,
 so a std-mounted candidate is invisible there too, including as the
-sole match — the two lookups can no longer disagree about std
-visibility.
+sole match — for any referrer *outside* the std tree, the two
+lookups can no longer disagree about std visibility. A referrer
+*inside* the std tree is the one remaining asymmetry:
+`lookup_by_name_direct`'s `InScope` tier still resolves a
+std-mounted candidate for a file that is itself part of
+`story::std…` (so std's own internal references keep working), but
+`lookup_unique_by_name` has no scope to classify `InScope` under and
+excludes that same candidate unconditionally — stricter than
+`lookup_by_name` for exactly that referrer.
 
 **Boundary rules** (keeping the axes from leaking):
 
