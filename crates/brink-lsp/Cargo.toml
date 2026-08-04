@@ -13,6 +13,7 @@ description = "Language server for inkle's ink narrative scripting language"
 brink-analyzer = { workspace = true }
 brink-db = { workspace = true }
 brink-driver = { workspace = true }
+brink-environment = { workspace = true }
 brink-fmt = { workspace = true }
 brink-ide = { workspace = true }
 brink-ir = { workspace = true }
