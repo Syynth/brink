@@ -370,6 +370,24 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[(
     )),
 )];
 
+/// The stdlib source set — `(root-relative key, source text)` pairs — for a
+/// caller that builds its own analysis universe *outside* [`Project::load`]
+/// (#2198): `brink-lsp` and `brink-cli`'s `ide` subcommand handlers construct
+/// their own `Driver`/`ProjectDb` directly rather than going through
+/// [`Environment`], so they cannot reach [`mount_stdlib`]'s private
+/// manifest/content-store merge. Rather than a second, parallel mount
+/// mechanism (the "second road" failure this issue exists to close), those
+/// callers pull the identical `(key, text)` pairs from here and fold them
+/// into whatever file-registration primitive their own loader already uses
+/// (`ProjectDb::set_file`), preserving the same "a project's own file at the
+/// same key wins" precedence [`mount_stdlib`] applies. This is the single
+/// source of truth both producers read — adding a stdlib module here is
+/// still the only place a new one is registered.
+#[must_use]
+pub fn stdlib_sources() -> &'static [(&'static str, &'static str)] {
+    STDLIB_SOURCES
+}
+
 /// Merge [`STDLIB_SOURCES`] into a manifest/content pair being assembled by
 /// [`Project::load`] — the whole mechanism the ruling describes: the
 /// producer adds stdlib entries, the same way it adds any other source key.

@@ -95,7 +95,7 @@
 //! full compile-identity but re-fragment the "no config yet" workflow this
 //! branch exists to preserve, which needs its own sign-off before changing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use brink_analyzer::AnalysisOptions;
@@ -253,6 +253,56 @@ fn discover_other_native_roots(roots: &[PathBuf], default_root: Option<&Path>) -
     found
 }
 
+/// Mount the stdlib source set (#2080's mount) into a freshly created
+/// project `db` — the LSP counterpart of `brink_environment::Project::load`'s
+/// own `mount_stdlib` call (issue #2198). Before this, `brink-lsp` built its
+/// `ProjectDb`s through an entirely separate path that never mounted
+/// anything, so a mounted std symbol was invisible to the editor even though
+/// a real compile through `Environment::load` already saw it.
+///
+/// Keyed by `root_dir.join(key)` — an **absolute** path, matching this
+/// module's own `set_native_root`/`set_ink_root` convention (see
+/// `discover_native`'s `absolute_keys_plus_native_root_mint_compile_identical_
+/// identity` test): `db`'s registered native/ink root strips that prefix back
+/// down to the same root-relative key (`std/conventions/screenplay.brink`)
+/// `Environment::load`'s manifest uses, so module identity mints identically
+/// either way. `root_dir` is `None` only for the rare rootless-and-wholly-
+/// unconfigured-workspace fallback (see the module doc's "Known
+/// non-compile-identical carve-out") — there is no real root to key an
+/// absolute path against there, so mounting is skipped rather than minting
+/// an ambiguous identity; a real compile of that same rootless tree has no
+/// stable root either. Pulls the identical `(key, text)` pairs
+/// `Environment::load` mounts from `brink_environment::stdlib_sources` (the
+/// shared source of truth, #2198), never a second copy of the stdlib. A
+/// project file already registered at the same key wins over the mounted
+/// copy, mirroring `mount_stdlib`'s own precedence — `db.set_file` is called
+/// before any project file has been admitted into a freshly created entry,
+/// so this only ever matters for a re-mount of an already-created project,
+/// which never happens (`ensure_index` only builds a `db` once per key).
+///
+/// Returns every mounted key's absolute path (whether newly inserted into
+/// `db` or already present) — the caller must still route each one through
+/// [`NativeProjects::owner`], since `db.set_file` alone only makes the key
+/// resolvable *inside this one db*; `NativeProjects::file_id`/
+/// `project_for_path` look the path up in `owner` first (issue #2198 review
+/// finding: without this, a mounted file was reachable from inside its own
+/// `ProjectDb` but invisible through every `NativeProjects`-level query, the
+/// only surface any `brink-lsp` handler actually calls).
+fn mount_stdlib(db: &mut brink_db::ProjectDb, root_dir: Option<&Path>) -> Vec<String> {
+    let Some(root_dir) = root_dir else {
+        return Vec::new();
+    };
+    let mut mounted = Vec::with_capacity(brink_environment::stdlib_sources().len());
+    for (key, text) in brink_environment::stdlib_sources() {
+        let abs = root_dir.join(key).to_string_lossy().into_owned();
+        if db.file_id(&abs).is_none() {
+            db.set_file(&abs, (*text).to_string());
+        }
+        mounted.push(abs);
+    }
+    mounted
+}
+
 /// One project entry: its classification key plus its own, fully
 /// independent database.
 struct ProjectEntry {
@@ -301,6 +351,19 @@ pub(crate) struct NativeProjects {
     /// path -> owning project index, so routing is O(1) instead of scanning
     /// every project on every request.
     owner: HashMap<String, usize>,
+    /// Every `FileId` that is a mounted stdlib file, not a real project file
+    /// (issue #2198) — [`Self::snapshot_for_analysis`] excludes these from
+    /// `file_meta` (and so from the `$/brink/backgroundAnalysisComplete`
+    /// `file_count`, `publish_all_diagnostics`, and
+    /// [`Self::all_file_metadata`]'s `workspace/symbol` listing), so the
+    /// mount is observable to real analysis/resolution (it still joins
+    /// `db.compute_projects()`/`analysis_inputs_for()`, matching a real
+    /// compile's symbol universe) without perturbing the client-facing
+    /// "how many of *my* files have been analyzed" protocol every
+    /// `file_count`-synchronized test (and, in principle, a real client)
+    /// relies on — a mount happening to exist is not a file the user
+    /// opened or the workspace scan found on disk.
+    mounted_std_ids: HashSet<FileId>,
 }
 
 impl NativeProjects {
@@ -310,6 +373,7 @@ impl NativeProjects {
             entries: Vec::new(),
             key_index: HashMap::new(),
             owner: HashMap::new(),
+            mounted_std_ids: HashSet::new(),
         };
         this.ensure_index(NativeProjectKey::Default);
         this
@@ -358,19 +422,26 @@ impl NativeProjects {
             .unwrap_or(u32::MAX)
             .saturating_mul(ID_STRIDE);
         let mut db = brink_db::ProjectDb::with_id_base(id_base);
-        let root = key
-            .root_dir(self.ctx.default_root.as_deref())
+        let root_dir = key.root_dir(self.ctx.default_root.as_deref());
+        let root = root_dir
+            .as_deref()
             .map(|p| p.to_string_lossy().into_owned());
         db.set_native_root(root.clone());
         if key == NativeProjectKey::Default {
             db.set_ink_root(root);
         }
+        let mounted = mount_stdlib(&mut db, root_dir.as_deref());
+        let mounted_ids: Vec<FileId> = mounted.iter().filter_map(|key| db.file_id(key)).collect();
         let idx = self.entries.len();
         self.entries.push(ProjectEntry {
             key: key.clone(),
             db,
         });
         self.key_index.insert(key, idx);
+        for mounted_key in mounted {
+            self.owner.insert(mounted_key, idx);
+        }
+        self.mounted_std_ids.extend(mounted_ids);
         idx
     }
 
@@ -407,17 +478,36 @@ impl NativeProjects {
     /// it's cheap to run under the `NativeProjects` lock. See the module
     /// doc's "Known limitation" for what this does *not* do (retroactively
     /// move an already-admitted file to a newly discovered sibling project).
+    ///
+    /// Also (re-)mounts the stdlib (issue #2198) into every entry: the
+    /// eagerly-created [`NativeProjectKey::Default`] project
+    /// ([`Self::new`]) is built *before* any workspace root is known, so
+    /// [`ensure_index`](Self::ensure_index)'s own mount attempt at creation
+    /// time sees `root_dir == None` and mounts nothing — this is the first
+    /// point a real root exists for it. [`mount_stdlib`]'s own
+    /// already-present guard makes calling it again for every other,
+    /// already-mounted entry a no-op.
     pub(super) fn apply_roots_context(&mut self, ctx: NativeRootsContext) {
         self.ctx = ctx;
-        for entry in &mut self.entries {
-            let root = entry
-                .key
-                .root_dir(self.ctx.default_root.as_deref())
+        let mut newly_mounted: Vec<(usize, String)> = Vec::new();
+        for (idx, entry) in self.entries.iter_mut().enumerate() {
+            let root_dir = entry.key.root_dir(self.ctx.default_root.as_deref());
+            let root = root_dir
+                .as_deref()
                 .map(|p| p.to_string_lossy().into_owned());
             entry.db.set_native_root(root.clone());
             if entry.key == NativeProjectKey::Default {
                 entry.db.set_ink_root(root);
             }
+            for mounted_key in mount_stdlib(&mut entry.db, root_dir.as_deref()) {
+                newly_mounted.push((idx, mounted_key));
+            }
+        }
+        for (idx, mounted_key) in newly_mounted {
+            if let Some(id) = self.entries[idx].db.file_id(&mounted_key) {
+                self.mounted_std_ids.insert(id);
+            }
+            self.owner.insert(mounted_key, idx);
         }
     }
 
@@ -507,11 +597,16 @@ impl NativeProjects {
     }
 
     /// `(FileId, path, source)` for every file in every project — the
-    /// workspace-wide view `workspace/symbol` needs.
+    /// workspace-wide view `workspace/symbol` needs. Excludes mounted stdlib
+    /// files (issue #2198, [`mounted_std_ids`](Self::mounted_std_ids)) — a
+    /// mount is not a file the workspace scan found or the user opened, so
+    /// it stays out of the client-facing file listing exactly as it stays
+    /// out of [`snapshot_for_analysis`]'s `file_meta`.
     pub(crate) fn all_file_metadata(&self) -> Vec<(FileId, String, String)> {
         self.entries
             .iter()
             .flat_map(|e| e.db.file_metadata())
+            .filter(|(id, _, _)| !self.mounted_std_ids.contains(id))
             .collect()
     }
 
@@ -547,7 +642,19 @@ impl NativeProjects {
             }
             modules.extend(db.module_map().iter().map(|(k, v)| (*k, v.clone())));
             module_diags.extend(db.module_map_diagnostics().iter().cloned());
-            let meta = db.file_metadata();
+            // Excludes mounted stdlib files (issue #2198,
+            // `mounted_std_ids`): a mount still fully participates in
+            // `compute_projects`/`analysis_inputs_for` above (so real
+            // analysis/resolution sees it, matching a real compile's
+            // symbol universe), but it is not a file the client's own
+            // workspace scan or `didOpen` produced, so it stays out of
+            // `file_meta` — the client-facing `file_count`/per-file
+            // diagnostic-publish/`workspace-symbol` surface.
+            let meta: Vec<_> = db
+                .file_metadata()
+                .into_iter()
+                .filter(|(fid, _, _)| !self.mounted_std_ids.contains(fid))
+                .collect();
             for (fid, _, _) in &meta {
                 if let Some(d) = db.file_diagnostics(*fid) {
                     per_file_diags.push((*fid, d.to_vec()));
@@ -576,7 +683,7 @@ impl NativeProjects {
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeProjectKey, NativeRootsContext};
+    use super::{ConfigLoadOutcome, NativeProjectKey, NativeProjects, NativeRootsContext};
     use std::path::{Path, PathBuf};
 
     fn ctx(
@@ -652,5 +759,87 @@ mod tests {
             c.classify(Path::new("/ws/elsewhere/stray.brink")),
             NativeProjectKey::Default
         );
+    }
+
+    /// Issue #2198: `brink-lsp` builds its own `NativeProjects`/`ProjectDb`
+    /// universe, entirely separate from `brink_environment::Project::load`
+    /// (the one real production compile path that mounts the stdlib, #2080/
+    /// #2190) — before this fix, `NativeProjects` never mounted anything, so
+    /// the editor disagreed with a real compile the moment a project could
+    /// see into `std/`. Runs the SAME two-step sequence
+    /// `Backend::register_native_root` uses in production
+    /// (`compute_roots_context` then `apply_roots_context`) against a real
+    /// temp workspace, then proves a symbol the mounted std file declares is
+    /// actually reachable through `NativeProjects`' own query surface — not
+    /// merely that a mount call was added somewhere. Rule 20a verified: with
+    /// both `mount_stdlib` call sites in this file reverted, this test fails
+    /// (`file_id(&std_key)` is `None`, so the `assert!` panics before the
+    /// symbol-index check is ever reached).
+    #[test]
+    fn native_projects_mounts_stdlib_and_a_std_symbol_is_visible() {
+        let dir = temp_dir("stdlib-mount");
+        std::fs::write(dir.join("brink.toml"), "[project]\ndialect = \"brink\"\n")
+            .expect("write brink.toml");
+        let main_source = "flow main() {\n  Hi. -> END\n}\n";
+        std::fs::write(dir.join("main.brink"), main_source).expect("write main.brink");
+
+        let mut projects = NativeProjects::new();
+        let outcome = ConfigLoadOutcome {
+            path: Some(dir.join("brink.toml")),
+            diagnostic: None,
+        };
+        let roots_ctx = NativeProjects::compute_roots_context(std::slice::from_ref(&dir), &outcome);
+        projects.apply_roots_context(roots_ctx);
+
+        let main_path = dir.join("main.brink").to_string_lossy().into_owned();
+        projects.set_file(&main_path, main_source.to_string());
+
+        let std_key = dir
+            .join("std/conventions/screenplay.brink")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            projects.file_id(&std_key).is_some(),
+            "the mounted std file must be a registered project file, got no \
+             FileId for {std_key}"
+        );
+
+        let opts = brink_analyzer::AnalysisOptions {
+            dialect: brink_analyzer::Dialect::Brink,
+            ..brink_analyzer::AnalysisOptions::default()
+        };
+        let _ = projects.snapshot_for_analysis(&opts);
+
+        let db = projects
+            .project_for_path(&main_path)
+            .expect("main.brink's owning project db");
+        let index = db.symbol_index();
+        assert!(
+            index.by_name.contains_key("scene_entered"),
+            "a symbol declared in the mounted std file must be visible in \
+             the project's own symbol index, got names: {:?}",
+            index.by_name.keys().collect::<Vec<_>>()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A fresh, empty temp directory, unique per call.
+    fn temp_dir(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!(
+            "brink-lsp-projects-test-{label}-{}-{n}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
     }
 }
