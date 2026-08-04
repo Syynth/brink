@@ -26,8 +26,8 @@ native project's own sources.
   files' lowering passes. Fixed by preferring the entry declared in the
   file currently being lowered (falling back to the old unscoped match when
   none exists, so every pre-#2197 corpus stays byte-identical).
-- **The bare-name visibility gap (2026-08-03 SUBTRACTION RULING):** stdlib
-  symbols are reachable only via an explicit `use std::…` — there is no
+- **The bare-name visibility gap (#2080's SCOPE FENCE, `docs/decision-log.md`):**
+  stdlib symbols are reachable only via an explicit `use std::…` — there is no
   implicit inclusion. That import mechanism doesn't exist yet (#1582/#2167),
   so today a std-mounted candidate is invisible to bare-name resolution,
   full stop — `brink-analyzer`'s `resolve::lookup_by_name_direct` now

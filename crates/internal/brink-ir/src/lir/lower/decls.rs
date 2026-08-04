@@ -407,12 +407,19 @@ pub fn collect_externals(
         for ext in &hir_file.externals {
             if let Some(id) = lookup_global(index, file_id, &ext.name.text, SymbolKind::External) {
                 let name = names.intern(&ext.name.text);
-                // Look for an ink-defined function with the same name, IN
-                // THIS SAME FILE, to use as fallback (issue #2197: a
-                // project's own `extern foo` + `fn foo` fallback pair must
-                // never cross-wire to some *other* file's same-named
-                // fallback — e.g. the stdlib mount's own `extern
-                // scene_entered` + `fn scene_entered` pair).
+                // Look for an ink-defined function with the same name to use
+                // as fallback — preferring one declared in this same file
+                // (issue #2197), but a same-file entry is not the only
+                // legitimate answer: an `extern foo` here and `=== function
+                // foo` in an `INCLUDE`d sibling is a real, supported
+                // cross-file fallback pair. What must never happen is
+                // falling through to a **mounted `story::std…`** module's
+                // same-named fallback with no import — e.g. the stdlib
+                // mount's own `extern scene_entered` + `fn scene_entered`
+                // pair binding to an unrelated project-declared `extern` of
+                // the same name — which is exactly what `lookup_global`'s
+                // own doc (the std exclusion in its unscoped fallback arm)
+                // now rules out.
                 let fallback = lookup_global(index, file_id, &ext.name.text, SymbolKind::Knot);
                 externals.push(lir::ExternalDef {
                     id,
@@ -425,6 +432,20 @@ pub fn collect_externals(
     }
 
     externals
+}
+
+/// True when `module` names the reserved standard-library namespace
+/// `brink_environment`'s stdlib mount (issue #2080's scope fence,
+/// `docs/decision-log.md`) populates: `story::std` itself, or any of its
+/// submodules (`story::std::conventions::screenplay`, …). A local mirror of
+/// `brink-analyzer::resolve::is_std_module`'s identical string convention —
+/// this crate lowers *before* `brink-analyzer` in the pipeline
+/// (`brink-ir::hir` → `brink-analyzer` → `brink-ir::lir`), so depending on
+/// `brink-analyzer` from here would be a cycle. Kept private and file-local
+/// rather than shared, same posture that sibling doc takes toward
+/// `brink-db::modules::native_module_path`.
+fn is_std_module(module: &str) -> bool {
+    module == "story::std" || module.starts_with("story::std::")
 }
 
 /// Look up a project-wide global by name, preferring the entry declared in
@@ -441,11 +462,24 @@ pub fn collect_externals(
 /// already assign to the definition *this file itself* just declared" —
 /// never a cross-file reference (those go through `resolve.rs`'s
 /// `ImportScope`-aware `lookup_by_name` instead), so the entry declared in
-/// `file` is always the right answer whenever one exists. Falling back to
-/// the first (unscoped) match when no same-file entry exists preserves
-/// byte-identical behavior for every pre-#2197 caller, where `by_name` never
-/// held more than one candidate for a given `(name, kind)` in the first
-/// place.
+/// `file` is always the right answer whenever one exists.
+///
+/// The unscoped fallback (no same-file entry) **excludes any candidate
+/// declared in a mounted `story::std…` module** (review finding on #2197):
+/// without this exclusion, a file that declares an `extern` with **no
+/// fallback of its own** — a legal, common shape — would silently fall
+/// through to whichever *other* file's same-named `fn` happens to sort
+/// first in `by_name`, including the stdlib mount's own same-named
+/// fallback (e.g. `std/conventions/screenplay.brink`'s `fn scene_entered`
+/// binding to a project's unrelated `extern scene_entered(title, slug)`
+/// with different params). That is exactly the "silently reach into std
+/// with no import" class this issue's bare-name-visibility half closes
+/// everywhere else (`resolve.rs`'s `lookup_by_name_direct`); this lookup is
+/// a different call path into the same index and needed its own carve-out.
+/// A **legitimate** cross-file fallback — `extern foo` in one file and
+/// `=== function foo` in an `INCLUDE`d sibling, neither of them std — is
+/// unaffected: only a `story::std…`-declared candidate is skipped, so
+/// every pre-#2197 non-std caller keeps its byte-identical unscoped match.
 pub(super) fn lookup_global(
     index: &SymbolIndex,
     file: FileId,
@@ -461,8 +495,11 @@ pub(super) fn lookup_global(
                     .is_some_and(|info| info.kind == kind && info.file == file)
             })
             .or_else(|| {
-                ids.iter()
-                    .find(|&&id| index.symbols.get(&id).is_some_and(|info| info.kind == kind))
+                ids.iter().find(|&&id| {
+                    index.symbols.get(&id).is_some_and(|info| {
+                        info.kind == kind && !info.module.as_deref().is_some_and(is_std_module)
+                    })
+                })
             })
             .copied()
     })
@@ -1234,5 +1271,144 @@ fn eval_bool_infix(a: bool, op: hir::InfixOp, b: bool) -> lir::ConstValue {
         InfixOp::Eq => ConstValue::Bool(a == b),
         InfixOp::NotEq => ConstValue::Bool(a != b),
         _ => ConstValue::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brink_format::DefinitionTag;
+    use rowan::TextRange;
+
+    use super::*;
+    use crate::symbols::{SymbolInfo, Visibility};
+
+    /// Insert one bare-name `SymbolInfo` into `index`, in `module` (`None`
+    /// for the undeclared/legacy world), owned by `file`.
+    fn insert(
+        index: &mut SymbolIndex,
+        id: DefinitionId,
+        file: FileId,
+        name: &str,
+        kind: SymbolKind,
+        module: Option<&str>,
+    ) {
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind,
+                file,
+                range: TextRange::default(),
+                id,
+                name: name.to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: module.map(str::to_string),
+                visibility: Visibility::Public,
+            },
+        );
+        index.by_name.entry(name.to_string()).or_default().push(id);
+    }
+
+    /// Issue #2197 review finding: a project file declaring `extern foo`
+    /// with **no fallback of its own** must not have `collect_externals`'
+    /// fallback lookup silently fall through to a mounted `story::std…`
+    /// module's own same-named `fn foo` — the exact "silently reach into
+    /// std with no import" class the bare-name-visibility half of #2197
+    /// closes at the `resolve.rs` layer, reached here through a completely
+    /// different call path (`lookup_global`'s unscoped `.or_else`).
+    #[test]
+    fn extern_only_no_fallback_does_not_bind_a_std_mounts_fn_of_the_same_name() {
+        let mut index = SymbolIndex::default();
+        let project_file = FileId(0);
+        let std_file = FileId(1);
+
+        // The project's own `extern scene_entered(...)` — no fallback fn
+        // anywhere in the project.
+        let project_extern = DefinitionId::new(DefinitionTag::ExternalFn, 1);
+        insert(
+            &mut index,
+            project_extern,
+            project_file,
+            "scene_entered",
+            SymbolKind::External,
+            Some("story::story"),
+        );
+
+        // The stdlib mount declares its OWN extern + fallback pair under
+        // the same bare name, in a `story::std…` module.
+        let std_extern = DefinitionId::new(DefinitionTag::ExternalFn, 2);
+        insert(
+            &mut index,
+            std_extern,
+            std_file,
+            "scene_entered",
+            SymbolKind::External,
+            Some("story::std::conventions::screenplay"),
+        );
+        let std_fallback = DefinitionId::new(DefinitionTag::Address, 3);
+        insert(
+            &mut index,
+            std_fallback,
+            std_file,
+            "scene_entered",
+            SymbolKind::Knot,
+            Some("story::std::conventions::screenplay"),
+        );
+
+        // The project's own extern still resolves (same-file entry exists).
+        assert_eq!(
+            lookup_global(&index, project_file, "scene_entered", SymbolKind::External),
+            Some(project_extern)
+        );
+
+        // But the fallback lookup — no same-file `Knot` named
+        // `scene_entered` exists in the project — must NOT fall through to
+        // the std mount's `fn scene_entered`. It must resolve to nothing.
+        assert_eq!(
+            lookup_global(&index, project_file, "scene_entered", SymbolKind::Knot),
+            None,
+            "an extern with no project-side fallback must not silently bind \
+             a same-named fn from a mounted std:: module"
+        );
+    }
+
+    /// The non-std twin of the test above: a **legitimate** cross-file
+    /// fallback (an `extern` in one file, its `=== function ===` fallback in
+    /// an `INCLUDE`d sibling, neither of them std) must still resolve via
+    /// the unscoped fallback exactly as before #2197 — the std exclusion
+    /// must not overreach into ordinary cross-file cases.
+    #[test]
+    fn extern_only_no_fallback_still_finds_a_non_std_sibling_fallback() {
+        let mut index = SymbolIndex::default();
+        let project_file = FileId(0);
+        let sibling_file = FileId(1);
+
+        let project_extern = DefinitionId::new(DefinitionTag::ExternalFn, 10);
+        insert(
+            &mut index,
+            project_extern,
+            project_file,
+            "narrate",
+            SymbolKind::External,
+            None,
+        );
+        let sibling_fallback = DefinitionId::new(DefinitionTag::Address, 11);
+        insert(
+            &mut index,
+            sibling_fallback,
+            sibling_file,
+            "narrate",
+            SymbolKind::Knot,
+            None,
+        );
+
+        assert_eq!(
+            lookup_global(&index, project_file, "narrate", SymbolKind::Knot),
+            Some(sibling_fallback),
+            "a non-std cross-file fallback pair must still resolve, unchanged \
+             from pre-#2197 behavior"
+        );
     }
 }
