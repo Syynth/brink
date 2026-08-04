@@ -488,6 +488,94 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     ))
 }
 
+/// The project's serialized conventions projection (issue #2111, NS-T seam
+/// 1/6): every `@[convention]` handler declared in the project's one
+/// configured conventions module, ascending by `order` — the editor-facing
+/// artifact the design-backport comment on #2111 (`docs/decision-log.md`
+/// 2026-08-03) calls "THE SOLE EDITOR INTERCHANGE": claims pattern, order,
+/// mode (attach/wrap), resulting disposition, and the `attach = StructName`
+/// schema name. Schema, never values — see [`ConventionsProjection`]'s own
+/// doc for that boundary and for why no comptime-fault/last-good case
+/// exists here (the mechanism that would have needed one, `fn
+/// conventions()` registration, is dissolved).
+///
+/// # Resolution (mirrors [`conventions_confinement_diagnostics_query`])
+///
+/// Deliberately the SAME resolution posture as that query, reused rather
+/// than re-derived, because both answer "which file is the configured
+/// conventions module" against the same `[project] elements` pointer:
+///
+/// - No `elements` configured at all → empty projection. There is no
+///   conventions module to project.
+/// - A **bare preset name** (`elements = "screenplay"`, not path-shaped) →
+///   ALSO empty, for now. `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s own
+///   doc states plainly that nothing resolves a preset name to its mounted
+///   source yet: "`std::conventions::screenplay` has no real
+///   `use`-importable module path… that needs #1582's pub marker and
+///   #2167's closure-scoped confinement, neither built yet." Minting a
+///   bespoke resolution here (bypassing that stated dependency) would be
+///   exactly the kind of undetermined-default invention the parent ruling's
+///   own "do not invent it" caution warns against — the issue's own
+///   "pre-frozen preset" note describes a *destination*, not something
+///   this slice can honestly claim to deliver ahead of #1582/#2167.
+/// - A path-shaped pointer that resolves to a real project file → that
+///   file's own [`ClaimHandlerDecl`]s, projected.
+/// - A path-shaped pointer that resolves to no real file → empty, with the
+///   same `tracing::warn!` this query's confinement sibling emits (never a
+///   silent drop).
+///
+/// # Invalidation
+///
+/// Reads exactly: `project.analysis_options(db).elements`, `module_map_query`
+/// (to resolve the pointer and to find the target file), and that ONE
+/// resolved file's `lowered_query` output. No other file's content is ever
+/// read, so this query is invalidated by an edit to the conventions module
+/// itself (or a project-config change to the pointer, or the discovered
+/// module set) and by nothing else — see [`ConventionsProjection`]'s own
+/// doc for why this is a strictly narrower, and correct, reading of the
+/// ruled "conventions module and its import closure" invalidation contract
+/// under the current (post-#2164) design.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn conventions_projection_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<brink_ir::ConventionsProjection> {
+    let opts = project.analysis_options(db);
+    let Some(pointer) = opts.elements.as_deref() else {
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+    if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
+        // A bare preset name — see this function's own doc for why that
+        // case stays unresolved here.
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    }
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let native_root = project.native_root(db).as_deref();
+    let expected_module = crate::modules::native_module_path(&crate::modules::root_relative_key(
+        native_root,
+        pointer,
+    ));
+    let Some(conventions_file) = project.files(db).iter().find(|f| {
+        module_map
+            .get(&f.file_id(db))
+            .is_some_and(|m| m.name == expected_module)
+    }) else {
+        // Same "warn, never silently drop" channel
+        // `conventions_confinement_diagnostics_query` uses for the
+        // identical unresolvable-pointer case.
+        tracing::warn!(
+            "[project] elements = \"{pointer}\" does not match any file in the project \
+             (expected module `{expected_module}`) — the conventions projection is empty \
+             until this is fixed"
+        );
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+    let hir = &lowered_query(db, *conventions_file).hir;
+    Arc::new(brink_ir::ConventionsProjection::from_decls(
+        &hir.claim_handlers,
+    ))
+}
+
 /// One file's `register`-intrinsic confinement diagnostics (`E175`, issue
 /// #1840 Q5 — the *legality* half of the 2026-08-02 "`register` is a
 /// comptime-only intrinsic" ruling). `register` is legal only inside the

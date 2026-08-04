@@ -113,7 +113,7 @@ pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
     call_site_diagnostics_query, call_site_metas_query, coalesce_types_query,
     comparator_contract_diagnostics_query, contributor_diagnostics_query,
-    conventions_confinement_diagnostics_query, diagnostics_query,
+    conventions_confinement_diagnostics_query, conventions_projection_query, diagnostics_query,
     effects_assertion_diagnostics_query, external_meta_query, has_errors_in_closure_query,
     has_errors_query, inline_docs_query, per_file_diagnostics_query,
     register_intrinsic_diagnostics_query, resolutions_index_query, ufcs_resolution_query,
@@ -291,6 +291,10 @@ impl Default for BrinkDatabase {
                 // ruling. Reads `module_map_query` only for a file that
                 // declared at least one claiming handler.
                 .ingredient::<conventions_confinement_diagnostics_query>()
+                // The serialized conventions projection (issue #2111, NS-T
+                // seam 1/6): the editor-facing artifact reads only the
+                // resolved conventions module's own `lowered_query` output.
+                .ingredient::<conventions_projection_query>()
                 // `register`-intrinsic confinement gate (E175, issue #1840
                 // Q5): a `register(...)` call is legal only inside the
                 // conventions module's `fn conventions()`. Reads

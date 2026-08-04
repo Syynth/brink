@@ -531,6 +531,156 @@ pub struct ClaimHandlerDecl {
     pub attach: Option<String>,
 }
 
+// ─── The serialized conventions projection (issue #2111) ────────────
+
+/// The attachment mode a `@[convention]` handler declares — issue #2164's
+/// 2026-08-03 design-backport comment names this axis "mode (attach/wrap)",
+/// tracked separately from the `attach = StructName` schema ruling at
+/// icebox issue #2169 ("the wrap mode… is the natural home for the title
+/// page once claiming can be region-scoped"). It is not a new concept: it is
+/// [`ClaimHandlerDecl::block`] read as a two-value enum for projection
+/// purposes, rather than a bare `bool` a tooling consumer would have to
+/// remember the polarity of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConventionMode {
+    /// The ordinary case: the handler's pattern matches exactly the one
+    /// claimed line. Nothing following it is captured.
+    Attach,
+    /// The `block` clause (issue #1839): the handler's trailing `content`-
+    /// typed parameter captures the run *following* the matched line,
+    /// terminated by a blank line or any element-level line. The handler
+    /// **wraps** the captured run — receives it, decides its emission.
+    Wrap,
+}
+
+/// One `@[convention]` handler's projected, purely declarative shape — the
+/// editor/host-readable half of a claiming declaration (issue #2111).
+///
+/// **Schema, never values** (`docs/decision-log.md` 2026-08-03 "The element
+/// output model"): every field here is read straight off the declaration's
+/// own annotation and return-type syntax. Nothing here is computed by
+/// running the handler's body — an editor consuming this projection never
+/// runs brink code, matching the "the editor reads data and never executes
+/// brink code" boundary the no-world-reads fence (issue #2179, not yet
+/// built) will eventually enforce on the *body* side of the same split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionProjectionEntry {
+    /// The handler's own name, carrying its declaration-site range — what a
+    /// hover/explain-match consumer jumps to.
+    pub name: Name,
+    /// The claiming pattern's regex source, as declared.
+    pub pattern: String,
+    /// The claiming precedence — see [`ConventionAnnotation::order`]'s own
+    /// doc. Every entry in a [`ConventionsProjection`] carries one (`order`
+    /// is required, never absent), and the projection's own `entries` are
+    /// already sorted ascending by it — the same resolution order the
+    /// classification walk uses.
+    pub order: i64,
+    /// Attach (ordinary) or wrap (`block`) — see [`ConventionMode`]'s own
+    /// doc.
+    pub mode: ConventionMode,
+    /// What a match on this handler produces — reuses [`ElementDisposition`]
+    /// verbatim rather than inventing a parallel "resulting kind" concept:
+    /// every claimed line still rewrites to exactly one call, so this is
+    /// [`ElementDisposition::Call`] for every entry today. Carried as a
+    /// real field (not simply omitted because there is only one variant)
+    /// for the same reason [`ElementMatch::disposition`] is: a tooling
+    /// consumer should read what happened, not infer it from a field's
+    /// absence, and this stays exact if a second disposition is ever added.
+    pub disposition: ElementDisposition,
+    /// The `attach = StructName` clause's declared struct name, if any —
+    /// see [`ConventionAnnotation::attach`]'s own doc. `None` for a handler
+    /// that only ever emits text (the pre-#2178 shape). Carries the
+    /// **schema name only** — the struct's own field/type shape is not
+    /// resolved here (the same declaration-surface-only posture `E180`
+    /// itself takes); a consumer wanting the full schema resolves the name
+    /// against the project's own struct declarations.
+    pub attach: Option<String>,
+}
+
+/// The serialized conventions projection (issue #2111): every `@[convention]`
+/// handler declared in the project's one configured conventions module, in
+/// ascending `order` — the flat, ordered, purely-declarative record an
+/// editor reads instead of tracing execution.
+///
+/// # Why there is no comptime-fault / last-good-value case here
+///
+/// The issue this type answers was filed against the `fn conventions()`
+/// registration design (issue #1840), where `order` came from
+/// comptime-evaluating a registration function — so the projection could
+/// fault (a step-limit hit, a panic) and the editor needed a last-good
+/// fallback (`docs/decision-log.md` 2026-08-01 "Conventions comptime… Q2").
+/// **That mechanism no longer exists.** The 2026-08-03 ruling "`fn
+/// conventions()` is DISSOLVED" moved `order` onto the `@[convention]`
+/// annotation itself, so every field on [`ConventionProjectionEntry`] is
+/// now read straight off one file's CST/HIR — a pure, total function of
+/// source text, with no VM execution anywhere in the path. There is
+/// nothing left to fault: a malformed declaration (a missing `order`, a
+/// duplicate one, an `attach` mismatch) is an ordinary compile diagnostic
+/// (`E178`/`E179`/`E180`) reported by the existing per-file lowering pass,
+/// not a comptime error this type needs to represent or degrade under.
+///
+/// # Why there is no import-closure dependency to track
+///
+/// The same dissolution removes the reason an import closure would matter:
+/// under the old design, evaluating `fn conventions()` could call into
+/// registered functions from imported modules, so the projection's
+/// *content* could depend on what those modules exported. Under the
+/// annotation-based design, `claims`/`order`/`block`/`attach` are all
+/// syntactic properties of the declaration *in the conventions module's own
+/// file* — the subtraction ruling (`docs/decision-log.md` 2026-08-03) makes
+/// that module "the SOLE source of active claiming handlers", so a handler
+/// reached only via delegation (calling into an imported preset's function
+/// body) still carries its own `@[convention(…)]` clause locally; the body
+/// it delegates to is never read by this projection (schema, never
+/// values). [`Self::from_decls`] therefore reads only the resolved
+/// conventions module's own [`ClaimHandlerDecl`]s —
+/// `brink_db::queries::analysis::conventions_projection_query`'s salsa
+/// dependency edges are exactly that file's `lowered_query` output plus the
+/// project's `[project] elements` pointer and module map, so an edit to any
+/// *other* file never re-executes this query's closure at all. This is a
+/// strictly narrower (and simpler) invalidation footprint than "the
+/// conventions module and its import closure" — it is "the conventions
+/// module alone" because nothing else can currently affect the result.
+/// Issue #2167's own need for import-closure computation (relaxing the
+/// `E169` confinement check for the delegation pattern) is a distinct,
+/// not-yet-ruled question this type does not attempt to answer.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConventionsProjection {
+    /// Every declared `@[convention]` handler, ascending by `order`.
+    pub entries: Vec<ConventionProjectionEntry>,
+}
+
+impl ConventionsProjection {
+    /// Build a projection from one file's already-collected claim-handler
+    /// declarations (`ClaimHandlerDecl`, ordered ascending by `order` —
+    /// [`crate::hir::lower_native::element::collect`]'s own contract).
+    /// Order is preserved, not re-sorted: this function trusts its input's
+    /// ordering rather than re-deriving it, so a caller that hands in an
+    /// unsorted slice gets an unsorted projection back — re-sorting here
+    /// would silently mask a caller bug instead of surfacing it.
+    #[must_use]
+    pub fn from_decls(decls: &[ClaimHandlerDecl]) -> Self {
+        Self {
+            entries: decls
+                .iter()
+                .map(|decl| ConventionProjectionEntry {
+                    name: decl.name.clone(),
+                    pattern: decl.pattern.clone(),
+                    order: decl.order,
+                    mode: if decl.block {
+                        ConventionMode::Wrap
+                    } else {
+                        ConventionMode::Attach
+                    },
+                    disposition: ElementDisposition::Call,
+                    attach: decl.attach.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// One `@NAME` cue occurrence, recorded regardless of whether any
 /// conventions handler ever claims the line (`docs/prose-dialect-spec.md`
 /// §5, issue #2114: "harvest by default, declaration upgrades").
@@ -2396,5 +2546,98 @@ mod lambda_body_tests {
         let all = body.all_exprs();
         // the `if` condition, the two branch initializers, and the tail.
         assert_eq!(all.len(), 4, "{all:?}");
+    }
+}
+
+#[cfg(test)]
+mod conventions_projection_tests {
+    use super::*;
+
+    fn name(text: &str) -> Name {
+        Name {
+            text: text.to_string(),
+            range: TextRange::default(),
+        }
+    }
+
+    fn decl(name_text: &str, order: i64, block: bool, attach: Option<&str>) -> ClaimHandlerDecl {
+        ClaimHandlerDecl {
+            name: name(name_text),
+            annotation: TextRange::default(),
+            params: Vec::new(),
+            pattern: format!("^{name_text}$"),
+            block,
+            order,
+            attach: attach.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn from_decls_preserves_input_order() {
+        // `collect` hands this function an already-`order`-sorted slice
+        // (issue #2164's own contract) — the builder trusts that, so this
+        // proves it does not re-sort behind the caller's back.
+        let decls = vec![
+            decl("exterior", 20, false, None),
+            decl("interior", 10, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls);
+        let names: Vec<&str> = projection
+            .entries
+            .iter()
+            .map(|e| e.name.text.as_str())
+            .collect();
+        assert_eq!(names, vec!["exterior", "interior"]);
+    }
+
+    #[test]
+    fn block_flag_becomes_wrap_mode_and_its_absence_becomes_attach_mode() {
+        let decls = vec![
+            decl("cue", 10, true, None),
+            decl("interior", 20, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls);
+        assert_eq!(projection.entries[0].mode, ConventionMode::Wrap);
+        assert_eq!(projection.entries[1].mode, ConventionMode::Attach);
+    }
+
+    #[test]
+    fn attach_schema_name_is_carried_through_verbatim() {
+        let decls = vec![decl("cue", 10, false, Some("Cue"))];
+        let projection = ConventionsProjection::from_decls(&decls);
+        assert_eq!(projection.entries[0].attach.as_deref(), Some("Cue"));
+    }
+
+    #[test]
+    fn no_attach_clause_projects_to_none() {
+        let decls = vec![decl("interior", 10, false, None)];
+        let projection = ConventionsProjection::from_decls(&decls);
+        assert_eq!(projection.entries[0].attach, None);
+    }
+
+    #[test]
+    fn every_entry_carries_the_call_disposition() {
+        // There is only one `ElementDisposition` variant today — this pins
+        // that the projection actually reads and carries it, rather than
+        // e.g. hardcoding a literal in a way that would silently stay
+        // correct even if this field were dropped from the struct.
+        let decls = vec![decl("interior", 10, false, None)];
+        let projection = ConventionsProjection::from_decls(&decls);
+        assert_eq!(projection.entries[0].disposition, ElementDisposition::Call);
+    }
+
+    #[test]
+    fn an_empty_decl_set_projects_to_an_empty_projection() {
+        let projection = ConventionsProjection::from_decls(&[]);
+        assert!(projection.entries.is_empty());
+        assert_eq!(projection, ConventionsProjection::default());
+    }
+
+    #[test]
+    fn order_and_pattern_are_carried_through_verbatim() {
+        let decls = vec![decl("interior", 42, false, None)];
+        let projection = ConventionsProjection::from_decls(&decls);
+        assert_eq!(projection.entries[0].order, 42);
+        assert_eq!(projection.entries[0].pattern, "^interior$");
     }
 }
