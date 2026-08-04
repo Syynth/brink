@@ -399,10 +399,10 @@ pub(crate) fn await_purity_diagnostics_query(
     ))
 }
 
-/// The module name the project's `[project] elements` pointer names, or
+/// The module name the project's `[project] conventions` pointer names, or
 /// `None` when there is nothing to resolve.
 ///
-/// The ONE place the `elements` pointer is turned into a module name, so
+/// The ONE place the `conventions` pointer is turned into a module name, so
 /// the two consumers that need it — [`conventions_confinement_diagnostics_query`]
 /// (which asks "is *this* file that module?") and
 /// [`conventions_projection_query`] (which asks "*which* file is that
@@ -413,8 +413,8 @@ pub(crate) fn await_purity_diagnostics_query(
 ///
 /// `None` covers the two cases both consumers treat identically and
 /// silently (see `brink_analyzer::conventions_module_diagnostics`'s own
-/// module doc): an unset `elements` key, and a **bare preset name**
-/// (`elements = "screenplay"`), which names a `std::conventions::*` module
+/// module doc): an unset `conventions` key, and a **bare preset name**
+/// (`conventions = "screenplay"`), which names a `std::conventions::*` module
 /// rather than a project file — `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s
 /// own doc records that nothing resolves a preset name to its mounted
 /// source yet (it needs #1582's pub marker and #2167's closure-scoped
@@ -543,6 +543,14 @@ pub(crate) fn conventions_confinement_diagnostics_query(
 /// incoming order or on which import statement happened to be visited
 /// first.
 ///
+/// The same path-sorted, first-wins rule governs name resolution *while
+/// walking imports*, too: when two files in the project declare the same
+/// module name, the import-target lookup resolves to the lowest-path file,
+/// deterministically — never whichever one `project.files` happened to
+/// iterate over last. Both the closure's final **order** and its
+/// **membership** (which file a duplicate name resolves to) are therefore
+/// independent of `project.files`' incoming order.
+///
 /// A named-but-unresolvable import (a typo, a module that doesn't exist)
 /// is simply not followed — this query only ever widens by real, resolved
 /// files, never by a dangling name a diagnostic elsewhere already reports.
@@ -553,15 +561,21 @@ pub(crate) fn import_closure_query(
     entry: SourceFile,
 ) -> Arc<Vec<SourceFile>> {
     let (module_map, _module_diags) = module_map_query(db, project);
-    let by_name: BTreeMap<&str, SourceFile> = project
-        .files(db)
-        .iter()
-        .filter_map(|f| {
-            module_map
-                .get(&f.file_id(db))
-                .map(|m| (m.name.as_str(), *f))
-        })
-        .collect();
+    // First-wins on a duplicate module name, over a path-sorted iteration —
+    // not the `.collect()`-into-map last-write-wins this replaced. A plain
+    // `.collect()` made a duplicate name's WINNER (not just its resolution
+    // order) depend on `project.files`' incoming order, contradicting this
+    // query's own "the order can never depend on `project.files`' incoming
+    // order" doc and the `min_by_key` determinism this same file applies
+    // ~30 lines below for the conventions file itself.
+    let mut files_by_path: Vec<SourceFile> = project.files(db).clone();
+    files_by_path.sort_by_key(|f| f.path(db).clone());
+    let mut by_name: BTreeMap<&str, SourceFile> = BTreeMap::new();
+    for f in &files_by_path {
+        if let Some(m) = module_map.get(&f.file_id(db)) {
+            by_name.entry(m.name.as_str()).or_insert(*f);
+        }
+    }
 
     let mut seen = std::collections::BTreeSet::new();
     seen.insert(entry.file_id(db));
@@ -598,13 +612,13 @@ pub(crate) fn import_closure_query(
 ///
 /// # Resolution (shared with [`conventions_confinement_diagnostics_query`])
 ///
-/// Both queries route the `[project] elements` pointer through the same
+/// Both queries route the `[project] conventions` pointer through the same
 /// [`expected_conventions_module`] helper, so "which module is the
 /// conventions module" has exactly one answer:
 ///
-/// - No `elements` configured at all → empty projection. There is no
+/// - No `conventions` configured at all → empty projection. There is no
 ///   conventions module to project.
-/// - A **bare preset name** (`elements = "screenplay"`, not path-shaped) →
+/// - A **bare preset name** (`conventions = "screenplay"`, not path-shaped) →
 ///   ALSO empty, for now. `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s own
 ///   doc states plainly that nothing resolves a preset name to its mounted
 ///   source yet: "`std::conventions::screenplay` has no real
@@ -625,7 +639,7 @@ pub(crate) fn import_closure_query(
 ///
 /// # Invalidation
 ///
-/// Reads: `project.analysis_options(db)` (for the `elements` pointer and
+/// Reads: `project.analysis_options(db)` (for the `conventions` pointer and
 /// the native root), [`module_map_query`] (to find which file carries the
 /// expected module name, and to resolve `IMPORT` targets), the resolved
 /// conventions module's own [`import_closure_query`] (finding 3 — widened
@@ -680,7 +694,7 @@ pub(crate) fn conventions_projection_query(
         // `conventions_confinement_diagnostics_query` uses for the
         // identical unresolvable-pointer case.
         tracing::warn!(
-            "[project] elements = \"{pointer}\" does not match any file in the project \
+            "[project] conventions = \"{pointer}\" does not match any file in the project \
              (expected module `{expected_module}`) — the conventions projection is empty \
              until this is fixed"
         );
@@ -716,7 +730,7 @@ pub(crate) fn conventions_projection_query(
     for entry in &projection.entries {
         if let Some(brink_ir::ConventionAttachSchema::Unresolved(name)) = &entry.attach {
             tracing::warn!(
-                "@[convention(…, attach = {name})]` on `{}` does not resolve to any struct \
+                "`@[convention(…, attach = {name})]` on `{}` does not resolve to any struct \
                  declared in the conventions module `{expected_module}` or its import closure \
                  — the projection carries this attach clause as `Unresolved` rather than \
                  dropping it",

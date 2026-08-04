@@ -10,8 +10,11 @@
 //! would have needed one (`fn conventions()` registration, issue #1840) is
 //! dissolved (`docs/decision-log.md` 2026-08-03). What remains testable —
 //! and is tested below — is the query SHAPE, its KEYING against the
-//! `[project] conventions` pointer, and its INVALIDATION footprint (exactly
-//! the resolved conventions module file, nothing else).
+//! `[project] conventions` pointer, and its INVALIDATION footprint —
+//! **the resolved conventions module file plus its transitive `IMPORT`
+//! closure** (finding 3's widened footprint; see
+//! `editing_an_imported_struct_file_updates_the_projection` and the
+//! two-hop/cyclic cases below), never the whole project.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -142,6 +145,93 @@ fn attach_resolves_across_an_imported_struct_file() {
                     ty: SchemaTypeShape::Named("bool".to_string()),
                 },
             ],
+        }),
+        "{projection:?}"
+    );
+}
+
+/// Issue #2111 finding 3's review follow-up: the closure walk must be
+/// genuinely TRANSITIVE, not just one hop deep. `conventions.brink` imports
+/// `middle.brink`, which in turn imports `schema.brink` — `conventions.brink`
+/// never names `schema.brink` directly, so this can only pass if
+/// `import_closure_query` keeps walking past the first hop.
+///
+/// Per rule 20a, this is confirmed to actually exercise multi-hop traversal:
+/// capping the walk at depth 1 (processing only the entry file's own
+/// `hir.imports`, never a discovered file's) makes this test fail, because
+/// `schema.brink` — and therefore `Cue`'s fields — never enters the closure.
+#[test]
+fn attach_resolves_transitively_through_a_two_hop_import_chain() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "schema.brink",
+        "struct Cue {\n  speaker: string,\n  voiceover: bool,\n}\n".to_owned(),
+    );
+    db.set_file("middle.brink", "use story::schema::Cue;\n".to_owned());
+    db.set_file(
+        "conventions.brink",
+        "use story::middle::Cue;\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
+         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name, voiceover: false };\n}\n"
+            .to_owned(),
+    );
+
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![
+                ConventionAttachField {
+                    name: "speaker".to_string(),
+                    ty: SchemaTypeShape::Named("string".to_string()),
+                },
+                ConventionAttachField {
+                    name: "voiceover".to_string(),
+                    ty: SchemaTypeShape::Named("bool".to_string()),
+                },
+            ],
+        }),
+        "{projection:?} — schema.brink is two hops from conventions.brink \
+         (via middle.brink); the closure walk must follow both hops"
+    );
+}
+
+/// A cyclic import graph (`conventions.brink` <-> `schema.brink`, each
+/// naming the other) must not hang `import_closure_query`'s traversal — the
+/// `seen` set guards against revisiting a file, so the walk terminates and
+/// still resolves `attach` correctly.
+#[test]
+fn a_cyclic_import_graph_terminates_and_still_resolves_attach() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "schema.brink",
+        "use story::conventions::cue;\n\
+         struct Cue {\n  speaker: string,\n}\n"
+            .to_owned(),
+    );
+    db.set_file(
+        "conventions.brink",
+        "use story::schema::Cue;\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
+         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n"
+            .to_owned(),
+    );
+
+    // The assertion itself is secondary to this test simply COMPLETING —
+    // a broken closure walk that chased the cycle without a `seen` guard
+    // would hang here instead of returning.
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![ConventionAttachField {
+                name: "speaker".to_string(),
+                ty: SchemaTypeShape::Named("string".to_string()),
+            }],
         }),
         "{projection:?}"
     );

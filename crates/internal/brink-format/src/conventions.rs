@@ -24,9 +24,11 @@
 //! #2108 host binding join) settling its exact needs risks locking in the
 //! wrong shape; wiring is left to a tracked follow-up. What exists here —
 //! the types, [`write_conventions_projection`]/[`read_conventions_projection`],
-//! and `brink_ir::ConventionsProjection::to_wire`'s lossless conversion — is
-//! the reusable, tested groundwork that follow-up builds on, not a stand-in
-//! for it.
+//! and `brink_ir::ConventionsProjection::to_wire`'s conversion (every field
+//! this wire shape carries survives the round trip — see
+//! [`ConventionEntryDef`]'s own doc for the one field it deliberately does
+//! not carry, and why that is not a loss today) — is the reusable, tested
+//! groundwork that follow-up builds on, not a stand-in for it.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -47,24 +49,30 @@ pub const CONVENTIONS_PROJECTION_WIRE_VERSION: u8 = 1;
 
 /// The conventions projection, as it would ride the wire: every
 /// `@[convention]` handler declared in the project's one configured
-/// conventions module, ascending by `order` — field-for-field the same
-/// shape `brink_ir::ConventionsProjection` carries in-process, with source
-/// spans stripped (a `.inkb`-loaded host has no source text to point a
-/// range at).
+/// conventions module, ascending by `order` — the same shape
+/// `brink_ir::ConventionsProjection` carries in-process, with source spans
+/// stripped (a `.inkb`-loaded host has no source text to point a range at)
+/// and `disposition` intentionally not carried — see
+/// [`ConventionEntryDef`]'s own doc for why.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConventionsProjectionDef {
     pub entries: Vec<ConventionEntryDef>,
 }
 
 /// One `@[convention]` handler's projected shape on the wire. Mirrors
-/// `brink_ir::ConventionProjectionEntry` field-for-field; there is no
-/// `disposition` field here because every wire entry is, today, the single
-/// existing `ElementDisposition::Call` case — this format has no other
-/// disposition to distinguish yet, unlike the in-process type which carries
-/// the field explicitly so a future second disposition doesn't need a wire
-/// bump to become visible in-process. Adding a second disposition to this
-/// wire shape is exactly the kind of section-local-version bump
-/// [`CONVENTIONS_PROJECTION_WIRE_VERSION`] exists for.
+/// `brink_ir::ConventionProjectionEntry`, with one deliberate exception:
+/// there is no `disposition` field here, because every wire entry is,
+/// today, the single existing `ElementDisposition::Call` case — this format
+/// has no other disposition to distinguish yet, unlike the in-process type,
+/// which carries the field explicitly (`ConventionProjectionEntry::disposition`'s
+/// own "read what happened, don't infer it from absence" reasoning) so a
+/// future second disposition doesn't need a wire bump to become visible
+/// in-process. Adding a second disposition to this wire shape is exactly the
+/// kind of section-local-version bump
+/// [`CONVENTIONS_PROJECTION_WIRE_VERSION`] exists for — until then, this
+/// one field's omission is a considered simplification of a
+/// currently-single-variant enum, not evidence of a lossy conversion
+/// elsewhere.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConventionEntryDef {
     pub name: String,
@@ -418,10 +426,36 @@ mod tests {
         let mut buf = Vec::new();
         write_conventions_projection(&projection, &mut buf);
         // The mode byte for the first entry sits right after: version(1) +
-        // count(4) + name(4+3) + pattern(4+18) + order(8).
-        let mode_byte_offset = 1 + 4 + (4 + 3) + (4 + 18) + 8;
+        // count(4) + name(4+len) + pattern(4+len) + order(8). Computed from
+        // the actual fixture strings' lengths (not hardcoded) so this stays
+        // correct if `sample()` ever changes.
+        let first = &projection.entries[0];
+        let mode_byte_offset = 1 + 4 + (4 + first.name.len()) + (4 + first.pattern.len()) + 8;
         assert_eq!(buf[mode_byte_offset], TAG_WRAP, "test fixture assumption");
         buf[mode_byte_offset] = 0xFF;
+        let mut offset = 0;
+        let err = read_conventions_projection(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidConventionsProjectionTag(0xFF));
+    }
+
+    /// Companion to `unknown_mode_tag_is_rejected`: corrupts the byte right
+    /// after the mode tag — the attach-presence flag — so the attach-tag
+    /// match's `other` arm is exercised independently. Before this pair, a
+    /// wrong offset made the "mode" test actually corrupt this byte instead,
+    /// leaving the mode match's `other` arm with zero coverage.
+    #[test]
+    fn unknown_attach_presence_tag_is_rejected() {
+        let projection = sample();
+        let mut buf = Vec::new();
+        write_conventions_projection(&projection, &mut buf);
+        let first = &projection.entries[0];
+        let mode_byte_offset = 1 + 4 + (4 + first.name.len()) + (4 + first.pattern.len()) + 8;
+        let attach_presence_offset = mode_byte_offset + 1;
+        assert_eq!(
+            buf[attach_presence_offset], 1,
+            "test fixture assumption: attach present"
+        );
+        buf[attach_presence_offset] = 0xFF;
         let mut offset = 0;
         let err = read_conventions_projection(&buf, &mut offset).unwrap_err();
         assert_eq!(err, DecodeError::InvalidConventionsProjectionTag(0xFF));

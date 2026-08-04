@@ -541,7 +541,7 @@ impl ProjectDb {
     /// `@[convention]` handler declared in the project's one configured
     /// conventions module, ascending by `order` — "THE SOLE EDITOR
     /// INTERCHANGE" the design-backport comment on #2111 names
-    /// (`docs/decision-log.md` 2026-08-03). Reads the `[project] elements`
+    /// (`docs/decision-log.md` 2026-08-03). Reads the `[project] conventions`
     /// pointer, the project module map, the resolved conventions module's
     /// transitive `IMPORT` closure (`import_closure_query`, issue #2111
     /// finding 3), and every file in that closure's own `lowered_query`

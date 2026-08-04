@@ -709,8 +709,10 @@ pub struct ConventionProjectionEntry {
 ///    projection would serialize to now exists
 ///    (`brink_format`'s hand-rolled `.inkb`-section-codec idiom, matching
 ///    `StructShapeDef`/`FrameShapeDef` rather than `serde` — this crate's
-///    `.inkb` format is not serde-based anywhere), with a lossless
-///    `to_wire()` conversion and round-trip tests. What does **not** yet
+///    `.inkb` format is not serde-based anywhere), with a `to_wire()`
+///    conversion (every field the wire shape carries round-trips exactly;
+///    see [`Self::to_wire`]'s own doc for the one field it deliberately
+///    does not carry) and round-trip tests. What does **not** yet
 ///    exist is a `StoryData` field / `SectionKind` tag / codegen population —
 ///    that requires threading a whole-project claim-handler join
 ///    (`brink_analyzer::conventions_registry`) through LIR lowering, which
@@ -802,9 +804,12 @@ impl ConventionsProjection {
     }
 
     /// Convert to the `.inkb`-section-codec wire shape (issue #2111
-    /// finding 2) — a lossless, field-for-field mirror with source spans
-    /// stripped. See `brink_format::conventions`'s own module doc for why
-    /// this exists but is not yet wired into `StoryData`.
+    /// finding 2) — a mirror with source spans stripped and (deliberately)
+    /// `disposition` not carried, since every entry is the single existing
+    /// `ElementDisposition::Call` case today; see
+    /// `brink_format::conventions::ConventionEntryDef`'s own doc for that
+    /// omission's reasoning. See `brink_format::conventions`'s own module
+    /// doc for why this exists but is not yet wired into `StoryData`.
     #[must_use]
     pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
         brink_format::ConventionsProjectionDef {
