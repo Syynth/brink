@@ -173,11 +173,25 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
 /// "should be dispatched by `lower_block_with_children`" arm — a no-op in
 /// release (silently dropping the block's statements) and a panic in debug
 /// (see #578 review).
+///
+/// `hir::Stmt::Assignment` with an `Index` target (`~ a[i] = v`, issue
+/// #2174 review finding) gets the same parallel guarded dispatch
+/// `mod.rs`'s classic-line statement match added: `stmts::lower_stmt`'s
+/// `Assignment` arm only resolves a bare `Path` target via
+/// `lower_assign_target`, so an `Index` target silently dropped the whole
+/// statement (`?` short-circuits to `None`) with zero diagnostics whenever
+/// this inline path — not just `mod.rs`'s top-level classic-line dispatch —
+/// was the one to reach it. `try_lower_indexed_assignment` is tried first
+/// so it can also raise the non-suppressible `E074` for a struct-field-
+/// projected root, mirroring `reject_field_projection_index_root`.
 fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
     let mut stmts = Vec::new();
     for stmt in &block.stmts {
         if let hir::Stmt::LogicBlock(lb) = stmt {
             stmts.extend(super::blocks::lower_logic_block(lb, ctx));
+        } else if let hir::Stmt::Assignment(a) = stmt
+            && super::blocks::try_lower_indexed_assignment(a, ctx, &mut stmts)
+        {
         } else if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
             stmts.push(s);
         }
