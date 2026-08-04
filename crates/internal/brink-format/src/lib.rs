@@ -15,6 +15,7 @@
 extern crate alloc;
 
 mod codec;
+mod conventions;
 mod counting;
 mod definition;
 mod id;
@@ -30,6 +31,11 @@ mod value;
 #[cfg(any(feature = "inkt", feature = "inkt-write"))]
 mod inkt;
 
+pub use conventions::{
+    CONVENTIONS_PROJECTION_WIRE_VERSION, ConventionAttachDef, ConventionAttachFieldDef,
+    ConventionEntryDef, ConventionModeDef, ConventionsProjectionDef, SchemaTypeDef,
+    read_conventions_projection, write_conventions_projection,
+};
 pub use counting::CountingFlags;
 pub use definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef, DirectEffects,

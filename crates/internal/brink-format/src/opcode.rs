@@ -1025,6 +1025,14 @@ pub enum DecodeError {
     /// once, so this is rejected rather than silently keeping the last
     /// occurrence (issue #985).
     DuplicateMapKey,
+    /// An unknown discriminant tag in the conventions-projection wire codec
+    /// (issue #2111 finding 2, `crate::conventions`) — a mode byte,
+    /// attach-presence/resolution byte, or `SchemaTypeDef` tag outside the
+    /// known range. One shared variant for all three: each is "an unknown
+    /// byte in this one codec's own tag space", the same causal category, so
+    /// this mirrors `InvalidSectionKind`'s single-variant-per-codec posture
+    /// rather than minting three near-duplicate variants.
+    InvalidConventionsProjectionTag(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -1097,6 +1105,9 @@ impl fmt::Display for DecodeError {
                 )
             }
             Self::DuplicateMapKey => write!(f, "duplicate key in map value"),
+            Self::InvalidConventionsProjectionTag(b) => {
+                write!(f, "invalid conventions-projection wire tag: {b:#04x}")
+            }
         }
     }
 }

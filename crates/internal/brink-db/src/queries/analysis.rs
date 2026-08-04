@@ -522,17 +522,79 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     ))
 }
 
+/// The transitive `IMPORT` closure of `entry`: `entry` itself plus every
+/// module reachable by following native `IMPORT` statements outward,
+/// breadth over the module-name → file reverse index [`module_map_query`]
+/// already builds. Issue #2111 finding 3: built in a **reusable** shape,
+/// generic over any entry file rather than conventions-specific, so #2167's
+/// `E169` confinement relaxation (legalizing a claim handler that delegates
+/// to an imported preset) can call this exact query instead of re-deriving
+/// its own closure walk.
+///
+/// Ink files have no `IMPORT` (only `INCLUDE`, which
+/// [`super::compilation_closure_files`]/`IncludeGraph` already cover) — an
+/// ink `entry` simply has no imports to walk and the closure is `[entry]`.
+///
+/// Sorted ascending by path (not discovery/traversal order) before
+/// returning: two callers that both need "first file wins on a name
+/// collision" (this module's own [`conventions_projection_query`], and any
+/// future #2167 use) get the same deterministic tie-break without each
+/// having to re-sort, and the order can never depend on `project.files`'
+/// incoming order or on which import statement happened to be visited
+/// first.
+///
+/// A named-but-unresolvable import (a typo, a module that doesn't exist)
+/// is simply not followed — this query only ever widens by real, resolved
+/// files, never by a dangling name a diagnostic elsewhere already reports.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn import_closure_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    entry: SourceFile,
+) -> Arc<Vec<SourceFile>> {
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let by_name: BTreeMap<&str, SourceFile> = project
+        .files(db)
+        .iter()
+        .filter_map(|f| {
+            module_map
+                .get(&f.file_id(db))
+                .map(|m| (m.name.as_str(), *f))
+        })
+        .collect();
+
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(entry.file_id(db));
+    let mut stack = vec![entry];
+    let mut closure = Vec::new();
+    while let Some(file) = stack.pop() {
+        closure.push(file);
+        let hir = &lowered_query(db, file).hir;
+        for import in &hir.imports {
+            if let Some(target) = by_name.get(import.module.as_str()).copied()
+                && seen.insert(target.file_id(db))
+            {
+                stack.push(target);
+            }
+        }
+    }
+    closure.sort_by_key(|f| f.path(db).clone());
+    Arc::new(closure)
+}
+
 /// The project's conventions projection (issue #2111, NS-T seam 1/6):
 /// every `@[convention]` handler declared in the project's one configured
 /// conventions module, ascending by `order` — the editor-facing artifact
 /// the design-backport comment on #2111 (`docs/decision-log.md`
 /// 2026-08-03) calls "THE SOLE EDITOR INTERCHANGE": claims pattern, order,
 /// mode (attach/wrap), resulting disposition, and the `attach = StructName`
-/// schema name. Schema, never values — see [`ConventionsProjection`]'s own
-/// doc for that boundary, for why no comptime-fault/last-good case exists
-/// here (the mechanism that would have needed one, `fn conventions()`
-/// registration, is dissolved), and — importantly — for the **parts of
-/// #2111 this query does not yet deliver**.
+/// schema, now RESOLVED to its fields and their types (issue #2111
+/// continuation, finding 1). Schema, never values — see
+/// [`ConventionsProjection`]'s own doc for that boundary, for why no
+/// comptime-fault/last-good case exists here (the mechanism that would have
+/// needed one, `fn conventions()` registration, is dissolved), and for the
+/// one part of #2111 this query still does not deliver (wire emission into
+/// `.inkb`/`StoryData` — see that type's doc).
 ///
 /// # Resolution (shared with [`conventions_confinement_diagnostics_query`])
 ///
@@ -554,26 +616,34 @@ pub(crate) fn conventions_confinement_diagnostics_query(
 ///   "pre-frozen preset" note describes a *destination*, not something
 ///   this slice can honestly claim to deliver ahead of #1582/#2167.
 /// - A path-shaped pointer that resolves to a real project file → that
-///   file's own [`ClaimHandlerDecl`]s, projected.
+///   file's own [`ClaimHandlerDecl`]s, projected, with each `attach` name
+///   resolved against every struct visible from that file's [`import_closure_query`]
+///   (finding 3).
 /// - A path-shaped pointer that resolves to no real file → empty, with the
 ///   same `tracing::warn!` this query's confinement sibling emits (never a
 ///   silent drop).
 ///
 /// # Invalidation
 ///
-/// Reads exactly: `project.analysis_options(db)` (for the `elements`
-/// pointer and the native root), [`module_map_query`] (to find which file
-/// carries the expected module name), and that ONE resolved file's
-/// [`lowered_query`] output. `module_map_query` is a whole-project query,
-/// so an edit elsewhere can *reach* this query — but only through a
-/// changed module map, which salsa backdates when the map's value is
-/// unchanged, so an ordinary edit to an unrelated story file never
-/// re-executes this closure (proven by
-/// `tests/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` case). No
-/// other file's *content* is ever read. See [`ConventionsProjection`]'s own
-/// doc for why this is a strictly narrower, and currently sufficient,
-/// reading of the ruled "conventions module and its import closure"
-/// invalidation contract — and for what would make the closure necessary.
+/// Reads: `project.analysis_options(db)` (for the `elements` pointer and
+/// the native root), [`module_map_query`] (to find which file carries the
+/// expected module name, and to resolve `IMPORT` targets), the resolved
+/// conventions module's own [`import_closure_query`] (finding 3 — widened
+/// from the pre-continuation "conventions module alone" footprint), and
+/// every file in that closure's own [`lowered_query`] output (for their
+/// `structs`, to resolve `attach` names). `module_map_query` and
+/// `import_closure_query` are whole-project-shaped, so an edit elsewhere
+/// can *reach* this query — but only through a changed module map or a
+/// changed closure, both of which salsa backdates when their value is
+/// unchanged, so an ordinary edit to a file **outside** the closure never
+/// re-executes this query's closure (proven by
+/// `tests/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` cases,
+/// including the new one for an edit to an *imported* struct file). See
+/// [`ConventionsProjection`]'s own doc for why this is now the ruled "the
+/// conventions module and its import closure" invalidation contract exactly,
+/// not the narrower "conventions module alone" reading the pre-continuation
+/// slice used (load-bearing on the un-resolved-schema shape that slice
+/// carried, and no longer true now that `attach` is resolved).
 #[salsa::tracked(returns(ref))]
 pub(crate) fn conventions_projection_query(
     db: &dyn salsa::Database,
@@ -616,10 +686,45 @@ pub(crate) fn conventions_projection_query(
         );
         return Arc::new(brink_ir::ConventionsProjection::default());
     };
+
+    // Issue #2111 finding 3: every struct visible from the conventions
+    // module's own file plus its transitive `IMPORT` closure, keyed by bare
+    // name. `import_closure_query` already returns files sorted ascending
+    // by path, and `entry(...).or_insert_with` is first-write-wins, so a
+    // name collision across two imported files resolves to the
+    // lexicographically-first path deterministically — the same tie-break
+    // posture `min_by_key` above uses for the conventions file itself.
+    let closure = import_closure_query(db, project, *conventions_file);
+    let mut structs: BTreeMap<String, Vec<brink_ir::ConventionAttachField>> = BTreeMap::new();
+    for file in closure.iter() {
+        let hir = &lowered_query(db, *file).hir;
+        for s in &hir.structs {
+            structs.entry(s.name.text.clone()).or_insert_with(|| {
+                s.fields
+                    .iter()
+                    .map(|f| brink_ir::ConventionAttachField {
+                        name: f.name.text.clone(),
+                        ty: brink_ir::SchemaTypeShape::from(&f.ty),
+                    })
+                    .collect()
+            });
+        }
+    }
+
     let hir = &lowered_query(db, *conventions_file).hir;
-    Arc::new(brink_ir::ConventionsProjection::from_decls(
-        &hir.claim_handlers,
-    ))
+    let projection = brink_ir::ConventionsProjection::from_decls(&hir.claim_handlers, &structs);
+    for entry in &projection.entries {
+        if let Some(brink_ir::ConventionAttachSchema::Unresolved(name)) = &entry.attach {
+            tracing::warn!(
+                "@[convention(…, attach = {name})]` on `{}` does not resolve to any struct \
+                 declared in the conventions module `{expected_module}` or its import closure \
+                 — the projection carries this attach clause as `Unresolved` rather than \
+                 dropping it",
+                entry.name.text
+            );
+        }
+    }
+    Arc::new(projection)
 }
 
 /// One file's `register`-intrinsic confinement diagnostics (`E175`, issue

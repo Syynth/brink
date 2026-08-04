@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use rowan::TextRange;
 
 use crate::provenance::Provenance;
@@ -553,6 +555,93 @@ pub enum ConventionMode {
     Wrap,
 }
 
+/// A field type's structural shape, resolved and span-free — issue #2111's
+/// continuation, finding 1: "the schema is a NAME, not fields... resolved
+/// FIELDS AND TYPES, never a value a handler computed." Mirrors
+/// [`TypeExpr`]'s three shapes, with source ranges stripped: a `.inkb` has
+/// no source text to point a range at, and this is schema, not a
+/// jump-to-declaration target (that's still [`ConventionAttachField::name`]'s
+/// job — it keeps its own field name as a plain `String` because a
+/// `.inkb`-loaded host has no source to carry a [`Name`]'s range against
+/// either; the in-process editor consumer that wants a field's declaration
+/// site re-resolves the owning [`StructDecl`] itself, the same way it
+/// resolves the schema's own name today).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaTypeShape {
+    /// A bare nominal name: `int`, `float`, `bool`, `string`, or a declared
+    /// struct name. Not recursively expanded — a field typed as another
+    /// struct carries that struct's bare name here, one level deep, matching
+    /// [`TypeExpr::Named`]'s own "declared struct names arrive in TM-4"
+    /// note. A consumer that needs the nested struct's own fields resolves
+    /// that name exactly the way this type's own name was resolved.
+    Named(String),
+    /// `name<args…>` — `List<L>`, `Array<T>`, `Map<K, V>`.
+    Generic {
+        name: String,
+        args: Vec<SchemaTypeShape>,
+    },
+    /// `fn(params…): ret`.
+    Fn {
+        params: Vec<SchemaTypeShape>,
+        ret: Box<SchemaTypeShape>,
+    },
+}
+
+impl From<&TypeExpr> for SchemaTypeShape {
+    fn from(ty: &TypeExpr) -> Self {
+        match ty {
+            TypeExpr::Named { name, .. } => Self::Named(name.clone()),
+            TypeExpr::Generic { name, args, .. } => Self::Generic {
+                name: name.clone(),
+                args: args.iter().map(Self::from).collect(),
+            },
+            TypeExpr::Fn { params, ret, .. } => Self::Fn {
+                params: params.iter().map(Self::from).collect(),
+                ret: Box::new(Self::from(&**ret)),
+            },
+        }
+    }
+}
+
+/// One resolved field of an `attach = StructName` schema (issue #2111
+/// finding 1): the field's declared name and type, read straight off the
+/// struct's own [`StructFieldDecl`] — never a value any handler computed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionAttachField {
+    pub name: String,
+    pub ty: SchemaTypeShape,
+}
+
+/// The `attach = StructName` clause's resolution outcome (issue #2111
+/// finding 1, superseding the pre-continuation `Option<String>` shape that
+/// carried only the name). Resolved against the conventions module's own
+/// file plus its transitive `IMPORT` closure (finding 3 —
+/// `brink_db::queries::analysis::import_closure_query`), since
+/// `attach = StructName` may legally name a struct declared in an imported
+/// module, not only the conventions module's own file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConventionAttachSchema {
+    /// The struct resolved: its declared name plus every field, in
+    /// declaration order, with each field's declared type. **Schema, never
+    /// values** — nothing here is computed by running the handler's body;
+    /// an editor or host consuming this never runs brink code.
+    Resolved {
+        name: String,
+        fields: Vec<ConventionAttachField>,
+    },
+    /// `attach = StructName` named a struct that does not exist anywhere in
+    /// the conventions module's own file or its import closure. Carries the
+    /// declared name rather than dropping it silently (house rule: flag
+    /// silent data drops) — a consumer can still report *what* was
+    /// declared even though it could not be resolved to a schema.
+    /// [`ClaimHandlerDecl::attach`]'s own doc: HIR lowering never checks
+    /// struct *existence* itself ("real name resolution's job, not this
+    /// one's"), so the projection query is the first layer that can even
+    /// notice — it warns through the same `tracing::warn!` channel its
+    /// unresolvable-pointer sibling case uses, never silently.
+    Unresolved(String),
+}
+
 /// One `@[convention]` handler's projected, purely declarative shape — the
 /// editor/host-readable half of a claiming declaration (issue #2111).
 ///
@@ -588,22 +677,14 @@ pub struct ConventionProjectionEntry {
     /// consumer should read what happened, not infer it from a field's
     /// absence, and this stays exact if a second disposition is ever added.
     pub disposition: ElementDisposition,
-    /// The `attach = StructName` clause's declared struct name, if any —
-    /// see [`ConventionAnnotation::attach`]'s own doc. `None` for a handler
-    /// that only ever emits text (the pre-#2178 shape).
-    ///
-    /// ⚠ Carries the **schema NAME only**, not the schema. #2111's design
-    /// comment shows the projection carrying the resolved struct
-    /// (`Cue { speaker: string, voiceover: bool, offscreen: bool }`); this
-    /// field carries `Some("Cue")`. Resolving the name against the
-    /// project's struct declarations is left to the consumer, which is
-    /// workable for the in-process editor consumer (it has the whole
-    /// project) and **not** workable for the load-time host consumer (a
-    /// `.inkb` carries no struct declarations). See
-    /// [`ConventionsProjection`]'s own "What #2111 does not yet deliver"
-    /// section — this is deliberately recorded as an open gap rather than
-    /// papered over.
-    pub attach: Option<String>,
+    /// The `attach = StructName` clause's resolution outcome, if the clause
+    /// was declared at all — see [`ConventionAnnotation::attach`]'s own doc.
+    /// `None` for a handler that only ever emits text (the pre-#2178
+    /// shape). See [`ConventionAttachSchema`]'s own doc for the
+    /// `Resolved`/`Unresolved` split — issue #2111 finding 1's resolved
+    /// field list, superseding the pre-continuation `Option<String>` shape
+    /// that carried only the struct's bare name.
+    pub attach: Option<ConventionAttachSchema>,
 }
 
 /// The conventions projection (issue #2111): every `@[convention]` handler
@@ -614,24 +695,36 @@ pub struct ConventionProjectionEntry {
 /// # What #2111 does NOT yet deliver
 ///
 /// Recorded here rather than left to be re-discovered, per the house rule
-/// that a doc must state current state upfront. This type is the
-/// **editor-facing half only**; three parts of the ruled design are open:
+/// that a doc must state current state upfront. The 2026-08-04 continuation
+/// closed two of the three gaps the original slice left open:
 ///
-/// 1. **The attachment schema is a NAME, not a struct.** #2111's design
-///    comment carries `Cue { speaker: string, voiceover: bool, offscreen:
-///    bool }`; [`ConventionProjectionEntry::attach`] carries `Some("Cue")`.
-///    See that field's own doc.
-/// 2. **It is not serialized.** Nothing here derives serde and nothing
-///    emits it into `.inkb`/`StoryData`, so the design's "ONE artifact,
-///    TWO consumers" currently has exactly one consumer — the salsa query
-///    `brink_db::ProjectDb::conventions_projection`. The load-time host
-///    read for the #2108 binding join does not exist yet, and depends on
-///    (1) to be useful when it does.
-/// 3. **No reusable import closure is computed.** The ruled invalidation
-///    contract names "the conventions module **and its import closure**",
-///    and #2167 needs that closure too. See the next section for why the
-///    narrower footprint is nonetheless *correct* for what is projected
-///    today — and for exactly what would break it.
+/// 1. ~~The attachment schema is a NAME, not a struct.~~ **CLOSED.**
+///    [`ConventionProjectionEntry::attach`] now carries a
+///    [`ConventionAttachSchema`] — the resolved field list (names + declared
+///    types), not merely the struct's bare name. Resolution walks the
+///    conventions module's own file plus its transitive `IMPORT` closure
+///    (item 3, now also closed) — see [`Self::from_decls`]'s doc.
+/// 2. **Still open, deliberately.** Nothing here derives a wire encoding and
+///    nothing emits it into `.inkb`/`StoryData` yet. The wire SHAPE this
+///    projection would serialize to now exists
+///    (`brink_format`'s hand-rolled `.inkb`-section-codec idiom, matching
+///    `StructShapeDef`/`FrameShapeDef` rather than `serde` — this crate's
+///    `.inkb` format is not serde-based anywhere), with a lossless
+///    `to_wire()` conversion and round-trip tests. What does **not** yet
+///    exist is a `StoryData` field / `SectionKind` tag / codegen population —
+///    that requires threading a whole-project claim-handler join
+///    (`brink_analyzer::conventions_registry`) through LIR lowering, which
+///    `brink-compiler`'s production pipeline does not currently do (it never
+///    runs through `brink-db`'s salsa layer at all), and is left to whoever
+///    wires the actual #2108 host binding join — allocating a `.inkb`
+///    section tag ahead of that consumer settling its exact needs would risk
+///    locking in the wrong shape. Tracked as a follow-up, not silently
+///    dropped.
+/// 3. ~~No reusable import closure is computed.~~ **CLOSED.**
+///    `brink_db::queries::analysis::import_closure_query` computes the
+///    transitive `IMPORT` closure of any entry file, generically — not
+///    conventions-specific — so #2167's `E169` confinement relaxation can
+///    call the exact same query.
 ///
 /// # Why there is no comptime-fault / last-good-value case here
 ///
@@ -643,49 +736,15 @@ pub struct ConventionProjectionEntry {
 /// **That mechanism no longer exists.** The 2026-08-03 ruling "`fn
 /// conventions()` is DISSOLVED" moved `order` onto the `@[convention]`
 /// annotation itself, so every field on [`ConventionProjectionEntry`] is
-/// now read straight off one file's CST/HIR — a pure, total function of
-/// source text, with no VM execution anywhere in the path. There is
+/// now read straight off HIR — a pure, total function of source text (now
+/// spanning the conventions module's own file plus its import closure, for
+/// `attach` resolution), with no VM execution anywhere in the path. There is
 /// nothing left to fault: a malformed declaration (a missing `order`, a
-/// duplicate one, an `attach` mismatch) is an ordinary compile diagnostic
-/// (`E178`/`E179`/`E180`) reported by the existing per-file lowering pass,
-/// not a comptime error this type needs to represent or degrade under.
-///
-/// # Why there is no import-closure dependency to track
-///
-/// The same dissolution removes the reason an import closure would matter:
-/// under the old design, evaluating `fn conventions()` could call into
-/// registered functions from imported modules, so the projection's
-/// *content* could depend on what those modules exported. Under the
-/// annotation-based design, `claims`/`order`/`block`/`attach` are all
-/// syntactic properties of the declaration *in the conventions module's own
-/// file* — the subtraction ruling (`docs/decision-log.md` 2026-08-03) makes
-/// that module "the SOLE source of active claiming handlers", so a handler
-/// reached only via delegation (calling into an imported preset's function
-/// body) still carries its own `@[convention(…)]` clause locally; the body
-/// it delegates to is never read by this projection (schema, never
-/// values). [`Self::from_decls`] therefore reads only the resolved
-/// conventions module's own [`ClaimHandlerDecl`]s —
-/// `brink_db::queries::analysis::conventions_projection_query`'s salsa
-/// dependency edges are exactly that file's `lowered_query` output plus the
-/// project's `[project] elements` pointer and module map, so an edit to any
-/// *other* file never re-executes this query's closure at all. This is a
-/// strictly narrower (and simpler) invalidation footprint than "the
-/// conventions module and its import closure" — it is "the conventions
-/// module alone" because nothing else can currently affect the result.
-/// Issue #2167's own need for import-closure computation (relaxing the
-/// `E169` confinement check for the delegation pattern) is a distinct,
-/// not-yet-ruled question this type does not attempt to answer.
-///
-/// ⚠ **This narrowing is load-bearing on gap (1) above, and closing that
-/// gap reopens it.** `attach = StructName` names a struct that may be
-/// declared in an *imported* module. While only the name is carried, the
-/// projection stays a function of one file's text. The moment the struct's
-/// field/type shape is resolved into the projection — which the design
-/// requires, and which the host consumer cannot do without — the
-/// projection's content depends on wherever that struct is declared, and
-/// the import closure becomes a real dependency edge that must be tracked.
-/// Whoever closes gap (1) must widen the invalidation footprint in the
-/// same change; do not read this section as "the closure is never needed".
+/// duplicate one, an `attach` name/return-type mismatch) is an ordinary
+/// compile diagnostic (`E178`/`E179`/`E180`) reported by the existing
+/// per-file lowering pass; an `attach` name that simply does not resolve to
+/// any declared struct becomes [`ConventionAttachSchema::Unresolved`] plus a
+/// `tracing::warn!`, not a fault this type needs to degrade under.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConventionsProjection {
     /// Every declared `@[convention]` handler, ascending by `order`.
@@ -700,8 +759,23 @@ impl ConventionsProjection {
     /// ordering rather than re-deriving it, so a caller that hands in an
     /// unsorted slice gets an unsorted projection back — re-sorting here
     /// would silently mask a caller bug instead of surfacing it.
+    ///
+    /// `structs` is the caller-resolved struct-name → field-list map (issue
+    /// #2111 finding 1 + finding 3): every struct visible from the
+    /// conventions module's own file plus its transitive `IMPORT` closure,
+    /// keyed by bare struct name. Building that map — walking the closure,
+    /// breaking name collisions deterministically — is the caller's job
+    /// (`brink_db::queries::analysis::conventions_projection_query`); this
+    /// function only does the per-entry lookup, so it stays a pure function
+    /// of its two inputs with no salsa/project awareness of its own. An
+    /// `attach` name absent from `structs` becomes
+    /// [`ConventionAttachSchema::Unresolved`] — never silently dropped, and
+    /// never a fabricated empty field list.
     #[must_use]
-    pub fn from_decls(decls: &[ClaimHandlerDecl]) -> Self {
+    pub fn from_decls(
+        decls: &[ClaimHandlerDecl],
+        structs: &BTreeMap<String, Vec<ConventionAttachField>>,
+    ) -> Self {
         Self {
             entries: decls
                 .iter()
@@ -715,9 +789,90 @@ impl ConventionsProjection {
                         ConventionMode::Attach
                     },
                     disposition: ElementDisposition::Call,
-                    attach: decl.attach.clone(),
+                    attach: decl.attach.as_ref().map(|name| match structs.get(name) {
+                        Some(fields) => ConventionAttachSchema::Resolved {
+                            name: name.clone(),
+                            fields: fields.clone(),
+                        },
+                        None => ConventionAttachSchema::Unresolved(name.clone()),
+                    }),
                 })
                 .collect(),
+        }
+    }
+
+    /// Convert to the `.inkb`-section-codec wire shape (issue #2111
+    /// finding 2) — a lossless, field-for-field mirror with source spans
+    /// stripped. See `brink_format::conventions`'s own module doc for why
+    /// this exists but is not yet wired into `StoryData`.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
+        brink_format::ConventionsProjectionDef {
+            entries: self
+                .entries
+                .iter()
+                .map(ConventionProjectionEntry::to_wire)
+                .collect(),
+        }
+    }
+}
+
+impl ConventionProjectionEntry {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionEntryDef {
+        brink_format::ConventionEntryDef {
+            name: self.name.text.clone(),
+            pattern: self.pattern.clone(),
+            order: self.order,
+            mode: match self.mode {
+                ConventionMode::Attach => brink_format::ConventionModeDef::Attach,
+                ConventionMode::Wrap => brink_format::ConventionModeDef::Wrap,
+            },
+            attach: self.attach.as_ref().map(ConventionAttachSchema::to_wire),
+        }
+    }
+}
+
+impl ConventionAttachSchema {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionAttachDef {
+        match self {
+            Self::Resolved { name, fields } => brink_format::ConventionAttachDef::Resolved {
+                name: name.clone(),
+                fields: fields.iter().map(ConventionAttachField::to_wire).collect(),
+            },
+            Self::Unresolved(name) => brink_format::ConventionAttachDef::Unresolved(name.clone()),
+        }
+    }
+}
+
+impl ConventionAttachField {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionAttachFieldDef {
+        brink_format::ConventionAttachFieldDef {
+            name: self.name.clone(),
+            ty: self.ty.to_wire(),
+        }
+    }
+}
+
+impl SchemaTypeShape {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::SchemaTypeDef {
+        match self {
+            Self::Named(name) => brink_format::SchemaTypeDef::Named(name.clone()),
+            Self::Generic { name, args } => brink_format::SchemaTypeDef::Generic {
+                name: name.clone(),
+                args: args.iter().map(SchemaTypeShape::to_wire).collect(),
+            },
+            Self::Fn { params, ret } => brink_format::SchemaTypeDef::Fn {
+                params: params.iter().map(SchemaTypeShape::to_wire).collect(),
+                ret: Box::new(ret.to_wire()),
+            },
         }
     }
 }
@@ -2613,6 +2768,17 @@ mod conventions_projection_tests {
         }
     }
 
+    fn no_structs() -> BTreeMap<String, Vec<ConventionAttachField>> {
+        BTreeMap::new()
+    }
+
+    fn field(name: &str, ty: SchemaTypeShape) -> ConventionAttachField {
+        ConventionAttachField {
+            name: name.to_string(),
+            ty,
+        }
+    }
+
     #[test]
     fn from_decls_preserves_input_order() {
         // `collect` hands this function an already-`order`-sorted slice
@@ -2622,7 +2788,7 @@ mod conventions_projection_tests {
             decl("exterior", 20, false, None),
             decl("interior", 10, false, None),
         ];
-        let projection = ConventionsProjection::from_decls(&decls);
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
         let names: Vec<&str> = projection
             .entries
             .iter()
@@ -2637,22 +2803,87 @@ mod conventions_projection_tests {
             decl("cue", 10, true, None),
             decl("interior", 20, false, None),
         ];
-        let projection = ConventionsProjection::from_decls(&decls);
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
         assert_eq!(projection.entries[0].mode, ConventionMode::Wrap);
         assert_eq!(projection.entries[1].mode, ConventionMode::Attach);
     }
 
+    /// Issue #2111 finding 1: the schema is the RESOLVED FIELD LIST, not
+    /// merely the struct's bare name.
     #[test]
-    fn attach_schema_name_is_carried_through_verbatim() {
+    fn attach_schema_resolves_to_the_declared_fields_and_types() {
         let decls = vec![decl("cue", 10, false, Some("Cue"))];
-        let projection = ConventionsProjection::from_decls(&decls);
-        assert_eq!(projection.entries[0].attach.as_deref(), Some("Cue"));
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![
+                field("speaker", SchemaTypeShape::Named("string".to_string())),
+                field("voiceover", SchemaTypeShape::Named("bool".to_string())),
+                field("offscreen", SchemaTypeShape::Named("bool".to_string())),
+            ],
+        );
+        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        assert_eq!(
+            projection.entries[0].attach,
+            Some(ConventionAttachSchema::Resolved {
+                name: "Cue".to_string(),
+                fields: vec![
+                    field("speaker", SchemaTypeShape::Named("string".to_string())),
+                    field("voiceover", SchemaTypeShape::Named("bool".to_string())),
+                    field("offscreen", SchemaTypeShape::Named("bool".to_string())),
+                ],
+            })
+        );
+    }
+
+    /// Mutation-style (rule 20a): reversing the field order must be visible
+    /// — a projection that silently re-sorted fields would pass a looser
+    /// assertion (e.g. a set comparison) but must fail this one.
+    #[test]
+    fn attach_schema_field_order_is_preserved_not_resorted() {
+        let decls = vec![decl("cue", 10, false, Some("Cue"))];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![
+                field("b_field", SchemaTypeShape::Named("bool".to_string())),
+                field("a_field", SchemaTypeShape::Named("string".to_string())),
+            ],
+        );
+        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let Some(ConventionAttachSchema::Resolved { fields, .. }) = &projection.entries[0].attach
+        else {
+            unreachable!(
+                "expected a resolved schema: {:?}",
+                projection.entries[0].attach
+            );
+        };
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["b_field", "a_field"],
+            "field order must not be re-sorted"
+        );
+    }
+
+    /// Issue #2111 finding 1: an `attach` name that resolves to no known
+    /// struct is flagged (`Unresolved`), never silently dropped to `None`
+    /// (house rule: flag silent data drops) and never fabricated into an
+    /// empty-fields `Resolved`.
+    #[test]
+    fn attach_schema_unresolved_struct_name_is_flagged_not_dropped() {
+        let decls = vec![decl("cue", 10, false, Some("Ghost"))];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        assert_eq!(
+            projection.entries[0].attach,
+            Some(ConventionAttachSchema::Unresolved("Ghost".to_string()))
+        );
     }
 
     #[test]
     fn no_attach_clause_projects_to_none() {
         let decls = vec![decl("interior", 10, false, None)];
-        let projection = ConventionsProjection::from_decls(&decls);
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
         assert_eq!(projection.entries[0].attach, None);
     }
 
@@ -2663,13 +2894,13 @@ mod conventions_projection_tests {
         // e.g. hardcoding a literal in a way that would silently stay
         // correct even if this field were dropped from the struct.
         let decls = vec![decl("interior", 10, false, None)];
-        let projection = ConventionsProjection::from_decls(&decls);
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
         assert_eq!(projection.entries[0].disposition, ElementDisposition::Call);
     }
 
     #[test]
     fn an_empty_decl_set_projects_to_an_empty_projection() {
-        let projection = ConventionsProjection::from_decls(&[]);
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
         assert!(projection.entries.is_empty());
         assert_eq!(projection, ConventionsProjection::default());
     }
@@ -2677,8 +2908,77 @@ mod conventions_projection_tests {
     #[test]
     fn order_and_pattern_are_carried_through_verbatim() {
         let decls = vec![decl("interior", 42, false, None)];
-        let projection = ConventionsProjection::from_decls(&decls);
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
         assert_eq!(projection.entries[0].order, 42);
         assert_eq!(projection.entries[0].pattern, "^interior$");
+    }
+
+    // ─── `to_wire` (issue #2111 finding 2) ──────────────────────────────
+
+    /// The wire conversion is lossless for a resolved schema — mutation-style
+    /// (rule 20a): forcing a wrong field type on either side would fail this
+    /// exact assertion, proving it isn't vacuously true.
+    #[test]
+    fn to_wire_carries_the_resolved_schema_losslessly() {
+        let decls = vec![decl("cue", 5, true, Some("Cue"))];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![field(
+                "speaker",
+                SchemaTypeShape::Named("string".to_string()),
+            )],
+        );
+        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let wire = projection.to_wire();
+        assert_eq!(wire.entries.len(), 1);
+        assert_eq!(wire.entries[0].name, "cue");
+        assert_eq!(wire.entries[0].mode, brink_format::ConventionModeDef::Wrap);
+        assert_eq!(
+            wire.entries[0].attach,
+            Some(brink_format::ConventionAttachDef::Resolved {
+                name: "Cue".to_string(),
+                fields: vec![brink_format::ConventionAttachFieldDef {
+                    name: "speaker".to_string(),
+                    ty: brink_format::SchemaTypeDef::Named("string".to_string()),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn to_wire_carries_unresolved_attach_as_unresolved_not_none() {
+        let decls = vec![decl("cue", 5, false, Some("Ghost"))];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let wire = projection.to_wire();
+        assert_eq!(
+            wire.entries[0].attach,
+            Some(brink_format::ConventionAttachDef::Unresolved(
+                "Ghost".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn to_wire_round_trips_through_the_inkb_codec() {
+        let decls = vec![
+            decl("cue", 5, true, Some("Cue")),
+            decl("interior", 10, false, None),
+        ];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![field(
+                "speaker",
+                SchemaTypeShape::Named("string".to_string()),
+            )],
+        );
+        let wire = ConventionsProjection::from_decls(&decls, &structs).to_wire();
+        let mut buf = Vec::new();
+        brink_format::write_conventions_projection(&wire, &mut buf);
+        let mut offset = 0;
+        let decoded = brink_format::read_conventions_projection(&buf, &mut offset)
+            .expect("decode the wire form this crate just encoded");
+        assert_eq!(decoded, wire);
     }
 }

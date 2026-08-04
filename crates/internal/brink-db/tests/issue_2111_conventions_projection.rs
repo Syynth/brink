@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use brink_analyzer::AnalysisOptions;
 use brink_db::ProjectDb;
-use brink_ir::ConventionMode;
+use brink_ir::{ConventionAttachField, ConventionAttachSchema, ConventionMode, SchemaTypeShape};
 
 const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
     fn interior(place: content) {\n  return place;\n}\n";
@@ -90,9 +90,183 @@ fn the_configured_modules_own_handlers_are_projected_in_order() {
     // declaration position (`cue` is declared second in the source above).
     assert_eq!(names, vec!["cue", "interior"], "{projection:?}");
     assert_eq!(projection.entries[0].mode, ConventionMode::Wrap);
-    assert_eq!(projection.entries[0].attach.as_deref(), Some("Cue"));
+    // Issue #2111 finding 1: `Cue` is declared in this SAME file
+    // (`BLOCK_CLAIMING_HANDLER`), so it resolves to its full field list, not
+    // merely its name.
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![ConventionAttachField {
+                name: "speaker".to_string(),
+                ty: SchemaTypeShape::Named("string".to_string()),
+            }],
+        })
+    );
     assert_eq!(projection.entries[1].mode, ConventionMode::Attach);
     assert_eq!(projection.entries[1].attach, None);
+}
+
+/// Issue #2111 finding 1 + finding 3: `attach = StructName` may legally name
+/// a struct declared in an IMPORTED module, not only the conventions
+/// module's own file — the schema still resolves, via the transitive
+/// `IMPORT` closure.
+#[test]
+fn attach_resolves_across_an_imported_struct_file() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "schema.brink",
+        "struct Cue {\n  speaker: string,\n  voiceover: bool,\n}\n".to_owned(),
+    );
+    db.set_file(
+        "conventions.brink",
+        "use story::schema::Cue;\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
+         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name, voiceover: false };\n}\n"
+            .to_owned(),
+    );
+
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![
+                ConventionAttachField {
+                    name: "speaker".to_string(),
+                    ty: SchemaTypeShape::Named("string".to_string()),
+                },
+                ConventionAttachField {
+                    name: "voiceover".to_string(),
+                    ty: SchemaTypeShape::Named("bool".to_string()),
+                },
+            ],
+        }),
+        "{projection:?}"
+    );
+}
+
+/// Issue #2111 finding 1: an `attach` name that resolves to no struct
+/// anywhere in the conventions module's own file or its import closure is
+/// flagged `Unresolved`, never silently dropped to `None`.
+#[test]
+fn attach_naming_a_nonexistent_struct_is_unresolved_not_dropped() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Ghost)]\n\
+         fn cue(name: string, body: content): Ghost {\n  return Ghost { speaker: name };\n}\n"
+            .to_owned(),
+    );
+
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Unresolved("Ghost".to_string()))
+    );
+}
+
+/// Issue #2111 finding 3's invalidation half: editing a struct file that IS
+/// in the conventions module's import closure must re-evaluate the
+/// projection (a real content change to `attach`'s resolved fields), unlike
+/// the "unrelated file" case above.
+#[test]
+fn editing_an_imported_struct_file_updates_the_projection() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "schema.brink",
+        "struct Cue {\n  speaker: string,\n}\n".to_owned(),
+    );
+    db.set_file(
+        "conventions.brink",
+        "use story::schema::Cue;\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
+         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n"
+            .to_owned(),
+    );
+
+    let before = db.conventions_projection();
+    assert_eq!(
+        before.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![ConventionAttachField {
+                name: "speaker".to_string(),
+                ty: SchemaTypeShape::Named("string".to_string()),
+            }],
+        })
+    );
+
+    // Add a field to the IMPORTED struct — not the conventions module
+    // itself.
+    db.update_file(
+        "schema.brink",
+        "struct Cue {\n  speaker: string,\n  voiceover: bool,\n}\n".to_owned(),
+    );
+    let after = db.conventions_projection();
+
+    assert!(
+        !Arc::ptr_eq(&before, &after),
+        "editing an imported struct file (in the closure) must re-evaluate the projection"
+    );
+    assert_eq!(
+        after.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![
+                ConventionAttachField {
+                    name: "speaker".to_string(),
+                    ty: SchemaTypeShape::Named("string".to_string()),
+                },
+                ConventionAttachField {
+                    name: "voiceover".to_string(),
+                    ty: SchemaTypeShape::Named("bool".to_string()),
+                },
+            ],
+        }),
+        "{after:?}"
+    );
+}
+
+/// The other half of finding 3's invalidation contract: a file that is
+/// neither the conventions module nor anywhere in its import closure must
+/// never widen the footprint, even when the project DOES have an import
+/// closure to speak of (distinguishing "closure-aware" from "everything is
+/// now in the closure by accident").
+#[test]
+fn editing_a_file_outside_the_import_closure_never_reexecutes_the_projection() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "schema.brink",
+        "struct Cue {\n  speaker: string,\n}\n".to_owned(),
+    );
+    db.set_file(
+        "conventions.brink",
+        "use story::schema::Cue;\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
+         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n"
+            .to_owned(),
+    );
+    db.set_file(
+        "scenes/heading.brink",
+        "flow main() {\n  A plain narrative line.\n}\n".to_owned(),
+    );
+
+    let before = db.conventions_projection();
+    db.update_file(
+        "scenes/heading.brink",
+        "flow main() {\n  A DIFFERENT plain narrative line.\n}\n".to_owned(),
+    );
+    let after = db.conventions_projection();
+
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "editing a file outside the import closure re-executed the conventions projection"
+    );
 }
 
 /// A claiming handler declared OUTSIDE the configured conventions module

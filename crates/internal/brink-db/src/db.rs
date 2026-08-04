@@ -542,12 +542,15 @@ impl ProjectDb {
     /// conventions module, ascending by `order` — "THE SOLE EDITOR
     /// INTERCHANGE" the design-backport comment on #2111 names
     /// (`docs/decision-log.md` 2026-08-03). Reads the `[project] elements`
-    /// pointer, the project module map, and only the resolved conventions
-    /// module's own `lowered_query` output — see
-    /// `conventions_projection_query`'s doc for the exact dependency set,
-    /// and `brink_ir::ConventionsProjection`'s doc for the parts of #2111
-    /// this does not yet deliver (the attach schema is a struct *name*, it
-    /// is not serialized into `.inkb`, and no import closure is computed).
+    /// pointer, the project module map, the resolved conventions module's
+    /// transitive `IMPORT` closure (`import_closure_query`, issue #2111
+    /// finding 3), and every file in that closure's own `lowered_query`
+    /// output — see `conventions_projection_query`'s doc for the exact
+    /// dependency set, and `brink_ir::ConventionsProjection`'s doc for the
+    /// one part of #2111 this still does not deliver: it is not yet
+    /// serialized into `.inkb`/`StoryData` (the attach schema IS now
+    /// resolved to its fields and types, not merely a struct name — that
+    /// gap closed in the 2026-08-04 continuation).
     pub fn conventions_projection(&self) -> Arc<brink_ir::ConventionsProjection> {
         Arc::clone(conventions_projection_query(&self.salsa, self.project))
     }

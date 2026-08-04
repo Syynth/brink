@@ -115,7 +115,7 @@ pub(crate) use analysis::{
     comparator_contract_diagnostics_query, contributor_diagnostics_query,
     conventions_confinement_diagnostics_query, conventions_projection_query, diagnostics_query,
     effects_assertion_diagnostics_query, external_meta_query, has_errors_in_closure_query,
-    has_errors_query, inline_docs_query, per_file_diagnostics_query,
+    has_errors_query, import_closure_query, inline_docs_query, per_file_diagnostics_query,
     register_intrinsic_diagnostics_query, resolutions_index_query, ufcs_resolution_query,
     value_meta_query, whole_project_diagnostics_query,
 };
@@ -291,9 +291,14 @@ impl Default for BrinkDatabase {
                 // ruling. Reads `module_map_query` only for a file that
                 // declared at least one claiming handler.
                 .ingredient::<conventions_confinement_diagnostics_query>()
+                // The reusable transitive `IMPORT` closure (issue #2111
+                // finding 3): generic over any entry file, so #2167 can
+                // reuse it for E169 confinement relaxation.
+                .ingredient::<import_closure_query>()
                 // The serialized conventions projection (issue #2111, NS-T
-                // seam 1/6): the editor-facing artifact reads only the
-                // resolved conventions module's own `lowered_query` output.
+                // seam 1/6): the editor-facing artifact, reading the
+                // resolved conventions module's import closure to resolve
+                // `attach = StructName` schemas (finding 1).
                 .ingredient::<conventions_projection_query>()
                 // `register`-intrinsic confinement gate (E175, issue #1840
                 // Q5): a `register(...)` call is legal only inside the
