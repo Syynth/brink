@@ -127,7 +127,12 @@ resolution regardless of any `pub`/`#@public` marking, until an
 explicit `use std::…` import exists (#1582/#2167, not yet built) —
 this is a resolution-layer gate (`brink-analyzer::resolve::
 lookup_by_name_direct`), not a visibility default, and does not
-change once those marks are added.
+change once those marks are added. Issue #2216 unified the
+scope-free UFCS-receiver lookup (`resolve::lookup_unique_by_name`,
+which has no `ImportScope` to classify against) onto the same gate,
+so a std-mounted candidate is invisible there too, including as the
+sole match — the two lookups can no longer disagree about std
+visibility.
 
 **Boundary rules** (keeping the axes from leaking):
 
