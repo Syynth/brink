@@ -145,46 +145,7 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
 pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
     let output = brink_compiler::compile_path(brink_path)
         .map_err(|e| format!("compile {}: {e}", brink_path.display()))?;
-    let (program, line_tables) = brink_runtime::link(&output.data)
-        .map_err(|e| format!("link {}: {e}", brink_path.display()))?;
-    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
-        std::sync::Arc::new(program),
-        line_tables,
-    );
-
-    let mut out = String::new();
-    let mut line_count = 0usize;
-    loop {
-        match story
-            .continue_single()
-            .map_err(|e| format!("runtime error in {}: {e}", brink_path.display()))?
-        {
-            brink_runtime::Step::Line(line) => out.push_str(&line.text),
-            brink_runtime::Step::Done
-            | brink_runtime::Step::End
-            | brink_runtime::Step::Suspended => {
-                break;
-            }
-            brink_runtime::Step::Choices(_) => {
-                return Err(format!(
-                    "{} presented choices — tier1-native cases must be choice-free \
-                     straight-line programs",
-                    brink_path.display()
-                ));
-            }
-        }
-        line_count += 1;
-        if line_count >= brink_runtime::FlowInstance::LINE_LIMIT {
-            return Err(format!(
-                "{} produced {} lines without reaching a terminal step — exceeded \
-                 FlowInstance::LINE_LIMIT ({})",
-                brink_path.display(),
-                line_count,
-                brink_runtime::FlowInstance::LINE_LIMIT
-            ));
-        }
-    }
-    Ok(out)
+    drive_native_transcript(&output.data, &brink_path.display().to_string())
 }
 
 /// Compile a `.ink` file with the brink compiler, link, and explore.
@@ -213,6 +174,107 @@ pub fn compile_and_explore_from_ink(
         brink_runtime::link(&output.data).map_err(|e| format!("link: {e}"))?;
     let episodes = crate::explore(std::sync::Arc::new(program), line_tables, config);
     Ok((output.data, episodes))
+}
+
+/// Compile an entry (`.ink` or `.brink`) through the **real production
+/// path** (issue #2223) — `brink_environment::Project::load` +
+/// `brink_environment::compile`, exactly mirroring `brink-cli`'s
+/// `compile_entry` (`brink_driver::native_source_root_with_warnings` for
+/// the root, `RealFs` rooted there, default `OptionOverrides`). Every other
+/// helper in this module compiles through `brink_compiler::compile_path`,
+/// which its own doc says plainly bypasses `Environment` entirely — so
+/// nothing here has ever exercised the stdlib mount (#2080) or
+/// `Environment`'s manifest keying. This is the parallel gate's sole entry
+/// point: it lets a corpus sweep run the *same* fixture through the real
+/// path alongside the existing `compile_path`-based one, to catch
+/// divergence between the two roads (`docs/decision-log.md`, #2223).
+///
+/// Discovery warnings (e.g. a pruned directory containing `.brink`
+/// sources) are discarded here — this is a correctness probe over corpus
+/// fixtures with no config quirks to report, not a CLI invocation.
+pub fn compile_via_environment(entry_path: &Path) -> Result<brink_format::StoryData, String> {
+    let (root, _warnings) = brink_driver::native_source_root_with_warnings(entry_path);
+    let tree = brink_driver::RealFs::new(&root);
+    let entry_key = brink_driver::relative_key(&root, entry_path);
+    let overrides = brink_environment::OptionOverrides::default();
+    let env = brink_environment::Project::load(&tree, &entry_key, &overrides)
+        .map_err(|e| format!("Environment::load {}: {e}", entry_path.display()))?;
+    let output = brink_environment::compile(&env)
+        .map_err(|e| format!("compile(&Environment) {}: {e}", entry_path.display()))?;
+    Ok(output.data)
+}
+
+/// The [`compile_via_environment`] analogue of [`compile_and_explore_from_ink`]
+/// — compiles through the real production path, links, and explores.
+pub fn compile_and_explore_via_environment(
+    ink_path: &Path,
+    config: &ExploreConfig,
+) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
+    let data = compile_via_environment(ink_path)?;
+    let (program, line_tables) = brink_runtime::link(&data).map_err(|e| format!("link: {e}"))?;
+    let episodes = crate::explore(std::sync::Arc::new(program), line_tables, config);
+    Ok((data, episodes))
+}
+
+/// Drive a compiled [`brink_format::StoryData`] to completion, returning the
+/// concatenated output text — the shared drive loop behind
+/// [`run_native_transcript`] and its [`compile_via_environment`] analogue,
+/// [`run_native_transcript_via_environment`]. Enforces the same choice-free
+/// and [`brink_runtime::FlowInstance::LINE_LIMIT`] contracts
+/// [`run_native_transcript`]'s own doc comment describes.
+fn drive_native_transcript(
+    data: &brink_format::StoryData,
+    case_label: &str,
+) -> Result<String, String> {
+    let (program, line_tables) =
+        brink_runtime::link(data).map_err(|e| format!("link {case_label}: {e}"))?;
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
+
+    let mut out = String::new();
+    let mut line_count = 0usize;
+    loop {
+        match story
+            .continue_single()
+            .map_err(|e| format!("runtime error in {case_label}: {e}"))?
+        {
+            brink_runtime::Step::Line(line) => out.push_str(&line.text),
+            brink_runtime::Step::Done
+            | brink_runtime::Step::End
+            | brink_runtime::Step::Suspended => {
+                break;
+            }
+            brink_runtime::Step::Choices(_) => {
+                return Err(format!(
+                    "{case_label} presented choices — tier1-native cases must be choice-free \
+                     straight-line programs"
+                ));
+            }
+        }
+        line_count += 1;
+        if line_count >= brink_runtime::FlowInstance::LINE_LIMIT {
+            return Err(format!(
+                "{case_label} produced {line_count} lines without reaching a terminal step — \
+                 exceeded FlowInstance::LINE_LIMIT ({})",
+                brink_runtime::FlowInstance::LINE_LIMIT
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// The [`compile_via_environment`] analogue of [`run_native_transcript`] —
+/// compiles a native `.brink` entry through the real production path
+/// (`Project::load` + `brink_environment::compile`, so the stdlib mount
+/// (#2080) is present exactly as it is for `brink compile`/`brink play`),
+/// links, and runs it to completion. Used by the #2223 parallel gate to
+/// compare against [`run_native_transcript`]'s `compile_path`-based
+/// transcript for the same fixture.
+pub fn run_native_transcript_via_environment(brink_path: &Path) -> Result<String, String> {
+    let data = compile_via_environment(brink_path)?;
+    drive_native_transcript(&data, &brink_path.display().to_string())
 }
 
 /// Compile a `.brink` native source string, link, explore, and also return
