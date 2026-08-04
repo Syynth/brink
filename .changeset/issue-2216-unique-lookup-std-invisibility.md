@@ -5,7 +5,7 @@
 Issue #2216 (follow-up to #2197/#2080): `brink-analyzer`'s
 `resolve::lookup_unique_by_name` — the scope-free UFCS-receiver lookup used
 by `infer::body`, which has no `ImportScope` to consult — now excludes any
-`story::std…`-mounted candidate the same way `lookup_by_name_direct` already
+`std…`-mounted candidate the same way `lookup_by_name_direct` already
 does for the scoped path, including when it is the function's sole
 candidate. Without this, a name whose only candidate was declared in the
 mounted `std/` tree would resolve through this path with no `use std::…`

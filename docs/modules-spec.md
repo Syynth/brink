@@ -122,7 +122,7 @@ spellings produce the identical `VisibilityMark::Public` this
 section's `effective_visibility` logic consumes.
 
 **Stdlib mount carve-out (issue #2197, per #2080's scope fence):** a
-`story::std…`-mounted module's items are invisible to bare-name
+`std…`-mounted module's items are invisible to bare-name
 resolution regardless of any `pub`/`#@public` marking, until an
 explicit `use std::…` import exists (#1582/#2167, not yet built) —
 this is a resolution-layer gate (`brink-analyzer::resolve::
@@ -136,10 +136,29 @@ lookups can no longer disagree about std visibility. A referrer
 *inside* the std tree is the one remaining asymmetry:
 `lookup_by_name_direct`'s `InScope` tier still resolves a
 std-mounted candidate for a file that is itself part of
-`story::std…` (so std's own internal references keep working), but
+`std…` (so std's own internal references keep working), but
 `lookup_unique_by_name` has no scope to classify `InScope` under and
 excludes that same candidate unconditionally — stricter than
 `lookup_by_name` for exactly that referrer.
+
+**`std` is a peer root of `story`, not a child of it (issue #2245, RULED
+2026-08-04):** `story::*` is the universe of what the project *author*
+provided; `std::*` — and every future mounted library — is a top-level
+peer of `story`, never nested under it. `brink_db::modules::
+native_module_path` mints `std::conventions::screenplay` for the mounted
+preset, never `story::std::conventions::screenplay`; a file's leading
+root-relative path segment decides which root it qualifies under, a
+structural fact rather than a project-config lookup. `is_std_module`
+followed suit: it used to be a `story::std…`-prefix string test
+duplicated independently in `brink-analyzer::resolve` and
+`brink-ir::lir::lower::decls` (those crates cannot share a helper without
+a dependency cycle in the direction `brink-ir` → `brink-analyzer` — but
+the *reverse* edge already exists, since `brink-analyzer` depends on
+`brink-ir`). It now lives once, in `brink-ir::symbols` (the substrate
+`SymbolIndex`/`ResolutionMap` already live in, precisely so `brink-ir::lir`
+can consume analyzer-shaped data without depending on `brink-analyzer`),
+and both former copies were deleted in favor of the shared
+`brink_ir::is_std_module`/`STD_ROOT`.
 
 **A third participant (issue #2238), narrowed by issue #2246:** LIR
 struct-shape resolution joined the std-invisibility gate so that a
