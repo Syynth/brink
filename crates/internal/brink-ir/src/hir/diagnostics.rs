@@ -1682,6 +1682,56 @@ pub enum DiagnosticCode {
     /// scope for this code, same posture `E171`'s own doc explains for
     /// captured-parameter types).
     E180,
+
+    // ── TM-4c struct-shape resolution backstop (docs/typed-mode-spec.md
+    //    §6, issue #2240) ─────────────────────────────────────────────
+    /// `lir::lower::structs::build_shape_table`'s own
+    /// `decls::lookup_global(index, file_id, name, SymbolKind::Struct)`
+    /// call — resolving a declared `STRUCT`'s **own** `DefinitionId`,
+    /// using its own declaring file as referrer — came back `None`.
+    ///
+    /// This is a non-suppressible defense-in-depth backstop, the
+    /// `E060`/`E073` posture: it should never fire from a normal compile.
+    /// The exact-file arm always matches a struct against itself *unless*
+    /// `brink-analyzer` already dropped this HIR decl's own symbol entry
+    /// as a true intra-module duplicate (`E023`, same declared module as
+    /// an earlier same-name declaration) — and even then,
+    /// `lookup_global`'s unscoped fallback normally rescues the
+    /// surviving sibling's id (which is exactly what lets
+    /// `build_shape_table`'s own `by_def.contains_key` dedup recognize
+    /// "true intra-module duplicate" and skip it a second time, rather
+    /// than minting a fresh, wrong shape). This code fires only in the
+    /// narrower case the fallback itself cannot rescue: **every**
+    /// surviving same-name candidate is std-declared, so the fallback's
+    /// own std-exclusion (issue #2197) empties the search too. Before
+    /// this code existed, that combination silently dropped the struct
+    /// from both `ShapeTable` and `NameTable` seeding with no diagnostic
+    /// at all — shifting every subsequent `ShapeId`/`NameId` and the
+    /// bytecode built from them (CLAUDE.md: "silent drops are always
+    /// bugs until proven otherwise").
+    ///
+    /// Reachable in principle (a project-declared module with two files
+    /// duplicating the same struct name, where the surviving declaration
+    /// is itself std-mounted), not reachable in practice today — std
+    /// ships a single preset file, so an intra-*std* duplicate can only
+    /// arise from a future multi-file std mount.
+    ///
+    /// `build_struct_shape_data` (the `NameId`-free, cutoff-friendly
+    /// twin `struct_shape_data_query` memoizes for the per-knot chunk
+    /// lowering path) performs the textually identical lookup and has no
+    /// diagnostic sink of its own to push into — it is a pure,
+    /// `Eq`-cutoff salsa data query, not a lowering pass threading a
+    /// `Vec<Diagnostic>` accumulator. It is deliberately left silent
+    /// there rather than given a redundant sink: every real compile
+    /// (`brink-db`'s `lir_query`) always computes `build_shape_table`
+    /// (via `lir_prelude_decls_query`) and `build_struct_shape_data` (via
+    /// `struct_shape_data_query` → `chunk_lowering_ctx_query` →
+    /// `lir_knot_chunk_query`) in the same salsa revision, over the same
+    /// `resolutions_index_query` index and the same files' `structs`
+    /// HIR — so the exact same drop condition always fires this
+    /// diagnostic from the prelude side in the same compile. See that
+    /// function's own doc comment for the full argument.
+    E181,
 }
 
 impl DiagnosticCode {
@@ -1874,6 +1924,7 @@ impl DiagnosticCode {
         Self::E178,
         Self::E179,
         Self::E180,
+        Self::E181,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2063,6 +2114,7 @@ impl DiagnosticCode {
             Self::E178 => "E178",
             Self::E179 => "E179",
             Self::E180 => "E180",
+            Self::E181 => "E181",
         }
     }
 
@@ -2365,6 +2417,9 @@ impl DiagnosticCode {
             Self::E180 => {
                 "a `@[convention(…, attach = StructName)]` clause disagrees with the handler's own declared return type"
             }
+            Self::E181 => {
+                "a declared STRUCT's own definition could not be resolved while building the struct-shape table — every surviving same-name candidate is std-declared"
+            }
         }
     }
 
@@ -2619,6 +2674,7 @@ impl DiagnosticCode {
             "E178" => Some(Self::E178),
             "E179" => Some(Self::E179),
             "E180" => Some(Self::E180),
+            "E181" => Some(Self::E181),
             _ => None,
         }
     }

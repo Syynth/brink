@@ -40,7 +40,12 @@
 //!   declaration dropped from the index) still keeps only its first
 //!   declaration's fields here, because both HIR decls resolve to the
 //!   *same* `DefinitionId` and the second is skipped once that id already
-//!   has an entry.
+//!   has an entry — unless every surviving same-name candidate is
+//!   std-declared, in which case [`build_shape_table`]'s own
+//!   `decls::lookup_global` call comes back `None` and raises the `E181`
+//!   backstop instead of silently dropping the declaration (issue #2240;
+//!   see that code's own doc, and [`build_struct_shape_data`]'s doc for why
+//!   its identical lookup does not duplicate the diagnostic).
 //! - [`GlobalShapeMap`]: every global `VAR`/`CONST` whose TM-2 type
 //!   annotation names a declared struct, resolved **once, at declaration
 //!   time** (using the global's own declaring file as referrer) to that
@@ -63,6 +68,7 @@ use crate::FileId;
 use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::{Diagnostic, DiagnosticCode};
 
 use super::context::NameTable;
 use super::decls::lookup_global;
@@ -218,10 +224,17 @@ impl ShapeTable {
 /// deterministic under the same ordering, same as before #2238. Two
 /// declared-module coexisting shapes (project vs. mounted std, say) get
 /// *different* `DefinitionId`s and both keep their own table entry.
+///
+/// `diagnostics` is the same accumulator `build_prelude_decls` threads
+/// through `decls::collect_globals`/`eval_const_expr` — pushed to, never
+/// read, if the lookup below ever comes back `None` (issue #2240's `E181`
+/// backstop; see that code's own doc for the exact, narrow condition that
+/// triggers it).
 pub fn build_shape_table(
     files: &[(FileId, &hir::HirFile)],
     names: &mut NameTable,
     index: &SymbolIndex,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> ShapeTable {
     let mut by_def: LookupMap<DefinitionId, ShapeInfo> = LookupMap::new();
     let mut by_name: LookupMap<String, Vec<DefinitionId>> = LookupMap::new();
@@ -238,14 +251,22 @@ pub fn build_shape_table(
             // `by_def.contains_key` dedup below depends on to recognize a
             // "true intra-module duplicate"). `None` here means even that
             // fallback found nothing — every surviving same-name candidate
-            // is std-declared. That silently drops `s` from both the shape
-            // table and `NameTable` seeding, shifting subsequent `NameId`s
-            // and emitted bytecode with no diagnostic (tracked: issue
-            // #2240 — this needs a real diagnostic or an explicit
-            // documented-drop contract, not a silent `continue`).
+            // is std-declared. Issue #2240: this used to silently drop `s`
+            // from both the shape table and `NameTable` seeding, shifting
+            // subsequent `NameId`s and emitted bytecode with no diagnostic —
+            // `E181` is the non-suppressible backstop that makes the drop
+            // loud instead (see that code's own doc for the full argument,
+            // including why `build_struct_shape_data`'s identical lookup
+            // deliberately does *not* duplicate this diagnostic).
             let Some(definition_id) =
                 lookup_global(index, file_id, &s.name.text, SymbolKind::Struct)
             else {
+                diagnostics.push(Diagnostic {
+                    file: file_id,
+                    range: s.name.range,
+                    message: DiagnosticCode::E181.title().to_string(),
+                    code: DiagnosticCode::E181,
+                });
                 continue;
             };
             if by_def.contains_key(&definition_id) {
@@ -383,6 +404,38 @@ pub struct StructShapeData {
 /// `files` order, same first-declaration-(by identity)-wins dedup, same
 /// offset = declaration index, same `decls::lookup_global`-resolved nested
 /// shape reference.
+///
+/// **Issue #2240 ruling — deliberately no diagnostic sink here.** This
+/// function's own `lookup_global` call below can miss for the identical
+/// narrow reason [`build_shape_table`]'s does (see [`crate::DiagnosticCode::E181`]'s
+/// doc: a true intra-module duplicate whose every surviving candidate is
+/// std-declared), and unlike `build_shape_table` — whose caller
+/// (`build_prelude_decls`) already threads a `Vec<Diagnostic>` accumulator
+/// through every other decl-collection pass — this function has no
+/// diagnostic conduit available at all: `brink-db`'s `struct_shape_data_query`
+/// is a `#[salsa::tracked(returns(ref))]` pure data query, cutoff-friendly
+/// and `Eq`-keyed by design (the whole point of [`StructShapeData`]'s
+/// `NameId`-free projection), not a lowering pass that could thread one
+/// through without widening the query's return shape and, with it, every
+/// downstream consumer's cutoff contract — exactly the kind of "thread a
+/// diagnostic sink through a whole-program salsa-memoized collector"
+/// architecture change issue #2240 itself named as a real design decision,
+/// not a substitution to make unilaterally inside a single-function fix.
+///
+/// This is safe to leave silent rather than a second unremarked drop,
+/// because the two functions are never independently reachable: every real
+/// compile (`brink-db`'s `lir_query`) computes both `build_shape_table` (via
+/// `lir_prelude_decls_query`) and this function (via
+/// `struct_shape_data_query` → `chunk_lowering_ctx_query` →
+/// `lir_knot_chunk_query`) in the same salsa revision, over the same
+/// `resolutions_index_query` index and the same files' `structs` HIR (a
+/// per-file decl-only HIR projection and the raw HIR agree on their
+/// `structs` field — see `PreludeDecls`'s own doc). So the exact same drop
+/// condition always also reaches `build_shape_table`'s identical lookup in
+/// that same compile and raises `E181` there. The only caller that could
+/// ever observe this function running *without* `build_shape_table` also
+/// running is `Db::knot_chunk`, a `#[doc(hidden)]` test-only probe — never a
+/// real product path.
 #[must_use]
 pub fn build_struct_shape_data(
     files: &[(FileId, &hir::HirFile)],
@@ -392,10 +445,10 @@ pub fn build_struct_shape_data(
     let mut shapes = Vec::new();
     for &(file_id, hir_file) in files {
         for s in &hir_file.structs {
-            // See `build_shape_table`'s identical lookup for why this can
-            // come back `None` (a true intra-module duplicate whose every
-            // surviving candidate is std-declared) and why that silent
-            // drop is tracked, not intended, behavior (issue #2240).
+            // See this function's own doc above, and `E181`'s doc, for why
+            // a `None` here (a true intra-module duplicate whose every
+            // surviving candidate is std-declared) is deliberately left
+            // undiagnosed at this call site specifically — issue #2240.
             let Some(definition_id) =
                 lookup_global(index, file_id, &s.name.text, SymbolKind::Struct)
             else {
@@ -634,7 +687,7 @@ mod tests {
         let hir = hir_for("STRUCT Alpha = #{v: int}\nSTRUCT Beta = #{v: int, w: int}\nHello.\n");
         let index = index_for_structs(&hir, FileId(0));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index);
+        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index, &mut Vec::new());
         assert_eq!(shapes.len(), 2);
         let alpha = shapes.get("Alpha").expect("Alpha should be in the table");
         let beta = shapes.get("Beta").expect("Beta should be in the table");
@@ -652,7 +705,7 @@ mod tests {
             hir_for("STRUCT Inner = #{v: int}\nSTRUCT Outer = #{inner: Inner, n: int}\nHello.\n");
         let index = index_for_structs(&hir, FileId(0));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index);
+        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index, &mut Vec::new());
         let inner = shapes.get("Inner").expect("Inner should be in the table");
         let outer = shapes.get("Outer").expect("Outer should be in the table");
         let (_, nested) = outer.field("inner").expect("Outer declares `inner`");
@@ -748,7 +801,7 @@ mod tests {
         let index = index_for_structs(&hir, FileId(0));
 
         let mut direct_names = NameTable::new();
-        let direct = build_shape_table(&files, &mut direct_names, &index);
+        let direct = build_shape_table(&files, &mut direct_names, &index, &mut Vec::new());
 
         let data = build_struct_shape_data(&files, &index);
         let mut throwaway = NameTable::new();
@@ -774,7 +827,7 @@ mod tests {
         let hir = hir_for("STRUCT Dup = #{a: int}\nSTRUCT Dup = #{b: int, c: int}\nHello.\n");
         let index = index_for_structs(&hir, FileId(0));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index);
+        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index, &mut Vec::new());
         assert_eq!(
             shapes.len(),
             1,
@@ -812,7 +865,7 @@ mod tests {
 
         let files = [(std_file, &std_hir), (project_file, &project_hir)];
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&files, &mut names, &index);
+        let shapes = build_shape_table(&files, &mut names, &index, &mut Vec::new());
 
         // Both shapes coexist — two distinct table entries for one name.
         assert_eq!(
@@ -841,6 +894,129 @@ mod tests {
         assert_ne!(
             from_std.id, from_project.id,
             "the two coexisting shapes have distinct shape ids"
+        );
+    }
+
+    /// Issue #2240's own regression: when a declared `STRUCT`'s own
+    /// `(file, name)` symbol entry is missing from the index — the same
+    /// exact-file-arm miss a true intra-module duplicate produces — and
+    /// every surviving same-name candidate in the bucket is std-declared,
+    /// `lookup_global`'s non-std fallback also misses. Before the `E181`
+    /// backstop this silently dropped the struct from the shape table with
+    /// no diagnostic at all; now it raises a real, non-suppressible compile
+    /// diagnostic instead.
+    ///
+    /// Rule 20a: verified this assertion fails (`diagnostics` stays empty)
+    /// with the `E181` push removed from `build_shape_table`'s `else`
+    /// branch (leaving a bare `continue`, matching the pre-fix code) —
+    /// restored before committing.
+    #[test]
+    fn build_shape_table_reports_e181_when_every_surviving_candidate_is_std_declared() {
+        let ghost_file = FileId(7);
+        let ghost_hir = hir_for("STRUCT Ghost = #{v: int}\nHello.\n");
+
+        // The only symbol the index knows about for "Ghost" is declared in
+        // a *different* file, in a mounted std module — modeling the
+        // aftermath of an analyzer-dropped intra-module duplicate whose
+        // surviving sibling happens to be std-declared. `ghost_file` itself
+        // carries no symbol for "Ghost" at all, so the exact-file arm
+        // misses, and the non-std fallback arm excludes the only candidate
+        // there is — exactly the condition `E181`'s doc describes.
+        let mut index = SymbolIndex::default();
+        let std_file = FileId(9);
+        let std_def_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        index.symbols.insert(
+            std_def_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: std_file,
+                range: rowan::TextRange::default(),
+                id: std_def_id,
+                name: "Ghost".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::x".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Ghost".to_string())
+            .or_default()
+            .push(std_def_id);
+
+        let mut names = NameTable::new();
+        let mut diagnostics = Vec::new();
+        let shapes = build_shape_table(
+            &[(ghost_file, &ghost_hir)],
+            &mut names,
+            &index,
+            &mut diagnostics,
+        );
+
+        assert!(
+            shapes.get("Ghost").is_none(),
+            "the struct still can't resolve its own identity, so it still \
+             occupies no table slot — E181 makes the drop loud, not stops \
+             it from happening"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "the unresolvable lookup must raise exactly one diagnostic"
+        );
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E181);
+        assert_eq!(diagnostics[0].file, ghost_file);
+        assert_eq!(
+            diagnostics[0].range, ghost_hir.structs[0].name.range,
+            "reported at the struct's own name span"
+        );
+    }
+
+    /// Companion to the test above, backing the `E181` doc's "always
+    /// co-computed with `build_shape_table` in the same compile" ruling for
+    /// why [`build_struct_shape_data`] deliberately raises no diagnostic of
+    /// its own: the identical unresolvable-lookup condition silently empties
+    /// its output too, exactly mirroring `build_shape_table`'s drop.
+    #[test]
+    fn build_struct_shape_data_silently_mirrors_the_same_unresolvable_drop() {
+        let ghost_file = FileId(7);
+        let ghost_hir = hir_for("STRUCT Ghost = #{v: int}\nHello.\n");
+
+        let mut index = SymbolIndex::default();
+        let std_file = FileId(9);
+        let std_def_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        index.symbols.insert(
+            std_def_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: std_file,
+                range: rowan::TextRange::default(),
+                id: std_def_id,
+                name: "Ghost".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::x".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Ghost".to_string())
+            .or_default()
+            .push(std_def_id);
+
+        let data = build_struct_shape_data(&[(ghost_file, &ghost_hir)], &index);
+
+        assert!(
+            data.shapes.is_empty(),
+            "the mirrored, diagnostic-sink-free path drops the same struct \
+             — see E181's doc for why that's a documented ruling and not a \
+             second unremarked silent drop"
         );
     }
 }

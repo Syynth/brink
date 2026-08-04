@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E176`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E181`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -554,6 +554,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E178`](diagnostics/E178.md) | A `@[convention(claims = "…")]` annotation has no `order` clause — required, with no default. |
 | [`E179`](diagnostics/E179.md) | Two `@[convention(…)]` declarations in the same module carry the same `order` — reported against every declaration in the group. |
 | [`E180`](diagnostics/E180.md) | A `@[convention(…, attach = StructName)]` clause names a struct the handler's own declared return type does not agree with. |
+| [`E181`](diagnostics/E181.md) | A declared `STRUCT`'s own definition could not be resolved while building the struct-shape table — every surviving same-name candidate is std-declared (non-suppressible backstop). |
 
 ## Known limitations
 
