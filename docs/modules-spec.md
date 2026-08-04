@@ -141,6 +141,19 @@ std-mounted candidate for a file that is itself part of
 excludes that same candidate unconditionally — stricter than
 `lookup_by_name` for exactly that referrer.
 
+**A third participant (issue #2238):** LIR struct-shape resolution
+(`brink-ir::lir::lower::structs::ShapeTable::resolve`, via
+`decls::lookup_global`) joined the std-invisibility gate so that a
+project's own struct and a mounted std preset's same-named struct can
+coexist without one silently claiming the other's shape id. It carries
+the identical asymmetry: `lookup_global`'s fallback excludes every
+std-declared candidate unconditionally, with **no** referrer-inside-std
+carve-out — unlike `lookup_by_name_direct`'s `InScope` tier, a std file
+referencing a same-named shape it does not itself declare resolves to
+`None` rather than a std sibling. Not yet reconciled with the other two
+lookups' referrer-inside-std handling (tracked alongside issue #2233's
+`lookup_unique_by_name` asymmetry).
+
 **Boundary rules** (keeping the axes from leaking):
 
 1. **`#@private` hides the name, not the cell.** A private
