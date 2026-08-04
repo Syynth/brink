@@ -350,12 +350,23 @@ const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
 fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let structs = ctx.structs;
     let file = ctx.file;
-    let index = ctx.index;
-    // Referrer-scoped (issue #2238): when the project and a mounted std
-    // preset both declare a `Cue`-shaped struct, this resolves to the one
-    // declared in `file` — the literal's own file — never the other file's
-    // coexisting same-named shape.
-    let Some(shape) = structs.shapes.resolve(&sl.shape.text, file, index) else {
+    // Issue #2246: `sl.shape` is a `RefKind::Struct` reference the analyzer
+    // already resolved against the referrer's module scope
+    // (`brink_analyzer::resolve::resolve_struct_ref`, full `Candidacy`
+    // semantics — same span key `resolutions` uses everywhere else in this
+    // module) — consume that recorded resolution directly instead of
+    // re-deriving it via `ShapeTable::resolve`'s own narrower file-scoped
+    // fallback. When the project and a mounted std preset both declare a
+    // `Cue`-shaped struct, the analyzer's answer is exactly the same one
+    // `ShapeTable::resolve` used to compute; when the analyzer failed to
+    // resolve the reference at all (an undeclared/un-imported shape name),
+    // there is no entry here either, so the `E073` backstop below still
+    // fires the same as before.
+    let shape = ctx
+        .resolutions
+        .resolve(file, sl.shape.range)
+        .and_then(|id| structs.shapes.get_by_def(id));
+    let Some(shape) = shape else {
         for (_name, val) in &sl.fields {
             lower_expr(val, ctx);
         }
@@ -447,28 +458,26 @@ fn static_offset_for(base: &hir::Expr, field_name: &str, ctx: &LowerCtx<'_>) -> 
 
 /// Chase `expr` to a compile-time-known struct shape's own `DefinitionId`,
 /// if any — the entire "known shape" story is: a construction literal
-/// (resolved via [`ShapeTable::resolve`], referrer = `ctx.file`), a `Path`
-/// naming a struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation, already
-/// resolved to a `DefinitionId` in `structs::GlobalShapeMap`/
-/// `LowerCtx::temp_shapes`), or a `FieldAccess` whose base has a known
-/// shape *and* whose accessed field is itself declared with a struct-typed
-/// annotation (chases through nested struct fields using only the shape
-/// table — never type inference, and never anything requiring
-/// `brink-analyzer`, which `brink-ir` cannot depend on). Every hop already
-/// carries a resolved identity (issue #2238) rather than a bare name, so
-/// there is no re-resolution — and no referrer-file tracking — needed at
-/// any point in the chase. Every other expression (a call, an index, a
-/// literal-typed value, …) returns `None` — always safe, just misses the
-/// optimization.
-///
-/// [`ShapeTable::resolve`]: super::structs::ShapeTable::resolve
+/// (its `RefKind::Struct` reference, already resolved by the analyzer —
+/// issue #2246, `lower_struct_literal`'s doc), a `Path` naming a
+/// struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation, already resolved to
+/// a `DefinitionId` in `structs::GlobalShapeMap`/`LowerCtx::temp_shapes`),
+/// or a `FieldAccess` whose base has a known shape *and* whose accessed
+/// field is itself declared with a struct-typed annotation (chases through
+/// nested struct fields using only the shape table — never type inference,
+/// and never anything requiring `brink-analyzer`, which `brink-ir` cannot
+/// depend on). Every hop already carries a resolved identity (issue #2238)
+/// rather than a bare name, so there is no re-resolution — and no
+/// referrer-file tracking — needed at any point in the chase. Every other
+/// expression (a call, an index, a literal-typed value, …) returns `None`
+/// — always safe, just misses the optimization.
 fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<DefinitionId> {
     match expr {
-        hir::Expr::StructLiteral(sl) => ctx
-            .structs
-            .shapes
-            .resolve(&sl.shape.text, ctx.file, ctx.index)
-            .map(|s| s.definition_id),
+        // Issue #2246: the analyzer already resolved this `RefKind::Struct`
+        // reference (see `lower_struct_literal`'s matching doc) — its
+        // target *is* the shape's own `DefinitionId`, so there is nothing
+        // further to look up here, not even `ShapeTable::get_by_def`.
+        hir::Expr::StructLiteral(sl) => ctx.resolutions.resolve(ctx.file, sl.shape.range),
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {

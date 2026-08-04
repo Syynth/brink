@@ -20,10 +20,22 @@
 //!   (different declared modules, different `DefinitionId`s) — the same
 //!   shape the table already has for knots/externals since #2197. `by_name`
 //!   keys a *bucket* of `DefinitionId`s per bare name instead of a single
-//!   winner; [`ShapeTable::resolve`] is the referrer-scoped lookup a
-//!   construction literal or field-type annotation uses to pick the right
-//!   one — the candidate declared in the referring file itself, else
-//!   whichever `decls::lookup_global` returns (its own std-exclusion rule).
+//!   winner; [`ShapeTable::resolve`] is the referrer-scoped lookup a **field
+//!   or TM-2/temp type annotation** uses to pick the right one — the
+//!   candidate declared in the referring file itself, else whichever
+//!   `decls::lookup_global` returns (its own std-exclusion rule, which
+//!   `resolve` itself now always goes through — issue #2246 review closed a
+//!   gap where a sole-candidate bucket skipped that exclusion entirely). A
+//!   construction literal's own shape name is a **different** case (issue
+//!   #2246): it is a `RefKind::Struct` reference the analyzer already
+//!   resolved with full module-scope `Candidacy` semantics
+//!   (`brink_analyzer::resolve::resolve_struct_ref`), so `expr::
+//!   lower_struct_literal`/`decls::eval_const_struct_literal` consume that
+//!   recorded resolution directly and never call `ShapeTable::resolve` at
+//!   all — a field/annotation name, by contrast, is never registered as a
+//!   ref at all (`symbols::project`'s own doc: "a nominal-only grammar,
+//!   resolved later by a different mechanism"), so `ShapeTable::resolve`
+//!   remains the only resolution those cases ever get.
 //!   A bona fide intra-module duplicate (analyzer-diagnosed `E023`, later
 //!   declaration dropped from the index) still keeps only its first
 //!   declaration's fields here, because both HIR decls resolve to the
@@ -147,12 +159,25 @@ impl ShapeTable {
     /// declare therefore resolves to `None` rather than a std sibling (see
     /// issue #2233 for the analogous `lookup_unique_by_name` asymmetry;
     /// this call path has the same gap and needs its own follow-up).
+    ///
+    /// Always routes through [`lookup_global`], even when `name`'s bucket
+    /// holds exactly one candidate (issue #2246 review): a prior "fast
+    /// path" returned that sole candidate unconditionally, bypassing
+    /// `lookup_global`'s own std-exclusion entirely — so a struct name only
+    /// a mounted `story::std…` module declares (no project-side homonym at
+    /// all) resolved silently, the exact "reach into std with no import"
+    /// class every other one of the five bare-name lookups this issue
+    /// audited was already taught to refuse. `lookup_global` is itself a
+    /// single `by_name` bucket scan, so this costs the same for the
+    /// overwhelmingly common zero/one-candidate case; it no longer answers
+    /// a different question than the multi-candidate branch does.
     #[must_use]
     pub fn resolve(&self, name: &str, referrer: FileId, index: &SymbolIndex) -> Option<&ShapeInfo> {
-        let ids = self.by_name.get(name)?;
-        if ids.len() <= 1 {
-            return ids.first().and_then(|id| self.by_def.get(id));
-        }
+        // Cheap early bailout: `name` isn't a declared `STRUCT` at all (in
+        // this table, by construction — every successfully-resolved
+        // declaration is added here), so there's nothing `lookup_global`
+        // could find that would map back to a `ShapeInfo` anyway.
+        self.by_name.get(name)?;
         let def_id = lookup_global(index, referrer, name, SymbolKind::Struct)?;
         self.by_def.get(&def_id)
     }
@@ -638,6 +663,70 @@ mod tests {
         assert_eq!(
             plain_nested, None,
             "a non-struct-typed field has no nested shape"
+        );
+    }
+
+    /// Issue #2246 review: `ShapeTable::resolve`'s old "fast path" answered
+    /// a *different*, unscoped question whenever `name`'s bucket held
+    /// exactly one candidate — it returned that candidate unconditionally,
+    /// never consulting `lookup_global`'s std-exclusion at all. A struct
+    /// name that only a mounted `story::std…` module declares, with **no**
+    /// project-side homonym anywhere (so the bucket really does hold just
+    /// one entry), used to resolve straight through — the referrer silently
+    /// reaching into std with no import, the exact bug class #2197/#2238
+    /// closed for every other bare-name lookup in this crate.
+    ///
+    /// Rule 20a: verified this assertion fails (returns `Some`, not `None`)
+    /// with the production fix reverted to the old `if ids.len() <= 1 {
+    /// return ids.first()... }` fast path.
+    #[test]
+    fn resolve_excludes_a_sole_std_declared_shape_with_no_project_homonym() {
+        let mut index = SymbolIndex::default();
+        let std_file = FileId(1);
+        let referrer_file = FileId(0);
+        let def_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        index.symbols.insert(
+            def_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: std_file,
+                range: rowan::TextRange::default(),
+                id: def_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("story::std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(def_id);
+
+        let mut by_def: LookupMap<DefinitionId, ShapeInfo> = LookupMap::new();
+        by_def.insert(
+            def_id,
+            ShapeInfo {
+                id: 0,
+                definition_id: def_id,
+                name: NameId(0),
+                fields: Vec::new(),
+                field_index: LookupMap::new(),
+            },
+        );
+        let mut by_name: LookupMap<String, Vec<DefinitionId>> = LookupMap::new();
+        by_name.insert("Cue".to_string(), vec![def_id]);
+        let shapes = ShapeTable { by_def, by_name };
+
+        assert!(
+            shapes.resolve("Cue", referrer_file, &index).is_none(),
+            "a struct name only a mounted std module declares must not resolve for a \
+             referrer that never declares (or imports) it itself — even when it is the \
+             sole candidate in the bucket"
         );
     }
 
