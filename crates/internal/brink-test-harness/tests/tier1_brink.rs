@@ -317,6 +317,70 @@ arr is {arr}.
     );
 }
 
+// ── #2174: classic-line (non-block) `~ a[i] = v` silent drop ────────────
+//
+// The three tests above (`path_then_index_mutator_lvalue_...`,
+// `path_then_index_plain_assignment_...`, `field_access_then_index_root_...`)
+// all write their `a.items[0] = 99` line *inside* a `~ { … }` T1b block —
+// the surface #2121/PR #2171 fixed. Discovered during that PR's review: the
+// identical assignment written as a classic (non-block) logic line —
+// `~ a.items[0] = 99`, no enclosing `~ { … }` — never reached
+// `reject_field_projection_index_root`/`lower_indexed_assignment` at all,
+// because the classic-line statement dispatch (`lir/lower/mod.rs`) only
+// tried `try_lower_field_assignment`'s `Path`/`FieldAccess` targets before
+// falling through to `stmts::lower_stmt`, whose `lower_assign_target` only
+// recognizes a bare `Path` — an `Index` target silently vanished with
+// **zero diagnostics**, not even a runtime fault. This is `#2174`.
+
+/// The exact `#2121` repro, but as a classic (non-block) logic line instead
+/// of inside `~ { … }`. Before the fix: compiled with zero diagnostics and
+/// the assignment never happened at all (confirmed to fail — i.e. the
+/// diagnostic was *absent* — with `try_lower_indexed_assignment`'s call site
+/// in `mod.rs`'s statement dispatch reverted, rule 20a).
+#[test]
+fn classic_line_path_then_index_struct_field_is_e074_not_silently_dropped() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<int>,
+}
+VAR a = Bag#{items: #[1, 2, 3]}
+~ a.items[0] = 99
+a is {a.items}.
+-> END
+";
+    let err = compile_brink(source).expect_err(
+        "a classic-line Path-then-Index struct-field assignment target must still be a compile error",
+    );
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+/// The root-cause repro that `#2174`'s investigation actually uncovered: a
+/// classic-line indexed assignment onto a **bare** array variable — no
+/// struct field involved at all — silently dropped the write with zero
+/// diagnostics (confirmed via a real compile+run before writing this test,
+/// rule 12n): the story compiled clean and printed the array's *original*
+/// contents, not the assigned value. This asserts the VALUE at the intended
+/// target after the assignment, not merely that the program built.
+///
+/// Confirmed to fail without the fix (rule 20a): with
+/// `try_lower_indexed_assignment`'s call site in `mod.rs` reverted, this
+/// prints `[1, 2, 3]` (the assignment silently dropped) instead of the
+/// `[99, 2, 3]` asserted here.
+#[test]
+fn classic_line_bare_variable_indexed_assignment_writes_the_value() {
+    let source = "VAR a = #[1, 2, 3]\n~ a[0] = 99\n{a}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "[99, 2, 3]\n");
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject
