@@ -76,11 +76,23 @@ pub struct ShapeInfo {
     pub fields: Vec<NameId>,
     /// Field source-name → `(offset, nested)`, where `nested` is the
     /// declared nested-struct-shape's own `DefinitionId`. `Some` only when
-    /// the field's own TM-2 annotation names another declared struct,
-    /// resolved once here (referrer = this struct's own declaring file) —
+    /// the field's own TM-2 annotation names a struct `decls::lookup_global`
+    /// resolves against this struct's own declaring file as referrer —
     /// that's what lets `expr::known_shape` chase a read chain
     /// (`o.inner.v`) across more than one `.field` hop without any type
     /// inference or re-resolution ambiguity.
+    ///
+    /// Behavior delta from pre-#2238 (unremarked in that PR's body): this
+    /// used to be a flat `struct_names.contains(name)` membership test over
+    /// every file's declared structs, std included — now it is
+    /// `lookup_global`'s referrer-scoped, std-excluding-fallback
+    /// resolution. A field typed as a struct that *only* std declares (the
+    /// referrer's own file has no same-named struct of its own) now records
+    /// `nested: None` where it previously recorded `Some(name)`, losing the
+    /// static-offset chase (`RecordGet`/`RecordSet`'s `static_offset`
+    /// `Some` → `None`) under `types = strict` for that field — by-name ops
+    /// remain correct, so this is a lowering-strategy change, not a
+    /// correctness one, but it is bytecode-visible.
     field_index: LookupMap<String, (u16, Option<DefinitionId>)>,
 }
 
@@ -106,10 +118,12 @@ pub struct ShapeTable {
 }
 
 impl ShapeTable {
-    /// Unambiguous lookup for callers with no referrer file context.
-    /// Returns the first-declared shape when several coexist — every real
-    /// lowering call site has a referrer file and uses
-    /// [`resolve`](Self::resolve) instead; this is test-only.
+    /// Referrer-free lookup for callers with no file context — **not**
+    /// unambiguous: when more than one declared `STRUCT` shares `name` this
+    /// returns whichever was declared *first* in `files` order, silently
+    /// discarding any later coexisting sibling. Every real lowering call
+    /// site has a referrer file and uses [`resolve`](Self::resolve)
+    /// instead; this is test-only.
     #[cfg(test)]
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&ShapeInfo> {
@@ -124,8 +138,15 @@ impl ShapeTable {
     /// declaring `Cue`, say — resolve exactly like `decls::lookup_global`
     /// already does for knots/externals: the candidate declared in
     /// `referrer` itself, else whichever non-std candidate
-    /// `decls::lookup_global`'s own fallback picks (or, when `referrer`
-    /// itself is std, one of its std siblings).
+    /// `decls::lookup_global`'s own fallback picks. That fallback excludes
+    /// **every** std-declared candidate unconditionally, with no
+    /// referrer-is-std carve-out — unlike `resolve.rs`'s
+    /// `lookup_by_name_direct`, whose `InScope` tier lets a referrer that is
+    /// itself part of `story::std…` resolve a std-mounted sibling. A std
+    /// file here that references a same-named shape it does not itself
+    /// declare therefore resolves to `None` rather than a std sibling (see
+    /// issue #2233 for the analogous `lookup_unique_by_name` asymmetry;
+    /// this call path has the same gap and needs its own follow-up).
     #[must_use]
     pub fn resolve(&self, name: &str, referrer: FileId, index: &SymbolIndex) -> Option<&ShapeInfo> {
         let ids = self.by_name.get(name)?;
@@ -180,8 +201,21 @@ pub fn build_shape_table(
     let mut next_id: u32 = 0;
     for &(file_id, hir_file) in files {
         for s in &hir_file.structs {
-            // Always resolves: `s` is declared in `file_id` itself, so
-            // `lookup_global`'s exact-file arm matches unconditionally.
+            // Usually resolves via `lookup_global`'s exact-file arm, since
+            // `s` is declared in `file_id` itself. It can also come back
+            // `None`: if the analyzer already dropped `s` as a true
+            // intra-module duplicate (E023, same declared module as an
+            // earlier file), no symbol carries `(file_id, s.name)` any
+            // more, the exact-file arm misses, and the non-std fallback
+            // arm has to rescue the id instead (which is exactly what the
+            // `by_def.contains_key` dedup below depends on to recognize a
+            // "true intra-module duplicate"). `None` here means even that
+            // fallback found nothing — every surviving same-name candidate
+            // is std-declared. That silently drops `s` from both the shape
+            // table and `NameTable` seeding, shifting subsequent `NameId`s
+            // and emitted bytecode with no diagnostic (tracked: issue
+            // #2240 — this needs a real diagnostic or an explicit
+            // documented-drop contract, not a silent `continue`).
             let Some(definition_id) =
                 lookup_global(index, file_id, &s.name.text, SymbolKind::Struct)
             else {
@@ -331,6 +365,10 @@ pub fn build_struct_shape_data(
     let mut shapes = Vec::new();
     for &(file_id, hir_file) in files {
         for s in &hir_file.structs {
+            // See `build_shape_table`'s identical lookup for why this can
+            // come back `None` (a true intra-module duplicate whose every
+            // surviving candidate is std-declared) and why that silent
+            // drop is tracked, not intended, behavior (issue #2240).
             let Some(definition_id) =
                 lookup_global(index, file_id, &s.name.text, SymbolKind::Struct)
             else {
