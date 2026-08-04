@@ -200,6 +200,25 @@ import — the fast path had not, in fact, been taught to skip std. #2246
 fixed it to always route through `lookup_global`, whether the bucket holds
 one candidate or many.
 
+**The gate is root identity, not a provenance channel (issue #2217):** the
+std-invisibility gate excludes a candidate whenever its module's root is
+`std` ([`is_std_module`](../crates/internal/brink-ir/src/symbols/roots.rs)),
+identically whether that module is the *embedded* stdlib mount or a
+project's own file that legitimately lives at a `std/…` path —
+`mount_stdlib`'s "project source at the same key wins" carve-out means both
+mint the exact same `std::…` module identity via `native_module_path`, by
+design, so there is no separate "which one is this really" fact to consult.
+Reconsidering `is_std_module` to distinguish the two would undo the "peer
+roots" ruling above, not fix a bug in it. What issue #2217 actually found
+missing was diagnosability: an author who places their own code under
+`std/` (with no intent to override any embedded module) got a bare
+"unresolved name" `E024`/`E025`/`E068` with nothing pointing at the rule
+responsible. `brink-analyzer::resolve::unresolved_diag` now checks whether
+the unresolved name has any declaration at all under the `std::` root
+(`is_std_shadowed_name`) and, if so, appends a hint naming the peer-root
+rule and the `use std::…` path forward — same diagnostic code, no new one
+allocated, resolution behavior unchanged.
+
 **Boundary rules** (keeping the axes from leaking):
 
 1. **`#@private` hides the name, not the cell.** A private
