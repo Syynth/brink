@@ -907,6 +907,19 @@ impl<'a> ProjectCtx<'a> {
             // (INCLUDE/IMPORT across surfaces), so the frontend flag must
             // follow the body being walked — issue #1876.
             native: def.native,
+            // Issue #2233: the referring def's own declared module, read
+            // straight off its `SymbolInfo` — the same string
+            // `ImportScope::file_module` would carry for this def's file,
+            // since a def's `module` is always its declaring file's
+            // declared module. `None` when the index has no entry for
+            // `def.id` (never expected in practice — every walked `Def`
+            // came from this same index) or when the def's own module is
+            // the legacy undeclared-stem-module `None`.
+            referrer_module: self
+                .index
+                .symbols
+                .get(&def.id)
+                .and_then(|info| info.module.as_deref()),
         }
     }
 }

@@ -82,6 +82,20 @@ pub(super) struct BodyCtx<'a> {
     /// 2026-08-01, `docs/t1c-spec.md` §2a) and a knot's **visit count** in
     /// ink. See [`InferPass::native_fn_value_target`].
     pub native: bool,
+    /// The declared module of the def whose body this is (`None` for an
+    /// undeclared stem-module referrer — the same value
+    /// [`crate::resolve::ImportScope::file_module`] would carry for this
+    /// same file, since a def's own [`SymbolInfo::module`] is always its
+    /// declaring file's declared module). Issue #2233: threaded so
+    /// [`crate::resolve::lookup_unique_by_name`] — which has no
+    /// [`ImportScope`](crate::resolve::ImportScope) to consult — can still
+    /// reproduce [`crate::resolve::lookup_by_name`]'s `InScope` tier for the
+    /// one case that matters to it: a referrer declared *inside* the std
+    /// tree looking up a sibling declared in that same std module. Every
+    /// other tier (`Imported`, cross-module `Other`) still needs the full
+    /// scope this field deliberately does not carry — this is a hint, not a
+    /// scope.
+    pub referrer_module: Option<&'a str>,
 }
 
 impl BodyCtx<'_> {
@@ -2156,6 +2170,7 @@ impl InferPass<'_, '_> {
             self.ctx.index,
             &method.text,
             &[SymbolKind::Knot, SymbolKind::External],
+            self.ctx.referrer_module,
         ) else {
             return Ty::Unknown;
         };
@@ -4685,6 +4700,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -4764,6 +4780,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -4860,6 +4877,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -4966,6 +4984,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5134,6 +5153,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5220,6 +5240,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5285,6 +5306,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5353,6 +5375,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5425,6 +5448,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5497,6 +5521,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);
@@ -5595,6 +5620,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            referrer_module: None,
             native: false,
         };
         let mut pass = empty_pass(&ctx);

@@ -1330,39 +1330,42 @@ fn lookup_by_name_direct(
 /// `name` whose kind is in `kinds`, or `None` when there is no such
 /// definition **or more than one**.
 ///
-/// This exists for callers that have no [`ImportScope`] to hand — issue
+/// This exists for callers that have no full [`ImportScope`] to hand — issue
 /// #1909's UFCS-result typing runs inside `infer::body`, whose [`BodyCtx`]
 /// (`brink-db`'s narrowed per-def HIR projection never holds a whole
-/// `HirFile`) carries no file imports at all.
+/// `HirFile`) carries no file imports at all. `referrer_module` is the one
+/// piece of that missing scope this function *can* still be handed — the
+/// referring def's own declared module (issue #2233; `BodyCtx::
+/// referrer_module`), the same value `ImportScope::file_module` would carry.
 ///
 /// **It is a strict subset of what [`lookup_by_name`] answers, never a
 /// second resolution rule** (issue #2216, unifying it with the
 /// std-invisibility gate [`lookup_by_name_direct`] added for the scoped path
-/// — 2026-08-03, issue #2197). This function has no [`ImportScope`] to
-/// consult, so it cannot classify a candidate `InScope` vs `Other` the way
-/// [`classify`] does — every caller of this function is, in effect, a
-/// "no import scope" caller, so a candidate declared in a mounted
-/// `std…` module is unconditionally excluded here, exactly as
-/// [`lookup_by_name`] excludes it under the default (no-import) scope. This
-/// holds even when the std candidate is the function's *sole* match: it is
-/// filtered out before it can ever become `sole`, so the name resolves as
-/// though that candidate did not exist, rather than being returned.
+/// — 2026-08-03, issue #2197). This function still has no full
+/// [`ImportScope`] to consult, so it cannot classify a candidate `Imported`
+/// vs cross-module `Other` the way [`classify`] does — a candidate declared
+/// in a mounted `std…` module is excluded here exactly as [`lookup_by_name`]
+/// excludes it under the default (no-import) scope, **unless** it is
+/// declared in the referrer's own module (`referrer_module`), which
+/// reproduces exactly the one tier this function *can* fully classify
+/// without an `ImportScope`: [`Candidacy::InScope`]'s "referrer and
+/// candidate share a declared module" rule (issue #2233 — the fix for the
+/// disagreement this doc used to call out; see below). This holds even when
+/// the std candidate is the function's *sole* match: it is filtered out
+/// before it can ever become `sole` whenever `referrer_module` doesn't match
+/// it, so the name resolves as though that candidate did not exist, rather
+/// than being returned.
 ///
 /// For every other case, [`lookup_by_name_direct`]'s own "byte-identity
-/// guarantee" fast path returns the sole non-std candidate of the requested
-/// kinds *unconditionally, ignoring the import scope*; the scope is
-/// consulted only once `multiple` is set. So whenever this function returns
-/// `Some(id)`, [`lookup_by_name`] returns the same `id` for any scope in
-/// which no coexisting `std…` candidate of that name is the
-/// referring file's own module — pinned by
-/// `unique_lookup_agrees_with_scoped_lookup`. That carve-out is not
-/// vacuous: a referrer whose own `file_module` sits inside the std tree is
-/// exactly the scope where [`lookup_by_name_direct`]'s `InScope` tier keeps
-/// resolving a coexisting std candidate (see its own doc) — this function
-/// has no scope to classify `InScope` under, so it excludes that same std
-/// candidate unconditionally, making it **stricter** than [`lookup_by_name`]
-/// for a referrer inside the std tree, not merely a subset of it. When it
-/// returns `None` on an ambiguous name, the caller must fall back to
+/// guarantee" fast path returns the sole non-std (or referrer-module-owned
+/// std) candidate of the requested kinds *unconditionally, ignoring the rest
+/// of the import scope*; the scope is consulted only once `multiple` is set.
+/// So whenever this function returns `Some(id)`, [`lookup_by_name`] returns
+/// the same `id` for any scope whose `file_module` equals this
+/// `referrer_module` — pinned by `unique_lookup_agrees_with_scoped_lookup`
+/// and, for the std case specifically, by
+/// `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`. When
+/// it returns `None` on an ambiguous name, the caller must fall back to
 /// whatever it did before rather than guess.
 ///
 /// [`BodyCtx`]: crate::infer
@@ -1370,6 +1373,7 @@ pub(crate) fn lookup_unique_by_name(
     index: &SymbolIndex,
     name: &str,
     kinds: &[SymbolKind],
+    referrer_module: Option<&str>,
 ) -> Option<DefinitionId> {
     let ids = index.by_name.get(name)?;
     let mut sole = None;
@@ -1380,11 +1384,21 @@ pub(crate) fn lookup_unique_by_name(
         if !kinds.contains(&info.kind) {
             continue;
         }
-        // Issue #2216: this function has no `ImportScope`, so — mirroring
-        // `lookup_by_name_direct`'s std-invisibility gate for the case
-        // where a candidate can never classify `InScope` — a std-mounted
-        // candidate must never win the sole-match count, even alone.
-        if info.module.as_deref().is_some_and(is_std_module) {
+        // Issue #2216, narrowed by #2233: this function has no full
+        // `ImportScope`, so — mirroring `lookup_by_name_direct`'s
+        // std-invisibility gate for the case where a candidate can never
+        // classify `Imported` here — a std-mounted candidate must never win
+        // the sole-match count, even alone, UNLESS it is declared in the
+        // referrer's own module: that is exactly `Candidacy::InScope`'s
+        // "referrer and candidate share a declared module" rule, the one
+        // tier this function can reproduce without a full scope. A std
+        // candidate in a *different* std module than the referrer's still
+        // falls through to `Other` and is excluded, matching
+        // `lookup_by_name`'s behavior for a referrer that has not imported
+        // that sibling module.
+        if info.module.as_deref().is_some_and(is_std_module)
+            && info.module.as_deref() != referrer_module
+        {
             continue;
         }
         if sole.is_some() {
@@ -2420,7 +2434,7 @@ mod tests {
     fn unique_lookup_agrees_with_scoped_lookup() {
         let (index, a, b) = two_module_ambush_index();
         assert_eq!(
-            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], None),
             None,
             "two same-named candidates: only the scoped lookup can decide, so decline"
         );
@@ -2449,7 +2463,7 @@ mod tests {
             bare_imports: BTreeSet::new(),
             aliases: BTreeMap::new(),
         };
-        let unique = lookup_unique_by_name(&single, "ambush", &[SymbolKind::Knot]);
+        let unique = lookup_unique_by_name(&single, "ambush", &[SymbolKind::Knot], None);
         assert_eq!(unique, Some(a));
         assert_eq!(
             unique,
@@ -2461,7 +2475,7 @@ mod tests {
             "the sole-candidate answer must not depend on the scope at all"
         );
         assert_eq!(
-            lookup_unique_by_name(&single, "ambush", &[SymbolKind::External]),
+            lookup_unique_by_name(&single, "ambush", &[SymbolKind::External], None),
             None,
             "the kind filter still gates the match"
         );
@@ -2612,23 +2626,22 @@ mod tests {
     }
 
     /// Issue #2216 (the #2197 follow-up this doc's own "known gap" pointed
-    /// at): [`lookup_unique_by_name`] has no [`ImportScope`] to consult, so
-    /// unlike [`lookup_by_name_direct`] it cannot classify a candidate
-    /// `InScope` vs `Other` — every caller of this function is, in effect,
-    /// a "no import scope" caller. A std-mounted candidate must therefore
-    /// be unconditionally invisible here, exactly as it is to
-    /// [`lookup_by_name`] with the default (no-import) scope, even when it
-    /// is the function's *sole* candidate — the case the old `!multiple`
-    /// style fast path would otherwise return unconditionally.
+    /// at), narrowed by #2233: with no `referrer_module` hint at all (`None`
+    /// — the shape every pre-#2233 caller effectively had), a std-mounted
+    /// candidate must still be unconditionally invisible here, exactly as it
+    /// is to [`lookup_by_name`] with the default (no-import) scope, even
+    /// when it is the function's *sole* candidate — the case the old
+    /// `!multiple` style fast path would otherwise return unconditionally.
     #[test]
     fn unique_lookup_excludes_std_mounted_sole_candidate() {
         let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
         assert_eq!(
-            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], None),
             None,
-            "a std-mounted sole candidate must not resolve through the scope-free path — \
-             lookup_by_name returns None for it under every scope, so lookup_unique_by_name \
-             must agree rather than silently reaching into std with no import"
+            "a std-mounted sole candidate must not resolve through the scope-free path when \
+             the caller has no referrer-module hint — lookup_by_name returns None for it under \
+             the default scope, so lookup_unique_by_name must agree rather than silently \
+             reaching into std with no import"
         );
     }
 
@@ -2637,27 +2650,22 @@ mod tests {
     /// must still resolve the ordinary one (not decline as ambiguous, and
     /// not pick the std one) — agreeing with [`lookup_by_name`] for a scope
     /// where neither candidate is `InScope` (asserted below with
-    /// `file_module = "story::another_module"`). That is not the *only*
-    /// scope where the two agree — a scope with `file_module =
-    /// "story::story"` (the ordinary candidate's own module) also agrees,
-    /// since the ordinary candidate then classifies `InScope` and wins
-    /// [`lookup_by_name`]'s own tie-break. The one scope where the two
-    /// *disagree*, asserted last: a referrer whose own `file_module` is the
-    /// std module itself. There, [`lookup_by_name_direct`]'s `InScope` tier
-    /// keeps resolving the std candidate (by design, so std's own internal
-    /// references keep working — see that function's doc), but
-    /// [`lookup_unique_by_name`] has no scope to classify `InScope` under
-    /// and excludes that same std candidate unconditionally, so the two
-    /// functions return different ids — the one deliberate disagreement
-    /// [`lookup_unique_by_name`]'s own doc now calls out.
+    /// `file_module = "story::another_module"`, passed through as
+    /// `referrer_module`). That is not the *only* scope where the two
+    /// agree — a scope with `file_module = "story::story"` (the ordinary
+    /// candidate's own module) also agrees, since the ordinary candidate
+    /// then classifies `InScope` and wins [`lookup_by_name`]'s own
+    /// tie-break. The std-referrer case — once the one deliberate
+    /// disagreement this doc used to call out — is now covered separately
+    /// by `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`
+    /// below, now that issue #2233 threads a `referrer_module` hint through.
     #[test]
     fn unique_lookup_skips_std_candidate_and_returns_the_ordinary_one() {
         let (index, ids) =
             ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
-        let std_id = ids[0];
         let project_id = ids[1];
         assert_eq!(
-            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], None),
             Some(project_id),
             "the std candidate must be excluded from the sole-match count entirely, leaving \
              the one ordinary candidate as the unique match"
@@ -2669,7 +2677,12 @@ mod tests {
             aliases: BTreeMap::new(),
         };
         assert_eq!(
-            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("story::another_module")
+            ),
             lookup_by_name(&index, &other_scope, "ambush", &[SymbolKind::Knot]),
             "the scope-free answer must agree with the scoped one for a scope where neither \
              candidate is InScope"
@@ -2681,11 +2694,31 @@ mod tests {
             aliases: BTreeMap::new(),
         };
         assert_eq!(
-            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], Some("story::story")),
             lookup_by_name(&index, &project_scope, "ambush", &[SymbolKind::Knot]),
             "the scope-free answer must also agree with the scoped one for a scope where the \
              ordinary candidate (not the std one) is InScope"
         );
+    }
+
+    /// Issue #2233: the fix for the one deliberate disagreement
+    /// `unique_lookup_excludes_std_mounted_sole_candidate`'s old sibling doc
+    /// used to describe (the pre-fix version of this file documented it on
+    /// `unique_lookup_skips_std_candidate_and_returns_the_ordinary_one`). A
+    /// referrer whose own `file_module` IS the std module keeps resolving
+    /// the std candidate via [`lookup_by_name_direct`]'s `InScope` tier
+    /// (std's own internal references are untouched by the #2197/#2216
+    /// gates) — and now that `lookup_unique_by_name` is handed that same
+    /// module string as `referrer_module`, it reproduces the identical
+    /// answer instead of excluding the std candidate unconditionally, for
+    /// the case that matters: the std candidate is the *sole* match once
+    /// visible (no coexisting ordinary candidate of the same name — see
+    /// `unique_lookup_still_declines_when_a_visible_std_sibling_is_ambiguous`
+    /// for what happens when one does coexist).
+    #[test]
+    fn unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module() {
+        let (index, ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        let std_id = ids[0];
         let std_scope = ImportScope {
             file_module: Some("std::conventions::screenplay".to_string()),
             qualified_modules: BTreeSet::new(),
@@ -2699,12 +2732,84 @@ mod tests {
              candidate via lookup_by_name_direct's InScope tier — std's own internal \
              references are untouched by the #2197/#2216 gates"
         );
-        assert_ne!(
-            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("std::conventions::screenplay")
+            ),
             lookup_by_name(&index, &std_scope, "ambush", &[SymbolKind::Knot]),
-            "…but lookup_unique_by_name has no scope to classify InScope under, so it cannot \
-             reproduce that answer for a referrer inside the std tree — the one deliberate \
-             disagreement between the two lookups"
+            "with the referrer's own module threaded through, lookup_unique_by_name now agrees \
+             with lookup_by_name for a referrer inside the std tree looking up a std sibling — \
+             the #2233 fix"
+        );
+    }
+
+    /// Issue #2233: threading `referrer_module` through fixes the *sole
+    /// candidate* disagreement above, but does not (and cannot, without
+    /// replicating `lookup_by_name_direct`'s full `InScope`-beats-`Other`
+    /// tie-break, a strictly larger change than a referrer hint) make
+    /// `lookup_unique_by_name` reproduce [`lookup_by_name`]'s tie-break when
+    /// an ordinary same-name candidate coexists with the now-visible std
+    /// sibling. There, un-excluding the std candidate makes it a *second*
+    /// candidate rather than the resolved one, so this function declines
+    /// (`None`) exactly per its own documented contract ("when it returns
+    /// `None` on an ambiguous name, the caller must fall back... rather than
+    /// guess") — a safe decline, not the silently-wrong `Some(project_id)`
+    /// answer this exact fixture produced before #2233 (the referrer-module
+    /// hint being `None` in every pre-#2233 call site is what caused that:
+    /// the std candidate was excluded unconditionally, leaving the ordinary
+    /// one as a false "sole" match).
+    #[test]
+    fn unique_lookup_still_declines_when_a_visible_std_sibling_is_ambiguous() {
+        let (index, _ids) =
+            ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("std::conventions::screenplay")
+            ),
+            None,
+            "with the std candidate now visible (referrer inside its own module) alongside a \
+             coexisting ordinary candidate, the name is genuinely ambiguous to this scope-free \
+             function — it must decline rather than silently pick either one"
+        );
+    }
+
+    /// Issue #2233: a referrer *inside* std but in a *different* std module
+    /// than the candidate must not gain visibility either — only an exact
+    /// module match reproduces `InScope`; a cross-std-submodule reference is
+    /// `Other` under `classify` (no import machinery to promote it to
+    /// `Imported` here), so it stays excluded exactly like any other
+    /// cross-module std reference.
+    #[test]
+    fn unique_lookup_still_excludes_a_different_std_sibling_module() {
+        let (index, ids) =
+            ambush_index_with_modules(&["std::conventions::screenplay", "std::conventions::other"]);
+        let other_id = ids[1];
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("std::conventions::other")
+            ),
+            Some(other_id),
+            "the referrer's own std module's candidate still resolves (InScope, exact match)"
+        );
+        let screenplay_scope = ImportScope {
+            file_module: Some("std::conventions::other".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &screenplay_scope, "ambush", &[SymbolKind::Knot]),
+            Some(other_id),
+            "sanity: lookup_by_name agrees — the referrer's own module wins, not the sibling"
         );
     }
 
