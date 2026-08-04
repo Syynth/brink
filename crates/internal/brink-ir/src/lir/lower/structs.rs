@@ -339,10 +339,11 @@ pub fn build_global_shape_map(
     shapes: &ShapeTable,
 ) -> GlobalShapeMap {
     let mut out = LookupMap::new();
-    for &(_, hir_file) in files {
+    for &(file_id, hir_file) in files {
         for var in &hir_file.variables {
             record_global_annotation(
                 &var.name.text,
+                file_id,
                 var.annotation.as_ref(),
                 SymbolKind::Variable,
                 index,
@@ -353,6 +354,7 @@ pub fn build_global_shape_map(
         for cst in &hir_file.constants {
             record_global_annotation(
                 &cst.name.text,
+                file_id,
                 cst.annotation.as_ref(),
                 SymbolKind::Constant,
                 index,
@@ -366,6 +368,7 @@ pub fn build_global_shape_map(
 
 fn record_global_annotation(
     name: &str,
+    file: FileId,
     annotation: Option<&hir::TypeExpr>,
     kind: SymbolKind,
     index: &SymbolIndex,
@@ -378,7 +381,7 @@ fn record_global_annotation(
     if shapes.get(ty_name).is_none() {
         return;
     }
-    if let Some(id) = lookup_global(index, name, kind) {
+    if let Some(id) = lookup_global(index, file, name, kind) {
         out.insert(id, ty_name.clone());
     }
 }

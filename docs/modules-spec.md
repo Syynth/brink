@@ -121,6 +121,14 @@ opts a declaration into public with a `pub` keyword rather than an
 spellings produce the identical `VisibilityMark::Public` this
 section's `effective_visibility` logic consumes.
 
+**Stdlib mount carve-out (issue #2197, per #2080's scope fence):** a
+`story::std…`-mounted module's items are invisible to bare-name
+resolution regardless of any `pub`/`#@public` marking, until an
+explicit `use std::…` import exists (#1582/#2167, not yet built) —
+this is a resolution-layer gate (`brink-analyzer::resolve::
+lookup_by_name_direct`), not a visibility default, and does not
+change once those marks are added.
+
 **Boundary rules** (keeping the axes from leaking):
 
 1. **`#@private` hides the name, not the cell.** A private
