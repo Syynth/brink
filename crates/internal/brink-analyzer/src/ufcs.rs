@@ -777,7 +777,7 @@ impl UfcsVisitor<'_> {
         };
         let Some(field_ty) = self
             .shapes
-            .resolve(shape_name, self.file, self.index)
+            .resolve(shape_name, self.scope, self.index)
             .and_then(|shape| shape.field_ty(&method.text))
         else {
             return false;
@@ -1231,7 +1231,7 @@ impl UfcsVisitor<'_> {
             };
             let field = self
                 .shapes
-                .resolve(shape_name, self.file, self.index)?
+                .resolve(shape_name, self.scope, self.index)?
                 .field_ty(&seg.text)?
                 .clone();
             ty = field;

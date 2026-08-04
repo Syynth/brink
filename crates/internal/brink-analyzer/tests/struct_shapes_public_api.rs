@@ -12,7 +12,7 @@
 //! `brink_analyzer::{declared_shapes, ShapeInfo}` only, with no
 //! crate-internal access.
 
-use brink_analyzer::{ShapeInfo, declared_shapes};
+use brink_analyzer::{ImportScope, ShapeInfo, declared_shapes};
 use brink_ir::{FileId, HirFile, SymbolManifest};
 
 /// Parse + lower one source file.
@@ -41,12 +41,14 @@ fn declared_shapes_is_reachable_from_outside_the_crate() {
     let shapes = declared_shapes(files, &index);
 
     // Issue #2241: `declared_shapes` is referrer-scoped, not a flat bare-name
-    // table — a caller resolves a shape for a specific referring file
-    // (`resolve`), which disambiguates a same-named shape declared in more
-    // than one coexisting module (the stdlib mount, #2080). A single-file
-    // project like this one always resolves to its own declaration.
+    // table — a caller resolves a shape against a specific referring file's
+    // `ImportScope` (`resolve`), which disambiguates a same-named shape
+    // declared in more than one coexisting module (the stdlib mount,
+    // #2080). A single-file project like this one always resolves to its
+    // own declaration.
+    let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
     let npc: &ShapeInfo = shapes
-        .resolve("Npc", file, &index)
+        .resolve("Npc", &scope, &index)
         .expect("Npc shape declared");
     assert!(npc.has_field("name"));
     assert!(npc.has_field("hp"));

@@ -59,7 +59,7 @@ use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
     AssignOp, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch,
-    StructLiteral, SymbolIndex, SymbolKind, is_std_module,
+    StructLiteral, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -67,6 +67,7 @@ use crate::annotations;
 use crate::infer::{
     FieldAssignMismatch, InferenceResult, InferredSig, Ty, is_string_numeric_concat,
 };
+use crate::resolve::ImportScope;
 
 /// One declared struct shape: fields in declaration order, name -> declared
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
@@ -112,13 +113,15 @@ impl ShapeInfo {
 /// layer down (issue #2238). This table used to be a flat
 /// `BTreeMap<String, ShapeInfo>` populated by plain last-`insert`-wins —
 /// whichever file's declaration was iterated last silently overwrote every
-/// earlier same-named one, with no per-caller referrer to break the tie.
-/// [`ShapeTable::resolve`] is the fix: every caller with a `FileId` in hand
-/// resolves the *right* candidate — its own file's declaration, else
-/// whichever remains once std-declared candidates are excluded — instead of
-/// a global winner. [`ShapeTable::get_by_def`] is for callers that already
-/// hold an exact `DefinitionId` (e.g. a construction literal's shape name,
-/// resolved with full module-scope `Candidacy` by
+/// earlier same-named one, with no per-caller scope to break the tie.
+/// [`ShapeTable::resolve`] is the fix: every caller with an [`ImportScope`]
+/// in hand resolves the *right* candidate through the same
+/// `Candidacy`-based module scoping [`crate::resolve::lookup_by_name`]
+/// already applies to every other symbol kind — instead of a global winner
+/// or a second, diverging std-exclusion policy (2026-08-04 peer-root
+/// ruling, `docs/decision-log.md`). [`ShapeTable::get_by_def`] is for
+/// callers that already hold an exact `DefinitionId` (e.g. a construction
+/// literal's shape name, resolved with full module-scope `Candidacy` by
 /// `resolve::resolve_struct_ref` and recorded in the project's
 /// `ResolutionMap` — see [`check`]).
 ///
@@ -136,7 +139,6 @@ pub fn declared_shapes(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Sha
     // `annotations::resolve`'s documented "unresolved -> silent" contract.
     let names = annotations::TypeNames::new(index, None);
     let mut by_def = BTreeMap::new();
-    let mut by_name: BTreeMap<String, Vec<DefinitionId>> = BTreeMap::new();
     for &(file, hir) in files {
         for s in &hir.structs {
             // Every declared `STRUCT` has exactly one symbol-index entry in
@@ -163,10 +165,9 @@ pub fn declared_shapes(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Sha
                 })
                 .collect();
             by_def.insert(def_id, ShapeInfo { fields });
-            by_name.entry(s.name.text.clone()).or_default().push(def_id);
         }
     }
-    ShapeTable { by_def, by_name }
+    ShapeTable { by_def }
 }
 
 /// [`declared_shapes`]' referrer-scoped lookup table — see that function's
@@ -176,10 +177,6 @@ pub struct ShapeTable {
     /// Every shape by its own symbol-index identity — the canonical store,
     /// unambiguous by construction.
     by_def: BTreeMap<DefinitionId, ShapeInfo>,
-    /// Bare name -> every `DefinitionId` sharing it, in declaration order.
-    /// More than one entry only when std and the project (or two declared
-    /// modules) coexist on the same name.
-    by_name: BTreeMap<String, Vec<DefinitionId>>,
 }
 
 impl ShapeTable {
@@ -205,37 +202,28 @@ impl ShapeTable {
         self.by_def.get(&id)
     }
 
-    /// Referrer-scoped lookup (issue #2241): when more than one declared
-    /// `STRUCT` shares `name`, resolve to the candidate declared in
-    /// `referrer` itself, else whichever remains once every mounted
-    /// `std…`-declared candidate is excluded — the same file-exact +
-    /// std-exclusion convention `brink_ir::lir::lower::decls::lookup_global`
-    /// already applies one layer down (that function is crate-private to
-    /// `brink-ir`, so this is a same-shape reimplementation, not a shared
-    /// call — brink-analyzer cannot depend on brink-ir's lowering-internal
-    /// helpers). Returns `None` when `name` names no declared `STRUCT` at
-    /// all, or every candidate sharing it is std-declared with none equal to
-    /// `referrer`.
+    /// Scope-aware lookup (issue #2241, corrected per #2245/#2246's
+    /// peer-root ruling — `docs/decision-log.md`, 2026-08-04): when more
+    /// than one declared `STRUCT` shares `name`, resolve through the same
+    /// `Candidacy`-based module scoping every other symbol kind uses —
+    /// [`crate::resolve::lookup_by_name`], the exact function
+    /// `resolve::resolve_struct_ref` already calls for `SymbolKind::Struct`.
+    /// This used to hand-roll its own `find(info.file == referrer)
+    /// .or_else(find(!is_std_module))` fallback — a bolt-on std gate the
+    /// ruling calls out by name as one of the five symptom gates to unwind,
+    /// not a second, diverging implementation of the same policy. Returns
+    /// `None` when `name` names no declared `STRUCT` at all, or
+    /// [`crate::resolve::lookup_by_name`] itself resolves to none (e.g.
+    /// every candidate sharing the name is std-declared and out of
+    /// `scope`).
     #[must_use]
-    pub fn resolve(&self, name: &str, referrer: FileId, index: &SymbolIndex) -> Option<&ShapeInfo> {
-        let ids = self.by_name.get(name)?;
-        let def_id = ids
-            .iter()
-            .find(|&&id| {
-                index
-                    .symbols
-                    .get(&id)
-                    .is_some_and(|info| info.file == referrer)
-            })
-            .or_else(|| {
-                ids.iter().find(|&&id| {
-                    index
-                        .symbols
-                        .get(&id)
-                        .is_some_and(|info| !info.module.as_deref().is_some_and(is_std_module))
-                })
-            })
-            .copied()?;
+    pub fn resolve(
+        &self,
+        name: &str,
+        scope: &ImportScope,
+        index: &SymbolIndex,
+    ) -> Option<&ShapeInfo> {
+        let def_id = crate::resolve::lookup_by_name(index, scope, name, &[SymbolKind::Struct])?;
         self.by_def.get(&def_id)
     }
 }
@@ -323,13 +311,27 @@ pub fn check_assignments(
     inference: &InferenceResult,
 ) -> Vec<Diagnostic> {
     let shapes = declared_shapes(files, index);
+    // Per-file scope, keyed the same way `resolve::resolve` and `ufcs::resolve`
+    // build one per file — `check_field_assign_mismatch` doesn't loop `files`
+    // itself (it's driven by `inference.bodies`, keyed by `DefinitionId`), so
+    // the scope for the fact's own declaring file is looked up here instead.
+    let scopes: BTreeMap<FileId, ImportScope> = files
+        .iter()
+        .map(|&(file, hir)| {
+            let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+            (file, scope)
+        })
+        .collect();
     let mut out = Vec::new();
     for (def, body) in &inference.bodies {
         let Some(info) = index.symbols.get(def) else {
             continue;
         };
+        let Some(scope) = scopes.get(&info.file) else {
+            continue;
+        };
         for fact in &body.field_assign_mismatches {
-            check_field_assign_mismatch(fact, info.file, index, &shapes, &mut out);
+            check_field_assign_mismatch(fact, info.file, scope, index, &shapes, &mut out);
         }
     }
     out
@@ -358,6 +360,7 @@ pub fn check_assignments(
 fn check_field_assign_mismatch(
     fact: &FieldAssignMismatch,
     file: FileId,
+    scope: &ImportScope,
     index: &SymbolIndex,
     shapes: &ShapeTable,
     out: &mut Vec<Diagnostic>,
@@ -367,7 +370,7 @@ fn check_field_assign_mismatch(
         let Ty::Struct(shape_name) = &current else {
             return;
         };
-        let Some(shape) = shapes.resolve(shape_name, file, index) else {
+        let Some(shape) = shapes.resolve(shape_name, scope, index) else {
             return;
         };
         let Some(field_ty) = shape.field_ty(&segment.text) else {
@@ -1465,6 +1468,51 @@ mod tests {
             "the missing-field diagnostic must name the PROJECT's own missing field \
              (`voiceover`), proving the check validated the literal against the project's own \
              2-field `Cue` shape rather than the coexisting file's 1-field one: {diags:?}"
+        );
+    }
+
+    /// F2 review finding (#2253): [`ShapeTable::resolve`] is the path
+    /// [`check_assignments`]/[`check_field_assign_mismatch`] (E063) uses —
+    /// unlike [`check`]/[`check_literal`] above, which never calls
+    /// `resolve` at all (it goes through [`ShapeTable::get_by_def`] with an
+    /// identity already resolved by `resolve::resolve_struct_ref`). This
+    /// exercises the multi-candidate branch `resolve` exists to handle,
+    /// through its own dedicated consumer rather than a proxy.
+    ///
+    /// Project and std each declare their own `STRUCT Cue`, deliberately
+    /// with *different* declared types for the same field name (`x: float`
+    /// vs `x: string`) so a wrong resolution doesn't just report the wrong
+    /// message — it silently reports NOTHING: assigning the string
+    /// `"wrong"` to `p.x` disagrees with the project's own `float`, but
+    /// would agree with std's `string`. If `resolve` ever picked std's
+    /// `Cue` for a reference inside the project file, this regresses to an
+    /// empty `diags` exactly like the pre-fix last-insert-wins bug did for
+    /// E069 above.
+    ///
+    /// Rule 20a: verified this test FAILS (empty `diags` instead of one
+    /// `E063`) against `ShapeTable::resolve` reverted to always return the
+    /// std candidate (i.e. simulating a resolution that ignores the
+    /// referrer's own module) — restored before committing.
+    #[test]
+    fn check_assignments_resolves_the_referrers_own_shape_when_std_and_project_share_a_name() {
+        let project_src = "STRUCT Cue = #{x: float}\n\
+             VAR p: Cue = Cue#{x: 0.0}\n\
+             === main ===\n~ p.x = \"wrong\"\n-> DONE\n";
+        let std_src = "STRUCT Cue = #{x: string}\nHello.\n";
+
+        let (project_file, project_hir, std_file, std_hir, index, _resolutions, inference) =
+            build_project_with_std_homonym(project_src, std_src);
+
+        let files = [(project_file, &project_hir), (std_file, &std_hir)];
+        let diags = check_assignments(&files, &index, &inference);
+
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+        assert!(
+            diags[0].message.contains("float"),
+            "the mismatch must be reported against the PROJECT's own `float`-declared `x`, not \
+             std's `string`-declared one — which would silently accept the identically-typed \
+             \"wrong\" RHS and produce zero diagnostics: {diags:?}"
         );
     }
 }

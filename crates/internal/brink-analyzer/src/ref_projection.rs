@@ -26,9 +26,10 @@
 //!   `structs::declared_shapes`/[`ShapeTable`] — the same referrer-scoped
 //!   shape table `structs::check`'s missing/extra/mistyped trio (E069–E071)
 //!   already builds for construction literals — rather than a second one.
-//!   Every lookup here is scoped to the segment's own file
-//!   ([`ShapeTable::resolve`], issue #2241) rather than a flat bare-name
-//!   winner. The seed
+//!   Every lookup here is scoped to the segment's own file's import scope
+//!   ([`ShapeTable::resolve`], issue #2241, module-scoped per the
+//!   2026-08-04 peer-root ruling) rather than a flat bare-name winner. The
+//!   seed
 //!   shape comes from the projection root's own `VAR name: Shape = …`
 //!   annotation (TM-2); anything else (`Ty::Unknown`, no annotation, a
 //!   non-struct declared type) is silently unchecked — "Unknown never
@@ -45,6 +46,7 @@ use rowan::TextRange;
 
 use crate::annotations;
 use crate::infer::Ty;
+use crate::resolve::ImportScope;
 use crate::structs::{ShapeTable, declared_shapes};
 
 /// `(start, end)` key for range-indexed lookups (`TextRange` has no `Ord`) —
@@ -299,12 +301,14 @@ pub fn check_strict(
             .filter(|r| r.file == file)
             .map(|r| (range_key(r.range), r.target))
             .collect();
+        let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
         let mut v = SegmentShapeVisitor {
             file,
             by_range,
             shapes: &shapes,
             var_seeds: &var_seeds,
             index,
+            scope: &scope,
             diagnostics: &mut out,
         };
         visit::visit(hir, &mut v);
@@ -343,6 +347,7 @@ struct SegmentShapeVisitor<'a> {
     shapes: &'a ShapeTable,
     var_seeds: &'a BTreeMap<(FileId, String), Ty>,
     index: &'a SymbolIndex,
+    scope: &'a ImportScope,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
@@ -380,7 +385,7 @@ impl SegmentShapeVisitor<'_> {
             match segment {
                 Segment::Field(name) => match &current {
                     Ty::Struct(shape_name) => {
-                        let Some(shape) = self.shapes.resolve(shape_name, self.file, self.index)
+                        let Some(shape) = self.shapes.resolve(shape_name, self.scope, self.index)
                         else {
                             return; // unresolved shape — E068 already covers it.
                         };
