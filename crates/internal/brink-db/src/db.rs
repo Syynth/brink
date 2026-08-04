@@ -537,15 +537,17 @@ impl ProjectDb {
         Arc::clone(harvest_index_query(&self.salsa, self.project))
     }
 
-    /// The serialized conventions projection (issue #2111, NS-T seam 1/6):
-    /// every `@[convention]` handler declared in the project's one
-    /// configured conventions module, ascending by `order` — "THE SOLE
-    /// EDITOR INTERCHANGE" the design-backport comment on #2111 names
-    /// (`docs/decision-log.md` 2026-08-03). Reads only the resolved
-    /// conventions module's own [`lowered_query`] output — see
-    /// [`conventions_projection_query`]'s own doc for the exact dependency
-    /// set and why no import-closure tracking is needed under the current
-    /// (post-#2164) design.
+    /// The conventions projection (issue #2111, NS-T seam 1/6): every
+    /// `@[convention]` handler declared in the project's one configured
+    /// conventions module, ascending by `order` — "THE SOLE EDITOR
+    /// INTERCHANGE" the design-backport comment on #2111 names
+    /// (`docs/decision-log.md` 2026-08-03). Reads the `[project] elements`
+    /// pointer, the project module map, and only the resolved conventions
+    /// module's own `lowered_query` output — see
+    /// `conventions_projection_query`'s doc for the exact dependency set,
+    /// and `brink_ir::ConventionsProjection`'s doc for the parts of #2111
+    /// this does not yet deliver (the attach schema is a struct *name*, it
+    /// is not serialized into `.inkb`, and no import closure is computed).
     pub fn conventions_projection(&self) -> Arc<brink_ir::ConventionsProjection> {
         Arc::clone(conventions_projection_query(&self.salsa, self.project))
     }

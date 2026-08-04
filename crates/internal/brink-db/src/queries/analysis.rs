@@ -399,6 +399,39 @@ pub(crate) fn await_purity_diagnostics_query(
     ))
 }
 
+/// The module name the project's `[project] elements` pointer names, or
+/// `None` when there is nothing to resolve.
+///
+/// The ONE place the `elements` pointer is turned into a module name, so
+/// the two consumers that need it — [`conventions_confinement_diagnostics_query`]
+/// (which asks "is *this* file that module?") and
+/// [`conventions_projection_query`] (which asks "*which* file is that
+/// module?") — cannot drift apart on the answer. Both must agree exactly:
+/// a projection built from a file that confinement does not consider the
+/// conventions module would report handlers the compiler is simultaneously
+/// diagnosing as misplaced.
+///
+/// `None` covers the two cases both consumers treat identically and
+/// silently (see `brink_analyzer::conventions_module_diagnostics`'s own
+/// module doc): an unset `elements` key, and a **bare preset name**
+/// (`elements = "screenplay"`), which names a `std::conventions::*` module
+/// rather than a project file — `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s
+/// own doc records that nothing resolves a preset name to its mounted
+/// source yet (it needs #1582's pub marker and #2167's closure-scoped
+/// confinement, neither built). `Some` does NOT mean a file with that
+/// module name exists; each caller checks that against
+/// [`module_map_query`] itself, because they warn differently about it.
+fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) -> Option<String> {
+    let opts = project.analysis_options(db);
+    let pointer = opts.elements.as_deref()?;
+    if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
+        return None;
+    }
+    Some(crate::modules::native_module_path(
+        &crate::modules::root_relative_key(project.native_root(db).as_deref(), pointer),
+    ))
+}
+
 /// One file's conventions-module confinement diagnostics (`E169`, issue
 /// #1844 — the MODULE half of the 2026-07-31 §9.1 ruling's item (4); #1838/
 /// #1847 cover the *placement* half, `E112`). A pattern-claiming
@@ -445,19 +478,16 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     let Some(pointer) = opts.elements.as_deref() else {
         return Arc::new(Vec::new());
     };
-    if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
+    // Shared with `conventions_projection_query` so the two cannot disagree
+    // about which module the pointer names — see the helper's own doc.
+    let Some(expected_module) = expected_conventions_module(db, project) else {
         return Arc::new(Vec::new());
-    }
+    };
     let file_id = file.file_id(db);
     let (module_map, _module_diags) = module_map_query(db, project);
     let Some(this_module) = module_map.get(&file_id).map(|m| m.name.as_str()) else {
         return Arc::new(Vec::new());
     };
-    let native_root = project.native_root(db).as_deref();
-    let expected_module = crate::modules::native_module_path(&crate::modules::root_relative_key(
-        native_root,
-        pointer,
-    ));
     // The pointer must resolve against a REAL file in the project before it
     // can confine anything. A typo'd `elements` value, a moved/deleted
     // target, or an `.ink`-suffixed path all produce an `expected_module`
@@ -488,22 +518,23 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     ))
 }
 
-/// The project's serialized conventions projection (issue #2111, NS-T seam
-/// 1/6): every `@[convention]` handler declared in the project's one
-/// configured conventions module, ascending by `order` — the editor-facing
-/// artifact the design-backport comment on #2111 (`docs/decision-log.md`
+/// The project's conventions projection (issue #2111, NS-T seam 1/6):
+/// every `@[convention]` handler declared in the project's one configured
+/// conventions module, ascending by `order` — the editor-facing artifact
+/// the design-backport comment on #2111 (`docs/decision-log.md`
 /// 2026-08-03) calls "THE SOLE EDITOR INTERCHANGE": claims pattern, order,
 /// mode (attach/wrap), resulting disposition, and the `attach = StructName`
 /// schema name. Schema, never values — see [`ConventionsProjection`]'s own
-/// doc for that boundary and for why no comptime-fault/last-good case
-/// exists here (the mechanism that would have needed one, `fn
-/// conventions()` registration, is dissolved).
+/// doc for that boundary, for why no comptime-fault/last-good case exists
+/// here (the mechanism that would have needed one, `fn conventions()`
+/// registration, is dissolved), and — importantly — for the **parts of
+/// #2111 this query does not yet deliver**.
 ///
-/// # Resolution (mirrors [`conventions_confinement_diagnostics_query`])
+/// # Resolution (shared with [`conventions_confinement_diagnostics_query`])
 ///
-/// Deliberately the SAME resolution posture as that query, reused rather
-/// than re-derived, because both answer "which file is the configured
-/// conventions module" against the same `[project] elements` pointer:
+/// Both queries route the `[project] elements` pointer through the same
+/// [`expected_conventions_module`] helper, so "which module is the
+/// conventions module" has exactly one answer:
 ///
 /// - No `elements` configured at all → empty projection. There is no
 ///   conventions module to project.
@@ -526,15 +557,19 @@ pub(crate) fn conventions_confinement_diagnostics_query(
 ///
 /// # Invalidation
 ///
-/// Reads exactly: `project.analysis_options(db).elements`, `module_map_query`
-/// (to resolve the pointer and to find the target file), and that ONE
-/// resolved file's `lowered_query` output. No other file's content is ever
-/// read, so this query is invalidated by an edit to the conventions module
-/// itself (or a project-config change to the pointer, or the discovered
-/// module set) and by nothing else — see [`ConventionsProjection`]'s own
-/// doc for why this is a strictly narrower, and correct, reading of the
-/// ruled "conventions module and its import closure" invalidation contract
-/// under the current (post-#2164) design.
+/// Reads exactly: `project.analysis_options(db)` (for the `elements`
+/// pointer and the native root), [`module_map_query`] (to find which file
+/// carries the expected module name), and that ONE resolved file's
+/// [`lowered_query`] output. `module_map_query` is a whole-project query,
+/// so an edit elsewhere can *reach* this query — but only through a
+/// changed module map, which salsa backdates when the map's value is
+/// unchanged, so an ordinary edit to an unrelated story file never
+/// re-executes this closure (proven by
+/// `tests/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` case). No
+/// other file's *content* is ever read. See [`ConventionsProjection`]'s own
+/// doc for why this is a strictly narrower, and currently sufficient,
+/// reading of the ruled "conventions module and its import closure"
+/// invalidation contract — and for what would make the closure necessary.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn conventions_projection_query(
     db: &dyn salsa::Database,
@@ -544,22 +579,29 @@ pub(crate) fn conventions_projection_query(
     let Some(pointer) = opts.elements.as_deref() else {
         return Arc::new(brink_ir::ConventionsProjection::default());
     };
-    if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
-        // A bare preset name — see this function's own doc for why that
-        // case stays unresolved here.
+    // `None` here = a bare preset name — see the helper's own doc for why
+    // that does not resolve to a projectable file yet.
+    let Some(expected_module) = expected_conventions_module(db, project) else {
         return Arc::new(brink_ir::ConventionsProjection::default());
-    }
+    };
     let (module_map, _module_diags) = module_map_query(db, project);
-    let native_root = project.native_root(db).as_deref();
-    let expected_module = crate::modules::native_module_path(&crate::modules::root_relative_key(
-        native_root,
-        pointer,
-    ));
-    let Some(conventions_file) = project.files(db).iter().find(|f| {
-        module_map
-            .get(&f.file_id(db))
-            .is_some_and(|m| m.name == expected_module)
-    }) else {
+    // `min_by_key` on the path, not `find`: unlike the confinement
+    // sibling's `any` (which only asks *whether* some file matches), this
+    // query has to pick *which* one, and a pick that depended on
+    // `project.files`' incoming order would be exactly the nondeterminism
+    // the house rule forbids. A collision should be impossible — a native
+    // file's module name is a pure function of its path — but "impossible"
+    // is not a reason to leave the tie-break to iteration order.
+    let Some(conventions_file) = project
+        .files(db)
+        .iter()
+        .filter(|f| {
+            module_map
+                .get(&f.file_id(db))
+                .is_some_and(|m| m.name == expected_module)
+        })
+        .min_by_key(|f| f.path(db).clone())
+    else {
         // Same "warn, never silently drop" channel
         // `conventions_confinement_diagnostics_query` uses for the
         // identical unresolvable-pointer case.

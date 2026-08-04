@@ -590,18 +590,48 @@ pub struct ConventionProjectionEntry {
     pub disposition: ElementDisposition,
     /// The `attach = StructName` clause's declared struct name, if any —
     /// see [`ConventionAnnotation::attach`]'s own doc. `None` for a handler
-    /// that only ever emits text (the pre-#2178 shape). Carries the
-    /// **schema name only** — the struct's own field/type shape is not
-    /// resolved here (the same declaration-surface-only posture `E180`
-    /// itself takes); a consumer wanting the full schema resolves the name
-    /// against the project's own struct declarations.
+    /// that only ever emits text (the pre-#2178 shape).
+    ///
+    /// ⚠ Carries the **schema NAME only**, not the schema. #2111's design
+    /// comment shows the projection carrying the resolved struct
+    /// (`Cue { speaker: string, voiceover: bool, offscreen: bool }`); this
+    /// field carries `Some("Cue")`. Resolving the name against the
+    /// project's struct declarations is left to the consumer, which is
+    /// workable for the in-process editor consumer (it has the whole
+    /// project) and **not** workable for the load-time host consumer (a
+    /// `.inkb` carries no struct declarations). See
+    /// [`ConventionsProjection`]'s own "What #2111 does not yet deliver"
+    /// section — this is deliberately recorded as an open gap rather than
+    /// papered over.
     pub attach: Option<String>,
 }
 
-/// The serialized conventions projection (issue #2111): every `@[convention]`
-/// handler declared in the project's one configured conventions module, in
+/// The conventions projection (issue #2111): every `@[convention]` handler
+/// declared in the project's one configured conventions module, in
 /// ascending `order` — the flat, ordered, purely-declarative record an
 /// editor reads instead of tracing execution.
+///
+/// # What #2111 does NOT yet deliver
+///
+/// Recorded here rather than left to be re-discovered, per the house rule
+/// that a doc must state current state upfront. This type is the
+/// **editor-facing half only**; three parts of the ruled design are open:
+///
+/// 1. **The attachment schema is a NAME, not a struct.** #2111's design
+///    comment carries `Cue { speaker: string, voiceover: bool, offscreen:
+///    bool }`; [`ConventionProjectionEntry::attach`] carries `Some("Cue")`.
+///    See that field's own doc.
+/// 2. **It is not serialized.** Nothing here derives serde and nothing
+///    emits it into `.inkb`/`StoryData`, so the design's "ONE artifact,
+///    TWO consumers" currently has exactly one consumer — the salsa query
+///    `brink_db::ProjectDb::conventions_projection`. The load-time host
+///    read for the #2108 binding join does not exist yet, and depends on
+///    (1) to be useful when it does.
+/// 3. **No reusable import closure is computed.** The ruled invalidation
+///    contract names "the conventions module **and its import closure**",
+///    and #2167 needs that closure too. See the next section for why the
+///    narrower footprint is nonetheless *correct* for what is projected
+///    today — and for exactly what would break it.
 ///
 /// # Why there is no comptime-fault / last-good-value case here
 ///
@@ -645,6 +675,17 @@ pub struct ConventionProjectionEntry {
 /// Issue #2167's own need for import-closure computation (relaxing the
 /// `E169` confinement check for the delegation pattern) is a distinct,
 /// not-yet-ruled question this type does not attempt to answer.
+///
+/// ⚠ **This narrowing is load-bearing on gap (1) above, and closing that
+/// gap reopens it.** `attach = StructName` names a struct that may be
+/// declared in an *imported* module. While only the name is carried, the
+/// projection stays a function of one file's text. The moment the struct's
+/// field/type shape is resolved into the projection — which the design
+/// requires, and which the host consumer cannot do without — the
+/// projection's content depends on wherever that struct is declared, and
+/// the import closure becomes a real dependency edge that must be tracked.
+/// Whoever closes gap (1) must widen the invalidation footprint in the
+/// same change; do not read this section as "the closure is never needed".
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConventionsProjection {
     /// Every declared `@[convention]` handler, ascending by `order`.
