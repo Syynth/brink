@@ -101,7 +101,7 @@ pub use strict::{
     LintLevel, LintPolicy, TypePolicy, effective_severity, native_strict_only_error,
     resolve_type_policy,
 };
-pub use structs::{ShapeInfo, declared_shapes};
+pub use structs::{ShapeInfo, ShapeTable, declared_shapes};
 pub use ufcs::{
     NodeKey, SideTable, UfcsArgMismatch, UfcsTable, UfcsVerdict, project_has_ufcs_call,
     resolve as resolve_ufcs_calls, to_lir_lookup as ufcs_lir_lookup,

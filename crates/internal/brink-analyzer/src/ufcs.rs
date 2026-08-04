@@ -115,7 +115,7 @@ use rowan::TextRange;
 use crate::annotations;
 use crate::infer::{InferenceResult, InferredSig, Ty, assignable, ref_assignable};
 use crate::resolve::ImportScope;
-use crate::structs::{ShapeInfo, declared_shapes};
+use crate::structs::{ShapeTable, declared_shapes};
 
 // ─── The side table (D2) ─────────────────────────────────────────────
 
@@ -604,7 +604,7 @@ struct UfcsVisitor<'a> {
     file: FileId,
     index: &'a SymbolIndex,
     scope: &'a ImportScope,
-    shapes: &'a BTreeMap<String, ShapeInfo>,
+    shapes: &'a ShapeTable,
     globals: &'a BTreeMap<DefinitionId, Ty>,
     bodies: &'a BTreeMap<DefinitionId, crate::infer::BodyTypes>,
     /// Every inferable def's finalized signature (issue #1881) — the UFCS
@@ -777,7 +777,7 @@ impl UfcsVisitor<'_> {
         };
         let Some(field_ty) = self
             .shapes
-            .get(shape_name)
+            .resolve(shape_name, self.scope, self.index)
             .and_then(|shape| shape.field_ty(&method.text))
         else {
             return false;
@@ -1229,7 +1229,11 @@ impl UfcsVisitor<'_> {
             let Ty::Struct(shape_name) = &ty else {
                 return None;
             };
-            let field = self.shapes.get(shape_name)?.field_ty(&seg.text)?.clone();
+            let field = self
+                .shapes
+                .resolve(shape_name, self.scope, self.index)?
+                .field_ty(&seg.text)?
+                .clone();
             ty = field;
         }
         (!ty.is_unknown() && ty != Ty::Conflicted).then_some(ty)

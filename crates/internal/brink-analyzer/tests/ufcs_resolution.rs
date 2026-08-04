@@ -18,7 +18,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brink_analyzer::{AnalysisOptions, UfcsVerdict};
+use brink_analyzer::{AnalysisOptions, ModuleMap, ResolvedModule, UfcsVerdict};
 use brink_ir::hir::lower_native;
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile, Name, SymbolManifest, hir::visit};
 
@@ -938,5 +938,133 @@ fn a_dotted_fn_literal_target_is_not_claimed_as_a_ufcs_callee() {
             .any(|d| d.code == DiagnosticCode::E025),
         "expected the unresolved-reference error to survive: {:?}",
         analysis.diagnostics
+    );
+}
+
+// ─── issue #2253 review finding F3: UFCS field-call resolution must use ───
+// ─── the referrer's own shape under a std/project name collision ─────────
+
+/// F3 (blocking, PR #2253 review): `ufcs::try_field_call`/`receiver_ty` walk
+/// `ShapeTable::resolve`, the same lookup `structs`/`ref_projection` use —
+/// but until this fix landed nothing in the suite exercised it under a
+/// same-named struct declared by two coexisting modules (the stdlib mount,
+/// #2080's M-2d scenario). This is that missing UFCS case.
+///
+/// Project and std each declare their own `Guest` shape, deliberately with
+/// *incompatible* field types for the same field name: the project's own
+/// `greet` is callable (`fn(int): int`), std's is not (`string`). If UFCS
+/// field-call resolution ever picked std's `Guest` for a reference inside
+/// the project file, `g.greet(3)` would hit the E140 "field exists but
+/// isn't callable" hard error instead of resolving as a clean
+/// `UfcsVerdict::FieldCall` — the same "wrong struct's fields" failure mode
+/// #2241 describes, exercised through this consumer specifically (the one
+/// F3 named as under-covered).
+///
+/// Rule 20a: verified this test FAILS (E140 fires, zero `FieldCall`
+/// verdicts) against a `ShapeTable::resolve` that ignores its `scope`
+/// argument and always prefers a std-declared candidate when one exists —
+/// restored before committing.
+#[test]
+fn ufcs_field_call_resolves_the_referrers_own_shape_when_std_and_project_share_a_name() {
+    let project_src = "\
+struct Guest {
+  greet: fn(int): int
+}
+
+fn main() {
+  let g = Guest { greet: \"hi\" };
+  let n = g.greet(3);
+}
+";
+    let std_src = "\
+struct Guest {
+  greet: string
+}
+
+fn noop() {}
+";
+
+    let (project_hir, project_manifest) = lower(project_src);
+    let (std_hir, std_manifest) = lower(std_src);
+    let project_file = FileId(0);
+    let std_file = FileId(1);
+
+    let mut modules = ModuleMap::new();
+    modules.insert(
+        project_file,
+        ResolvedModule {
+            name: "story::main".to_string(),
+            declared: true,
+            was: None,
+        },
+    );
+    modules.insert(
+        std_file,
+        ResolvedModule {
+            name: "std::conventions::screenplay".to_string(),
+            declared: true,
+            was: None,
+        },
+    );
+
+    let files = vec![
+        (project_file, &project_hir, &project_manifest),
+        (std_file, &std_hir, &std_manifest),
+    ];
+    let analysis = brink_analyzer::analyze_with_modules(
+        &files,
+        &modules,
+        &AnalysisOptions::default(),
+        // Native `.brink` fixtures throughout this file (issue #1358).
+        true,
+    );
+    assert!(
+        !analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E023),
+        "cross-declared-module `Guest`s must coexist with no duplicate-declaration \
+         diagnostic: {:?}",
+        analysis.diagnostics
+    );
+
+    let hir_inputs = vec![(project_file, &project_hir), (std_file, &std_hir)];
+    let manifest_inputs = vec![(project_file, &project_manifest), (std_file, &std_manifest)];
+    let inline_docs = brink_analyzer::project_inline_docs(&manifest_inputs);
+    let inference = brink_analyzer::infer_project(
+        &hir_inputs,
+        &analysis.index,
+        &analysis.resolutions,
+        None,
+        &inline_docs,
+    );
+    let (table, ufcs_diags) = brink_analyzer::ufcs_resolution(
+        &hir_inputs,
+        &analysis.index,
+        &analysis.resolutions,
+        &inference,
+    );
+
+    assert!(
+        !ufcs_diags.iter().any(|d| d.code == DiagnosticCode::E140),
+        "the project's own callable `greet` field must resolve a clean field-call verdict, \
+         not std's non-callable one: {ufcs_diags:?}"
+    );
+    let verdicts: Vec<_> = table.iter().map(|(_key, v)| v.clone()).collect();
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::FieldCall {
+        receiver,
+        field,
+        field_ty,
+    } = &verdicts[0]
+    else {
+        panic!("expected a field-call verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(*receiver, brink_analyzer::Ty::Struct("Guest".into()));
+    assert_eq!(field, "greet");
+    assert!(
+        matches!(field_ty, brink_analyzer::Ty::Fn(..)),
+        "resolved against std's non-callable `greet: string` instead of the project's own \
+         `greet: fn(int): int`: {field_ty:?}"
     );
 }
