@@ -381,6 +381,46 @@ fn classic_line_bare_variable_indexed_assignment_writes_the_value() {
     assert_eq!(out, "[99, 2, 3]\n");
 }
 
+/// Issue #2174 review finding — the second entry point for the same
+/// silent-drop class: `content::lower_inline_block`, not just `mod.rs`'s
+/// top-level classic-line statement dispatch. A multiline conditional
+/// embedded directly in a choice's display text (`choice.start_content`,
+/// `hir::normalize`'s lift pass never walks a `Choice`'s own
+/// `start_content`/`bracket_content`/`inner_content` fields — only
+/// `choice.body` — so this stays an inline `hir::ContentPart::
+/// InlineConditional` reaching `content::lower_inline_block`'s branch
+/// lowering, not `lower_block_with_children`'s top-level dispatch) can
+/// contain a classic indexed-assignment logic line with no text at all
+/// (`- true: ~ a[0] = 99`). Before this fix `lower_inline_block` intercepted
+/// only `hir::Stmt::LogicBlock`, falling through to `stmts::lower_stmt` for
+/// everything else — whose `Assignment` arm only resolves a bare `Path`
+/// target, so the `Index` target silently vanished, zero diagnostics, same
+/// as the `mod.rs` case.
+///
+/// Confirmed to fail without the fix (rule 20a): with the parallel guarded
+/// dispatch in `content::lower_inline_block` reverted, this prints
+/// `[1, 2, 3]` (the assignment silently dropped) instead of the
+/// `[99, 2, 3]` asserted here.
+#[test]
+fn choice_display_text_inline_conditional_indexed_assignment_writes_the_value() {
+    let source =
+        "VAR a = #[1, 2, 3]\n* Pick {2 > 0:\n- true: ~ a[0] = 99\n}\nChosen.\n{a}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("runtime error") {
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => {
+                story.choose(0).expect("choose");
+            }
+            Step::Done => {}
+            Step::End | Step::Suspended => break,
+        }
+    }
+    assert_eq!(out, "Pick\nChosen.\n[99, 2, 3]\n");
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject
