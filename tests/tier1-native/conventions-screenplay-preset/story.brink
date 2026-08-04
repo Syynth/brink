@@ -6,11 +6,14 @@
 // `order`-based precedence, so this is now purely a missing-import gap, not
 // a comptime one) — so this fixture inlines the SAME four handler
 // declarations the shipped preset ships, proving the preset's own bodies
-// dispatch correctly via the mechanism that IS landed today (single-file
-// `@[convention(claims = …, order = N)]` + `block` capture, issues
-// #1838/#1839/#2164). Also inlines the `scene_entered`
-// host extern + no-op fallback (issue #2092) `heading` now calls — this
-// fixture is driven with the default `FallbackHandler`
+// dispatch correctly via the mechanism that IS landed today: single-file
+// `@[convention(claims = …, order = N)]` dispatch (issues #1838/#2164), plain
+// `heading`/`transition`, and `cue`/`parenthetical` migrated to ATTACH MODE
+// by issue #2166 (`attach = StructName`, issue #2178) — they claim and
+// consume only their own line, declaring a `Cue`/`Parenthetical` struct
+// rather than `block`-capturing the dialogue that follows. Also inlines the
+// `scene_entered` host extern + no-op fallback (issue #2092) `heading` now
+// calls — this fixture is driven with the default `FallbackHandler`
 // (`brink_test_harness::corpus::run_native_transcript`, no host bound), so
 // the no-op fallback is what actually runs here; the extern firing with the
 // right args against a REAL bound handler is proven separately in
@@ -33,16 +36,22 @@ fn transition(text: string) {
   return text;
 }
 
-@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", order = 30, block)]
-fn cue(name: string, body: content) >{
-  {name}
-  {body}
+struct Cue {
+  speaker: string,
 }
 
-@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", order = 40, block)]
-fn parenthetical(delivery: string, body: content) >{
-  ({delivery})
-  {body}
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 30)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+struct Parenthetical {
+  delivery: string,
+}
+
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", attach = Parenthetical, order = 40)]
+fn parenthetical(delivery: string): Parenthetical {
+  return Parenthetical { delivery: delivery };
 }
 
 flow main() {
