@@ -815,7 +815,10 @@ fn eval_const_struct_literal(
         shapes,
         ..
     } = env;
-    let Some(shape) = shapes.get(&sl.shape.text) else {
+    // Referrer-scoped (issue #2238): `file` is the declaration default's
+    // own file, so a project/std name collision resolves to the shape
+    // declared alongside this literal, not a coexisting same-named one.
+    let Some(shape) = shapes.resolve(&sl.shape.text, file, index) else {
         diagnostics.push(Diagnostic {
             file,
             range: sl.ptr.text_range(),

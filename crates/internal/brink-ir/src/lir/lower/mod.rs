@@ -363,7 +363,7 @@ pub fn build_prelude_decls(
     // and field names ahead of the declaration names in the seeded
     // `NameTable`, and a `NameId` is an index into that same seed, emitted
     // alongside it.
-    let shape_table = structs::build_shape_table(files, &mut names);
+    let shape_table = structs::build_shape_table(files, &mut names, index);
     let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
 
     let mut decl_diagnostics = Vec::new();
