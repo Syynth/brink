@@ -350,8 +350,12 @@ impl Project {
 /// hash-addressed [`Environment::manifest`] every project source lives in,
 /// keyed by the same root-relative, forward-slash string-key convention
 /// (`std/conventions/screenplay.brink`). Native module identity then mints
-/// for it exactly as `brink_db::modules::native_module_path` mints for any
-/// project file — no std-specific identity rule exists or is needed.
+/// `std::conventions::screenplay` for it — the reserved `std/` leading
+/// segment mints as a top-level PEER of `story`, never nested under it
+/// (issue #2245, decision-log 2026-08-04 "peer roots" ruling); every other
+/// key still mints under `story` exactly as before, so no *caller* of
+/// `brink_db::modules::native_module_path` needs a std-specific rule of its
+/// own — the peer-root check lives once, inside that function.
 ///
 /// `include_str!` (not a runtime filesystem read) because the wasm build
 /// (`@brink-lang/web`) has no filesystem — the ruling's explicit

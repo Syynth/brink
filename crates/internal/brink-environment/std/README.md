@@ -22,10 +22,13 @@ mounts this directory's source into every compiled project's
 `Environment` manifest (`crates/internal/brink-environment`) — the same
 hash-addressed, string-keyed home every project source lives in, embedded
 via `include_str!` so it mounts identically on hosts with no filesystem
-(wasm). Native module identity mints for `std/conventions/screenplay.brink`
-exactly as it would for any project file at that path
-(`brink_db::modules::native_module_path`) — no std-specific resolution
-rule exists or is needed for *that* part. What's still missing: nothing
+(wasm). Native module identity mints `std::conventions::screenplay` for
+`std/conventions/screenplay.brink` (`brink_db::modules::
+native_module_path`) — a **peer root** of `story`, not a subdirectory of
+it (issue #2245, decision-log 2026-08-04 "peer roots" ruling): an
+ordinary project file at `market/barter.brink` still mints
+`story::market::barter`, but a key whose leading segment is the reserved
+`std` root mints under `std` instead. What's still missing: nothing
 here is marked `pub`, and no confinement rule scopes what a project's own
 `use` may reach into it — a real `use std::…` importing an item from this
 module still needs #1582's pub marker and #2167's closure-scoped

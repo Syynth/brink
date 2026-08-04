@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use brink_analyzer::{ModuleMap, ResolvedModule};
-use brink_ir::{Diagnostic, DiagnosticCode, FileId};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, STD_ROOT};
 use rowan::TextRange;
 
 use crate::include_graph::IncludeGraph;
@@ -114,12 +114,22 @@ pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a
 /// function of the root-relative path"; charter §13.2: path on disk = path
 /// in language) — see [`root_relative_key`] for how a caller that
 /// keys by absolute path obtains one. Directory segments become
-/// `::`-separated module walls, the file (`.brink` stripped) is the leaf, and
-/// `story::` is the absolute root:
+/// `::`-separated module walls and the file (`.brink` stripped) is the leaf.
 ///
-/// - `barter.brink`            → `story::barter`
-/// - `market/barter.brink`     → `story::market::barter`
-/// - `npcs/quests/intro.brink` → `story::npcs::quests::intro`
+/// **The root is not always `story`** (decision-log 2026-08-04, "`std::` and
+/// libraries are PEER ROOTS of `story::`, not children of it" — issue
+/// #2245). `story::*` is the universe of what the project *author*
+/// provided; a mounted library is a top-level peer of `story`, never a
+/// child of it. Structurally, that means the root a path mints under
+/// depends on its **leading** segment: a key whose leading segment is the
+/// reserved [`STD_ROOT`] (`brink_environment::mount_stdlib`'s `std/…` key
+/// convention) roots there instead of under `story`; every other key —
+/// the entire project tree — roots under `story`, exactly as before:
+///
+/// - `barter.brink`                        → `story::barter`
+/// - `market/barter.brink`                 → `story::market::barter`
+/// - `npcs/quests/intro.brink`             → `story::npcs::quests::intro`
+/// - `std/conventions/screenplay.brink`    → `std::conventions::screenplay`
 ///
 /// This string is folded into `DefinitionId` identity (a **declared**,
 /// always-qualifying module), so it is save-key-critical and must stay a
@@ -131,11 +141,20 @@ pub(crate) fn native_module_path(relative_path: &str) -> String {
     let without_ext = relative_path
         .strip_suffix(".brink")
         .unwrap_or(relative_path);
-    let mut out = String::from("story");
-    for segment in without_ext.split(['/', '\\']) {
-        if segment.is_empty() || segment == "." {
-            continue;
-        }
+    let mut segments = without_ext
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty() && *segment != ".");
+
+    let Some(first) = segments.next() else {
+        return String::from("story");
+    };
+
+    let mut out = if first == STD_ROOT {
+        first.to_string()
+    } else {
+        format!("story::{first}")
+    };
+    for segment in segments {
         out.push_str("::");
         out.push_str(segment);
     }
@@ -282,6 +301,35 @@ mod tests {
             "story::market::barter"
         );
         assert_eq!(native_module_path("./main.brink"), "story::main");
+    }
+
+    /// Issue #2245: a key mounted under the reserved `std/` prefix
+    /// (`brink_environment::mount_stdlib`'s convention) roots at `std` — a
+    /// top-level PEER of `story`, never a child of it. Reverting to the old
+    /// unconditional `String::from("story")` prefix makes this fail
+    /// (`story::std::conventions::screenplay` instead of
+    /// `std::conventions::screenplay`) — verified red-first per house rule
+    /// 20a.
+    #[test]
+    fn native_module_path_roots_a_std_mounted_key_as_a_peer_of_story() {
+        assert_eq!(
+            native_module_path("std/conventions/screenplay.brink"),
+            "std::conventions::screenplay"
+        );
+        // The root itself, bare.
+        assert_eq!(native_module_path("std.brink"), "std");
+        // Backslash separators normalize the same way for the std root.
+        assert_eq!(
+            native_module_path("std\\conventions\\screenplay.brink"),
+            "std::conventions::screenplay"
+        );
+        // A project's own directory that only merely *starts with* `std`
+        // textually (not the reserved segment itself) is NOT the peer
+        // root — segment matching, not a string-prefix test.
+        assert_eq!(
+            native_module_path("stdlib/helpers.brink"),
+            "story::stdlib::helpers"
+        );
     }
 
     /// Issue #1572: with no declared root — every compile path, where

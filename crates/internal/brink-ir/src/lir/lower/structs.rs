@@ -154,7 +154,7 @@ impl ShapeTable {
     /// **every** std-declared candidate unconditionally, with no
     /// referrer-is-std carve-out — unlike `resolve.rs`'s
     /// `lookup_by_name_direct`, whose `InScope` tier lets a referrer that is
-    /// itself part of `story::std…` resolve a std-mounted sibling. A std
+    /// itself part of `std…` resolve a std-mounted sibling. A std
     /// file here that references a same-named shape it does not itself
     /// declare therefore resolves to `None` rather than a std sibling (see
     /// issue #2233 for the analogous `lookup_unique_by_name` asymmetry;
@@ -164,7 +164,7 @@ impl ShapeTable {
     /// holds exactly one candidate (issue #2246 review): a prior "fast
     /// path" returned that sole candidate unconditionally, bypassing
     /// `lookup_global`'s own std-exclusion entirely — so a struct name only
-    /// a mounted `story::std…` module declares (no project-side homonym at
+    /// a mounted `std…` module declares (no project-side homonym at
     /// all) resolved silently, the exact "reach into std with no import"
     /// class every other one of the five bare-name lookups this issue
     /// audited was already taught to refuse. `lookup_global` is itself a
@@ -670,7 +670,7 @@ mod tests {
     /// a *different*, unscoped question whenever `name`'s bucket held
     /// exactly one candidate — it returned that candidate unconditionally,
     /// never consulting `lookup_global`'s std-exclusion at all. A struct
-    /// name that only a mounted `story::std…` module declares, with **no**
+    /// name that only a mounted `std…` module declares, with **no**
     /// project-side homonym anywhere (so the bucket really does hold just
     /// one entry), used to resolve straight through — the referrer silently
     /// reaching into std with no import, the exact bug class #2197/#2238
@@ -697,7 +697,7 @@ mod tests {
                 detail: None,
                 scope: None,
                 param_detail: None,
-                module: Some("story::std::conventions::screenplay".to_string()),
+                module: Some("std::conventions::screenplay".to_string()),
                 visibility: Visibility::Public,
             },
         );

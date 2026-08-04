@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, Import, LocalSymbol, RefKind, ResolutionMap, ResolvedRef,
-    Scope, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest, Visibility,
+    Scope, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest, Visibility, is_std_module,
 };
 
 use crate::manifest::local_definition_id;
@@ -185,19 +185,6 @@ enum Candidacy {
     Imported,
     /// Neither — a cross-module definition this file has no line of sight to.
     Other,
-}
-
-/// True when `module` names the reserved standard-library namespace
-/// `brink_environment`'s stdlib mount (issue #2080) populates: `story::std`
-/// itself, or any of its submodules (`story::std::conventions::screenplay`,
-/// …) — `native_module_path`'s path-derived scheme applied to a file mounted
-/// at `std/…`. A pure string convention check, not a project-config lookup:
-/// `mount_stdlib`'s own doc already treats `std/` as "a reserved-by-
-/// convention path", and `brink-analyzer` cannot depend on `brink-db` (which
-/// owns `native_module_path`) without a cycle, so this mirrors that
-/// convention locally rather than importing it.
-fn is_std_module(module: &str) -> bool {
-    module == "story::std" || module.starts_with("story::std::")
 }
 
 /// Classify a candidate against the referring file's import scope (M-2d).
@@ -1248,7 +1235,7 @@ pub(crate) fn lookup_by_name(
 /// before issue #1590's alias fallback, plus the 2026-08-03 SUBTRACTION
 /// RULING's std-invisibility gate (issue #2197, doc below) — no longer
 /// byte-identical to that description, but byte-identical for every corpus
-/// that never coexists with a `story::std::…` candidate (the whole
+/// that never coexists with a `std::…` candidate (the whole
 /// pre-stdlib-mount world).
 fn lookup_by_name_direct(
     index: &SymbolIndex,
@@ -1280,7 +1267,7 @@ fn lookup_by_name_direct(
         // confinement, neither built yet. Until then, stdlib symbols are
         // reachable only via that not-yet-existing explicit import — there
         // is no implicit inclusion, so `classify` can never answer
-        // `Imported` for a std candidate today (nothing under `story::std`
+        // `Imported` for a std candidate today (nothing under `std`
         // can be marked public yet) — every std candidate this file does
         // not itself
         // belong to (i.e. not `InScope`, which still covers a std file
@@ -1355,7 +1342,7 @@ fn lookup_by_name_direct(
 /// consult, so it cannot classify a candidate `InScope` vs `Other` the way
 /// [`classify`] does — every caller of this function is, in effect, a
 /// "no import scope" caller, so a candidate declared in a mounted
-/// `story::std…` module is unconditionally excluded here, exactly as
+/// `std…` module is unconditionally excluded here, exactly as
 /// [`lookup_by_name`] excludes it under the default (no-import) scope. This
 /// holds even when the std candidate is the function's *sole* match: it is
 /// filtered out before it can ever become `sole`, so the name resolves as
@@ -1366,7 +1353,7 @@ fn lookup_by_name_direct(
 /// kinds *unconditionally, ignoring the import scope*; the scope is
 /// consulted only once `multiple` is set. So whenever this function returns
 /// `Some(id)`, [`lookup_by_name`] returns the same `id` for any scope in
-/// which no coexisting `story::std…` candidate of that name is the
+/// which no coexisting `std…` candidate of that name is the
 /// referring file's own module — pinned by
 /// `unique_lookup_agrees_with_scoped_lookup`. That carve-out is not
 /// vacuous: a referrer whose own `file_module` sits inside the std tree is
@@ -2545,7 +2532,7 @@ mod tests {
     /// into `std::…` with zero imports.
     #[test]
     fn std_mounted_sole_candidate_is_invisible_with_no_import() {
-        let (index, _ids) = ambush_index_with_modules(&["story::std::conventions::screenplay"]);
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
         assert_eq!(
             lookup_by_name(
                 &index,
@@ -2575,7 +2562,7 @@ mod tests {
     #[test]
     fn project_own_module_wins_over_a_coexisting_std_mount_candidate() {
         let (index, ids) =
-            ambush_index_with_modules(&["story::story", "story::std::conventions::screenplay"]);
+            ambush_index_with_modules(&["story::story", "std::conventions::screenplay"]);
         let project_id = ids[0];
         let scope = ImportScope {
             file_module: Some("story::story".to_string()),
@@ -2608,7 +2595,7 @@ mod tests {
     #[test]
     fn project_referencing_a_third_module_still_skips_a_coexisting_std_candidate() {
         let (index, ids) =
-            ambush_index_with_modules(&["story::std::conventions::screenplay", "story::story"]);
+            ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
         let project_id = ids[1];
         let scope = ImportScope {
             file_module: Some("story::another_module".to_string()),
@@ -2635,7 +2622,7 @@ mod tests {
     /// style fast path would otherwise return unconditionally.
     #[test]
     fn unique_lookup_excludes_std_mounted_sole_candidate() {
-        let (index, _ids) = ambush_index_with_modules(&["story::std::conventions::screenplay"]);
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
         assert_eq!(
             lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
             None,
@@ -2666,7 +2653,7 @@ mod tests {
     #[test]
     fn unique_lookup_skips_std_candidate_and_returns_the_ordinary_one() {
         let (index, ids) =
-            ambush_index_with_modules(&["story::std::conventions::screenplay", "story::story"]);
+            ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
         let std_id = ids[0];
         let project_id = ids[1];
         assert_eq!(
@@ -2700,7 +2687,7 @@ mod tests {
              ordinary candidate (not the std one) is InScope"
         );
         let std_scope = ImportScope {
-            file_module: Some("story::std::conventions::screenplay".to_string()),
+            file_module: Some("std::conventions::screenplay".to_string()),
             qualified_modules: BTreeSet::new(),
             bare_imports: BTreeSet::new(),
             aliases: BTreeMap::new(),

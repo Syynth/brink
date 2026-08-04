@@ -1,7 +1,7 @@
 use brink_format::{DefinitionId, DefinitionTag};
 
 use crate::determinism::LookupMap;
-use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::symbols::{SymbolIndex, SymbolKind, is_std_module};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
 use super::context::{
@@ -413,7 +413,7 @@ pub fn collect_externals(
                 // legitimate answer: an `extern foo` here and `=== function
                 // foo` in an `INCLUDE`d sibling is a real, supported
                 // cross-file fallback pair. What must never happen is
-                // falling through to a **mounted `story::std…`** module's
+                // falling through to a **mounted `std…`** module's
                 // same-named fallback with no import — e.g. the stdlib
                 // mount's own `extern scene_entered` + `fn scene_entered`
                 // pair binding to an unrelated project-declared `extern` of
@@ -432,20 +432,6 @@ pub fn collect_externals(
     }
 
     externals
-}
-
-/// True when `module` names the reserved standard-library namespace
-/// `brink_environment`'s stdlib mount (issue #2080's scope fence,
-/// `docs/decision-log.md`) populates: `story::std` itself, or any of its
-/// submodules (`story::std::conventions::screenplay`, …). A local mirror of
-/// `brink-analyzer::resolve::is_std_module`'s identical string convention —
-/// this crate lowers *before* `brink-analyzer` in the pipeline
-/// (`brink-ir::hir` → `brink-analyzer` → `brink-ir::lir`), so depending on
-/// `brink-analyzer` from here would be a cycle. Kept private and file-local
-/// rather than shared, same posture that sibling doc takes toward
-/// `brink-db::modules::native_module_path`.
-fn is_std_module(module: &str) -> bool {
-    module == "story::std" || module.starts_with("story::std::")
 }
 
 /// Look up a project-wide global by name, preferring the entry declared in
@@ -477,7 +463,7 @@ fn is_std_module(module: &str) -> bool {
 /// mounted std shape it never imported.
 ///
 /// The unscoped fallback (no same-file entry) **excludes any candidate
-/// declared in a mounted `story::std…` module** (review finding on #2197):
+/// declared in a mounted `std…` module** (review finding on #2197):
 /// without this exclusion, a file that declares an `extern` with **no
 /// fallback of its own** — a legal, common shape — would silently fall
 /// through to whichever *other* file's same-named `fn` happens to sort
@@ -490,7 +476,7 @@ fn is_std_module(module: &str) -> bool {
 /// a different call path into the same index and needed its own carve-out.
 /// A **legitimate** cross-file fallback — `extern foo` in one file and
 /// `=== function foo` in an `INCLUDE`d sibling, neither of them std — is
-/// unaffected: only a `story::std…`-declared candidate is skipped, so
+/// unaffected: only a `std…`-declared candidate is skipped, so
 /// every pre-#2197 non-std caller keeps its byte-identical unscoped match.
 pub(super) fn lookup_global(
     index: &SymbolIndex,
@@ -1337,7 +1323,7 @@ mod tests {
 
     /// Issue #2197 review finding: a project file declaring `extern foo`
     /// with **no fallback of its own** must not have `collect_externals`'
-    /// fallback lookup silently fall through to a mounted `story::std…`
+    /// fallback lookup silently fall through to a mounted `std…`
     /// module's own same-named `fn foo` — the exact "silently reach into
     /// std with no import" class the bare-name-visibility half of #2197
     /// closes at the `resolve.rs` layer, reached here through a completely
@@ -1361,7 +1347,7 @@ mod tests {
         );
 
         // The stdlib mount declares its OWN extern + fallback pair under
-        // the same bare name, in a `story::std…` module.
+        // the same bare name, in a `std…` module.
         let std_extern = DefinitionId::new(DefinitionTag::ExternalFn, 2);
         insert(
             &mut index,
@@ -1369,7 +1355,7 @@ mod tests {
             std_file,
             "scene_entered",
             SymbolKind::External,
-            Some("story::std::conventions::screenplay"),
+            Some("std::conventions::screenplay"),
         );
         let std_fallback = DefinitionId::new(DefinitionTag::Address, 3);
         insert(
@@ -1378,7 +1364,7 @@ mod tests {
             std_file,
             "scene_entered",
             SymbolKind::Knot,
-            Some("story::std::conventions::screenplay"),
+            Some("std::conventions::screenplay"),
         );
 
         // The project's own extern still resolves (same-file entry exists).
