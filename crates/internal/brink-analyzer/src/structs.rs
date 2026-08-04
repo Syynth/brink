@@ -59,7 +59,7 @@ use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
     AssignOp, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch,
-    StructLiteral, SymbolIndex, SymbolKind,
+    StructLiteral, SymbolIndex, SymbolKind, is_std_module,
 };
 use rowan::TextRange;
 
@@ -100,7 +100,27 @@ impl ShapeInfo {
     }
 }
 
-/// Every declared `STRUCT` shape in the project, by name.
+/// Every declared `STRUCT` shape in the project — a referrer-scoped lookup
+/// table (issue #2241).
+///
+/// A bare struct name is **not** a unique key: the stdlib mount (#2080) lets
+/// a project's own `struct Cue { … }` coexist with a same-named
+/// `struct Cue { … }` a mounted std preset declares (M-2d module
+/// coexistence, `manifest::is_cross_declared_module_collision`) — both are
+/// genuinely distinct `Struct` symbols with distinct `DefinitionId`s, the
+/// same shape `brink_ir::lir::lower::structs::ShapeTable` already handles one
+/// layer down (issue #2238). This table used to be a flat
+/// `BTreeMap<String, ShapeInfo>` populated by plain last-`insert`-wins —
+/// whichever file's declaration was iterated last silently overwrote every
+/// earlier same-named one, with no per-caller referrer to break the tie.
+/// [`ShapeTable::resolve`] is the fix: every caller with a `FileId` in hand
+/// resolves the *right* candidate — its own file's declaration, else
+/// whichever remains once std-declared candidates are excluded — instead of
+/// a global winner. [`ShapeTable::get_by_def`] is for callers that already
+/// hold an exact `DefinitionId` (e.g. a construction literal's shape name,
+/// resolved with full module-scope `Candidacy` by
+/// `resolve::resolve_struct_ref` and recorded in the project's
+/// `ResolutionMap` — see [`check`]).
 ///
 /// Public (issue #858) so tooling outside `brink-analyzer` can resolve a
 /// `STRUCT`'s declared fields — e.g. offering field-name completions after
@@ -108,19 +128,32 @@ impl ShapeInfo {
 /// crate already builds for its own construction-literal checks
 /// ([`check`]) and `ref`-projection path-segment validation.
 #[must_use]
-pub fn declared_shapes(
-    files: &[(FileId, &HirFile)],
-    index: &SymbolIndex,
-) -> BTreeMap<String, ShapeInfo> {
+pub fn declared_shapes(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> ShapeTable {
     // No manifest access at this call site (`structs::check` isn't
     // threaded a `HostManifest` — struct field types aren't in T1d-2's
     // scope), so `Handle<K>` field types resolve `None` here, same as any
     // other name `TypeNames` doesn't recognize — consistent with
     // `annotations::resolve`'s documented "unresolved -> silent" contract.
     let names = annotations::TypeNames::new(index, None);
-    let mut out = BTreeMap::new();
-    for &(_file, hir) in files {
+    let mut by_def = BTreeMap::new();
+    let mut by_name: BTreeMap<String, Vec<DefinitionId>> = BTreeMap::new();
+    for &(file, hir) in files {
         for s in &hir.structs {
+            // Every declared `STRUCT` has exactly one symbol-index entry in
+            // its own declaring file (a bona fide intra-file duplicate is
+            // analyzer-diagnosed `E023` and dropped from the index before
+            // this runs — mirrors `ShapeTable::build_shape_table`'s own doc
+            // one layer down). No entry means nothing to key a `ShapeInfo`
+            // under, so this decl contributes nothing rather than silently
+            // colliding with an unrelated same-named one.
+            let Some(def_id) =
+                annotations::def_id_for(index, file, SymbolKind::Struct, &s.name.text)
+            else {
+                continue;
+            };
+            if by_def.contains_key(&def_id) {
+                continue;
+            }
             let fields = s
                 .fields
                 .iter()
@@ -129,10 +162,82 @@ pub fn declared_shapes(
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            out.insert(s.name.text.clone(), ShapeInfo { fields });
+            by_def.insert(def_id, ShapeInfo { fields });
+            by_name.entry(s.name.text.clone()).or_default().push(def_id);
         }
     }
-    out
+    ShapeTable { by_def, by_name }
+}
+
+/// [`declared_shapes`]' referrer-scoped lookup table — see that function's
+/// doc for the coexistence story this exists to resolve correctly.
+#[derive(Default)]
+pub struct ShapeTable {
+    /// Every shape by its own symbol-index identity — the canonical store,
+    /// unambiguous by construction.
+    by_def: BTreeMap<DefinitionId, ShapeInfo>,
+    /// Bare name -> every `DefinitionId` sharing it, in declaration order.
+    /// More than one entry only when std and the project (or two declared
+    /// modules) coexist on the same name.
+    by_name: BTreeMap<String, Vec<DefinitionId>>,
+}
+
+impl ShapeTable {
+    /// Number of declared shapes in the project — referrer-free, since a
+    /// count needs no disambiguation.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_def.len()
+    }
+
+    /// Whether the project declares no `STRUCT` shapes at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_def.is_empty()
+    }
+
+    /// Resolve a shape already pinned to an exact `DefinitionId` — no
+    /// referrer ambiguity possible, since the identity was already resolved
+    /// once, correctly, by whatever recorded it (e.g. a construction
+    /// literal's `RefKind::Struct` resolution, `resolve::resolve_struct_ref`).
+    #[must_use]
+    pub fn get_by_def(&self, id: DefinitionId) -> Option<&ShapeInfo> {
+        self.by_def.get(&id)
+    }
+
+    /// Referrer-scoped lookup (issue #2241): when more than one declared
+    /// `STRUCT` shares `name`, resolve to the candidate declared in
+    /// `referrer` itself, else whichever remains once every mounted
+    /// `std…`-declared candidate is excluded — the same file-exact +
+    /// std-exclusion convention `brink_ir::lir::lower::decls::lookup_global`
+    /// already applies one layer down (that function is crate-private to
+    /// `brink-ir`, so this is a same-shape reimplementation, not a shared
+    /// call — brink-analyzer cannot depend on brink-ir's lowering-internal
+    /// helpers). Returns `None` when `name` names no declared `STRUCT` at
+    /// all, or every candidate sharing it is std-declared with none equal to
+    /// `referrer`.
+    #[must_use]
+    pub fn resolve(&self, name: &str, referrer: FileId, index: &SymbolIndex) -> Option<&ShapeInfo> {
+        let ids = self.by_name.get(name)?;
+        let def_id = ids
+            .iter()
+            .find(|&&id| {
+                index
+                    .symbols
+                    .get(&id)
+                    .is_some_and(|info| info.file == referrer)
+            })
+            .or_else(|| {
+                ids.iter().find(|&&id| {
+                    index
+                        .symbols
+                        .get(&id)
+                        .is_some_and(|info| !info.module.as_deref().is_some_and(is_std_module))
+                })
+            })
+            .copied()?;
+        self.by_def.get(&def_id)
+    }
 }
 
 /// Strict-mode construction checks over every struct literal in the
@@ -224,7 +329,7 @@ pub fn check_assignments(
             continue;
         };
         for fact in &body.field_assign_mismatches {
-            check_field_assign_mismatch(fact, info.file, &shapes, &mut out);
+            check_field_assign_mismatch(fact, info.file, index, &shapes, &mut out);
         }
     }
     out
@@ -253,7 +358,8 @@ pub fn check_assignments(
 fn check_field_assign_mismatch(
     fact: &FieldAssignMismatch,
     file: FileId,
-    shapes: &BTreeMap<String, ShapeInfo>,
+    index: &SymbolIndex,
+    shapes: &ShapeTable,
     out: &mut Vec<Diagnostic>,
 ) {
     let mut current = fact.root_ty.clone();
@@ -261,7 +367,7 @@ fn check_field_assign_mismatch(
         let Ty::Struct(shape_name) = &current else {
             return;
         };
-        let Some(shape) = shapes.get(shape_name) else {
+        let Some(shape) = shapes.resolve(shape_name, file, index) else {
             return;
         };
         let Some(field_ty) = shape.field_ty(&segment.text) else {
@@ -348,7 +454,7 @@ pub(crate) struct MistypeCtx<'a> {
 
 struct ConstructionVisitor<'a> {
     file: FileId,
-    shapes: &'a BTreeMap<String, ShapeInfo>,
+    shapes: &'a ShapeTable,
     index: &'a SymbolIndex,
     globals: &'a BTreeMap<DefinitionId, Ty>,
     signatures: &'a BTreeMap<DefinitionId, InferredSig>,
@@ -508,14 +614,31 @@ fn check_literal_duplicates(sl: &StructLiteral, file: FileId, out: &mut Vec<Diag
 /// Check one struct literal against its declared shape (if resolvable — an
 /// unresolved shape name has nothing to check against, and is already
 /// diagnosed separately by `resolve::resolve_struct_ref`'s `E068`).
+///
+/// Issue #2241: `sl.shape`'s own name is a `RefKind::Struct` reference the
+/// analyzer already resolved with full module-scope `Candidacy`
+/// (`resolve::resolve_struct_ref`, walked into the `ResolutionMap` every
+/// construction literal's shape name gets — `symbols::project`'s `walk_expr`
+/// registers one for every `Expr::StructLiteral`, unconditionally). Consuming
+/// that recorded resolution by range (`ctx.resolution_by_range`) rather than
+/// re-deriving the shape from `sl.shape.text` by bare name is exactly the
+/// "lowering consumes analyzer types" fix PR #2248 already applied on the LIR
+/// side for this same reference kind — this is its analyzer-side twin. A
+/// missing entry here means `resolve_struct_ref` itself couldn't resolve the
+/// name (already reported as `E068`), so there is nothing to check against,
+/// same as before.
 fn check_literal(
     sl: &StructLiteral,
     file: FileId,
-    shapes: &BTreeMap<String, ShapeInfo>,
+    shapes: &ShapeTable,
     ctx: &MistypeCtx<'_>,
     out: &mut Vec<Diagnostic>,
 ) {
-    let Some(shape) = shapes.get(&sl.shape.text) else {
+    let Some(shape) = ctx
+        .resolution_by_range
+        .get(&range_key(sl.shape.range))
+        .and_then(|def_id| shapes.get_by_def(*def_id))
+    else {
         return;
     };
 
@@ -1206,5 +1329,142 @@ mod tests {
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E084));
+    }
+
+    // ─── issue #2241: declared_shapes is referrer-scoped, not last-wins ──
+
+    /// Build a project file coexisting with a "std"-shaped file (M-2d
+    /// cross-declared-module coexistence, mirroring the real stdlib mount
+    /// #2080) — each declares its own `STRUCT Cue`, with the project's own
+    /// carrying MORE fields than the coexisting file's same-named one.
+    /// Returns everything [`check`] needs to validate the project's own
+    /// construction literal.
+    ///
+    /// No `#@module` directive in either source: the module tag a real
+    /// compile derives from `#@module`/the native path is supplied directly
+    /// here via `ModuleMap`, exactly as `manifest::tests`'s own
+    /// `cross_declared_module_duplicate_coexists_under_brink` does — this
+    /// test only needs the tag on the index, not the parsed source's own
+    /// (irrelevant) `HirFile::module`.
+    fn build_project_with_std_homonym(
+        project_src: &str,
+        std_src: &str,
+    ) -> (
+        FileId,
+        HirFile,
+        FileId,
+        HirFile,
+        SymbolIndex,
+        ResolutionMap,
+        InferenceResult,
+    ) {
+        let project_file = FileId(0);
+        let std_file = FileId(1);
+
+        let project_parsed = brink_syntax::parse(project_src);
+        let (project_hir, project_manifest, _diag) = lower(project_file, &project_parsed.tree());
+        let std_parsed = brink_syntax::parse(std_src);
+        let (std_hir, std_manifest, _diag) = lower(std_file, &std_parsed.tree());
+
+        let mut modules = crate::ModuleMap::new();
+        modules.insert(
+            project_file,
+            crate::ResolvedModule {
+                name: "story::main".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        modules.insert(
+            std_file,
+            crate::ResolvedModule {
+                name: "std::conventions::screenplay".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+
+        let (index, diag) = crate::symbol_index_with_modules(
+            &[(project_file, &project_manifest), (std_file, &std_manifest)],
+            &modules,
+            crate::Dialect::Brink,
+            false,
+        );
+        assert!(
+            diag.is_empty(),
+            "cross-declared-module `Cue`s must coexist with no diagnostic: {diag:?}"
+        );
+
+        let project_scope =
+            crate::ImportScope::new(Some("story::main".to_string()), &project_hir.imports);
+        let (project_resolutions, _diag) =
+            crate::resolve(project_file, &project_manifest, &index, &project_scope);
+        let std_scope = crate::ImportScope::new(
+            Some("std::conventions::screenplay".to_string()),
+            &std_hir.imports,
+        );
+        let (std_resolutions, _diag) = crate::resolve(std_file, &std_manifest, &index, &std_scope);
+
+        let mut resolutions: ResolutionMap = (*project_resolutions).clone();
+        resolutions.extend((*std_resolutions).iter().cloned());
+
+        let files = [(project_file, &project_hir), (std_file, &std_hir)];
+        let inference = crate::infer_project(&files, &index, &resolutions, None, &BTreeMap::new());
+
+        (
+            project_file,
+            project_hir,
+            std_file,
+            std_hir,
+            (*index).clone(),
+            resolutions,
+            inference,
+        )
+    }
+
+    /// The wave's own headline scenario: a project's own `STRUCT Cue`
+    /// coexists with a same-named `STRUCT Cue` from a distinct declared
+    /// module (mirrors `std/conventions/screenplay.brink`'s real one-field
+    /// `Cue`). Before this fix, `declared_shapes` built a flat
+    /// `BTreeMap<String, ShapeInfo>` via plain last-`insert`-wins — with
+    /// `files` ordered `[project, std]` below, std's `ShapeInfo` is inserted
+    /// LAST and silently overwrites the project's own in the table, even
+    /// though the construction literal itself lives in the project file and
+    /// `resolve::resolve_struct_ref` already resolves it to the PROJECT's own
+    /// `Cue` (never std's — the referrer's own module wins that tie-break).
+    /// The missing-field check would then validate against std's one-field
+    /// shape, which the literal's sole `speaker` initializer already
+    /// satisfies — a silent E069 false negative: "accepted when it should
+    /// error" (issue #2241's own words).
+    ///
+    /// Rule 20a: verified this test FAILS on the pre-fix code (reverting
+    /// `declared_shapes` to the flat bare-name `BTreeMap::insert` and
+    /// `check_literal` to `shapes.get(&sl.shape.text)`) — the assertion
+    /// below (`diags.len() == 1`, `E069` naming `voiceover`) fails with
+    /// `diags` empty instead, because std's one-field shape (which won the
+    /// last-insert race with `files = [project, std]`) sees the literal's
+    /// sole `speaker` field as complete.
+    #[test]
+    fn construction_check_resolves_the_referrers_own_shape_when_std_and_project_share_a_name() {
+        let project_src = "STRUCT Cue = #{speaker: string, voiceover: string}\n\
+             === main ===\n~ p = Cue#{speaker: \"A\"}\n-> DONE\n";
+        let std_src = "STRUCT Cue = #{speaker: string}\nHello.\n";
+
+        let (project_file, project_hir, std_file, std_hir, index, resolutions, inference) =
+            build_project_with_std_homonym(project_src, std_src);
+
+        // Deliberately `[project, std]` — std's shape is inserted LAST into
+        // the pre-fix flat table, exposing the last-wins bug.
+        let files = [(project_file, &project_hir), (std_file, &std_hir)];
+        let diags = check(&files, &index, &inference, &resolutions);
+
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E069);
+        assert!(
+            diags[0].message.contains("voiceover"),
+            "the missing-field diagnostic must name the PROJECT's own missing field \
+             (`voiceover`), proving the check validated the literal against the project's own \
+             2-field `Cue` shape rather than the coexisting file's 1-field one: {diags:?}"
+        );
     }
 }

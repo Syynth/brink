@@ -40,7 +40,14 @@ fn declared_shapes_is_reachable_from_outside_the_crate() {
     let files: &[(FileId, &HirFile)] = &[(file, &hir)];
     let shapes = declared_shapes(files, &index);
 
-    let npc: &ShapeInfo = shapes.get("Npc").expect("Npc shape declared");
+    // Issue #2241: `declared_shapes` is referrer-scoped, not a flat bare-name
+    // table — a caller resolves a shape for a specific referring file
+    // (`resolve`), which disambiguates a same-named shape declared in more
+    // than one coexisting module (the stdlib mount, #2080). A single-file
+    // project like this one always resolves to its own declaration.
+    let npc: &ShapeInfo = shapes
+        .resolve("Npc", file, &index)
+        .expect("Npc shape declared");
     assert!(npc.has_field("name"));
     assert!(npc.has_field("hp"));
     assert!(!npc.has_field("mana"), "undeclared field must report false");

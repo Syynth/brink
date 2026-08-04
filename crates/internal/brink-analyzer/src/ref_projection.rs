@@ -23,9 +23,12 @@
 //!   on rejected syntax is noise.
 //! - [`check_strict`] — **E098** (a projection segment disagrees with the
 //!   root's statically-known shape). `types = strict` only, reusing
-//!   `structs::declared_shapes`/`ShapeInfo` — the same shape table
-//!   `structs::check`'s missing/extra/mistyped trio (E069–E071) already
-//!   builds for construction literals — rather than a second one. The seed
+//!   `structs::declared_shapes`/[`ShapeTable`] — the same referrer-scoped
+//!   shape table `structs::check`'s missing/extra/mistyped trio (E069–E071)
+//!   already builds for construction literals — rather than a second one.
+//!   Every lookup here is scoped to the segment's own file
+//!   ([`ShapeTable::resolve`], issue #2241) rather than a flat bare-name
+//!   winner. The seed
 //!   shape comes from the projection root's own `VAR name: Shape = …`
 //!   annotation (TM-2); anything else (`Ty::Unknown`, no annotation, a
 //!   non-struct declared type) is silently unchecked — "Unknown never
@@ -42,7 +45,7 @@ use rowan::TextRange;
 
 use crate::annotations;
 use crate::infer::Ty;
-use crate::structs::{ShapeInfo, declared_shapes};
+use crate::structs::{ShapeTable, declared_shapes};
 
 /// `(start, end)` key for range-indexed lookups (`TextRange` has no `Ord`) —
 /// same convention `fn_values`/`dialect_gate` already use.
@@ -337,7 +340,7 @@ fn declared_var_shapes(
 struct SegmentShapeVisitor<'a> {
     file: FileId,
     by_range: BTreeMap<(u32, u32), brink_format::DefinitionId>,
-    shapes: &'a BTreeMap<String, ShapeInfo>,
+    shapes: &'a ShapeTable,
     var_seeds: &'a BTreeMap<(FileId, String), Ty>,
     index: &'a SymbolIndex,
     diagnostics: &'a mut Vec<Diagnostic>,
@@ -377,7 +380,8 @@ impl SegmentShapeVisitor<'_> {
             match segment {
                 Segment::Field(name) => match &current {
                     Ty::Struct(shape_name) => {
-                        let Some(shape) = self.shapes.get(shape_name) else {
+                        let Some(shape) = self.shapes.resolve(shape_name, self.file, self.index)
+                        else {
                             return; // unresolved shape — E068 already covers it.
                         };
                         if !shape.has_field(&name.text) {
