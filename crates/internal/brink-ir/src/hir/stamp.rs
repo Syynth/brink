@@ -160,13 +160,15 @@ fn stamp_block(
 /// `file`: the file whose declarations this statement belongs to — see
 /// [`lookup_label_id`]'s doc. Threaded down from [`stamp_block`] for the
 /// primary weave walk and from every lambda-stamping call site (issue
-/// #2215) so a labeled gather/choice/block reached only through a
-/// block-capture (`stamp_lambdas_in_expr`'s `Fragment` arm) or a
+/// #2215) so a labeled gather/choice/block reached through a
 /// content-embedded inline conditional/sequence
 /// (`stamp_lambdas_in_content_part`'s `InlineConditional`/
-/// `InlineSequence` arms) gets the same same-file-preferred label lookup
-/// the primary walk already gets — every call site has a real `FileId` in
-/// scope, so there is no longer an unscoped case to fall back to.
+/// `InlineSequence` arms, or transitively via `stamp_lambdas_in_expr`'s
+/// `Fragment` arm when a block-capture's own captured content line
+/// carries one of these mid-line) gets the same same-file-preferred label
+/// lookup the primary walk already gets — every call site has a real
+/// `FileId` in scope, so there is no longer an unscoped case to fall back
+/// to.
 #[expect(
     clippy::too_many_lines,
     reason = "structural match over all statement types"
@@ -547,11 +549,20 @@ fn stamp_lambdas_in_expr(
         // at this same `scope_path`, with fresh local counters exactly like
         // a choice body gets (this fragment is its own isolated statement
         // list, not sharing the enclosing frame's structural counters).
-        // `file` is threaded through (issue #2215) so a labeled
-        // gather/choice/block nested inside a block-capture still gets the
-        // same same-file-preferred [`lookup_label_id`] lookup the primary
-        // weave walk gets — see that function's doc for the collision this
-        // closes.
+        // `file` is threaded through (issue #2215) so that traversal still
+        // gets the same same-file-preferred [`lookup_label_id`] lookup the
+        // primary weave walk gets — see that function's doc for the
+        // collision this closes. Note a top-level labeled
+        // gather/choice/block is never itself one of `stmts` here:
+        // `capture_block`'s terminator (`is_plain_content_line`,
+        // `hir::lower_native::element`) stops the captured run at any
+        // `CONTENT_LINE` bearing a `LABEL`/`CHOICE_POINT`/`DIVERT_STMT`/
+        // `TUNNEL_CALL`, specifically so it can never be absorbed into a
+        // `Stmt::LabeledBlock`/`Stmt::ChoiceSet`. A label only reaches this
+        // arm transitively, through a captured plain content line's own
+        // mid-line inline conditional/sequence — the same
+        // `InlineConditional`/`InlineSequence` shape handled below, just
+        // one level deeper.
         hir::Expr::Fragment(stmts) => {
             let mut seq = 0;
             let mut cc = 0;
@@ -822,7 +833,11 @@ fn alloc_address(path: &str) -> DefinitionId {
 /// `InlineSequence` arms) now threads one through too — those call sites
 /// share the exact same collision this function's file-scoped lookup
 /// fixes, reachable through an explicitly *labeled* gather/choice/block
-/// nested inside a block-capture or inline conditional/sequence, declared
+/// nested inside a content-embedded inline conditional/sequence (or, one
+/// level deeper, inside such a construct's own mid-line inline
+/// conditional/sequence when it sits within a block-capture's captured
+/// content line — see the `Fragment` arm's own doc for why a labeled
+/// container can never be a top-level statement of a capture), declared
 /// identically in two *coexisting* declared modules (confirmed live via
 /// the real production compile path, not merely theoretical — see the
 /// `brink-test-harness` regression this issue adds).
