@@ -316,8 +316,9 @@ nodes:
   direct declarations, so admitting a module-nested claim there would
   validate and then silently register nothing to claim with. Even a
   validly-placed top-level `@[convention]` handler is further confined to
-  **one file**: the conventions module `brink.toml`'s `[project] elements`
-  key names. A claiming handler declared anywhere else is `E169` (issue
+  **one file**: the conventions module `brink.toml`'s `[project]
+  conventions` key (renamed from `elements` by issue #2180) names. A
+  claiming handler declared anywhere else is `E169` (issue
   #1844, the 2026-07-31 §9.1 ruling's item 4) — `!name`-dispatched
   (`@[element]`) handlers have no such restriction, since they
   self-announce at the call site instead of silently reinterpreting prose.

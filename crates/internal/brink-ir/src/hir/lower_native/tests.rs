@@ -3852,7 +3852,7 @@ fn lower_with_no_external_registry_is_byte_identical_to_lower() {
 fn an_injected_registry_claims_a_line_in_a_file_that_declares_no_local_handler() {
     // The gap issue #1863 names directly: today a file with zero local
     // `claims = "…"` handlers never dispatches anything, however the
-    // project's `[project] elements` module is configured. An injected
+    // project's `[project] conventions` module is configured. An injected
     // registry is the seam that changes that.
     let (hir, _m, diags) = lower_with_conventions(
         FileId(0),

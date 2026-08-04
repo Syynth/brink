@@ -366,6 +366,45 @@ pub(super) fn try_lower_field_assignment(
     false
 }
 
+/// Issue #2174 — the classic-line remainder of #2121/PR #2171.
+///
+/// `lower_block_assignment` (the `~ { … }` T1b block surface, just below)
+/// dispatches an `Index` assignment target straight to
+/// [`lower_indexed_assignment`] — which is where
+/// [`reject_field_projection_index_root`]'s guard lives. But the
+/// classic-line (non-block) statement dispatch (`mod.rs`'s `hir::Stmt`
+/// match) only ever tried [`try_lower_field_assignment`]'s `Path`/
+/// `FieldAccess` targets before falling through to `stmts::lower_stmt`,
+/// whose own `lower_assign_target` recognizes only a bare `Path` — an
+/// `Index` target (`a[i] = v`) fell through its `_ => None` arm and
+/// **silently dropped the whole statement**, with no diagnostic at all.
+///
+/// This isn't only the field-projected-root shape (`a.items[0] = v`) #2121
+/// fixed for the block surface — reproduced against a real compile+run
+/// (rule 20a): even the *bare-variable* classic-line spelling (`~ a[0] =
+/// 99`, `a: Array<int>`, no struct involved) compiled clean and the write
+/// never happened, because the classic-line dispatch never reached
+/// `lower_indexed_assignment` at all, for any `Index` target.
+///
+/// Factored out here (mirroring `try_lower_field_assignment`'s guard-arm
+/// shape) so both surfaces share the exact same call into
+/// `lower_indexed_assignment`, instead of the classic-line dispatch growing
+/// a second, divergent copy: a bare-variable root now lowers correctly, and
+/// a struct-field-projected root gets the identical non-suppressible
+/// `E074` the block form already raises via
+/// `reject_field_projection_index_root`.
+pub(super) fn try_lower_indexed_assignment(
+    assign: &hir::Assignment,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    let hir::Expr::Index(idx) = &assign.target else {
+        return false;
+    };
+    lower_indexed_assignment(idx, assign.op, &assign.value, ctx, out);
+    true
+}
+
 fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) {
     ctx.diagnostics.push(Diagnostic {
         file: ctx.file,

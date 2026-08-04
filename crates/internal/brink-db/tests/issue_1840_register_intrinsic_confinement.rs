@@ -21,24 +21,24 @@ use brink_analyzer::{AnalysisOptions, Dialect};
 use brink_db::ProjectDb;
 use brink_ir::DiagnosticCode;
 
-fn opts_with_elements(pointer: &str) -> AnalysisOptions {
+fn opts_with_conventions(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
-        elements: Some(pointer.to_owned()),
+        conventions: Some(pointer.to_owned()),
         ..AnalysisOptions::default()
     }
 }
 
-/// [`opts_with_elements`], plus `dialect: Brink` — every effects-assertion
+/// [`opts_with_conventions`], plus `dialect: Brink` — every effects-assertion
 /// check (`effects_assertions_diagnostics_query` and its siblings) gates on
 /// `AnalysisOptions.dialect == Brink` regardless of the file's own native
 /// `.brink` syntax (`docs/effects-spec.md` §10's "Callers only run this
 /// under `dialect = brink`" posture, mirrored by `t2_2_effects_assertions.
-/// rs`'s `analyze_native` helper) — `opts_with_elements` alone (as the
+/// rs`'s `analyze_native` helper) — `opts_with_conventions` alone (as the
 /// `E175`-only tests above use it) never triggers `E103`.
-fn opts_with_elements_and_brink_dialect(pointer: &str) -> AnalysisOptions {
+fn opts_with_conventions_and_brink_dialect(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
         dialect: Dialect::Brink,
-        ..opts_with_elements(pointer)
+        ..opts_with_conventions(pointer)
     }
 }
 
@@ -55,7 +55,7 @@ const CONVENTIONS_FN: &str = "fn scene(place: string) {\n  return place;\n}\n\
 #[test]
 fn a_legal_register_call_in_the_configured_module_is_silent() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CONVENTIONS_FN}flow main() {{\n  hi\n}}\n"),
@@ -70,7 +70,7 @@ fn a_legal_register_call_in_the_configured_module_is_silent() {
 #[test]
 fn a_register_call_outside_fn_conventions_in_the_configured_module_is_e175() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         "fn scene(place: string) {\n  return place;\n}\n\
@@ -90,7 +90,7 @@ fn a_register_call_outside_fn_conventions_in_the_configured_module_is_e175() {
 #[test]
 fn a_register_call_in_the_right_function_but_wrong_file_is_e175() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
     db.set_file(
         "scenes/heading.brink",
@@ -100,13 +100,13 @@ fn a_register_call_in_the_right_function_but_wrong_file_is_e175() {
     assert_eq!(codes(&diags), vec![DiagnosticCode::E175], "{diags:?}");
 }
 
-/// Diverges from `E169`'s `unset_elements_never_fires`: with no conventions
+/// Diverges from `E169`'s `unset_conventions_never_fires`: with no conventions
 /// module configured at all, there is no possible legal placement for
 /// `register`, so every call is still illegal — unlike declaring a claiming
 /// handler (nothing being confined *to* yet), `register`'s legality is not
 /// project-configuration-dependent.
 #[test]
-fn unset_elements_still_flags_every_register_call() {
+fn unset_conventions_still_flags_every_register_call() {
     let mut db = ProjectDb::new();
     db.set_analysis_options(AnalysisOptions::default());
     db.set_file(
@@ -118,13 +118,13 @@ fn unset_elements_still_flags_every_register_call() {
 }
 
 /// Diverges from `E169`'s `a_preset_name_pointer_never_fires`: a bare
-/// preset name (`elements = "screenplay"`) names no project file, so —
+/// preset name (`conventions = "screenplay"`) names no project file, so —
 /// same reasoning as the unset case — every `register` call is still
 /// illegal.
 #[test]
 fn a_preset_name_pointer_still_flags_every_register_call() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("screenplay"));
+    db.set_analysis_options(opts_with_conventions("screenplay"));
     db.set_file(
         "scenes/heading.brink",
         format!("{CONVENTIONS_FN}flow main() {{\n  hi\n}}\n"),
@@ -133,15 +133,15 @@ fn a_preset_name_pointer_still_flags_every_register_call() {
     assert_eq!(codes(&diags), vec![DiagnosticCode::E175], "{diags:?}");
 }
 
-/// Diverges from `E169`'s `an_unresolvable_elements_pointer_never_fires_
-/// even_against_the_real_module`: a typo'd/moved `elements` pointer means
+/// Diverges from `E169`'s `an_unresolvable_conventions_pointer_never_fires_
+/// even_against_the_real_module`: a typo'd/moved `conventions` pointer means
 /// there is no file the compiler can confirm is "the" conventions module,
 /// so even the file the author most likely intended still gets flagged —
 /// there is no module for a `register` call to be legally "inside".
 #[test]
-fn an_unresolvable_elements_pointer_still_flags_the_real_module() {
+fn an_unresolvable_conventions_pointer_still_flags_the_real_module() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("typo.brink"));
+    db.set_analysis_options(opts_with_conventions("typo.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CONVENTIONS_FN}flow main() {{\n  hi\n}}\n"),
@@ -156,7 +156,7 @@ fn an_unresolvable_elements_pointer_still_flags_the_real_module() {
 #[test]
 fn a_shadowing_register_function_is_never_e175() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
     db.set_file(
         "scenes/heading.brink",
@@ -181,7 +181,7 @@ fn a_shadowing_register_function_is_never_e175() {
 #[test]
 fn a_param_named_register_used_as_a_call_target_is_never_e175() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
     db.set_file(
         "scenes/heading.brink",
@@ -201,7 +201,7 @@ fn a_param_named_register_used_as_a_call_target_is_never_e175() {
 #[test]
 fn a_temp_named_register_used_as_a_call_target_is_never_e175() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
     db.set_file(
         "scenes/heading.brink",
@@ -223,7 +223,7 @@ fn a_temp_named_register_used_as_a_call_target_is_never_e175() {
 #[test]
 fn a_project_with_no_register_calls_is_always_silent() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         "fn conventions() {\n}\nflow main() {\n  hi\n}\n".to_owned(),
@@ -244,7 +244,7 @@ fn a_project_with_no_register_calls_is_always_silent() {
 #[test]
 fn a_legal_register_call_compiles_all_the_way_to_story_data() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         format!("{CONVENTIONS_FN}flow main() {{\n  hi\n}}\n"),
@@ -263,7 +263,7 @@ fn a_legal_register_call_compiles_all_the_way_to_story_data() {
 #[test]
 fn an_illegal_register_call_fails_story_data_with_e175() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
         "fn scene(place: string) {\n  return place;\n}\n\
@@ -293,7 +293,7 @@ fn an_illegal_register_call_fails_story_data_with_e175() {
 #[test]
 fn a_pure_conventions_fn_now_exceeds_on_the_registry_write() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements_and_brink_dialect("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions_and_brink_dialect("conventions.brink"));
     db.set_file(
         "conventions.brink",
         "fn scene(place: string) {\n  return place;\n}\n\
@@ -322,7 +322,7 @@ fn a_pure_conventions_fn_now_exceeds_on_the_registry_write() {
 #[test]
 fn declaring_the_registry_write_satisfies_the_effects_assertion() {
     let mut db = ProjectDb::new();
-    db.set_analysis_options(opts_with_elements_and_brink_dialect("conventions.brink"));
+    db.set_analysis_options(opts_with_conventions_and_brink_dialect("conventions.brink"));
     db.set_file(
         "conventions.brink",
         "fn scene(place: string) {\n  return place;\n}\n\

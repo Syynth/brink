@@ -1353,9 +1353,31 @@ fn lower_block_with_children(
             // possibly-multiple `lir::Stmt`s here since `stmts::lower_stmt`'s
             // `Option<Stmt>` return can't express that. Falls through to the
             // ordinary `stmts::lower_stmt` path (the `_` arm below) for
-            // every other assignment (plain variable, indexed).
+            // every other assignment (plain variable) — indexed targets are
+            // caught by the arm just below instead.
             hir::Stmt::Assignment(assign)
                 if blocks::try_lower_field_assignment(assign, ctx, &mut stmts) =>
+            {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
+            // A classic (non-block) `~ a[i] = expr` logic line whose target
+            // is an index expression (issue #2174) — the same dispatch
+            // `lower_block_assignment` already gives the `~ { … }` block
+            // form, factored into `try_lower_indexed_assignment` so both
+            // surfaces share it rather than the classic-line dispatch
+            // growing a second, divergent copy. Before this arm existed,
+            // an `Index` target fell through to `stmts::lower_stmt`, whose
+            // `lower_assign_target` only recognizes a bare `Path` — the
+            // statement silently vanished with no diagnostic, for *every*
+            // classic-line indexed assignment (not only the struct-field-
+            // projected-root shape #2121 fixed for the block surface).
+            // Handles a bare-variable root correctly and rejects a
+            // struct-field-projected root with `E074`
+            // (`reject_field_projection_index_root`), mirroring #2121.
+            hir::Stmt::Assignment(assign)
+                if blocks::try_lower_indexed_assignment(assign, ctx, &mut stmts) =>
             {
                 children.append(&mut ctx.pending_children);
                 pos += 1;

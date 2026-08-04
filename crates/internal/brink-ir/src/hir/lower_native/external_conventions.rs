@@ -4,9 +4,10 @@
 //! `element::collect` (issue #1838) builds a file's claiming-handler table
 //! by walking **that file's own CST children only** — the confinement
 //! ruling (issue #1844) restricts *declaring* a claiming handler to the
-//! one module `brink.toml`'s `[project] elements` names, but nothing
-//! today lets a line in any *other* file actually match against that
-//! module's handlers. This module is the seam: an optional, externally
+//! one module `brink.toml`'s `[project] conventions` (renamed from
+//! `elements` by issue #2180) names, but nothing today lets a line in any
+//! *other* file actually match against that module's handlers. This
+//! module is the seam: an optional, externally
 //! supplied, already-ordered handler set that [`super::lower_with_conventions`]
 //! merges in alongside a file's own local declarations.
 //!

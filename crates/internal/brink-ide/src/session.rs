@@ -74,15 +74,16 @@ impl IdeSnapshot {
             // defaulting — exactly the "a mount silently doesn't resolve
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
-            // `brink.toml`'s `[project] elements` pointer (issue #1844) has
-            // no `IdeSession` setter yet — nothing in this crate resolves
-            // or carries it, so there is nothing to read here. The
-            // confinement check it feeds (`E169`) is wired only into
-            // `brink-db`'s salsa query graph (`ProjectDb::analysis`/
-            // `diagnostics`), reachable through `brink compile`/`brink
-            // check`, not through this off-db snapshot path — a follow-up,
-            // not a silent default (see the issue thread).
-            elements: None,
+            // `brink.toml`'s `[project] conventions` pointer (issue #1844;
+            // renamed from `elements` by #2180) has no `IdeSession` setter
+            // yet — nothing in this crate resolves or carries it, so there
+            // is nothing to read here. The confinement check it feeds
+            // (`E169`) is wired only into `brink-db`'s salsa query graph
+            // (`ProjectDb::analysis`/`diagnostics`), reachable through
+            // `brink compile`/`brink check`, not through this off-db
+            // snapshot path — a follow-up, not a silent default (see the
+            // issue thread).
+            conventions: None,
         };
         // The snapshot's own native classification (issue #1358) — see
         // `is_native`'s field doc. `brink-lsp`'s `analysis_loop` passes the
@@ -594,15 +595,16 @@ impl IdeSession {
             // not `..Default::default()` — see that note for why.
             lints: self.lints.clone(),
             // No `IdeSession` setter carries `brink.toml`'s `[project]
-            // elements` pointer yet (issue #1844) — see the matching note
-            // on `IdeSnapshot::analyze` above. This method's result is also
+            // conventions` pointer yet (issue #1844; renamed from
+            // `elements` by #2180) — see the matching note on
+            // `IdeSnapshot::analyze` above. This method's result is also
             // what `sync_db_options` writes into `ProjectDb`, so today no
             // `IdeSession`-mounted project can reach the `E169` confinement
             // check even through the db-direct query surface; a project
             // compiled via `brink compile`/`brink check` (which resolve
             // `AnalysisOptions` from `brink.toml` independently, not
             // through this struct) does reach it.
-            elements: None,
+            conventions: None,
         }
     }
 
