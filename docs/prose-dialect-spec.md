@@ -1222,6 +1222,48 @@ not built: any completion-UI consumer of the index — this is the
 project-db seam the ruling calls for, not the editor feature reading it
 (a separate, not-yet-filed downstream slice of #2006).
 
+### 5.2 Implementation status — the succession-row carrier (#2115, 2026-08-04)
+
+The 2026-08-03 "Conventions × the editor" ruling (`docs/decision-log.md`)
+settled that `@[convention]` deliberately has no succession property: "The
+language says what a line IS; the editor overlay says what pressing Tab
+DOES." This section's "Succession rules live in the conventions file" line
+above describes `DialogueDialect` (#368)'s pre-ruling shape, not where these
+rows are declared today — they are **not** declared in the conventions
+module. What shipped:
+
+- **The carrier.** `brink_ir::ConventionsProjection` gained `transitions:
+  Vec<TransitionRow>` / `templates: Templates` fields plus a
+  `with_succession(transitions, templates) -> Result<Self, Vec<DialectError>>`
+  builder that re-keys both against the projection's own `entries[].name`
+  (plus `reserved_structural_kinds()`) instead of `DialogueDialect`'s
+  independent `elements` list — the re-keying this ruling calls for.
+- **One shared validator.** `dialect::validate_succession` is called by both
+  `DialogueDialect::validate` (against its own `elements`) and
+  `with_succession` (against the projection's kinds), so the two can never
+  silently disagree. As a side effect it closed a pre-existing gap:
+  `templates` entries were never checked against `elements` at all before
+  this landed; `transitions` and `templates` are now validated identically,
+  each producing its own error variant
+  (`DialectError::TransitionUndeclaredKind` /
+  `DialectError::TemplateUndeclaredKind`).
+- **The wire mirror.** `brink_format::ConventionsProjectionDef` carries
+  `transitions`/`templates` through the `.inkb`-section-codec shape
+  verbatim (`CONVENTIONS_PROJECTION_WIRE_VERSION` bumped `1` → `2`); nothing
+  emits this section into a real `.inkb`/`StoryData` file yet (unchanged
+  from #2111).
+
+What has **not** shipped: a producer. `ConventionsProjection::from_decls` —
+the only path `ProjectDb::conventions_projection()` (`brink-db`) actually
+calls — hard-codes `transitions: Vec::new()` and `templates:
+Templates::default()`; nothing sources a `DialogueDialect` (or any other
+succession input) into `conventions_projection_query`, so every consumer of
+the real projection sees empty succession fields regardless of what the
+project declares. `with_succession` itself is exercised only from
+`brink-ir`'s own test module today. This is transport with no wiring, not a
+feature — see #2115's tracked remainder for the project-config surface that
+would supply the input.
+
 ## 6. Display metrics & measurement (#362 becomes a consumer)
 
 - **The host declares metrics in the manifest** (host-authored,

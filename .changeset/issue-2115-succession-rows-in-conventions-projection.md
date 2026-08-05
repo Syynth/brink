@@ -18,10 +18,13 @@ rows; it never interprets them (§5 of `docs/prose-dialect-spec.md`,
   `set_dialect(json)` calls the same `brink_ir::dialect::validate` this
   slice extends — a `DialogueDialect` JSON payload whose `templates`
   array names a `kind` that `elements` never declared (and that isn't a
-  reserved structural kind) is now rejected with a `JsError`, where it
-  previously validated silently. `transitions` was already checked this
-  way; `templates` was not — this closes that gap for both callers of
-  the shared `validate_succession` helper at once.
+  reserved structural kind) is now rejected with a `JsError`
+  (`DialectError::TemplateUndeclaredKind`), where it previously validated
+  silently. `transitions` was already checked this way (reported as
+  `DialectError::TransitionUndeclaredKind`); `templates` was not — this
+  closes that gap for both callers of the shared `validate_succession`
+  helper at once, each kind of row now reported under its own error
+  variant.
 - **New API surface (brink-ir):** `ConventionsProjection::with_succession`,
   `dialect::validate_succession`, and `dialect::reserved_structural_kinds`
   are now exported from the crate root alongside `Templates`,

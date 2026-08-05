@@ -531,6 +531,10 @@ pub enum DialectError {
     /// reserved structural kind.
     #[error("transition row references undeclared, non-structural kind '{0}'")]
     TransitionUndeclaredKind(String),
+    /// A `templates` entry references a kind that is neither declared nor a
+    /// reserved structural kind.
+    #[error("template entry references undeclared, non-structural kind '{0}'")]
+    TemplateUndeclaredKind(String),
     /// Two elements declare the same kind.
     #[error("duplicate element kind '{0}'")]
     DuplicateKind(String),
@@ -655,7 +659,7 @@ pub fn validate_succession(
     }
     for entry in &templates.entries {
         if !is_known(&entry.kind) {
-            errors.push(DialectError::TransitionUndeclaredKind(entry.kind.clone()));
+            errors.push(DialectError::TemplateUndeclaredKind(entry.kind.clone()));
         }
     }
     errors
@@ -1218,7 +1222,7 @@ mod tests {
         });
         let errs = validate(&d).expect_err("should fail");
         assert!(errs.iter().any(
-            |e| matches!(e, DialectError::TransitionUndeclaredKind(k) if k == "nonexistent_kind")
+            |e| matches!(e, DialectError::TemplateUndeclaredKind(k) if k == "nonexistent_kind")
         ));
     }
 

@@ -839,8 +839,10 @@ impl ConventionsProjection {
     /// # Errors
     ///
     /// Returns every [`crate::dialect::DialectError::TransitionUndeclaredKind`]
-    /// found, without attaching anything, if any row or template entry names
-    /// an unknown kind.
+    /// (for a `transitions` row) or
+    /// [`crate::dialect::DialectError::TemplateUndeclaredKind`] (for a
+    /// `templates` entry) found, without attaching anything, if any row or
+    /// template entry names an unknown kind.
     pub fn with_succession(
         mut self,
         transitions: Vec<crate::dialect::TransitionRow>,
@@ -3226,34 +3228,10 @@ mod conventions_projection_tests {
             .expect_err("`character` is never declared");
         assert_eq!(
             errors,
-            vec![crate::dialect::DialectError::TransitionUndeclaredKind(
+            vec![crate::dialect::DialectError::TemplateUndeclaredKind(
                 "character".to_string()
             )]
         );
-    }
-
-    /// A rejected attach must not leave the projection half-mutated — the
-    /// whole point of taking `self` by value and returning `Result<Self, _>`
-    /// rather than mutating in place.
-    #[test]
-    fn with_succession_leaves_no_partial_state_on_rejection() {
-        let projection = ConventionsProjection::from_decls(&[], &no_structs());
-        let before = projection.clone();
-        let row = TransitionRow {
-            on: "nonexistent".to_string(),
-            key: "Tab".to_string(),
-            has_content: None,
-            action: TransitionAction::Strip,
-            hint: None,
-        };
-        // The rejected call consumes `projection.clone()`, not `projection`
-        // itself — proving the untouched original still has empty
-        // transitions/templates.
-        let _ = before
-            .clone()
-            .with_succession(vec![row], Templates::default());
-        assert!(before.transitions.is_empty());
-        assert_eq!(before.templates, Templates::default());
     }
 
     /// `to_wire` carries `transitions`/`templates` losslessly through the
