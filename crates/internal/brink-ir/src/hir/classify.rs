@@ -165,25 +165,57 @@ impl LineClassification {
 /// if that invariant is somehow violated, and silently declining a
 /// hypothetically-broken entry is safer than panicking on a line an
 /// author is actively typing.
+///
+/// # Trim contract
+///
+/// `text` is trimmed before any pattern is tried, exactly the convention
+/// [`crate::hir::lower_native::element::try_claim`] and the TS editor's own
+/// classifier (`packages/ink-editor/src/dialect.ts`) both use: `base` is
+/// advanced by the leading-whitespace byte count so every returned range
+/// still lands on real source, and a whitespace-only `text` short-circuits
+/// to [`LineClassification::default`] (nothing can match an empty line, and
+/// the compiler never tries). Without this, an indented line classifies
+/// differently here than in the compiler, and `^.*$` would "match" a blank
+/// line the compiler explicitly refuses.
 #[must_use]
 pub fn classify_line(
     projection: &ConventionsProjection,
     base: TextSize,
     text: &str,
 ) -> LineClassification {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return LineClassification::default();
+    }
+    // Where `trimmed` starts inside `text`, so capture offsets land on real
+    // source bytes rather than on the untrimmed line's start — mirrors
+    // `try_claim`'s own `lead`/`base` composition exactly.
+    let Ok(lead) = u32::try_from(text.len() - text.trim_start().len()) else {
+        return LineClassification::default();
+    };
+    let base = base + TextSize::from(lead);
+
     let mut hits = Vec::with_capacity(projection.entries.len());
     for entry in &projection.entries {
         let Ok(pattern) = Regex::new(&entry.pattern) else {
             continue;
         };
-        let Some(caps) = pattern.captures(text) else {
+        let Some(caps) = pattern.captures(trimmed) else {
             continue;
         };
         let Some(captures) = bind_captures(&pattern, &caps, base) else {
-            // A capture's byte offset does not fit a `u32` — cannot be a
-            // real span on any line short enough for an editor to hold in
-            // memory, but declined rather than faked (house rule: never
-            // fabricate data) if it were ever somehow reached.
+            // Either a capture's byte offset does not fit a `u32` (cannot
+            // be a real span on any line short enough for an editor to
+            // hold in memory), or a named group declared by the pattern
+            // failed to participate in this particular match — e.g. an
+            // alternation branch that did not fire. `try_claim` declines
+            // the claim entirely in that second case (`caps.name(param)?`
+            // returns from the whole function), and this walk mirrors that
+            // exactly: such an entry is neither `matched` nor `shadowed`,
+            // not reported with a partial capture list. This is a
+            // deliberate divergence from a *static* "these patterns could
+            // collide" heuristic — the compiler's refusal is total, so
+            // this walk's is too.
             continue;
         };
         hits.push(ClassifiedMatch {
@@ -204,9 +236,13 @@ pub fn classify_line(
 
 /// Bind every named capture group `pattern` declares to its span in this
 /// particular match, in the group's declaration order (the `regex` crate's
-/// own `capture_names()` contract) — `None` if any offset does not fit a
-/// `u32`, so the caller can decline the whole hit rather than emit a
-/// partially-bogus capture list.
+/// own `capture_names()` contract) — `None` if *any* declared named group
+/// failed to participate in this match (e.g. the losing branch of an
+/// alternation) or any offset does not fit a `u32`, so the caller declines
+/// the whole hit rather than emit a capture list with a group silently
+/// missing from it. E160/E167 pin named captures ≡ params exactly, so a
+/// non-participating group here is the same condition `try_claim`'s own
+/// `caps.name(param)?` declines a claim for.
 fn bind_captures(
     pattern: &Regex,
     caps: &regex::Captures<'_>,
@@ -215,8 +251,8 @@ fn bind_captures(
     pattern
         .capture_names()
         .flatten()
-        .filter_map(|name| caps.name(name).map(|m| (name, m)))
-        .map(|(name, m)| {
+        .map(|name| {
+            let m = caps.name(name)?;
             let start = u32::try_from(m.start()).ok()?;
             let end = u32::try_from(m.end()).ok()?;
             Some(ClassifiedCapture {
@@ -364,6 +400,75 @@ mod tests {
     fn an_empty_projection_never_matches_anything() {
         let p = projection(&[]);
         let result = classify_line(&p, TextSize::from(0), "anything at all");
+        assert!(result.is_empty());
+    }
+
+    /// An alternation where only one branch's named group participates
+    /// must be declined entirely — neither `matched` nor `shadowed` — the
+    /// same total refusal `try_claim`'s `caps.name(param)?` gives, since
+    /// E160/E167 pin named captures to params exactly and a group that
+    /// didn't fire is a call with a missing argument.
+    #[test]
+    fn an_entry_with_a_non_participating_named_group_is_declined_entirely() {
+        let p = projection(&[decl(
+            "interior",
+            10,
+            "^(?:INT\\. (?<place>.+)|EXT\\. (?<outside>.+))$",
+        )]);
+        let result = classify_line(&p, TextSize::from(0), "INT. MARKET");
+        assert!(
+            result.is_empty(),
+            "the `outside` group never participated on this branch, so the \
+             whole entry must be declined, not reported as a partial match"
+        );
+    }
+
+    /// The same declined-entirely rule applies when the non-participating
+    /// entry would otherwise have been shadowed, not just when it would
+    /// have won.
+    #[test]
+    fn a_non_participating_entry_is_not_recorded_as_shadowed_either() {
+        let p = projection(&[
+            decl("any_line", 10, "^.*$"),
+            decl(
+                "interior_or_exterior",
+                20,
+                "^(?:INT\\. (?<place>.+)|EXT\\. (?<outside>.+))$",
+            ),
+        ]);
+        let result = classify_line(&p, TextSize::from(0), "INT. MARKET");
+        let matched = result.matched.expect("expected a match");
+        assert_eq!(matched.handler.text, "any_line");
+        assert!(
+            result.shadowed.is_empty(),
+            "interior_or_exterior's `outside` group never participated, so \
+             it must not appear as a shadow"
+        );
+    }
+
+    /// Leading whitespace is trimmed before matching, and `base` is
+    /// advanced by the leading-whitespace byte count so capture ranges
+    /// still land on real source — mirrors `try_claim`'s own contract.
+    #[test]
+    fn an_indented_line_is_trimmed_before_matching_and_captures_land_on_real_source() {
+        let p = projection(&[decl("interior", 10, "^INT\\. (?<place>.+)$")]);
+        let result = classify_line(&p, TextSize::from(100), "    INT. MARKET SQUARE");
+        let matched = result.matched.expect("expected a match after trimming");
+        assert_eq!(matched.handler.text, "interior");
+        let capture = &matched.captures[0];
+        assert_eq!(capture.text, "MARKET SQUARE");
+        // 4 leading spaces + "INT. " (5 bytes) = 9; base 100 + 9 = 109 is
+        // where `place` starts, and "MARKET SQUARE" is 13 bytes long.
+        assert_eq!(capture.range, TextRange::new(109.into(), 122.into()));
+    }
+
+    /// A whitespace-only line never matches anything, even a pattern that
+    /// would otherwise match any text at all — the compiler never tries
+    /// `try_claim` on one either.
+    #[test]
+    fn a_whitespace_only_line_never_matches_anything() {
+        let p = projection(&[decl("any_line", 10, "^.*$")]);
+        let result = classify_line(&p, TextSize::from(0), "   \t  ");
         assert!(result.is_empty());
     }
 }
