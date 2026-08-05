@@ -1450,7 +1450,7 @@ mod tests {
              E181 and fail compilation, not silently drop the struct",
         );
         let CompileError::Diagnostics(diags) = err else {
-            panic!("expected a Diagnostics compile error, got: {err:?}");
+            unreachable!("expected a Diagnostics compile error, got: {err:?}");
         };
         assert!(
             diags
