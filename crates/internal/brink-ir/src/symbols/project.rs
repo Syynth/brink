@@ -91,6 +91,12 @@ pub fn project_manifest(hir: &HirFile) -> SymbolManifest {
             v.was.clone(),
             v.doc.clone(),
         );
+        // Issue #2249: `VAR`'s TM-2 annotation, same as a struct field's
+        // (see the `hir.structs` loop below) — no HIR reference registered
+        // for it anywhere until now.
+        if let Some(ann) = &v.annotation {
+            p.walk_type_annotation(ann, None, None);
+        }
         p.walk_expr(&v.value, None, None);
     }
     for c in &hir.constants {
@@ -104,6 +110,9 @@ pub fn project_manifest(hir: &HirFile) -> SymbolManifest {
             c.was.clone(),
             c.doc.clone(),
         );
+        if let Some(ann) = &c.annotation {
+            p.walk_type_annotation(ann, None, None);
+        }
         p.walk_expr(&c.value, None, None);
     }
     for l in &hir.lists {
@@ -140,9 +149,19 @@ pub fn project_manifest(hir: &HirFile) -> SymbolManifest {
             None,
             s.doc.clone(),
         );
-        // Field TypeExprs never register unresolved refs (`hir::lower::types`
-        // takes no `sink` — a nominal-only grammar, resolved later by a
-        // different mechanism), so there's nothing further to walk here.
+        // Issue #2249: a field's own TM-2 type annotation is a nominal
+        // grammar that has no HIR reference registered elsewhere — unlike
+        // a construction literal's shape name (`RefKind::Struct`, issue
+        // #2246), `hir::lower::types` takes no `sink`, so nothing upstream
+        // of this projection ever saw it as a "reference" at all. Walking
+        // it here (rather than leaving it for `brink-ir::lir::lower`'s own
+        // `decls::lookup_global`/`ShapeTable::resolve` primitive to
+        // re-derive) is exactly what lets that lowering-side duplicate be
+        // deleted in favor of consuming `brink-analyzer`'s recorded
+        // resolution — see `RefKind::Type`'s own doc.
+        for f in &s.fields {
+            p.walk_type_annotation(&f.ty, None, None);
+        }
     }
     for e in &hir.externals {
         p.declare(
@@ -279,6 +298,31 @@ impl Projector {
         });
     }
 
+    /// Register a TM-2 [`crate::TypeExpr`] annotation's bare nominal leaf
+    /// name as an unresolved [`RefKind::Type`] reference (issue #2249): a
+    /// struct field's declared type, or a `VAR`/`CONST`/`temp` annotation.
+    ///
+    /// Only the `Named` leaf is registered. `Generic`/`Fn` annotations
+    /// (`List<L>`, `fn(T…): R`) never name a struct at their own top level
+    /// — their *head* (`List`, `fn`) is a fixed grammar keyword, never a
+    /// declared symbol — so there is nothing to resolve there; this
+    /// mirrors the two lowering sites this reference kind replaces
+    /// (`lir::lower::structs::record_global_annotation`,
+    /// `lir::lower::context::record_temp_annotation`), which likewise only
+    /// ever matched a bare `TypeExpr::Named`, never descended into a
+    /// generic's args. A future generic-element struct reference (e.g.
+    /// `Array<Cue>`) is out of this issue's scope.
+    fn walk_type_annotation(
+        &mut self,
+        ty: &crate::TypeExpr,
+        knot: Option<&str>,
+        stitch: Option<&str>,
+    ) {
+        if let crate::TypeExpr::Named { name, range } = ty {
+            self.push_ref(name.clone(), *range, RefKind::Type, knot, stitch, None);
+        }
+    }
+
     fn push_label(&mut self, name: String, range: TextRange) {
         self.manifest.labels.push(DeclaredSymbol {
             name,
@@ -382,6 +426,11 @@ impl Projector {
             Stmt::TempDecl(t) => {
                 if let Some(e) = &t.value {
                     self.walk_expr(e, knot, stitch);
+                }
+                // Issue #2249: a `~ temp name: type` annotation, same TM-2
+                // treatment as a struct field's or a `VAR`/`CONST`'s.
+                if let Some(ann) = &t.annotation {
+                    self.walk_type_annotation(ann, knot, stitch);
                 }
                 self.push_local(
                     t.name.text.clone(),
@@ -598,6 +647,12 @@ impl Projector {
             BlockStmt::TempDecl(t) => {
                 if let Some(e) = &t.value {
                     self.walk_expr(e, knot, stitch);
+                }
+                // Issue #2249: block-scoped `temp`'s TM-2 annotation — same
+                // treatment as `Stmt::TempDecl`'s (T1b's block-scoped
+                // twin).
+                if let Some(ann) = &t.annotation {
+                    self.walk_type_annotation(ann, knot, stitch);
                 }
                 self.push_local(
                     t.name.text.clone(),

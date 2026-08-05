@@ -117,12 +117,22 @@ pub fn validate_admission(
     for v in &hir.variables {
         c.check_range(v.ptr.text_range());
         c.check_range(v.name.range);
+        // Issue #2249: a `VAR`'s TM-2 annotation is now a real
+        // `RefKind::Type` reference (`symbols::project`'s walk) — its range
+        // must be a recognized candidate here too, or E121 misfires on
+        // every annotated global.
+        if let Some(ann) = &v.annotation {
+            c.push_ref(ann.range());
+        }
         // File scope — no enclosing knot/stitch (mirrors root content above).
         c.walk_expr(&v.value, "");
     }
     for cst in &hir.constants {
         c.check_range(cst.ptr.text_range());
         c.check_range(cst.name.range);
+        if let Some(ann) = &cst.annotation {
+            c.push_ref(ann.range());
+        }
         c.walk_expr(&cst.value, "");
     }
     for l in &hir.lists {
@@ -137,6 +147,9 @@ pub fn validate_admission(
         c.check_range(s.name.range);
         for f in &s.fields {
             c.check_range(f.name.range);
+            // Issue #2249: a field's own TM-2 type is now a real
+            // `RefKind::Type` reference too.
+            c.push_ref(f.ty.range());
         }
     }
     for e in &hir.externals {
@@ -258,6 +271,11 @@ impl Collector {
             Stmt::TempDecl(t) => {
                 self.check_range(t.ptr.text_range());
                 self.check_range(t.name.range);
+                // Issue #2249: `~ temp name: type`'s TM-2 annotation is now
+                // a real `RefKind::Type` reference.
+                if let Some(ann) = &t.annotation {
+                    self.push_ref(ann.range());
+                }
                 if let Some(e) = &t.value {
                     self.walk_expr(e, prefix);
                 }
@@ -460,6 +478,11 @@ impl Collector {
             BlockStmt::TempDecl(t) => {
                 self.check_range(t.ptr.text_range());
                 self.check_range(t.name.range);
+                // Issue #2249: block-scoped `temp`'s TM-2 annotation, same
+                // as `Stmt::TempDecl`'s.
+                if let Some(ann) = &t.annotation {
+                    self.push_ref(ann.range());
+                }
                 if let Some(e) = &t.value {
                     self.walk_expr(e, "");
                 }

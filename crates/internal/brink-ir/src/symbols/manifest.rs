@@ -104,4 +104,17 @@ pub enum RefKind {
     /// TM-4b, docs/typed-mode-spec.md §6) — resolved against declared
     /// `SymbolKind::Struct` symbols.
     Struct,
+    /// A TM-2 type annotation's bare nominal leaf name (docs/typed-mode-spec.md
+    /// §3) — a struct field's declared type, or a `VAR`/`CONST`/`temp`
+    /// annotation (issue #2249). Resolved against declared
+    /// `SymbolKind::Struct` symbols exactly like `RefKind::Struct`, but
+    /// unlike that kind, **not every occurrence names a struct**: `int`,
+    /// `float`, `List`, … are equally legal `Named` leaves that were never
+    /// meant to resolve here at all (`brink_ir::TypeExpr::Named`'s own doc).
+    /// A miss is therefore never diagnosed by this reference's own
+    /// resolution — `brink_analyzer::annotations::check` (`E061`) is the
+    /// annotation-content diagnostic, run separately and project-flat (not
+    /// referrer-scoped; issue #2249 leaves that asymmetry unresolved, same
+    /// posture as issue #2233's `lookup_unique_by_name`).
+    Type,
 }

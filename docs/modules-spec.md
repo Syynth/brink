@@ -209,19 +209,50 @@ itself, the same lookup the rest of this section describes — **not** by
 `ShapeTable::resolve`/`decls::lookup_global`, which construction literals
 no longer call at all.
 
-`ShapeTable::resolve` (via `decls::lookup_global`) remains the resolution
-path for the cases with no HIR reference to consume — a struct field's
-declared type, and a `VAR`/`CONST`/`temp` TM-2 type annotation (`project.rs`'s
-own doc: "Field `TypeExpr`s never register unresolved refs… a nominal-only
-grammar, resolved later by a different mechanism"). It carries the
-identical asymmetry described above for those callers only: `lookup_global`'s
-fallback excludes every std-declared candidate unconditionally, with
-**no** referrer-inside-std carve-out — unlike `lookup_by_name_direct`'s
-`InScope` tier, a std file referencing a same-named shape it does not
-itself declare resolves to `None` rather than a std sibling. `resolve::
-lookup_unique_by_name`'s own analogous asymmetry was fixed by issue #2233
-(a `referrer_module` hint); this `decls::lookup_global`/`ShapeTable::resolve`
-half is not yet reconciled and is tracked separately by issues #2249/#2246.
+**Closed by issue #2249:** the paragraph above used to end here with
+`ShapeTable::resolve` (via `decls::lookup_global`) as the remaining
+resolution path for the cases with no HIR reference to consume — a struct
+field's declared type, and a `VAR`/`CONST`/`temp` TM-2 type annotation
+(`project.rs`'s own doc used to read: "Field `TypeExpr`s never register
+unresolved refs… a nominal-only grammar, resolved later by a different
+mechanism"). Issue #2249 closed that gap the same way #2246 closed the
+construction-literal one: `symbols::project`'s walk now registers a
+`RefKind::Type` reference for a field's/annotation's `Named` leaf, resolved
+by a new `resolve::resolve_type_ref` (identical `lookup_by_name`,
+`ImportScope`-aware machinery — `SymbolKind::Struct` only). Lowering
+(`build_shape_table`'s field loop, `build_struct_shape_data`'s identical
+loop, `structs::record_global_annotation`,
+`context::LowerCtx::record_temp_annotation`) consumes that recorded
+resolution directly; `ShapeTable::resolve` had no production caller left
+and was deleted. The `lookup_global`/`lookup_by_name_direct` asymmetry this
+section describes is therefore now **closed** for this reference kind too
+— a std file referencing a *sibling* std struct in a type annotation, with
+no import, resolves via the `InScope` tier exactly like every other
+reference kind, where it previously could not. `resolve::
+lookup_unique_by_name`'s own analogous asymmetry (issue #2233, a
+`referrer_module` hint) remains the one unreconciled case in this family.
+
+**Not touched by #2249, still a real gap:** `annotations::check`'s `E061`
+"unrecognized type name" diagnostic (`annotations::declared_struct_names`)
+is project-flat with no referrer-scoping or std-exclusion of its own — a
+std-only struct name is "recognized" for `E061`'s purposes regardless of
+whether the referrer imports it, so an unresolvable-but-`E061`-silent
+`~ temp c: Cue` (std-only `Cue`, no import) still raises no diagnostic
+anywhere. Extending `declared_struct_names` to the same referrer-scoped
+vocabulary `resolve_type_ref` now uses is the natural next step, not
+attempted here — see issue #2249's own "compounding diagnostic gap"
+section.
+
+**Two sibling lookups audited and found not to fit the `RefKind` pattern
+(issue #2249):** `lir::lower::decls::collect_externals`'s extern-to-
+fallback-`fn` pairing and `context::LowerCtx::lookup_address_id`'s
+locally-declared-label addressing are both genuine self-declaration
+lookups — the pairing/existence check is inferred by the compiler from two
+declarations' matching names (or a scope-qualified label's own
+declaration), never resolved from a path the *user* wrote at that call
+site the way a divert target, a variable read, or a type annotation is.
+There is no HIR reference to hang a `RefKind` on at either site; both
+remain on `decls::lookup_global`, unchanged.
 
 **Correction to the record:** `docs/decision-log.md`'s 2026-08-04 "peer
 roots" entry lists `ShapeTable::resolve`'s fast path among five sites
