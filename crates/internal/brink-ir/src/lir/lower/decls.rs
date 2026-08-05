@@ -1,7 +1,7 @@
 use brink_format::{DefinitionId, DefinitionTag};
 
 use crate::determinism::LookupMap;
-use crate::symbols::{SymbolIndex, SymbolKind, is_std_module};
+use crate::symbols::{SymbolIndex, SymbolKind, is_reserved_root_module};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
 use super::context::{
@@ -478,6 +478,11 @@ pub fn collect_externals(
 /// `=== function foo` in an `INCLUDE`d sibling, neither of them std — is
 /// unaffected: only a `std…`-declared candidate is skipped, so
 /// every pre-#2197 non-std caller keeps its byte-identical unscoped match.
+///
+/// #2251: generalized from the single-root `is_std_module` to
+/// `is_reserved_root_module` — the exclusion was never really std-specific,
+/// it excludes any mounted-library candidate, so it now checks the whole
+/// `RESERVED_ROOTS` set. Behavior is unchanged today (one root mounted).
 pub(super) fn lookup_global(
     index: &SymbolIndex,
     file: FileId,
@@ -495,7 +500,8 @@ pub(super) fn lookup_global(
             .or_else(|| {
                 ids.iter().find(|&&id| {
                     index.symbols.get(&id).is_some_and(|info| {
-                        info.kind == kind && !info.module.as_deref().is_some_and(is_std_module)
+                        info.kind == kind
+                            && !info.module.as_deref().is_some_and(is_reserved_root_module)
                     })
                 })
             })

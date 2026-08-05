@@ -16,4 +16,4 @@ pub use index::{
 };
 pub use manifest::{DeclaredSymbol, LocalSymbol, RefKind, SymbolManifest, UnresolvedRef};
 pub use project::project_manifest;
-pub use roots::{STD_ROOT, is_std_module};
+pub use roots::{RESERVED_ROOTS, STD_ROOT, is_reserved_root_module};

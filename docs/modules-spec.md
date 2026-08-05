@@ -142,23 +142,51 @@ excludes that same candidate unconditionally — stricter than
 `lookup_by_name` for exactly that referrer.
 
 **`std` is a peer root of `story`, not a child of it (issue #2245, RULED
-2026-08-04):** `story::*` is the universe of what the project *author*
-provided; `std::*` — and every future mounted library — is a top-level
-peer of `story`, never nested under it. `brink_db::modules::
-native_module_path` mints `std::conventions::screenplay` for the mounted
-preset, never `story::std::conventions::screenplay`; a file's leading
-root-relative path segment decides which root it qualifies under, a
-structural fact rather than a project-config lookup. `is_std_module`
-followed suit: it used to be a `story::std…`-prefix string test
-duplicated independently in `brink-analyzer::resolve` and
-`brink-ir::lir::lower::decls` (those crates cannot share a helper without
-a dependency cycle in the direction `brink-ir` → `brink-analyzer` — but
-the *reverse* edge already exists, since `brink-analyzer` depends on
-`brink-ir`). It now lives once, in `brink-ir::symbols` (the substrate
-`SymbolIndex`/`ResolutionMap` already live in, precisely so `brink-ir::lir`
-can consume analyzer-shaped data without depending on `brink-analyzer`),
-and both former copies were deleted in favor of the shared
-`brink_ir::is_std_module`/`STD_ROOT`.
+2026-08-04; generalized to a set of reserved roots by issue #2251):**
+`story::*` is the universe of what the project *author* provided; `std::*`
+— and every future mounted library — is a top-level peer of `story`,
+never nested under it. `brink_db::modules::native_module_path` mints
+`std::conventions::screenplay` for the mounted preset, never
+`story::std::conventions::screenplay`; a file's leading root-relative path
+segment decides which root it qualifies under, a structural fact rather
+than a project-config lookup — checked against `brink_ir::RESERVED_ROOTS`,
+not a single hardcoded literal. `is_std_module` followed suit: it used to
+be a `story::std…`-prefix string test duplicated independently in
+`brink-analyzer::resolve` and `brink-ir::lir::lower::decls` (those crates
+cannot share a helper without a dependency cycle in the direction
+`brink-ir` → `brink-analyzer` — but the *reverse* edge already exists,
+since `brink-analyzer` depends on `brink-ir`). It now lives once, in
+`brink-ir::symbols` (the substrate `SymbolIndex`/`ResolutionMap` already
+live in, precisely so `brink-ir::lir` can consume analyzer-shaped data
+without depending on `brink-analyzer`), and both former copies were
+deleted in favor of the shared helper.
+
+Issue #2245's fix (PR #2250) shipped that helper as a single `&str`
+constant (`STD_ROOT`) and a check that answered only "is this the std
+root?" — correct for the one library mounted at the time, but unable to
+answer the ruling's general form ("and every future mounted library")
+without either re-deriving the check by hand at a second call site or
+silently falling through to the `story` branch for an unrecognized root.
+Issue #2251 generalized it: `brink_ir::RESERVED_ROOTS` is now the *set*
+of reserved peer-root names (`&["std"]` today), and `brink_ir::
+is_reserved_root_module` (renamed from `is_std_module`, since none of its
+three call sites — the `Candidacy::Other` exclusion in
+`brink-analyzer::resolve::lookup_by_name_direct` and
+`::lookup_unique_by_name`, and `brink-ir::lir::lower::decls::
+lookup_global`'s unscoped fallback — were ever std-*specific*; each
+excludes "any reserved-root candidate this file doesn't itself belong
+to") checks membership against the whole set. A second mounted library
+becomes a one-line addition to `RESERVED_ROOTS`, not a new branch at any
+consumer. This intentionally stops short of a per-root visibility
+*policy* type: with one root mounted, there is no second data point to
+generalize a differing policy from, so no policy hook was added.
+
+Issue #2217 (open) — a project's own file legitimately placed at a
+`std/…` path is misclassified as the mounted preset, because the gate is
+purely path-shape-based (leading segment, not embedded-vs-project origin)
+— is **not** resolved by this generalization: the gate is still exactly
+as path-shape-based as before, now against a set of shapes instead of
+one. #2251 did not touch that axis.
 
 **A third participant (issue #2238), narrowed by issue #2246:** LIR
 struct-shape resolution joined the std-invisibility gate so that a

@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use brink_analyzer::{ModuleMap, ResolvedModule};
-use brink_ir::{Diagnostic, DiagnosticCode, FileId, STD_ROOT};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, RESERVED_ROOTS};
 use rowan::TextRange;
 
 use crate::include_graph::IncludeGraph;
@@ -118,13 +118,15 @@ pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a
 ///
 /// **The root is not always `story`** (decision-log 2026-08-04, "`std::` and
 /// libraries are PEER ROOTS of `story::`, not children of it" — issue
-/// #2245). `story::*` is the universe of what the project *author*
-/// provided; a mounted library is a top-level peer of `story`, never a
-/// child of it. Structurally, that means the root a path mints under
-/// depends on its **leading** segment: a key whose leading segment is the
-/// reserved [`STD_ROOT`] (`brink_environment::mount_stdlib`'s `std/…` key
-/// convention) roots there instead of under `story`; every other key —
-/// the entire project tree — roots under `story`, exactly as before:
+/// #2245, generalized to a set of roots by #2251). `story::*` is the
+/// universe of what the project *author* provided; a mounted library is a
+/// top-level peer of `story`, never a child of it. Structurally, that
+/// means the root a path mints under depends on its **leading** segment: a
+/// key whose leading segment names one of the reserved [`RESERVED_ROOTS`]
+/// (`brink_environment::mount_stdlib`'s `std/…` key convention is the one
+/// entry that exists today) roots there instead of under `story`; every
+/// other key — the entire project tree — roots under `story`, exactly as
+/// before:
 ///
 /// - `barter.brink`                        → `story::barter`
 /// - `market/barter.brink`                 → `story::market::barter`
@@ -149,7 +151,7 @@ pub(crate) fn native_module_path(relative_path: &str) -> String {
         return String::from("story");
     };
 
-    let mut out = if first == STD_ROOT {
+    let mut out = if RESERVED_ROOTS.contains(&first) {
         first.to_string()
     } else {
         format!("story::{first}")
@@ -332,6 +334,23 @@ mod tests {
             native_module_path("stdlib/helpers.brink"),
             "story::stdlib::helpers"
         );
+    }
+
+    /// Issue #2251: this call site consults [`RESERVED_ROOTS`] as a *set*,
+    /// not a single hardcoded `STD_ROOT` comparison — iterating the real
+    /// set (today: just `std`) means this assertion automatically covers a
+    /// future second entry the moment it is added to `RESERVED_ROOTS`,
+    /// with no edit to this test file, unlike a test that hardcodes the
+    /// literal `"std"`.
+    #[test]
+    fn native_module_path_roots_every_reserved_root_as_a_peer_of_story() {
+        for root in RESERVED_ROOTS {
+            assert_eq!(
+                native_module_path(&format!("{root}/leaf.brink")),
+                format!("{root}::leaf"),
+                "reserved root `{root}` must mint as its own peer root, not under story::"
+            );
+        }
     }
 
     /// Issue #1572: with no declared root — every compile path, where
