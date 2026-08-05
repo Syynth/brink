@@ -32,6 +32,7 @@ impl LowerExpr for ast::FunctionCall {
         let path = Path {
             segments: vec![make_name(name_text.clone(), ident_range)],
             range: ident_range,
+            crosses_module_wall: false,
         };
         let args: Vec<Expr> = self
             .arg_list()

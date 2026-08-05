@@ -1049,6 +1049,7 @@ pub(super) fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
     hir::Path {
         segments: receiver_segs.to_vec(),
         range: path.range,
+        crosses_module_wall: path.crosses_module_wall,
     }
 }
 

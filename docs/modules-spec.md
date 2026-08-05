@@ -53,24 +53,33 @@ IMPORT quest_3                                      // qualified: -> quest_3.amb
   out-of-module names with the import edit attached; rename keeps
   import lines coherent (the INCLUDE-rewrite machinery precedent).
 - **A bare import's trailing segment dual-reads (RULED, issue #1592,
-  2026-07-27)**: `IMPORT { barter } FROM story::market` /
-  `use story::market::barter;` checks `barter` against **both**
-  readings independently — an item `story::market` publicly exports,
-  and a declared submodule `story::market::barter` in its own right —
-  and licenses whichever holds. **Both may hold at once, with no
-  precedence between them**: the item is bare-importable under its
-  own name, and (if `barter` is also a declared submodule) that
-  submodule's public exports become bare-referenceable too, exactly
-  as an explicit qualified import of it would grant. The well-formedness
-  check (`E088`) only fires when the trailing segment resolves as
-  **neither**. A parent module importing its own declared child
-  submodule this way (`story::market` writing
-  `use story::market::barter;`) is not a self-import (`E090`) — it is
-  the mandatory spelling the import-required gate demands to reference
-  the child's exports; self-import (`E090`) still fires for the
-  qualified form (`IMPORT story::market;` from within `story::market`)
-  and for the leaf-item form naming the importing file's own module
-  outright (`use story::market::barter;` from inside
+  2026-07-27; corrected 2026-08-05, issue #2287)**: `IMPORT { barter }
+  FROM story::market` / `use story::market::barter;` checks `barter`
+  against **both** readings independently — an item `story::market`
+  publicly exports, and a declared submodule `story::market::barter`
+  in its own right — and licenses whichever holds. **Both may hold at
+  once, with no precedence between them**: the item is bare-importable
+  under its own name, and (if `barter` is also a declared submodule)
+  that submodule's public exports become **qualified-accessible**
+  (`barter.ambush`/`barter::haggle`, per dialect) — exactly as an
+  explicit qualified import of it would grant, and matching Rust's own
+  `use a::b;` (`b` becomes nameable as `b::item`, never brings `item`
+  into bare scope). **Never bare**: importing the module does not, by
+  itself, bring any of its members' bare names into scope — only a
+  symbol-level or glob import of a specific member does that (§2's
+  "importable set" above). Issue #2287 corrected this bullet and its
+  implementation, which had drifted into granting bare access as well
+  — the exact defect the issue reported (`-> haggle` resolving after
+  only `use story::market::barter;`, with no `barter::` qualifier
+  anywhere in source). The well-formedness check (`E088`) only fires
+  when the trailing segment resolves as **neither**. A parent module
+  importing its own declared child submodule this way (`story::market`
+  writing `use story::market::barter;`) is not a self-import (`E090`)
+  — it is the mandatory spelling the import-required gate demands to
+  reference the child's exports; self-import (`E090`) still fires for
+  the qualified form (`IMPORT story::market;` from within
+  `story::market`) and for the leaf-item form naming the importing
+  file's own module outright (`use story::market::barter;` from inside
   `story::market::barter` itself). **Aliasing a trailing segment that
   resolves as a module has no representation** (`AS`/`as` renames one
   local binding, not a whole export set) and is rejected the same way

@@ -62,6 +62,7 @@ fn synthetic_target(name: &str) -> DivertTarget {
                 range,
             }],
             range,
+            crosses_module_wall: false,
         }),
         args: Vec::new(),
     }

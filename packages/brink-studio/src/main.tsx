@@ -88,13 +88,15 @@ const NESTED_FIXTURE: Record<string, string> = {
 //     `VENDOR` in story.brink renders unclaimed. DO NOT "fix" this by
 //     inlining the handlers into story.brink; that hides the defect, and the
 //     single-file tier1-native fixture already covers the inline shape.
-//   - `-> barter::haggle` is the intended module-qualified divert and does
-//     not resolve (#2287). DO NOT swap it for bare `-> haggle`, which happens
-//     to compile but is itself wrong — bare names require a symbol or glob
-//     import, not a module import.
+//   - `-> barter::haggle` is the intended module-qualified divert
+//     (fixed by #2287 — the module-qualified spelling now resolves, and a
+//     bare `-> haggle` after this file's module-only `use` correctly does
+//     not). DO NOT swap it for bare `-> haggle`; that would now be rejected,
+//     and rejecting it is the correct behavior — bare names require a
+//     symbol or glob import, not a module import.
 //
-// When #2287 and #2289 land, this fixture should go green on its own. That is
-// the point: it is a live acceptance test you can look at.
+// When #2289 lands, this fixture should go green on its own. That is the
+// point: it is a live acceptance test you can look at.
 const NATIVE_FIXTURE: Record<string, string> = {
   "brink.toml": '[project]\nentry = "story.brink"\nconventions = "conventions.brink"\n',
   "conventions.brink": `struct Cue {
