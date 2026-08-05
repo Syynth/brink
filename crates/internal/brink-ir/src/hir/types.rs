@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rowan::TextRange;
 
@@ -745,6 +745,23 @@ pub struct ConventionProjectionEntry {
 pub struct ConventionsProjection {
     /// Every declared `@[convention]` handler, ascending by `order`.
     pub entries: Vec<ConventionProjectionEntry>,
+    /// Editor-overlay Tab/Enter/Shift-Tab succession rows (issue #2115) —
+    /// `DialogueDialect` (#368)'s surviving `transitions` field, attached via
+    /// [`Self::with_succession`] and re-keyed against THIS projection's own
+    /// `entries` rather than `DialogueDialect`'s own (dissolving)
+    /// `elements` list. Empty unless [`Self::with_succession`] populated it —
+    /// [`Self::from_decls`] never sets these, since succession rows are not
+    /// part of a `@[convention]` declaration (`@[convention]` "deliberately
+    /// has no succession property", `docs/decision-log.md` 2026-08-03
+    /// backport on #2115). **Tooling-grade: the compiler transports these
+    /// rows, it never interprets them** (`docs/prose-dialect-spec.md` §5,
+    /// "ignored by the compiler").
+    pub transitions: Vec<crate::dialect::TransitionRow>,
+    /// Editor-overlay template/picker metadata (issue #2115) —
+    /// `DialogueDialect`'s surviving `templates` field. See
+    /// [`Self::transitions`]'s own doc for provenance and the
+    /// transports-not-interprets contract.
+    pub templates: crate::dialect::Templates,
 }
 
 impl ConventionsProjection {
@@ -794,6 +811,55 @@ impl ConventionsProjection {
                     }),
                 })
                 .collect(),
+            transitions: Vec::new(),
+            templates: crate::dialect::Templates::default(),
+        }
+    }
+
+    /// Attach editor-overlay succession rows (issue #2115):
+    /// `DialogueDialect` (#368)'s surviving `transitions`/`templates`
+    /// fields, **re-keyed against this projection's own convention kinds**
+    /// (`entries[].name`) instead of `DialogueDialect`'s own dissolving
+    /// `elements` list. This is the ruled split
+    /// (`docs/decision-log.md` 2026-08-03, "Conventions × the editor"):
+    /// *"The language says what a line IS; the editor overlay says what
+    /// pressing Tab DOES."* A row naming a kind this projection doesn't
+    /// declare (and that isn't a
+    /// [`crate::dialect::reserved_structural_kinds`] structural kind) is
+    /// rejected rather than silently carried — the same
+    /// carry-a-dangling-reference failure mode `set_dialect` already
+    /// produced between editor and compiler when `DialogueDialect` was the
+    /// only ground truth.
+    ///
+    /// The compiler **transports** these rows; it never interprets them
+    /// (`docs/prose-dialect-spec.md` §5, "ignored by the compiler") — this
+    /// validation only proves each row points at a real convention kind, it
+    /// never gives the rows compiler-preferred meaning.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`crate::dialect::DialectError::TransitionUndeclaredKind`]
+    /// found, without attaching anything, if any row or template entry names
+    /// an unknown kind.
+    pub fn with_succession(
+        mut self,
+        transitions: Vec<crate::dialect::TransitionRow>,
+        templates: crate::dialect::Templates,
+    ) -> Result<Self, Vec<crate::dialect::DialectError>> {
+        let known: BTreeSet<&str> = self
+            .entries
+            .iter()
+            .map(|entry| entry.name.text.as_str())
+            .chain(crate::dialect::reserved_structural_kinds().iter().copied())
+            .collect();
+        let errors =
+            crate::dialect::validate_succession(&transitions, &templates, |k| known.contains(k));
+        if errors.is_empty() {
+            self.transitions = transitions;
+            self.templates = templates;
+            Ok(self)
+        } else {
+            Err(errors)
         }
     }
 
@@ -804,6 +870,9 @@ impl ConventionsProjection {
     /// `brink_format::conventions::ConventionEntryDef`'s own doc for that
     /// omission's reasoning. See `brink_format::conventions`'s own module
     /// doc for why this exists but is not yet wired into `StoryData`.
+    /// `transitions`/`templates` (issue #2115) ride the same wire shape,
+    /// carried verbatim — see [`Self::with_succession`]'s own doc for why
+    /// the compiler never reshapes them.
     #[must_use]
     pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
         brink_format::ConventionsProjectionDef {
@@ -812,6 +881,12 @@ impl ConventionsProjection {
                 .iter()
                 .map(ConventionProjectionEntry::to_wire)
                 .collect(),
+            transitions: self
+                .transitions
+                .iter()
+                .map(crate::dialect::TransitionRow::to_wire)
+                .collect(),
+            templates: self.templates.to_wire(),
         }
     }
 }
@@ -3007,6 +3082,214 @@ mod conventions_projection_tests {
             )],
         );
         let wire = ConventionsProjection::from_decls(&decls, &structs).to_wire();
+        let mut buf = Vec::new();
+        brink_format::write_conventions_projection(&wire, &mut buf);
+        let mut offset = 0;
+        let decoded = brink_format::read_conventions_projection(&buf, &mut offset)
+            .expect("decode the wire form this crate just encoded");
+        assert_eq!(decoded, wire);
+    }
+
+    // ─── `with_succession` (issue #2115) ────────────────────────────────
+
+    use crate::dialect::{TemplateEntry, Templates, TransitionAction, TransitionRow};
+
+    fn character_row() -> TransitionRow {
+        TransitionRow {
+            on: "character".to_string(),
+            key: "Tab".to_string(),
+            has_content: Some(true),
+            action: TransitionAction::Convert {
+                kind: "dialogue".to_string(),
+            },
+            hint: None,
+        }
+    }
+
+    /// A transition row keyed to a real convention kind this projection
+    /// declares (not a `DialogueDialect`-owned `elements` entry) attaches
+    /// cleanly.
+    #[test]
+    fn with_succession_accepts_rows_keyed_to_a_declared_convention_kind() {
+        let decls = vec![
+            decl("character", 1, false, None),
+            decl("dialogue", 2, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let templates = Templates {
+            entries: vec![TemplateEntry {
+                kind: "character".to_string(),
+                label: "Character cue".to_string(),
+                picker_key: Some("@".to_string()),
+                blank_tab: true,
+            }],
+        };
+        let attached = projection
+            .with_succession(vec![character_row()], templates.clone())
+            .expect("both rows key off declared convention kinds");
+        assert_eq!(attached.transitions, vec![character_row()]);
+        assert_eq!(attached.templates, templates);
+    }
+
+    /// Reserved structural kinds (never declared by any `@[convention]`)
+    /// are still legal succession-row targets — the same
+    /// declared-OR-reserved-structural rule `DialogueDialect::validate`
+    /// applies to its own `chain`/`transitions`.
+    #[test]
+    fn with_succession_accepts_reserved_structural_kinds() {
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let row = TransitionRow {
+            on: "narrative".to_string(),
+            key: "Enter".to_string(),
+            has_content: None,
+            action: TransitionAction::Newline,
+            hint: None,
+        };
+        let attached = projection
+            .with_succession(vec![row], Templates::default())
+            .expect("`narrative` is a reserved structural kind");
+        assert_eq!(attached.transitions.len(), 1);
+    }
+
+    /// The re-keying half of issue #2115: a transition row naming a kind
+    /// `DialogueDialect.elements` might have declared, but that this
+    /// projection's own convention kinds do NOT, is rejected — proving the
+    /// row is validated against the projection, never against a
+    /// `DialogueDialect`'s independent element list.
+    #[test]
+    fn with_succession_rejects_a_kind_this_projection_never_declared() {
+        let projection =
+            ConventionsProjection::from_decls(&[decl("character", 1, false, None)], &no_structs());
+        let row = TransitionRow {
+            on: "parenthetical".to_string(),
+            key: "Tab".to_string(),
+            has_content: None,
+            action: TransitionAction::Strip,
+            hint: None,
+        };
+        let errors = projection
+            .with_succession(vec![row], Templates::default())
+            .expect_err(
+                "`parenthetical` is declared by neither this projection nor reserved-structural",
+            );
+        assert_eq!(
+            errors,
+            vec![crate::dialect::DialectError::TransitionUndeclaredKind(
+                "parenthetical".to_string()
+            )]
+        );
+    }
+
+    /// A `Convert { kind }` target is checked independently of the row's own
+    /// `on` — both must resolve, and each unresolved kind is reported.
+    #[test]
+    fn with_succession_rejects_an_undeclared_convert_target() {
+        let projection =
+            ConventionsProjection::from_decls(&[decl("character", 1, false, None)], &no_structs());
+        let row = TransitionRow {
+            on: "character".to_string(),
+            key: "Tab".to_string(),
+            has_content: None,
+            action: TransitionAction::Convert {
+                kind: "dialogue".to_string(),
+            },
+            hint: None,
+        };
+        let errors = projection
+            .with_succession(vec![row], Templates::default())
+            .expect_err("`dialogue` is never declared");
+        assert_eq!(
+            errors,
+            vec![crate::dialect::DialectError::TransitionUndeclaredKind(
+                "dialogue".to_string()
+            )]
+        );
+    }
+
+    /// A `Templates` entry naming an undeclared kind is rejected too — the
+    /// gap `DialogueDialect::validate` itself had before #2115 (templates
+    /// were never checked against `elements` at all; `validate_succession`
+    /// closes it for both callers at once).
+    #[test]
+    fn with_succession_rejects_a_template_entry_for_an_undeclared_kind() {
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let templates = Templates {
+            entries: vec![TemplateEntry {
+                kind: "character".to_string(),
+                label: "Character cue".to_string(),
+                picker_key: None,
+                blank_tab: false,
+            }],
+        };
+        let errors = projection
+            .with_succession(Vec::new(), templates)
+            .expect_err("`character` is never declared");
+        assert_eq!(
+            errors,
+            vec![crate::dialect::DialectError::TransitionUndeclaredKind(
+                "character".to_string()
+            )]
+        );
+    }
+
+    /// A rejected attach must not leave the projection half-mutated — the
+    /// whole point of taking `self` by value and returning `Result<Self, _>`
+    /// rather than mutating in place.
+    #[test]
+    fn with_succession_leaves_no_partial_state_on_rejection() {
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let before = projection.clone();
+        let row = TransitionRow {
+            on: "nonexistent".to_string(),
+            key: "Tab".to_string(),
+            has_content: None,
+            action: TransitionAction::Strip,
+            hint: None,
+        };
+        // The rejected call consumes `projection.clone()`, not `projection`
+        // itself — proving the untouched original still has empty
+        // transitions/templates.
+        let _ = before
+            .clone()
+            .with_succession(vec![row], Templates::default());
+        assert!(before.transitions.is_empty());
+        assert_eq!(before.templates, Templates::default());
+    }
+
+    /// `to_wire` carries `transitions`/`templates` losslessly through the
+    /// `.inkb`-codec round trip, mirroring
+    /// `to_wire_round_trips_through_the_inkb_codec`'s own coverage of
+    /// `entries`.
+    #[test]
+    fn to_wire_round_trips_succession_rows_through_the_inkb_codec() {
+        let decls = vec![
+            decl("character", 1, false, None),
+            decl("dialogue", 2, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs())
+            .with_succession(
+                vec![character_row()],
+                Templates {
+                    entries: vec![TemplateEntry {
+                        kind: "character".to_string(),
+                        label: "Character cue".to_string(),
+                        picker_key: Some("@".to_string()),
+                        blank_tab: true,
+                    }],
+                },
+            )
+            .expect("keyed to a declared convention kind");
+        let wire = projection.to_wire();
+        assert_eq!(wire.transitions.len(), 1);
+        assert_eq!(wire.transitions[0].on, "character");
+        assert_eq!(
+            wire.transitions[0].action,
+            brink_format::TransitionActionDef::Convert {
+                kind: "dialogue".to_string()
+            }
+        );
+        assert_eq!(wire.templates.entries.len(), 1);
+
         let mut buf = Vec::new();
         brink_format::write_conventions_projection(&wire, &mut buf);
         let mut offset = 0;

@@ -112,7 +112,7 @@ Tracked as **#2006**.
 | Hover shows the handler body | ✅ | ❌ | every matched line points at a real function (§9.1's improvement over the dissolved table) |
 | Capture spans as decoration ranges | ✅ | ❌ | the same spans drive editor decoration |
 | Harvest index (cues, span kinds) | ✅ | ✅ | **LANDED #2114** — project-wide, sibling of the symbol index |
-| Succession rules (Tab/Enter) | ✅ | ❌ | slice #2115 — transport only; CM6 held |
+| Succession rules (Tab/Enter) | ✅ | ⚠️ | slice #2115 — transport LANDED (`ConventionsProjection::with_succession` re-keys `DialogueDialect`'s surviving `transitions`/`templates` off the projection's own convention kinds, plus the `.inkb`-codec wire mirror); actually wiring Tab/Enter in CM6 stays held (editor-frontend, NS-T hold) |
 | Serialized conventions projection | ✅ | ❌ | slice #2111 — behind #1840 |
 | Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
 | `@[style]` consumption | ✅ | ❌ | slice #2116 — declaration surface landed (#1719/PR #2069) |

@@ -4218,6 +4218,28 @@ mod dialect_wasm_tests {
         assert!(s.set_dialect(&value.to_string()).is_err());
     }
 
+    /// Issue #2115: `templates` is now checked the same way `transitions`
+    /// already was (`dialect::validate_succession`, shared by both) — a
+    /// `templates` entry naming a kind nothing declares is rejected here,
+    /// through the real wasm-facing `set_dialect` entry point, not merely
+    /// at the native `brink_ir::dialect::validate` unit-test layer.
+    #[wasm_bindgen_test]
+    fn set_dialect_rejects_undeclared_template_kind() {
+        let mut s = EditorSession::new();
+        let json_str =
+            serde_json::to_string(&brink_ir::DialogueDialect::default()).expect("serializes");
+        let mut value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        value["templates"]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind": "nonexistent",
+                "label": "Nonexistent",
+                "blank_tab": false,
+            }));
+        assert!(s.set_dialect(&value.to_string()).is_err());
+    }
+
     #[wasm_bindgen_test]
     fn apply_project_config_rejects_malformed_toml() {
         let mut s = EditorSession::new();

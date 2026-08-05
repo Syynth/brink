@@ -343,7 +343,7 @@ fn default_chain_is() -> Vec<String> {
 /// kind it declares. Structural transition rows stay interpreter-owned;
 /// dialect rows are an **overlay**, resolved before the built-in weave
 /// table.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitionRow {
     /// The kind this row applies to (must be declared, or a reserved
     /// structural kind — see [`validate`]).
@@ -364,7 +364,7 @@ pub struct TransitionRow {
 /// A transition action. Tagged so serde errors are legible (untagged unions
 /// over mixed string/object shapes were rejected during design review for
 /// producing unusable errors).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum TransitionAction {
     /// Convert the current line to `kind`.
@@ -380,7 +380,7 @@ pub enum TransitionAction {
 }
 
 /// Editor-overlay template metadata (picker labels, blank-tab behavior).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Templates {
     /// Per-kind picker entries: kind → (label, optional picker key, blank-tab
     /// flag). Kept as a `Vec` for determinism (ordered UI).
@@ -389,7 +389,7 @@ pub struct Templates {
 }
 
 /// One picker/template entry for a declared kind.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateEntry {
     /// The kind this template is for.
     pub kind: String,
@@ -401,6 +401,62 @@ pub struct TemplateEntry {
     /// Whether pressing Tab on a blank line inserts this template.
     #[serde(default)]
     pub blank_tab: bool,
+}
+
+// ─── Succession-row wire conversion (issue #2115) ─────────────────────
+
+/// See [`crate::ConventionsProjection::to_wire`]'s doc — these rows travel
+/// to the wire **as data**, never interpreted by the compiler (§5 of
+/// `docs/prose-dialect-spec.md`: "ignored by the compiler"). Conversion is
+/// a plain field-for-field mirror, the same posture
+/// `ConventionProjectionEntry::to_wire` already takes.
+impl TransitionRow {
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::TransitionRowDef {
+        brink_format::TransitionRowDef {
+            on: self.on.clone(),
+            key: self.key.clone(),
+            has_content: self.has_content,
+            action: self.action.to_wire(),
+            hint: self.hint.clone(),
+        }
+    }
+}
+
+impl TransitionAction {
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::TransitionActionDef {
+        match self {
+            Self::Convert { kind } => {
+                brink_format::TransitionActionDef::Convert { kind: kind.clone() }
+            }
+            Self::Newline => brink_format::TransitionActionDef::Newline,
+            Self::Strip => brink_format::TransitionActionDef::Strip,
+            Self::Clear => brink_format::TransitionActionDef::Clear,
+            Self::Trap => brink_format::TransitionActionDef::Trap,
+        }
+    }
+}
+
+impl Templates {
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::TemplatesDef {
+        brink_format::TemplatesDef {
+            entries: self.entries.iter().map(TemplateEntry::to_wire).collect(),
+        }
+    }
+}
+
+impl TemplateEntry {
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::TemplateEntryDef {
+        brink_format::TemplateEntryDef {
+            kind: self.kind.clone(),
+            label: self.label.clone(),
+            picker_key: self.picker_key.clone(),
+            blank_tab: self.blank_tab,
+        }
+    }
 }
 
 // ─── Malformed diagnostics ─────────────────────────────────────────────
@@ -549,7 +605,45 @@ pub fn validate(dialect: &DialogueDialect) -> Result<(), Vec<DialectError>> {
         }
     }
 
-    for row in &dialect.transitions {
+    errors.extend(validate_succession(
+        &dialect.transitions,
+        &dialect.templates,
+        is_known,
+    ));
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// Validate succession rows (transitions + templates) against an arbitrary
+/// set of known kinds (issue #2115). Unlike [`validate`]'s own chain check
+/// (which is always checked against ONE `DialogueDialect`'s own `elements`),
+/// this is reusable against any known-kind predicate — in particular a
+/// [`crate::ConventionsProjection`]'s own convention kinds
+/// (`entries[].name`), so `transitions`/`templates` can re-key off the
+/// projection instead of carrying an independent element list. That
+/// re-keying is exactly what `docs/decision-log.md`'s 2026-08-03 "Conventions
+/// × the editor" entry rules for `DialogueDialect`'s surviving
+/// `transitions`/`templates` fields: *"they re-key off convention kinds from
+/// the projection instead of carrying their own element list"* — the same
+/// divergence `set_dialect` already created between editor and compiler is
+/// exactly what re-keying against one shared source avoids re-creating.
+///
+/// [`validate`] calls this with its own dialect's `is_known` closure, so a
+/// `DialogueDialect`'s own transitions/templates are validated by exactly
+/// this function too — one check, two callers, never two implementations
+/// that could silently disagree.
+#[must_use]
+pub fn validate_succession(
+    transitions: &[TransitionRow],
+    templates: &Templates,
+    is_known: impl Fn(&str) -> bool,
+) -> Vec<DialectError> {
+    let mut errors = Vec::new();
+    for row in transitions {
         if !is_known(&row.on) {
             errors.push(DialectError::TransitionUndeclaredKind(row.on.clone()));
         }
@@ -559,12 +653,12 @@ pub fn validate(dialect: &DialogueDialect) -> Result<(), Vec<DialectError>> {
             errors.push(DialectError::TransitionUndeclaredKind(kind.clone()));
         }
     }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors)
+    for entry in &templates.entries {
+        if !is_known(&entry.kind) {
+            errors.push(DialectError::TransitionUndeclaredKind(entry.kind.clone()));
+        }
     }
+    errors
 }
 
 /// Reject portable-regex-subset violations: lookaround (`(?=`, `(?!`, `(?<=`,
@@ -1105,6 +1199,27 @@ mod tests {
         let mut d = at_cue_preset();
         d.chain[0].after.push("narrative".to_owned());
         assert_eq!(validate(&d), Ok(()));
+    }
+
+    /// Issue #2115: before this slice, `validate` checked `transitions` but
+    /// never `templates` at all — a `TemplateEntry.kind` naming an
+    /// undeclared, non-reserved kind validated silently. This is the direct,
+    /// always-run (non-wasm) regression test for that gap; the wasm-facing
+    /// equivalent through `set_dialect` lives in
+    /// `crates/brink-web/src/editor/mod.rs`'s `dialect_wasm_tests`.
+    #[test]
+    fn validate_rejects_undeclared_template_kind() {
+        let mut d = at_cue_preset();
+        d.templates.entries.push(TemplateEntry {
+            kind: "nonexistent_kind".to_owned(),
+            label: "Nonexistent".to_owned(),
+            picker_key: None,
+            blank_tab: false,
+        });
+        let errs = validate(&d).expect_err("should fail");
+        assert!(errs.iter().any(
+            |e| matches!(e, DialectError::TransitionUndeclaredKind(k) if k == "nonexistent_kind")
+        ));
     }
 
     #[test]

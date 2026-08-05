@@ -18,7 +18,10 @@ pub mod symbols;
 
 // Re-export HIR and symbol types at the crate root for convenience.
 // LIR types are accessed via `brink_ir::lir::` to avoid name conflicts.
-pub use dialect::{DialectError, DialogueDialect, ElementNature, ResolvedDialect};
+pub use dialect::{
+    DialectError, DialogueDialect, ElementNature, ResolvedDialect, TemplateEntry, Templates,
+    TransitionAction, TransitionRow, reserved_structural_kinds, validate_succession,
+};
 pub use hir::*;
 pub use host_manifest::*;
 pub use provenance::{KindToken, NodeClass, Provenance, ProvenanceResolver};
