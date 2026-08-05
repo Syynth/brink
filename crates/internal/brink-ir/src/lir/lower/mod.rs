@@ -370,8 +370,15 @@ pub fn build_prelude_decls(
     // below shares — declaration diagnostics lead in emission order, and a
     // struct-shape drop is exactly as early as it gets.
     let mut decl_diagnostics = Vec::new();
-    let shape_table = structs::build_shape_table(files, &mut names, index, &mut decl_diagnostics);
-    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
+    let shape_table = structs::build_shape_table(
+        files,
+        &mut names,
+        index,
+        &resolutions_lookup,
+        &mut decl_diagnostics,
+    );
+    let global_shapes =
+        structs::build_global_shape_map(files, index, &resolutions_lookup, &shape_table);
 
     let mut ids = context::IdAllocator::new();
     let mut lifted: Vec<lir::Container> = Vec::new();

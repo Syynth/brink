@@ -249,6 +249,19 @@ fn symbol_visible_bare_in_file(
 /// imported it (bare name from that module, or the module qualified). A
 /// same-module reference, or a public target in the undeclared legacy soup
 /// (`module == None`), is always bare-legal and never flagged (§2/§3).
+///
+/// This walks `resolutions` uniformly — `ResolvedRef` carries no
+/// `RefKind`, only `(file, range, target)`, so every reference kind that
+/// resolves to a non-local target is gated the same way regardless of the
+/// syntax that produced it. Issue #2249's new `RefKind::Type` (a struct
+/// field's or `VAR`/`CONST`/`temp` annotation's `Named` leaf,
+/// `resolve::resolve_type_ref`) is therefore already in scope here — it
+/// resolves to the same `SymbolKind::Struct` target a construction
+/// literal's `RefKind::Struct` reference does (issue #2246, the first
+/// reference kind to reach this gate for a struct target), so a
+/// project-file annotation naming an unimported public struct in another
+/// declared module now raises `E025` here too, and a `#@private` one raises
+/// `E087` — exercised in `type_annotation_reference_to_*` below.
 fn check_cross_module_refs(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -753,6 +766,134 @@ mod tests {
             !e025[0].message.contains("IMPORT"),
             "E025 message must not hardcode ink's IMPORT syntax: {:?}",
             e025[0].message
+        );
+    }
+
+    // ── PR #2271 review finding: issue #2249's new `RefKind::Type` ───────
+    // reference resolves to a `SymbolKind::Struct` target exactly like a
+    // construction literal's `RefKind::Struct` does (issue #2246) — and
+    // `check_cross_module_refs` walks `resolutions` by target kind alone
+    // (`ResolvedRef` carries no `RefKind`), so it is already in scope here.
+    // These three model the resolution `resolve::resolve_type_ref` records
+    // for a `VAR`/`CONST`/`temp` annotation or struct field naming a struct
+    // in another declared module — the same hand-built-`SymbolIndex` idiom
+    // `e025_message_never_hardcodes_a_concrete_import_statement` above uses
+    // for a `Knot` target.
+
+    /// An unimported, unqualified reference to a *public* struct in another
+    /// declared module: `E025`, same as any other reference kind.
+    #[test]
+    fn type_annotation_reference_to_unimported_public_struct_in_another_module_is_e025() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module("town");
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let cue_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                visibility: Visibility::Public,
+                ..symbol(cue_id, SymbolKind::Struct, "Cue", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        // `town`'s `~ temp c: Cue` (or a struct field `f: Cue`) resolves to
+        // `quest`'s public `Cue` with no import — this is the shape
+        // `resolve_type_ref` records for the `TYPE_EXPR`/`TYPE_NAME` range.
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 3),
+            target: cue_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E025 && d.file == FileId(1)),
+            "unimported cross-module struct type annotation must raise E025: {diagnostics:?}"
+        );
+    }
+
+    /// The same reference, but `town` has imported `Cue` from `quest`: no
+    /// diagnostic.
+    #[test]
+    fn type_annotation_reference_to_imported_public_struct_in_another_module_is_silent() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module_and_imports("town", vec![bare_import("quest", "Cue")]);
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let cue_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                visibility: Visibility::Public,
+                ..symbol(cue_id, SymbolKind::Struct, "Cue", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 3),
+            target: cue_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        assert!(
+            diagnostics.is_empty(),
+            "an imported cross-module struct type annotation must raise nothing: {diagnostics:?}"
+        );
+    }
+
+    /// A reference to a `#@private` struct in another module: `E087`,
+    /// unconditionally — imports never let a private definition cross a
+    /// module boundary.
+    #[test]
+    fn type_annotation_reference_to_private_struct_in_another_module_is_e087() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module("town");
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let cue_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                visibility: Visibility::Private,
+                ..symbol(cue_id, SymbolKind::Struct, "Cue", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 3),
+            target: cue_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E087 && d.file == FileId(1)),
+            "a private struct referenced cross-module in a type annotation must raise E087: \
+             {diagnostics:?}"
         );
     }
 

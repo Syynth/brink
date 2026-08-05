@@ -301,6 +301,9 @@ pub fn resolve_file(
             RefKind::Struct => {
                 resolve_struct_ref(index, scope, file_id, uref, &mut map, &mut diagnostics);
             }
+            RefKind::Type => {
+                resolve_type_ref(index, scope, file_id, uref, &mut map);
+            }
         }
     }
 
@@ -926,6 +929,52 @@ fn resolve_struct_ref(
         path,
         DiagnosticCode::E068,
     ));
+}
+
+/// Resolve a TM-2 type annotation's bare nominal leaf name (issue #2249) —
+/// a struct field's declared type, or a `VAR`/`CONST`/`temp` annotation —
+/// against declared `SymbolKind::Struct` symbols, exactly like
+/// [`resolve_struct_ref`]'s lookup.
+///
+/// **Deliberately no diagnostic on a miss**, unlike `resolve_struct_ref`'s
+/// `E068`: a `RefKind::Type` reference's `path` is not guaranteed to name a
+/// struct at all — `int`, `float`, `List`, … are equally legal `Named`
+/// leaves (`brink_ir::TypeExpr::Named`'s own doc), so "no declared struct
+/// named this" is the overwhelmingly common, entirely legal case, not an
+/// error. `annotations::check` (`E061`) is the dedicated "is this a
+/// recognized type at all" diagnostic, run separately over the same HIR —
+/// this function only ever *feeds* lowering's struct-shape chase
+/// (`lir::lower::structs::record_global_annotation`,
+/// `lir::lower::context::record_temp_annotation`) a resolved identity when
+/// one exists, mirroring those two callers' own prior silent-`None`
+/// posture (`ShapeTable::resolve` before this issue).
+///
+/// This *is* still narrower than `E061`'s own vocabulary check
+/// (`annotations::declared_struct_names`): that lookup is project-flat,
+/// with no referrer-scoping or std-exclusion at all, so a std-only struct
+/// name is "recognized" for `E061`'s purposes regardless of importer —
+/// unlike this function's `lookup_by_name`, which *does* exclude an
+/// unimported std candidate. A `~ temp c: Cue` naming only a mounted std
+/// module's `Cue`, with no project-side homonym or import, therefore still
+/// raises no diagnostic anywhere today: `E061` accepts it (the name is
+/// declared *somewhere*), and this resolution silently misses (by design,
+/// per the paragraph above) rather than raising a new one. Issue #2249
+/// leaves that specific compounding gap unruled — `annotations::TypeNames`
+/// becoming referrer-scoped would be the natural fix, tracked there.
+fn resolve_type_ref(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    file_id: FileId,
+    uref: &brink_ir::UnresolvedRef,
+    map: &mut ResolutionMap,
+) {
+    if let Some(id) = lookup_by_name(index, scope, &uref.path, &[SymbolKind::Struct]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+    }
 }
 
 // ─── Lookup helpers ─────────────────────────────────────────────────
@@ -2745,6 +2794,246 @@ mod tests {
             "with the referrer's own module threaded through, lookup_unique_by_name now agrees \
              with lookup_by_name for a referrer inside the std tree looking up a std sibling — \
              the #2233 fix"
+        );
+    }
+
+    /// Issue #2249: `resolve_type_ref` (the new `RefKind::Type` arm) routes
+    /// a TM-2 annotation through this file's own `lookup_by_name` — full
+    /// `ImportScope`/`Candidacy` semantics — rather than
+    /// `lir::lower::decls::lookup_global`'s narrower fallback, which
+    /// `ShapeTable::resolve` used before this issue (deleted; see
+    /// `brink-ir::lir::lower::structs`'s module doc). The two primitives
+    /// disagree on exactly this shape: a referrer *inside* a std module
+    /// referencing a **sibling** struct in the *same* std module, declared
+    /// in a different file, with no explicit import — `lookup_global`
+    /// excludes every std-declared candidate unconditionally in its
+    /// fallback arm (no referrer-is-std carve-out, `decls.rs`'s own doc),
+    /// so this would have resolved to `None` under the old
+    /// `ShapeTable::resolve`; `lookup_by_name_direct`'s `InScope` tier
+    /// (std's own internal references are untouched by the #2197/#2216
+    /// gates, same as the `Knot` case `unique_lookup_reproduces_in_scope_
+    /// std_sibling_with_referrer_module` above proves) resolves it. This is
+    /// the one behavioral delta issue #2249's PR body must call out: a
+    /// std convention file's own `~ temp c: Cue`-shaped annotation
+    /// referencing a *sibling* std file's struct now gets the static-offset
+    /// chase (`known_shape`) it silently lost before.
+    #[test]
+    fn resolve_type_ref_reproduces_in_scope_std_sibling_with_referrer_module() {
+        let mut index = SymbolIndex::default();
+        let cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC0E);
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        let std_scope = ImportScope {
+            file_module: Some("std::conventions::screenplay".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let referrer_file = FileId(1); // a *different* std file, same module
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &std_scope, referrer_file, &uref, &mut map);
+
+        assert_eq!(
+            map,
+            vec![ResolvedRef {
+                file: referrer_file,
+                range: uref.range,
+                target: cue_id,
+            }],
+            "a referrer inside std referencing a sibling std file's struct with no import \
+             resolves via lookup_by_name_direct's InScope tier — the exact case \
+             ShapeTable::resolve's old lookup_global-based fallback could never reach \
+             (it excluded every std-declared candidate unconditionally, referrer or not)"
+        );
+    }
+
+    /// Issue #2249: the flip side of the test above — a scalar/tower/
+    /// generic-head keyword (never a declared struct) must resolve to
+    /// nothing and raise no diagnostic, because `resolve_type_ref`'s own
+    /// doc is explicit that "no declared struct named this" is the
+    /// legal, common case for a `RefKind::Type` reference, not an error.
+    #[test]
+    fn resolve_type_ref_silently_misses_a_scalar_keyword_name() {
+        let index = SymbolIndex::default();
+        let uref = UnresolvedRef {
+            path: "int".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
+        assert!(
+            map.is_empty(),
+            "`int` never names a declared STRUCT — this must not resolve, and (unlike \
+             RefKind::Struct's E068) resolve_type_ref never diagnoses a miss either, since a \
+             miss here is not necessarily wrong"
+        );
+    }
+
+    /// PR #2271 review finding: `lir::lower::structs`'s own tests
+    /// (`lookup_global_excludes_a_sole_std_declared_struct_with_no_project_
+    /// homonym`, `lookup_global_picks_the_referrers_own_shape_when_names_
+    /// collide`) were retargeted at `decls::lookup_global` after issue
+    /// #2249 deleted `ShapeTable::resolve` — but annotations no longer call
+    /// `lookup_global` at all; they go through this file's own
+    /// `resolve_type_ref`/`lookup_by_name`/`ImportScope` machinery (this
+    /// module's own doc on `resolve_type_ref`). Neither retargeted test, nor
+    /// `resolve_type_ref_silently_misses_a_scalar_keyword_name` above (an
+    /// empty index, no std/project homonym in play at all), exercises the
+    /// std-exclusion property through the real annotation path. This test
+    /// closes that gap's negative half: a struct only a mounted std module
+    /// declares, referenced from an ordinary (non-std, non-importing) project
+    /// file, must not resolve — mirroring
+    /// `std_mounted_sole_candidate_is_invisible_with_no_import` above, but
+    /// through `resolve_type_ref` (the real TM-2 annotation path) instead of
+    /// `lookup_by_name` directly.
+    #[test]
+    fn resolve_type_ref_excludes_a_std_only_struct_with_no_project_homonym_or_import() {
+        let mut index = SymbolIndex::default();
+        let cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC0F);
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        // An ordinary project file, no `#@module`/`use` in play at all —
+        // the default scope every non-modules file carries.
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
+        assert!(
+            map.is_empty(),
+            "a struct only a mounted std module declares must not resolve for a `~ temp c: Cue`- \
+             shaped annotation with no project-side homonym and no import — the sole-candidate \
+             std-exclusion property `resolve_type_ref`'s own doc claims, unproven by any test \
+             through this path before: {map:?}"
+        );
+    }
+
+    /// PR #2271 review finding, positive half: a project's own struct and a
+    /// coexisting mounted std struct sharing a bare name (M-2d, issue
+    /// #2238) — a referrer *inside* the project's own declared module must
+    /// resolve its own struct through `resolve_type_ref`, never the std
+    /// mount's same-named one. Mirrors `project_own_module_wins_over_a_
+    /// coexisting_std_mount_candidate` above, but through the real
+    /// annotation path.
+    #[test]
+    fn resolve_type_ref_picks_the_referrers_own_project_struct_over_a_coexisting_std_homonym() {
+        let mut index = SymbolIndex::default();
+        let std_cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC10);
+        index.symbols.insert(
+            std_cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: std_cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        let project_cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC11);
+        index.symbols.insert(
+            project_cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(1),
+                range: TextRange::default(),
+                id: project_cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("story::market".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        for id in [std_cue_id, project_cue_id] {
+            index.by_name.entry("Cue".to_string()).or_default().push(id);
+        }
+
+        let scope = ImportScope {
+            file_module: Some("story::market".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &scope, FileId(1), &uref, &mut map);
+        assert_eq!(
+            map,
+            vec![ResolvedRef {
+                file: FileId(1),
+                range: uref.range,
+                target: project_cue_id,
+            }],
+            "a `story::market` file's own `~ temp c: Cue` must resolve to `story::market`'s own \
+             Cue, never the coexisting std mount's same-named one: {map:?}"
         );
     }
 

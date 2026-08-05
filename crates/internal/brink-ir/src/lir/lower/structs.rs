@@ -20,22 +20,39 @@
 //!   (different declared modules, different `DefinitionId`s) — the same
 //!   shape the table already has for knots/externals since #2197. `by_name`
 //!   keys a *bucket* of `DefinitionId`s per bare name instead of a single
-//!   winner; [`ShapeTable::resolve`] is the referrer-scoped lookup a **field
-//!   or TM-2/temp type annotation** uses to pick the right one — the
-//!   candidate declared in the referring file itself, else whichever
-//!   `decls::lookup_global` returns (its own std-exclusion rule, which
-//!   `resolve` itself now always goes through — issue #2246 review closed a
-//!   gap where a sole-candidate bucket skipped that exclusion entirely). A
-//!   construction literal's own shape name is a **different** case (issue
-//!   #2246): it is a `RefKind::Struct` reference the analyzer already
-//!   resolved with full module-scope `Candidacy` semantics
-//!   (`brink_analyzer::resolve::resolve_struct_ref`), so `expr::
-//!   lower_struct_literal`/`decls::eval_const_struct_literal` consume that
-//!   recorded resolution directly and never call `ShapeTable::resolve` at
-//!   all — a field/annotation name, by contrast, is never registered as a
-//!   ref at all (`symbols::project`'s own doc: "a nominal-only grammar,
-//!   resolved later by a different mechanism"), so `ShapeTable::resolve`
-//!   remains the only resolution those cases ever get.
+//!   winner, disambiguated per reference kind:
+//!
+//!   - A construction literal's own shape name (issue #2246) and a **field
+//!     or TM-2/temp type annotation** (issue #2249) are both `RefKind`
+//!     references the analyzer already resolves with full module-scope
+//!     `Candidacy` semantics (`brink_analyzer::resolve::resolve_struct_ref`/
+//!     `resolve_type_ref`, into the same `ResolutionMap`) — `expr::
+//!     lower_struct_literal`/`decls::eval_const_struct_literal` (the
+//!     literal) and [`build_shape_table`]'s field loop /
+//!     [`record_global_annotation`] / `context::LowerCtx::
+//!     record_temp_annotation` (the annotation cases) all consume that
+//!     recorded resolution directly via a `ResolutionLookup`, never
+//!     re-deriving it. Before #2249, a field/annotation name had no HIR
+//!     reference registered at all (`symbols::project`'s own prior doc: "a
+//!     nominal-only grammar, resolved later by a different mechanism") — a
+//!     now-deleted `ShapeTable::resolve` was that "different mechanism",
+//!     the one brink-ir-side primitive re-implementing referrer scoping
+//!     and std-exclusion on its own, routed through `decls::lookup_global`
+//!     even for a sole-candidate bucket (issue #2246 review closed a gap
+//!     where a prior "fast path" skipped that exclusion entirely). Once
+//!     both real callers moved to the analyzer's own resolution, it had
+//!     **no production caller left** and was removed — its std-exclusion
+//!     property is now enforced by the analyzer's own
+//!     `lookup_by_name`/`ImportScope` machinery instead, a genuinely
+//!     different (and, per issue #2233's tracked asymmetry, not-yet-
+//!     reconciled) implementation of the same "referrer can't reach an
+//!     unimported std sibling" property. `ShapeTable`'s own bare-name lookup
+//!     (`by_name`/the old `ShapeTable::get`) had no caller left once both
+//!     real call sites moved to `DefinitionId`-keyed lookup and was deleted
+//!     alongside them — [`ShapeTable::get_by_def`] is the only lookup left,
+//!     including in tests (see `struct_def_id` in this module's own test
+//!     helpers, which reproduces the `DefinitionId` a test needs instead).
+//!
 //!   A bona fide intra-module duplicate (analyzer-diagnosed `E023`, later
 //!   declaration dropped from the index) still keeps only its first
 //!   declaration's fields here, because both HIR decls resolve to the
@@ -67,10 +84,10 @@ use brink_format::{DefinitionId, NameId};
 use crate::FileId;
 use crate::determinism::{LookupMap, LookupSet};
 use crate::hir;
-use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::symbols::{ResolutionMap, SymbolIndex, SymbolKind};
 use crate::{Diagnostic, DiagnosticCode};
 
-use super::context::NameTable;
+use super::context::{NameTable, ResolutionLookup};
 use super::decls::lookup_global;
 use super::lir;
 
@@ -83,8 +100,8 @@ use super::lir;
 pub struct ShapeInfo {
     pub id: u32,
     /// This shape's own `Struct` symbol identity (issue #2238) — what
-    /// [`ShapeTable::resolve`] disambiguates by when more than one declared
-    /// shape shares a bare name, and what every *eager* resolution
+    /// [`ShapeTable::get_by_def`] disambiguates by when more than one
+    /// declared shape shares a bare name, and what every *eager* resolution
     /// ([`GlobalShapeMap`], `LowerCtx::temp_shapes`, a field's own nested
     /// annotation) stores instead of a re-resolvable name.
     pub definition_id: DefinitionId,
@@ -94,19 +111,20 @@ pub struct ShapeInfo {
     pub fields: Vec<NameId>,
     /// Field source-name → `(offset, nested)`, where `nested` is the
     /// declared nested-struct-shape's own `DefinitionId`. `Some` only when
-    /// the field's own TM-2 annotation names a struct `decls::lookup_global`
-    /// resolves against this struct's own declaring file as referrer —
-    /// that's what lets `expr::known_shape` chase a read chain
-    /// (`o.inner.v`) across more than one `.field` hop without any type
-    /// inference or re-resolution ambiguity.
+    /// the field's own TM-2 annotation is a `RefKind::Type` reference
+    /// (issue #2249) the analyzer resolved against this struct's own
+    /// declaring file as referrer — that's what lets `expr::known_shape`
+    /// chase a read chain (`o.inner.v`) across more than one `.field` hop
+    /// without any type inference or re-resolution ambiguity.
     ///
     /// Behavior delta from pre-#2238 (unremarked in that PR's body): this
     /// used to be a flat `struct_names.contains(name)` membership test over
-    /// every file's declared structs, std included — now it is
-    /// `lookup_global`'s referrer-scoped, std-excluding-fallback
-    /// resolution. A field typed as a struct that *only* std declares (the
-    /// referrer's own file has no same-named struct of its own) now records
-    /// `nested: None` where it previously recorded `Some(name)`, losing the
+    /// every file's declared structs, std included — now it is the
+    /// analyzer's referrer-scoped, `ImportScope`-aware resolution (issue
+    /// #2249 moved this off `decls::lookup_global`'s own, differently-scoped
+    /// std-exclusion fallback — see the module doc). A field typed as a
+    /// struct that *only* std declares, with no import, now records
+    /// `nested: None` where it once recorded `Some(name)`, losing the
     /// static-offset chase (`RecordGet`/`RecordSet`'s `static_offset`
     /// `Some` → `None`) under `types = strict` for that field — by-name ops
     /// remain correct, so this is a lowering-strategy change, not a
@@ -127,69 +145,19 @@ impl ShapeInfo {
 #[derive(Default, Clone)]
 pub struct ShapeTable {
     /// Every shape by its own symbol-index identity — the canonical store.
+    /// The **only** store as of issue #2249: real code always has a
+    /// `DefinitionId` in hand (a `RefKind::Struct`/`RefKind::Type`
+    /// reference the analyzer already resolved, issues #2246/#2249) and
+    /// looks a shape up via [`get_by_def`](ShapeTable::get_by_def) — a
+    /// prior bare-name-keyed `by_name` bucket (backing a now-deleted
+    /// `ShapeTable::resolve`, the referrer-scoped/std-excluding lookup a
+    /// field/TM-2/temp annotation used before this issue) is gone; nothing
+    /// left ever needs to look a shape up by its bare name alone. See the
+    /// module doc.
     by_def: LookupMap<DefinitionId, ShapeInfo>,
-    /// Bare name → every `DefinitionId` sharing it, in declaration order.
-    /// More than one entry only when std and the project (or two declared
-    /// modules) coexist on the same name (#2238) — [`ShapeTable::resolve`]
-    /// picks the right one.
-    by_name: LookupMap<String, Vec<DefinitionId>>,
 }
 
 impl ShapeTable {
-    /// Referrer-free lookup for callers with no file context — **not**
-    /// unambiguous: when more than one declared `STRUCT` shares `name` this
-    /// returns whichever was declared *first* in `files` order, silently
-    /// discarding any later coexisting sibling. Every real lowering call
-    /// site has a referrer file and uses [`resolve`](Self::resolve)
-    /// instead; this is test-only.
-    #[cfg(test)]
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&ShapeInfo> {
-        self.by_name
-            .get(name)?
-            .first()
-            .and_then(|id| self.by_def.get(id))
-    }
-
-    /// Referrer-scoped lookup (issue #2238): when more than one declared
-    /// `STRUCT` shares `name` — the project and a mounted std preset both
-    /// declaring `Cue`, say — resolve exactly like `decls::lookup_global`
-    /// already does for knots/externals: the candidate declared in
-    /// `referrer` itself, else whichever non-std candidate
-    /// `decls::lookup_global`'s own fallback picks. That fallback excludes
-    /// **every** std-declared candidate unconditionally, with no
-    /// referrer-is-std carve-out — unlike `resolve.rs`'s
-    /// `lookup_by_name_direct`, whose `InScope` tier lets a referrer that is
-    /// itself part of `std…` resolve a std-mounted sibling. A std
-    /// file here that references a same-named shape it does not itself
-    /// declare therefore resolves to `None` rather than a std sibling.
-    /// `brink-analyzer::resolve::lookup_unique_by_name`'s own analogous
-    /// asymmetry was fixed by issue #2233 (a `referrer_module` hint); this
-    /// `decls::lookup_global`/`ShapeTable::resolve` half is unfixed and
-    /// tracked separately by issues #2249/#2246.
-    ///
-    /// Always routes through [`lookup_global`], even when `name`'s bucket
-    /// holds exactly one candidate (issue #2246 review): a prior "fast
-    /// path" returned that sole candidate unconditionally, bypassing
-    /// `lookup_global`'s own std-exclusion entirely — so a struct name only
-    /// a mounted `std…` module declares (no project-side homonym at
-    /// all) resolved silently, the exact "reach into std with no import"
-    /// class every other one of the five bare-name lookups this issue
-    /// audited was already taught to refuse. `lookup_global` is itself a
-    /// single `by_name` bucket scan, so this costs the same for the
-    /// overwhelmingly common zero/one-candidate case; it no longer answers
-    /// a different question than the multi-candidate branch does.
-    #[must_use]
-    pub fn resolve(&self, name: &str, referrer: FileId, index: &SymbolIndex) -> Option<&ShapeInfo> {
-        // Cheap early bailout: `name` isn't a declared `STRUCT` at all (in
-        // this table, by construction — every successfully-resolved
-        // declaration is added here), so there's nothing `lookup_global`
-        // could find that would map back to a `ShapeInfo` anyway.
-        self.by_name.get(name)?;
-        let def_id = lookup_global(index, referrer, name, SymbolKind::Struct)?;
-        self.by_def.get(&def_id)
-    }
-
     /// Resolve a shape already pinned to a specific `DefinitionId` — a
     /// nested field's own annotation, a global's TM-2 type, or a temp's
     /// declared type, every one of which was resolved once, correctly, at
@@ -230,14 +198,21 @@ impl ShapeTable {
 /// read, if the lookup below ever comes back `None` (issue #2240's `E181`
 /// backstop; see that code's own doc for the exact, narrow condition that
 /// triggers it).
+///
+/// `resolutions` (issue #2249): each field's own nested-struct chase no
+/// longer re-derives its answer through `decls::lookup_global` — a field's
+/// TM-2 type is now a `RefKind::Type` reference the analyzer already
+/// resolved (`symbols::project`'s walk + `resolve::resolve_type_ref`), so
+/// this consumes that recorded resolution directly. See the module doc's
+/// "field or TM-2/temp type annotation" paragraph.
 pub fn build_shape_table(
     files: &[(FileId, &hir::HirFile)],
     names: &mut NameTable,
     index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> ShapeTable {
     let mut by_def: LookupMap<DefinitionId, ShapeInfo> = LookupMap::new();
-    let mut by_name: LookupMap<String, Vec<DefinitionId>> = LookupMap::new();
     let mut next_id: u32 = 0;
     for &(file_id, hir_file) in files {
         for s in &hir_file.structs {
@@ -286,20 +261,17 @@ pub fn build_shape_table(
                     reason = "a struct won't declare anywhere near u16::MAX fields"
                 )]
                 let offset = i as u16;
-                let nested = match &f.ty {
-                    hir::TypeExpr::Named { name, .. } => {
-                        lookup_global(index, file_id, name, SymbolKind::Struct)
-                    }
-                    _ => None,
-                };
+                // Issue #2249: `f.ty`'s own span is a `RefKind::Type`
+                // reference (`symbols::project::Projector::walk_type_annotation`)
+                // — a `Generic`/`Fn` field type never registered one (there
+                // is nothing to look up at `f.ty.range()` for those), so
+                // `resolve` correctly falls through to `None` for them too,
+                // matching the prior `match` arm's `_ => None`.
+                let nested = resolutions.resolve(file_id, f.ty.range());
                 field_index.insert(f.name.text.clone(), (offset, nested));
             }
             let id = next_id;
             next_id += 1;
-            by_name
-                .entry(s.name.text.clone())
-                .or_default()
-                .push(definition_id);
             by_def.insert(
                 definition_id,
                 ShapeInfo {
@@ -313,7 +285,7 @@ pub fn build_shape_table(
         }
     }
 
-    ShapeTable { by_def, by_name }
+    ShapeTable { by_def }
 }
 
 /// Every declared shape as an [`lir::StructShapeDef`], ordered by
@@ -402,8 +374,16 @@ pub struct StructShapeData {
 /// [`build_shape_table`]'s id/offset/nested/referrer-resolution rules
 /// exactly (verified equivalent in the module tests) — same topological
 /// `files` order, same first-declaration-(by identity)-wins dedup, same
-/// offset = declaration index, same `decls::lookup_global`-resolved nested
-/// shape reference.
+/// offset = declaration index, same analyzer-`RefKind::Type`-resolved
+/// nested shape reference (issue #2249).
+///
+/// `resolutions`: the project's whole resolution map (not yet the
+/// `ResolutionLookup` index — built once, internally, exactly like
+/// `build_prelude_decls`'s own `resolutions: &ResolutionMap` parameter),
+/// so `struct_shape_data_query` (a pure, `Eq`-keyed salsa query with no
+/// `ResolutionLookup` of its own to reuse) can hand this the same
+/// `resolutions_index_query().resolutions` field `build_prelude_decls`
+/// reads.
 ///
 /// **Issue #2240 ruling — deliberately no diagnostic sink here.** This
 /// function's own `lookup_global` call below can miss for the identical
@@ -440,7 +420,9 @@ pub struct StructShapeData {
 pub fn build_struct_shape_data(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
+    resolutions: &ResolutionMap,
 ) -> StructShapeData {
+    let resolutions = ResolutionLookup::build(resolutions);
     let mut seen: LookupSet<DefinitionId> = LookupSet::new();
     let mut shapes = Vec::new();
     for &(file_id, hir_file) in files {
@@ -465,12 +447,9 @@ pub fn build_struct_shape_data(
                     reason = "a struct won't declare anywhere near u16::MAX fields"
                 )]
                 let offset = i as u16;
-                let nested = match &f.ty {
-                    hir::TypeExpr::Named { name, .. } => {
-                        lookup_global(index, file_id, name, SymbolKind::Struct)
-                    }
-                    _ => None,
-                };
+                // Issue #2249: mirrors `build_shape_table`'s identical
+                // migration — see that function's doc.
+                let nested = resolutions.resolve(file_id, f.ty.range());
                 fields.push(StructFieldEntry {
                     name: f.name.text.clone(),
                     offset,
@@ -495,7 +474,7 @@ pub fn build_struct_shape_data(
         },
         &mut throwaway,
     );
-    let global_map = build_global_shape_map(files, index, &shape_table);
+    let global_map = build_global_shape_map(files, index, &resolutions, &shape_table);
     let mut global_shapes: Vec<(DefinitionId, DefinitionId)> = global_map.into_iter().collect();
     global_shapes.sort_by_key(|a| a.0.to_raw());
 
@@ -513,7 +492,6 @@ pub fn build_struct_shape_data(
 #[must_use]
 pub fn rebuild_shape_table(data: &StructShapeData, names: &mut NameTable) -> ShapeTable {
     let mut by_def: LookupMap<DefinitionId, ShapeInfo> = LookupMap::new();
-    let mut by_name: LookupMap<String, Vec<DefinitionId>> = LookupMap::new();
     for (id, entry) in data.shapes.iter().enumerate() {
         let shape_name = names.intern(&entry.name);
         let mut fields = Vec::with_capacity(entry.fields.len());
@@ -527,10 +505,6 @@ pub fn rebuild_shape_table(data: &StructShapeData, names: &mut NameTable) -> Sha
             reason = "shape count won't exceed u32::MAX"
         )]
         let shape_id = id as u32;
-        by_name
-            .entry(entry.name.clone())
-            .or_default()
-            .push(entry.definition_id);
         by_def.insert(
             entry.definition_id,
             ShapeInfo {
@@ -542,7 +516,7 @@ pub fn rebuild_shape_table(data: &StructShapeData, names: &mut NameTable) -> Sha
             },
         );
     }
-    ShapeTable { by_def, by_name }
+    ShapeTable { by_def }
 }
 
 /// Reconstruct the [`GlobalShapeMap`] from [`StructShapeData`]'s sorted
@@ -557,6 +531,7 @@ pub fn rebuild_global_shape_map(data: &StructShapeData) -> GlobalShapeMap {
 pub fn build_global_shape_map(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
     shapes: &ShapeTable,
 ) -> GlobalShapeMap {
     let mut out = LookupMap::new();
@@ -568,6 +543,7 @@ pub fn build_global_shape_map(
                 var.annotation.as_ref(),
                 SymbolKind::Variable,
                 index,
+                resolutions,
                 shapes,
                 &mut out,
             );
@@ -579,6 +555,7 @@ pub fn build_global_shape_map(
                 cst.annotation.as_ref(),
                 SymbolKind::Constant,
                 index,
+                resolutions,
                 shapes,
                 &mut out,
             );
@@ -592,19 +569,34 @@ pub fn build_global_shape_map(
 /// read of this entry (`LowerCtx::global_shape`) gets the already-correct
 /// shape identity, with no re-resolution (and no referrer-file tracking)
 /// needed at any call site.
+///
+/// Issue #2249: `annotation`'s own span is a `RefKind::Type` reference the
+/// analyzer already resolved — consumed directly via `resolutions` instead
+/// of re-deriving it through `ShapeTable::resolve`'s own narrower
+/// primitive. Mirrors `context::LowerCtx::record_temp_annotation`'s
+/// identical migration (its `temp` twin).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors decls::lookup_global's own doc precedent for this shape; adding \
+              `resolutions` (issue #2249) pushed this one over the 7-arg default"
+)]
 fn record_global_annotation(
     name: &str,
     file: FileId,
     annotation: Option<&hir::TypeExpr>,
     kind: SymbolKind,
     index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
     shapes: &ShapeTable,
     out: &mut GlobalShapeMap,
 ) {
-    let Some(hir::TypeExpr::Named { name: ty_name, .. }) = annotation else {
+    let Some(ann) = annotation else {
         return;
     };
-    let Some(shape) = shapes.resolve(ty_name, file, index) else {
+    let Some(shape) = resolutions
+        .resolve(file, ann.range())
+        .and_then(|id| shapes.get_by_def(id))
+    else {
         return;
     };
     if let Some(id) = lookup_global(index, file, name, kind) {
@@ -622,12 +614,26 @@ mod tests {
 
     use brink_format::DefinitionTag;
 
-    use crate::symbols::{SymbolInfo, Visibility};
+    use crate::symbols::{ResolvedRef, SymbolInfo, Visibility};
 
     fn hir_for(src: &str) -> hir::HirFile {
         let parsed = brink_syntax::parse(src);
         let (hir, _manifest, _diag) = hir::lower(FileId(0), &parsed.tree());
         hir
+    }
+
+    /// Deterministic `(file, name)` → `DefinitionId` hash, matching
+    /// `index_for_structs`' own per-struct id assignment exactly — the
+    /// **only** way a test recovers a specific shape from a [`ShapeTable`]
+    /// (issue #2249 deleted `ShapeTable::get`'s bare-name lookup; every
+    /// caller now goes through [`ShapeTable::get_by_def`], the same
+    /// `DefinitionId`-only surface production code uses, so a test needs
+    /// this to reproduce the id `index_for_structs` assigned).
+    fn struct_def_id(file: FileId, name: &str) -> DefinitionId {
+        let mut hasher = DefaultHasher::new();
+        file.0.hash(&mut hasher);
+        name.hash(&mut hasher);
+        DefinitionId::new(DefinitionTag::StructDef, hasher.finish())
     }
 
     /// Build a minimal [`SymbolIndex`] with exactly `hir`'s `STRUCT`
@@ -653,10 +659,7 @@ mod tests {
             if already_indexed {
                 continue;
             }
-            let mut hasher = DefaultHasher::new();
-            file.0.hash(&mut hasher);
-            s.name.text.hash(&mut hasher);
-            let def_id = DefinitionId::new(DefinitionTag::StructDef, hasher.finish());
+            let def_id = struct_def_id(file, &s.name.text);
             index.symbols.insert(
                 def_id,
                 SymbolInfo {
@@ -682,21 +685,92 @@ mod tests {
         index
     }
 
+    /// Test-only stand-in for `brink_analyzer::resolve::resolve_type_ref`
+    /// (issue #2249): resolves every struct field's / global's `Named` TM-2
+    /// type annotation against `index`'s declared `Struct` symbols, without
+    /// pulling in `brink-analyzer` (crate layering forbids the reverse edge
+    /// — see `index_for_structs`'s own doc). No referrer-scoping/std-exclusion
+    /// nuance — every fixture in this module either declares its structs in
+    /// one file or (`lookup_global_picks_the_referrers_own_shape_when_names_collide`)
+    /// never exercises a nested-field/global-annotation lookup at all, so a
+    /// bare by-name match is faithful to what the analyzer would resolve
+    /// for the cases this module actually covers; the analyzer's own
+    /// referrer/std-exclusion behavior has its own dedicated test coverage
+    /// (`brink-analyzer::resolve`'s tests).
+    fn resolutions_for(files: &[(FileId, &hir::HirFile)], index: &SymbolIndex) -> ResolutionMap {
+        fn record(
+            file: FileId,
+            ty: &hir::TypeExpr,
+            index: &SymbolIndex,
+            refs: &mut Vec<ResolvedRef>,
+        ) {
+            let hir::TypeExpr::Named { name, range } = ty else {
+                return;
+            };
+            let Some(id) = index.by_name.get(name).and_then(|ids| {
+                ids.iter()
+                    .find(|id| {
+                        index
+                            .symbols
+                            .get(id)
+                            .is_some_and(|info| info.kind == SymbolKind::Struct)
+                    })
+                    .copied()
+            }) else {
+                return;
+            };
+            refs.push(ResolvedRef {
+                file,
+                range: *range,
+                target: id,
+            });
+        }
+        let mut refs = Vec::new();
+        for &(file_id, hir_file) in files {
+            for s in &hir_file.structs {
+                for f in &s.fields {
+                    record(file_id, &f.ty, index, &mut refs);
+                }
+            }
+            for v in &hir_file.variables {
+                if let Some(ann) = &v.annotation {
+                    record(file_id, ann, index, &mut refs);
+                }
+            }
+            for c in &hir_file.constants {
+                if let Some(ann) = &c.annotation {
+                    record(file_id, ann, index, &mut refs);
+                }
+            }
+        }
+        refs
+    }
+
     #[test]
     fn shape_table_assigns_dense_ids_in_declaration_order() {
         let hir = hir_for("STRUCT Alpha = #{v: int}\nSTRUCT Beta = #{v: int, w: int}\nHello.\n");
         let index = index_for_structs(&hir, FileId(0));
+        let files = [(FileId(0), &hir)];
+        let resolutions = ResolutionLookup::build(&resolutions_for(&files, &index));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index, &mut Vec::new());
+        let shapes = build_shape_table(&files, &mut names, &index, &resolutions, &mut Vec::new());
         assert_eq!(shapes.len(), 2);
-        let alpha = shapes.get("Alpha").expect("Alpha should be in the table");
-        let beta = shapes.get("Beta").expect("Beta should be in the table");
+        let alpha = shapes
+            .get_by_def(struct_def_id(FileId(0), "Alpha"))
+            .expect("Alpha should be in the table");
+        let beta = shapes
+            .get_by_def(struct_def_id(FileId(0), "Beta"))
+            .expect("Beta should be in the table");
         assert_eq!(alpha.id, 0, "first declared struct gets shape id 0");
         assert_eq!(beta.id, 1, "second declared struct gets shape id 1");
         assert_eq!(beta.fields.len(), 2);
         assert_eq!(beta.field("v").map(|(offset, _)| offset), Some(0));
         assert_eq!(beta.field("w").map(|(offset, _)| offset), Some(1));
-        assert!(shapes.get("Bogus").is_none());
+        assert!(
+            shapes
+                .get_by_def(struct_def_id(FileId(0), "Bogus"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -704,10 +778,16 @@ mod tests {
         let hir =
             hir_for("STRUCT Inner = #{v: int}\nSTRUCT Outer = #{inner: Inner, n: int}\nHello.\n");
         let index = index_for_structs(&hir, FileId(0));
+        let files = [(FileId(0), &hir)];
+        let resolutions = ResolutionLookup::build(&resolutions_for(&files, &index));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index, &mut Vec::new());
-        let inner = shapes.get("Inner").expect("Inner should be in the table");
-        let outer = shapes.get("Outer").expect("Outer should be in the table");
+        let shapes = build_shape_table(&files, &mut names, &index, &resolutions, &mut Vec::new());
+        let inner = shapes
+            .get_by_def(struct_def_id(FileId(0), "Inner"))
+            .expect("Inner should be in the table");
+        let outer = shapes
+            .get_by_def(struct_def_id(FileId(0), "Outer"))
+            .expect("Outer should be in the table");
         let (_, nested) = outer.field("inner").expect("Outer declares `inner`");
         assert_eq!(
             nested,
@@ -721,21 +801,17 @@ mod tests {
         );
     }
 
-    /// Issue #2246 review: `ShapeTable::resolve`'s old "fast path" answered
-    /// a *different*, unscoped question whenever `name`'s bucket held
-    /// exactly one candidate — it returned that candidate unconditionally,
-    /// never consulting `lookup_global`'s std-exclusion at all. A struct
-    /// name that only a mounted `std…` module declares, with **no**
-    /// project-side homonym anywhere (so the bucket really does hold just
-    /// one entry), used to resolve straight through — the referrer silently
-    /// reaching into std with no import, the exact bug class #2197/#2238
-    /// closed for every other bare-name lookup in this crate.
-    ///
-    /// Rule 20a: verified this assertion fails (returns `Some`, not `None`)
-    /// with the production fix reverted to the old `if ids.len() <= 1 {
-    /// return ids.first()... }` fast path.
+    /// Issue #2246 review: `lookup_global`'s std-exclusion fallback must
+    /// refuse a struct name only a mounted `std…` module declares, with
+    /// **no** project-side homonym anywhere (so the candidate bucket holds
+    /// just one entry) — the referrer must not silently reach into std
+    /// with no import, the exact bug class #2197/#2238 closed for every
+    /// other bare-name lookup in this crate. (Formerly exercised through
+    /// `ShapeTable::resolve`'s own now-deleted wrapper — issue #2249 — this
+    /// test now calls `lookup_global` directly, the primitive that
+    /// actually implements the property.)
     #[test]
-    fn resolve_excludes_a_sole_std_declared_shape_with_no_project_homonym() {
+    fn lookup_global_excludes_a_sole_std_declared_struct_with_no_project_homonym() {
         let mut index = SymbolIndex::default();
         let std_file = FileId(1);
         let referrer_file = FileId(0);
@@ -762,23 +838,8 @@ mod tests {
             .or_default()
             .push(def_id);
 
-        let mut by_def: LookupMap<DefinitionId, ShapeInfo> = LookupMap::new();
-        by_def.insert(
-            def_id,
-            ShapeInfo {
-                id: 0,
-                definition_id: def_id,
-                name: NameId(0),
-                fields: Vec::new(),
-                field_index: LookupMap::new(),
-            },
-        );
-        let mut by_name: LookupMap<String, Vec<DefinitionId>> = LookupMap::new();
-        by_name.insert("Cue".to_string(), vec![def_id]);
-        let shapes = ShapeTable { by_def, by_name };
-
         assert!(
-            shapes.resolve("Cue", referrer_file, &index).is_none(),
+            lookup_global(&index, referrer_file, "Cue", SymbolKind::Struct).is_none(),
             "a struct name only a mounted std module declares must not resolve for a \
              referrer that never declares (or imports) it itself — even when it is the \
              sole candidate in the bucket"
@@ -799,18 +860,27 @@ mod tests {
         );
         let files = [(FileId(0), &hir)];
         let index = index_for_structs(&hir, FileId(0));
+        let resolutions_map = resolutions_for(&files, &index);
+        let resolutions = ResolutionLookup::build(&resolutions_map);
 
         let mut direct_names = NameTable::new();
-        let direct = build_shape_table(&files, &mut direct_names, &index, &mut Vec::new());
+        let direct = build_shape_table(
+            &files,
+            &mut direct_names,
+            &index,
+            &resolutions,
+            &mut Vec::new(),
+        );
 
-        let data = build_struct_shape_data(&files, &index);
+        let data = build_struct_shape_data(&files, &index, &resolutions_map);
         let mut throwaway = NameTable::new();
         let rebuilt = rebuild_shape_table(&data, &mut throwaway);
 
         assert_eq!(direct.len(), rebuilt.len());
         for name in ["Inner", "Outer", "Alpha"] {
-            let d = direct.get(name).expect("shape in direct table");
-            let r = rebuilt.get(name).expect("shape in rebuilt table");
+            let def_id = struct_def_id(FileId(0), name);
+            let d = direct.get_by_def(def_id).expect("shape in direct table");
+            let r = rebuilt.get_by_def(def_id).expect("shape in rebuilt table");
             assert_eq!(d.id, r.id, "{name} shape id");
             assert_eq!(d.fields.len(), r.fields.len(), "{name} field count");
             // Every field: same offset + same nested shape identity.
@@ -826,14 +896,18 @@ mod tests {
     fn duplicate_struct_names_keep_the_first_declaration() {
         let hir = hir_for("STRUCT Dup = #{a: int}\nSTRUCT Dup = #{b: int, c: int}\nHello.\n");
         let index = index_for_structs(&hir, FileId(0));
+        let files = [(FileId(0), &hir)];
+        let resolutions = ResolutionLookup::build(&resolutions_for(&files, &index));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&[(FileId(0), &hir)], &mut names, &index, &mut Vec::new());
+        let shapes = build_shape_table(&files, &mut names, &index, &resolutions, &mut Vec::new());
         assert_eq!(
             shapes.len(),
             1,
             "the duplicate name occupies one table slot"
         );
-        let dup = shapes.get("Dup").expect("Dup should be in the table");
+        let dup = shapes
+            .get_by_def(struct_def_id(FileId(0), "Dup"))
+            .expect("Dup should be in the table");
         assert_eq!(
             dup.fields.len(),
             1,
@@ -846,10 +920,12 @@ mod tests {
     /// Issue #2238's own regression: two *coexisting* declared-module
     /// shapes sharing a bare name (project vs. mounted std, modeled here as
     /// two distinct files each declaring its own `Cue`) must each keep
-    /// their own table entry, and `resolve` must pick the one declared in
-    /// the referrer's own file rather than whichever was seen first.
+    /// their own table entry, and `lookup_global` (the primitive
+    /// `ShapeTable::resolve` used to wrap, before its issue #2249 removal)
+    /// must pick the one declared in the referrer's own file rather than
+    /// whichever was seen first.
     #[test]
-    fn resolve_picks_the_referrers_own_shape_when_names_collide() {
+    fn lookup_global_picks_the_referrers_own_shape_when_names_collide() {
         let std_file = FileId(0);
         let std_hir = hir_for("STRUCT Cue = #{speaker: string}\nHello.\n");
         let project_file = FileId(1);
@@ -864,8 +940,9 @@ mod tests {
         }
 
         let files = [(std_file, &std_hir), (project_file, &project_hir)];
+        let resolutions = ResolutionLookup::build(&resolutions_for(&files, &index));
         let mut names = NameTable::new();
-        let shapes = build_shape_table(&files, &mut names, &index, &mut Vec::new());
+        let shapes = build_shape_table(&files, &mut names, &index, &resolutions, &mut Vec::new());
 
         // Both shapes coexist — two distinct table entries for one name.
         assert_eq!(
@@ -874,8 +951,8 @@ mod tests {
             "std's Cue and the project's Cue both keep a shape id"
         );
 
-        let from_std = shapes
-            .resolve("Cue", std_file, &index)
+        let from_std = lookup_global(&index, std_file, "Cue", SymbolKind::Struct)
+            .and_then(|id| shapes.get_by_def(id))
             .expect("std's own file resolves its own Cue");
         assert_eq!(
             from_std.fields.len(),
@@ -883,8 +960,8 @@ mod tests {
             "std's Cue keeps its own 1-field shape"
         );
 
-        let from_project = shapes
-            .resolve("Cue", project_file, &index)
+        let from_project = lookup_global(&index, project_file, "Cue", SymbolKind::Struct)
+            .and_then(|id| shapes.get_by_def(id))
             .expect("the project's own file resolves its own Cue");
         assert_eq!(
             from_project.fields.len(),
@@ -947,17 +1024,15 @@ mod tests {
             .or_default()
             .push(std_def_id);
 
+        let files = [(ghost_file, &ghost_hir)];
+        let resolutions = ResolutionLookup::build(&resolutions_for(&files, &index));
         let mut names = NameTable::new();
         let mut diagnostics = Vec::new();
-        let shapes = build_shape_table(
-            &[(ghost_file, &ghost_hir)],
-            &mut names,
-            &index,
-            &mut diagnostics,
-        );
+        let shapes = build_shape_table(&files, &mut names, &index, &resolutions, &mut diagnostics);
 
-        assert!(
-            shapes.get("Ghost").is_none(),
+        assert_eq!(
+            shapes.len(),
+            0,
             "the struct still can't resolve its own identity, so it still \
              occupies no table slot — E181 makes the drop loud, not stops \
              it from happening"
@@ -1010,7 +1085,9 @@ mod tests {
             .or_default()
             .push(std_def_id);
 
-        let data = build_struct_shape_data(&[(ghost_file, &ghost_hir)], &index);
+        let files = [(ghost_file, &ghost_hir)];
+        let resolutions = resolutions_for(&files, &index);
+        let data = build_struct_shape_data(&files, &index, &resolutions);
 
         assert!(
             data.shapes.is_empty(),

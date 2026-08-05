@@ -1765,7 +1765,7 @@ pub(crate) fn struct_shape_data_query(
         .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
         .collect();
     let resolved = resolutions_index_query(db, project);
-    brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index)
+    brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index, &resolved.resolutions)
 }
 
 /// One file's declaration-only HIR projection (issue #839 / FG-4e):

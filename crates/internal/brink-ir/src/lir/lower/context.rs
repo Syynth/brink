@@ -785,19 +785,27 @@ impl<'a> LowerCtx<'a> {
         self.temp_shapes.insert(slot, shape_def);
     }
 
-    /// TM-4c: if `annotation` is a `Named` type naming a declared struct,
-    /// resolve it **once, now** — referrer = this frame's own file, always
-    /// correct since a temp's annotation and every read of it share one
-    /// file (issue #2238) — and record it as `slot`'s known shape
-    /// (`set_temp_shape`). The one call every `TempDecl` lowering site
-    /// (classic and block-scoped) makes right after allocating/resolving
-    /// the temp's own slot, so `expr::known_shape` can later chase a
-    /// struct-typed `temp`'s reads/writes to a static offset under `types =
-    /// strict`.
+    /// TM-4c: if `annotation` names a declared struct, record it as `slot`'s
+    /// known shape (`set_temp_shape`). The one call every `TempDecl`
+    /// lowering site (classic and block-scoped) makes right after
+    /// allocating/resolving the temp's own slot, so `expr::known_shape` can
+    /// later chase a struct-typed `temp`'s reads/writes to a static offset
+    /// under `types = strict`.
+    ///
+    /// Issue #2249: `annotation`'s own span is a `RefKind::Type` reference
+    /// the analyzer already resolved (`symbols::project`'s walk +
+    /// `resolve::resolve_type_ref`, referrer = this frame's own file, same
+    /// correctness argument issue #2238 gave for the prior
+    /// `ShapeTable::resolve` call this replaces: a temp's annotation and
+    /// every read of it share one file) — consume that recorded resolution
+    /// directly instead of re-deriving it through `ShapeTable::resolve`'s
+    /// own narrower primitive. Mirrors `lir::lower::structs::
+    /// record_global_annotation`'s identical migration.
     pub fn record_temp_annotation(&mut self, slot: u16, annotation: Option<&crate::hir::TypeExpr>) {
-        if let Some(crate::hir::TypeExpr::Named { name, .. }) = annotation
-            && let Some(shape) = self.structs.shapes.resolve(name, self.file, self.index)
-        {
+        let shape = annotation
+            .and_then(|ann| self.resolutions.resolve(self.file, ann.range()))
+            .and_then(|id| self.structs.shapes.get_by_def(id));
+        if let Some(shape) = shape {
             self.set_temp_shape(slot, shape.definition_id);
         }
     }

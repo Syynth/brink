@@ -450,17 +450,37 @@ pub fn collect_externals(
 /// `resolve.rs`'s `ImportScope`-aware `lookup_by_name` instead), so the
 /// entry declared in `file` is always the right answer whenever one exists.
 ///
-/// **Exception (issue #2246):** `ShapeTable::resolve`'s own two production
-/// callers — `structs::record_global_annotation` and
-/// `context::record_temp_annotation`, a `VAR`/`CONST`/`temp` TM-2 struct
-/// annotation — pass a **referrer** file that did not itself declare the
-/// annotated shape; that *is* a cross-file reference, routed through this
+/// **Former exception, closed by issue #2249:** `ShapeTable::resolve`'s own
+/// two production callers (a `VAR`/`CONST`/`temp` TM-2 struct annotation)
+/// used to pass a **referrer** file that did not itself declare the
+/// annotated shape — a genuine cross-file reference routed through this
 /// file-scoped fallback rather than `resolve.rs`'s full-`Candidacy`
-/// machinery because it has no analyzer-recorded resolution to consume (no
-/// HIR reference is walked for a `TypeExpr` annotation at all — see
-/// `project.rs`'s own doc). The unscoped-fallback std-exclusion below is
-/// exactly what keeps that one caller from silently reaching into a
-/// mounted std shape it never imported.
+/// machinery, because there was no analyzer-recorded resolution to consume
+/// (no HIR reference was walked for a `TypeExpr` annotation at all).
+/// `symbols::project`'s walk now registers one (`RefKind::Type`), so both
+/// callers — `structs::record_global_annotation`,
+/// `context::LowerCtx::record_temp_annotation` — consume the analyzer's own
+/// `resolve::resolve_type_ref` resolution directly and no longer reach this
+/// function at all; a struct field's own nested-type lookup
+/// (`build_shape_table`/`build_struct_shape_data`) made the identical move.
+///
+/// **Two other call sites here were audited against the same "does this
+/// need a `RefKind`?" question and found NOT to fit it (issue #2249):**
+/// `collect_externals`' fallback-fn lookup and `context::LowerCtx::
+/// lookup_address_id` are both genuine **self-declaration** lookups in the
+/// sense the paragraph above already describes — an `extern foo`'s
+/// same-named `fn` fallback and a locally-declared label's own address are
+/// never something the *user* wrote a textual reference to at this exact
+/// call site; the pairing/existence check is inferred by the compiler from
+/// two declarations' matching names (or a scope-qualified label's own
+/// declaration), not resolved from a written path the way a divert target,
+/// a variable read, or a type annotation is. There is no HIR reference to
+/// register a `RefKind` for at either site — inventing a synthetic one with
+/// no real source span would be exactly the "second scoped-resolution
+/// implementation" issue #2249 warns against growing, not a reduction of
+/// one. Both sites already get this function's std-exclusion for free, as
+/// every other caller does; they are a genuinely different shape of gap
+/// than the four `RefKind::Type` sites, not an oversight.
 ///
 /// The unscoped fallback (no same-file entry) **excludes any candidate
 /// declared in a mounted `std…` module** (review finding on #2197):
