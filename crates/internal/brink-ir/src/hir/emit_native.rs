@@ -2187,6 +2187,7 @@ mod tests {
                         ),
                     }],
                     range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+                    crosses_module_wall: false,
                 })),
                 onwards_args: Vec::new(),
             })],

@@ -31,6 +31,9 @@ pub fn lower_path(path: &ast::Path) -> Path {
     Path {
         segments,
         range: path.syntax().text_range(),
+        // ink has no `::` module-qualifying separator at all — always
+        // `false` (see `hir::Path::crosses_module_wall`'s doc).
+        crosses_module_wall: false,
     }
 }
 

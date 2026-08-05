@@ -28,11 +28,13 @@ use crate::manifest::local_definition_id;
 /// item-is-the-leaf reading) — but Rust's `use`, which charter §13.2
 /// commits to lifting verbatim, dual-reads that trailing segment: `barter`
 /// may be an *item* `story::market` exports, or it may itself name the
-/// **module** `story::market::barter` (a real submodule, licensing its own
-/// public exports bare — "its items become referenceable by bare name per
-/// existing import-coverage rules", per the #1592 ruling). Same shape for
-/// every entry in a nested list (`use a::{b, c};` dual-reads `b` and `c`
-/// independently, exactly as `use a::b;` dual-reads `b`).
+/// **module** `story::market::barter` (a real submodule, licensing
+/// **module-qualified** access to its own public exports — "a trailing
+/// segment that resolves to a module licenses that module, exactly as
+/// Rust's `use` does", per the #1592 ruling, `docs/decision-log.md`
+/// 2026-07-27). Same shape for every entry in a nested list (`use a::{b,
+/// c};` dual-reads `b` and `c` independently, exactly as `use a::b;`
+/// dual-reads `b`).
 ///
 /// This is a **per-file** query (`resolve(FileId)`'s incremental contract:
 /// "reads only the symbol index and this file's own manifest — never
@@ -50,13 +52,25 @@ use crate::manifest::local_definition_id;
 /// non-conflicting sets (`bare` is name-precise; `qualified` is
 /// module-wide), so a name that resolves as *both* an item of `module` and
 /// a module in its own right gets both: the item is bare-importable under
-/// its own name, and the submodule's public exports also become
-/// bare-visible. This mirrors Rust's own per-namespace `use` semantics
+/// its own name (via `bare`), and the submodule's public exports become
+/// reachable **qualified** — `barter::haggle`, never bare `haggle` (via
+/// `qualified`). This mirrors Rust's own per-namespace `use` semantics
 /// (a module and a value can share a name without conflict) without this
 /// codebase needing to model namespaces explicitly. `modules::check`'s
 /// `E088` is the check that validates *this* file's readings against real
 /// project-wide module/export data and diagnoses when a trailing segment
 /// resolves to **neither**.
+///
+/// ⚠ **Corrected 2026-08-05 (issue #2287).** This doc previously claimed
+/// the submodule reading makes its exports "bare-visible" / "referenceable
+/// by bare name" — that was an over-read of the 2026-07-27 ruling and was
+/// itself the reported bug: a `qualified` entry alone must never license a
+/// *bare* reference (`resolve_divert::lookup_knot_bare`'s
+/// `is_qualified_import_only` exclusion is what now enforces this for
+/// diverts specifically — the only reference kind this issue's repro
+/// covers). `qualified_modules.contains(module)` still legitimately grants
+/// non-divert reference kinds `Candidacy::Imported` for their own
+/// qualified-syntax forms; nothing about that changed.
 #[must_use]
 pub(crate) fn import_coverage_for_file(
     imports: &[Import],
@@ -85,8 +99,9 @@ pub(crate) fn import_coverage_for_file(
                 // candidate is inserted whether or not the item was
                 // aliased, so an aliased trailing segment that resolves to
                 // a module (`use a::b as c;` where `b` is a submodule)
-                // still licenses `b`'s exports bare under their *own*
-                // names, even though `c` binds nothing useful. That shape
+                // still licenses qualified access to `b`'s exports under
+                // `b`'s *own* name (`b::item`, issue #2287), even though
+                // `c` binds nothing useful. That shape
                 // has no sound alias representation at all (aliasing a
                 // whole module's export set, not one name) and is
                 // diagnosed loudly at the whole-project level instead —
@@ -402,6 +417,18 @@ fn lookup_divert(
 ) -> Option<DefinitionId> {
     let path = &uref.path;
 
+    // Module-qualified (`-> barter::haggle`, issue #2287): resolved
+    // entirely separately from ink's own dotted `knot.stitch` addressing
+    // below — a module qualifier licenses reaching a top-level flow through
+    // an imported *module*, never a stitch/label path, and a miss here must
+    // not fall through to the single-segment resolution below (that
+    // fallback treating the *whole* qualified path as an opaque bare name
+    // is exactly how issue #2287's bug (b) let `-> haggle` slip through
+    // after the qualified form failed).
+    if uref.module_qualified {
+        return lookup_qualified_divert(index, scope, path);
+    }
+
     // Dotted path — try exact qualified lookup, then qualify with current knot
     if path.contains('.') {
         if let Some(id) =
@@ -449,8 +476,17 @@ fn lookup_divert(
         }
     }
 
-    // 2. Knot at top level
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Knot]) {
+    // 2. Knot at top level — a *bare* divert name (no qualifier segment at
+    // all in source) must resolve only to a same-module candidate or one a
+    // symbol-level/glob `use` actually named (issue #2287): unlike the flat
+    // `lookup_by_name`/`classify` most other reference kinds use (which
+    // also treats a **qualified**-module import as licensing bare access,
+    // since e.g. a function-call callee may itself be spelled either way),
+    // a bare divert has no qualifier to license through — a candidate
+    // reachable only via a qualified-module import must stay unresolved
+    // here, or `-> haggle` would silently accept exactly the over-permissive
+    // reading #2287 reported as bug (b).
+    if let Some(id) = lookup_knot_bare(index, scope, path) {
         return Some(id);
     }
 
@@ -478,6 +514,157 @@ fn lookup_divert(
 
     // 7. Divert parameter in scope (`=== knot(-> x) ===` then `-> x`)
     lookup_local_in_scope(locals, path, &uref.scope)
+}
+
+/// Is `info` reachable *only* through a **qualified-module** import
+/// (`use ...::mod;` / `import mod;`, `scope.qualified_modules`) with no
+/// corresponding bare (symbol-level/glob) import of this exact name (issue
+/// #2287)? A qualified-module import licenses `module::name`/`module.name`
+/// access to any public export — [`classify`]'s `Candidacy::Imported`
+/// correctly grants that for reference kinds whose own syntax can carry a
+/// qualifier — but it must never *also* license the bare `name` spelling,
+/// which only a symbol-level or glob import brings into scope. `false` for
+/// a candidate with no module at all (the legacy/undeclared-module world,
+/// always bare-visible) and for one already bare-imported (both readings
+/// can hold at once per #1592's dual-reading ruling; the bare one still
+/// wins).
+fn is_qualified_import_only(scope: &ImportScope, info: &SymbolInfo) -> bool {
+    let Some(module) = &info.module else {
+        return false;
+    };
+    info.visibility == Visibility::Public
+        && scope.qualified_modules.contains(module)
+        && !scope
+            .bare_imports
+            .contains(&(module.clone(), info.name.clone()))
+}
+
+/// Bare (single-segment, no qualifier at all in source) top-level-`Knot`
+/// divert lookup (issue #2287). Deliberately duplicates
+/// [`lookup_by_name_direct`]'s own fast-path/tie-break structure — same
+/// std-reserved-root skip, same "`!multiple` sole match wins regardless of
+/// candidacy" byte-identity guarantee that lets a totally *unimported*
+/// cross-module `Knot` still resolve here exactly as before (its specific
+/// diagnostic — `E087` private-cross-module or `E025` import-required — is
+/// `modules::check`'s separate, more precise gate to raise on the
+/// resulting `ResolvedRef`, not this function's job to pre-empt) — with
+/// exactly one new exclusion, structurally parallel to the std skip: a
+/// candidate reachable *only* via a qualified-module import
+/// ([`is_qualified_import_only`]) is skipped before it can ever win, since
+/// a module import must never license the bare spelling (bug (b)). Not a
+/// thin wrapper over `lookup_by_name`/`classify` because that fast path
+/// applies its own exclusion **before** counting a candidate into
+/// `first_match`/`multiple`, exactly where this one must too — bolting the
+/// exclusion on afterward would still let a qualified-only candidate win
+/// as the "sole" match.
+fn lookup_knot_bare(index: &SymbolIndex, scope: &ImportScope, name: &str) -> Option<DefinitionId> {
+    if let Some(id) = lookup_knot_bare_direct(index, scope, name) {
+        return Some(id);
+    }
+    // Alias fallback (issue #1590), mirroring `lookup_by_name`'s own: an
+    // aliased bare-import item (`use ...::haggle as h;`) is never in
+    // `index.by_name` under its local alias, so the direct lookup above
+    // can never find it — `scope.aliases` is the indirection. The alias
+    // entry's mere presence already proves this file bare-imported that
+    // exact `(module, source_name)` pair (`ImportScope::new` only ever
+    // populates it from a bare import item that named an alias), so no
+    // further candidacy check is needed here, exactly as `lookup_by_name`
+    // performs none either.
+    let (module, source_name) = scope.aliases.get(name)?;
+    let ids = index.by_name.get(source_name.as_str())?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        (info.kind == SymbolKind::Knot && info.module.as_deref() == Some(module.as_str()))
+            .then_some(*id)
+    })
+}
+
+/// The direct (non-alias) half of [`lookup_knot_bare`] — see that
+/// function's own doc for why this duplicates
+/// [`lookup_by_name_direct`]'s structure rather than reusing it.
+fn lookup_knot_bare_direct(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    name: &str,
+) -> Option<DefinitionId> {
+    let ids = index.by_name.get(name)?;
+    let mut first_match = None;
+    let mut first_in_scope = None;
+    let mut first_imported = None;
+    let mut multiple = false;
+    for id in ids {
+        let Some(info) = index.symbols.get(id) else {
+            continue;
+        };
+        if info.kind != SymbolKind::Knot {
+            continue;
+        }
+        let candidacy = classify(scope, info);
+        if candidacy == Candidacy::Other
+            && info.module.as_deref().is_some_and(is_reserved_root_module)
+        {
+            continue;
+        }
+        if is_qualified_import_only(scope, info) {
+            continue;
+        }
+        if first_match.is_none() {
+            first_match = Some(*id);
+        } else {
+            multiple = true;
+        }
+        match candidacy {
+            Candidacy::InScope if first_in_scope.is_none() => first_in_scope = Some(*id),
+            Candidacy::Imported if first_imported.is_none() => first_imported = Some(*id),
+            _ => {}
+        }
+    }
+    if !multiple {
+        return first_match;
+    }
+    first_in_scope.or(first_imported).or(first_match)
+}
+
+/// Does `module` (a candidate's real, fully `::`-joined declared module
+/// name) match a divert's own written qualifier segment(s) — the prefix of
+/// `-> qualifier::name` before the final `::`? Exact match covers the
+/// common single-level case (`barter` naming module `story::market::barter`
+/// end-to-end would require `qualifier == module`); the suffix form covers
+/// a qualifier that only spells the module's own trailing component(s),
+/// the shape `use story::market::barter;`'s dual-reading licenses (issue
+/// #1592) and issue #2287's own repro exercises.
+fn module_matches_qualifier(module: &str, qualifier: &str) -> bool {
+    module == qualifier || module.ends_with(&format!("::{qualifier}"))
+}
+
+/// Module-qualified divert lookup (`-> barter::haggle`, issue #2287):
+/// `path` is `uref.path` when `uref.module_qualified` is set —
+/// `::`-joined, never `.`-joined, so it splits cleanly into the qualifier
+/// prefix and the bare target name. Resolves only against a top-level
+/// `Knot` (the sole symbol kind a native `flow` divert target names) whose
+/// real declared module matches the qualifier
+/// ([`module_matches_qualifier`]) and which this file imported *qualified*
+/// (`scope.qualified_modules` — a symbol-level/glob import does not carry
+/// this licensing power for the qualified spelling, mirroring
+/// [`classify`]'s own module-qualified-import reading).
+fn lookup_qualified_divert(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    path: &str,
+) -> Option<DefinitionId> {
+    let (qualifier, name) = path.rsplit_once("::")?;
+    let ids = index.by_name.get(name)?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        if info.kind != SymbolKind::Knot || info.visibility != Visibility::Public {
+            return None;
+        }
+        let module = info.module.as_deref()?;
+        if !module_matches_qualifier(module, qualifier) {
+            return None;
+        }
+        scope.qualified_modules.contains(module).then_some(*id)
+    })
 }
 
 fn resolve_variable(
@@ -1739,6 +1926,7 @@ mod tests {
                 stitch: stitch.map(String::from),
             },
             arg_count,
+            module_qualified: false,
         }
     }
 
@@ -2902,6 +3090,7 @@ mod tests {
             kind: RefKind::Type,
             scope: Scope::default(),
             arg_count: None,
+            module_qualified: false,
         };
         let mut map: ResolutionMap = Vec::new();
         resolve_type_ref(&index, &std_scope, referrer_file, &uref, &mut map);
@@ -2934,6 +3123,7 @@ mod tests {
             kind: RefKind::Type,
             scope: Scope::default(),
             arg_count: None,
+            module_qualified: false,
         };
         let mut map: ResolutionMap = Vec::new();
         resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
@@ -2996,6 +3186,7 @@ mod tests {
             kind: RefKind::Type,
             scope: Scope::default(),
             arg_count: None,
+            module_qualified: false,
         };
         let mut map: ResolutionMap = Vec::new();
         resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
@@ -3068,6 +3259,7 @@ mod tests {
             kind: RefKind::Type,
             scope: Scope::default(),
             arg_count: None,
+            module_qualified: false,
         };
         let mut map: ResolutionMap = Vec::new();
         resolve_type_ref(&index, &scope, FileId(1), &uref, &mut map);
@@ -3525,6 +3717,233 @@ mod tests {
             "a direct in-scope `start` must win over the colliding alias — \
              `ambush AS start` never reaches quest_a's ambush ({aliased_target:?}) \
              under that name"
+        );
+    }
+
+    // ── Issue #2287: module-qualified divert resolution ──────────────
+    //
+    // `market/barter.brink` declaring `pub flow haggle()` (module
+    // `story::market::barter`), referenced from `story.brink`. Four rows,
+    // the maintainer's corrected model (issue #2287's comment):
+    //
+    //   | import                             | `-> barter::haggle` | `-> haggle` |
+    //   |-------------------------------------|----------------------|-------------|
+    //   | *(none)*                            | rejected             | rejected    |
+    //   | `use story::market::barter;`        | accepted             | rejected    |
+    //   | `use story::market::barter::haggle;`| —                    | accepted    |
+    //
+    // The fourth row (`use story::market::barter::*;`, a glob import) is
+    // not exercised here — the native grammar has no glob-`use` production
+    // at all (`brink_syntax_native::parser::decl::use_tree` accepts only an
+    // `IDENT` segment, a `{ … }` group, or a trailing `as` alias; no `*`
+    // arm), so that import spelling cannot be constructed as HIR in the
+    // first place. See this PR's body for the full finding.
+
+    fn haggle_index(module: &str) -> (SymbolIndex, DefinitionId) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let id = DefinitionId::new(DefinitionTag::Address, 0x748);
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind: SymbolKind::Knot,
+                file: FileId(1),
+                range: TextRange::default(),
+                id,
+                name: "haggle".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some(module.to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("haggle".to_string())
+            .or_default()
+            .push(id);
+        (index, id)
+    }
+
+    fn divert_uref(path: &str, module_qualified: bool) -> UnresolvedRef {
+        UnresolvedRef {
+            path: path.to_string(),
+            range: range(0, path.len() as u32),
+            kind: RefKind::Divert,
+            scope: Scope::default(),
+            arg_count: None,
+            module_qualified,
+        }
+    }
+
+    /// Bug (a): `use story::market::barter;` (a module-qualified import —
+    /// lowered as a bare import of item `barter` from `story::market`, whose
+    /// #1592 dual-reading also licenses `story::market::barter` as a
+    /// qualified module candidate) must accept `-> barter::haggle`.
+    ///
+    /// Reverting `lookup_divert`'s `uref.module_qualified` branch makes this
+    /// fail: the old code only ever tried `path.contains('.')`, and a
+    /// `::`-joined path with no dot at all falls through every branch to
+    /// `None` — reproducing the exact reported defect (`unresolved divert
+    /// target: barter.haggle`, before this fix normalized `::` to `.` and
+    /// lost the distinction entirely).
+    #[test]
+    fn qualified_divert_resolves_via_module_qualified_import() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "barter".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        let uref = divert_uref("barter::haggle", true);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            Some(haggle_id),
+            "`use story::market::barter;` must license the module-qualified \
+             `-> barter::haggle` divert"
+        );
+    }
+
+    /// The other half of bug (a): with no import at all, `-> barter::haggle`
+    /// must stay rejected — and the diagnostic must spell the qualifier with
+    /// `::`, not the confusing `.` the pre-fix path-joining produced.
+    #[test]
+    fn qualified_divert_rejected_with_no_import_and_message_uses_double_colon() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::default();
+        let uref = divert_uref("barter::haggle", true);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            None,
+            "no import at all must not license the qualified divert"
+        );
+
+        let mut diagnostics = Vec::new();
+        let mut map = ResolutionMap::new();
+        resolve_divert(
+            &index,
+            &scope,
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert!(map.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E024);
+        assert!(
+            diagnostics[0].message.contains("barter::haggle"),
+            "the E024 message must spell the qualified path with `::` (the \
+             native separator actually written), not `.`: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Bug (b), the dangerous half: `use story::market::barter;` licenses
+    /// the module-qualified spelling (test above) but must NOT also license
+    /// the bare `-> haggle` — that was the over-permissive defect issue
+    /// #2287 reported as its more dangerous half. Reverting
+    /// `lookup_divert`'s step 2 back to `lookup_by_name` makes this fail:
+    /// the dual-reading phantom `story::market::barter` entry in
+    /// `qualified_modules` would classify `haggle` `Candidacy::Imported`,
+    /// and being the sole candidate, the old fast path returned it
+    /// unconditionally.
+    #[test]
+    fn bare_divert_rejected_after_qualified_module_import_only() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "barter".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        let uref = divert_uref("haggle", false);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            None,
+            "a qualified-module-only import must not license the bare \
+             `-> haggle` spelling"
+        );
+    }
+
+    /// Row 3 of the corrected table: `use story::market::barter::haggle;`
+    /// (a genuine symbol-level bare import — no dual-reading ambiguity,
+    /// since the whole prefix `story::market::barter` is unambiguously the
+    /// module and `haggle` is unambiguously the item) must license the bare
+    /// `-> haggle` spelling.
+    #[test]
+    fn bare_divert_resolves_via_symbol_level_import() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market::barter".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "haggle".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        let uref = divert_uref("haggle", false);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            Some(haggle_id),
+            "`use story::market::barter::haggle;` must license the bare \
+             `-> haggle` divert"
+        );
+    }
+
+    /// With no import at all, `lookup_divert` must still resolve the bare
+    /// `-> haggle` — end-to-end it is correctly rejected (issue #2287
+    /// confirms this row already worked), but that rejection is
+    /// `modules::check`'s separate whole-project `E025`/`E087` gate's job,
+    /// which only fires on a *resolved* reference (`ResolutionMap` walk,
+    /// `check_cross_module_refs`'s own doc). This is the pre-existing,
+    /// deliberate byte-identity guarantee `lookup_by_name_direct`'s own doc
+    /// describes (`!multiple` sole match wins regardless of candidacy) —
+    /// `lookup_knot_bare` must reproduce it exactly, not just for bug (b)'s
+    /// qualified-import-only case. `crates/internal/brink-db/src/db.rs`'s
+    /// `private_cross_module_reference_is_e087_through_db` and
+    /// `public_cross_module_reference_without_import_is_e025` are the real
+    /// end-to-end regression pins for this — this unit test is the
+    /// resolve-layer half, added after those two briefly regressed to
+    /// `E024` during this fix's own development (an over-broad first draft
+    /// of `lookup_knot_bare` rejected *any* non-`InScope`/non-bare-imported
+    /// candidate, not only a qualified-import-only one).
+    #[test]
+    fn bare_divert_still_resolves_with_no_import_deferring_to_the_e025_e087_gate() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let uref = divert_uref("haggle", false);
+        assert_eq!(
+            lookup_divert(&index, &ImportScope::default(), &[], &uref),
+            Some(haggle_id),
+            "a totally unimported cross-module Knot must still resolve here — \
+             `modules::check`'s E025/E087 gate is what rejects it, with a far \
+             more precise diagnostic than a bare E024 would give"
         );
     }
 }

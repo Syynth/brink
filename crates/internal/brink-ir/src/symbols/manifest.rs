@@ -91,6 +91,15 @@ pub struct UnresolvedRef {
     pub scope: Scope,
     /// For `RefKind::Function` calls, the number of arguments at the call site.
     pub arg_count: Option<usize>,
+    /// `true` only for a `RefKind::Divert` whose source path crossed a
+    /// module wall (`hir::Path::crosses_module_wall`, issue #2287) —
+    /// `-> barter::haggle`, never ink's own dotted `-> knot.stitch`
+    /// addressing, which reuses the same joined `path` string but never sets
+    /// this. When `true`, `path` is joined with `::` (not `.`) so the
+    /// qualifier prefix and bare target name split back apart cleanly
+    /// (`resolve::lookup_qualified_divert`). Always `false` for every other
+    /// `RefKind` — module-qualified access is a divert-only concern today.
+    pub module_qualified: bool,
 }
 
 /// What kind of reference this is, for diagnostic context.

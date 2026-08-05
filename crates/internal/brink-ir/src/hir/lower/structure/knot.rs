@@ -125,6 +125,7 @@ pub(super) fn lower_knot_body(
                         range: first.name.range,
                     }],
                     range: first.name.range,
+                    crosses_module_wall: false,
                 }),
                 args: Vec::new(),
             },

@@ -405,6 +405,7 @@ fn entry_root_content(knots: &[Knot]) -> crate::Block {
             path: DivertPath::Path(Path {
                 segments: vec![main.name.clone()],
                 range: main.name.range,
+                crosses_module_wall: false,
             }),
             args: Vec::new(),
         },

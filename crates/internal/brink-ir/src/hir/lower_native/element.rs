@@ -949,6 +949,7 @@ pub(super) fn try_claim(
                 range: claimed,
             }],
             range: claimed,
+            crosses_module_wall: false,
         },
         call_args,
     );
@@ -1265,6 +1266,7 @@ pub(super) fn try_dispatch(
                 range: claimed,
             }],
             range: claimed,
+            crosses_module_wall: false,
         },
         call_args,
     );
