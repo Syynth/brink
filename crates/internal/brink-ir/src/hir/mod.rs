@@ -5,6 +5,7 @@
 //! stay as trees, choices and conditionals keep their branch structure, diverts
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
+mod classify;
 pub mod construct;
 mod diagnostics;
 pub(crate) mod doc_block;
@@ -19,6 +20,7 @@ mod stamp;
 mod types;
 pub mod visit;
 
+pub use classify::{ClassifiedCapture, ClassifiedMatch, LineClassification, classify_line};
 pub use construct::{ConstructForm, ConstructTarget};
 pub use diagnostics::*;
 pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
