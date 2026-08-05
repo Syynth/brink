@@ -250,13 +250,19 @@ mod tests {
             "expected non-empty semantic tokens for a native file"
         );
 
-        // Decode: with the ink classifier misrouted onto native source
-        // (this issue's bug), the ink parser garbles native text badly
-        // enough that no token would even land at these exact
-        // (line, start_char) coordinates — `struct Cue {` and
-        // `    speaker: string,` parse identically under both frontends
-        // lexically, so this also exercises the native-CST-vs-ink-CST
-        // dispatch, not just the classifier.
+        // Decode: `struct Cue {` and `    speaker: string,` happen to lex
+        // identically under both frontends (`struct`/`Cue`/`speaker`/
+        // `string` are all plain `IDENT`/keyword tokens either way), so a
+        // token genuinely does land at these exact (line, start_char)
+        // coordinates even pre-fix — the bug is not a missing token, it's
+        // the wrong *classification*: with the ink classifier misrouted
+        // onto native source (this issue's bug), `Cue` and `speaker` both
+        // decode to `variable` (no `STRUCT_DECL`/`STRUCT_FIELD` parent
+        // exists in ink's `SyntaxKind`). Reviewed 2026-08-01: an earlier
+        // version of this comment claimed no token would land here at all,
+        // which was false and is corrected here — what actually changes
+        // between pre- and post-fix is the `token_type` this test asserts
+        // below, not token presence.
         let type_at = |line: u64, col: u64| {
             let found = tokens
                 .iter()

@@ -438,6 +438,20 @@ fn symbol_kind_to_classification(kind: SymbolKind) -> Classification {
 // above are frontend-agnostic (they dispatch on `brink_ir::SymbolKind`, not
 // on either `SyntaxKind`), so both classifiers share them.
 
+/// Node kinds whose parser raw-bumps arbitrary source text into one CST
+/// node, regardless of what the shared lexer tagged each byte as: `TEXT`
+/// (`content::text_run_until`), `CUE_NAME` (`element::cue_name`), `TAG`
+/// (`content::tag`), and `SCENE_TITLE` (`element::scene_title`). A leaf
+/// whose direct parent is one of these is literal prose — a keyword
+/// lexeme, a `-`, or a digit run inside one of them is text, never a
+/// keyword/operator/number (review finding on #2280/#2286: the original
+/// "absorbed into prose" carve-out only checked `TEXT`, missing the three
+/// other raw-bump runs the native grammar introduced).
+fn is_prose_run_container(kind: brink_syntax_native::SyntaxKind) -> bool {
+    use brink_syntax_native::SyntaxKind as NK;
+    matches!(kind, NK::TEXT | NK::CUE_NAME | NK::TAG | NK::SCENE_TITLE)
+}
+
 fn classify_native_token(
     token: &brink_syntax_native::SyntaxToken,
     resolution_index: &HashMap<TextRange, SymbolKind>,
@@ -513,8 +527,15 @@ fn classify_native_token(
         // folding such tokens into a `TEXT` node exactly as it does the
         // `@`/`AT` sigil (`SyntaxKind::AT`'s doc) — so the same "absorbed
         // into TEXT" guard ink's `classify_token` uses for #275 applies here
-        // too, just for a different reason.
-        if token.parent().is_some_and(|p| p.kind() == NK::TEXT) {
+        // too, just for a different reason. Extended to every raw-bump run,
+        // not only `TEXT` — `@THE END:`'s `CUE_NAME` lexes `END` as
+        // `KW_END`, and a `#if only` tag lexes `if` as `KW_IF`; both are a
+        // character name / tag text, not a keyword (review finding on
+        // #2280/#2286).
+        if token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
+        {
             return None;
         }
         return Some(Classification {
@@ -539,6 +560,20 @@ fn classify_native_token(
 
     if kind == NK::IDENT {
         return classify_native_ident(token, resolution_index);
+    }
+
+    // A `-` or digit run inside a raw-bump prose container is literal text
+    // (`INT. HALL - DAY`'s `-`, `@JEAN-LUC`'s `-`), not an operator or a
+    // number — `classify_native_fixed_kind` below has no parent access at
+    // all, so it cannot tell these apart from a real `-`/numeric-literal
+    // token on its own; check parent-awareness here first (review finding
+    // on #2280/#2286, the same hole as the keyword carve-out above).
+    if matches!(kind, NK::MINUS | NK::INTEGER | NK::FLOAT)
+        && token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
+    {
+        return None;
     }
 
     classify_native_fixed_kind(kind)
@@ -685,6 +720,20 @@ fn classify_native_ident(
             token_type: TT_PARAMETER,
             modifiers: 0,
         }),
+        // `[slug]` on a scene heading — the slug names the stitch the
+        // heading declares (`element::scene_stitch`'s doc: "a heading
+        // declares a stitch"), same as any other stitch header (review
+        // finding on #2280/#2286).
+        NK::SCENE_SLUG => Some(Classification {
+            token_type: TT_FUNCTION,
+            modifiers: MOD_DECLARATION,
+        }),
+        // `INT. TITLE - DAY` — the heading's display name. Narrative text,
+        // not a symbol reference; without this arm every word fell through
+        // to the resolution fallback below and rendered as a plain
+        // `variable` — precisely #2280's own worked example (review finding
+        // on #2280/#2286).
+        NK::SCENE_TITLE => None,
         // `PATH`/other contexts — try the resolution index.
         _ => Some(classify_native_ident_by_resolution(token, resolution_index)),
     }
@@ -1474,6 +1523,115 @@ mod tests {
             at(x_col).token_type,
             TT_PROPERTY,
             "the trailing field segment must not reuse the head variable's colour"
+        );
+    }
+
+    #[test]
+    fn native_scene_heading_title_and_slug_are_not_variable() {
+        // #2280's own worked example: `INT. COFFEE SHOP - DAY` had no arm
+        // for `SCENE_TITLE`/`SCENE_SLUG` in `classify_native_ident`'s match,
+        // so every word of the display name (and the slug's stitch name)
+        // fell through to `classify_native_ident_by_resolution` ->
+        // `GENERIC_VARIABLE` — the exact defect the issue names. This is
+        // inside the fence the PR drew: it already covers the sibling
+        // `CUE`/`CUE_NAME`/`COMPACT_CUE` constructs from the same parser
+        // module (`element.rs`).
+        let src = "INT. COFFEE SHOP - DAY [coffee_shop]\nThe morning rush.\n";
+        let tokens = analyzed_native_tokens(src);
+
+        // The title is narrative display text, not a symbol reference — no
+        // token at all should decode to one of its words (the pre-fix bug
+        // *did* emit a token here, just misclassified as `variable`).
+        for word in ["COFFEE", "SHOP", "DAY"] {
+            assert!(
+                tokens.iter().all(|t| token_text(src, t) != word),
+                "scene-title word {word:?} must not get its own semantic token: {tokens:?}"
+            );
+        }
+
+        // The title's `-` is literal text, not an operator.
+        assert!(
+            tokens
+                .iter()
+                .all(|t| !(token_text(src, t) == "-" && t.token_type == TT_OPERATOR)),
+            "the title's `-` must not read as an operator: {tokens:?}"
+        );
+
+        // The slug names the stitch this heading declares.
+        let slug = tokens
+            .iter()
+            .find(|t| token_text(src, t) == "coffee_shop")
+            .expect("a semantic token for the scene slug");
+        assert_eq!(
+            slug.token_type, TT_FUNCTION,
+            "the slug declares a stitch, like any other stitch header"
+        );
+        assert_ne!(
+            slug.modifiers & MOD_DECLARATION,
+            0,
+            "the slug is this stitch's declaration site"
+        );
+    }
+
+    #[test]
+    fn native_cue_name_and_tag_do_not_leak_keyword_or_operator_colours() {
+        // The "absorbed into prose" carve-out (both the keyword guard and
+        // the `-`/digit guard) only checked `NK::TEXT`, but `CUE_NAME`
+        // (`element::cue_name`) and `TAG` (`content::tag`) raw-bump source
+        // text the exact same way, and native hard-reserves keywords
+        // everywhere at the lexer (`lexer/ident.rs`: `"END" => KW_END`) —
+        // so `@THE END:` lexed `END` as `KW_END` with parent `CUE_NAME` and
+        // rendered in keyword colour inside a character name, and `#if
+        // only` did the same for `if` under `TAG`. Same shape as `@JEAN-LUC`
+        // rendering its `-` as an operator.
+        let src = "@THE END: Says who?\n@JEAN-LUC\nHello.\n#if only\n";
+        let tokens = analyzed_native_tokens(src);
+
+        let keyword_texts: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.token_type == TT_KEYWORD)
+            .map(|t| token_text(src, t))
+            .collect();
+        assert!(
+            !keyword_texts.contains(&"END"),
+            "`END` inside a cue name must not read as a keyword: {keyword_texts:?}"
+        );
+        assert!(
+            !keyword_texts.contains(&"if"),
+            "`if` inside a tag must not read as a keyword: {keyword_texts:?}"
+        );
+
+        assert!(
+            tokens
+                .iter()
+                .all(|t| !(token_text(src, t) == "-" && t.token_type == TT_OPERATOR)),
+            "`-` inside a cue name must not read as an operator: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn native_range_filter_works() {
+        // The native sibling of `range_filter_works` — review finding on
+        // #2280/#2286: `semantic_tokens_range_native` had zero callers and
+        // zero tests, unlike its ink sibling (covered by this same test
+        // shape).
+        let source = "flow main() {\n    Hello world\n    -> DONE\n}\n";
+        let mut session = crate::session::IdeSession::new();
+        let file_id = session.update_and_analyze("t.brink", source.to_string());
+        let root = session
+            .syntax_root_native(file_id)
+            .expect("native syntax root");
+        let analysis = session.analysis().expect("analysis");
+
+        let all = semantic_tokens_native(source, &root, analysis, file_id);
+        let range_tokens = semantic_tokens_range_native(source, &root, analysis, file_id, 2, 2);
+
+        // Only tokens on line 2 (`    -> DONE`).
+        let all_line2: Vec<_> = all.iter().filter(|t| t.line == 2).collect();
+        assert_eq!(range_tokens.len(), all_line2.len());
+        assert!(
+            !range_tokens.is_empty(),
+            "line 2 has real tokens to filter to"
         );
     }
 }
