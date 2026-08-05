@@ -24,6 +24,11 @@ describe("completionType", () => {
     expect(completionType("param")).toBe("variable");
     expect(completionType("temp")).toBe("variable");
     expect(completionType("value")).toBe("enum");
+    // Cue-name completions (#2134) — matches the LSP side's
+    // `CompletionItemKind::CONSTANT`. Without this KIND_MAP entry a cue row
+    // silently falls back to "text", mis-icons it, and disables
+    // auto-open-on-completion the same way a missing #229 entry would.
+    expect(completionType("cue")).toBe("constant");
   });
 
   it("falls back to text for unknown kinds", () => {

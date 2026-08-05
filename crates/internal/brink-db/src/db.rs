@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, BodyTypes, EffectRow, HarvestIndex, InferenceResult,
-    InferredSig, Sig, SymbolMeta,
+    AnalysisOptions, AnalysisResult, BodyTypes, EffectRow, HarvestIndex, HarvestNames,
+    InferenceResult, InferredSig, Sig, SymbolMeta,
 };
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
@@ -17,13 +17,13 @@ use crate::determinism::LookupMap;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    conventions_projection_query, diagnostics_query, effects_query, harvest_index_query,
-    has_errors_query, include_graph_query, infer_body_query, inferred_signature_query,
-    lir_knot_chunk_query, lir_prelude_decls_query, lir_query, local_signature_query, lowered_query,
-    module_map_query, parse_native_query, parse_query, per_file_diagnostics_query,
-    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query, ufcs_resolution_query,
-    value_meta_query,
+    conventions_projection_query, diagnostics_query, effects_query, harvest_completion_index_query,
+    harvest_index_query, has_errors_query, include_graph_query, infer_body_query,
+    inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
+    local_signature_query, lowered_query, module_map_query, parse_native_query, parse_query,
+    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
+    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
+    type_inference_query, ufcs_resolution_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -535,6 +535,16 @@ impl ProjectDb {
     /// doc for the full dependency set).
     pub fn harvest_index(&self) -> Arc<HarvestIndex> {
         Arc::clone(harvest_index_query(&self.salsa, self.project))
+    }
+
+    /// The harvest index's range-free completion projection (issue #2134):
+    /// every harvested cue and span/attribute *name*, with every site's
+    /// `TextRange` dropped. This is the query a keystroke-driven completion
+    /// path should read instead of [`harvest_index`](Self::harvest_index)
+    /// itself — see [`harvest_completion_index_query`]'s own doc for why
+    /// the raw index can never `Eq`-cutoff.
+    pub fn harvest_completion_names(&self) -> Arc<HarvestNames> {
+        Arc::clone(harvest_completion_index_query(&self.salsa, self.project))
     }
 
     /// The conventions projection (issue #2111, NS-T seam 1/6): every
