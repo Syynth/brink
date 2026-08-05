@@ -595,6 +595,56 @@ mod tests {
         assert!(res.new_source.is_some());
     }
 
+    // ── PR #2271 review finding: type-annotation reference ranges ────────
+
+    #[test]
+    fn renaming_a_struct_via_a_type_annotation_reference_does_not_corrupt_trailing_source() {
+        // `symbols::project::walk_type_annotation` registers a
+        // `RefKind::Type` reference at `TypeExpr::Named`'s range (the
+        // `TYPE_EXPR`/`TYPE_NAME` node the ink-dialect parser builds).
+        // `narrowed_reference_range` returns `None` for a `SymbolKind::Struct`
+        // target (none of its three narrowings apply), so `rename` falls
+        // back to that raw range. Before the trivia fix in
+        // `brink-syntax::parser::types::type_name_or_generic`, `TYPE_NAME`
+        // absorbed the whitespace trailing the type name, so renaming
+        // `Point` -> `Cue` rewrote `Point ` (with the trailing space),
+        // producing `VAR p: Cue= 0` — silent source corruption with no
+        // syntax error to catch it. This proves the emitted edit's range is
+        // exactly the 5-byte `Point` identifier, never the identifier plus
+        // trailing trivia.
+        const SRC: &str = "STRUCT Point = #{x: float}\nVAR p: Point = 0\n=== main ===\n-> DONE\n";
+        let (s, id) = session(SRC);
+        let decl_pos = u32::try_from(SRC.find("Point").expect("decl")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result = rename(s.db(), analysis, id, TextSize::from(decl_pos), "Cue").expect("rename");
+
+        let ann_pos =
+            u32::try_from(SRC.rfind("Point").expect("annotation occurrence")).expect("offset");
+        let edit = result
+            .edits
+            .iter()
+            .find(|e| e.range.start() == TextSize::from(ann_pos));
+        assert!(
+            edit.is_some(),
+            "expected an edit at the VAR annotation's `Point` occurrence, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = edit.expect("checked above");
+        assert_eq!(
+            edit.range.end(),
+            TextSize::from(ann_pos + 5),
+            "edit range must end exactly at the identifier's end, not swallow the trailing \
+             space before `=`: {:?}",
+            edit.range
+        );
+        assert_eq!(edit.new_text, "Cue");
+    }
+
     // ── Issue #1539: rename follows UFCS call sites ──────────────────────
 
     const UFCS_FREE_FN_SRC: &str = "\

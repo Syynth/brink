@@ -82,9 +82,19 @@ fn type_name_or_generic(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect_ident_or_keyword();
     p.finish_node();
-    p.skip_ws();
 
+    // `current()` peeks past trivia without consuming it (`nth`/`non_trivia`),
+    // so this branch check is safe before any trivia is flushed. Only the
+    // `TYPE_GENERIC` arm actually consumes it here — that trivia belongs
+    // *inside* the generic node, before the `<`. The `TYPE_NAME` arm must
+    // NOT consume it before `start_node_at`: doing so pulled trailing
+    // whitespace inside the `TYPE_NAME` node (`checkpoint` is pinned before
+    // `IDENTIFIER`, so anything bumped before `start_node_at` gets wrapped
+    // into it), corrupting the node's range for any consumer that treats it
+    // as the type name's true span (e.g. rename/find-references) — mirrors
+    // `brink-syntax-native/src/parser/types.rs`'s `type_name_or_generic`.
     if p.current() == LT {
+        p.skip_ws();
         p.start_node_at(checkpoint, TYPE_GENERIC);
         p.bump(); // LT
         if p.at_depth_limit() {
@@ -173,6 +183,37 @@ mod tests {
         let out = dump("=== function heal(ref hp: int, amount: int): int ===\n~ return hp\n");
         assert!(out.contains("TYPE_ANNOTATION"), "{out}");
         assert!(out.contains("TYPE_NAME"), "{out}");
+    }
+
+    /// PR #2271 review finding: `TYPE_NAME`'s range must be exactly the
+    /// identifier's range, never absorbing the trailing trivia the ink
+    /// lexer folds between a type name and whatever follows it (`=`, `)`,
+    /// `===`, …). `brink-ide::rename` registers a `RefKind::Type` reference
+    /// at `TypeExpr::Named`'s (the `TYPE_EXPR` node's) range and emits an
+    /// edit over exactly that span — a `TYPE_NAME`/`TYPE_EXPR` that swallows
+    /// trailing whitespace corrupts a rename's replacement text (e.g.
+    /// `Point`→`Cue` on `VAR p: Point = 0` would emit `Cue= 0`, eating the
+    /// space). Before this fix, `type_name_or_generic` called `p.skip_ws()`
+    /// *before* `start_node_at(checkpoint, TYPE_NAME)`, and since
+    /// `checkpoint` is pinned ahead of the `IDENTIFIER` node, the already
+    /// bumped whitespace token got retroactively wrapped inside `TYPE_NAME`.
+    #[test]
+    fn type_name_range_excludes_trailing_trivia() {
+        let parsed = parse("VAR p: Point = 0\n");
+        let root = parsed.syntax();
+        let type_name = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::TYPE_NAME)
+            .expect("TYPE_NAME node");
+        let ident = type_name
+            .descendants_with_tokens()
+            .find_map(|e| e.into_token().filter(|t| t.kind() == SyntaxKind::IDENT))
+            .expect("IDENT token inside TYPE_NAME");
+        assert_eq!(
+            type_name.text_range(),
+            ident.text_range(),
+            "TYPE_NAME must span exactly its IDENT, not any trailing trivia: {root:#?}"
+        );
     }
 
     #[test]

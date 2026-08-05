@@ -2899,6 +2899,144 @@ mod tests {
         );
     }
 
+    /// PR #2271 review finding: `lir::lower::structs`'s own tests
+    /// (`lookup_global_excludes_a_sole_std_declared_struct_with_no_project_
+    /// homonym`, `lookup_global_picks_the_referrers_own_shape_when_names_
+    /// collide`) were retargeted at `decls::lookup_global` after issue
+    /// #2249 deleted `ShapeTable::resolve` — but annotations no longer call
+    /// `lookup_global` at all; they go through this file's own
+    /// `resolve_type_ref`/`lookup_by_name`/`ImportScope` machinery (this
+    /// module's own doc on `resolve_type_ref`). Neither retargeted test, nor
+    /// `resolve_type_ref_silently_misses_a_scalar_keyword_name` above (an
+    /// empty index, no std/project homonym in play at all), exercises the
+    /// std-exclusion property through the real annotation path. This test
+    /// closes that gap's negative half: a struct only a mounted std module
+    /// declares, referenced from an ordinary (non-std, non-importing) project
+    /// file, must not resolve — mirroring
+    /// `std_mounted_sole_candidate_is_invisible_with_no_import` above, but
+    /// through `resolve_type_ref` (the real TM-2 annotation path) instead of
+    /// `lookup_by_name` directly.
+    #[test]
+    fn resolve_type_ref_excludes_a_std_only_struct_with_no_project_homonym_or_import() {
+        let mut index = SymbolIndex::default();
+        let cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC0F);
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        // An ordinary project file, no `#@module`/`use` in play at all —
+        // the default scope every non-modules file carries.
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
+        assert!(
+            map.is_empty(),
+            "a struct only a mounted std module declares must not resolve for a `~ temp c: Cue`- \
+             shaped annotation with no project-side homonym and no import — the sole-candidate \
+             std-exclusion property `resolve_type_ref`'s own doc claims, unproven by any test \
+             through this path before: {map:?}"
+        );
+    }
+
+    /// PR #2271 review finding, positive half: a project's own struct and a
+    /// coexisting mounted std struct sharing a bare name (M-2d, issue
+    /// #2238) — a referrer *inside* the project's own declared module must
+    /// resolve its own struct through `resolve_type_ref`, never the std
+    /// mount's same-named one. Mirrors `project_own_module_wins_over_a_
+    /// coexisting_std_mount_candidate` above, but through the real
+    /// annotation path.
+    #[test]
+    fn resolve_type_ref_picks_the_referrers_own_project_struct_over_a_coexisting_std_homonym() {
+        let mut index = SymbolIndex::default();
+        let std_cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC10);
+        index.symbols.insert(
+            std_cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: std_cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        let project_cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC11);
+        index.symbols.insert(
+            project_cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(1),
+                range: TextRange::default(),
+                id: project_cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("story::market".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        for id in [std_cue_id, project_cue_id] {
+            index.by_name.entry("Cue".to_string()).or_default().push(id);
+        }
+
+        let scope = ImportScope {
+            file_module: Some("story::market".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &scope, FileId(1), &uref, &mut map);
+        assert_eq!(
+            map,
+            vec![ResolvedRef {
+                file: FileId(1),
+                range: uref.range,
+                target: project_cue_id,
+            }],
+            "a `story::market` file's own `~ temp c: Cue` must resolve to `story::market`'s own \
+             Cue, never the coexisting std mount's same-named one: {map:?}"
+        );
+    }
+
     /// Issue #2233: threading `referrer_module` through fixes the *sole
     /// candidate* disagreement above, but does not (and cannot, without
     /// replicating `lookup_by_name_direct`'s full `InScope`-beats-`Other`

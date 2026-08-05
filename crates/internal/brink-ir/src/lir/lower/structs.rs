@@ -46,9 +46,12 @@
 //!     `lookup_by_name`/`ImportScope` machinery instead, a genuinely
 //!     different (and, per issue #2233's tracked asymmetry, not-yet-
 //!     reconciled) implementation of the same "referrer can't reach an
-//!     unimported std sibling" property. [`ShapeTable::get`] remains, test-
-//!     only, as a thin by-name lookup for assertions that don't care about
-//!     referrer scoping at all.
+//!     unimported std sibling" property. `ShapeTable`'s own bare-name lookup
+//!     (`by_name`/the old `ShapeTable::get`) had no caller left once both
+//!     real call sites moved to `DefinitionId`-keyed lookup and was deleted
+//!     alongside them — [`ShapeTable::get_by_def`] is the only lookup left,
+//!     including in tests (see `struct_def_id` in this module's own test
+//!     helpers, which reproduces the `DefinitionId` a test needs instead).
 //!
 //!   A bona fide intra-module duplicate (analyzer-diagnosed `E023`, later
 //!   declaration dropped from the index) still keeps only its first
@@ -97,11 +100,10 @@ use super::lir;
 pub struct ShapeInfo {
     pub id: u32,
     /// This shape's own `Struct` symbol identity (issue #2238) — what
-    /// [`ShapeTable::get`] (test-only) or [`ShapeTable::get_by_def`]
-    /// disambiguates by when more than one declared shape shares a bare
-    /// name, and what every *eager* resolution ([`GlobalShapeMap`],
-    /// `LowerCtx::temp_shapes`, a field's own nested annotation) stores
-    /// instead of a re-resolvable name.
+    /// [`ShapeTable::get_by_def`] disambiguates by when more than one
+    /// declared shape shares a bare name, and what every *eager* resolution
+    /// ([`GlobalShapeMap`], `LowerCtx::temp_shapes`, a field's own nested
+    /// annotation) stores instead of a re-resolvable name.
     pub definition_id: DefinitionId,
     pub name: NameId,
     /// Field `NameId`s in shape declaration order — `RecordNew`'s
