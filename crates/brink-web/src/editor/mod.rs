@@ -2860,6 +2860,34 @@ mod tests {
     }
 
     #[test]
+    fn ink_prose_starting_with_at_falls_back_to_ordinary_completion() {
+        // Review finding on #2134 (minor): `detect_completion_context` is
+        // dialect-agnostic, so an ink `.ink` line starting with `@` is
+        // textually indistinguishable from a native cue position — but
+        // ink's grammar has no cue syntax at all
+        // (`cue_names_are_never_harvested_from_the_ink_frontend`), so this
+        // must fall back to the ordinary symbol list, not hard-return
+        // empty.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "=== start ===\n@something\n-> END\n");
+        assert!(s.set_active_file("main.ink"));
+
+        let offset = u32::try_from("=== start ===\n@".len()).expect("fits u32");
+        let items = json(&s.completions(offset));
+        let names: Vec<&str> = items
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|i| i["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"start"),
+            "an ink file's '@' line must fall back to the ordinary symbol \
+             list instead of hard-returning empty: {items}"
+        );
+    }
+
+    #[test]
     fn signature_help_is_dialect_aware_for_stdlib_mutators() {
         // #600: `signature_help` must call `signature_help_with_dialect` —
         // the lvalue-mutator rendering (`push(a: lvalue, v)`,
