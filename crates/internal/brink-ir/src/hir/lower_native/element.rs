@@ -117,14 +117,20 @@
 //! some *other* file, injected into this file's dispatch, so that a single
 //! conventions module could claim prose across the whole project. That
 //! injection seam (`external_conventions.rs`,
-//! `brink_analyzer::conventions_registry`) is now deleted (issue #2165):
-//! cross-file reach for a conventions module is handled at the project
-//! layer instead, through its `IMPORT` closure (`brink_db::queries::
-//! analysis::import_closure_query`), not through a value threaded into
-//! single-file lowering. `!name` dispatch never had a cross-file
-//! counterpart at all — cross-file dispatch-name resolution is
-//! `docs/prose-dialect-spec.md` §3.5b's own Deferred item, so
-//! [`try_dispatch`] stays file-local.
+//! `brink_analyzer::conventions_registry`) is now deleted (issue #2165), and
+//! nothing replaces it: after this deletion a conventions module has **no**
+//! cross-file claiming reach at all — [`collect`] only ever scans its own
+//! file's `fn` declarations into `HirFile::claim_handlers`. `brink_db::
+//! queries::analysis::import_closure_query` does not fill this gap; its one
+//! consumer (`conventions_projection_query`) reads it only to resolve
+//! `attach = StructName` against the importing file's visible structs, not
+//! to gather another file's claim handlers. The real blockers to
+//! cross-file reach are issue #1582 (a `pub` marker so a handler can be
+//! named from outside its declaring file) and issue #2167 (confining that
+//! reach to the project's `IMPORT` closure rather than the whole tree).
+//! `!name` dispatch never had a cross-file counterpart at all — cross-file
+//! dispatch-name resolution is `docs/prose-dialect-spec.md` §3.5b's own
+//! Deferred item, so [`try_dispatch`] stays file-local.
 
 use std::collections::BTreeMap;
 

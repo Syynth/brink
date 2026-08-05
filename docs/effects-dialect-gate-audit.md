@@ -118,7 +118,10 @@ The helper this comments on, `analyze_native` (line 514), sets
 including `main.brink` files, i.e. files that are native by path already.
 
 **b. `issue_1840_register_intrinsic_confinement.rs:31-37`** (E103, brink-db
-test, this wave's #1840/#2095 build):
+test, this wave's #1840/#2095 build) — ⚠ **file deleted by issue #2165 /
+PR #2259** (the `fn conventions()`/`register` machinery this test guarded
+was dissolved by the 2026-08-03 ruling); the coordinates below are dated
+history, not a live citation:
 
 > `[opts_with_elements]`, plus `dialect: Brink` — every effects-assertion
 > check (`effects_assertions_diagnostics_query` and its siblings) gates on
@@ -130,7 +133,8 @@ Its own `a_pure_conventions_fn_now_exceeds_on_the_registry_write` test
 (line 294) has to reach for `opts_with_elements_and_brink_dialect` to observe
 `E103` on `@[effects(pure)] fn conventions() { register(scene); }` — a
 `conventions.brink` file, i.e. native by extension and by grammar
-(`fn`/`flow`, not `===`/`function`).
+(`fn`/`flow`, not `===`/`function`). (Also deleted with the rest of the
+file by #2165/#2259 — see the note above.)
 
 **c. `crates/brink-compiler/tests/driver.rs:633-640`** (E119, this wave's
 #2085/#2097 build):
