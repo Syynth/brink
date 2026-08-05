@@ -141,13 +141,19 @@ pub fn declared_shapes(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> Sha
     let mut by_def = BTreeMap::new();
     for &(file, hir) in files {
         for s in &hir.structs {
-            // Every declared `STRUCT` has exactly one symbol-index entry in
-            // its own declaring file (a bona fide intra-file duplicate is
-            // analyzer-diagnosed `E023` and dropped from the index before
-            // this runs — mirrors `ShapeTable::build_shape_table`'s own doc
-            // one layer down). No entry means nothing to key a `ShapeInfo`
-            // under, so this decl contributes nothing rather than silently
-            // colliding with an unrelated same-named one.
+            // NOT actually an invariant (review finding on #2240/#2258):
+            // `annotations::def_id_for` is exact-file-only, with no
+            // fallback arm at all — unlike `lir::lower::structs`'
+            // `decls::lookup_global`, which at least rescues a surviving
+            // non-std sibling before giving up. So this lookup misses on
+            // *every* true intra-module duplicate this file's own
+            // declaration lost to (`E023` dropped its symbol-index entry),
+            // not only the narrower std-declared-survivor case `E181`
+            // reports one layer down. When it misses, this decl silently
+            // contributes nothing to `by_def` — a fourth, still-undiagnosed
+            // silent-drop site of the exact class `E181` exists to make
+            // loud (see that code's own doc and `build_shape_table`'s),
+            // just with no diagnostic sink wired here yet.
             let Some(def_id) =
                 annotations::def_id_for(index, file, SymbolKind::Struct, &s.name.text)
             else {
