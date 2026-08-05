@@ -293,32 +293,6 @@ fn regression_1128_await_pop_fault() {
     );
 }
 
-/// Review finding on #1840 Q4's registration slice: `register` is a
-/// direct-unresolved-intrinsic write to the conventions-registry cell
-/// (`infer::intrinsics::intrinsic_effects`'s `conventions_write` bit),
-/// exactly the same shape as the RNG-cell write `chance` performs above —
-/// so `await register(...)` must trip E105 too. `call_is_effectful`'s
-/// direct-intrinsic arm originally consulted only `rng_write` and `faults`,
-/// missing the newer `conventions_write` atom entirely; a `register` call
-/// directly in a wake condition silently passed the purity gate.
-#[test]
-fn regression_1840_await_register_write() {
-    let source = concat!(
-        "=== function scene() ===\n",
-        "~ return 1\n",
-        "=== start ===\n",
-        "~ await register(scene)\n",
-        "-> END\n",
-    );
-    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
-    let diags = diagnostics_of(err);
-    assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E105),
-        "a direct conventions-registry-write intrinsic in the condition \
-         must trip the purity gate: {diags:?}"
-    );
-}
-
 /// The other side of the #1128 coin: a **total, read-only** unresolved
 /// intrinsic in the condition (`string(…)` — no fault path, no draw, no
 /// write) stays outside every set in the shared table and must NOT trip the

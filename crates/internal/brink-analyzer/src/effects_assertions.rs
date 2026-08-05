@@ -308,14 +308,6 @@ fn resolve_cell(ctx: &Ctx<'_>, name: &str) -> Option<DefinitionId> {
     if name == "rng" {
         return Some(DefinitionId::RNG_CELL);
     }
-    // Issue #1840 Q4: `conventions_registry` names the compiler-owned
-    // conventions handler registry cell every `register(...)` call writes —
-    // the same "well-known cell name" shape as `rng`, above. A user-declared
-    // `VAR`/`CONST` named `conventions_registry` shadows this, consistent
-    // with the general stdlib-name shadowing rule.
-    if name == "conventions_registry" {
-        return Some(DefinitionId::CONVENTIONS_REGISTRY_CELL);
-    }
     None
 }
 
@@ -355,12 +347,6 @@ fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &Symbol
         // the way the assertion surface spells it (`writes rng`).
         if *id == DefinitionId::RNG_CELL {
             return "rng (the std::rand RNG state cell)".to_string();
-        }
-        // Issue #1840 Q4: same posture — the conventions registry cell has
-        // no symbol-index entry either, so name it the way the assertion
-        // surface spells it (`writes(conventions_registry)`).
-        if *id == DefinitionId::CONVENTIONS_REGISTRY_CELL {
-            return "conventions_registry (the conventions handler registry cell)".to_string();
         }
         index
             .symbols

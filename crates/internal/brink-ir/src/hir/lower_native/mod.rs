@@ -137,13 +137,10 @@ mod decl;
 mod doc_comment;
 mod element;
 mod expr;
-pub mod external_conventions;
 mod lambda;
 mod module;
 pub mod provenance;
 mod types;
-
-pub use external_conventions::{ExternalClaimHandler, ExternalConventions};
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -168,38 +165,10 @@ mod import;
 /// call #3. `root_content` is the one exception: see [`entry_root_content`]
 /// for the `flow main()` entry convention.
 ///
-/// A thin wrapper over [`lower_with_conventions`] with no injected
-/// registry — this signature stays exactly what it has always been so
-/// none of this crate's ~40 existing call sites need to change; issue
-/// #1863's injection point is additive, opted into only by calling
-/// [`lower_with_conventions`] directly.
 #[must_use]
 pub fn lower(
     file_id: FileId,
     file: &ast::SourceFile,
-) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
-    lower_with_conventions(file_id, file, None)
-}
-
-/// Lower a complete native source file to HIR, optionally merging in an
-/// externally supplied, already-ordered conventions registry (issue
-/// #1863, `external_conventions`) — claiming handlers declared in
-/// another file (the project's conventions module) that this file's own
-/// prose should also be matched against.
-///
-/// `external: None` is byte-identical to [`lower`] — this function IS
-/// `lower`'s implementation, not a parallel path that could drift from
-/// it. See `external_conventions`'s module doc for the seam this
-/// parameter is: an ordered identity list arriving from outside,
-/// already joined against the conventions module's own CST-derived
-/// handler payload (`brink_analyzer::conventions_registry`, or a
-/// hand-constructed [`external_conventions::ExternalConventions`] in a
-/// test — the two are the same shape by construction).
-#[must_use]
-pub fn lower_with_conventions(
-    file_id: FileId,
-    file: &ast::SourceFile,
-    external: Option<&external_conventions::ExternalConventions>,
 ) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut top = TopLevel::default();
@@ -207,7 +176,7 @@ pub fn lower_with_conventions(
     // The file's natural-notation element handlers, collected before any
     // body is lowered so a claiming `@[convention(claims = "…", order = N)]`
     // declared *below* the prose it claims still claims it (issue #1838).
-    let mut elements = element::collect(file_id, file.syntax(), external);
+    let mut elements = element::collect(file_id, file.syntax());
 
     // `E179` (issue #2164): two `@[convention]` declarations in this file
     // sharing the same `order` — a static check independent of lowering,

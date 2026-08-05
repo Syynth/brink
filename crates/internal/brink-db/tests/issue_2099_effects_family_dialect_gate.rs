@@ -43,8 +43,8 @@ fn analyze(source: &str, opts: AnalysisOptions) -> Vec<brink_ir::Diagnostic> {
     // would stay "dark by default" even after an `is_native` fallback (#2099
     // option (a)) landed, silently voiding the suite's forward-looking
     // purpose. Setting the entry here matches the convention ~15 sibling
-    // `brink-db` suites already use (e.g. `issue_1840_register_intrinsic_
-    // confinement.rs`).
+    // `brink-db` suites already use (e.g. `issue_1844_conventions_module_
+    // fence.rs`).
     db.set_entry("main.brink");
     db.analysis().diagnostics.clone()
 }

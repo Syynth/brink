@@ -1572,22 +1572,15 @@ pub enum DiagnosticCode {
     /// `infer::body::InferPass::infer_lambda`, reported by
     /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
     E174,
-    /// `register(…)` used outside the conventions module's `fn conventions()`
-    /// (issue #1840 Q5, `docs/decision-log.md` 2026-08-02 "`register` is a
-    /// comptime-only intrinsic; calling it elsewhere is a diagnostic").
-    /// `register` is a T1b comptime-only intrinsic with no opcode, no
-    /// runtime registry cell, and no bytecode — legal only inside the
-    /// project's configured conventions module's well-known `fn
-    /// conventions()`, where a comptime evaluator (not yet built —
-    /// #1840's remaining slice) intercepts it. Calling it anywhere else —
-    /// a different function, a different file, or a conventions module
-    /// with no confined pointer configured at all — is this compile
-    /// error rather than the silent no-op CLAUDE.md forbids.
-    ///
-    /// Native-only: the conventions module and `fn conventions()` are both
-    /// `.brink`-surface concepts (`@[convention(claims = "…", order = N)]` handlers,
-    /// `brink.toml`'s `[project] conventions`, renamed from `elements` by
-    /// issue #2180), same posture as `E169`.
+    /// RETIRED (issue #2165) — was `register`'s comptime-only-intrinsic
+    /// confinement check (issue #1840 Q5): `register` was legal only inside
+    /// the project's configured conventions module's `fn conventions()`,
+    /// enforced here. The 2026-08-03 ruling (`docs/decision-log.md`, "`fn
+    /// conventions()` is DISSOLVED") removed `fn conventions()` and
+    /// `register` from the design entirely — precedence is now a static
+    /// `order` property on `@[convention]` (issue #2164), needing no
+    /// comptime evaluator and so no confinement diagnostic to raise. Code
+    /// kept reserved, not reused.
     E175,
     /// A divert-with-args site (`-> knot(args)`, `->-> tunnel(args)`, or
     /// `<- thread(args)`) supplies a number of arguments that does not
@@ -1682,6 +1675,71 @@ pub enum DiagnosticCode {
     /// scope for this code, same posture `E171`'s own doc explains for
     /// captured-parameter types).
     E180,
+
+    // ── TM-4c struct-shape resolution backstop (docs/typed-mode-spec.md
+    //    §6, issue #2240) ─────────────────────────────────────────────
+    /// `lir::lower::structs::build_shape_table`'s own
+    /// `decls::lookup_global(index, file_id, name, SymbolKind::Struct)`
+    /// call — resolving a declared `STRUCT`'s **own** `DefinitionId`,
+    /// using its own declaring file as referrer — came back `None`.
+    ///
+    /// This is a non-suppressible defense-in-depth backstop, the
+    /// `E060`/`E073` posture: it should never fire from a normal compile.
+    /// The exact-file arm always matches a struct against itself *unless*
+    /// `brink-analyzer` already dropped this HIR decl's own symbol entry
+    /// as a true intra-module duplicate (`E023`, same declared module as
+    /// an earlier same-name declaration) — and even then,
+    /// `lookup_global`'s unscoped fallback normally rescues the
+    /// surviving sibling's id (which is exactly what lets
+    /// `build_shape_table`'s own `by_def.contains_key` dedup recognize
+    /// "true intra-module duplicate" and skip it a second time, rather
+    /// than minting a fresh, wrong shape). This code fires only in the
+    /// narrower case the fallback itself cannot rescue: **every**
+    /// surviving same-name candidate is std-declared, so the fallback's
+    /// own std-exclusion (issue #2197) empties the search too. Before
+    /// this code existed, that combination silently dropped the struct
+    /// from both `ShapeTable` and `NameTable` seeding with no diagnostic
+    /// at all — shifting every subsequent `ShapeId`/`NameId` and the
+    /// bytecode built from them (CLAUDE.md: "silent drops are always
+    /// bugs until proven otherwise").
+    ///
+    /// Reachable **today**, not merely in principle (review finding on
+    /// #2240): any project whose own declaring file is not all-native
+    /// (`project_is_all_native`) and whose own `STRUCT`/`struct` shares a
+    /// name with one the std-mounted screenplay preset declares (`Cue`,
+    /// `Parenthetical`) collides with it — neither side needs a `#@module`
+    /// for this to happen. `symbol_index_query` builds the shared index
+    /// from every `set_file`-registered file regardless of the
+    /// compilation closure, so the mounted std declaration sits in the
+    /// index even for an ink entry whose LIR closure never reaches it.
+    /// With neither declaration module-qualified (or the project simply
+    /// not `Dialect::Brink`), M-2d cross-declared-module coexistence
+    /// (`is_cross_declared_module_collision`) never applies, so the pair
+    /// collapses to an ordinary same-module duplicate — and it is the
+    /// *project's* declaration that gets dropped whenever its own file
+    /// sorts after the std key in `FileId`-mint order (any project file
+    /// named e.g. `story.ink`, `world.ink`, `types.ink` does, since
+    /// `"std/…"` sorts first). See `brink-environment`'s
+    /// `e181_is_reachable_from_an_ordinary_ink_project_colliding_with_a_std_preset_name`
+    /// for this compiled end to end through the real analyzer drop, not a
+    /// hand-built `SymbolIndex`.
+    ///
+    /// `build_struct_shape_data` (the `NameId`-free, cutoff-friendly
+    /// twin `struct_shape_data_query` memoizes for the per-knot chunk
+    /// lowering path) performs the textually identical lookup and has no
+    /// diagnostic sink of its own to push into — it is a pure,
+    /// `Eq`-cutoff salsa data query, not a lowering pass threading a
+    /// `Vec<Diagnostic>` accumulator. It is deliberately left silent
+    /// there rather than given a redundant sink: every real compile
+    /// (`brink-db`'s `lir_query`) always computes `build_shape_table`
+    /// (via `lir_prelude_decls_query`) and `build_struct_shape_data` (via
+    /// `struct_shape_data_query` → `chunk_lowering_ctx_query` →
+    /// `lir_knot_chunk_query`) in the same salsa revision, over the same
+    /// `resolutions_index_query` index and the same files' `structs`
+    /// HIR — so the exact same drop condition always fires this
+    /// diagnostic from the prelude side in the same compile. See that
+    /// function's own doc comment for the full argument.
+    E181,
 }
 
 impl DiagnosticCode {
@@ -1874,6 +1932,7 @@ impl DiagnosticCode {
         Self::E178,
         Self::E179,
         Self::E180,
+        Self::E181,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2063,6 +2122,7 @@ impl DiagnosticCode {
             Self::E178 => "E178",
             Self::E179 => "E179",
             Self::E180 => "E180",
+            Self::E181 => "E181",
         }
     }
 
@@ -2355,7 +2415,7 @@ impl DiagnosticCode {
                 "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
             }
             Self::E175 => {
-                "`register` is a comptime-only intrinsic — legal only inside the project's configured conventions module's `fn conventions()`"
+                "retired (issue #2165) — `fn conventions()`/`register` were dissolved from the design"
             }
             Self::E176 => {
                 "a divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters"
@@ -2364,6 +2424,9 @@ impl DiagnosticCode {
             Self::E179 => "two `@[convention]` declarations in this module carry the same `order`",
             Self::E180 => {
                 "a `@[convention(…, attach = StructName)]` clause disagrees with the handler's own declared return type"
+            }
+            Self::E181 => {
+                "a declared STRUCT's own definition could not be resolved while building the struct-shape table — every surviving same-name candidate is std-declared"
             }
         }
     }
@@ -2619,6 +2682,7 @@ impl DiagnosticCode {
             "E178" => Some(Self::E178),
             "E179" => Some(Self::E179),
             "E180" => Some(Self::E180),
+            "E181" => Some(Self::E181),
             _ => None,
         }
     }

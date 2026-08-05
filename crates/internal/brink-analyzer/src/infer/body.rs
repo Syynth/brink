@@ -3538,15 +3538,6 @@ impl InferPass<'_, '_> {
         if fx.rng_write {
             self.effect_writes.insert(DefinitionId::RNG_CELL);
         }
-        if fx.conventions_write {
-            // Issue #1840 Q4: `register(...)` is an ordinary write to the
-            // conventions handler registry cell — closes the gap where
-            // `register` was, in practice, row-exempt (see
-            // `super::intrinsics`'s module doc and
-            // `crate::register_intrinsic`'s doc for the full history).
-            self.effect_writes
-                .insert(DefinitionId::CONVENTIONS_REGISTRY_CELL);
-        }
         match name {
             "len" => Ty::Int,
             // `int(x)` is ONE value-directed verb (NS-A5,

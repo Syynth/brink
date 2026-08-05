@@ -324,9 +324,8 @@ impl Ctx<'_> {
     /// same dispatch rule `infer::body::infer_intrinsic` follows) — judged
     /// against the ONE shared intrinsic effect table (issue #1128,
     /// [`crate::infer::intrinsic_effects`]): a draw (`await chance(0.5)` —
-    /// an RNG-cell write, NS-A6's "draws are writes"), a fault-bearing
-    /// verb (`await pop(a)`), or a conventions-registry write (`await
-    /// register(...)`, #1840 Q4) makes condition re-evaluation observable,
+    /// an RNG-cell write, NS-A6's "draws are writes") or a fault-bearing
+    /// verb (`await pop(a)`) makes condition re-evaluation observable,
     /// exactly the class the resolved-callee row check already rejects.
     /// Before this consult the direct-intrinsic shape silently escaped E105
     /// because only resolved callees' rows were judged. Any other
@@ -339,7 +338,7 @@ impl Ctx<'_> {
         let Some(&def) = self.by_range.get(&key) else {
             if let [seg] = path.segments.as_slice() {
                 let fx = crate::infer::intrinsic_effects(&seg.text, arg_count);
-                return fx.rng_write || fx.faults || fx.conventions_write;
+                return fx.rng_write || fx.faults;
             }
             return false;
         };

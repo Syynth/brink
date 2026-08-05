@@ -363,10 +363,16 @@ pub fn build_prelude_decls(
     // and field names ahead of the declaration names in the seeded
     // `NameTable`, and a `NameId` is an index into that same seed, emitted
     // alongside it.
-    let shape_table = structs::build_shape_table(files, &mut names, index);
+    //
+    // `decl_diagnostics` is allocated here (rather than after, as it used to
+    // be) so `build_shape_table` can push its own `E181` backstop (issue
+    // #2240) into the same accumulator every other decl-collection pass
+    // below shares — declaration diagnostics lead in emission order, and a
+    // struct-shape drop is exactly as early as it gets.
+    let mut decl_diagnostics = Vec::new();
+    let shape_table = structs::build_shape_table(files, &mut names, index, &mut decl_diagnostics);
     let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
 
-    let mut decl_diagnostics = Vec::new();
     let mut ids = context::IdAllocator::new();
     let mut lifted: Vec<lir::Container> = Vec::new();
     let struct_ctx = context::StructCtx {

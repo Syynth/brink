@@ -16,13 +16,19 @@
 //!
 //! This defines the wire SHAPE and its codec only — it is not yet wired
 //! into [`crate::StoryData`]/[`crate::inkb::SectionKind`]. Doing that
-//! requires threading a whole-project claim-handler join
-//! (`brink_analyzer::conventions_registry`) through LIR lowering, which
-//! `brink-compiler`'s production pipeline does not do today (it never runs
-//! through `brink-db`'s salsa layer — only the editor does). Allocating a
-//! `.inkb` section tag and `StoryData` field ahead of that consumer (the
-//! #2108 host binding join) settling its exact needs risks locking in the
-//! wrong shape; wiring is left to a tracked follow-up. What exists here —
+//! requires threading the project-layer conventions projection —
+//! `brink_ir::ConventionsProjection::from_decls` (built from
+//! `ClaimHandlerDecl`s), surfaced editor-side via `brink_db::queries::
+//! analysis::conventions_projection_query` (#2111/#2212) — through LIR
+//! lowering, which `brink-compiler`'s production pipeline does not do today
+//! (it never runs through `brink-db`'s salsa layer — only the editor does).
+//! The join this used to name, `brink_analyzer::conventions_registry`, was
+//! deleted with the rest of the dissolved `fn conventions()`/`register`
+//! machinery (issue #2165); it is not what this section still needs to
+//! wire up. Allocating a `.inkb` section tag and `StoryData` field ahead of
+//! that consumer (the #2108 host binding join) settling its exact needs
+//! risks locking in the wrong shape; wiring is left to a tracked follow-up.
+//! What exists here —
 //! the types, [`write_conventions_projection`]/[`read_conventions_projection`],
 //! and `brink_ir::ConventionsProjection::to_wire`'s conversion (every field
 //! this wire shape carries survives the round trip — see
