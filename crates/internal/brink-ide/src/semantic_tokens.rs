@@ -661,7 +661,13 @@ fn classify_native_ident(
             token_type: TT_NAMESPACE,
             modifiers: MOD_DECLARATION,
         }),
-        NK::FN_DECL | NK::EXTERN_DECL => Some(Classification {
+        // `SCENE_SLUG` shares this arm deliberately: `[slug]` on a scene
+        // heading names the stitch the heading declares (`element::
+        // scene_stitch`'s doc: "a heading declares a stitch"), so it is the
+        // same classification as any other stitch header (review finding on
+        // #2280/#2286). Kept folded in rather than as its own identical arm —
+        // clippy's `match_same_arms` denies the duplicate.
+        NK::FN_DECL | NK::EXTERN_DECL | NK::SCENE_SLUG => Some(Classification {
             token_type: TT_FUNCTION,
             modifiers: MOD_DECLARATION,
         }),
@@ -719,14 +725,6 @@ fn classify_native_ident(
         NK::ANNOTATION_ARG => Some(Classification {
             token_type: TT_PARAMETER,
             modifiers: 0,
-        }),
-        // `[slug]` on a scene heading — the slug names the stitch the
-        // heading declares (`element::scene_stitch`'s doc: "a heading
-        // declares a stitch"), same as any other stitch header (review
-        // finding on #2280/#2286).
-        NK::SCENE_SLUG => Some(Classification {
-            token_type: TT_FUNCTION,
-            modifiers: MOD_DECLARATION,
         }),
         // `INT. TITLE - DAY` — the heading's display name. Narrative text,
         // not a symbol reference; without this arm every word fell through
