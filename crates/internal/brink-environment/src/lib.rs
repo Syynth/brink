@@ -1389,6 +1389,77 @@ mod tests {
         );
     }
 
+    // ── issue #2240 review finding: E181 reachability ─────────────────
+
+    /// The `E181` reachability claim this PR originally shipped ("not
+    /// reachable from any project compilable today") is false. A plain
+    /// `Brink`-dialect ink project (dialect must be `Brink` for `STRUCT` to
+    /// parse at all — under the default `StrictInk` it is `E051`, see
+    /// `issue_460_shared_chunk_ctx.rs`'s own `brink_opts` doc) that declares
+    /// its own `struct Cue` collides with the std-mounted `screenplay`
+    /// preset's own `Cue` (#2080): `symbol_index_query` builds the shared
+    /// index from every `set_file`-registered file regardless of the
+    /// compilation closure (`compile`'s own loop registers the mounted
+    /// stdlib key alongside the project's, per
+    /// `stdlib_mount_is_manifest_only_for_an_ink_entry`'s own doc just
+    /// above), so std's `Cue` sits in the index even though it never
+    /// itself joins an ink entry's LIR closure. Neither struct declares a
+    /// `#@module`, and this project is not all-native
+    /// (`project_is_all_native`), so M-2d cross-declared-module coexistence
+    /// never even applies (`manifest::is_cross_declared_module_collision`) —
+    /// `insert_symbol` treats the pair as a true intra-module duplicate
+    /// (`E023`).
+    ///
+    /// The entry is deliberately named `story.ink`, not `main.ink`:
+    /// `FileId` mint order follows `set_file` call order, which follows
+    /// `Environment::source_keys`'s sorted (`BTreeMap`) manifest order —
+    /// `"story.ink"` sorts *after* `"std/conventions/screenplay.brink"`
+    /// lexicographically (`'d' < 'o'` at the third byte), so std's `Cue`
+    /// is inserted into the index first and it is the PROJECT's own later
+    /// `Cue` that `insert_symbol` drops — the direction the review finding
+    /// traced. (`main.ink` sorts *before* `"std/…"` and drops std's `Cue`
+    /// instead, which raises no diagnostic at all since nothing else
+    /// references it — verified while building this test.)
+    ///
+    /// Once the project's own `Cue` is dropped, `build_shape_table`'s
+    /// self-lookup for it misses on both its exact-file arm (no entry left
+    /// in `story.ink`) and the unscoped fallback (std's surviving `Cue` is
+    /// excluded by the fallback's own std-visibility carve-out, issue
+    /// #2197) — exactly the condition `E181`'s doc describes, and it fires
+    /// here through the REAL analyzer drop, not a hand-built `SymbolIndex`.
+    ///
+    /// Per rule 20a: reverting the `E181` push in
+    /// `structs::build_shape_table` (restoring the bare `continue`) makes
+    /// this test fail — `compile` would then succeed instead of erroring,
+    /// since the struct would go back to being silently dropped with no
+    /// diagnostic at all.
+    #[test]
+    fn e181_is_reachable_from_an_ordinary_ink_project_colliding_with_a_std_preset_name() {
+        let t = tree(&[(
+            "story.ink",
+            "STRUCT Cue = #{\n  speaker: string,\n}\nHello.\n-> END\n",
+        )]);
+        let overrides = OptionOverrides {
+            dialect: Some(Dialect::Brink),
+            ..OptionOverrides::default()
+        };
+        let env = Project::load(&t, "story.ink", &overrides).expect("loads");
+
+        let err = compile(&env).expect_err(
+            "a project struct colliding with a std-declared homonym must raise \
+             E181 and fail compilation, not silently drop the struct",
+        );
+        let CompileError::Diagnostics(diags) = err else {
+            unreachable!("expected a Diagnostics compile error, got: {err:?}");
+        };
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E181),
+            "expected E181 among the blocking diagnostics: {diags:?}"
+        );
+    }
+
     // ── the pure compile over the input ──────────────────────────────
 
     #[test]
