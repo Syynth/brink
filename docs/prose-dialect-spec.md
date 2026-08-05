@@ -1181,11 +1181,22 @@ Consequences (RULED):
   carry editor-consumed fields the compiler ignores (descriptions,
   attr types, display metadata). A declaration format is a
   documentation format.
-- **Succession rules live in the conventions file** — the editing-time
-  dual of chain rules (`after cue: enter → dialogue, tab →
+- **Succession rules are EDITOR-OWNED and externally defined** — the
+  editing-time dual of chain rules (`after cue: enter → dialogue, tab →
   parenthetical`), consumed by the editor's transition machinery,
   ignored by the compiler. This is what makes the Tab/Enter behavior
   convention-driven instead of hardcoded ink.
+  ⚠ **Corrected 2026-08-05.** This line previously read "succession rules
+  live in the conventions file," which the 2026-08-03 "Conventions × the
+  editor" ruling superseded ("the language says what a line IS; the editor
+  overlay says what pressing Tab DOES") — `@[convention]` deliberately has
+  no succession property. The rows are **not** declared in the conventions
+  module and are **not** sourced by the compiler at all. The editor defines
+  them however it likes and passes them in; the Rust side's only job is
+  **validation and re-keying** against the projection's real convention
+  kinds (`ConventionsProjection::with_succession`), so a rule naming a kind
+  no convention declares fails loudly. Nothing about them is persisted, and
+  they must never reach `.inkb` — see §5.2.
 
 ### 5.1 Implementation status — the harvest index (#2114, 2026-08-03)
 
