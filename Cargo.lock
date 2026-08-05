@@ -2312,6 +2312,7 @@ dependencies = [
 name = "brink-runtime"
 version = "0.0.11"
 dependencies = [
+ "brink-analyzer",
  "brink-compiler",
  "brink-format",
  "divan",
@@ -2356,6 +2357,7 @@ dependencies = [
  "brink-environment",
  "brink-format",
  "brink-ir",
+ "brink-project-config",
  "brink-runtime",
  "brink-source-tree",
  "brink-syntax",

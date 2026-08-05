@@ -241,6 +241,37 @@ fn symbol_visible_bare_in_file(
     })
 }
 
+/// Every (file, range) the project's cross-file conventions injection
+/// (issue #2289) rewrote into a call against a handler declared in
+/// *another* file — [`brink_ir::ElementMatch::injected`], keyed by the
+/// exact range `brink_ir::hir::lower_native::element::try_claim` gives the
+/// rewritten `Expr::Call`'s `Path`, which by the `ResolvedRef::range`
+/// contract (issue #1561, `brink_ir::symbols::index::ResolvedRef`'s own
+/// doc) is also the resulting resolved reference's own range — so this map
+/// is an exact-match lookup key for [`check_cross_module_refs`], with no
+/// new identifier needed on either side.
+///
+/// Built from `(u32, u32)` pairs rather than `TextRange` itself:
+/// `text_size::TextRange` derives neither `Ord` nor `PartialOrd`, so it
+/// cannot key a `BTreeSet` directly — the pair is exactly its own
+/// `(start, end)` and just as exact a key.
+fn conventions_injected_call_ranges(
+    files: &[(FileId, &HirFile)],
+) -> BTreeMap<FileId, BTreeSet<(u32, u32)>> {
+    let mut ranges: BTreeMap<FileId, BTreeSet<(u32, u32)>> = BTreeMap::new();
+    for &(file_id, hir) in files {
+        for m in &hir.element_matches {
+            if m.injected {
+                ranges
+                    .entry(file_id)
+                    .or_default()
+                    .insert((m.line.start().into(), m.line.end().into()));
+            }
+        }
+    }
+    ranges
+}
+
 /// Cross-module reference gating (`E087` private / `E025` import-required).
 ///
 /// Every resolved reference whose target lies outside the referrer's module
@@ -262,6 +293,18 @@ fn symbol_visible_bare_in_file(
 /// project-file annotation naming an unimported public struct in another
 /// declared module now raises `E025` here too, and a `#@private` one raises
 /// `E087` — exercised in `type_annotation_reference_to_*` below.
+///
+/// **Issue #2289's exemption**: a reference whose `(file, range)` appears in
+/// [`conventions_injected_call_ranges`] is skipped before the visibility
+/// switch below, regardless of which arm it would otherwise take. Such a
+/// reference is not a user-authored cross-module access at all — it is the
+/// compiler's own rewrite of a matched prose line into a call against the
+/// project's *configured* conventions module, sanctioned by the very
+/// `brink.toml` `[project] conventions` pointer that caused the injection
+/// (docs/decision-log.md 2026-08-05: "it's never file local … that's why
+/// they're conventions and not 'local patterns'"). Requiring `pub` on every
+/// claiming handler plus a `use` in every claiming file would reintroduce
+/// exactly the file-local opt-in that ruling rejects.
 fn check_cross_module_refs(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -270,6 +313,7 @@ fn check_cross_module_refs(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let (qualified_imports, bare_imports) = import_coverage(files);
+    let injected_calls = conventions_injected_call_ranges(files);
 
     for r in resolutions {
         let Some(target) = index.symbols.get(&r.target) else {
@@ -283,6 +327,14 @@ fn check_cross_module_refs(
         // A same-module reference is always bare-legal (§2) — nothing to
         // enforce.
         if referrer_in_target_module(file_module, target, r.file) {
+            continue;
+        }
+        // Issue #2289: a cross-file conventions injection's own rewritten
+        // call is exempt — see this function's own doc.
+        if injected_calls
+            .get(&r.file)
+            .is_some_and(|s| s.contains(&(r.range.start().into(), r.range.end().into())))
+        {
             continue;
         }
         match target.visibility {

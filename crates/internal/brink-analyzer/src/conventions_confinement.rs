@@ -33,13 +33,23 @@
 //! hands it in alongside the raw pointer string (for the diagnostic
 //! message only).
 //!
-//! # What is NOT enforced here, and why
+//! # What IS now enforced (issue #2289, part 2 of the 2026-08-05 ruling)
 //!
-//! - **An unset `conventions` key.** No conventions module is configured, so
-//!   there is nothing to confine claiming *to* — every existing project
-//!   without this key stays exactly as permissive as it was before this
-//!   check existed. The caller is responsible for skipping this pass
-//!   entirely in that case (never calling it with a meaningless `pointer`).
+//! An **unset `conventions` key** used to be silent here, on the reasoning
+//! recorded just below (kept for history): "nothing is being confined to
+//! yet, so a project that hasn't opted in stays exactly as permissive as it
+//! always was." That reasoning did not survive part 1 of the same ruling —
+//! conventions now claim across the WHOLE PROJECT, not just their own file —
+//! so a `@[convention]` with no configured module names no module for the
+//! declaration to belong to. It is a misconfiguration, not an opt-out, and
+//! [`conventions_unconfigured_diagnostics`] reports it at `E169` exactly like
+//! [`conventions_module_diagnostics`] reports one declared outside the
+//! configured module. The caller (`brink_db::queries::analysis::
+//! conventions_confinement_diagnostics_query`) now calls this sibling
+//! instead of skipping the file whenever `opts.conventions` is `None`.
+//!
+//! # What is still NOT enforced here, and why
+//!
 //! - **A bare preset name** (`conventions = "screenplay"`). A preset points
 //!   at a `std::conventions::*` module, not a project file — there is no
 //!   path in the project tree to compare a claiming handler's own file
@@ -115,6 +125,33 @@ pub fn conventions_module_diagnostics(
                  pattern-claiming handlers may only be declared in the project's configured \
                  conventions module (`brink.toml`'s `[project] conventions = \"{pointer}\"`) — move \
                  `{name}` there",
+                name = handler.name.text,
+            ),
+        })
+        .collect()
+}
+
+/// Diagnose every claiming handler declared in `hir` when the project has
+/// **no** conventions module configured at all (issue #2289, part 2 of the
+/// 2026-08-05 ruling — see this module's own doc, "What IS now enforced").
+///
+/// The caller calls this instead of [`conventions_module_diagnostics`]
+/// specifically when `[project] conventions` is entirely unset — there is
+/// no `pointer` string to name a destination module with, so the message
+/// tells the author to configure one rather than to move the handler
+/// somewhere specific.
+#[must_use]
+pub fn conventions_unconfigured_diagnostics(file_id: FileId, hir: &HirFile) -> Vec<Diagnostic> {
+    hir.claim_handlers
+        .iter()
+        .map(|handler| Diagnostic {
+            file: file_id,
+            range: handler.annotation,
+            code: DiagnosticCode::E169,
+            message: format!(
+                "`{name}` claims prose with `@[convention(claims = \"…\", order = …)]`, but no \
+                 conventions module is configured for this project — set `brink.toml`'s \
+                 `[project] conventions = \"…\"` to the module `{name}` should live in",
                 name = handler.name.text,
             ),
         })
@@ -205,5 +242,43 @@ mod tests {
         assert_eq!(hir.claim_handlers.len(), 1, "{:?}", hir.claim_handlers);
         let diags = conventions_module_diagnostics(FileId(0), &hir, false, "conventions.brink");
         assert_eq!(diags.len(), 1, "{diags:?}");
+    }
+
+    #[test]
+    fn no_claim_handlers_is_silent_even_when_unconfigured() {
+        let hir = build_native("flow main() {\n  hi\n}\n");
+        let diags = conventions_unconfigured_diagnostics(FileId(0), &hir);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn claim_handler_with_no_configured_module_is_e169() {
+        // Issue #2289 part 2: an unset `conventions` key no longer opts a
+        // project out of confinement — a declared claim handler with no
+        // module to belong to is a misconfiguration and must error.
+        let hir = build_native(CLAIMING_SRC);
+        let diags = conventions_unconfigured_diagnostics(FileId(0), &hir);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E169);
+        assert!(diags[0].message.contains("interior"), "{diags:?}");
+        assert!(
+            diags[0]
+                .message
+                .contains("no conventions module is configured"),
+            "{diags:?}"
+        );
+        assert_eq!(diags[0].range, hir.claim_handlers[0].annotation);
+    }
+
+    #[test]
+    fn one_diagnostic_per_declared_handler_when_unconfigured() {
+        let src = "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\
+                   @[convention(claims = \"^B$\", order = 20)]\nfn b() {\n  return \"b\";\n}\n\
+                   flow main() {\n  hi\n}\n";
+        let hir = build_native(src);
+        assert_eq!(hir.claim_handlers.len(), 2, "{:?}", hir.claim_handlers);
+        let diags = conventions_unconfigured_diagnostics(FileId(0), &hir);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E169));
     }
 }

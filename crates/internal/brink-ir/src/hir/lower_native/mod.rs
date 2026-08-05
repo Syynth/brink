@@ -165,10 +165,37 @@ mod import;
 /// call #3. `root_content` is the one exception: see [`entry_root_content`]
 /// for the `flow main()` entry convention.
 ///
+/// A thin wrapper over [`lower_with_conventions`] with no injected
+/// handler set — this signature stays exactly what it has always been so
+/// none of this crate's ~40 existing call sites need to change; issue
+/// #2289's injection point is additive, opted into only by calling
+/// [`lower_with_conventions`] directly.
 #[must_use]
 pub fn lower(
     file_id: FileId,
     file: &ast::SourceFile,
+) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
+    lower_with_conventions(file_id, file, None)
+}
+
+/// Lower a complete native source file to HIR, optionally merging in the
+/// project's configured conventions module's declared `@[convention]`
+/// handlers (issue #2289, correcting the file-local claiming defect the
+/// 2026-08-05 ruling names — see [`element`]'s own module doc, "Cross-file
+/// claiming reach").
+///
+/// `external: None` is byte-identical to [`lower`] — this function IS
+/// `lower`'s implementation, not a parallel path that could drift from
+/// it. `external` is every `ClaimHandlerDecl` the project's conventions
+/// module declares, resolved and ordered by the caller
+/// (`brink_db::queries::analysis::external_claim_handlers_query`) — this
+/// crate has no project database of its own to resolve "which file is the
+/// conventions module" itself.
+#[must_use]
+pub fn lower_with_conventions(
+    file_id: FileId,
+    file: &ast::SourceFile,
+    external: Option<&[crate::ClaimHandlerDecl]>,
 ) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut top = TopLevel::default();
@@ -176,7 +203,7 @@ pub fn lower(
     // The file's natural-notation element handlers, collected before any
     // body is lowered so a claiming `@[convention(claims = "…", order = N)]`
     // declared *below* the prose it claims still claims it (issue #1838).
-    let mut elements = element::collect(file_id, file.syntax());
+    let mut elements = element::collect(file_id, file.syntax(), external);
 
     // `E179` (issue #2164): two `@[convention]` declarations in this file
     // sharing the same `order` — a static check independent of lowering,

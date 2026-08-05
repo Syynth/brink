@@ -6,8 +6,13 @@
 //! plain input writes — there is no separate overlay pathway.
 //!
 //! Layer 1 (per file): [`parse_query`], [`lowered_query`] (HIR + manifest +
-//! lowering diagnostics, exactly the composition the old `set_file` cached),
-//! [`suppressions_query`], and the project-wide [`include_graph_query`].
+//! lowering diagnostics, exactly the composition the old `set_file` cached
+//! — now project-aware, issue #2289: it merges in the conventions module's
+//! cross-file claiming reach via [`external_claim_handlers_query`], reading
+//! the project-*independent* [`raw_lowered_query`] underneath), and its two
+//! exceptions that read `raw_lowered_query` directly ([`suppressions_query`]
+//! and [`external_claim_handlers_query`] itself — see either's own doc for
+//! why), plus the project-wide [`include_graph_query`].
 //!
 //! Layer 2 (project-wide names): [`symbol_index_query`],
 //! [`harvest_index_query`] (the project-db harvest obligation over cue
@@ -119,9 +124,9 @@ pub(crate) use analysis::{
     call_site_diagnostics_query, call_site_metas_query, coalesce_types_query,
     comparator_contract_diagnostics_query, contributor_diagnostics_query,
     conventions_confinement_diagnostics_query, conventions_projection_query, diagnostics_query,
-    effects_assertion_diagnostics_query, external_meta_query, has_errors_in_closure_query,
-    has_errors_query, import_closure_query, inline_docs_query, per_file_diagnostics_query,
-    resolutions_index_query, ufcs_resolution_query, value_meta_query,
+    effects_assertion_diagnostics_query, external_claim_handlers_query, external_meta_query,
+    has_errors_in_closure_query, has_errors_query, import_closure_query, inline_docs_query,
+    per_file_diagnostics_query, resolutions_index_query, ufcs_resolution_query, value_meta_query,
     whole_project_diagnostics_query,
 };
 
@@ -156,6 +161,12 @@ impl Default for BrinkDatabase {
                 // B0.10a native compile seam (issue #1106): the frontend-
                 // specific parse ingredient, dispatched by `lowered_query`.
                 .ingredient::<parse_native_query>()
+                // Issue #2289: the project-*independent* raw lowering
+                // (`raw_lowered_query`) and the project-aware canonical
+                // entry point (`lowered_query`) that merges in the
+                // conventions module's cross-file claiming reach — see
+                // either query's own doc.
+                .ingredient::<raw_lowered_query>()
                 .ingredient::<lowered_query>()
                 .ingredient::<suppressions_query>()
                 .ingredient::<include_graph_query>()
@@ -301,6 +312,12 @@ impl Default for BrinkDatabase {
                 // ruling. Reads `module_map_query` only for a file that
                 // declared at least one claiming handler.
                 .ingredient::<conventions_confinement_diagnostics_query>()
+                // The cross-file claiming injection seam (issue #2289):
+                // the project's configured conventions module's declared
+                // `@[convention]` handlers, read once per project revision
+                // and merged into every other native file's lowering by
+                // `lowered_query`.
+                .ingredient::<external_claim_handlers_query>()
                 // The reusable transitive `IMPORT` closure (issue #2111
                 // finding 3): generic over any entry file, so #2167 can
                 // reuse it for E169 confinement relaxation.
@@ -415,25 +432,110 @@ pub(crate) struct LoweredFile {
     pub admission: Vec<Diagnostic>,
 }
 
-/// Lower one file to HIR. Salsa's dependency tracking on the `parse` input
-/// replaces the retired per-knot green-node/byte-offset cache (`knot_cache`):
-/// the composition below is byte-identical to what `set_file` produced.
+/// Lower one file to HIR, ignoring project identity entirely. Salsa's
+/// dependency tracking on the `parse` input replaces the retired per-knot
+/// green-node/byte-offset cache (`knot_cache`): the composition below is
+/// byte-identical to what `set_file` produced.
+///
+/// The project-*independent* half of lowering — deliberately kept that way
+/// (no `ProjectInput` parameter) so an edit to one file can never, through
+/// this query alone, invalidate another file's memo. [`lowered_query`] is
+/// the project-aware entry point every other consumer should read instead
+/// (issue #2289's cross-file claiming reach needs project identity to know
+/// which file the conventions module is); this raw query now has exactly
+/// two callers: [`suppressions_query`] (whose `allow_scopes` are a pure
+/// CST scan, unaffected by which handlers a line ends up claimed by — see
+/// `brink_ir::hir::lower_native::annotation::allow_scopes`) and
+/// [`external_claim_handlers_query`] (reading the conventions module's OWN
+/// declared handlers, which are likewise invariant to whatever `external`
+/// set that file itself was lowered with — [`Elements::handler_decls`]
+/// only ever reads local declarations, never an injected one — see that
+/// method's own doc in `brink-ir`). Reading the raw query here, rather than
+/// the project-aware one, is what breaks the circular
+/// dependency [`lowered_query`] → [`external_claim_handlers_query`] would
+/// otherwise close on itself when lowering the conventions module's own
+/// file.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647). `heap_size`:
 /// one of the five #538/#647 estimators — #537 flagged this family's
 /// per-def analogues (`def_body`/`solve_scc`) as the dominant Arc-hidden
 /// payload; this is the per-file sibling.
+///
+/// `Arc`-wrapped (issue #2289 review finding): every OTHER native file in a
+/// project with no conventions module configured — the overwhelmingly
+/// common case, and every ink file in every project — takes
+/// [`lowered_query`]'s pass-through arm, which used to deep-clone this
+/// query's plain `LoweredFile` (the whole HIR/manifest/diagnostics payload)
+/// into a second salsa memo for zero semantic reason. `Arc::clone` on that
+/// same pass-through arm is a refcount bump instead — this needs no change
+/// at any of this module's many `&lowered_query(..).hir`-shaped call sites
+/// (deref coercion carries a `&Arc<LoweredFile>` through to `.hir` exactly
+/// like a `&LoweredFile` did), only here and at `lowered_query`'s own body.
 #[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
-pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> LoweredFile {
+pub(crate) fn raw_lowered_query(db: &dyn salsa::Database, file: SourceFile) -> Arc<LoweredFile> {
     let file_id = file.file_id(db);
     // Decide the frontend from the path *before* touching either parser
     // (B0.10a, the native compile seam, issue #1106): this branch precedes
     // the parse call, so an `.ink` file never runs the native parser and a
     // native file never runs the ink one. The ink arm is byte-identical to
     // the pre-seam body, keeping the oracle invariance a tautology.
-    match file_language(file.path(db)) {
+    Arc::new(match file_language(file.path(db)) {
         Language::Ink => lower_file(file_id, parse_query(db, file)),
-        Language::Native => lower_native_file(file_id, parse_native_query(db, file)),
+        Language::Native => lower_native_file(file_id, parse_native_query(db, file), None),
+    })
+}
+
+/// Lower one file to HIR — the canonical, project-aware entry point every
+/// consumer besides [`suppressions_query`]/[`external_claim_handlers_query`]
+/// should read (see [`raw_lowered_query`]'s own doc for why those two are
+/// the exception).
+///
+/// For an ink file, or a native file that either IS the project's
+/// configured conventions module or has none configured, this is
+/// byte-identical to [`raw_lowered_query`] (a clone of its cached
+/// `Arc<LoweredFile>` — a refcount bump, no extra lowering work and,
+/// since the #2289 review finding below, no struct copy either). For every
+/// OTHER native file in a project with a conventions module configured,
+/// this re-lowers with [`external_claim_handlers_query`]'s ordered handler
+/// set merged in, so a `claims`-declared handler in that one module claims
+/// prose across the WHOLE project (issue #2289, correcting the file-local
+/// claiming defect the 2026-08-05 ruling names — see `brink_ir::hir::
+/// lower_native::element`'s module doc, "Cross-file claiming reach").
+///
+/// `Arc`-wrapped (issue #2289 review finding): before this, the pass-through
+/// arms below (every ink file, and every native file with no injection to
+/// do — the overwhelming majority of files in the overwhelming majority of
+/// projects) deep-cloned [`raw_lowered_query`]'s entire `LoweredFile`
+/// (HIR + manifest + diagnostics + admission) into a second salsa memo for
+/// zero semantic benefit, and both queries' `heap_size = heap_size::
+/// lowered_file_heap_size` estimator (issues #538/#647) double-counted that
+/// duplicated payload's residency. `Arc<LoweredFile>::clone` on those same
+/// arms is a refcount bump instead — see [`raw_lowered_query`]'s own doc.
+///
+/// `lru = 4096`/`heap_size`: same per-file runaway-guard/estimator posture
+/// as [`raw_lowered_query`] — see that query's own doc.
+#[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
+pub(crate) fn lowered_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<LoweredFile> {
+    let file_id = file.file_id(db);
+    if file_language(file.path(db)) != Language::Native {
+        return Arc::clone(raw_lowered_query(db, file));
+    }
+    let external = external_claim_handlers_query(db, project);
+    match &**external {
+        Some((conventions_file_id, decls)) if *conventions_file_id != file_id => {
+            Arc::new(lower_native_file(
+                file_id,
+                parse_native_query(db, file),
+                Some(decls.as_slice()),
+            ))
+        }
+        // No conventions module configured, or this file IS that module —
+        // either way, nothing to inject; byte-identical to the raw lowering.
+        _ => Arc::clone(raw_lowered_query(db, file)),
     }
 }
 
@@ -473,22 +575,31 @@ pub(crate) fn file_language(path: &str) -> Language {
 /// (issue #1161) rides the real `@[…]` grammar, so its declaration-scoped
 /// records are produced by lowering and picked up here off
 /// [`brink_ir::HirFile::allow_scopes`] — always empty for an ink file, whose
-/// annotation channel has no `allow` tenant. Reading [`lowered_query`] costs
-/// nothing extra in practice: every consumer of this query already reads the
-/// same file's lowering diagnostics alongside it.
+/// annotation channel has no `allow` tenant. Reads [`raw_lowered_query`],
+/// not the project-aware [`lowered_query`] (issue #2289): `allow_scopes`
+/// is a pure CST scan (`brink_ir::hir::lower_native::annotation::
+/// allow_scopes`), unaffected by which handlers a claiming rewrite ends up
+/// using, so the project-independent lowering is exactly as correct here
+/// and avoids this query depending on project identity at all.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> Suppressions {
     let mut out = parse_suppressions(file.text(db));
     out.allow_scopes
-        .clone_from(&lowered_query(db, file).hir.allow_scopes);
+        .clone_from(&raw_lowered_query(db, file).hir.allow_scopes);
     out
 }
 
 /// The `INCLUDE` graph over the whole project. Always complete — edges are
 /// derived from every file's HIR against the full path set, so the old
 /// "rebuild after batch load" step no longer exists.
+///
+/// Reads [`raw_lowered_query`], not the project-aware [`lowered_query`]
+/// (issue #2289): `hir.includes` is an ink-only structural directive list,
+/// unaffected by claiming injection — and reading the project-aware query
+/// here would close a cycle, since [`external_claim_handlers_query`]
+/// reads [`module_map_query`], which reads this query.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInput) -> IncludeGraph {
     let files = project.files(db);
@@ -499,7 +610,7 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
 
     let mut graph = IncludeGraph::new();
     for file in files {
-        let hir = &lowered_query(db, *file).hir;
+        let hir = &raw_lowered_query(db, *file).hir;
         let include_ids: Vec<FileId> = hir
             .includes
             .iter()
@@ -646,7 +757,13 @@ pub(crate) fn module_map_query(
         .iter()
         .filter(|f| file_language(f.path(db)) == Language::Ink)
         .map(|f| {
-            let hir_module = lowered_query(db, *f).hir.module.as_ref();
+            // `raw_lowered_query`, not the project-aware `lowered_query`
+            // (issue #2289): `hir.module` is a structural top-of-file
+            // directive, unaffected by claiming injection, and reading the
+            // project-aware query here would close a cycle back through
+            // `external_claim_handlers_query`, which itself reads this
+            // very query to resolve the conventions module's file.
+            let hir_module = raw_lowered_query(db, *f).hir.module.as_ref();
             crate::modules::FileModuleInput {
                 file: f.file_id(db),
                 stem: crate::modules::file_stem(f.path(db)).to_string(),
@@ -680,7 +797,9 @@ pub(crate) fn module_map_query(
     let native_root = project.native_root(db).as_deref();
     for f in files {
         if file_language(f.path(db)) == Language::Native {
-            let was = lowered_query(db, *f)
+            // `raw_lowered_query` — see the identical note on the ink arm
+            // above.
+            let was = raw_lowered_query(db, *f)
                 .hir
                 .module
                 .as_ref()
@@ -711,7 +830,7 @@ pub(crate) fn symbol_index_query(
     let files = project.files(db);
     let manifest_refs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
-        .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).manifest))
         .collect();
 
     let (module_map, module_diags) = module_map_query(db, project);
@@ -767,7 +886,7 @@ pub(crate) fn harvest_index_query(
     let files = project.files(db);
     let hir_refs: Vec<(FileId, &HirFile)> = files
         .iter()
-        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
     let manifest = project.analysis_options(db).host_manifest.as_ref();
     Arc::new(brink_analyzer::harvest(&hir_refs, manifest))
@@ -860,7 +979,7 @@ pub(crate) fn resolve_query(
     file: SourceFile,
 ) -> (Arc<ResolutionMap>, Vec<Diagnostic>) {
     let index = resolution_index_query(db, project);
-    let lowered = lowered_query(db, file);
+    let lowered = lowered_query(db, project, file);
 
     // Import-scoped resolution (M-2d, docs/modules-spec.md §2; issue #790):
     // feed the resolver this file's own **declared** module and its `IMPORT`
@@ -946,7 +1065,7 @@ pub(crate) fn signature_query<'db>(
         .files(db)
         .iter()
         .filter(|f| f.file_id(db) == declaring_file)
-        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
     let opts = project.analysis_options(db);
     brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
@@ -988,7 +1107,7 @@ pub(crate) fn local_signature_query<'db>(
     def: DefKey<'db>,
 ) -> Option<Arc<Sig>> {
     let index = resolution_index_query(db, project);
-    let manifest = &lowered_query(db, file).manifest;
+    let manifest = &lowered_query(db, project, file).manifest;
     let opts = project.analysis_options(db);
     brink_analyzer::local_signature(def.def(db), manifest, index, opts.host_manifest.as_ref())
 }
@@ -1104,7 +1223,7 @@ pub(crate) fn def_body_query<'db>(
         .files(db)
         .iter()
         .find(|f| f.file_id(db) == declaring_file)?;
-    let hir = &lowered_query(db, *file).hir;
+    let hir = &lowered_query(db, project, *file).hir;
     let (params, return_annotation, body) =
         brink_analyzer::def_body(def_id, &[(declaring_file, hir)], index)?;
     Some(Arc::new(DefBody {
@@ -1150,7 +1269,7 @@ pub(crate) fn referenced_globals_query<'db>(
     else {
         return Arc::new(BTreeSet::new());
     };
-    let hir = &lowered_query(db, *file).hir;
+    let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
     Arc::new(brink_analyzer::referenced_globals(
         def_id,
@@ -1199,7 +1318,7 @@ pub(crate) fn call_edges_query<'db>(
     else {
         return Arc::new(BTreeSet::new());
     };
-    let hir = &lowered_query(db, *file).hir;
+    let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
     let inferable = inferable_defs_query(db, project);
     Arc::new(brink_analyzer::call_edges(
@@ -1471,7 +1590,7 @@ pub(crate) fn def_effect_atoms_query<'db>(
     else {
         return Arc::new(brink_analyzer::EffectAtoms::default());
     };
-    let hir = &lowered_query(db, *file).hir;
+    let hir = &lowered_query(db, project, *file).hir;
     let (resolutions, _diags) = resolve_query(db, project, *file);
     let inferable = inferable_defs_query(db, project);
     Arc::new(brink_analyzer::def_effect_atoms(
@@ -1809,7 +1928,11 @@ pub(crate) fn struct_shape_data_query(
     let topo = compilation_closure_files(db, project);
     let hir_refs: Vec<(FileId, &HirFile)> = topo
         .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, &lowered_query(db, *f).hir)))
+        .filter_map(|id| {
+            by_id
+                .get(id)
+                .map(|f| (*id, &lowered_query(db, project, *f).hir))
+        })
         .collect();
     let resolved = resolutions_index_query(db, project);
     brink_ir::lir::build_struct_shape_data(&hir_refs, &resolved.index, &resolved.resolutions)
@@ -1843,8 +1966,7 @@ pub(crate) fn decl_hir_query(
     project: ProjectInput,
     file: SourceFile,
 ) -> HirFile {
-    let _ = project;
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     HirFile {
         root_content: brink_ir::hir::Block::default(),
         knots: Vec::new(),
@@ -1869,7 +1991,7 @@ pub(crate) fn normalized_stamped_query(
     file: SourceFile,
 ) -> Arc<HirFile> {
     let resolved = resolutions_index_query(db, project);
-    let mut hir = lowered_query(db, file).hir.clone();
+    let mut hir = lowered_query(db, project, file).hir.clone();
     brink_ir::normalize_file(&mut hir);
     let mut slice = [(file.file_id(db), hir)];
     // #1504: the file's own path qualifies its root-content scope path, so
@@ -2383,7 +2505,7 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
             file: f.file_id(db),
             source: f.text(db),
             suppressions: suppressions_query(db, *f),
-            lowering: &lowered_query(db, *f).diagnostics,
+            lowering: &lowered_query(db, project, *f).diagnostics,
         })
         .collect();
     let opts = project.analysis_options(db);
@@ -2469,7 +2591,7 @@ pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInp
             file: f.file_id(db),
             source: f.text(db),
             suppressions: suppressions_query(db, *f),
-            lowering: &lowered_query(db, *f).diagnostics,
+            lowering: &lowered_query(db, project, *f).diagnostics,
         })
         .collect();
     let opts = project.analysis_options(db);
@@ -2877,10 +2999,23 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
 /// `DiagnosticCode::severity` reports as `Severity::Warning` so it never
 /// gates `has_errors_query`/`has_errors_in_closure_query`. The B0.3
 /// admission validator runs at the same seam (NF-6, always-on).
-fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
+///
+/// `external` is issue #2289's cross-file claiming injection: every
+/// `@[convention]` handler declared in the project's configured
+/// conventions module, resolved by [`external_claim_handlers_query`] and
+/// threaded through by [`lowered_query`] — `None` for [`raw_lowered_query`]
+/// (project-independent lowering) and for the conventions module's own
+/// file. See `brink_ir::hir::lower_native::lower_with_conventions`'s own
+/// doc for what merging it in changes.
+fn lower_native_file(
+    file_id: FileId,
+    parse: &NativeParse,
+    external: Option<&[brink_ir::ClaimHandlerDecl]>,
+) -> LoweredFile {
     let tree = parse.tree();
 
-    let (hir, manifest, mut diagnostics) = brink_ir::hir::lower_native::lower(file_id, &tree);
+    let (hir, manifest, mut diagnostics) =
+        brink_ir::hir::lower_native::lower_with_conventions(file_id, &tree, external);
 
     // Surface parser diagnostics as compile diagnostics, split by severity:
     // `Error` becomes the non-suppressible `E037` (malformed source fails

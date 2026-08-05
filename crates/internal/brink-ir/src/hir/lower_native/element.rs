@@ -91,46 +91,65 @@
 //! [`super::body::lower_items`] path, so a handler that would claim one of
 //! them still claims it, with no special case needed.
 //!
-//! # Deliberately not here
+//! # Cross-file claiming reach (issue #2289)
 //!
-//! `fn conventions()` registration is dissolved machinery (issue #2165,
-//! `docs/decision-log.md` 2026-08-03 "`fn conventions()` is DISSOLVED —
-//! handler precedence is a property of the `@[element]` annotation") — it
-//! never existed as anything but a design placeholder and there is nothing
-//! left to build here. Dispatching to a `flow` target (rather than a
-//! top-level `fn`) is also not here: `!name`'s placement is legal on a
-//! `flow` too ([`super::annotation::is_consumed_position`]), but [`collect`]
-//! only ever scans top-level `fn` declarations into the dispatch table —
-//! the same restriction `claims` already has, for the same reason (the
-//! rewrite is an expression call). The confinement of claiming to the
-//! `brink.toml`-named conventions module needs project identity that
-//! single-file lowering does not have — this module only records the raw
-//! material for that check ([`collect`] populates `HirFile::claim_handlers`
-//! with every declared handler's name and annotation range, independent of
-//! `matches`); the check itself runs at the project layer (issue #1844,
-//! `brink_db::queries::analysis::conventions_confinement_diagnostics_query`),
-//! which is the one seam that has both a file's module identity and the
-//! configured pointer.
+//! `docs/decision-log.md`'s 2026-08-05 ruling corrects a defect that
+//! survived §9.1 item 4's confinement rule: *"it's never file local. you
+//! configure conventions for a project, that's why they're conventions
+//! and not 'local patterns'."* §9.1 item 4 restricted **declaring** a
+//! claiming handler to the one module `brink.toml`'s `[project]
+//! conventions` names (`E169`, `brink_analyzer::conventions_confinement`)
+//! — but until this issue landed, nothing let a line in any *other* file
+//! actually match against that module's handlers, which made a
+//! correctly-declared conventions module claim nothing outside its own
+//! file. [`collect`] now accepts an optional, already-ordered `external`
+//! handler set — every `@[convention]` declared in the project's
+//! configured conventions module, read off that file's own
+//! `HirFile::claim_handlers` — and merges it with this file's local
+//! declarations into one precedence-ordered dispatch table (see
+//! [`Elements`]'s own doc for how `ClaimHandler::decl` tells the two
+//! apart). The project-identity work (which file is the conventions
+//! module, and reading its declared handlers) happens one layer up,
+//! in `brink_db::queries::analysis::external_claim_handlers_query` — this
+//! crate has no project database of its own, matching every other
+//! project-identity-gated check here (`conventions_module_diagnostics`'s
+//! `is_conventions_module` flag is the precedent this follows).
 //!
-//! An earlier design (issue #1863) had [`collect`] also accept an optional,
-//! already-ordered EXTERNAL handler set — claiming handlers declared in
-//! some *other* file, injected into this file's dispatch, so that a single
-//! conventions module could claim prose across the whole project. That
-//! injection seam (`external_conventions.rs`,
-//! `brink_analyzer::conventions_registry`) is now deleted (issue #2165), and
-//! nothing replaces it: after this deletion a conventions module has **no**
-//! cross-file claiming reach at all — [`collect`] only ever scans its own
-//! file's `fn` declarations into `HirFile::claim_handlers`. `brink_db::
-//! queries::analysis::import_closure_query` does not fill this gap; its one
-//! consumer (`conventions_projection_query`) reads it only to resolve
-//! `attach = StructName` against the importing file's visible structs, not
-//! to gather another file's claim handlers. The real blockers to
-//! cross-file reach are issue #1582 (a `pub` marker so a handler can be
-//! named from outside its declaring file) and issue #2167 (confining that
-//! reach to the project's `IMPORT` closure rather than the whole tree).
-//! `!name` dispatch never had a cross-file counterpart at all — cross-file
-//! dispatch-name resolution is `docs/prose-dialect-spec.md` §3.5b's own
-//! Deferred item, so [`try_dispatch`] stays file-local.
+//! Unlike the earlier #1863 design this replaces (deleted by issue #2165
+//! alongside the dissolved `fn conventions()` comptime registration it was
+//! built for), an injected handler now carries a **real** `order` and
+//! `attach` — issue #2164 made `order` a required property of the
+//! `@[convention]` declaration itself, so there is no separate
+//! comptime-evaluated identity list to join against; `ClaimHandlerDecl` is
+//! already the whole payload. Local and injected handlers are therefore
+//! merged and sorted by `order` together, not chained as "local always
+//! wins" — true project-wide precedence, not merely a last-resort fallback.
+//!
+//! `fn conventions()` registration itself stays dissolved machinery (issue
+//! #2165, `docs/decision-log.md` 2026-08-03 "`fn conventions()` is
+//! DISSOLVED — handler precedence is a property of the `@[element]`
+//! annotation") — it never existed as anything but a design placeholder
+//! and there is nothing left to build here. Dispatching to a `flow` target
+//! (rather than a top-level `fn`) is also not here: `!name`'s placement is
+//! legal on a `flow` too ([`super::annotation::is_consumed_position`]), but
+//! [`collect`] only ever scans top-level `fn` declarations into the
+//! dispatch table — the same restriction `claims` already has, for the
+//! same reason (the rewrite is an expression call). `!name` dispatch never
+//! had a cross-file counterpart at all — cross-file dispatch-name
+//! resolution is `docs/prose-dialect-spec.md` §3.5b's own Deferred item,
+//! so [`try_dispatch`] stays file-local; only `claims` (project-configured
+//! conventions) reaches across files.
+//!
+//! What this does **not** do: an injected [`ClaimHandler`]'s `annotation`/
+//! `name` ranges are copied straight off the declaring file's
+//! `ClaimHandlerDecl` — real source positions, but in *another file's*
+//! text. A consumer of `HirFile::element_matches` that assumes every range
+//! it carries indexes into *this* file's own source (true for every local
+//! match, and true before this issue) will misresolve an injected match's
+//! `handler`/`annotation` fields. No such consumer exists yet (checked:
+//! `brink-ide`'s only reader tests line equality, not these two fields) —
+//! flagged here rather than either fabricating a cross-file-safe schema
+//! this issue never asked for, or silently shipping the hazard unremarked.
 
 use std::collections::BTreeMap;
 
@@ -150,9 +169,14 @@ use super::provenance::native_provenance;
 use crate::provenance::NodeClass;
 
 /// One declared natural-notation handler: a top-level `fn` whose
-/// `@[convention(claims = "…", order = N)]` pattern claims prose lines.
+/// `@[convention(claims = "…", order = N)]` pattern claims prose lines —
+/// OR a handler injected from the project's configured conventions
+/// module (issue #2289), for which `decl` is `None` (see that field's own
+/// doc).
 struct ClaimHandler {
-    /// The handler's own name, carrying its declaration-site range.
+    /// The handler's own name, carrying its declaration-site range — in
+    /// the injected case, the range is in the DECLARING file (the
+    /// conventions module), not this one.
     name: Name,
     /// Parameter names in declaration order — the argument order the
     /// rewritten call uses. Guaranteed by `E160`/`E167` to be exactly the
@@ -160,11 +184,22 @@ struct ClaimHandler {
     params: Vec<String>,
     /// The compiled claiming pattern.
     pattern: regex::Regex,
-    /// Range of the `@[convention(claims = "…", order = N)]` line itself.
+    /// Range of the `@[convention(claims = "…", order = N)]` line itself
+    /// — in the injected case, in the declaring file, same caveat as
+    /// `name`.
     annotation: TextRange,
     /// The handler declaration's own range — used to suppress claiming
-    /// inside the handler's own body (the staging rule).
-    decl: TextRange,
+    /// inside the handler's own body (the staging rule). `None` for an
+    /// injected handler (issue #2289): "own body is not claimable" is a
+    /// same-file concept, and an injected handler's declaration range is
+    /// meaningless — usually plain wrong — against `claimed` ranges in
+    /// THIS file's own text; comparing them by coincidence of numeric
+    /// offset would be a real bug, not a conservative no-op, so injected
+    /// handlers skip the check entirely rather than risk it. `Some` (a
+    /// local declaration) is also how [`Elements::handler_decls`] and the
+    /// duplicate-order/duplicate-pattern diagnoses tell "declared in this
+    /// file" apart from "injected from elsewhere" — see their own docs.
+    decl: Option<TextRange>,
     /// The bare `block` clause (issue #1839): `true` when the trailing
     /// parameter is a `content`-typed block-capture receiver, not a
     /// regex-bound capture — see [`try_claim`]'s doc for what that changes
@@ -173,13 +208,20 @@ struct ClaimHandler {
     /// The claiming precedence (issue #2164, `docs/decision-log.md`
     /// 2026-08-03 "`order` is REQUIRED on `@[convention]`…") — a bare
     /// integer, required on every `@[convention]` declaration, so every
-    /// `ClaimHandler` carries a real one (no "no order" case). [`collect`]
-    /// sorts `handlers` by this field ascending before
+    /// `ClaimHandler` carries a real one (no "no order" case) — local
+    /// *and* injected alike, since `order` lives on the declaration
+    /// itself, not on some separate comptime-evaluated identity list
+    /// (issue #2289: unlike the deleted #1863 injection seam this
+    /// replaces, an injected handler's `order`/`attach` are real values
+    /// read straight off `ClaimHandlerDecl`, not placeholders). [`collect`]
+    /// sorts the merged local+injected set by this field ascending before
     /// [`try_claim`]/[`diagnose_duplicate_patterns`] ever see it — lower
-    /// values are tried first.
+    /// values are tried first, project-wide.
     order: i64,
     /// The `attach = StructName` clause (issue #2178), if declared — see
-    /// `crate::ConventionAnnotation::attach`'s own doc.
+    /// `crate::ConventionAnnotation::attach`'s own doc. Real for an
+    /// injected handler too (issue #2289) — see this struct's own `order`
+    /// doc for why.
     attach: Option<String>,
 }
 
@@ -224,6 +266,16 @@ struct DispatchHandler {
 /// than re-derived per line: a per-line whole-tree scan would make body
 /// lowering quadratic in file size.
 pub(super) struct Elements {
+    /// Every claiming handler this file's prose is matched against, in
+    /// ascending `order` — both this file's own local declarations
+    /// (`decl: Some(...)`) and, since issue #2289, every handler injected
+    /// from the project's configured conventions module (`decl: None`),
+    /// merged and sorted together so precedence is total project-wide,
+    /// not "local always wins". [`try_claim`] walks this single ordered
+    /// list; [`Elements::handler_decls`] and the duplicate-order/
+    /// duplicate-pattern diagnoses filter to the local subset only (see
+    /// their own docs) — those checks are about what *this file*
+    /// declares, not what it can claim with.
     handlers: Vec<ClaimHandler>,
     /// `!name`-dispatched handlers (issue #2004), keyed by dispatch name
     /// (the `name = "…"` alias if declared, else the `fn`'s own name) — a
@@ -250,11 +302,24 @@ pub(super) struct Elements {
 }
 
 impl Elements {
-    /// `true` when no handler claims anything in this file, so callers
-    /// can skip candidate testing entirely on the overwhelmingly common
-    /// path.
+    /// `true` when no handler — local or injected — claims anything in
+    /// this file, so callers can skip candidate testing entirely on the
+    /// overwhelmingly common path.
     fn is_inert(&self) -> bool {
         self.handlers.is_empty()
+    }
+
+    /// This file's own locally declared handlers only — `handlers`
+    /// filtered to `decl.is_some()` (see [`ClaimHandler::decl`]'s own
+    /// doc), preserving the merged vec's overall `order`. Shared by
+    /// [`handler_decls`](Self::handler_decls) and every diagnostic that
+    /// means "declared IN THIS FILE": an injected handler (issue #2289)
+    /// was declared elsewhere, so it must never appear in any of them —
+    /// counting it would falsely accuse the *injecting* file of a
+    /// confinement violation, or diagnose a duplicate against a
+    /// declaration that isn't really here.
+    fn local_handlers(&self) -> impl Iterator<Item = &ClaimHandler> {
+        self.handlers.iter().filter(|h| h.decl.is_some())
     }
 
     /// Every claiming handler *declared* in this file, in ascending
@@ -265,10 +330,11 @@ impl Elements {
     /// [`HirFile::claim_handlers`](crate::HirFile::claim_handlers)'s
     /// source (issue #1844's confinement check). Deliberately independent
     /// of `matches`: a handler that claims nothing in its own file is still
-    /// a declaration, and still checkable.
+    /// a declaration, and still checkable. Reads
+    /// [`local_handlers`](Self::local_handlers) only — never an injected
+    /// handler (issue #2289).
     pub(super) fn handler_decls(&self) -> Vec<crate::ClaimHandlerDecl> {
-        self.handlers
-            .iter()
+        self.local_handlers()
             .map(|h| crate::ClaimHandlerDecl {
                 name: h.name.clone(),
                 annotation: h.annotation,
@@ -305,7 +371,28 @@ impl Elements {
 /// since a shared `order` is `E179`, an `Error`-severity diagnostic that
 /// fails the compile; the tie-break only matters for what a caller sees
 /// while diagnostics are still being collected.
-pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
+///
+/// `external` is the issue #2289 injection point: every `@[convention]`
+/// handler declared in the project's configured conventions module,
+/// already resolved by the caller (`brink_db::queries::analysis::
+/// external_claim_handlers_query`) — `None`/empty for the conventions
+/// module's own file (it already has these declarations locally; the
+/// caller skips injecting a file into itself) and for every project with
+/// no conventions module configured. Each `external` entry is compiled
+/// and merged into `handlers` alongside the local declarations, then the
+/// **combined** set is sorted by `order` — real project-wide precedence,
+/// not "local always wins" (contrast the deleted #1863 design, which had
+/// no real `order` to sort an injected handler by). An external entry
+/// whose name collides with a handler this file declares *locally* is
+/// dropped: a local declaration always wins over an injected one of the
+/// same name — in practice this only fires when a caller mistakenly
+/// injects a file into its own lowering, which should never happen, but
+/// costs nothing to guard against.
+pub(super) fn collect(
+    file_id: FileId,
+    root: &SyntaxNode,
+    external: Option<&[crate::ClaimHandlerDecl]>,
+) -> Elements {
     let mut handlers = Vec::new();
     let mut dispatch: BTreeMap<String, DispatchHandler> = BTreeMap::new();
     for node in root.children() {
@@ -358,7 +445,7 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
                 params: param_names.clone(),
                 pattern,
                 annotation: convention.range,
-                decl: node.text_range(),
+                decl: Some(node.text_range()),
                 block: convention.block,
                 order: convention.order,
                 attach: convention.attach.map(|a| a.text),
@@ -382,12 +469,41 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
             });
         }
     }
+    // Issue #2289: merge in every handler injected from the project's
+    // conventions module, dropping any whose name collides with a LOCAL
+    // declaration (this function's own doc explains why a collision
+    // should never happen in practice). Each is compiled fresh — a
+    // pattern that failed to compile in its own declaring file would
+    // already be diagnosed there and never reach `ClaimHandlerDecl`, so a
+    // compile failure here is unreachable in practice, but declining
+    // (rather than panicking) costs nothing.
+    if let Some(external) = external {
+        for candidate in external {
+            if handlers.iter().any(|h| h.name.text == candidate.name.text) {
+                continue;
+            }
+            let Ok(pattern) = regex::Regex::new(&candidate.pattern) else {
+                continue;
+            };
+            handlers.push(ClaimHandler {
+                name: candidate.name.clone(),
+                params: candidate.params.clone(),
+                pattern,
+                annotation: candidate.annotation,
+                decl: None,
+                block: candidate.block,
+                order: candidate.order,
+                attach: candidate.attach.clone(),
+            });
+        }
+    }
     // Issue #2164: precedence now comes from `order`, not declaration
     // position — see this function's own doc. `E179` (duplicate `order`)
     // is diagnosed separately by [`diagnose_duplicate_order`], called by
     // `super::lower` right after this returns — a real diagnostic sink,
     // unlike this function's own `scratch`-discarding per-declaration
-    // reads.
+    // reads. A stable sort over the COMBINED local+injected set — issue
+    // #2289 makes precedence total project-wide, not "local always wins".
     handlers.sort_by_key(|h| h.order);
     Elements {
         handlers,
@@ -427,12 +543,17 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
 /// itself, plus building each message's "other declarations" list) — see
 /// [`diagnose_duplicate_patterns`]'s own doc for why that headroom is
 /// never a real concern at this scale.
+///
+/// Reads [`Elements::local_handlers`], never an injected one (issue
+/// #2289) — an order collision between this file's own declaration and a
+/// handler injected from elsewhere is not two declarations in *one*
+/// module sharing a value, so it is not this check's concern.
 pub(super) fn diagnose_duplicate_order(
     file_id: FileId,
     elements: &Elements,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let handlers = &elements.handlers;
+    let handlers: Vec<&ClaimHandler> = elements.local_handlers().collect();
 
     // Group handler indices by their shared `order` value. `BTreeMap`, not
     // `HashMap`, per this workspace's determinism rule — iteration order
@@ -598,12 +719,19 @@ fn generate_witnesses_from_hir(hir: &Hir) -> Vec<String> {
 /// the single digits (one project's worth of prose conventions, not a
 /// generated table) — a sorted/hashed pass would trade clarity for
 /// headroom this call site doesn't need.
+///
+/// Reads [`Elements::local_handlers`], never an injected one (issue
+/// #2289) — this file's own declarations are what "byte-identical to an
+/// earlier-declared one" and "dead code" mean here; an injected handler
+/// was not declared in this file and is never a candidate for either
+/// role, matching [`Elements::handler_decls`]'s own "declared IN THIS
+/// FILE" posture.
 pub(super) fn diagnose_duplicate_patterns(
     file_id: FileId,
     elements: &Elements,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let handlers = &elements.handlers;
+    let handlers: Vec<&ClaimHandler> = elements.local_handlers().collect();
     for (later_idx, later) in handlers.iter().enumerate().skip(1) {
         // Ground truth, not assumption: did `later` ever actually win a
         // claim? If so it is live, not dead code.
@@ -716,11 +844,13 @@ pub(super) fn try_claim(
 
     let claimed = node.text_range();
     // `decl` suppresses a claim inside the handler's own body (the staging
-    // rule — see `ClaimHandler::decl`'s doc).
-    let handler = elements
-        .handlers
-        .iter()
-        .find(|h| !h.decl.contains_range(claimed) && h.pattern.is_match(trimmed))?;
+    // rule — see `ClaimHandler::decl`'s doc); `None` (an injected handler,
+    // issue #2289) never suppresses anything, since a range in another
+    // file can never contain a range in this one. Iterates the merged
+    // local+injected set in `order` — first match wins, project-wide.
+    let handler = elements.handlers.iter().find(|h| {
+        !h.decl.is_some_and(|d| d.contains_range(claimed)) && h.pattern.is_match(trimmed)
+    })?;
 
     let is_block = handler.block;
     // See this function's own "Block capture" doc: the trailing param is
@@ -758,6 +888,11 @@ pub(super) fn try_claim(
     // borrow of `elements.handlers`/`.external` `handler` holds must end
     // before the `is_block`/attach branches below borrow `elements` mutably.
     let is_attach = handler.attach.is_some();
+    // Issue #2289: `decl.is_none()` is exactly "this handler was injected
+    // from the project's configured conventions module, not declared in
+    // this file" (see `ClaimHandler::decl`'s own doc) — copied out now for
+    // the same borrow-lifetime reason as `is_attach` above.
+    let is_injected = handler.decl.is_none();
 
     let mut call_args: Vec<Expr> = captures
         .iter()
@@ -832,6 +967,7 @@ pub(super) fn try_claim(
         captures,
         disposition: ElementDisposition::Call,
         content: content_range,
+        injected: is_injected,
     });
 
     if is_attach {
@@ -1149,6 +1285,10 @@ pub(super) fn try_dispatch(
         captures,
         disposition: ElementDisposition::Call,
         content: content_range,
+        // `!name` dispatch never has a cross-file counterpart (this
+        // module's own doc, "Deliberately not here") — every
+        // `DispatchHandler` is declared in this same file.
+        injected: false,
     });
 
     Some((

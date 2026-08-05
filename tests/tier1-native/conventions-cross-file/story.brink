@@ -1,0 +1,11 @@
+// The claiming file: no handlers, no `use`/`IMPORT` of `conventions.brink`
+// at all — an ordinary story file. `VENDOR` below is claimed by
+// `conventions.brink`'s `cue` handler purely because the project's
+// `brink.toml` names that file as `[project] conventions` (see this
+// directory's own `conventions.brink` for why this fixture exists).
+
+flow main() {
+  VENDOR
+  You shouldn't be here after dark.
+  -> END
+}
