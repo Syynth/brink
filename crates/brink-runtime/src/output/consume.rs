@@ -232,19 +232,27 @@ impl OutputBuffer {
             "flush_lines() called with active checkpoints"
         );
         let unread = &self.transcript[self.cursor..];
-        let result: Vec<_> = resolve_lines_annotated(
+        let annotated = resolve_lines_annotated(
             unread,
             self.pending_element.clone(),
             program,
             line_tables,
             resolver,
             &self.fragments,
-        )
-        .into_iter()
-        .filter_map(|(text, tags, suppressed, element)| {
-            (!suppressed).then_some((text, tags, element))
-        })
-        .collect();
+        );
+        // Carry the end-of-slice element-attachment state forward, mirroring
+        // `take_first_line` — otherwise an `ElementAttachEnd` consumed by this
+        // flush is lost and the attach data stays live on every later line
+        // (issue #2108 review finding).
+        self.pending_element = annotated
+            .last()
+            .map_or_else(BTreeMap::new, |(_, _, _, e)| e.clone());
+        let result: Vec<_> = annotated
+            .into_iter()
+            .filter_map(|(text, tags, suppressed, element)| {
+                (!suppressed).then_some((text, tags, element))
+            })
+            .collect();
         self.cursor = self.transcript.len();
         result
     }
@@ -262,6 +270,11 @@ impl OutputBuffer {
     /// Reset the read cursor to the beginning for re-rendering.
     pub fn reset_cursor(&mut self) {
         self.cursor = 0;
+        // At index 0 no attach run has accumulated yet — without this, a
+        // locale hot-swap re-render (issue #2108 review finding) would carry
+        // the previous pass's element data onto the newly re-drained leading
+        // lines.
+        self.pending_element = BTreeMap::new();
     }
 
     /// Returns the number of parts in the transcript.

@@ -2364,4 +2364,111 @@ mod tests {
              top-level resolve_lines/end_capture paths do: {text:?}"
         );
     }
+
+    /// Review finding on issue #2108's PR: unlike [`OutputBuffer::
+    /// take_first_line`], [`OutputBuffer::flush_lines`] seeded
+    /// `pending_element` from `self.pending_element` but never wrote the
+    /// end-of-slice state back — so an `ElementAttachEnd` consumed by a
+    /// `flush_lines` call was lost and the attach data stayed live forever
+    /// on whatever the buffer resolved next. Drain an attach run's first
+    /// line through `take_first_line` (the call that seeds
+    /// `pending_element` in the first place) and its remainder — including
+    /// the closing `ElementAttachEnd` — through `flush_lines` in one shot,
+    /// then prove a line pushed afterward does NOT inherit the closed
+    /// run's data.
+    #[test]
+    fn flush_lines_writes_back_pending_element_past_the_closed_run() {
+        let p = test_dummy_program();
+        let mut buf = OutputBuffer::new();
+
+        buf.push_element_attach("speaker".to_string(), "VENDOR".to_string());
+        buf.push_text("Line one.");
+        buf.push_newline();
+        buf.push_text("Line two.");
+        buf.push_newline();
+        buf.push_element_attach_end();
+
+        let (first_text, _, first_element) = buf
+            .take_first_line(&p, &[], None)
+            .expect("first line of the attach run");
+        assert_eq!(first_text, "Line one.\n");
+        assert_eq!(
+            first_element.get("speaker").map(String::as_str),
+            Some("VENDOR")
+        );
+
+        let rest = buf.flush_lines(&p, &[], None);
+        let line_two = rest
+            .iter()
+            .find(|(text, ..)| text == "Line two.")
+            .expect("Line two. present in the flush");
+        assert_eq!(
+            line_two.2.get("speaker").map(String::as_str),
+            Some("VENDOR"),
+            "the last line of the run itself must still carry the attach data: {rest:?}"
+        );
+
+        // Pushed after the run closed — must not inherit "speaker": "VENDOR".
+        buf.push_text("Unattached.");
+        buf.push_newline();
+        let (after_text, _, after_element) = buf
+            .take_first_line(&p, &[], None)
+            .expect("line after the closed run");
+        assert_eq!(after_text, "Unattached.\n");
+        assert!(
+            after_element.is_empty(),
+            "flush_lines must write pending_element back to empty once it \
+             consumes the run-closing ElementAttachEnd: {after_element:?}"
+        );
+    }
+
+    /// Review finding on issue #2108's PR: [`OutputBuffer::reset_cursor`]
+    /// rewound `self.cursor` but left `pending_element` populated. At index
+    /// 0 no attach run has accumulated yet, so a locale hot-swap re-render
+    /// (the public use of `reset_cursor`) leaked the previous drain pass's
+    /// element data onto the re-drained leading line.
+    ///
+    /// Transcript: `[narration, NL, ElementAttach(speaker=VENDOR), dialogue,
+    /// NL]` — the exact probe from the finding. The narration line reports
+    /// `{}` on the first pass (the attach hasn't happened yet); after
+    /// draining the whole buffer once and calling `reset_cursor`, the
+    /// re-drained narration line must report `{}` again too, not the
+    /// dialogue run's `speaker` leaking backward from the previous pass.
+    #[test]
+    fn reset_cursor_clears_pending_element() {
+        let p = test_dummy_program();
+        let mut buf = OutputBuffer::new();
+
+        buf.push_text("Intro.");
+        buf.push_newline();
+        buf.push_element_attach("speaker".to_string(), "VENDOR".to_string());
+        buf.push_text("Dialogue.");
+        buf.push_newline();
+
+        let (first_text, _, first_element) =
+            buf.take_first_line(&p, &[], None).expect("narration line");
+        assert_eq!(first_text, "Intro.\n");
+        assert!(first_element.is_empty(), "{first_element:?}");
+
+        let (second_text, _, second_element) =
+            buf.take_first_line(&p, &[], None).expect("dialogue line");
+        assert_eq!(second_text, "Dialogue.\n");
+        assert_eq!(
+            second_element.get("speaker").map(String::as_str),
+            Some("VENDOR")
+        );
+
+        buf.reset_cursor();
+        let (text_after_reset, _, element_after_reset) = buf
+            .take_first_line(&p, &[], None)
+            .expect("re-drained narration line after reset_cursor");
+        assert_eq!(text_after_reset, "Intro.\n");
+        assert!(
+            element_after_reset.is_empty(),
+            "reset_cursor must clear pending_element — no attach run has \
+             accumulated yet at index 0, so the re-drained leading line \
+             must not inherit the previous pass's speaker: \
+             {element_after_reset:?}"
+        );
+    }
 }

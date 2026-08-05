@@ -222,3 +222,68 @@ flow main() {
         "a bare transition after a dialogue run must not inherit its speaker: {transition_line:?}"
     );
 }
+
+/// Review finding on issue #2108's PR: `OutputBuffer::flush_lines` seeded
+/// `resolve_lines_annotated` with `pending_element` but never wrote the
+/// end-of-slice state back (unlike `take_first_line`, which does) — so an
+/// `ElementAttachEnd` consumed by a yield-point flush (a choice boundary,
+/// here) was lost and the attach data stayed live on every line
+/// afterward, in a different block.
+///
+/// `@VENDOR`'s two-line run is followed immediately by a choice point: the
+/// trailing dialogue line has nothing after it in the transcript to prove
+/// its own completion via `take_first_line` before the story yields
+/// `Step::Choices`, so it — and the run-closing `ElementAttachEnd` — drain
+/// through `flush_lines` at that yield point instead. Once a choice is
+/// taken, the chosen branch's own line(s) belong to a new block entirely
+/// and must not inherit `VENDOR`'s speaker.
+#[test]
+fn attach_element_data_does_not_leak_across_a_choice_boundary() {
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+flow main() {
+  @VENDOR
+  You shouldn't be here after dark.
+  Get out now.
+
+  {?
+    * [Leave] You leave without a word.
+  }
+  -> END
+}
+"#;
+    let mut story = story_from_native_source(src);
+    let before_steps = story.continue_maximally().expect("drive to choices");
+    assert!(
+        matches!(before_steps.last(), Some(Step::Choices(_))),
+        "{before_steps:?}"
+    );
+
+    story.choose(0).expect("choose Leave");
+    let after_steps = story.continue_maximally().expect("drive to END");
+
+    let after_lines: Vec<_> = after_steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+    assert!(!after_lines.is_empty(), "{after_steps:?}");
+    for line in &after_lines {
+        assert_eq!(
+            line.element,
+            Element::narrative(),
+            "a line in the branch taken after the choice must not inherit \
+             VENDOR's already-closed attach run: {after_steps:?}"
+        );
+    }
+}
