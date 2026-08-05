@@ -693,7 +693,6 @@ pub(super) fn diagnose_duplicate_patterns(
 /// number of items consumed is returned alongside the statements so the
 /// caller (`body::lower_items`) can skip them rather than lowering them
 /// a second time.
-#[expect(clippy::too_many_lines)]
 pub(super) fn try_claim(
     file_id: FileId,
     node: &SyntaxNode,
