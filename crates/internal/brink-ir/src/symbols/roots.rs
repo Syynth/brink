@@ -37,21 +37,30 @@
 //! not a re-derivation anywhere else.
 //!
 //! This intentionally does **not** add a per-root visibility *policy* type
-//! (an enum, a trait, a `ReservedRoot { name, policy }` struct). With
-//! exactly one root mounted today, every consumer's exclusion behavior
-//! (skip a reserved-root candidate in bare-name-fallback resolution) is
-//! identical for that root — there is no second data point to generalize
-//! a *policy* from, only a second *name*. Inventing a policy hook now
-//! would be speculative machinery nobody has asked for; the set below is
-//! exactly the generalization #2251 asks for and no more.
+//! (an enum, a trait, a `ReservedRoot { name, policy }` struct) — that half
+//! of #2251's ask is deliberately deferred, not delivered here. Note that
+//! the membership check below is not policy-neutral: every consumer that
+//! calls [`is_reserved_root_module`] now applies std's bare-name-fallback
+//! exclusion to *any* member of [`RESERVED_ROOTS`], with no per-root
+//! opt-out. That is a real decision, baked in by generalizing a single
+//! `std`-specific check into a set-membership test — it is just not a
+//! *differing* policy per root, because there is only one data point
+//! (`std`) to generalize a difference from. A future root that needs
+//! different visibility behavior than `std` still needs the policy type;
+//! this module only gives it a name to add to the set.
 
 /// The standard library's reserved peer-root name — the one entry in
 /// [`RESERVED_ROOTS`] that exists today (`brink_environment::mount_stdlib`'s
 /// `std/…` source-key convention, turned into a module path by
-/// `brink_db::modules::native_module_path`). Kept as its own named
-/// constant — rather than only an index into the set — because some call
-/// sites (this module's own tests, `native_module_path`'s doc example)
-/// mean "the std root" specifically, not "any reserved root".
+/// `brink_db::modules::native_module_path`). Kept as its own public
+/// constant rather than folded away into an unlabeled `RESERVED_ROOTS[0]`
+/// index: today the only consumer that means "the std root" specifically,
+/// not "any reserved root", is this module's own tests
+/// (`reserved_roots_contains_exactly_std_today`), but that distinction —
+/// naming one particular root versus testing set membership — is real even
+/// with a single entry, and a public name is cheaper to keep than to add
+/// back once a second root exists and something legitimately needs to
+/// single `std` out from its peers.
 pub const STD_ROOT: &str = "std";
 
 /// The full set of reserved peer-root names (#2251, generalizing #2245's

@@ -179,7 +179,13 @@ to") checks membership against the whole set. A second mounted library
 becomes a one-line addition to `RESERVED_ROOTS`, not a new branch at any
 consumer. This intentionally stops short of a per-root visibility
 *policy* type: with one root mounted, there is no second data point to
-generalize a differing policy from, so no policy hook was added.
+generalize a differing policy from, so no policy hook was added. That
+does not mean no policy decision was made — generalizing a single
+`std`-specific check into a set-membership test bakes in the decision
+that every future [`RESERVED_ROOTS`] member inherits `std`'s
+bare-name-fallback exclusion identically, with no per-root opt-out. A
+root that needs *different* visibility behavior than `std` still needs
+the policy type this section declines to add.
 
 Issue #2217 (open) — a project's own file legitimately placed at a
 `std/…` path is misclassified as the mounted preset, because the gate is

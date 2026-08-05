@@ -140,6 +140,18 @@ pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a
 /// never flow through `resolve_modules`: they have no `#@module` inheritance
 /// and no INCLUDE graph, so their identity is this function and nothing more.
 pub(crate) fn native_module_path(relative_path: &str) -> String {
+    native_module_path_in(RESERVED_ROOTS, relative_path)
+}
+
+/// [`native_module_path`], parameterized over the reserved-root set instead
+/// of hardcoding [`RESERVED_ROOTS`]. Exists so a test can exercise the
+/// leading-segment→root decision against a set with more than one member
+/// (issue #2251 review finding: the real `RESERVED_ROOTS` has exactly one
+/// entry today, so a test that only ever iterates the real constant cannot
+/// tell "the check is root-agnostic" apart from "the check happens to work
+/// for `std`") without mutating a `pub const`. `native_module_path` is the
+/// only production caller, always with `RESERVED_ROOTS`.
+fn native_module_path_in(roots: &[&str], relative_path: &str) -> String {
     let without_ext = relative_path
         .strip_suffix(".brink")
         .unwrap_or(relative_path);
@@ -151,7 +163,7 @@ pub(crate) fn native_module_path(relative_path: &str) -> String {
         return String::from("story");
     };
 
-    let mut out = if RESERVED_ROOTS.contains(&first) {
+    let mut out = if roots.contains(&first) {
         first.to_string()
     } else {
         format!("story::{first}")
@@ -351,6 +363,27 @@ mod tests {
                 "reserved root `{root}` must mint as its own peer root, not under story::"
             );
         }
+    }
+
+    /// #2251 review finding: the test above only ever iterates the real
+    /// `RESERVED_ROOTS` (one member, `std`), so it cannot distinguish
+    /// "the leading-segment check is root-agnostic" from "the check
+    /// happens to work for `std`". Exercise
+    /// [`native_module_path_in`] directly against a two-member set — one
+    /// entry that is not `std` at all — to prove a second reserved root
+    /// mints as its own peer root while an ordinary project path is
+    /// unaffected.
+    #[test]
+    fn native_module_path_in_generalizes_to_a_second_reserved_root() {
+        let roots: &[&str] = &["std", "gizmo"];
+        assert_eq!(
+            native_module_path_in(roots, "gizmo/leaf.brink"),
+            "gizmo::leaf"
+        );
+        assert_eq!(
+            native_module_path_in(roots, "market/barter.brink"),
+            "story::market::barter"
+        );
     }
 
     /// Issue #1572: with no declared root — every compile path, where
