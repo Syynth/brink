@@ -1550,7 +1550,7 @@ fn ambiguous_diag(file: FileId, range: rowan::TextRange, path: &str) -> Diagnost
 }
 
 /// True when `index` holds at least one declared symbol named `path`
-/// whose module is the `std::` peer root ([`is_std_module`]) — regardless
+/// whose module is a reserved peer root ([`is_reserved_root_module`]) — regardless
 /// of `SymbolKind`, since the point here is not "which lookup would have
 /// matched" but "does bare-name resolution's std-invisibility gate
 /// (`lookup_by_name`, `lookup_unique_by_name`) explain why this path came
@@ -1573,7 +1573,7 @@ fn is_std_shadowed_name(index: &SymbolIndex, path: &str) -> bool {
             index
                 .symbols
                 .get(id)
-                .is_some_and(|info| info.module.as_deref().is_some_and(is_std_module))
+                .is_some_and(|info| info.module.as_deref().is_some_and(is_reserved_root_module))
         })
     })
 }
