@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, Import, LocalSymbol, RefKind, ResolutionMap, ResolvedRef,
-    Scope, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest, Visibility, is_std_module,
+    Scope, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest, Visibility,
+    is_reserved_root_module,
 };
 
 use crate::manifest::local_definition_id;
@@ -1266,7 +1267,17 @@ fn lookup_by_name_direct(
         // `Imported` are untouched, so a std file's own internal
         // references, and a future real `use std::…` import once #1582/
         // #2167 ship, keep resolving normally.
-        if candidacy == Candidacy::Other && info.module.as_deref().is_some_and(is_std_module) {
+        //
+        // #2251: this exclusion is not actually std-specific — it applies
+        // to "any reserved-root candidate this file does not itself
+        // belong to", so it now checks `is_reserved_root_module` against
+        // the whole `RESERVED_ROOTS` set rather than the single `std`
+        // literal `is_std_module` used to compare against. Behavior is
+        // unchanged today (the set has exactly one member), and a future
+        // second mounted library gets this same exclusion for free.
+        if candidacy == Candidacy::Other
+            && info.module.as_deref().is_some_and(is_reserved_root_module)
+        {
             continue;
         }
         if first_match.is_none() {
@@ -1376,7 +1387,11 @@ pub(crate) fn lookup_unique_by_name(
         // falls through to `Other` and is excluded, matching
         // `lookup_by_name`'s behavior for a referrer that has not imported
         // that sibling module.
-        if info.module.as_deref().is_some_and(is_std_module)
+        //
+        // #2251: generalized from the single-root `is_std_module` to
+        // `is_reserved_root_module` — same reasoning as
+        // `lookup_by_name_direct`'s exclusion above.
+        if info.module.as_deref().is_some_and(is_reserved_root_module)
             && info.module.as_deref() != referrer_module
         {
             continue;

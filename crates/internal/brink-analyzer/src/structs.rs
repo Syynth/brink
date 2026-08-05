@@ -215,9 +215,10 @@ impl ShapeTable {
     /// [`crate::resolve::lookup_by_name`], the exact function
     /// `resolve::resolve_struct_ref` already calls for `SymbolKind::Struct`.
     /// This used to hand-roll its own `find(info.file == referrer)
-    /// .or_else(find(!is_std_module))` fallback — a bolt-on std gate the
-    /// ruling calls out by name as one of the five symptom gates to unwind,
-    /// not a second, diverging implementation of the same policy. Returns
+    /// .or_else(find(!is_reserved_root_module))` fallback — a bolt-on std
+    /// gate the ruling calls out by name as one of the five symptom gates
+    /// to unwind, not a second, diverging implementation of the same
+    /// policy. Returns
     /// `None` when `name` names no declared `STRUCT` at all, or
     /// [`crate::resolve::lookup_by_name`] itself resolves to none (e.g.
     /// every candidate sharing the name is std-declared and out of
