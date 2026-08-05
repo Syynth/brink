@@ -138,10 +138,12 @@ export interface Line {
    * carry no line payload, so no block id. */
   block_id?: number;
   /** This line's classification (`brink_runtime::Element`, issue #1683).
-   * Present only for `"text"`, mirroring `block_id` above. Scoped
-   * narrowly today: every line reports the degenerate
-   * `{ kind: "narrative", data: {} }` case — no `@[element]` handler's
-   * classification reaches this field yet. */
+   * Present only for `"text"`, mirroring `block_id` above. `kind` still
+   * always reports the degenerate `"narrative"` case — no `@[element]`
+   * handler's own classification reaches `kind` yet. `data` is populated
+   * as of issue #2108: an `@[convention(..., attach = StructName)]`
+   * handler's returned struct fields merge into `data` on every line in
+   * the run that follows it. */
   element?: ElementJs;
   choices?: Choice[];
   /** External name, present only on an `awaiting_external` line. */
