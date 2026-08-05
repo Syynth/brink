@@ -780,13 +780,27 @@ pub(crate) fn harvest_index_query(
 /// [`HarvestIndex`] can never `Eq`-cutoff on its own — its sites carry real
 /// ranges, so nearly any edit changes its output — the exact gap that
 /// forced [`resolution_index_query`] to exist for the symbol index (see
-/// this module's own doc, "The `resolution_index` cutoff seam"). Without
-/// this projection, a completion path reading `harvest_index_query` on
-/// every keystroke would re-run the whole-project harvest merge on every
-/// keystroke project-wide. This query is the harvest index's sibling of
-/// that seam: a prose edit that adds no cue/span/attribute *name* anywhere
-/// backdates here even though it changes `harvest_index_query`'s own
-/// output.
+/// this module's own doc, "The `resolution_index` cutoff seam"). This query
+/// is the harvest index's sibling of that seam: a prose edit that adds no
+/// cue/span/attribute *name* anywhere makes **this** query's own output
+/// `Eq`-identical to before, so a memoized reader of *this* projection can
+/// backdate across it.
+///
+/// **Correction (review finding on #2134):** this query still calls
+/// [`harvest_index_query`] directly above, so *this* memo's own body still
+/// re-runs the whole-project harvest merge on every edit that changes any
+/// file's `lowered_query` output — same as before this projection existed.
+/// It does not skip that merge, and does not claim to. What it buys is
+/// downstream: any *memoized* consumer that reads `harvest_completion_names`
+/// (rather than `harvest_index` directly) sees an `Eq`-stable value across a
+/// pure range-shifting edit and can backdate its own memo on it, the same
+/// benefit `resolution_index_query` gives `resolve_query`. No such memoized
+/// downstream consumer exists today — both `brink-lsp`'s `completion`
+/// handler and `brink-web`'s `EditorSession::completions` read
+/// `harvest_completion_names()` directly, per request, with nothing between
+/// them and this query to backdate — so the measured present-day
+/// incrementality delta is zero. The seam is built for the next memoized
+/// consumer, not a win realized yet.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn harvest_completion_index_query(
     db: &dyn salsa::Database,
