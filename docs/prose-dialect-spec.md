@@ -586,9 +586,9 @@ fn radio(chan: string, text: content) {
   ordering is expressible declaratively on the annotation itself —
   `@[convention(…, order = N)]` (issue #2164) — with no comptime evaluator,
   no registry cell, and no compiler→runtime dependency needed at all.
-  `register`, `E175`, and `DefinitionId::CONVENTIONS_REGISTRY_CELL` are
-  deleted; `register_intrinsic.rs` and `docs/diagnostics/E175.md` no
-  longer exist); **multi-token
+  `register` and `DefinitionId::CONVENTIONS_REGISTRY_CELL` are deleted;
+  `register_intrinsic.rs` no longer exists. `E175` is retired in place
+  (`docs/diagnostics/E175.md`), never reused, never raised); **multi-token
   style values** — issue #1719's `@[style(key = "value")]` value is a single
   presentation token today (one `StyleToken` per key), not the
   space-separated list this section's own screenplay preset describes

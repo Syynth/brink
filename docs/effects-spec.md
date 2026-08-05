@@ -1172,11 +1172,12 @@ writes / calls / emits / suspend defeat fusion).
    (`docs/decision-log.md`, "`fn conventions()` is DISSOLVED") removed
    `fn conventions()` and `register` from the design outright — precedence
    is now a property of `@[convention]`'s `order` clause, computed
-   statically, with no comptime evaluator ever needed. `register`, `E175`,
+   statically, with no comptime evaluator ever needed. `register`,
    `DefinitionId::CONVENTIONS_REGISTRY_CELL`, and the `conventions_write`
    effect-row bit this entry describes are all deleted; nothing above this
-   line describes current behavior. `register_intrinsic.rs` and
-   `docs/diagnostics/E175.md` no longer exist.
+   line describes current behavior. `register_intrinsic.rs` no longer
+   exists; `E175` is retired in place (`docs/diagnostics/E175.md`), never
+   reused, and never raised by any pass.
 
 ### 14.6 Build posture
 

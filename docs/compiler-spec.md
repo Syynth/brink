@@ -549,7 +549,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E172`](diagnostics/E172.md) | A native `#…` tag begins with `@` — the ink-dialect directive-tag shape (`#@private`/`#@was`/`#@local`/…) — but native has no directive channel, so it lowers as an ordinary runtime tag. |
 | [`E173`](diagnostics/E173.md) | An inline markup span of a declared kind is missing an attribute the host manifest marks `required` for that kind. |
 | [`E174`](diagnostics/E174.md) | A lambda's own written annotation (a parameter's `: T` or the lambda's `: R` return annotation) disagrees with the type its body actually infers. |
-| `E175` | Retired (issue #2165) — was `register`'s comptime-only-intrinsic confinement check; `fn conventions()`/`register` were dissolved by the 2026-08-03 ruling (`docs/decision-log.md`) before either ever had a real caller. The code is not reused. |
+| [`E175`](diagnostics/E175.md) | RETIRED (issue #2165) — was `register`'s comptime-only-intrinsic confinement check; `fn conventions()`/`register` were dissolved by the 2026-08-03 ruling (`docs/decision-log.md`), so precedence is now a static `order` property with no confinement diagnostic to raise. |
 | [`E176`](diagnostics/E176.md) | A divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters — `E031`'s sibling for the divert call shape. |
 | [`E178`](diagnostics/E178.md) | A `@[convention(claims = "…")]` annotation has no `order` clause — required, with no default. |
 | [`E179`](diagnostics/E179.md) | Two `@[convention(…)]` declarations in the same module carry the same `order` — reported against every declaration in the group. |
