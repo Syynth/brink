@@ -779,6 +779,17 @@ fn emit_stmt_stream(
                 let line = emit_await(a, context)?;
                 let _ = writeln!(out, "{indent}{line}");
             }
+            // Issue #2108: `AttachElement`/`EndElementRun` are synthesized
+            // by `hir::lower_native::element::try_claim`'s attach-mode
+            // rewrite — an attach convention's claimed line has already
+            // been consumed as source text (the whole point of the ruled
+            // model, "an attaching convention CONSUMES its own line") and
+            // has no native spelling of its own left to respell. Refuse
+            // rather than guess, matching this emitter's own conservative-
+            // by-construction contract.
+            Stmt::AttachElement(_) | Stmt::EndElementRun => {
+                return Err(unsupported("attach-mode element rewrite", context));
+            }
         }
         i += 1;
     }

@@ -667,7 +667,15 @@ fn stmt_anchor(stmt: &Stmt) -> Option<TextRange> {
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
         Stmt::Await(a) => Some(a.ptr.text_range()),
-        Stmt::ChoiceSet(_) | Stmt::LabeledBlock(_) | Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+        // Issue #2108: `AttachElement`/`EndElementRun` carry no
+        // `Provenance`/`ptr` field of their own — same "nothing to offer"
+        // posture as `ExprStmt`/`EndOfLine`.
+        Stmt::ChoiceSet(_)
+        | Stmt::LabeledBlock(_)
+        | Stmt::ExprStmt(_)
+        | Stmt::EndOfLine
+        | Stmt::AttachElement(_)
+        | Stmt::EndElementRun => None,
     }
 }
 

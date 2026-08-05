@@ -91,6 +91,8 @@ const END_TAG: u8 = 0x65;
 const EVAL_LINE: u8 = 0x66;
 const BEGIN_FRAGMENT: u8 = 0x68;
 const END_FRAGMENT: u8 = 0x69;
+const ATTACH_ELEMENT: u8 = 0x6A;
+const END_ELEMENT_RUN: u8 = 0x6B;
 
 // Choices
 const BEGIN_CHOICE: u8 = 0x72;
@@ -1213,6 +1215,17 @@ pub enum Opcode {
     BeginFragment,
     /// End fragment capture — store parts and push `Value::FragmentRef`.
     EndFragment,
+    /// An `attach = StructName` convention handler's claimed line (issue
+    /// #2108) — see `brink_ir::hir::Stmt::AttachElement`'s doc. Pops the
+    /// call's result off the value stack; when it is a `Value::Record`
+    /// matching a known `StructShapes` entry, merges its fields (converted
+    /// via the same `stringify` display path as `string()`/interpolation)
+    /// into the VM's per-block attachment state — no output, no `Step::Line`.
+    AttachElement,
+    /// Closes the run an `AttachElement` opened — see
+    /// `brink_ir::hir::Stmt::EndElementRun`'s doc. Clears the VM's
+    /// accumulated attachment data and starts a fresh block.
+    EndElementRun,
 
     // ── Choices ─────────────────────────────────────────────────────────
     BeginChoice(ChoiceFlags, DefinitionId),
@@ -1835,6 +1848,8 @@ impl Opcode {
             }
             Self::BeginFragment => write_u8(buf, BEGIN_FRAGMENT),
             Self::EndFragment => write_u8(buf, END_FRAGMENT),
+            Self::AttachElement => write_u8(buf, ATTACH_ELEMENT),
+            Self::EndElementRun => write_u8(buf, END_ELEMENT_RUN),
 
             // Choices
             Self::BeginChoice(flags, target) => {
@@ -2161,6 +2176,8 @@ impl Opcode {
             }
             BEGIN_FRAGMENT => Self::BeginFragment,
             END_FRAGMENT => Self::EndFragment,
+            ATTACH_ELEMENT => Self::AttachElement,
+            END_ELEMENT_RUN => Self::EndElementRun,
 
             // Choices
             BEGIN_CHOICE => {
@@ -2481,6 +2498,8 @@ mod tests {
         roundtrip(&Opcode::EndTag);
         roundtrip(&Opcode::EvalLine(0, 0));
         roundtrip(&Opcode::EvalLine(42, 2));
+        roundtrip(&Opcode::AttachElement);
+        roundtrip(&Opcode::EndElementRun);
     }
 
     #[test]

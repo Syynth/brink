@@ -235,7 +235,9 @@ fn walk_block(file_id: FileId, block: &Block, diags: &mut Vec<Diagnostic>) {
             | Stmt::ExprStmt(_)
             | Stmt::EndOfLine
             | Stmt::LogicBlock(_)
-            | Stmt::Await(_) => {}
+            | Stmt::Await(_)
+            | Stmt::AttachElement(_)
+            | Stmt::EndElementRun => {}
         }
     }
 }

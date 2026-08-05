@@ -3,15 +3,20 @@
 //
 // `cue`'s declared return type (`: Cue`) must agree with its `attach = Cue`
 // clause or the declaration is `E180` and never registered as a claiming
-// handler at all — this fixture proves the AGREEING case compiles and runs:
-// `cue` claims the `VENDOR` line, its body returns a real `Cue { … }` value,
-// and that struct's default rendering becomes the claimed line's text.
+// handler at all — this fixture proves the AGREEING case compiles and runs.
 //
-// This is a syntax/plumbing proof for the schema declaration itself, not a
-// proof that any editor/host projection reads `attach` — no such projection
-// exists yet (`#2111` is blocked on this landing, per the issue's own
-// sequencing note); `ClaimHandlerDecl::attach` is populated but has no
-// consumer in this repo today.
+// ⚠ UPDATED (issue #2108, `docs/decision-log.md` 2026-08-03 "The element
+// output model"): `cue`'s claimed `VENDOR` line no longer becomes its own
+// visible transcript line — an attaching convention CONSUMES its own line
+// (ruling item 2/6: "AN EVENT EXISTS IFF A LINE EXISTS"). `cue`'s `Cue`
+// value's fields (`speaker`, `voiceover`) are merged into the VM's
+// per-block attachment state instead, and every line materialized while
+// they're live carries a COPY (ruling item 5) — see `crates/brink-runtime/
+// tests/element.rs`'s `attach_convention_data_reaches_the_following_run`
+// for the actual `Element.data` assertion this fixture's own text-only
+// transcript can't express. `ClaimHandlerDecl::attach` now has that one
+// real consumer (the runtime's `Opcode::AttachElement`); the editor/host
+// projection (`#2111`) is still unbuilt.
 struct Cue {
   speaker: string,
   voiceover: bool,

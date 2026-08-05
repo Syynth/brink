@@ -752,6 +752,12 @@ pub(super) fn try_claim(
     // borrow `elements` mutably for the recursive capture.
     let handler_name = handler.name.clone();
     let handler_annotation = handler.annotation;
+    // Issue #2108/#2178: whether this handler declares `attach = StructName`
+    // — copied out now, alongside `handler_name`/`handler_annotation`, for
+    // the same reason those two are (this function's own note above): the
+    // borrow of `elements.handlers`/`.external` `handler` holds must end
+    // before the `is_block`/attach branches below borrow `elements` mutably.
+    let is_attach = handler.attach.is_some();
 
     let mut call_args: Vec<Expr> = captures
         .iter()
@@ -764,11 +770,43 @@ pub(super) fn try_claim(
 
     let mut consumed = 0;
     let mut content_range = None;
+    // Only populated in the `is_attach` branch below — the captured
+    // following run's own (already-lowered) statements, spliced back into
+    // the returned stream after this handler's own `AttachElement`/
+    // `EndElementRun` pair. Kept outside the `if`/`else if` so `capture_block`
+    // (which mutably borrows `elements` to record any interior claims) runs
+    // **exactly once** per claimed line — calling it twice would re-lower
+    // the captured run and double every diagnostic/`ElementMatch` it
+    // produces.
+    let mut attach_run_stmts: Vec<Stmt> = Vec::new();
+    // `is_block` (wrap mode, #1839) is checked first: `annotation::
+    // convention_annotation` does NOT currently reject a declaration that
+    // combines `block` with `attach = StructName` (verified — no such
+    // check exists there), so this `if`/`else if` is the one place that
+    // ordering decision is made today: a handler declaring both takes the
+    // `block` (wrap) path and its `attach` clause is silently inert. That
+    // combination has no test and no ruled semantics of its own — flagged
+    // here rather than either fabricating an exclusivity guarantee or
+    // inventing "what should happen when a handler wraps AND attaches"
+    // unilaterally.
     if is_block {
         let (fragment_stmts, n, range) = capture_block(file_id, following, elements, diags);
         consumed = n;
         content_range = range;
         call_args.push(Expr::Fragment(fragment_stmts));
+    } else if is_attach {
+        // Issue #2108, `docs/decision-log.md` 2026-08-03 "The element
+        // output model: attachment is block-level metadata, delivery is
+        // per-line". The "following run" an attach handler's captures
+        // attach to is the exact same terminator search `block`-mode uses
+        // (item 4: "the run IS the block") — reused here, but the captured
+        // statements are spliced back into the returned stream as ordinary
+        // sibling statements (bracketed by `EndElementRun`) rather than
+        // embedded as this call's own argument.
+        let (run_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        consumed = n;
+        content_range = range;
+        attach_run_stmts = run_stmts;
     }
 
     let call = Expr::Call(
@@ -794,6 +832,43 @@ pub(super) fn try_claim(
         disposition: ElementDisposition::Call,
         content: content_range,
     });
+
+    if is_attach {
+        // Ruling item 6: "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
+        // convention emits no `Stmt::Content`/`Stmt::EndOfLine` at all, only
+        // `AttachElement` (evaluates `call`, merges its fields into the
+        // VM's per-block attachment state) followed by the captured
+        // following run's own already-lowered statements and, usually, a
+        // closing `EndElementRun`.
+        //
+        // **The one exception** (found by tracing the actual bytecode for
+        // `cue` immediately followed by `parenthetical` — #2108's own
+        // fixture): `capture_block`'s terminator search stops at ANY
+        // element-level line, including another `CUE`/`PARENTHETICAL` —
+        // so `cue`'s own captured run is *empty* when a `parenthetical`
+        // immediately follows it, exactly the shape ruling item 3
+        // ("cue and parenthetical both attach to the SAME run") requires
+        // to chain. Closing right there (as an earlier version of this
+        // code unconditionally did) would clear `cue`'s data before
+        // `parenthetical`'s own `AttachElement` — or the dialogue after
+        // it — ever reads it. So: an empty capture caused SPECIFICALLY by
+        // an immediately-following `CUE`/`PARENTHETICAL` node leaves the
+        // run open (no `EndElementRun` here — the following claim's own
+        // rewrite closes it once IT finishes); any other empty-capture
+        // reason (a blank line, a heading, a dispatch, end of statements)
+        // closes immediately, so an attach with genuinely nothing after it
+        // never leaks into unrelated later content.
+        let chains_into_next_attach = attach_run_stmts.is_empty()
+            && following
+                .first()
+                .is_some_and(|n| matches!(n.kind(), N::CUE | N::PARENTHETICAL));
+        let mut stmts = vec![Stmt::AttachElement(call)];
+        stmts.extend(attach_run_stmts);
+        if !chains_into_next_attach {
+            stmts.push(Stmt::EndElementRun);
+        }
+        return Some((stmts, consumed));
+    }
 
     Some((
         vec![

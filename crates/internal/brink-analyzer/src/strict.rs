@@ -1603,12 +1603,24 @@ fn check_void_stmt(
                 check_void_root(file, cond, void_defs, resolution_by_range, out);
             }
         }
+        // Issue #2108: unlike `ExprStmt` (a call's result deliberately
+        // discarded), an attach handler's call result is a used value — the
+        // struct whose fields become attached element data — so a
+        // void-returning call here is checked the same as `Assignment`/
+        // `TempDecl`'s value position. (`attach = StructName`'s own E180
+        // check already requires the declaration's return type to name a
+        // real struct, so this arm is not expected to ever fire in
+        // practice — but it costs nothing to check rather than assume.)
+        Stmt::AttachElement(e) => {
+            check_void_root(file, e, void_defs, resolution_by_range, out);
+        }
         Stmt::Divert(_)
         | Stmt::TunnelCall(_)
         | Stmt::ThreadStart(_)
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
-        | Stmt::EndOfLine => {}
+        | Stmt::EndOfLine
+        | Stmt::EndElementRun => {}
     }
 }
 
@@ -1917,7 +1929,9 @@ fn collect_temps_stmt(
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
         | Stmt::Await(_)
-        | Stmt::EndOfLine => {}
+        | Stmt::EndOfLine
+        | Stmt::AttachElement(_)
+        | Stmt::EndElementRun => {}
     }
 }
 

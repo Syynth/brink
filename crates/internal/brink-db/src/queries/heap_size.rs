@@ -244,7 +244,17 @@ fn stmt_heap(s: &Stmt) -> usize {
         Stmt::Conditional(c) => conditional_heap(c),
         Stmt::Sequence(s) => sequence_heap(s),
         Stmt::LogicBlock(lb) => block_stmts_heap(&lb.stmts),
-        Stmt::Assignment(_) | Stmt::ExprStmt(_) | Stmt::Await(_) | Stmt::EndOfLine => 0,
+        // Issue #2108: `AttachElement`'s `Expr` payload is uncounted for
+        // the same reason `Assignment`/`ExprStmt`/`Await`'s are — this
+        // walker does not recurse into generic `Expr` trees at all (see
+        // e.g. `Stmt::Return` above, which counts `onwards_args` but not
+        // `value`); `EndElementRun` carries no payload regardless.
+        Stmt::Assignment(_)
+        | Stmt::ExprStmt(_)
+        | Stmt::Await(_)
+        | Stmt::EndOfLine
+        | Stmt::AttachElement(_)
+        | Stmt::EndElementRun => 0,
     }
 }
 

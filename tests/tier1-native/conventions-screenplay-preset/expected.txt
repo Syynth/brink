@@ -1,8 +1,5 @@
 -- INT. MARKET SQUARE - NIGHT --
 The square is empty.
-Cue { speaker: VENDOR }
-Parenthetical { delivery: hushed }
 You shouldn't be here after dark.
-Cue { speaker: KID }
 Says who?
 CUT TO:

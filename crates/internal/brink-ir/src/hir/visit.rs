@@ -250,8 +250,8 @@ fn walk_stmt(stmt: &Stmt, ctx: ContentContext, v: &mut impl HirVisitor) {
         Stmt::LabeledBlock(b) => walk_block_ctx(b, ctx, v),
         Stmt::Conditional(c) => walk_conditional(c, ctx, v),
         Stmt::Sequence(s) => walk_sequence(s, ctx, v),
-        Stmt::ExprStmt(e) => walk_expr(e, v),
-        Stmt::EndOfLine => {}
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => walk_expr(e, v),
+        Stmt::EndOfLine | Stmt::EndElementRun => {}
         Stmt::LogicBlock(lb) => walk_logic_block(lb, v),
         Stmt::Await(a) => {
             if let Some(e) = &a.condition {

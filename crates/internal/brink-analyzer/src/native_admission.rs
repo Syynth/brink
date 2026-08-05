@@ -200,7 +200,9 @@ fn walk_block(file_id: FileId, block: &Block, in_choice_body: bool, diags: &mut 
             | Stmt::ExprStmt(_)
             | Stmt::EndOfLine
             | Stmt::LogicBlock(_)
-            | Stmt::Await(_) => {}
+            | Stmt::Await(_)
+            | Stmt::AttachElement(_)
+            | Stmt::EndElementRun => {}
         }
     }
 }

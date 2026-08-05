@@ -128,6 +128,8 @@ fn stmt_name(s: &Stmt) -> &'static str {
         Stmt::EndOfLine => "EndOfLine",
         Stmt::LogicBlock(_) => "LogicBlock",
         Stmt::Await(_) => "Await",
+        Stmt::AttachElement(_) => "AttachElement",
+        Stmt::EndElementRun => "EndElementRun",
     }
 }
 

@@ -1307,28 +1307,48 @@ fold logic in the same PR — oracle CASES/EPISODES measured
 byte-identical to the pre-migration baseline (5607/1010/2 episodes,
 365/8/397 cases).
 
-### 7.2 Implementation status — `Element`'s degenerate case only (#1683)
+### 7.2 Implementation status — `Element.data` populated for `attach` (#2108)
 
 `brink_runtime::Element { kind: String, data: BTreeMap<String, String> }`
-shipped as `OutputLine.element`, migrating the same marshal legs #1684
-touched (`brink-web`'s `LineJs`/`ElementJs`, the `@brink-lang/web`
-`Line`/`SessionLine` TS types). **Scoped to the degenerate case only,
-honestly**: every line reports `Element::narrative()` (`kind:
-"narrative"`, empty `data`) regardless of source markup — no
-`@[element]` handler's classification (§3.5b) reaches this field yet.
-Compile-time-baked `kind`/`data` (handler name + named captures,
-`hir::ElementMatch`) exists in the compiler already, but wiring it onto
-a specific runtime `OutputLine` needs either new `.inkb` line-table
-storage (the single-line, return-based case — `heading`/`transition`
-in `std/conventions/screenplay.brink`) or a VM-level scoping mechanism
-(a `block`-capturing handler like `cue`/`parenthetical`, whose call
-emits more than one line dynamically) — neither is attempted here; see
-this issue's tracked follow-up for a concrete design sketch (an
-`Element` push/pop VM stack bracketing the rewritten call, plus a new
-`.inkb`-adjacent constant table) that still needs maintainer sign-off
-before it becomes production VM/wire architecture. Oracle CASES/EPISODES
-measured unchanged from #1684's own baseline (5607/1010/2 episodes,
-365/8/397 cases) — expected, since no text/tags path changed.
+shipped as `OutputLine.element` (#1683/#1684), migrating the same marshal
+legs #1684 touched (`brink-web`'s `LineJs`/`ElementJs`, the
+`@brink-lang/web` `Line`/`SessionLine` TS types) — at first scoped to the
+degenerate case only, every line reporting `Element::narrative()`
+regardless of source markup.
+
+**Issue #2108 populates `data` for the one case the 2026-08-03 "element
+output model" ruling settled**: an `attach = StructName` convention
+handler's claimed line consumes itself (no `Step::Line` at all — ruling
+item 6, "AN EVENT EXISTS IFF A LINE EXISTS") and its returned struct's
+fields merge into the following run's `Element.data`, copied onto every
+line materialized while the run is open (item 5) — `cue` and
+`parenthetical` in `std/conventions/screenplay.brink` both attach onto the
+same dialogue run (item 3). Mechanism: two new bytecode opcodes
+(`Opcode::AttachElement`/`Opcode::EndElementRun`, `brink-format`) push
+markers into the VM output buffer's own append-only transcript
+(`OutputPart::ElementAttach`/`ElementAttachEnd`, transient — never reach
+the persisted `.brkt` wire format) rather than mutating a live `Flow`
+field, because the buffer defers a line's commitment until later content
+proves no `Glue` reaches back over it — a naively "current, mutable"
+field would misattribute a later run's data to an earlier, still-buffered
+line. See `crates/brink-runtime/tests/element.rs`'s
+`attach_convention_data_reaches_the_following_run` for the runtime proof.
+
+**Still scoped narrower than the full ruling, honestly**: `kind` stays
+`Element::NARRATIVE` even for a claimed line — classifying `kind` itself
+for a non-attach single-line handler (`heading`/`transition` reporting
+their own handler name) needs either new `.inkb` line-table storage or the
+same VM mechanism, and is not attempted here. `BlockId` is not re-derived
+from attach runs either (§7.1's own note stands: it still just counts
+terminator-bounded runs) — a run of adjacent attached lines can span more
+than one `BlockId` if it also crosses a real terminator. Persistence is
+explicitly out of scope: `SaveState` never captured execution position or
+the output buffer to begin with (`brink-runtime::save`'s own module doc),
+so this doesn't newly regress anything there, but a save/resume story for
+`Element.data` specifically (as opposed to `BlockId`, which was already
+never persisted) has not been designed. Oracle CASES/EPISODES measured
+unchanged from the current ratchet (5608 episodes) — expected, since no
+oracle fixture uses `@[convention]`/attach dispatch.
 
 ## 8. Worked cases (abbreviated; spellings illustrative)
 

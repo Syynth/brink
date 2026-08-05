@@ -92,10 +92,12 @@ pub enum Step {
 summary, not the source of truth.)
 
 ⚠ `OutputLine.element` (`Element { kind, data }`, PR #2109) is the carrier for
-per-line classification, but **every line reports `Element::NARRATIVE` today** —
-nothing populates it from claim handlers yet (#1683). The field exists; the
-classification does not. Do not read its presence as "the host can distinguish a
-scene heading".
+per-line classification. `kind` still reports `Element::NARRATIVE` on every
+line — no claim handler classifies its own `kind` yet (#1683). As of #2108,
+`data` is populated for one case: an `@[convention(..., attach = StructName)]`
+handler's returned struct fields merge into `data` on every line in the run
+that follows it. Do not read `kind`'s presence as "the host can distinguish a
+scene heading" — that part of the field still carries no classification.
 
 Primary consumer pattern:
 

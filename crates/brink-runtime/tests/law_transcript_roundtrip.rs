@@ -229,7 +229,14 @@ fn assert_output_part_variants_exhaustive(part: &OutputPart) {
         // generate coverage for. It stays listed in this match (rather
         // than a wildcard) so the guard still trips if `Checkpoint` is
         // ever removed or split.
-        | OutputPart::Checkpoint => {}
+        | OutputPart::Checkpoint
+        // `ElementAttach`/`ElementAttachEnd` (issue #2108) are excluded for
+        // the identical reason `Checkpoint` is: transient, in-memory-only
+        // markers `write_transcript` filters out on write (see
+        // `OutputPart::ElementAttach`'s own doc and `is_persisted` in
+        // `transcript.rs`) — nothing for a round-trip law to prove.
+        | OutputPart::ElementAttach(..)
+        | OutputPart::ElementAttachEnd => {}
     }
 }
 

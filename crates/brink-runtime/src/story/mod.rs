@@ -241,6 +241,11 @@ impl<R: StoryRng> Story<R> {
         let start = range.start.min(end);
         let slice = &transcript[start..end];
         let fragments = self.default.flow.output.fragments();
+        // Element-attachment data (issue #2108) is dropped here — this
+        // method's public contract is `(text, tags)`, unchanged; a caller
+        // that needs per-line element data has no use for a locale-
+        // re-rendering slice taken in isolation from the surrounding
+        // `Step::Line` stream anyway.
         crate::output::resolve_lines(
             slice,
             &self.program,
@@ -248,6 +253,9 @@ impl<R: StoryRng> Story<R> {
             self.resolver.as_deref(),
             fragments,
         )
+        .into_iter()
+        .map(|(text, tags, _element)| (text, tags))
+        .collect()
     }
 
     /// Re-resolve all pending choices against the current line tables.

@@ -641,6 +641,8 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::EvalLine(idx, slots) => write!(w, "eval_line {idx} {slots}"),
         Opcode::BeginFragment => write!(w, "begin_fragment"),
         Opcode::EndFragment => write!(w, "end_fragment"),
+        Opcode::AttachElement => write!(w, "attach_element"),
+        Opcode::EndElementRun => write!(w, "end_element_run"),
 
         // Choices
         Opcode::BeginChoice(flags, target) => {

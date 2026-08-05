@@ -810,10 +810,13 @@ mod websession_wasm_tests {
         assert_eq!(v["line"]["type"], "text", "{json}");
         assert_eq!(v["line"]["text"], "Hello world.\n", "{json}");
         assert!(v["line"]["block_id"].is_u64(), "{json}");
-        // `element` (issue #1683): every line reports the degenerate
-        // narrative case with an empty data map — guards the marshal leg
-        // that a deleted `element: Some(ElementJs { .. })` arm in
-        // `value_marshal.rs::line_to_js` would otherwise leave untested.
+        // `element` (issue #1683): this fixture has no `@[convention(...,
+        // attach = ...)]` handler in play, so the line reports the
+        // degenerate narrative case with an empty data map (issue #2108
+        // populates `data` only downstream of an attach handler) — guards
+        // the marshal leg that a deleted `element: Some(ElementJs { .. })`
+        // arm in `value_marshal.rs::line_to_js` would otherwise leave
+        // untested.
         assert_eq!(v["line"]["element"]["kind"], "narrative", "{json}");
         assert_eq!(
             v["line"]["element"]["data"],

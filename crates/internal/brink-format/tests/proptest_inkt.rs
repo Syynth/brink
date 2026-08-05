@@ -377,6 +377,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::EmitValue),
         Just(Opcode::EmitNewline),
         Just(Opcode::Glue),
+        Just(Opcode::AttachElement),
+        Just(Opcode::EndElementRun),
         Just(Opcode::Done),
         Just(Opcode::End),
         Just(Opcode::Nop),
@@ -614,7 +616,9 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::Nop
         | Opcode::BeginStringEval
         | Opcode::EndStringEval
-        | Opcode::SourceLocation(_, _) => {}
+        | Opcode::SourceLocation(_, _)
+        | Opcode::AttachElement
+        | Opcode::EndElementRun => {}
     }
 }
 

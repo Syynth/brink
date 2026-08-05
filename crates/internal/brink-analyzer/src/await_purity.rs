@@ -401,7 +401,12 @@ fn collect_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<AwaitSite<'a>>) {
         | Stmt::Assignment(_)
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
-        | Stmt::EndOfLine => {}
+        | Stmt::EndOfLine
+        // Issue #2108: `AttachElement`'s call expression can't embed an
+        // `await` (a statement-level construct, never an expression), and
+        // `EndElementRun` carries no expression at all.
+        | Stmt::AttachElement(_)
+        | Stmt::EndElementRun => {}
     }
 }
 

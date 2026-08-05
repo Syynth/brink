@@ -196,8 +196,15 @@ fn walk_stmt_for_depth(
         brink_ir::Stmt::Await(a) => {
             set_depth_for_range(a.ptr.text_range(), depth, line_starts, depth_map);
         }
-        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine | brink_ir::Stmt::LogicBlock(_) => {
-        }
+        // Issue #2108: `AttachElement`/`EndElementRun` are synthesized by
+        // attach-mode claim rewriting, not produced by parsing source
+        // directly — same "inherited from context, nothing to tag" posture
+        // as `ExprStmt`/`EndOfLine`/`LogicBlock` above.
+        brink_ir::Stmt::ExprStmt(_)
+        | brink_ir::Stmt::EndOfLine
+        | brink_ir::Stmt::LogicBlock(_)
+        | brink_ir::Stmt::AttachElement(_)
+        | brink_ir::Stmt::EndElementRun => {}
     }
 }
 
@@ -215,7 +222,13 @@ fn stmt_start_line(stmt: &brink_ir::Stmt, line_starts: &[usize]) -> Option<usize
         brink_ir::Stmt::LabeledBlock(b) => b.label.as_ref()?.range,
         brink_ir::Stmt::Conditional(c) => c.ptr.text_range(),
         brink_ir::Stmt::Sequence(s) => s.ptr.text_range(),
-        brink_ir::Stmt::ExprStmt(_) | brink_ir::Stmt::EndOfLine => return None,
+        // Issue #2108: `AttachElement`/`EndElementRun` are synthesized,
+        // never produced by parsing source — no line of their own to
+        // report, same as `ExprStmt`/`EndOfLine`.
+        brink_ir::Stmt::ExprStmt(_)
+        | brink_ir::Stmt::EndOfLine
+        | brink_ir::Stmt::AttachElement(_)
+        | brink_ir::Stmt::EndElementRun => return None,
         brink_ir::Stmt::LogicBlock(lb) => lb.ptr.text_range(),
         brink_ir::Stmt::Await(a) => a.ptr.text_range(),
     };

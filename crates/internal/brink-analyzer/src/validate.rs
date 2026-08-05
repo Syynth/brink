@@ -266,7 +266,9 @@ fn stmt_range(stmt: &Stmt) -> Option<rowan::TextRange> {
         Stmt::Conditional(c) => Some(c.ptr.text_range()),
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
         Stmt::LabeledBlock(b) => b.label.as_ref().map(|l| l.range),
-        Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+        // Issue #2108: `AttachElement`/`EndElementRun` carry no
+        // `Provenance`/`ptr` of their own.
+        Stmt::ExprStmt(_) | Stmt::EndOfLine | Stmt::AttachElement(_) | Stmt::EndElementRun => None,
         Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
         Stmt::Await(a) => Some(a.ptr.text_range()),
     }

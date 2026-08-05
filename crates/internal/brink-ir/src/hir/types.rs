@@ -1295,6 +1295,40 @@ pub enum Stmt {
     /// checked effect-free (the purity gate, E105) and lowering to the VM is
     /// fenced (E052) until the runtime spill/restore slice (FS-3) lands.
     Await(AwaitStmt),
+    /// An `attach = StructName` convention handler's claimed line (issue
+    /// #2108, `docs/decision-log.md` 2026-08-03 "The element output model:
+    /// attachment is block-level metadata, delivery is per-line"). Unlike
+    /// the ordinary `Stmt::Content(Content { parts: [Interpolation(call)] })`
+    /// rewrite [`super::lower_native::element::try_claim`] produces for a
+    /// non-attach handler, this consumes its own line entirely: no
+    /// `Content`, no `EndOfLine`, no visible text — ruling item (6), "AN
+    /// EVENT EXISTS IFF A LINE EXISTS" — an attaching convention emits no
+    /// line and so produces no `Step::Line` at all. `call` still has to run
+    /// (a handler may call pure fns/commands, so its return value is not
+    /// always statically known — unlike the handler's own named *captures*,
+    /// which are literal regex-matched source text and fully static): the
+    /// call's *value* (expected to be the declared `attach` struct) is what
+    /// carries the metadata, evaluated at the position this line used to
+    /// occupy and merged into the VM's per-block attachment state rather
+    /// than pushed to the output buffer (`brink_runtime::vm`'s
+    /// `Opcode::AttachElement` handler). Always immediately followed by the
+    /// captured following-run statements (if any — the same terminator scan
+    /// [`super::lower_native::element::capture_block`] already uses for
+    /// `block`-mode) and a closing [`Stmt::EndElementRun`], which the
+    /// caller ([`super::lower_native::element::try_claim`]) splices in as
+    /// ordinary sibling statements, never as this variant's own payload.
+    AttachElement(Expr),
+    /// Closes the run an [`Stmt::AttachElement`] opened: clears the VM's
+    /// accumulated block-attachment data (so content after this point is
+    /// never misattributed to a speaker/attach group it wasn't part of —
+    /// e.g. a `transition` line following a `cue`+dialogue run must not
+    /// still report the previous run's `speaker`) and starts a fresh
+    /// [`super::super::story::types::BlockId`] run, matching that type's
+    /// own "the run IS the block" superset doc. Always emitted in pairs with
+    /// exactly one preceding `Stmt::AttachElement` per
+    /// [`super::lower_native::element::try_claim`]'s attach-mode rewrite —
+    /// never constructed standalone.
+    EndElementRun,
 }
 
 // ─── T1b superset: multi-line `~ { … }` blocks ──────────────────────
@@ -2182,8 +2216,8 @@ fn push_stmt_exprs<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Expr>) {
                 }
             }
         }
-        Stmt::ExprStmt(e) => out.push(e),
-        Stmt::EndOfLine => {}
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => out.push(e),
+        Stmt::EndOfLine | Stmt::EndElementRun => {}
         Stmt::LogicBlock(lb) => {
             for s in &lb.stmts {
                 push_block_stmt_exprs(s, out);

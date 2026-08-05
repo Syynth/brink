@@ -236,8 +236,11 @@ impl Analyzer {
             Stmt::LabeledBlock(b) => self.walk_block(b),
             Stmt::Conditional(c) => self.walk_conditional(c),
             Stmt::Sequence(s) => self.walk_sequence(s),
-            Stmt::ExprStmt(e) => self.record_reads(e, pos),
-            Stmt::EndOfLine => {}
+            // Issue #2108: `AttachElement`'s call expression is a read site
+            // like any other `ExprStmt`; `EndElementRun` carries none, like
+            // `EndOfLine`.
+            Stmt::ExprStmt(e) | Stmt::AttachElement(e) => self.record_reads(e, pos),
+            Stmt::EndOfLine | Stmt::EndElementRun => {}
             Stmt::LogicBlock(lb) => {
                 for bs in &lb.stmts {
                     self.walk_block_stmt(bs);

@@ -218,14 +218,18 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
         }
         Stmt::Conditional(cond) => remap_conditional(cond, map),
         Stmt::Sequence(seq) => remap_sequence(seq, map),
-        Stmt::ExprStmt(e) => remap_expr(e, map),
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => remap_expr(e, map),
         Stmt::LogicWhile(w) => {
             remap_expr(&mut w.condition, map);
             remap_stmts(&mut w.body, map);
             remap_stmts(&mut w.post, map);
         }
         // No name references.
-        Stmt::EnterContainer(_) | Stmt::EndOfLine | Stmt::LogicBreak | Stmt::LogicContinue => {}
+        Stmt::EnterContainer(_)
+        | Stmt::EndOfLine
+        | Stmt::LogicBreak
+        | Stmt::LogicContinue
+        | Stmt::EndElementRun => {}
     }
 }
 
