@@ -2,6 +2,7 @@
 
 use core::mem;
 
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -53,6 +54,41 @@ pub enum OutputPart {
     Checkpoint,
     /// A tag associated with the current line of output.
     Tag(String),
+    /// One field of an `attach = StructName` convention handler's return
+    /// value, merged into the run currently open (issue #2108,
+    /// `docs/decision-log.md` 2026-08-03 "The element output model:
+    /// attachment is block-level metadata, delivery is per-line"). Embedded
+    /// in the SAME append-only stream as `Tag`, rather than mutated on
+    /// `Flow` directly, for the identical reason tags are: the output
+    /// buffer defers a `Newline`'s commitment until later content proves no
+    /// `Glue` reaches back over it (`OutputBuffer::has_completed_line`'s own
+    /// doc), so by the time a line is finally drained the VM may already
+    /// have stepped past several MORE opcodes (including a later run's own
+    /// `ElementAttach`/`ElementAttachEnd`). Reading a live, continuously-
+    /// mutated `Flow` field at drain time would misattribute a LATER run's
+    /// data to an EARLIER, still-buffered line — embedding the merge as its
+    /// own transcript entry, at the exact point it actually happened,
+    /// avoids that entirely: [`resolve_lines_annotated`] rebuilds the
+    /// correct per-line snapshot by walking the stream in order, the same
+    /// way it already does for `Tag`.
+    ///
+    /// Unlike `Tag` (which resets every line), this ACCUMULATES across
+    /// multiple lines until a matching [`Self::ElementAttachEnd`] closes the
+    /// run — ruling item 4/5: "the run IS the block" and "every line in it
+    /// carries a copy."
+    ///
+    /// **Not part of the persisted `.brkt` format** (`crate::transcript`'s
+    /// `is_persisted`) — like [`Self::Checkpoint`], this is in-memory-only
+    /// bookkeeping. Issue #2108 is explicitly scoped to "the in-memory half"
+    /// (see its own tracked follow-up on save/resume); a transcript replayed
+    /// from a `.brkt` file loses element attachment, matching that scope.
+    ElementAttach(String, String),
+    /// Closes the run an [`Self::ElementAttach`] opened, clearing the
+    /// accumulated data so content after this point is never misattributed
+    /// to a run it wasn't part of. See [`Self::ElementAttach`]'s doc for why
+    /// this lives in the transcript stream rather than on `Flow`, and for
+    /// its non-persisted status.
+    ElementAttachEnd,
 }
 
 impl OutputPart {
@@ -139,7 +175,9 @@ fn resolve_part(
         | OutputPart::Spring
         | OutputPart::Glue
         | OutputPart::Checkpoint
-        | OutputPart::Tag(_) => String::new(),
+        | OutputPart::Tag(_)
+        | OutputPart::ElementAttach(..)
+        | OutputPart::ElementAttachEnd => String::new(),
     }
 }
 
@@ -340,6 +378,19 @@ pub(crate) struct OutputBuffer {
     fragment_depth: usize,
     /// Tags accumulated during each nested fragment capture level.
     fragment_pending_tags: Vec<Vec<String>>,
+    /// Element-attachment state (issue #2108) carried forward across
+    /// separate [`Self::take_first_line`] calls — the streaming, one-line-
+    /// at-a-time API resolves only the slice through each line's own
+    /// completing `Newline`, so a run spanning MULTIPLE lines (ruling item
+    /// 5: "every line in it carries a copy") would otherwise lose the data
+    /// after its first line, once the cursor has advanced past the
+    /// `ElementAttach` parts that live before it. Seeded into
+    /// `resolve_lines_annotated` at the start of each call and updated from
+    /// its trailing state afterward — see `take_first_line`'s own doc.
+    /// [`Self::flush_lines`] needs no equivalent: it resolves the entire
+    /// remaining tail in one call, so the accumulation stays correct
+    /// without carrying anything between separate calls.
+    pending_element: BTreeMap<String, String>,
 }
 
 impl OutputBuffer {
@@ -353,6 +404,7 @@ impl OutputBuffer {
             fragment_capture: Vec::new(),
             fragment_depth: 0,
             fragment_pending_tags: Vec::new(),
+            pending_element: BTreeMap::new(),
         }
     }
 
@@ -592,6 +644,21 @@ impl OutputBuffer {
         self.target().push(OutputPart::Tag(tag));
     }
 
+    /// Merge one field of an `attach = StructName` handler's return value
+    /// into the currently open run (issue #2108, `Opcode::AttachElement`'s
+    /// handler). See [`OutputPart::ElementAttach`]'s doc for why this is a
+    /// transcript entry rather than a `Flow`-level mutation.
+    pub(crate) fn push_element_attach(&mut self, key: String, value: String) {
+        self.target().push(OutputPart::ElementAttach(key, value));
+    }
+
+    /// Close the run the most recent [`Self::push_element_attach`] calls
+    /// opened (`Opcode::EndElementRun`'s handler). See
+    /// [`OutputPart::ElementAttachEnd`]'s doc.
+    pub(crate) fn push_element_attach_end(&mut self) {
+        self.target().push(OutputPart::ElementAttachEnd);
+    }
+
     /// Returns true if a capture is currently active.
     /// Whether a string-eval/tag/function-return capture is active — pushes
     /// currently route to transient scratch, not visible output (NS-A2:
@@ -665,6 +732,8 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     | OutputPart::Checkpoint
                     | OutputPart::Tag(_)
                     | OutputPart::Spring
+                    | OutputPart::ElementAttach(..)
+                    | OutputPart::ElementAttachEnd
                     // B4 (`docs/stdlib-spec.md` §1.6b): a final-`None`
                     // value renders empty at the display boundary — same
                     // pass-through treatment as whitespace-only text below,
@@ -786,7 +855,11 @@ fn resolve_parts(
                     saw_fragment_ref = false;
                 }
             }
-            OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {
+            OutputPart::Glue
+            | OutputPart::Checkpoint
+            | OutputPart::Tag(_)
+            | OutputPart::ElementAttach(..)
+            | OutputPart::ElementAttachEnd => {
                 after_glue = true;
             }
         }
@@ -841,24 +914,41 @@ fn part_involves_fragment_ref(part: &OutputPart) -> bool {
     }
 }
 
-/// Resolve glue and split into per-line output with associated tags.
+/// Resolve glue and split into per-line output with associated tags and
+/// element-attachment data.
 ///
-/// Each returned element is `(line_text, line_tags)`. Tags that appear
-/// in the stream associate with the current line (the line being built
-/// when the tag is encountered). Lines that [`resolve_lines_annotated`]
-/// marks suppressed (issue #2091 — an empty `content`/Fragment capture)
-/// are dropped entirely; nothing else changes.
+/// A resolved line: text, tags, and element-attachment data (issue #2108,
+/// [`OutputPart::ElementAttach`]'s own doc).
+pub(crate) type ResolvedLine = (String, Vec<String>, BTreeMap<String, String>);
+
+/// [`ResolvedLine`] plus the issue #2091 suppression flag —
+/// [`resolve_lines_annotated`]'s own unfiltered form.
+pub(crate) type AnnotatedResolvedLine = (String, Vec<String>, bool, BTreeMap<String, String>);
+
+/// Each returned element is `(line_text, line_tags, line_element_data)`.
+/// Tags reset every line; element-attachment data (issue #2108) persists
+/// across lines until an `ElementAttachEnd` closes the run — see
+/// [`OutputPart::ElementAttach`]'s own doc. Lines that
+/// [`resolve_lines_annotated`] marks suppressed (issue #2091 — an empty
+/// `content`/Fragment capture) are dropped entirely; nothing else changes.
 pub(crate) fn resolve_lines(
     parts: &[OutputPart],
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
     fragments: &[Fragment],
-) -> Vec<(String, Vec<String>)> {
-    resolve_lines_annotated(parts, program, line_tables, resolver, fragments)
-        .into_iter()
-        .filter_map(|(text, tags, suppressed)| (!suppressed).then_some((text, tags)))
-        .collect()
+) -> Vec<ResolvedLine> {
+    resolve_lines_annotated(
+        parts,
+        BTreeMap::new(),
+        program,
+        line_tables,
+        resolver,
+        fragments,
+    )
+    .into_iter()
+    .filter_map(|(text, tags, suppressed, element)| (!suppressed).then_some((text, tags, element)))
+    .collect()
 }
 
 /// Like [`resolve_lines`], but reports — per resolved line, as the trailing
@@ -904,13 +994,24 @@ pub(crate) fn resolve_lines(
 /// "there is no completed line at all" without losing that index alignment
 /// (naively dropping the suppressed entry from the `Vec` would shift the
 /// filler into its place and return the very blank line being suppressed).
+///
+/// `seed_element` (issue #2108) is the element-attachment state already
+/// accumulated BEFORE `parts` starts — `take_first_line` passes its own
+/// carried-forward [`OutputBuffer::pending_element`] here (a multi-line
+/// attach run spans more than one `take_first_line` call, each resolving
+/// only its own line's slice); every other caller passes an empty map,
+/// since they resolve from a cold start. The trailing filler entry's own
+/// element field is always the state at the END of `parts` — callers that
+/// need to carry it forward (again, only `take_first_line`) read it from
+/// there.
 pub(crate) fn resolve_lines_annotated(
     parts: &[OutputPart],
+    seed_element: BTreeMap<String, String>,
     program: &Program,
     line_tables: &[Vec<LineEntry>],
     resolver: Option<&dyn PluralResolver>,
     fragments: &[Fragment],
-) -> Vec<(String, Vec<String>, bool)> {
+) -> Vec<AnnotatedResolvedLine> {
     if parts.is_empty() {
         return Vec::new();
     }
@@ -919,9 +1020,16 @@ pub(crate) fn resolve_lines_annotated(
     let mut remove = vec![false; parts.len()];
     mark_glue_removals(parts, &mut remove);
 
-    let mut lines: Vec<(String, Vec<String>, bool)> = Vec::new();
+    let mut lines: Vec<AnnotatedResolvedLine> = Vec::new();
     let mut current_text = String::new();
     let mut current_tags: Vec<String> = Vec::new();
+    // Issue #2108: unlike `current_tags` (reset every line), this
+    // ACCUMULATES across lines — cleared only by `ElementAttachEnd` — so
+    // every line materialized while a run is open gets a copy (ruling item
+    // 5). Cloned, never moved, into each pushed line entry below. Seeded
+    // from the caller's already-accumulated state (see this function's own
+    // `seed_element` doc) rather than always starting empty.
+    let mut current_element: BTreeMap<String, String> = seed_element;
     let mut saw_fragment_ref = false;
     let mut after_glue = false;
 
@@ -964,13 +1072,24 @@ pub(crate) fn resolve_lines_annotated(
                     let trimmed = current_text.trim().to_string();
                     let suppressed =
                         trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
-                    lines.push((trimmed, mem::take(&mut current_tags), suppressed));
+                    lines.push((
+                        trimmed,
+                        mem::take(&mut current_tags),
+                        suppressed,
+                        current_element.clone(),
+                    ));
                     current_text = String::new();
                     saw_fragment_ref = false;
                 }
             }
             OutputPart::Tag(tag) => {
                 current_tags.push(tag.clone());
+            }
+            OutputPart::ElementAttach(key, value) => {
+                current_element.insert(key.clone(), value.clone());
+            }
+            OutputPart::ElementAttachEnd => {
+                current_element.clear();
             }
             OutputPart::Glue | OutputPart::Checkpoint => {
                 after_glue = true;
@@ -998,7 +1117,7 @@ pub(crate) fn resolve_lines_annotated(
     // issue suppresses.
     let trimmed = current_text.trim().to_string();
     let suppressed = trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
-    lines.push((trimmed, current_tags, suppressed));
+    lines.push((trimmed, current_tags, suppressed, current_element));
 
     lines
 }
@@ -1039,12 +1158,22 @@ mod tests {
     impl OutputBuffer {
         fn test_flush_lines(&mut self) -> Vec<(String, Vec<String>)> {
             let p = test_dummy_program();
+            // Element-attachment data (issue #2108) is dropped here — none
+            // of these pre-existing tests exercise attach conventions, and
+            // widening every existing `(text, tags)` assertion in this
+            // module for a field they never populate would just be noise.
+            // `crates/brink-runtime/tests/element.rs` exercises the real
+            // per-line element data end to end instead.
             self.flush_lines(&p, &[], None)
+                .into_iter()
+                .map(|(text, tags, _element)| (text, tags))
+                .collect()
         }
 
         fn test_take_first_line(&mut self) -> Option<(String, Vec<String>)> {
             let p = test_dummy_program();
             self.take_first_line(&p, &[], None)
+                .map(|(text, tags, _element)| (text, tags))
         }
 
         fn test_end_capture(&mut self) -> Option<String> {
@@ -1881,7 +2010,13 @@ mod tests {
             line_ref(2, vec![], brink_format::LineFlags::from_plain("(hushed)")),
         ];
 
-        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        // Element-attachment data (issue #2108) is dropped here — these
+        // pre-existing fixtures don't exercise attach conventions.
+        let lines: Vec<(String, Vec<String>)> =
+            resolve_lines(&parts, &program, &line_tables, None, &fragments)
+                .into_iter()
+                .map(|(text, tags, _element)| (text, tags))
+                .collect();
         assert_eq!(
             lines,
             vec![
@@ -1934,7 +2069,13 @@ mod tests {
             line_ref(2, vec![], brink_format::LineFlags::from_plain("After.")),
         ];
 
-        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        // Element-attachment data (issue #2108) is dropped here — these
+        // pre-existing fixtures don't exercise attach conventions.
+        let lines: Vec<(String, Vec<String>)> =
+            resolve_lines(&parts, &program, &line_tables, None, &fragments)
+                .into_iter()
+                .map(|(text, tags, _element)| (text, tags))
+                .collect();
         assert_eq!(
             lines,
             vec![
@@ -1971,7 +2112,13 @@ mod tests {
             line_ref(2, vec![], brink_format::LineFlags::from_plain("(hushed)")),
         ];
 
-        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        // Element-attachment data (issue #2108) is dropped here — these
+        // pre-existing fixtures don't exercise attach conventions.
+        let lines: Vec<(String, Vec<String>)> =
+            resolve_lines(&parts, &program, &line_tables, None, &fragments)
+                .into_iter()
+                .map(|(text, tags, _element)| (text, tags))
+                .collect();
         assert_eq!(
             lines,
             vec![
@@ -2021,7 +2168,7 @@ mod tests {
         // here, so 5 iterations is generous headroom against a stall.
         for _ in 0..5 {
             match buf.take_first_line(&program, &line_tables, None) {
-                Some((text, _)) => got.push(text),
+                Some((text, _, _)) => got.push(text),
                 None => break,
             }
         }

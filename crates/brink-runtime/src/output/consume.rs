@@ -6,13 +6,15 @@
 //! unread tail at once (`flush_lines`). Reading never rewinds the cursor
 //! except via `reset_cursor` (used for locale-hot-swap re-rendering).
 
+use alloc::collections::BTreeMap;
+#[cfg(test)]
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
 use brink_format::{LineEntry, PluralResolver};
 
-use super::{OutputBuffer, OutputPart, mark_glue_removals, resolve_lines, resolve_lines_annotated};
+use super::{OutputBuffer, OutputPart, ResolvedLine, mark_glue_removals, resolve_lines_annotated};
 use crate::program::Program;
 
 impl OutputBuffer {
@@ -75,8 +77,16 @@ impl OutputBuffer {
     }
 
     /// Drain the first complete line from the buffer, resolving glue
-    /// on the drained segment. Returns `(text, tags)`. The remainder
-    /// stays in the buffer for future calls.
+    /// on the drained segment. Returns `(text, tags, element_data)` — the
+    /// third element is issue #2108's per-line element-attachment snapshot
+    /// (see [`super::OutputPart::ElementAttach`]'s doc for why this is
+    /// correct despite the buffer's deferred-commit glue handling: the
+    /// resolved slice below stops at THIS line's own completing `Newline`,
+    /// so a later run's `ElementAttach`/`ElementAttachEnd` — which live
+    /// strictly after that point in the transcript — can never contaminate
+    /// it, even though the VM may already have executed them by the time
+    /// this method runs). The remainder stays in the buffer for future
+    /// calls.
     ///
     /// The returned text includes a trailing `\n` to indicate a complete
     /// line. This matches the convention that `continue_maximally` joins
@@ -95,7 +105,7 @@ impl OutputBuffer {
         program: &Program,
         line_tables: &[Vec<LineEntry>],
         resolver: Option<&dyn PluralResolver>,
-    ) -> Option<(String, Vec<String>)> {
+    ) -> Option<ResolvedLine> {
         if self.has_checkpoint() {
             return None;
         }
@@ -142,9 +152,20 @@ impl OutputBuffer {
             let split_at = candidate_newline?;
 
             // Resolve the slice through the newline (inclusive). No drain.
+            // Seeded with `pending_element` (issue #2108) — the element-
+            // attachment state already accumulated before this slice, so a
+            // multi-line attach run's second-and-later lines still see it
+            // even though the `ElementAttach` part(s) that produced it live
+            // before `self.cursor` now (consumed by an earlier call).
             let slice = &self.transcript[self.cursor..=self.cursor + split_at];
-            let mut lines =
-                resolve_lines_annotated(slice, program, line_tables, resolver, &self.fragments);
+            let mut lines = resolve_lines_annotated(
+                slice,
+                self.pending_element.clone(),
+                program,
+                line_tables,
+                resolver,
+                &self.fragments,
+            );
             if lines.is_empty() {
                 return None;
             }
@@ -154,12 +175,21 @@ impl OutputBuffer {
             // not be re-scanned on the next loop iteration.
             self.cursor += split_at + 1;
 
-            let (mut text, tags, suppressed) = lines.swap_remove(0);
+            let (mut text, tags, suppressed, element) = lines.swap_remove(0);
+            // The trailing filler entry — now at index 0 after `swap_remove`
+            // — carries the element-attachment state as of the END of this
+            // slice (past this line's own `Newline`, so it reflects any
+            // `ElementAttachEnd` that immediately followed it too). Carry
+            // that forward for whatever line the next call resolves,
+            // whether or not this one is suppressed.
+            self.pending_element = lines
+                .first()
+                .map_or_else(BTreeMap::new, |(_, _, _, e)| e.clone());
             if suppressed {
                 continue;
             }
             text.push('\n');
-            return Some((text, tags));
+            return Some((text, tags, element));
         }
     }
 
@@ -184,20 +214,37 @@ impl OutputBuffer {
 
     /// Resolve glue and flush to structured per-line output.
     ///
-    /// Each returned element is `(line_text, line_tags)`. Tags are associated
-    /// with the line they appear on in the output stream.
+    /// Each returned element is `(line_text, line_tags, element_data)`. Tags
+    /// are associated with the line they appear on in the output stream;
+    /// `element_data` (issue #2108) accumulates across lines the same way
+    /// `take_first_line` does. Seeded with `pending_element` for the same
+    /// reason `take_first_line` seeds it: a run's `ElementAttach` part(s)
+    /// may already be behind the cursor if an earlier `take_first_line` call
+    /// drained the run's first line(s) before this flush drains the rest.
     pub fn flush_lines(
         &mut self,
         program: &Program,
         line_tables: &[Vec<LineEntry>],
         resolver: Option<&dyn PluralResolver>,
-    ) -> Vec<(String, Vec<String>)> {
+    ) -> Vec<ResolvedLine> {
         debug_assert!(
             !self.has_checkpoint(),
             "flush_lines() called with active checkpoints"
         );
         let unread = &self.transcript[self.cursor..];
-        let result = resolve_lines(unread, program, line_tables, resolver, &self.fragments);
+        let result: Vec<_> = resolve_lines_annotated(
+            unread,
+            self.pending_element.clone(),
+            program,
+            line_tables,
+            resolver,
+            &self.fragments,
+        )
+        .into_iter()
+        .filter_map(|(text, tags, suppressed, element)| {
+            (!suppressed).then_some((text, tags, element))
+        })
+        .collect();
         self.cursor = self.transcript.len();
         result
     }

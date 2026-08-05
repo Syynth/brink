@@ -4270,10 +4270,15 @@ impl InferPass<'_, '_> {
                     self.infer_block(&branch.body);
                 }
             }
-            Stmt::ExprStmt(e) => {
+            // Issue #2108: an attach handler's claimed-line call is
+            // type-checked exactly like any other call-as-statement — the
+            // difference from `ExprStmt` is purely in how codegen emits
+            // what follows the evaluation, not in how the call itself
+            // infers. `EndElementRun` carries no expression.
+            Stmt::ExprStmt(e) | Stmt::AttachElement(e) => {
                 self.infer_expr(e);
             }
-            Stmt::EndOfLine => {}
+            Stmt::EndOfLine | Stmt::EndElementRun => {}
             Stmt::LogicBlock(lb) => self.infer_logic_block(lb),
             // `~ await <cond>` (docs/flow-suspension-spec.md §3): the condition
             // sits in condition position (no forcing) — its reads become the

@@ -35,6 +35,9 @@
 //! `[Part]*`, so the count must exclude it too or a reader following this
 //! doc to extend the format would write `parts.len()` and produce a byte
 //! stream whose declared count disagrees with what it actually encoded.
+//! `OutputPart::ElementAttach`/`ElementAttachEnd` (issue #2108) are the same
+//! kind of transient, zero-byte marker for the identical reason —
+//! deliberately in-memory-only; see that variant's own doc.
 //!
 //! The fragment section and the trailing fragment-tags section are both
 //! **backward-compat optional**: `read_transcript` treats "no bytes left"
@@ -361,7 +364,15 @@ pub fn render_transcript(
     resolver: Option<&dyn brink_format::PluralResolver>,
     fragments: &[crate::output::Fragment],
 ) -> Vec<(String, Vec<String>)> {
+    // Element-attachment data (issue #2108) is dropped here — moot in
+    // practice, since `OutputPart::ElementAttach`/`ElementAttachEnd` are not
+    // persisted (`is_persisted`, below), so a `.brkt`-sourced `parts` slice
+    // never contains any to begin with. This function's public contract
+    // (`(text, tags)`) stays unchanged either way.
     resolve_lines(parts, program, line_tables, resolver, fragments)
+        .into_iter()
+        .map(|(text, tags, _element)| (text, tags))
+        .collect()
 }
 
 // ── Part codec ────────────────────────────────────────────────────────────
@@ -388,7 +399,10 @@ pub fn render_transcript(
 /// arm in lockstep — otherwise the written count disagrees with the emitted
 /// bytes and `read_transcript` misreads the part list.
 fn is_persisted(part: &OutputPart) -> bool {
-    !matches!(part, OutputPart::Checkpoint)
+    !matches!(
+        part,
+        OutputPart::Checkpoint | OutputPart::ElementAttach(..) | OutputPart::ElementAttachEnd
+    )
 }
 
 /// Encode a single [`OutputPart`] (its tag byte plus payload) onto `buf`.
@@ -428,7 +442,12 @@ fn encode_part(part: &OutputPart, buf: &mut Vec<u8>) {
             write_u8(buf, TAG_TAG);
             write_str(buf, s);
         }
-        OutputPart::Checkpoint => {} // filtered out
+        // `Checkpoint` is filtered out (transient capture marker).
+        // `ElementAttach`/`ElementAttachEnd` (issue #2108) are the same kind
+        // of transient, in-memory-only marker — see `is_persisted`'s doc
+        // and `OutputPart::ElementAttach`'s own doc for why they never
+        // reach the `.brkt` wire format either.
+        OutputPart::Checkpoint | OutputPart::ElementAttach(..) | OutputPart::ElementAttachEnd => {}
     }
 }
 
@@ -1076,11 +1095,17 @@ mod tests {
     // fragment's `filtered_count` used to hand-duplicate the same
     // `!matches!(p, OutputPart::Checkpoint)` predicate. They now both call
     // the single shared `is_persisted` helper, which must stay in lockstep
-    // with `encode_part`'s zero-byte `OutputPart::Checkpoint` arm: only
-    // `Checkpoint` is transient (zero bytes), every other variant persists.
+    // with `encode_part`'s zero-byte arms: `Checkpoint` and — since issue
+    // #2108 — `ElementAttach`/`ElementAttachEnd` are transient (zero
+    // bytes); every other variant persists.
     #[test]
-    fn is_persisted_filters_only_checkpoint() {
+    fn is_persisted_filters_transient_markers_only() {
         assert!(!is_persisted(&OutputPart::Checkpoint));
+        assert!(!is_persisted(&OutputPart::ElementAttach(
+            "speaker".to_string(),
+            "VENDOR".to_string()
+        )));
+        assert!(!is_persisted(&OutputPart::ElementAttachEnd));
         assert!(is_persisted(&OutputPart::Text("hi".to_string())));
         assert!(is_persisted(&OutputPart::LineRef {
             container_idx: 0,

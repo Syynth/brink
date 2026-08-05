@@ -164,6 +164,8 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
             let slots = parse_operand_u8(&operands, 1, mnemonic)?;
             Ok(Opcode::EvalLine(idx, slots))
         }
+        "attach_element" => Ok(Opcode::AttachElement),
+        "end_element_run" => Ok(Opcode::EndElementRun),
 
         // Choices
         "begin_choice" => {

@@ -434,8 +434,14 @@ fn stamp_stmt(
                 stamp_lambdas_in_expr(a, file, scope_path, label_scope, index);
             }
         }
-        hir::Stmt::ExprStmt(e) => stamp_lambdas_in_expr(e, file, scope_path, label_scope, index),
-        hir::Stmt::EndOfLine => {}
+        // Issue #2108: the attach handler's call expression could embed a
+        // lambda the same way any other call argument can — scan it like
+        // `ExprStmt` does. `EndElementRun` carries no expression, like
+        // `EndOfLine`.
+        hir::Stmt::ExprStmt(e) | hir::Stmt::AttachElement(e) => {
+            stamp_lambdas_in_expr(e, file, scope_path, label_scope, index);
+        }
+        hir::Stmt::EndOfLine | hir::Stmt::EndElementRun => {}
         hir::Stmt::LogicBlock(lb) => {
             stamp_lambdas_in_block_stmts(&mut lb.stmts, file, scope_path, label_scope, index);
         }

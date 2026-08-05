@@ -376,6 +376,18 @@ pub enum Stmt {
     /// `continue` — jump to the innermost enclosing `LogicWhile`'s condition
     /// re-check.
     LogicContinue,
+
+    /// An `attach = StructName` convention handler's claimed line (issue
+    /// #2108) — see [`crate::hir::Stmt::AttachElement`]'s doc for the full
+    /// rationale. Lowers to `Opcode::AttachElement`: evaluate `expr`, then
+    /// merge its (expected-`Record`) fields into the VM's per-block
+    /// attachment state instead of the output buffer — no line, no event.
+    AttachElement(Expr),
+    /// Closes the run an [`Stmt::AttachElement`] opened — see
+    /// [`crate::hir::Stmt::EndElementRun`]'s doc. Lowers to
+    /// `Opcode::EndElementRun`: clears the VM's accumulated attachment data
+    /// and starts a fresh block.
+    EndElementRun,
 }
 
 /// A `while cond { … }` loop body (T1b).

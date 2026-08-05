@@ -105,44 +105,44 @@
 //   *only its own line* — it never receives the dialogue that follows,
 //   the way a `block` handler would. It declares `attach = Cue`
 //   (issue #2178: a plain `struct` naming the handler's declared output
-//   schema) and returns a `Cue` value; nothing downstream reads that
-//   struct as attachment metadata yet (no consumer of `attach` exists in
-//   this repo today — see `Cue`'s own doc below), so today the only
-//   observable effect of the return value is that its structural default
-//   rendering (`docs/decision-log.md`'s "Display: the structural default
-//   form" convention, exercised end to end by `tests/tier1-native/
-//   conventions-attach-schema`) becomes the claimed line's own displayed
-//   text. Only claims a cue with no trailing tag extension (`@VENDOR
-//   #(v.o.)` declines the same way a slug-carrying heading does — the
-//   tag is structure the pattern is never shown).
+//   schema) and returns a `Cue` value. **Issue #2108 built the runtime
+//   consumer**: `cue`'s claimed line produces no visible text at all
+//   (ruling item 6, "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
+//   convention emits no line) — its `Cue` value's fields merge into the
+//   VM's per-block attachment state instead, and the dialogue line(s)
+//   that follow each carry a copy (`OutputLine.element.data`). Only
+//   claims a cue with no trailing tag extension (`@VENDOR #(v.o.)`
+//   declines the same way a slug-carrying heading does — the tag is
+//   structure the pattern is never shown).
 // - `parenthetical` — a chain-gated `(delivery)` line (parser-enforced:
 //   only recognized directly after a live cue). **Also migrated to
 //   ATTACH MODE by issue #2166**, for the identical reason `cue` was:
 //   it claims and consumes only its own line, declares `attach =
-//   Parenthetical`, and returns a `Parenthetical` value.
+//   Parenthetical`, and returns a `Parenthetical` value — same #2108
+//   runtime consumer as `cue`.
 //
 // ⚠ **Cue, parenthetical, and the dialogue that follows are three
-// independent claims today, not one joined attachment.** Before issue
-// #2166, `cue`/`parenthetical` were `block`-capturing handlers that
-// WRAPPED the run following their matched line into their own template
-// output — this is exactly the shape the ruled attach/wrap split
-// (`docs/decision-log.md` 2026-08-03, "The element output model")
-// retires for a pattern-claiming handler that only ever wants to tag
-// *itself*, not re-emit someone else's dialogue. Under attach mode,
-// `cue`/`parenthetical` consume nothing beyond their own matched line;
-// the dialogue line(s) that follow are ordinary `CONTENT_LINE`s, lowered
-// and displayed through the same unclaimed path any other prose line
-// takes (verbatim, exactly as authored) — `cue` and `parenthetical`
-// never see them, and never learn what the other claimed. There is
-// still no context-injection linking the three claims (deferred, §3.5b's
-// own Deferred list: "handlers reading attachment data") — a real
-// consumer of `attach = Cue`/`attach = Parenthetical` (an editor
-// projection, a host binding) does not exist in this repo yet, so
-// "attaches metadata to the run that follows" is the schema's *declared*
-// intent, not a built runtime propagation today. What ships here is
-// exactly `#2178`'s landed mechanism: a claiming handler whose return
-// type agrees with its own `attach` clause, matched line → one call →
-// that struct's structural-default text.
+// independent CLAIMS, but the first two ATTACH to the third — not three
+// unrelated events.** Before issue #2166, `cue`/`parenthetical` were
+// `block`-capturing handlers that WRAPPED the run following their matched
+// line into their own template output — this is exactly the shape the
+// ruled attach/wrap split (`docs/decision-log.md` 2026-08-03, "The element
+// output model") retires for a pattern-claiming handler that only ever
+// wants to tag *itself*, not re-emit someone else's dialogue. Under attach
+// mode, `cue`/`parenthetical` consume nothing beyond their own matched
+// line as CONTENT; the dialogue line(s) that follow are ordinary
+// `CONTENT_LINE`s, lowered and displayed through the same unclaimed path
+// any other prose line takes (verbatim, exactly as authored) — `cue` and
+// `parenthetical` never receive that dialogue as a call argument, and
+// never learn what the other claimed. What they DO reach it by is
+// runtime-accumulated METADATA (issue #2108): both attach onto the SAME
+// following run (ruling item 3 — cue's `speaker` and parenthetical's
+// `delivery` both land in that run's `Element.data`), not by any
+// content-level joining. `attach = Cue`/`attach = Parenthetical`'s
+// consumer is the VM's block-attachment state (`brink_runtime::vm`'s
+// `Opcode::AttachElement`/`Opcode::EndElementRun`); a typed host binding
+// (`bind_brink_element`, `bevy-brink`) and an editor projection (#2111)
+// are both still unbuilt — see this issue's own tracked follow-up notes.
 //
 // ⚠ **`try_claim` matches purely on extracted TEXT against a handler's
 // pattern — it never restricts a handler to only the grammar kind its

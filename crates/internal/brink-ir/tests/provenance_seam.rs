@@ -217,6 +217,8 @@ fn collect_block(block: &hir::Block, out: &mut Vec<Provenance>) {
             }
             hir::Stmt::LogicBlock(lb) => push(out, lb.ptr),
             hir::Stmt::ExprStmt(_) | hir::Stmt::EndOfLine | hir::Stmt::Await(_) => {}
+            // Issue #2108: neither carries a `Provenance`/`ptr` of its own.
+            hir::Stmt::AttachElement(_) | hir::Stmt::EndElementRun => {}
         }
     }
 }
@@ -471,6 +473,8 @@ fn garble_stmt(stmt: &mut hir::Stmt) {
                 garble_expr(cond);
             }
         }
+        hir::Stmt::AttachElement(e) => garble_expr(e),
+        hir::Stmt::EndElementRun => {}
     }
 }
 

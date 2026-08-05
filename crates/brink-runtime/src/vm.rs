@@ -192,6 +192,44 @@ fn step_impl<R: crate::rng::StoryRng>(
             note_effect_emit(flow, program);
             flow.output.push_glue();
         }
+        Opcode::AttachElement => {
+            // Issue #2108: an `attach = StructName` convention handler's
+            // claimed line. `call` (already evaluated by the preceding
+            // codegen'd expression opcodes) leaves its result here — push
+            // its fields into the output buffer's own append-only stream
+            // (`OutputPart::ElementAttach`) rather than mutating a live
+            // `Flow` field. See that variant's own doc for why: the buffer
+            // defers a line's commitment until later content proves no
+            // `Glue` reaches back over its `Newline`, so the VM may already
+            // have stepped past a LATER run's own attach opcodes by the
+            // time an EARLIER, still-buffered line is finally drained —
+            // reading a live "current" field at that point would attribute
+            // the wrong run's data to it. No `note_effect_emit` call: unlike
+            // `EmitValue`, this never reaches the visible transcript
+            // (ruling item 6, "AN EVENT EXISTS IFF A LINE EXISTS" — no
+            // line, so no emit to attribute an effect to).
+            let val = flow.pop_value()?;
+            if let Value::Record { shape, fields } = &val
+                && let Some(entry) = program.struct_shapes.get(shape.0 as usize)
+                && entry.fields.len() == fields.len()
+            {
+                for (name, v) in entry.fields.iter().zip(fields.iter()) {
+                    let key = program.name_checked(*name).unwrap_or("?").to_string();
+                    let value = value_ops::stringify(v, program);
+                    flow.output.push_element_attach(key, value);
+                }
+            }
+            // A non-`Record` value (or a shape/field-count mismatch — the
+            // struct-shapes table wire is malformed, or the compile-time
+            // `attach = StructName` / return-type agreement check (E180)
+            // somehow didn't fire) is not a compile error at this layer:
+            // silently attaching nothing here mirrors `stringify`'s own
+            // "total by construction" fallback for a stale `ShapeId`
+            // rather than faulting the whole story over it.
+        }
+        Opcode::EndElementRun => {
+            flow.output.push_element_attach_end();
+        }
         Opcode::EndChoice => {
             flow.skipping_choice = false;
         }

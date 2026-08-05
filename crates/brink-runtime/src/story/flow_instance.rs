@@ -3,6 +3,7 @@
 //! `CLAUDE.md`'s "Runtime public API" (`advance`/`begin_function_eval`/etc.).
 
 use alloc::borrow::ToOwned;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -410,23 +411,27 @@ impl FlowInstance {
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
         if self.flow.output.has_completed_line()
-            && let Some((text, tags)) =
+            && let Some((text, tags, element)) =
                 self.flow
                     .output
                     .take_first_line(program, line_tables, resolver)
         {
-            return Ok(StepOutcome::Step(make_output_line(&self.flow, text, tags)));
+            return Ok(StepOutcome::Step(make_output_line(
+                &self.flow, text, tags, element,
+            )));
         }
 
         // 2. If buffer has partial content but VM has already yielded
         //    (any non-Active state), flush it. At a yield point, no more
         //    output is coming, so trailing Newlines are committed.
         if self.flow.output.has_unread() && self.status != StoryStatus::Active {
-            let (text, tags) = flush_remaining(&mut self.flow, program, line_tables, resolver);
+            let (text, tags, element) =
+                flush_remaining(&mut self.flow, program, line_tables, resolver);
             return Ok(StepOutcome::Step(yield_step(
                 self.status,
                 text,
                 tags,
+                element,
                 &mut self.flow,
                 program,
                 line_tables,
@@ -483,10 +488,12 @@ impl FlowInstance {
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) =
+                        && let Some((text, tags, element)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
+                        return Ok(StepOutcome::Step(make_output_line(
+                            flow, text, tags, element,
+                        )));
                     }
                 }
 
@@ -497,10 +504,12 @@ impl FlowInstance {
                         return Ok(StepOutcome::AwaitingExternal);
                     }
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) =
+                        && let Some((text, tags, element)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
+                        return Ok(StepOutcome::Step(make_output_line(
+                            flow, text, tags, element,
+                        )));
                     }
                 }
 
@@ -516,10 +525,12 @@ impl FlowInstance {
                         if all_invisible {
                             select_choice(flow, context, status, stats, 0)?;
                             if flow.output.has_completed_line()
-                                && let Some((text, tags)) =
+                                && let Some((text, tags, element)) =
                                     flow.output.take_first_line(program, line_tables, resolver)
                             {
-                                return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
+                                return Ok(StepOutcome::Step(make_output_line(
+                                    flow, text, tags, element,
+                                )));
                             }
                             continue;
                         }
@@ -534,17 +545,21 @@ impl FlowInstance {
                     }
 
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) =
+                        && let Some((text, tags, element)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
+                        return Ok(StepOutcome::Step(make_output_line(
+                            flow, text, tags, element,
+                        )));
                     }
 
-                    let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
+                    let (text, tags, element) =
+                        flush_remaining(flow, program, line_tables, resolver);
                     return Ok(StepOutcome::Step(yield_step(
                         *status,
                         text,
                         tags,
+                        element,
                         flow,
                         program,
                         line_tables,
@@ -557,17 +572,21 @@ impl FlowInstance {
                     *status = StoryStatus::Ended;
 
                     if flow.output.has_completed_line()
-                        && let Some((text, tags)) =
+                        && let Some((text, tags, element)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
+                        return Ok(StepOutcome::Step(make_output_line(
+                            flow, text, tags, element,
+                        )));
                     }
 
-                    let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
+                    let (text, tags, element) =
+                        flush_remaining(flow, program, line_tables, resolver);
                     return Ok(StepOutcome::Step(yield_step(
                         *status,
                         text,
                         tags,
+                        element,
                         flow,
                         program,
                         line_tables,
@@ -1461,40 +1480,72 @@ fn resolve_external_call(
     }
 }
 
-/// Flush remaining output buffer content into `(text, tags)`.
+/// Flush remaining output buffer content into `(text, tags, element_data)`.
 ///
 /// At a yield point (Done/Choices/Ended), no more output is coming, so
-/// trailing newlines are committed. Lines are joined with `\n` and tags
-/// are flattened into a single vec.
+/// trailing newlines are committed. Lines are joined with `\n`, tags are
+/// flattened into a single vec, and element-attachment data (issue #2108) is
+/// merged the same way — later lines' keys win on conflict, matching the
+/// existing "just flatten" precision this function already had for tags:
+/// multiple flushed-at-once lines belonging to genuinely different attach
+/// runs is a pre-existing imprecision this fix does not newly introduce.
 fn flush_remaining(
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, BTreeMap<String, String>) {
     let lines = flow.output.flush_lines(program, line_tables, resolver);
     let mut text = String::new();
     let mut tags = Vec::new();
-    for (i, (line_text, line_tags)) in lines.iter().enumerate() {
+    let mut element = BTreeMap::new();
+    for (i, (line_text, line_tags, line_element)) in lines.iter().enumerate() {
         if i > 0 {
             text.push('\n');
         }
         text.push_str(line_text);
         tags.extend_from_slice(line_tags);
+        element.extend(line_element.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
-    (text, tags)
+    (text, tags, element)
 }
 
 /// Build a [`Step::Line`] stamped with the flow's current [`BlockId`] and
-/// the degenerate [`Element::narrative`] classification (issue #1683 —
-/// see [`Element`]'s doc for why this stays the always-correct default
-/// rather than a handler-derived kind/data pair today).
-fn make_output_line(flow: &Flow, text: String, tags: Vec<String>) -> Step {
+/// its [`Element`] classification.
+///
+/// Issue #2108 (`docs/decision-log.md` 2026-08-03 "The element output
+/// model") populates `element.data` from `data` — the per-line element-
+/// attachment snapshot [`OutputBuffer::take_first_line`]/`flush_lines`
+/// already resolved from the output buffer's own transcript (see
+/// `OutputPart::ElementAttach`'s doc for why it lives there rather than on
+/// `Flow`). The common case — no attach convention preceded this line —
+/// passes an empty map, falling back to the always-correct
+/// [`Element::narrative`] default, unchanged from #1683.
+///
+/// `element.kind` stays [`Element::NARRATIVE`] either way: only *data* is
+/// populated here. Classifying `kind` itself for a non-attach single-line
+/// handler (`heading`/`transition` reporting their own handler name) is a
+/// distinct, separately-tractable gap this PR does not close — see
+/// `docs/decision-log.md`/this issue's follow-up notes.
+fn make_output_line(
+    flow: &Flow,
+    text: String,
+    tags: Vec<String>,
+    data: BTreeMap<String, String>,
+) -> Step {
+    let element = if data.is_empty() {
+        Element::narrative()
+    } else {
+        Element {
+            kind: Element::NARRATIVE.to_string(),
+            data,
+        }
+    };
     Step::Line(OutputLine {
         text,
         tags,
         block_id: BlockId(flow.next_block_id),
-        element: Element::narrative(),
+        element,
     })
 }
 
@@ -1540,10 +1591,16 @@ fn collect_choices(
 /// terminal is stashed on `flow.pending_terminal` for the very next
 /// `advance` call to return with no further VM stepping. If there's
 /// nothing to flush, the bare terminal is returned immediately.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "issue #2108's `element` param pushed this past 7; each param is \
+              a distinct piece of the terminal/line it builds, not a natural group"
+)]
 fn yield_step(
     status: StoryStatus,
     text: String,
     tags: Vec<String>,
+    element: BTreeMap<String, String>,
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
@@ -1558,13 +1615,13 @@ fn yield_step(
         // Defensive fallback — `yield_step` is only ever called once
         // `status` has transitioned away from `Active` at a genuine yield
         // point (see call sites), so this arm is unreachable in practice.
-        StoryStatus::Active => return make_output_line(flow, text, tags),
+        StoryStatus::Active => return make_output_line(flow, text, tags, element),
     };
 
     if text.is_empty() && tags.is_empty() {
         terminal
     } else {
         flow.pending_terminal.stash(flow.next_block_id, terminal);
-        make_output_line(flow, text, tags)
+        make_output_line(flow, text, tags, element)
     }
 }

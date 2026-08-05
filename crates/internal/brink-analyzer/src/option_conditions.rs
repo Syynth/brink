@@ -130,7 +130,12 @@ fn check_stmt(stmt: &Stmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Dia
         | Stmt::Assignment(_)
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
-        | Stmt::EndOfLine => {}
+        | Stmt::EndOfLine
+        // Issue #2108: an attach handler's call is not a condition
+        // position — no `Option[T]` truthiness check applies here, same as
+        // `ExprStmt`.
+        | Stmt::AttachElement(_)
+        | Stmt::EndElementRun => {}
     }
 }
 

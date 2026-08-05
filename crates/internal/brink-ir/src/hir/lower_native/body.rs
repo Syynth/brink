@@ -862,7 +862,9 @@ pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
             | Stmt::Assignment(_)
             | Stmt::ExprStmt(_)
             | Stmt::EndOfLine
-            | Stmt::Await(_) => {}
+            | Stmt::Await(_)
+            | Stmt::AttachElement(_)
+            | Stmt::EndElementRun => {}
         }
     }
     block.recompute_tail();

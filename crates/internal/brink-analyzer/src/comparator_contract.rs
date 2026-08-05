@@ -416,7 +416,9 @@ fn collect_stmt(stmt: &Stmt, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>
                 collect_expr(a, ctx, out);
             }
         }
-        Stmt::ExprStmt(e) => collect_expr(e, ctx, out),
+        // Issue #2108: the attach handler's call expression can embed a
+        // comparator argument the same way any other call can.
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => collect_expr(e, ctx, out),
         Stmt::Await(a) => {
             if let Some(cond) = &a.condition {
                 collect_expr(cond, ctx, out);
@@ -444,7 +446,11 @@ fn collect_stmt(stmt: &Stmt, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>
             }
         }
         Stmt::Content(content) => collect_content(content, ctx, out),
-        Stmt::Divert(_) | Stmt::TunnelCall(_) | Stmt::ThreadStart(_) | Stmt::EndOfLine => {}
+        Stmt::Divert(_)
+        | Stmt::TunnelCall(_)
+        | Stmt::ThreadStart(_)
+        | Stmt::EndOfLine
+        | Stmt::EndElementRun => {}
     }
 }
 

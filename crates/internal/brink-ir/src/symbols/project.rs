@@ -402,8 +402,8 @@ impl Projector {
             Stmt::LabeledBlock(b) => self.walk_block(b, knot, stitch),
             Stmt::Conditional(c) => self.walk_conditional(c, knot, stitch),
             Stmt::Sequence(s) => self.walk_sequence(s, knot, stitch),
-            Stmt::ExprStmt(e) => self.walk_expr(e, knot, stitch),
-            Stmt::EndOfLine => {}
+            Stmt::ExprStmt(e) | Stmt::AttachElement(e) => self.walk_expr(e, knot, stitch),
+            Stmt::EndOfLine | Stmt::EndElementRun => {}
             Stmt::LogicBlock(lb) => self.walk_logic_block(lb, knot, stitch),
             Stmt::Await(a) => {
                 if let Some(e) = &a.condition {

@@ -27,12 +27,18 @@ pub enum StoryStatus {
 /// uninterrupted run — a terminal ([`Step::Choices`]/[`Step::Done`]/
 /// [`Step::End`]) or a host-directed jump always starts a new one.
 ///
-/// Compile-time-baked block ids (per §3.6's attachment mechanism, once the
-/// element/markup layer lands — issue #1683) are a superset of this: in
-/// today's schema-less-ink degenerate case there is exactly one implicit
-/// "narrative" element for the whole story, so a `BlockId` here simply
-/// counts uninterrupted runs. The wire field is stable now so #1683 can
-/// refine *how* it's assigned without another contract break.
+/// Compile-time-baked block ids (per §3.6's attachment mechanism) are a
+/// superset of this. Issue #2108 (`docs/decision-log.md` 2026-08-03 "The
+/// element output model") delivers the first real instance: an
+/// `attach = StructName` convention handler's data is merged into the VM's
+/// output buffer (`brink_runtime::vm`'s `Opcode::AttachElement`/
+/// `Opcode::EndElementRun`) and every line materialized while it's live gets
+/// a copy in [`Element::data`] — but `BlockId` itself is **not** re-derived
+/// from that mechanism; it stays the plain terminator-counting value it
+/// always was (this field's own `next_block_id` doc, `brink_runtime::story::
+/// call_stack::Flow`). A run of adjacent lines sharing one attach group can
+/// therefore span more than one `BlockId` if it also crosses a real
+/// terminator — the two concepts have not been unified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub u64);
 
@@ -43,23 +49,26 @@ pub struct BlockId(pub u64);
 /// kind, not a closed enum: the vocabulary belongs to whichever preset or
 /// `@[element]` handler classified the line, never to the runtime.
 ///
-/// **Scoped narrower than the full ruling, honestly** (issue #1683): today
-/// every line gets [`Element::narrative`], the degenerate case the spec's
-/// "superset check" names ("schema-less ink → `element: narrative`").
-/// Compile-time-baked data from an `@[element]` handler's match (kind =
-/// handler name, data = its named captures, `hir::ElementMatch`) is real in
-/// the compiler already, but wiring it onto a *specific* runtime
-/// `OutputLine` needs either new `.inkb` line-table storage (for the
-/// single-line, return-based case) or a VM-level scoping mechanism (for a
-/// `block`-capturing handler like `cue`/`parenthetical`, whose call emits
-/// more than one line dynamically) — neither is built here. See this
-/// issue's tracked follow-up for the concrete design.
+/// **`data` is real** (issue #2108, `docs/decision-log.md` 2026-08-03 "The
+/// element output model: attachment is block-level metadata, delivery is
+/// per-line"): an `attach = StructName` convention handler's claimed line
+/// consumes itself (no event — item 6, "AN EVENT EXISTS IFF A LINE EXISTS")
+/// and its returned struct's fields merge into `data` on every line in the
+/// run that follows (item 3: multiple attach handlers, e.g. `cue` then
+/// `parenthetical`, accumulate onto the same run). **`kind` stays the
+/// degenerate [`Self::NARRATIVE`] regardless** — classifying `kind` itself
+/// for a non-attach single-line handler (`heading`/`transition` reporting
+/// their own handler name as `kind`) is a distinct, still-open gap; see
+/// issue #2108's own follow-up notes. A line with no preceding attach
+/// convention still reports the always-correct [`Element::narrative`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
     /// The classifying handler's name, or [`Self::NARRATIVE`] for an
-    /// ordinary, unclassified line.
+    /// ordinary, unclassified line — always the latter today, see this
+    /// type's own doc.
     pub kind: String,
-    /// Open, handler-defined payload. Empty for the degenerate case.
+    /// Open, handler-defined payload. Empty when no `attach` convention
+    /// preceded this line.
     pub data: BTreeMap<String, String>,
 }
 
@@ -82,13 +91,11 @@ impl Element {
 
 /// One line of story content, carried inside [`Step::Line`].
 ///
-/// `.text()`/`.tags()` intentionally stay plain fields rather than a
-/// `Vec<Part>` decomposition — that structured-markup surface
-/// (`docs/prose-dialect-spec.md` §7/§9.1's `Part::Span`) is out of scope
-/// here; it rides its own follow-up (#1683) once the element/markup layer
-/// exists. This shape is the information-identical degenerate case the
-/// spec's "superset check" calls out: schema-less ink → one implicit
-/// narrative element, flat text.
+/// `.text` stays a plain field rather than a `Vec<Part>` decomposition —
+/// that structured-markup surface (`docs/prose-dialect-spec.md` §7/§9.1's
+/// `Part::Span`) is still out of scope (issue #2108 populated
+/// [`Element::data`], the other half of the spec's element/markup layer, but
+/// deliberately not this one — see this issue's own tracked follow-up).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputLine {
     /// The line's text content.
@@ -97,7 +104,8 @@ pub struct OutputLine {
     pub tags: Vec<String>,
     /// The run of adjacent content this line belongs to. See [`BlockId`].
     pub block_id: BlockId,
-    /// This line's classification. See [`Element`] for today's scoping.
+    /// This line's classification. See [`Element`]'s own doc for what's
+    /// populated today and what isn't.
     pub element: Element,
 }
 

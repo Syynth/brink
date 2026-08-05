@@ -282,8 +282,8 @@ impl Collector {
             Stmt::LabeledBlock(b) => self.walk_block(b, prefix),
             Stmt::Conditional(c) => self.walk_conditional(c, prefix),
             Stmt::Sequence(s) => self.walk_sequence(s, prefix),
-            Stmt::ExprStmt(e) => self.walk_expr(e, prefix),
-            Stmt::EndOfLine => {}
+            Stmt::ExprStmt(e) | Stmt::AttachElement(e) => self.walk_expr(e, prefix),
+            Stmt::EndOfLine | Stmt::EndElementRun => {}
             Stmt::LogicBlock(lb) => self.walk_logic_block(lb),
             Stmt::Await(a) => {
                 self.check_range(a.ptr.text_range());

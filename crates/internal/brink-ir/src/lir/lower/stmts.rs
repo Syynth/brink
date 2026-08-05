@@ -14,6 +14,7 @@ use super::lir;
 /// `ChoiceSet`, `LabeledBlock`, `Conditional`, and `Sequence` are handled
 /// by the caller (`lower_block_with_children`) since they may produce child
 /// containers. This function handles all remaining statement types.
+#[expect(clippy::too_many_lines)]
 pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
     match stmt {
         hir::Stmt::Divert(divert) => {
@@ -169,6 +170,14 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             emit_await_lowering_fence(ctx, a.ptr.text_range());
             None
         }
+
+        // Issue #2108: straight expression-to-statement lowering, mirroring
+        // `ExprStmt` above — the difference from an ordinary call-for-
+        // side-effects is entirely in what codegen emits after evaluating
+        // it (`Opcode::AttachElement` vs `Pop`), not in how the call
+        // expression itself lowers.
+        hir::Stmt::AttachElement(expr) => Some(lir::Stmt::AttachElement(lower_expr(expr, ctx))),
+        hir::Stmt::EndElementRun => Some(lir::Stmt::EndElementRun),
     }
 }
 

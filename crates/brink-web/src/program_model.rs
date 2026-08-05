@@ -506,6 +506,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::EvalLine(idx, slots) => format!("eval_line #{idx} {slots}"),
         Opcode::BeginFragment => "begin_fragment".to_owned(),
         Opcode::EndFragment => "end_fragment".to_owned(),
+        Opcode::AttachElement => "attach_element".to_owned(),
+        Opcode::EndElementRun => "end_element_run".to_owned(),
 
         // Choices (target resolved)
         Opcode::BeginChoice(flags, target) => {

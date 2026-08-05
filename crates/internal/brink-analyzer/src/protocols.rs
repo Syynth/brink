@@ -273,7 +273,9 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             | Stmt::Return(_)
             | Stmt::ExprStmt(_)
             | Stmt::EndOfLine
-            | Stmt::Await(_) => {}
+            | Stmt::Await(_)
+            | Stmt::AttachElement(_)
+            | Stmt::EndElementRun => {}
         }
     }
 }
