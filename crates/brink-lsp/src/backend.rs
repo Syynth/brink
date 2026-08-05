@@ -858,6 +858,20 @@ fn is_source_path(path: &std::path::Path) -> bool {
         .is_some_and(|ext| ext == "ink" || ext == "brink")
 }
 
+/// Whether `path` names a native `.brink` file — the only frontend whose
+/// grammar has cue (`@NAME`) syntax at all
+/// (`cue_names_are_never_harvested_from_the_ink_frontend`, `brink-analyzer`).
+/// A deliberate, minimal duplicate of `brink-db`'s own `file_language`
+/// extension check (crate-private there), used by
+/// [`Backend::completion`]'s cue-completion gate (review finding on #2134,
+/// minor) to tell "an ink prose line that happens to start with `@`" apart
+/// from a real native cue position.
+fn is_native_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "brink")
+}
+
 fn lock_db(db: &Arc<Mutex<NativeProjects>>) -> std::sync::MutexGuard<'_, NativeProjects> {
     match db.lock() {
         Ok(guard) => guard,
@@ -1440,7 +1454,15 @@ impl LanguageServer for Backend {
 
                 // ── Completion ──
                 completion_provider: Some(CompletionOptions {
-                    trigger_characters: Some(vec!["->".into(), ".".into()]),
+                    // `@` (issue #2134 review finding, blocking): the cue-
+                    // name completion position (`CompletionContext::CueName`)
+                    // sits right after `@` at the start of a line — without
+                    // it as a trigger character, a client that only asks the
+                    // server for completions on a registered trigger (rather
+                    // than on every keystroke) never requests them at that
+                    // position, contradicting the "a real user hits this by
+                    // typing `@`" reachability claim.
+                    trigger_characters: Some(vec!["->".into(), ".".into(), "@".into()]),
                     resolve_provider: Some(true),
                     ..Default::default()
                 }),
@@ -2022,7 +2044,7 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let byte_offset: usize = idx.offset(pos.line, pos.character).into();
 
-        let ctx = detect_completion_context(&snap.source, byte_offset);
+        let mut ctx = detect_completion_context(&snap.source, byte_offset);
         let cursor_scope = cursor_scope(&snap.source, byte_offset);
 
         let mut items: Vec<CompletionItem> = Vec::new();
@@ -2035,23 +2057,43 @@ impl LanguageServer for Backend {
         // `harvest_index`, for the same Eq-cutoff reason
         // `resolution_index_query` exists for the symbol index (see that
         // query's own doc).
+        //
+        // `detect_completion_context` is dialect-agnostic (review finding on
+        // #2134, minor): it classifies purely from source text, so a plain
+        // ink prose line that happens to start with `@` (e.g. `@midnight the
+        // clock…`) is misread as the same `CueName` position, even though
+        // ink's grammar has no cue syntax at all
+        // (`cue_names_are_never_harvested_from_the_ink_frontend`,
+        // `brink-analyzer`) — an ink file's harvest contribution is always
+        // empty, project-wide harvest from *other* native files
+        // notwithstanding. Gate on the file's own language (native `.brink`
+        // vs ink), not on whether the harvest happens to be empty right now:
+        // a native file with zero declared cues anywhere in the project is
+        // still a genuine (if currently empty) cue position and must keep
+        // returning no items rather than falling back to ordinary symbols —
+        // exactly what `cue_name_completion_offers_nothing_but_harvested_cues`
+        // pins. Only an ink file — which can never mean a cue, regardless of
+        // harvest state — downgrades `ctx` to `General` here.
         if matches!(ctx, CompletionContext::CueName) {
-            let projects = lock_db(&self.db);
-            let names = projects
-                .project_for_path(&path)
-                .map(brink_db::ProjectDb::harvest_completion_names);
-            drop(projects);
-            if let Some(names) = names {
-                for cue in &names.cues {
-                    items.push(CompletionItem {
-                        label: cue.clone(),
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        detail: Some("cue".to_owned()),
-                        ..Default::default()
-                    });
+            if is_native_path(&path) {
+                let projects = lock_db(&self.db);
+                let names = projects
+                    .project_for_path(&path)
+                    .map(brink_db::ProjectDb::harvest_completion_names);
+                drop(projects);
+                if let Some(names) = names {
+                    for cue in &names.cues {
+                        items.push(CompletionItem {
+                            label: cue.clone(),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            detail: Some("cue".to_owned()),
+                            ..Default::default()
+                        });
+                    }
                 }
+                return Ok(Some(CompletionResponse::Array(items)));
             }
-            return Ok(Some(CompletionResponse::Array(items)));
+            ctx = CompletionContext::General;
         }
 
         // For dotted paths, show only children of the specified knot.
@@ -3343,8 +3385,8 @@ mod tests {
 
     use super::{
         ConfigLoadOutcome, ConfigOverrides, LineIndex, PublishDecision, PublishRecord, PublishTier,
-        collect_source_files, config_error_diagnostic, native_source_root, path_under_ignored_dir,
-        publish_decision, rename_suspicion_diags, resolve_language_options,
+        collect_source_files, config_error_diagnostic, is_native_path, native_source_root,
+        path_under_ignored_dir, publish_decision, rename_suspicion_diags, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -3447,6 +3489,20 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// Review finding on #2134 (minor): `is_native_path` is the gate
+    /// `Backend::completion` uses to tell a real native cue position apart
+    /// from an ink prose line that merely starts with `@` — get the
+    /// extension boundary right, including the no-extension and
+    /// `.brink`-substring-but-not-suffix cases.
+    #[test]
+    fn is_native_path_matches_only_the_brink_extension() {
+        assert!(is_native_path("main.brink"));
+        assert!(is_native_path("market/vendor.brink"));
+        assert!(!is_native_path("main.ink"));
+        assert!(!is_native_path("notes.brink.txt"));
+        assert!(!is_native_path("no_extension"));
     }
 
     /// Issue #1424: a workspace legitimately *rooted* inside an
