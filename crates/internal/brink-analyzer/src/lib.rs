@@ -72,7 +72,9 @@ pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
-pub use harvest::{CueHarvest, HarvestIndex, HarvestSite, SpanHarvest, harvest};
+pub use harvest::{
+    CueHarvest, HarvestIndex, HarvestNames, HarvestSite, SpanHarvest, SpanNames, harvest,
+};
 pub use infer::{
     BodyTypes, CallGraph, CoalesceError, Def, DirectCallArgMismatch, EffectAtoms, EffectRow,
     FieldAssignMismatch, FnRow, InferenceResult, InferredSig, LambdaAnnotationMismatch,

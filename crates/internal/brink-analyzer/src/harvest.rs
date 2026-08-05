@@ -43,7 +43,7 @@
 //! work once that mechanism exists, not something this issue can build
 //! ahead of it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_ir::hir::{Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
 use brink_ir::{FileId, HostManifest, ManifestSpanKind};
@@ -100,6 +100,61 @@ pub struct SpanHarvest {
 pub struct HarvestIndex {
     pub cues: BTreeMap<String, CueHarvest>,
     pub spans: BTreeMap<String, SpanHarvest>,
+}
+
+/// Range-free completion projection of a [`HarvestIndex`] (issue #2134).
+///
+/// Every [`HarvestSite`] carries a `TextRange`, so the raw index can never
+/// `Eq`-cutoff — nearly any edit shifts a site's range and would defeat
+/// early cutoff for every dependent, exactly the property that forced
+/// `resolution_index_query` to exist as a range-zeroed early-cutoff
+/// projection of the symbol index (see `brink-db`'s
+/// `queries/mod.rs` module doc, "The `resolution_index` cutoff seam"). A
+/// completion consumer only needs to know *that* a name exists project-wide,
+/// never *where* — so this projection keeps just the name sets (and, for
+/// spans, the manifest's `declared` metadata, which carries no ranges
+/// either). `harvest_completion_index_query` in `brink-db` is this
+/// projection's own tracked-query wrapper, the harvest-index sibling of
+/// `resolution_index_query`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HarvestNames {
+    pub cues: BTreeSet<String>,
+    pub spans: BTreeMap<String, SpanNames>,
+}
+
+/// One markup span kind's range-free completion record — see [`HarvestNames`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpanNames {
+    pub attrs: BTreeSet<String>,
+    /// The host manifest's declaration of this kind, when registered — see
+    /// [`SpanHarvest::declared`].
+    pub declared: Option<ManifestSpanKind>,
+}
+
+impl HarvestIndex {
+    /// Project this index down to the range-free name sets a completion
+    /// consumer needs (issue #2134) — see [`HarvestNames`]'s doc for why the
+    /// projection exists. Backdates across any edit that shifts a site's
+    /// range without adding or removing a name/attribute.
+    #[must_use]
+    pub fn names(&self) -> HarvestNames {
+        HarvestNames {
+            cues: self.cues.keys().cloned().collect(),
+            spans: self
+                .spans
+                .iter()
+                .map(|(name, span)| {
+                    (
+                        name.clone(),
+                        SpanNames {
+                            attrs: span.attrs.keys().cloned().collect(),
+                            declared: span.declared.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Build the project-wide harvest index from every file's HIR, upgrading
@@ -461,5 +516,56 @@ mod tests {
         let index = harvest(&[(FileId(0), &hir)], None);
         assert!(index.spans.contains_key("b"));
         assert!(index.spans.contains_key("glitch"));
+    }
+
+    // ── HarvestNames: the range-free completion projection (#2134) ──────
+
+    #[test]
+    fn names_projection_drops_ranges_but_keeps_every_cue_and_span_name() {
+        let hir = lower_native(
+            "flow a() {\n  @KID\n  <wave amount=\"3\">shimmer</wave>\n  Says hi.\n}\n",
+        );
+        let index = harvest(&[(FileId(0), &hir)], None);
+        let names = index.names();
+        assert!(names.cues.contains("KID"));
+        let wave = names.spans.get("wave").expect("wave harvested");
+        assert!(wave.attrs.contains("amount"));
+    }
+
+    #[test]
+    fn names_projection_is_eq_stable_across_a_range_only_change() {
+        // The load-bearing property (#2134): two harvests of the *same*
+        // name from different byte offsets must produce identical
+        // `HarvestNames` output, even though the raw `HarvestIndex` (whose
+        // sites carry real ranges) differs.
+        let a = lower_native("flow a() {\n  @KID\n  Hi.\n}\n");
+        let b = lower_native("flow a() {\n\n\n  @KID\n  Hi.\n}\n");
+        let index_a = harvest(&[(FileId(0), &a)], None);
+        let index_b = harvest(&[(FileId(0), &b)], None);
+        assert_ne!(
+            index_a, index_b,
+            "sanity: the raw indexes differ by range, so this test is real"
+        );
+        assert_eq!(
+            index_a.names(),
+            index_b.names(),
+            "the range-free projection must be Eq-stable across a pure range shift"
+        );
+    }
+
+    #[test]
+    fn names_projection_preserves_declared_span_metadata() {
+        let manifest = HostManifest {
+            markup: vec![ManifestSpanKind {
+                name: "sfx".to_string(),
+                attrs: vec![required_attr("volume")],
+            }],
+            ..HostManifest::default()
+        };
+        let hir = lower_native("flow a() {\n  Nothing here.\n}\n");
+        let index = harvest(&[(FileId(0), &hir)], Some(&manifest));
+        let names = index.names();
+        let sfx = names.spans.get("sfx").expect("declared kind must appear");
+        assert!(sfx.declared.as_ref().expect("declared").attrs[0].required);
     }
 }

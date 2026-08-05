@@ -31,8 +31,51 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
-        let ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
+        let mut ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
         let scope = brink_ide::cursor_scope(source, abs_offset as usize);
+
+        // Cue-name completion (issue #2134, `docs/prose-dialect-spec.md`
+        // §5): every `@NAME` cue harvested anywhere in the project — not
+        // just this file — completes here, mirroring `brink-lsp`'s
+        // `completion` handler. Reads the range-free completion projection
+        // (`harvest_completion_names`), not the raw `harvest_index`, for
+        // the same Eq-cutoff reason `resolution_index_query` exists for the
+        // symbol index.
+        //
+        // `detect_completion_context` is dialect-agnostic (review finding on
+        // #2134, minor): it classifies purely from source text, so a plain
+        // ink prose line that happens to start with `@` is misread as the
+        // same `CueName` position, even though ink's grammar has no cue
+        // syntax at all (`cue_names_are_never_harvested_from_the_ink_frontend`,
+        // `brink-analyzer`) — an ink file's own harvest contribution is
+        // always empty, project-wide harvest from *other* native files
+        // notwithstanding. Gate on the file's own language (native `.brink`
+        // vs ink), not on whether the harvest happens to be empty right now:
+        // a native file with zero declared cues anywhere in the project is
+        // still a genuine (if currently empty) cue position and must keep
+        // returning no items rather than falling back to ordinary symbols —
+        // exactly what `cue_name_completion_offers_nothing_but_harvested_cues`
+        // pins. Only an ink file — which can never mean a cue, regardless of
+        // harvest state — downgrades `ctx` to `General` here.
+        if matches!(ctx, brink_ide::CompletionContext::CueName) {
+            if is_native_path(path) {
+                let names = self.session.db().harvest_completion_names();
+                let items: Vec<CompletionItemJs> = names
+                    .cues
+                    .iter()
+                    .map(|name| CompletionItemJs {
+                        name: name.clone(),
+                        kind: "cue".to_owned(),
+                        detail: None,
+                        insert: None,
+                        out_of_scope: false,
+                        source_file: None,
+                    })
+                    .collect();
+                return serde_json::to_string(&items).unwrap_or_default();
+            }
+            ctx = brink_ide::CompletionContext::General;
+        }
 
         // Auto-import (#312 F): symbols declared in files NOT reachable from the
         // current file's INCLUDE graph are still offered, but tagged as
@@ -144,4 +187,18 @@ impl EditorSession {
 
         serde_json::to_string(&items).unwrap_or_default()
     }
+}
+
+/// Whether `path` names a native `.brink` file — the only frontend whose
+/// grammar has cue (`@NAME`) syntax at all
+/// (`cue_names_are_never_harvested_from_the_ink_frontend`, `brink-analyzer`).
+/// A deliberate, minimal duplicate of `brink-db`'s own `file_language`
+/// extension check (crate-private there), used by
+/// [`EditorSession::completions_impl`]'s cue-completion gate (review finding
+/// on #2134, minor) to tell "an ink prose line that happens to start with
+/// `@`" apart from a real native cue position.
+fn is_native_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "brink")
 }

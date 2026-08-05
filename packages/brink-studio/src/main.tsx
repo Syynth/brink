@@ -71,6 +71,66 @@ const NESTED_FIXTURE: Record<string, string> = {
   "util.ink": "=== util ===\n-> END\n",
 };
 
+// Native-surface project, loaded via `?fixture=native` — the first `.brink`
+// content the playground has ever seeded. Exists so the native editor
+// surfaces can be *seen* rather than only asserted: the analysis half
+// (hover, navigation, rename, signature, completions, symbols, folding) has
+// worked on `.brink` for weeks with no way to look at it (#1131, hold lifted
+// 2026-08-05). Two files, because the cross-file half is the interesting
+// part — `pub` visibility (#1582) and per-project extent (#1580) only mean
+// anything with a second file to reference.
+// ⚠ THIS FIXTURE DOES NOT FULLY COMPILE TODAY, ON PURPOSE. It is written to
+// the RULED model, not to whatever currently happens to work, so the studio
+// shows the real gaps instead of hiding them:
+//
+//   - Conventions live in their OWN module named by `brink.toml`, per §9.1
+//     item 4. They currently claim nothing outside their own file (#2289) —
+//     `VENDOR` in story.brink renders unclaimed. DO NOT "fix" this by
+//     inlining the handlers into story.brink; that hides the defect, and the
+//     single-file tier1-native fixture already covers the inline shape.
+//   - `-> barter::haggle` is the intended module-qualified divert and does
+//     not resolve (#2287). DO NOT swap it for bare `-> haggle`, which happens
+//     to compile but is itself wrong — bare names require a symbol or glob
+//     import, not a module import.
+//
+// When #2287 and #2289 land, this fixture should go green on its own. That is
+// the point: it is a live acceptance test you can look at.
+const NATIVE_FIXTURE: Record<string, string> = {
+  "brink.toml": '[project]\nentry = "story.brink"\nconventions = "conventions.brink"\n',
+  "conventions.brink": `struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+@[convention(claims = "^(?<kind>INT|EXT)\\\\. (?<title>.+)$", order = 20)]
+fn heading(kind: string, title: string) {
+  return "-- {kind}. {title} --";
+}
+`,
+  "story.brink": `use story::market::barter;
+
+pub flow main() {
+  INT. MARKET SQUARE - NIGHT
+  The square is empty.
+
+  VENDOR
+  You shouldn't be here after dark.
+
+  -> barter::haggle
+}
+`,
+  "market/barter.brink": `pub flow haggle() {
+  KID
+  How much for the lantern?
+  -> DONE
+}
+`,
+};
+
 // ── Bootstrap ──────────────────────────────────────────────────
 
 // HMR guard (dev only). Under Vite HMR an update that reaches this entry
@@ -102,7 +162,9 @@ async function main(): Promise<void> {
       ? { "main.ink": SCREENPLAY_FIXTURE }
       : fixture === "nested"
         ? NESTED_FIXTURE
-        : {
+        : fixture === "native"
+          ? NATIVE_FIXTURE
+          : {
             "main.ink": MAIN_INK,
             "toppled-temple.ink": toppledTemple,
           };
@@ -141,7 +203,10 @@ async function main(): Promise<void> {
   const handle: StudioHandle = await mountStudio(appRoot, {
     files,
     provider,
-    entryFile: "main.ink",
+    // The native fixture has no `main.ink` — hardcoding one opened a phantom
+    // tab for a file outside the project, which then reported an error the
+    // Problems panel could not show (mistaken for #2281 until traced here).
+    entryFile: fixture === "native" ? "story.brink" : "main.ink",
     extensions: withExtension ? createExampleExtension : undefined,
     // The pretend host's capability manifest (the panel renders the same
     // object). Registered regardless of `?ext=none` — the host's vocabulary
