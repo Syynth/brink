@@ -82,15 +82,29 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let (Some(analysis), Some(source), Some(root)) = (
-            self.session.analysis(),
-            self.session.source(file_id),
-            self.session.syntax_root(file_id),
-        ) else {
+        let (Some(analysis), Some(source)) =
+            (self.session.analysis(), self.session.source(file_id))
+        else {
             return "[]".to_owned();
         };
 
-        let raw = brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id);
+        // A native (`.brink`) file's real CST is a distinct tree from the
+        // ink one `syntax_root` always returns (issue #2280) — routing a
+        // native file through the ink classifier reproduces the exact bug
+        // this dispatch exists to fix: `struct`/`Cue`/`speaker`/... all
+        // reading as a plain `variable`, and string literals shredded on
+        // every character ink's tokenizer treats as significant.
+        let raw = if self.session.is_native(file_id) {
+            let Some(root) = self.session.syntax_root_native(file_id) else {
+                return "[]".to_owned();
+            };
+            brink_ide::semantic_tokens::semantic_tokens_native(source, &root, analysis, file_id)
+        } else {
+            let Some(root) = self.session.syntax_root(file_id) else {
+                return "[]".to_owned();
+            };
+            brink_ide::semantic_tokens::semantic_tokens(source, &root, analysis, file_id)
+        };
 
         let tokens: Vec<TokenJs> = raw
             .iter()
@@ -197,5 +211,78 @@ impl EditorSession {
 
         serde_json::to_string(&HirProjectionJs { spans, lines })
             .unwrap_or_else(|_| EMPTY.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorSession;
+
+    /// End-to-end through the actual wasm-bridge entry point (issue #2280):
+    /// a native `.brink` file's `struct`/field-name/type-reference tokens
+    /// must not all read as `variable` (token type `2`) — the bug this
+    /// dispatch exists to fix. `update_file` alone does **not** make a file
+    /// active for IDE queries (`semantic_tokens` reads `active_path`) —
+    /// `set_active_file` does; skipping it would silently query an empty
+    /// path and pass vacuously.
+    #[test]
+    fn semantic_tokens_on_a_native_file_does_not_collapse_everything_to_variable() {
+        const TT_VARIABLE: u64 = 2;
+        const TT_STRUCT: u64 = 13;
+        const TT_PROPERTY: u64 = 14;
+
+        let mut s = EditorSession::new();
+        s.update_file(
+            "t.brink",
+            "struct Cue {\n    speaker: string,\n}\nflow main() {\n    -> DONE\n}\n",
+        );
+        assert!(
+            s.set_active_file("t.brink"),
+            "t.brink must be loaded and selectable"
+        );
+
+        let json = s.semantic_tokens();
+        let tokens: serde_json::Value =
+            serde_json::from_str(&json).expect("semantic_tokens must return valid JSON");
+        let tokens = tokens.as_array().expect("a JSON array of tokens");
+        assert!(
+            !tokens.is_empty(),
+            "expected non-empty semantic tokens for a native file"
+        );
+
+        // Decode: with the ink classifier misrouted onto native source
+        // (this issue's bug), the ink parser garbles native text badly
+        // enough that no token would even land at these exact
+        // (line, start_char) coordinates — `struct Cue {` and
+        // `    speaker: string,` parse identically under both frontends
+        // lexically, so this also exercises the native-CST-vs-ink-CST
+        // dispatch, not just the classifier.
+        let type_at = |line: u64, col: u64| {
+            let found = tokens
+                .iter()
+                .find(|t| t["line"] == line && t["start_char"] == col);
+            assert!(
+                found.is_some(),
+                "no token at line {line} col {col}: {tokens:?}"
+            );
+            found.expect("checked above")["token_type"]
+                .as_u64()
+                .expect("token_type is a number")
+        };
+
+        // Line 0: `struct Cue {` — `Cue` starts at column 7.
+        assert_eq!(
+            type_at(0, 7),
+            TT_STRUCT,
+            "the struct's own name must not read as `variable`"
+        );
+        // Line 1: `    speaker: string,` — `speaker` at column 4.
+        assert_eq!(
+            type_at(1, 4),
+            TT_PROPERTY,
+            "a struct field name must not read as `variable`"
+        );
+        assert_ne!(type_at(0, 7), TT_VARIABLE);
+        assert_ne!(type_at(1, 4), TT_VARIABLE);
     }
 }
