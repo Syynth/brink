@@ -25,6 +25,9 @@ const KIND_MAP: Record<string, string> = {
   temp: "variable",
   // Host value-picker items (#174): a labelled value for an argument slot.
   value: "enum",
+  // Cue-name completions (#2134): matches the LSP side's
+  // `CompletionItemKind::CONSTANT`.
+  cue: "constant",
 };
 
 /** Map a wasm completion `kind` to a CodeMirror completion `type` (its icon).
