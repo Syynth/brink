@@ -13,11 +13,16 @@ drops a declared `STRUCT` when its own definition can't be resolved.
   struct silently vanished from the shape table and the seeded name table,
   shifting every subsequent `ShapeId`/`NameId` and the bytecode built from
   them with no diagnostic at all.
-- Not reachable from any project compilable today (the standard library
-  ships a single preset file, so an intra-*std* duplicate can't yet arise)
-  — this closes the gap for when it becomes reachable, and makes the
-  compiler's own invariant violation loud instead of silent if it is ever
-  hit some other way.
+- Reachable today, not only from a future std mount: an ordinary project
+  declaring its own `struct Cue`/`struct Parenthetical` (the two names the
+  mounted screenplay preset already declares) can collide with std's, with
+  no `#@module` on either side required — `symbol_index_query` shares one
+  index across every registered file regardless of the compilation
+  closure, so the project's own struct gets dropped as an ordinary
+  duplicate whenever its file sorts after the std key in `FileId`-mint
+  order, and `E181` now fires instead of a silent drop. See
+  `docs/diagnostics/E181.md` for the exact condition and the fix (rename,
+  or declare a `#@module`).
 - `lir::lower::structs::build_struct_shape_data` (the `NameId`-free
   cutoff-friendly twin `brink-db`'s `struct_shape_data_query` memoizes)
   performs the identical lookup and deliberately does **not** duplicate

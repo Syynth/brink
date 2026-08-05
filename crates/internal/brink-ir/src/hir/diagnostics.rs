@@ -1710,11 +1710,26 @@ pub enum DiagnosticCode {
     /// bytecode built from them (CLAUDE.md: "silent drops are always
     /// bugs until proven otherwise").
     ///
-    /// Reachable in principle (a project-declared module with two files
-    /// duplicating the same struct name, where the surviving declaration
-    /// is itself std-mounted), not reachable in practice today — std
-    /// ships a single preset file, so an intra-*std* duplicate can only
-    /// arise from a future multi-file std mount.
+    /// Reachable **today**, not merely in principle (review finding on
+    /// #2240): any project whose own declaring file is not all-native
+    /// (`project_is_all_native`) and whose own `STRUCT`/`struct` shares a
+    /// name with one the std-mounted screenplay preset declares (`Cue`,
+    /// `Parenthetical`) collides with it — neither side needs a `#@module`
+    /// for this to happen. `symbol_index_query` builds the shared index
+    /// from every `set_file`-registered file regardless of the
+    /// compilation closure, so the mounted std declaration sits in the
+    /// index even for an ink entry whose LIR closure never reaches it.
+    /// With neither declaration module-qualified (or the project simply
+    /// not `Dialect::Brink`), M-2d cross-declared-module coexistence
+    /// (`is_cross_declared_module_collision`) never applies, so the pair
+    /// collapses to an ordinary same-module duplicate — and it is the
+    /// *project's* declaration that gets dropped whenever its own file
+    /// sorts after the std key in `FileId`-mint order (any project file
+    /// named e.g. `story.ink`, `world.ink`, `types.ink` does, since
+    /// `"std/…"` sorts first). See `brink-environment`'s
+    /// `e181_is_reachable_from_an_ordinary_ink_project_colliding_with_a_std_preset_name`
+    /// for this compiled end to end through the real analyzer drop, not a
+    /// hand-built `SymbolIndex`.
     ///
     /// `build_struct_shape_data` (the `NameId`-free, cutoff-friendly
     /// twin `struct_shape_data_query` memoizes for the per-knot chunk
