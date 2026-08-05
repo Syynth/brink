@@ -328,6 +328,7 @@ fn resolve_divert(
         check_divert_arity(index, file_id, uref, id, diagnostics);
     } else {
         diagnostics.push(unresolved_diag(
+            index,
             file_id,
             uref.range,
             &uref.path,
@@ -519,6 +520,7 @@ fn resolve_variable(
                 return;
             }
             diagnostics.push(unresolved_diag(
+                index,
                 file_id,
                 uref.range,
                 path,
@@ -805,6 +807,7 @@ fn resolve_function(
     }
 
     diagnostics.push(unresolved_diag(
+        index,
         file_id,
         uref.range,
         path,
@@ -893,6 +896,7 @@ fn resolve_list_ref(
     }
 
     diagnostics.push(unresolved_diag(
+        index,
         file_id,
         uref.range,
         path,
@@ -924,6 +928,7 @@ fn resolve_struct_ref(
         return;
     }
     diagnostics.push(unresolved_diag(
+        index,
         file_id,
         uref.range,
         path,
@@ -1544,16 +1549,57 @@ fn ambiguous_diag(file: FileId, range: rowan::TextRange, path: &str) -> Diagnost
     }
 }
 
+/// True when `index` holds at least one declared symbol named `path`
+/// whose module is the `std::` peer root ([`is_std_module`]) — regardless
+/// of `SymbolKind`, since the point here is not "which lookup would have
+/// matched" but "does bare-name resolution's std-invisibility gate
+/// (`lookup_by_name`, `lookup_unique_by_name`) explain why this path came
+/// back empty".
+///
+/// Issue #2217: the gate that excludes std candidates from bare-name
+/// resolution (`lookup_by_name`'s `Candidacy::Other` skip,
+/// `lookup_unique_by_name`'s unconditional skip) applies identically to
+/// the *embedded* stdlib mount and to a project's own file that legitimately
+/// lives at a `std/…` path (`brink_environment::mount_stdlib`'s "project
+/// source at the same key wins" carve-out — both mint the identical
+/// `std::…` module identity via `native_module_path`, by design; see
+/// `docs/modules-spec.md` §4 "peer roots"). Reconsidering `is_std_module`
+/// to distinguish the two would undo that ruling, so this does not attempt
+/// it — it only turns the resulting unexplained E024/E025/E068 into a
+/// diagnosable one, without inventing a new diagnostic code.
+fn is_std_shadowed_name(index: &SymbolIndex, path: &str) -> bool {
+    index.by_name.get(path).is_some_and(|ids| {
+        ids.iter().any(|id| {
+            index
+                .symbols
+                .get(id)
+                .is_some_and(|info| info.module.as_deref().is_some_and(is_std_module))
+        })
+    })
+}
+
 fn unresolved_diag(
+    index: &SymbolIndex,
     file: FileId,
     range: rowan::TextRange,
     path: &str,
     code: DiagnosticCode,
 ) -> Diagnostic {
+    let message = if is_std_shadowed_name(index, path) {
+        format!(
+            "{}: `{path}` — a declaration of this name exists under the `std::` peer root \
+             (either the mounted stdlib, or your own project file at a `std/…` path); bare \
+             names under `std::` are invisible outside it by rule, not by mistake — reference \
+             it with `use std::…` (docs/modules-spec.md §4)",
+            code.title(),
+        )
+    } else {
+        format!("{}: `{path}`", code.title())
+    };
     Diagnostic {
         file,
         range,
-        message: format!("{}: `{path}`", code.title()),
+        message,
         code,
     }
 }
@@ -3101,6 +3147,131 @@ mod tests {
             lookup_by_name(&index, &screenplay_scope, "ambush", &[SymbolKind::Knot]),
             Some(other_id),
             "sanity: lookup_by_name agrees — the referrer's own module wins, not the sibling"
+        );
+    }
+
+    /// Issue #2217: `is_std_module`/the std-invisibility gate excludes a
+    /// name from bare-name resolution identically whether the candidate is
+    /// the *embedded* stdlib mount or a project's own file that legitimately
+    /// lives at a `std/…` path (`mount_stdlib`'s "project source at the same
+    /// key wins" carve-out — both mint the same `std::…` module identity,
+    /// by design, per #2245's "peer roots" ruling). Before this fix, the
+    /// resulting diagnostic was a bare "unresolved name" with nothing
+    /// distinguishing "no such symbol anywhere" from "this symbol exists,
+    /// but only under `std::`, invisible by rule" — an author who names
+    /// their own directory `std/` had no way to learn that from the
+    /// diagnostic alone.
+    #[test]
+    fn is_std_shadowed_name_true_when_only_a_std_candidate_exists() {
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        assert!(
+            is_std_shadowed_name(&index, "ambush"),
+            "a name whose sole declaration lives under the std peer root must be reported as \
+             std-shadowed"
+        );
+    }
+
+    #[test]
+    fn is_std_shadowed_name_false_for_an_ordinary_project_name() {
+        let (index, _ids) = ambush_index_with_modules(&["story::story"]);
+        assert!(
+            !is_std_shadowed_name(&index, "ambush"),
+            "a name declared only in an ordinary project module must not be reported as \
+             std-shadowed"
+        );
+        assert!(
+            !is_std_shadowed_name(&index, "no_such_name"),
+            "a name with no declaration at all must not be reported as std-shadowed either"
+        );
+    }
+
+    #[test]
+    fn unresolved_diag_hints_at_std_shadowing_when_a_std_candidate_exists() {
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        let diag = unresolved_diag(
+            &index,
+            FileId(0),
+            range(0, 6),
+            "ambush",
+            DiagnosticCode::E025,
+        );
+        assert_eq!(diag.code, DiagnosticCode::E025);
+        assert!(
+            diag.message.contains("std::") && diag.message.contains("peer root"),
+            "the diagnostic for a name that IS declared, but only under std, must say so \
+             rather than reading as an ordinary unresolved-name error: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn unresolved_diag_stays_plain_when_no_std_candidate_exists() {
+        let index = SymbolIndex::default();
+        let diag = unresolved_diag(&index, FileId(0), range(0, 6), "nope", DiagnosticCode::E025);
+        assert_eq!(
+            diag.message,
+            format!("{}: `nope`", DiagnosticCode::E025.title()),
+            "a genuinely unresolved name (no std candidate anywhere) must keep the plain \
+             message — the hint must not fire spuriously"
+        );
+    }
+
+    /// End-to-end through the real resolution entry point, not just the
+    /// diagnostic-formatting helper directly: a project file that places its
+    /// own `Variable` declaration under a `std/…` path (the exact landmine
+    /// #2217 describes — nothing marks this as the embedded stdlib) is
+    /// invisible to a bare reference from the rest of the project, and the
+    /// `E025` this produces must carry the std-shadowing hint.
+    #[test]
+    fn resolve_variable_hints_std_shadowing_for_a_projects_own_std_path_file() {
+        let mut index = SymbolIndex::default();
+        let id = DefinitionId::new(brink_format::DefinitionTag::Address, 0xF00D);
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind: SymbolKind::Variable,
+                file: FileId(0),
+                range: TextRange::default(),
+                id,
+                name: "screenplay_intro".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("screenplay_intro".to_string())
+            .or_default()
+            .push(id);
+
+        let scope = ImportScope::default();
+        let locals: Vec<LocalSymbol> = Vec::new();
+        let mut map: ResolutionMap = Vec::new();
+        let mut diagnostics = Vec::new();
+        let uref = uref("screenplay_intro", RefKind::Variable, None, None);
+
+        resolve_variable(
+            &index,
+            &scope,
+            &locals,
+            FileId(1),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+
+        assert!(map.is_empty(), "a std-shadowed candidate must not resolve");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E025);
+        assert!(
+            diagnostics[0].message.contains("std::"),
+            "the real resolution path's E025 must carry the std-shadowing hint too, not just \
+             the diagnostic-formatting helper in isolation: {}",
+            diagnostics[0].message
         );
     }
 
