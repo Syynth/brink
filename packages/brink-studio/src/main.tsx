@@ -79,6 +79,22 @@ const NESTED_FIXTURE: Record<string, string> = {
 // 2026-08-05). Two files, because the cross-file half is the interesting
 // part — `pub` visibility (#1582) and per-project extent (#1580) only mean
 // anything with a second file to reference.
+// ⚠ THIS FIXTURE DOES NOT FULLY COMPILE TODAY, ON PURPOSE. It is written to
+// the RULED model, not to whatever currently happens to work, so the studio
+// shows the real gaps instead of hiding them:
+//
+//   - Conventions live in their OWN module named by `brink.toml`, per §9.1
+//     item 4. They currently claim nothing outside their own file (#2289) —
+//     `VENDOR` in story.brink renders unclaimed. DO NOT "fix" this by
+//     inlining the handlers into story.brink; that hides the defect, and the
+//     single-file tier1-native fixture already covers the inline shape.
+//   - `-> barter::haggle` is the intended module-qualified divert and does
+//     not resolve (#2287). DO NOT swap it for bare `-> haggle`, which happens
+//     to compile but is itself wrong — bare names require a symbol or glob
+//     import, not a module import.
+//
+// When #2287 and #2289 land, this fixture should go green on its own. That is
+// the point: it is a live acceptance test you can look at.
 const NATIVE_FIXTURE: Record<string, string> = {
   "brink.toml": '[project]\nentry = "story.brink"\nconventions = "conventions.brink"\n',
   "conventions.brink": `struct Cue {
