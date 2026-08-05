@@ -51,7 +51,17 @@ use crate::value::MAX_DECODE_DEPTH;
 /// `VERSION`, matching every other section-local-versioned table
 /// (`EffectRows`, `AliasTable`, `FrameShapes`) so this section's own
 /// encoding can grow without a format-wide bump once it is wired in.
-pub const CONVENTIONS_PROJECTION_WIRE_VERSION: u8 = 1;
+///
+/// Bumped `1` → `2` by issue #2115: `ConventionsProjectionDef` gained
+/// `transitions`/`templates` (the editor-overlay succession rows
+/// `brink_ir::DialogueDialect`'s surviving fields carry, re-keyed off this
+/// section's own `entries`). Nothing has emitted a version-`1` section into
+/// a real `.inkb`/`StoryData` yet (see this module's own doc — the wire
+/// shape is not wired into `crate::StoryData` at all), so there is no
+/// on-disk version-`1` payload this bump could orphan; it exists so a
+/// future reader can tell the two shapes apart the moment this section
+/// *is* wired in, rather than needing an out-of-band note.
+pub const CONVENTIONS_PROJECTION_WIRE_VERSION: u8 = 2;
 
 /// The conventions projection, as it would ride the wire: every
 /// `@[convention]` handler declared in the project's one configured
@@ -60,9 +70,54 @@ pub const CONVENTIONS_PROJECTION_WIRE_VERSION: u8 = 1;
 /// stripped (a `.inkb`-loaded host has no source text to point a range at)
 /// and `disposition` intentionally not carried — see
 /// [`ConventionEntryDef`]'s own doc for why.
+///
+/// `transitions`/`templates` (issue #2115) are `brink_ir::DialogueDialect`
+/// (#368)'s surviving editor-overlay fields, carried through **verbatim** —
+/// this crate never validates or reshapes them (that happens once, in
+/// `brink_ir::ConventionsProjection::with_succession`, before `to_wire` is
+/// ever called). Empty (`Vec::new()`/`TemplatesDef::default()`) for a
+/// projection nothing ever attached succession rows to.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConventionsProjectionDef {
     pub entries: Vec<ConventionEntryDef>,
+    pub transitions: Vec<TransitionRowDef>,
+    pub templates: TemplatesDef,
+}
+
+/// Wire mirror of `brink_ir::dialect::TransitionRow` (issue #2115) — one
+/// Tab/Enter/Shift-Tab transition row, transported without interpretation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionRowDef {
+    pub on: String,
+    pub key: String,
+    pub has_content: Option<bool>,
+    pub action: TransitionActionDef,
+    pub hint: Option<String>,
+}
+
+/// Wire mirror of `brink_ir::dialect::TransitionAction`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransitionActionDef {
+    Convert { kind: String },
+    Newline,
+    Strip,
+    Clear,
+    Trap,
+}
+
+/// Wire mirror of `brink_ir::dialect::Templates`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TemplatesDef {
+    pub entries: Vec<TemplateEntryDef>,
+}
+
+/// Wire mirror of `brink_ir::dialect::TemplateEntry`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateEntryDef {
+    pub kind: String,
+    pub label: String,
+    pub picker_key: Option<String>,
+    pub blank_tab: bool,
 }
 
 /// One `@[convention]` handler's projected shape on the wire. Mirrors
@@ -138,6 +193,12 @@ const TAG_TYPE_NAMED: u8 = 0;
 const TAG_TYPE_GENERIC: u8 = 1;
 const TAG_TYPE_FN: u8 = 2;
 
+const TAG_ACTION_CONVERT: u8 = 0;
+const TAG_ACTION_NEWLINE: u8 = 1;
+const TAG_ACTION_STRIP: u8 = 2;
+const TAG_ACTION_CLEAR: u8 = 3;
+const TAG_ACTION_TRAP: u8 = 4;
+
 /// Write the conventions-projection section (no header framing beyond its
 /// own section-local version byte, matching [`CONVENTIONS_PROJECTION_WIRE_VERSION`]):
 /// entry count, then each entry in the order given. Callers sort/dedupe
@@ -165,6 +226,61 @@ pub fn write_conventions_projection(projection: &ConventionsProjectionDef, buf: 
                 write_attach(attach, buf);
             }
         }
+    }
+    write_u32(buf, projection.transitions.len() as u32);
+    for row in &projection.transitions {
+        write_transition_row(row, buf);
+    }
+    write_templates(&projection.templates, buf);
+}
+
+fn write_transition_row(row: &TransitionRowDef, buf: &mut Vec<u8>) {
+    write_str(buf, &row.on);
+    write_str(buf, &row.key);
+    match row.has_content {
+        None => write_u8(buf, 0),
+        Some(v) => {
+            write_u8(buf, 1);
+            write_u8(buf, u8::from(v));
+        }
+    }
+    write_transition_action(&row.action, buf);
+    match &row.hint {
+        None => write_u8(buf, 0),
+        Some(hint) => {
+            write_u8(buf, 1);
+            write_str(buf, hint);
+        }
+    }
+}
+
+fn write_transition_action(action: &TransitionActionDef, buf: &mut Vec<u8>) {
+    match action {
+        TransitionActionDef::Convert { kind } => {
+            write_u8(buf, TAG_ACTION_CONVERT);
+            write_str(buf, kind);
+        }
+        TransitionActionDef::Newline => write_u8(buf, TAG_ACTION_NEWLINE),
+        TransitionActionDef::Strip => write_u8(buf, TAG_ACTION_STRIP),
+        TransitionActionDef::Clear => write_u8(buf, TAG_ACTION_CLEAR),
+        TransitionActionDef::Trap => write_u8(buf, TAG_ACTION_TRAP),
+    }
+}
+
+#[expect(clippy::cast_possible_truncation)]
+fn write_templates(templates: &TemplatesDef, buf: &mut Vec<u8>) {
+    write_u32(buf, templates.entries.len() as u32);
+    for entry in &templates.entries {
+        write_str(buf, &entry.kind);
+        write_str(buf, &entry.label);
+        match &entry.picker_key {
+            None => write_u8(buf, 0),
+            Some(key) => {
+                write_u8(buf, 1);
+                write_str(buf, key);
+            }
+        }
+        write_u8(buf, u8::from(entry.blank_tab));
     }
 }
 
@@ -256,7 +372,91 @@ pub fn read_conventions_projection(
             attach,
         });
     }
-    Ok(ConventionsProjectionDef { entries })
+    let transitions_count = read_u32(buf, offset)? as usize;
+    // Minimum per-row footprint: `on` + `key` (4+4) + no-has_content (1) +
+    // cheapest action tag (1) + no-hint (1) = 11 bytes.
+    let mut transitions =
+        Vec::with_capacity(safe_capacity(transitions_count, buf.len(), *offset, 11));
+    for _ in 0..transitions_count {
+        transitions.push(read_transition_row(buf, offset)?);
+    }
+    let templates = read_templates(buf, offset)?;
+    Ok(ConventionsProjectionDef {
+        entries,
+        transitions,
+        templates,
+    })
+}
+
+fn read_transition_row(buf: &[u8], offset: &mut usize) -> Result<TransitionRowDef, DecodeError> {
+    let on = read_str(buf, offset)?;
+    let key = read_str(buf, offset)?;
+    let has_content = match read_u8(buf, offset)? {
+        0 => None,
+        1 => Some(match read_u8(buf, offset)? {
+            0 => false,
+            1 => true,
+            other => return Err(DecodeError::InvalidConventionsProjectionTag(other)),
+        }),
+        other => return Err(DecodeError::InvalidConventionsProjectionTag(other)),
+    };
+    let action = read_transition_action(buf, offset)?;
+    let hint = match read_u8(buf, offset)? {
+        0 => None,
+        1 => Some(read_str(buf, offset)?),
+        other => return Err(DecodeError::InvalidConventionsProjectionTag(other)),
+    };
+    Ok(TransitionRowDef {
+        on,
+        key,
+        has_content,
+        action,
+        hint,
+    })
+}
+
+fn read_transition_action(
+    buf: &[u8],
+    offset: &mut usize,
+) -> Result<TransitionActionDef, DecodeError> {
+    match read_u8(buf, offset)? {
+        TAG_ACTION_CONVERT => Ok(TransitionActionDef::Convert {
+            kind: read_str(buf, offset)?,
+        }),
+        TAG_ACTION_NEWLINE => Ok(TransitionActionDef::Newline),
+        TAG_ACTION_STRIP => Ok(TransitionActionDef::Strip),
+        TAG_ACTION_CLEAR => Ok(TransitionActionDef::Clear),
+        TAG_ACTION_TRAP => Ok(TransitionActionDef::Trap),
+        other => Err(DecodeError::InvalidConventionsProjectionTag(other)),
+    }
+}
+
+fn read_templates(buf: &[u8], offset: &mut usize) -> Result<TemplatesDef, DecodeError> {
+    let count = read_u32(buf, offset)? as usize;
+    // Minimum per-entry footprint: `kind` + `label` (4+4) + no-picker_key
+    // (1) + blank_tab (1) = 10 bytes.
+    let mut entries = Vec::with_capacity(safe_capacity(count, buf.len(), *offset, 10));
+    for _ in 0..count {
+        let kind = read_str(buf, offset)?;
+        let label = read_str(buf, offset)?;
+        let picker_key = match read_u8(buf, offset)? {
+            0 => None,
+            1 => Some(read_str(buf, offset)?),
+            other => return Err(DecodeError::InvalidConventionsProjectionTag(other)),
+        };
+        let blank_tab = match read_u8(buf, offset)? {
+            0 => false,
+            1 => true,
+            other => return Err(DecodeError::InvalidConventionsProjectionTag(other)),
+        };
+        entries.push(TemplateEntryDef {
+            kind,
+            label,
+            picker_key,
+            blank_tab,
+        });
+    }
+    Ok(TemplatesDef { entries })
 }
 
 fn read_attach(
@@ -360,6 +560,66 @@ mod tests {
                     attach: Some(ConventionAttachDef::Unresolved("Ghost".to_string())),
                 },
             ],
+            // Issue #2115: every `TransitionActionDef` variant, plus both
+            // `has_content`/`hint` presences, so the wire codec's coverage
+            // matches the precedent this file already sets for
+            // `ConventionModeDef`/`ConventionAttachDef` (rule: cover every
+            // variant a precedent test already covers).
+            transitions: vec![
+                TransitionRowDef {
+                    on: "character".to_string(),
+                    key: "Tab".to_string(),
+                    has_content: Some(true),
+                    action: TransitionActionDef::Convert {
+                        kind: "dialogue".to_string(),
+                    },
+                    hint: Some("Convert to dialogue".to_string()),
+                },
+                TransitionRowDef {
+                    on: "dialogue".to_string(),
+                    key: "Enter".to_string(),
+                    has_content: Some(false),
+                    action: TransitionActionDef::Newline,
+                    hint: None,
+                },
+                TransitionRowDef {
+                    on: "parenthetical".to_string(),
+                    key: "Shift-Tab".to_string(),
+                    has_content: None,
+                    action: TransitionActionDef::Strip,
+                    hint: None,
+                },
+                TransitionRowDef {
+                    on: "character".to_string(),
+                    key: "Escape".to_string(),
+                    has_content: None,
+                    action: TransitionActionDef::Clear,
+                    hint: None,
+                },
+                TransitionRowDef {
+                    on: "interior".to_string(),
+                    key: "Backspace".to_string(),
+                    has_content: None,
+                    action: TransitionActionDef::Trap,
+                    hint: None,
+                },
+            ],
+            templates: TemplatesDef {
+                entries: vec![
+                    TemplateEntryDef {
+                        kind: "character".to_string(),
+                        label: "Character cue".to_string(),
+                        picker_key: Some("@".to_string()),
+                        blank_tab: true,
+                    },
+                    TemplateEntryDef {
+                        kind: "parenthetical".to_string(),
+                        label: "Parenthetical".to_string(),
+                        picker_key: None,
+                        blank_tab: false,
+                    },
+                ],
+            },
         }
     }
 
@@ -416,12 +676,71 @@ mod tests {
                     ],
                 }),
             }],
+            transitions: Vec::new(),
+            templates: TemplatesDef::default(),
         };
         let mut buf = Vec::new();
         write_conventions_projection(&projection, &mut buf);
         let mut offset = 0;
         let decoded = read_conventions_projection(&buf, &mut offset).expect("decode");
         assert_eq!(decoded, projection);
+    }
+
+    /// Issue #2115: `transitions`/`templates` round-trip independently of
+    /// `entries` — a projection with succession rows but zero declared
+    /// convention kinds is a legal wire shape (validation that the rows
+    /// point at real kinds happens once, in-process, before `to_wire` is
+    /// ever reached — see `brink_ir::ConventionsProjection::with_succession`).
+    #[test]
+    fn round_trips_succession_rows_with_no_entries() {
+        let full = sample();
+        let projection = ConventionsProjectionDef {
+            entries: Vec::new(),
+            transitions: full.transitions,
+            templates: full.templates,
+        };
+        let mut buf = Vec::new();
+        write_conventions_projection(&projection, &mut buf);
+        let mut offset = 0;
+        let decoded = read_conventions_projection(&buf, &mut offset).expect("decode");
+        assert_eq!(decoded, projection);
+        assert_eq!(
+            offset,
+            buf.len(),
+            "reader must consume exactly what the writer wrote"
+        );
+    }
+
+    /// Companion to `unknown_mode_tag_is_rejected`/`unknown_attach_presence_tag_is_rejected`:
+    /// corrupts the transition-row `action` tag byte (issue #2115's codec
+    /// addition), exercising `read_transition_action`'s own `other` arm.
+    #[test]
+    fn unknown_transition_action_tag_is_rejected() {
+        let projection = ConventionsProjectionDef {
+            entries: Vec::new(),
+            transitions: vec![TransitionRowDef {
+                on: "character".to_string(),
+                key: "Tab".to_string(),
+                has_content: None,
+                action: TransitionActionDef::Newline,
+                hint: None,
+            }],
+            templates: TemplatesDef::default(),
+        };
+        let mut buf = Vec::new();
+        write_conventions_projection(&projection, &mut buf);
+        // version(1) + entries_count(4)=0 + transitions_count(4)=1 +
+        // on(4+len) + key(4+len) + no-has_content(1) = action tag offset.
+        let row = &projection.transitions[0];
+        let action_tag_offset = 1 + 4 + 4 + (4 + row.on.len()) + (4 + row.key.len()) + 1;
+        assert_eq!(
+            buf[action_tag_offset], TAG_ACTION_NEWLINE,
+            "test fixture assumption"
+        );
+        buf[action_tag_offset] = 0xFF;
+        let mut offset = 0;
+        let err = read_conventions_projection(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidConventionsProjectionTag(0xFF));
     }
 
     /// Rule 20a/mutation-style: an unknown mode tag must be a decode error,
