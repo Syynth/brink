@@ -616,7 +616,12 @@ fn hir_file_heap(hir: &HirFile) -> usize {
             .sum::<usize>()
 }
 
-pub(crate) fn lowered_file_heap_size(value: &LoweredFile) -> usize {
+/// `value`'s type follows `raw_lowered_query`/`lowered_query`'s own Output
+/// type (issue #2289 review finding: both now return `Arc<LoweredFile>`,
+/// not `LoweredFile`, so this estimator's own signature must match) —
+/// deref-transparent, so the body below is unchanged from before that
+/// change.
+pub(crate) fn lowered_file_heap_size(value: &Arc<LoweredFile>) -> usize {
     hir_file_heap(&value.hir)
         + manifest_heap(&value.manifest)
         + diagnostics_heap(&value.diagnostics)
@@ -916,8 +921,8 @@ mod tests {
 
         let small_parse = brink_syntax::parse(small_src);
         let big_parse = brink_syntax::parse(&big_src);
-        let small_file = lower_file(brink_ir::FileId(0), &small_parse);
-        let big_file = lower_file(brink_ir::FileId(0), &big_parse);
+        let small_file = Arc::new(lower_file(brink_ir::FileId(0), &small_parse));
+        let big_file = Arc::new(lower_file(brink_ir::FileId(0), &big_parse));
 
         let small_size = lowered_file_heap_size(&small_file);
         let big_size = lowered_file_heap_size(&big_file);

@@ -888,6 +888,11 @@ pub(super) fn try_claim(
     // borrow of `elements.handlers`/`.external` `handler` holds must end
     // before the `is_block`/attach branches below borrow `elements` mutably.
     let is_attach = handler.attach.is_some();
+    // Issue #2289: `decl.is_none()` is exactly "this handler was injected
+    // from the project's configured conventions module, not declared in
+    // this file" (see `ClaimHandler::decl`'s own doc) — copied out now for
+    // the same borrow-lifetime reason as `is_attach` above.
+    let is_injected = handler.decl.is_none();
 
     let mut call_args: Vec<Expr> = captures
         .iter()
@@ -962,6 +967,7 @@ pub(super) fn try_claim(
         captures,
         disposition: ElementDisposition::Call,
         content: content_range,
+        injected: is_injected,
     });
 
     if is_attach {
@@ -1279,6 +1285,10 @@ pub(super) fn try_dispatch(
         captures,
         disposition: ElementDisposition::Call,
         content: content_range,
+        // `!name` dispatch never has a cross-file counterpart (this
+        // module's own doc, "Deliberately not here") — every
+        // `DispatchHandler` is declared in this same file.
+        injected: false,
     });
 
     Some((

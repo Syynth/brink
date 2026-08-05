@@ -354,6 +354,50 @@ fn conventions_attach_schema() {
     assert_case("conventions-attach-schema");
 }
 
+/// Cross-file conventions claiming (issue #2289, review finding on #2297):
+/// genuinely TWO files — `conventions.brink` declares the claiming `cue`
+/// handler and nothing else, `story.brink` claims none of its own and
+/// never `use`s the conventions module — proving reach is project-wide,
+/// not file-local, on a real end-to-end compile+run, not just the HIR
+/// assertions `issue_2289_cross_file_claiming.rs` already covers.
+///
+/// Deliberately **not** routed through this file's own [`assert_case`]:
+/// that helper drives every other case through
+/// [`brink_test_harness::corpus::run_native_transcript`], which compiles
+/// through `brink_compiler::compile_path` — a **single-file** entry point
+/// that bypasses `Environment`/project discovery entirely (that function's
+/// own doc says so). A single-file compile of `story.brink` alone would
+/// never even see `conventions.brink` or this directory's `brink.toml`, so
+/// `assert_case` here would silently prove nothing about cross-file reach.
+/// [`brink_test_harness::corpus::run_native_transcript_via_environment`] is
+/// the one road that performs the real "every `.brink` file under the
+/// project root joins the project" discovery
+/// (`brink_environment::Project::load`, the same production path
+/// `brink compile`/`brink play` use) — the only way this fixture's second
+/// file is ever compiled at all.
+///
+/// Also the regression guard for the #2297 review finding this fixture was
+/// added to close: before that finding's fix, the injected call into
+/// `conventions.brink`'s `cue` (a different, un-`pub`, un-`use`d module)
+/// tripped `brink_analyzer::modules::check_cross_module_refs`'s `E087`, and
+/// this fixture's compile failed outright rather than merely mis-claiming.
+#[test]
+fn conventions_cross_file_claiming() {
+    let dir = corpus_dir().join("conventions-cross-file");
+    let expected = brink_test_harness::corpus::load_golden_transcript(
+        &dir.join("expected.txt"),
+        "conventions-cross-file",
+    )
+    .expect("golden transcript must be present and non-vacuous");
+    let actual =
+        brink_test_harness::corpus::run_native_transcript_via_environment(&dir.join("story.brink"))
+            .unwrap_or_else(|e| panic!("case conventions-cross-file: {e}"));
+    assert_eq!(
+        actual, expected,
+        "case conventions-cross-file: output mismatch\n--- expected ---\n{expected}\n--- actual ---\n{actual}"
+    );
+}
+
 /// Compile-level sibling to `annotations_element_block`, proving the ⚠
 /// requirement `docs/decision-log.md`'s 2026-08-01 ruling flags as owed and
 /// unverified: a block's interior lines must keep their **own** line-table
@@ -868,6 +912,7 @@ fn every_case_directory_has_a_test() {
         "as-binding",
         "construction-literal",
         "conventions-attach-schema",
+        "conventions-cross-file",
         "conventions-screenplay-preset",
         "directive-like-tag",
         "divert-target-args",

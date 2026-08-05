@@ -15,13 +15,30 @@
 
 use brink_analyzer::AnalysisOptions;
 use brink_db::ProjectDb;
-use brink_ir::{DiagnosticCode, ElementKind};
+use brink_ir::{Diagnostic, DiagnosticCode, ElementKind, Severity};
 
 fn opts_with_conventions(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
         conventions: Some(pointer.to_owned()),
         ..AnalysisOptions::default()
     }
+}
+
+/// The project must compile clean — not merely "no `E169`" (that alone lets
+/// the cross-module gate's `E087`/`E025` straight through unnoticed, which is
+/// exactly the review finding this asserts against: an injected handler in
+/// another module used to make the compile itself fail). Every test in this
+/// file that lowers a project through [`ProjectDb::analysis`] asserts this
+/// instead of a single-code exclusion.
+fn assert_no_error_diagnostics(diags: &[Diagnostic]) {
+    let errors: Vec<&Diagnostic> = diags
+        .iter()
+        .filter(|d| d.code.severity() == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics: {errors:?}"
+    );
 }
 
 const CUE_CONVENTIONS_MODULE: &str = "@[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", order = 10)]\n\
@@ -51,12 +68,18 @@ fn a_handler_in_the_conventions_module_claims_a_line_in_another_file() {
     assert_eq!(hir.element_matches[0].handler.text, "cue");
     assert_eq!(hir.element_matches[0].kind, ElementKind::ContentLine);
     // No confinement diagnostic against the CLAIMING file — the handler is
-    // declared in the configured module, it just claims elsewhere.
+    // declared in the configured module, it just claims elsewhere. And the
+    // project must actually COMPILE: the rewritten call resolves into
+    // `conventions.brink`, a different module than `story.brink` — asserting
+    // only the absence of `E169` lets the M-2 cross-module gate's `E087`
+    // (private-by-default) or `E025` (unimported-public) straight through
+    // unnoticed.
     let diags = db.analysis().diagnostics.clone();
     assert!(
         diags.iter().all(|d| d.code != DiagnosticCode::E169),
         "{diags:?}"
     );
+    assert_no_error_diagnostics(&diags);
 }
 
 /// Reach is WHOLE-PROJECT, not scoped to the conventions module's `IMPORT`
@@ -83,6 +106,10 @@ fn reach_is_whole_project_not_just_the_import_closure() {
         hir.element_matches
     );
     assert_eq!(hir.element_matches[0].handler.text, "cue");
+    // No `use`/`IMPORT` anywhere in this project — if the injected call were
+    // gated as an ordinary cross-module reference, this would be exactly the
+    // unimported-public (`E025`) or private-by-default (`E087`) case.
+    assert_no_error_diagnostics(&db.analysis().diagnostics);
 }
 
 /// Two sibling files, neither importing the other nor the conventions
@@ -115,6 +142,7 @@ fn multiple_independent_sibling_files_are_each_claimed() {
         "{:?}",
         hir_b.element_matches
     );
+    assert_no_error_diagnostics(&db.analysis().diagnostics);
 }
 
 /// A line that does not match the conventions module's pattern stays
@@ -136,6 +164,7 @@ fn a_non_matching_line_in_another_file_stays_unclaimed() {
         "lowercase prose should not match the `cue` handler's pattern: {:?}",
         hir.element_matches
     );
+    assert_no_error_diagnostics(&db.analysis().diagnostics);
 }
 
 /// The conventions module's own file is excluded from its own injected set
@@ -153,4 +182,5 @@ fn the_conventions_module_still_claims_within_its_own_file() {
         .expect("conventions.brink should lower");
     assert_eq!(hir.element_matches.len(), 1, "{:?}", hir.element_matches);
     assert_eq!(hir.element_matches[0].handler.text, "cue");
+    assert_no_error_diagnostics(&db.analysis().diagnostics);
 }

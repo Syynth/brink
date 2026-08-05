@@ -486,6 +486,29 @@ pub struct ElementMatch {
     /// search itself — the same no-invisible-expansion guarantee `line`
     /// already gives the claimed header line alone.
     pub content: Option<TextRange>,
+    /// `true` when `handler` is one of the project's cross-file conventions
+    /// injections (issue #2289) — matched against a
+    /// `brink_ir::hir::lower_native::element::ClaimHandler` whose own
+    /// `decl` is `None`, never a locally declared handler in this file.
+    /// `false` for every `!name`-dispatched match too (`try_dispatch` is
+    /// file-local, per this crate's own module doc) — the flag means
+    /// specifically "this call was rewritten against a handler declared in
+    /// ANOTHER file".
+    ///
+    /// This is the seam `brink_analyzer::modules::check_cross_module_refs`
+    /// reads to exempt the rewritten call from M-2's cross-module
+    /// visibility gate (`E087`/`E025`): the call is compiler-synthesized
+    /// dispatch to the project's own designated conventions module, sanctioned
+    /// by the very `brink.toml` `[project] conventions` pointer that made the
+    /// injection happen in the first place — not a user-authored reference
+    /// that needs `pub`/`use` to cross a module wall. `line` is the exact
+    /// range the rewritten `Expr::Call`'s `Path` carries (see
+    /// `lower_native::element::try_claim`), which by the `ResolvedRef::range`
+    /// contract (issue #1561) is also the resulting resolved reference's own
+    /// range — so a consumer can match `element_matches` entries against
+    /// `ResolvedRef`s by `(file, range)` alone, with no new identifier
+    /// needed on either side.
+    pub injected: bool,
 }
 
 /// One natural-notation claiming handler *declared* in a file — recorded

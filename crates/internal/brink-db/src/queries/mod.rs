@@ -460,18 +460,29 @@ pub(crate) struct LoweredFile {
 /// one of the five #538/#647 estimators — #537 flagged this family's
 /// per-def analogues (`def_body`/`solve_scc`) as the dominant Arc-hidden
 /// payload; this is the per-file sibling.
+///
+/// `Arc`-wrapped (issue #2289 review finding): every OTHER native file in a
+/// project with no conventions module configured — the overwhelmingly
+/// common case, and every ink file in every project — takes
+/// [`lowered_query`]'s pass-through arm, which used to deep-clone this
+/// query's plain `LoweredFile` (the whole HIR/manifest/diagnostics payload)
+/// into a second salsa memo for zero semantic reason. `Arc::clone` on that
+/// same pass-through arm is a refcount bump instead — this needs no change
+/// at any of this module's many `&lowered_query(..).hir`-shaped call sites
+/// (deref coercion carries a `&Arc<LoweredFile>` through to `.hir` exactly
+/// like a `&LoweredFile` did), only here and at `lowered_query`'s own body.
 #[salsa::tracked(returns(ref), lru = 4096, heap_size = heap_size::lowered_file_heap_size)]
-pub(crate) fn raw_lowered_query(db: &dyn salsa::Database, file: SourceFile) -> LoweredFile {
+pub(crate) fn raw_lowered_query(db: &dyn salsa::Database, file: SourceFile) -> Arc<LoweredFile> {
     let file_id = file.file_id(db);
     // Decide the frontend from the path *before* touching either parser
     // (B0.10a, the native compile seam, issue #1106): this branch precedes
     // the parse call, so an `.ink` file never runs the native parser and a
     // native file never runs the ink one. The ink arm is byte-identical to
     // the pre-seam body, keeping the oracle invariance a tautology.
-    match file_language(file.path(db)) {
+    Arc::new(match file_language(file.path(db)) {
         Language::Ink => lower_file(file_id, parse_query(db, file)),
         Language::Native => lower_native_file(file_id, parse_native_query(db, file), None),
-    }
+    })
 }
 
 /// Lower one file to HIR — the canonical, project-aware entry point every
@@ -481,14 +492,25 @@ pub(crate) fn raw_lowered_query(db: &dyn salsa::Database, file: SourceFile) -> L
 ///
 /// For an ink file, or a native file that either IS the project's
 /// configured conventions module or has none configured, this is
-/// byte-identical to [`raw_lowered_query`] (a clone of its cached value —
-/// no extra lowering work, just an `Arc`-free struct copy). For every
+/// byte-identical to [`raw_lowered_query`] (a clone of its cached
+/// `Arc<LoweredFile>` — a refcount bump, no extra lowering work and,
+/// since the #2289 review finding below, no struct copy either). For every
 /// OTHER native file in a project with a conventions module configured,
 /// this re-lowers with [`external_claim_handlers_query`]'s ordered handler
 /// set merged in, so a `claims`-declared handler in that one module claims
 /// prose across the WHOLE project (issue #2289, correcting the file-local
 /// claiming defect the 2026-08-05 ruling names — see `brink_ir::hir::
 /// lower_native::element`'s module doc, "Cross-file claiming reach").
+///
+/// `Arc`-wrapped (issue #2289 review finding): before this, the pass-through
+/// arms below (every ink file, and every native file with no injection to
+/// do — the overwhelming majority of files in the overwhelming majority of
+/// projects) deep-cloned [`raw_lowered_query`]'s entire `LoweredFile`
+/// (HIR + manifest + diagnostics + admission) into a second salsa memo for
+/// zero semantic benefit, and both queries' `heap_size = heap_size::
+/// lowered_file_heap_size` estimator (issues #538/#647) double-counted that
+/// duplicated payload's residency. `Arc<LoweredFile>::clone` on those same
+/// arms is a refcount bump instead — see [`raw_lowered_query`]'s own doc.
 ///
 /// `lru = 4096`/`heap_size`: same per-file runaway-guard/estimator posture
 /// as [`raw_lowered_query`] — see that query's own doc.
@@ -497,21 +519,23 @@ pub(crate) fn lowered_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
     file: SourceFile,
-) -> LoweredFile {
+) -> Arc<LoweredFile> {
     let file_id = file.file_id(db);
     if file_language(file.path(db)) != Language::Native {
-        return raw_lowered_query(db, file).clone();
+        return Arc::clone(raw_lowered_query(db, file));
     }
     let external = external_claim_handlers_query(db, project);
     match &**external {
-        Some((conventions_file_id, decls)) if *conventions_file_id != file_id => lower_native_file(
-            file_id,
-            parse_native_query(db, file),
-            Some(decls.as_slice()),
-        ),
+        Some((conventions_file_id, decls)) if *conventions_file_id != file_id => {
+            Arc::new(lower_native_file(
+                file_id,
+                parse_native_query(db, file),
+                Some(decls.as_slice()),
+            ))
+        }
         // No conventions module configured, or this file IS that module —
         // either way, nothing to inject; byte-identical to the raw lowering.
-        _ => raw_lowered_query(db, file).clone(),
+        _ => Arc::clone(raw_lowered_query(db, file)),
     }
 }
 
