@@ -19,14 +19,28 @@ pub enum CompletionContext {
     /// [`CompletionContext::FunctionArgs`] so completion offers only
     /// function-definition names here, not every value symbol in scope.
     FnTarget,
-    /// Right after `@` at the start of a line, with at most a partial cue
-    /// name typed since (`@`, `@KI`) — the native prose dialect's cue
-    /// position (`docs/prose-dialect-spec.md` §5, issue #2134). Distinct
-    /// from every other context: a cue name is not a [`brink_ir::SymbolInfo`]
-    /// at all, so the ordinary symbol-index completion loop must not run
-    /// here — the caller reads the project's harvest index instead (issue
-    /// #2114/#2134's "harvest by default" — every cue completes project-wide
-    /// regardless of whether any conventions handler claims it).
+    /// Right after `@` at the start of a line, with at most a partial
+    /// **first word** of the cue name typed since (`@`, `@KI`) — the native
+    /// prose dialect's cue position (`docs/prose-dialect-spec.md` §5, issue
+    /// #2134). Distinct from every other context: a cue name is not a
+    /// [`brink_ir::SymbolInfo`] at all, so the ordinary symbol-index
+    /// completion loop must not run here — the caller reads the project's
+    /// harvest index instead (issue #2114/#2134's "harvest by default" —
+    /// every cue completes project-wide regardless of whether any
+    /// conventions handler claims it).
+    ///
+    /// Deliberately does **not** stay live past the name's first whitespace
+    /// (review finding on #2134, blocking): a multi-word cue name (`@MARKET
+    /// VENDOR`) is real (`cue_name()` scans up to `#`/`:`/newline, not
+    /// whitespace), but every completion client anchors its replacement
+    /// range on `\w`-only word-matching (`packages/ink-editor/src/completions.ts`'s
+    /// `ctx.matchBefore(/[\w.]+/)`; `brink-lsp`'s `CompletionItem` carries no
+    /// `text_edit`/`filter_text` either). Offering `CueName` mid-second-word
+    /// would replace only the in-progress last word with the full harvested
+    /// name, corrupting the line (`@MARKET VEN` + accept `MARKET VENDOR` →
+    /// `@MARKET MARKET VENDOR`). Narrowing to the first word avoids that
+    /// corruption outright; completing a cue's second word onward is future
+    /// work, not this issue's scope.
     CueName,
     /// Default — show everything.
     General,
@@ -42,16 +56,22 @@ pub fn detect_completion_context(source: &str, byte_offset: usize) -> Completion
     let is_logic_line = trimmed.starts_with('~');
 
     // A cue line (issue #2134): the cursor sits right after `@` at the start
-    // of the line, with at most a partial name typed since. `cue_name()`
-    // (`brink_ir`) scans up to `#`/`:`/newline for the raw name, so a name
-    // may itself contain spaces (`@MARKET VENDOR: …`) — only those two
-    // delimiters end the name-typing zone, not whitespace. `@[` is excluded
-    // so an in-progress `@[convention(…)]`/`@[was(…)]` annotation is never
+    // of the line, with at most a partial **first word** of the name typed
+    // since. `cue_name()` (`brink_ir`) itself scans up to `#`/`:`/newline for
+    // the raw name — a cue name may contain spaces (`@MARKET VENDOR: …`) —
+    // but completion stops offering `CueName` at the first whitespace
+    // (review finding on #2134, blocking): every completion client replaces
+    // only the `\w`-contiguous word under the cursor, so staying "in
+    // context" past a space would replace just the in-progress second word
+    // with the full name and corrupt the line (see
+    // [`CompletionContext::CueName`]'s own doc). `@[` is excluded so an
+    // in-progress `@[convention(…)]`/`@[was(…)]` annotation is never
     // misread as a cue.
     let is_cue_line = trimmed.starts_with('@')
         && !trimmed.starts_with("@[")
         && !trimmed.contains('#')
-        && !trimmed.contains(':');
+        && !trimmed.contains(':')
+        && !trimmed.contains(char::is_whitespace);
 
     // Scan backwards through the line prefix for context clues.
     // More specific contexts (parens, braces, divert) take priority over the
@@ -580,12 +600,18 @@ mod tests {
     }
 
     #[test]
-    fn context_cue_name_multi_word() {
-        // `cue_name()` scans up to `#`/`:`/newline — a name may contain
-        // spaces (`@MARKET VENDOR: …`), so mid-typing a second word must
-        // still be the cue-name context.
+    fn context_cue_name_stops_at_first_word_boundary() {
+        // `cue_name()` itself scans up to `#`/`:`/newline — a declared cue
+        // name may contain spaces (`@MARKET VENDOR: …`) — but completion
+        // deliberately does NOT stay in `CueName` context past the first
+        // word (review finding on #2134, blocking): every completion client
+        // replaces only the `\w`-contiguous word under the cursor, so
+        // offering `CueName` while typing a second word would replace just
+        // that word with the full harvested name and corrupt the line
+        // (`@MARKET VEN` + accept `MARKET VENDOR` -> `@MARKET MARKET
+        // VENDOR`). See `CompletionContext::CueName`'s own doc.
         let src = "@MARKET VEN";
-        assert!(matches!(
+        assert!(!matches!(
             detect_completion_context(src, src.len()),
             CompletionContext::CueName
         ));

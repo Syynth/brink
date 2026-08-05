@@ -2727,6 +2727,115 @@ fn market_vendor_cue_completes_across_files_without_opening_the_declaring_file()
     );
 }
 
+/// A two-word cue name (`MARKET VENDOR`), declared once in a sibling file —
+/// `cue_name()` allows internal whitespace (only `#`/`:`/newline end the
+/// name), so this is a legal declaration, not a malformed one.
+const NATIVE_MARKET_VENDOR_DECL: &str = "\
+flow sell() {
+  @MARKET VENDOR
+  Something for the road?
+}
+";
+
+/// `main.brink` for
+/// `cue_completion_does_not_offer_a_multi_word_cue_mid_second_word` — the
+/// cursor sits right after `@MARKET VEN`, mid-typing the cue's *second*
+/// word.
+const NATIVE_CUE_PARTIAL_SECOND_WORD: &str = "\
+flow start() {
+  @MARKET VEN
+}
+";
+
+/// Review finding on #2134 (blocking): every completion client replaces only
+/// the `\w`-contiguous word under the cursor (`CodeMirror`'s
+/// `ctx.matchBefore(/[\w.]+/)`; `brink-lsp`'s own `CompletionItem` carries no
+/// `text_edit`/`filter_text`). Offering the full harvested `MARKET VENDOR`
+/// label while the user is still typing the cue's second word (`@MARKET
+/// VEN`) would therefore replace only `VEN`, corrupting the line into
+/// `@MARKET MARKET VENDOR` on accept. `detect_completion_context` must stop
+/// recognizing `CueName` context at the name's first whitespace, so this
+/// position falls back to the ordinary completion list instead — proven
+/// here at the insertion/response level (not just `brink-ide`'s
+/// context-detection unit tests), through the real
+/// `textDocument/completion` request the corrupting scenario actually
+/// hits.
+#[test]
+fn cue_completion_does_not_offer_a_multi_word_cue_mid_second_word() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-cue-multiword-no-corrupt");
+    std::fs::create_dir_all(root.join("market")).unwrap();
+    std::fs::write(root.join("market/vendor.brink"), NATIVE_MARKET_VENDOR_DECL).unwrap();
+    std::fs::write(root.join("main.brink"), NATIVE_CUE_PARTIAL_SECOND_WORD).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let main_uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &main_uri, NATIVE_CUE_PARTIAL_SECOND_WORD);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &main_uri, MAX_MESSAGES);
+
+    // Retried like the sibling cross-file test above — the workspace scan
+    // that loads `market/vendor.brink` races this file's own `didOpen`.
+    // "Settled" here means the harvested cue has definitely reached the db
+    // (`VENDOR`-only completion would appear at the single-word position);
+    // this test's own request is always at the multi-word position, so it
+    // never itself flips true/false on the race — only whether the *other*
+    // sibling test's harvest has propagated far enough to trust a negative
+    // result from this one.
+    let mut settled = false;
+    let mut completion_resp = Value::Null;
+    for attempt in 0..20u64 {
+        completion_resp = completion_at(
+            &mut stdin,
+            &mut stdout,
+            300 + attempt,
+            &main_uri,
+            1,
+            13, // right after `@MARKET VEN` on `  @MARKET VEN`.
+        );
+        let vendor_probe = completion_at(
+            &mut stdin,
+            &mut stdout,
+            400 + attempt,
+            &main_uri,
+            1,
+            3, // right after `@` alone — the single-word cue position.
+        );
+        settled = vendor_probe["result"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|it| it["label"] == "MARKET VENDOR"));
+        if settled {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        settled,
+        "harness precondition: the harvested `MARKET VENDOR` cue never \
+         reached the db within the retry budget, so this test cannot trust \
+         a negative result: {completion_resp}"
+    );
+
+    let labels: Vec<&str> = completion_resp["result"]
+        .as_array()
+        .map(|items| items.iter().filter_map(|it| it["label"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        !labels.contains(&"MARKET VENDOR"),
+        "completion mid-second-word of a partially typed multi-word cue \
+         must NOT offer the full cue label — accepting it would corrupt \
+         the line into `@MARKET MARKET VENDOR` (review finding on #2134): \
+         {completion_resp}"
+    );
+}
+
 /// `alpha.brink` and `beta.brink` — two native modules that each declare a
 /// flow named `greet`. Legal: a native file's module is its path and is
 /// always *declared*, so the two are `story::alpha::greet` and
