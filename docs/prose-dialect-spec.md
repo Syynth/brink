@@ -1716,36 +1716,49 @@ grace.
 5. **Deferred details**: context injection; numeric capture coercion;
    fused-`until` sugar; indent-level style tokens; which-blocks
    question closed by §8d.2.
-6. **Editor implications (NS-T)** — #1350/#1131 stay held; the bridge
-   features (§2b.3), the park decoration (§8c), the built-in token
-   vocabulary (§3.5b) are their incoming scope.
+6. **Editor implications (NS-T)** — ✅ **The compiler-first hold below is
+   LIFTED (2026-08-05, `docs/decision-log.md` "The compiler-first hold on
+   the native editor track (#1131 / NS-T) is LIFTED").** Native editor work
+   — including real native token classification, previously the one part
+   of this section explicitly held — may proceed in parallel with
+   remaining compiler work; #1131's status banner is the up-to-date charter
+   for what is built vs. outstanding. Issue #2280 (native semantic-token
+   classification, closed by the PR landing this update) is the first work
+   shipped under the lift. The bridge features (§2b.3), the park
+   decoration (§8c), and the built-in token vocabulary (§3.5b) remain
+   in scope for follow-on native editor work generally.
 
-   ⚠ **Scope of the hold, ruled 2026-08-01:** it covers editor *frontend*
-   work — CM6, token rendering, the live renderer, `fmt`. It does **not**
-   cover the classification/explain-match query family, which is emitted from
-   `brink-db`/`brink-ide` and is **compiler work wearing editor's clothes**
-   (#2006). Holding compiler-side queries behind the compiler track would
-   hold them behind themselves.
+   The paragraphs below record the **now-superseded** 2026-08-01 hold and
+   its rationale — kept for history, not as current guidance:
 
-   ⚠ **Why they are held, restated 2026-08-01 (maintainer).** The hold is
-   **deliberate sequencing — the compiler work finishes before the editor
-   work starts** — *not* an unlifted blocker waiting on this document. The
-   original 2026-07-25 rationale ("don't classify tokens against a surface
-   that will shift") has in fact been overtaken: that surface landed
-   2026-07-28 (#1715 closed, #1716 landed, #1717 closed, escape set final
-   per §8d.6). A review on 2026-08-01 read the bare "stay held" above as
-   stale and concluded the hold should be lifted. It should not. This note
-   exists so the next reader does not repeat that inference.
+   ⚠ **Scope of the hold, ruled 2026-08-01 (superseded 2026-08-05):** it
+   covered editor *frontend* work — CM6, token rendering, the live
+   renderer, `fmt`. It did **not** cover the classification/explain-match
+   query family, which is emitted from `brink-db`/`brink-ide` and is
+   **compiler work wearing editor's clothes** (#2006). Holding compiler-side
+   queries behind the compiler track would have held them behind
+   themselves.
+
+   ⚠ **Why they were held, restated 2026-08-01 (maintainer; superseded
+   2026-08-05).** The hold was **deliberate sequencing — the compiler work
+   finishes before the editor work starts** — *not* an unlifted blocker
+   waiting on this document. The original 2026-07-25 rationale ("don't
+   classify tokens against a surface that will shift") had in fact already
+   been overtaken: that surface landed 2026-07-28 (#1715 closed, #1716
+   landed, #1717 closed, escape set final per §8d.6). A review on
+   2026-08-01 read the bare "stay held" above as stale and concluded the
+   hold should be lifted; at the time it should not have been — that
+   changed on 2026-08-05, per the maintainer ruling linked above.
 
    **Also ruled 2026-08-01: take the free part now.** Register `.brink`
    *and* gate `semantic_tokens_full`/`_range` on `db.is_native` in the same
    change — switching on the native diagnostics, hover, go-to-definition,
    rename and cross-file scope that **already work** and that no client
-   currently requests. Real native token classification stays held. The two
-   halves must ship together: `parse_query` is unconditionally the *ink*
-   parser with no dialect gate, so registering alone would light up a live
-   bug (the server emitting ink-misclassified tokens over native source),
-   latent today only because nothing asks.
+   currently requests. Real native token classification stayed held at the
+   time; the two halves shipped together: `parse_query` is unconditionally
+   the *ink* parser with no dialect gate, so registering alone would have
+   lit up a live bug (the server emitting ink-misclassified tokens over
+   native source), latent only because nothing asked.
 
 ## Migration notes — breaking changes for authors
 

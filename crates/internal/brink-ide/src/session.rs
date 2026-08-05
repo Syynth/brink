@@ -759,8 +759,40 @@ impl IdeSession {
     }
 
     /// Get the parse tree root for a file.
+    ///
+    /// This always runs the **ink** frontend, regardless of the file's
+    /// extension (`ProjectDb::parse`'s doc comment: `parse()` "stays
+    /// ink-typed and untouched for the LSP/IDE ink path"). A native
+    /// (`.brink`) file's *real* CST — the one its own HIR/resolutions were
+    /// built from — is [`syntax_root_native`](Self::syntax_root_native); a
+    /// caller presenting syntax to a user (semantic tokens, folding, ...)
+    /// must check [`is_native`](Self::is_native) and use that instead, or it
+    /// ends up classifying the ink-parsed garbage tree ink's grammar
+    /// produces from native source text (issue #2280).
     pub fn syntax_root(&self, id: FileId) -> Option<brink_syntax::SyntaxNode> {
         self.db.parse(id).map(brink_syntax::Parse::syntax)
+    }
+
+    /// Get the native (`.brink`) parse tree root for a file (issue #2280) —
+    /// the native sibling of [`syntax_root`](Self::syntax_root), backed by
+    /// `ProjectDb::parse_native` (the same native CST `lowered_query` builds
+    /// this file's HIR/resolutions from, so ranges from this root line up
+    /// with [`crate::semantic_tokens`]'s resolution index). `None` for a
+    /// file this session hasn't loaded, same as `syntax_root`.
+    pub fn syntax_root_native(&self, id: FileId) -> Option<brink_syntax_native::SyntaxNode> {
+        self.db
+            .parse_native(id)
+            .map(brink_syntax_native::Parse::syntax)
+    }
+
+    /// Whether `id` is a native (`.brink`) module rather than an ink file
+    /// (issue #2280) — a thin pass-through to `ProjectDb::is_native`, so a
+    /// query-layer caller (`brink-web`'s `semantic_tokens_impl`, ...) can
+    /// pick [`syntax_root`](Self::syntax_root) vs
+    /// [`syntax_root_native`](Self::syntax_root_native) without reaching
+    /// past this session into the db directly.
+    pub fn is_native(&self, id: FileId) -> bool {
+        self.db.is_native(id)
     }
 }
 
