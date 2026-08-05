@@ -34,6 +34,30 @@ impl EditorSession {
         let ctx = brink_ide::detect_completion_context(source, abs_offset as usize);
         let scope = brink_ide::cursor_scope(source, abs_offset as usize);
 
+        // Cue-name completion (issue #2134, `docs/prose-dialect-spec.md`
+        // §5): every `@NAME` cue harvested anywhere in the project — not
+        // just this file — completes here, mirroring `brink-lsp`'s
+        // `completion` handler. Reads the range-free completion projection
+        // (`harvest_completion_names`), not the raw `harvest_index`, for
+        // the same Eq-cutoff reason `resolution_index_query` exists for the
+        // symbol index.
+        if matches!(ctx, brink_ide::CompletionContext::CueName) {
+            let names = self.session.db().harvest_completion_names();
+            let items: Vec<CompletionItemJs> = names
+                .cues
+                .iter()
+                .map(|name| CompletionItemJs {
+                    name: name.clone(),
+                    kind: "cue".to_owned(),
+                    detail: None,
+                    insert: None,
+                    out_of_scope: false,
+                    source_file: None,
+                })
+                .collect();
+            return serde_json::to_string(&items).unwrap_or_default();
+        }
+
         // Auto-import (#312 F): symbols declared in files NOT reachable from the
         // current file's INCLUDE graph are still offered, but tagged as
         // out-of-scope so the editor can render a "from <file>" affordance and

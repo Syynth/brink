@@ -13,6 +13,10 @@
 //! [`harvest_index_query`] (the project-db harvest obligation over cue
 //! payloads and markup span kinds, issue #2114 — a sibling merge over the
 //! same per-file [`lowered_query`] outputs, not a per-file query),
+//! [`harvest_completion_index_query`] (the harvest index's own early-cutoff
+//! completion projection, issue #2134 — the sibling of
+//! [`resolution_index_query`] below, dropping every site's `TextRange` down
+//! to bare name sets),
 //! [`resolution_index_query`] (the early-cutoff seam — see below),
 //! [`resolve_query`], [`signature_query`], and [`analysis_query`] — the
 //! latter now a thin assembler (issue #632 / FG-3) over
@@ -87,7 +91,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, CallGraph, HarvestIndex, InferenceResult, SccGraph, Sig, TypePolicy,
+    AnalysisOptions, CallGraph, HarvestIndex, HarvestNames, InferenceResult, SccGraph, Sig,
+    TypePolicy,
 };
 use brink_format::{
     CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
@@ -158,6 +163,11 @@ impl Default for BrinkDatabase {
                 .ingredient::<module_map_query>()
                 .ingredient::<symbol_index_query>()
                 .ingredient::<harvest_index_query>()
+                // Issue #2134: the harvest index's range-free completion
+                // projection — the sibling of `resolution_index_query`
+                // below, for the same Eq-cutoff reason (see this module's
+                // doc and `harvest_completion_index_query`'s own).
+                .ingredient::<harvest_completion_index_query>()
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
                 .ingredient::<signature_query>()
@@ -761,6 +771,29 @@ pub(crate) fn harvest_index_query(
         .collect();
     let manifest = project.analysis_options(db).host_manifest.as_ref();
     Arc::new(brink_analyzer::harvest(&hir_refs, manifest))
+}
+
+/// The early-cutoff projection of [`harvest_index_query`] a completion
+/// consumer reads (issue #2134): every cue and span/attribute *name*, with
+/// every [`brink_analyzer::HarvestSite`]'s `TextRange` dropped.
+///
+/// [`HarvestIndex`] can never `Eq`-cutoff on its own — its sites carry real
+/// ranges, so nearly any edit changes its output — the exact gap that
+/// forced [`resolution_index_query`] to exist for the symbol index (see
+/// this module's own doc, "The `resolution_index` cutoff seam"). Without
+/// this projection, a completion path reading `harvest_index_query` on
+/// every keystroke would re-run the whole-project harvest merge on every
+/// keystroke project-wide. This query is the harvest index's sibling of
+/// that seam: a prose edit that adds no cue/span/attribute *name* anywhere
+/// backdates here even though it changes `harvest_index_query`'s own
+/// output.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn harvest_completion_index_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<HarvestNames> {
+    let index = harvest_index_query(db, project);
+    Arc::new(index.names())
 }
 
 /// The early-cutoff projection of the symbol index used by resolution:

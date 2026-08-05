@@ -1228,10 +1228,26 @@ What has **not** shipped: the **cast roster** — no type or registration
 point for it exists anywhere in the compiler, so a harvested cue name has
 no declaration-upgrade path yet (`CueHarvest` carries only harvest sites).
 It is explicitly named as a tenant of the §3.5 module door, i.e. blocked on
-the same comptime conventions machinery issue #1840 has not landed. Also
-not built: any completion-UI consumer of the index — this is the
-project-db seam the ruling calls for, not the editor feature reading it
-(a separate, not-yet-filed downstream slice of #2006).
+the same comptime conventions machinery issue #1840 has not landed.
+
+**Update (#2134, 2026-08-05): the cue-name completion consumer has landed.**
+`brink-ide`'s `CompletionContext::CueName` (right after `@` at the start of a
+line, at most a partial name typed) is offered from
+`ProjectDb::harvest_completion_names()` — not the raw `harvest_index()` —
+in both `brink-lsp`'s `completion` handler and `brink-web`'s
+`EditorSession::completions`, proven cross-file (a cue declared in one file
+completes while editing an unrelated sibling that never imports it, in both
+consumers) with no conventions handler or host manifest required. The
+Eq-cutoff gap the original ruling flagged — `HarvestSite` carries a
+`TextRange`, so `HarvestIndex` can never `Eq`-cutoff the way
+`resolution_index_query` lets `SymbolIndex` — is closed by
+`harvest_completion_index_query` (`brink-db`), which projects the index down
+to bare cue/span/attribute name sets (`brink_analyzer::HarvestNames`,
+`HarvestIndex::names()`) before any completion path reads it.
+
+Still **not** built: markup span/attribute completion — no `<tag …>`
+completion context exists yet in `brink-ide::completion`; only the cue-name
+position was in #2134's scope.
 
 ### 5.2 Implementation status — the succession-row carrier (#2115, 2026-08-04)
 

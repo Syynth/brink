@@ -2807,6 +2807,58 @@ mod tests {
         );
     }
 
+    // ── Cue-name completion (issue #2134) ───────────────────────────────
+
+    #[test]
+    fn a_cue_declared_in_one_file_completes_while_editing_a_sibling_file() {
+        // The load-bearing cross-file property (`docs/prose-dialect-spec.md`
+        // §5): `@VENDOR` is declared only in `vendor.brink`, never opened as
+        // the active file — completion in the unrelated, never-importing
+        // `main.brink` must still offer it, mirroring `brink-lsp`'s own
+        // cross-file cue completion test.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "vendor.brink",
+            "flow sell() {\n  @VENDOR\n  Something for the road?\n}\n",
+        );
+        s.update_file("main.brink", "flow start() {\n  @\n}\n");
+        assert!(s.set_active_file("main.brink"));
+
+        let offset = u32::try_from("flow start() {\n  @".len()).expect("fits u32");
+        let items = json(&s.completions(offset));
+        let labels: Vec<&str> = items
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|i| i["name"].as_str())
+            .collect();
+        assert!(
+            labels.contains(&"VENDOR"),
+            "a cue declared only in vendor.brink must complete in main.brink: {items}"
+        );
+    }
+
+    #[test]
+    fn cue_name_completion_offers_nothing_but_harvested_cues() {
+        // Cue-name context is handled separately from the ordinary
+        // symbol-index loop (issue #2134) — an author-defined `VAR`/`flow`
+        // must never leak into this position.
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", "var gold = 10\nflow start() {\n  @\n}\n");
+        assert!(s.set_active_file("main.brink"));
+
+        let offset = u32::try_from("var gold = 10\nflow start() {\n  @".len()).expect("fits u32");
+        let items = json(&s.completions(offset));
+        let names: Vec<&str> = items
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|i| i["name"].as_str())
+            .collect();
+        assert!(!names.contains(&"gold"), "{items}");
+        assert!(!names.contains(&"start"), "{items}");
+    }
+
     #[test]
     fn signature_help_is_dialect_aware_for_stdlib_mutators() {
         // #600: `signature_help` must call `signature_help_with_dialect` —

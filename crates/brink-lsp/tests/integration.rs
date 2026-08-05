@@ -2618,6 +2618,115 @@ fn native_two_file_workspace_goes_to_definition_without_opening_the_sibling() {
     );
 }
 
+/// `market/vendor.brink` — declares the `@VENDOR` cue that
+/// `market_vendor_cue_completes_across_files_without_opening_the_declaring_file`
+/// proves completes in a sibling file that never opens this one.
+const NATIVE_VENDOR: &str = "\
+flow sell() {
+  @VENDOR
+  Something for the road?
+}
+";
+
+/// `main.brink` for the same test — no `use` of `vendor.brink` at all: the
+/// harvest index is not import-scoped (issue #2114/#2134's "harvest by
+/// default" — `harvest_index_query` merges every project file unconditionally,
+/// unlike symbol completion's reachability filter), so this file has zero
+/// static relationship to `vendor.brink` beyond sharing a workspace.
+const NATIVE_CUE_MAIN: &str = "\
+flow start() {
+  @
+}
+";
+
+/// Request `textDocument/completion` at a position and return the raw
+/// response.
+fn completion_at(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: u64,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> Value {
+    send(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+            },
+        }),
+    );
+    recv_response(stdout, id).0
+}
+
+/// Issue #2134's headline deliverable, proven the way a user actually meets
+/// it: `@VENDOR` is declared only in `market/vendor.brink`, which this test
+/// never opens — it merely sits on disk, reaching the db through the same
+/// `initialized` workspace scan #1562's cross-file navigation test above
+/// relies on. Completion right after `@` in the unrelated, never-imported
+/// `main.brink` must still offer `VENDOR`: "every @NAME cue in the project
+/// completes everywhere" (`docs/prose-dialect-spec.md` §5), not just within
+/// the file that declared it.
+#[test]
+fn market_vendor_cue_completes_across_files_without_opening_the_declaring_file() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-cross-file-cue");
+    std::fs::create_dir_all(root.join("market")).unwrap();
+    std::fs::write(root.join("market/vendor.brink"), NATIVE_VENDOR).unwrap();
+    std::fs::write(root.join("main.brink"), NATIVE_CUE_MAIN).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    // Only `main.brink` is opened. `market/vendor.brink` is on disk and must
+    // reach the db through the workspace scan, exactly like #1562's
+    // `market/barter.brink` above.
+    let main_uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &main_uri, NATIVE_CUE_MAIN);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &main_uri, MAX_MESSAGES);
+
+    // Retried rather than pinned to a specific analysis pass — the workspace
+    // scan and this file's own `didOpen` race, same as the definition test.
+    let mut completion_resp = Value::Null;
+    for attempt in 0..10u64 {
+        completion_resp = completion_at(
+            &mut stdin,
+            &mut stdout,
+            100 + attempt,
+            &main_uri,
+            1,
+            3, // right after `@` on `  @` (line 1, the flow body).
+        );
+        let offers_vendor = completion_resp["result"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|it| it["label"] == "VENDOR"));
+        if offers_vendor {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let labels: Vec<&str> = completion_resp["result"]
+        .as_array()
+        .map(|items| items.iter().filter_map(|it| it["label"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        labels.contains(&"VENDOR"),
+        "a cue declared only in market/vendor.brink (never opened) must \
+         complete in main.brink (issue #2134): {completion_resp}"
+    );
+}
+
 /// `alpha.brink` and `beta.brink` — two native modules that each declare a
 /// flow named `greet`. Legal: a native file's module is its path and is
 /// always *declared*, so the two are `story::alpha::greet` and

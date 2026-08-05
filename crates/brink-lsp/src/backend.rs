@@ -2027,6 +2027,33 @@ impl LanguageServer for Backend {
 
         let mut items: Vec<CompletionItem> = Vec::new();
 
+        // Cue-name completion (issue #2134, `docs/prose-dialect-spec.md`
+        // §5): every `@NAME` cue harvested anywhere in the project — not
+        // just this file — completes here, "harvest by default" regardless
+        // of whether any conventions handler claims it. Reads the range-free
+        // completion projection (`harvest_completion_names`), not the raw
+        // `harvest_index`, for the same Eq-cutoff reason
+        // `resolution_index_query` exists for the symbol index (see that
+        // query's own doc).
+        if matches!(ctx, CompletionContext::CueName) {
+            let projects = lock_db(&self.db);
+            let names = projects
+                .project_for_path(&path)
+                .map(brink_db::ProjectDb::harvest_completion_names);
+            drop(projects);
+            if let Some(names) = names {
+                for cue in &names.cues {
+                    items.push(CompletionItem {
+                        label: cue.clone(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        detail: Some("cue".to_owned()),
+                        ..Default::default()
+                    });
+                }
+            }
+            return Ok(Some(CompletionResponse::Array(items)));
+        }
+
         // For dotted paths, show only children of the specified knot.
         if let CompletionContext::DottedPath { ref knot } = ctx {
             let prefix = format!("{knot}.");
