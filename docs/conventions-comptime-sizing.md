@@ -1,5 +1,11 @@
 # `fn conventions()` + comptime evaluation — sizing memo and blocking questions
 
+> **SUPERSEDED — `fn conventions()`/`register` DISSOLVED by the 2026-08-03
+> ruling** (`docs/decision-log.md`, "`fn conventions()` is DISSOLVED —
+> handler precedence is a property of the `@[element]` annotation"); the
+> machinery this memo sizes was deleted by issue #2165 / PR #2259. Retained
+> as history only — do not use this memo to plan new work.
+
 **Status: AGENT-AUTHORED SIZING — not a ruling, and not an implementation.**
 Written 2026-07-31 against issue #1840 ("Conventions v1c"), the 2026-07-31
 decision-log entry *"Conventions are annotated handlers: the declarative

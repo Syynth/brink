@@ -13,7 +13,6 @@ mod coalesce;
 mod comparator_contract;
 mod contains_domain;
 mod conventions_confinement;
-mod conventions_registry;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -33,7 +32,6 @@ mod option_rules;
 mod protocols;
 mod range_refinement;
 mod ref_projection;
-mod register_intrinsic;
 mod resolve;
 mod signature;
 mod strict;
@@ -66,9 +64,6 @@ pub use comparator_contract::{
 pub use conventions_confinement::{
     conventions_module_diagnostics, is_path_shaped_conventions_pointer,
 };
-pub use conventions_registry::{
-    ClaimHandlerCandidate, candidate_claim_handlers, join_conventions_registry,
-};
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
     assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,
@@ -94,7 +89,6 @@ pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
-pub use register_intrinsic::register_intrinsic_diagnostics;
 pub use resolve::ImportScope;
 pub use signature::{Sig, local_signature, signature};
 pub use strict::{

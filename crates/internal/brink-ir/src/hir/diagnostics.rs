@@ -1572,22 +1572,15 @@ pub enum DiagnosticCode {
     /// `infer::body::InferPass::infer_lambda`, reported by
     /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
     E174,
-    /// `register(…)` used outside the conventions module's `fn conventions()`
-    /// (issue #1840 Q5, `docs/decision-log.md` 2026-08-02 "`register` is a
-    /// comptime-only intrinsic; calling it elsewhere is a diagnostic").
-    /// `register` is a T1b comptime-only intrinsic with no opcode, no
-    /// runtime registry cell, and no bytecode — legal only inside the
-    /// project's configured conventions module's well-known `fn
-    /// conventions()`, where a comptime evaluator (not yet built —
-    /// #1840's remaining slice) intercepts it. Calling it anywhere else —
-    /// a different function, a different file, or a conventions module
-    /// with no confined pointer configured at all — is this compile
-    /// error rather than the silent no-op CLAUDE.md forbids.
-    ///
-    /// Native-only: the conventions module and `fn conventions()` are both
-    /// `.brink`-surface concepts (`@[convention(claims = "…", order = N)]` handlers,
-    /// `brink.toml`'s `[project] conventions`, renamed from `elements` by
-    /// issue #2180), same posture as `E169`.
+    /// RETIRED (issue #2165) — was `register`'s comptime-only-intrinsic
+    /// confinement check (issue #1840 Q5): `register` was legal only inside
+    /// the project's configured conventions module's `fn conventions()`,
+    /// enforced here. The 2026-08-03 ruling (`docs/decision-log.md`, "`fn
+    /// conventions()` is DISSOLVED") removed `fn conventions()` and
+    /// `register` from the design entirely — precedence is now a static
+    /// `order` property on `@[convention]` (issue #2164), needing no
+    /// comptime evaluator and so no confinement diagnostic to raise. Code
+    /// kept reserved, not reused.
     E175,
     /// A divert-with-args site (`-> knot(args)`, `->-> tunnel(args)`, or
     /// `<- thread(args)`) supplies a number of arguments that does not
@@ -2422,7 +2415,7 @@ impl DiagnosticCode {
                 "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
             }
             Self::E175 => {
-                "`register` is a comptime-only intrinsic — legal only inside the project's configured conventions module's `fn conventions()`"
+                "retired (issue #2165) — `fn conventions()`/`register` were dissolved from the design"
             }
             Self::E176 => {
                 "a divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters"

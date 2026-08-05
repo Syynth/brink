@@ -526,7 +526,7 @@ pub struct LowerCtx<'a> {
     ///
     /// Read by exactly one lowering decision today: a bare `Expr::Path`
     /// resolving to a statically-named function is a **fn value** on the
-    /// native surface (`register(scene)`, RULED 2026-08-01, issue #1862)
+    /// native surface (`handler(scene)`, RULED 2026-08-01, issue #1862)
     /// but a knot's **visit count** in ink — see
     /// [`super::expr::lower_path`].
     pub native: bool,
