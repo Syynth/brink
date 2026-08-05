@@ -187,7 +187,10 @@ async function main(): Promise<void> {
   const handle: StudioHandle = await mountStudio(appRoot, {
     files,
     provider,
-    entryFile: "main.ink",
+    // The native fixture has no `main.ink` — hardcoding one opened a phantom
+    // tab for a file outside the project, which then reported an error the
+    // Problems panel could not show (mistaken for #2281 until traced here).
+    entryFile: fixture === "native" ? "story.brink" : "main.ink",
     extensions: withExtension ? createExampleExtension : undefined,
     // The pretend host's capability manifest (the panel renders the same
     // object). Registered regardless of `?ext=none` — the host's vocabulary
