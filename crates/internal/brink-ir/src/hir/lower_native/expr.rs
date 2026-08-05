@@ -187,7 +187,11 @@ pub(super) fn lower_path(path: &ast::Path) -> Path {
             range: t.text_range(),
         })
         .collect();
-    Path { segments, range }
+    Path {
+        segments,
+        range,
+        crosses_module_wall: path.crosses_module_wall(),
+    }
 }
 
 fn lower_prefix(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Expr {
@@ -366,6 +370,7 @@ fn lower_construct(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnosti
                         range: type_path.syntax().text_range(),
                     }],
                     range: type_path.syntax().text_range(),
+                    crosses_module_wall: false,
                 },
                 args,
             )

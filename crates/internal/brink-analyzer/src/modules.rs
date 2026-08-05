@@ -432,8 +432,10 @@ pub fn check(
                     // *importing file's own module* legitimately importing
                     // one of its own declared **child** submodules
                     // (`story::market` writing `use story::market::barter;`
-                    // to license `barter`'s exports bare) — required by the
-                    // E025 import-required gate, not a self-import. That
+                    // to license qualified access to `barter`'s exports,
+                    // e.g. `barter::haggle` — never bare `haggle`) —
+                    // required by the E025 import-required gate, not a
+                    // self-import. That
                     // shape gets its own full-path check right below,
                     // exactly where it belongs; checked per item (not once
                     // per import) because whether it applies depends on
@@ -475,10 +477,11 @@ pub fn check(
                     // set under their own names; there is no field to carry
                     // "these exports now come in under `b`" instead. Before
                     // this check, the alias was silently ignored: the
-                    // submodule's exports still became bare-visible under
-                    // their original names (the phantom `module::item`
-                    // candidate in `resolve::import_coverage_for_file` does
-                    // not know about aliases at all), while `b` bound
+                    // submodule's exports remained reachable via qualified
+                    // access under their original name (e.g. `barter::x`,
+                    // never bare) (the phantom `module::item` candidate in
+                    // `resolve::import_coverage_for_file` does not know
+                    // about aliases at all), while `b` bound
                     // nothing — with no diagnostic anywhere. This is the
                     // same "no `Import` shape for aliasing a whole module"
                     // gap `lower_native::import::lower_use_decl` already
@@ -1044,10 +1047,12 @@ mod tests {
     /// *and* a declared submodule in its own right, neither reading is
     /// suppressed — no `E088` fires, because the check only fires when
     /// NEITHER reading holds. (The *licensing* half of "both apply" — that
-    /// the submodule's exports also become bare-visible alongside the item
-    /// — is proved at the resolution level in
-    /// `native_use_dual_reading.rs`, which is a whole-project concern this
-    /// diagnostics-only pass can't observe.)
+    /// the submodule is also licensed for qualified access alongside the
+    /// item (never bare) — is proved at the resolution level in
+    /// `native_use_dual_reading.rs`'s
+    /// `use_naming_a_module_does_not_license_bare_access_to_its_exports`,
+    /// which is a whole-project concern this diagnostics-only pass can't
+    /// observe.)
     #[test]
     fn dual_reading_both_item_and_submodule_neither_is_suppressed() {
         let market = hir_with_module("story::market");
@@ -1162,8 +1167,9 @@ mod tests {
     /// `story::market` itself, parsed as `module: "story::market", items:
     /// [barter]`) must NOT be flagged `E090` — this is exactly the import
     /// the `E025` import-required gate makes *mandatory* for
-    /// `story::market` to reference `story::market::barter`'s exports bare,
-    /// not a self-import. The pre-fix prefix check
+    /// `story::market` to reference `story::market::barter`'s exports via
+    /// qualified access (e.g. `barter::haggle`), not a self-import. The
+    /// pre-fix prefix check
     /// (`own_module == import.module`) could not distinguish this from a
     /// genuine self-import because it never consulted the item's own
     /// dual-reading verdict (`is_module`).
@@ -1206,9 +1212,10 @@ mod tests {
     /// declared **submodule** (`use story::market::barter as b;`) has no
     /// sound `Import` representation — aliasing an entire module's export
     /// set, not one name. Before this fix this was silently accepted:
-    /// `story::market::barter`'s exports still became bare-visible under
-    /// their own names (the phantom module candidate ignores aliases) while
-    /// `b` bound nothing, with no diagnostic anywhere. Mirrors
+    /// `story::market::barter`'s exports remained reachable via qualified
+    /// access under their own name (the phantom module candidate ignores
+    /// aliases) while `b` bound nothing, with no diagnostic anywhere.
+    /// Mirrors
     /// `lower_native::import::lower_use_decl`'s `E129` for the
     /// single-segment `use a as m;` module-alias shape.
     #[test]

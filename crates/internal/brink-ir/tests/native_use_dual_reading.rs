@@ -6,9 +6,25 @@
 //! `SymbolIndex` fixtures. This file proves the other half through the real
 //! parse → lower → analyze pipeline: a native `use story::market::barter;`
 //! whose trailing segment `barter` names a **module**, not an item, must
-//! license bare references to that submodule's public exports inside the
-//! importing file — "its items become referenceable by bare name per
-//! existing import-coverage rules" (the #1592 ruling's own words).
+//! license **module-qualified** references to that submodule's public
+//! exports inside the importing file (`-> barter::haggle`) — "a trailing
+//! segment that resolves to a module licenses that module, exactly as
+//! Rust's `use` does" (the #1592 ruling's own words,
+//! `docs/decision-log.md` 2026-07-27).
+//!
+//! ⚠ **Corrected 2026-08-05 (issue #2287).** This file's own prose (and
+//! `resolve::import_coverage_for_file`'s doc, and `docs/modules-spec.md`
+//! §2) used to over-read that ruling as "the submodule's public exports
+//! also become **bare**-referenceable" — i.e. that `use story::market::
+//! barter;` alone would license bare `-> haggle`, with no `barter::`
+//! qualifier at all. That over-reading was itself the bug #2287 reported:
+//! Rust's `use a::b;` makes `b` nameable as `b::item`, never brings `item`
+//! into bare scope — "licenses that module" always meant *qualified*
+//! access, matching every other qualified-module-import case in this
+//! codebase (`IMPORT quest_3` → `-> quest_3.ambush.start`,
+//! `native-surface-charter.md` §13.2). Only a **symbol-level or glob**
+//! import brings a name into *bare* scope. The fixtures below were fixed
+//! to assert the corrected (and originally-intended) reading.
 //!
 //! **Why the defining side is `.ink`, again.** Same reason as
 //! `native_use_import_scope.rs` (issue #1581): at the time this fixture was
@@ -47,8 +63,20 @@ You haggle at the market stall.
 
 /// `main.brink` — native, `use`s the **module**, not an item
 /// (`use story::market::barter;`, no `{ }`, no trailing item beyond the
-/// submodule's own name) and then references its export bare.
+/// submodule's own name) and then references its export **module-qualified**
+/// (issue #2287's corrected reading — see the module doc).
 const MAIN: &str = "\
+use story::market::barter;
+
+flow start() {
+  -> barter::haggle
+}
+";
+
+/// The bare-divert sibling of [`MAIN`] — same import, but the reference
+/// omits the qualifier. Proves the other (dangerous) half of #2287's
+/// correction: a module-only import must NOT also license this spelling.
+const MAIN_BARE: &str = "\
 use story::market::barter;
 
 flow start() {
@@ -125,11 +153,12 @@ fn module_map_with_main(main_module: &str) -> ModuleMap {
 }
 
 /// `use story::market::barter;` — naming the module, not an item — must
-/// license `haggle` (the submodule's public export) bare, with zero
-/// diagnostics: no `E025`/`E087` (unresolved/private cross-module
-/// reference) and no `E088` (the retired silent no-op's diagnostic).
+/// license `-> barter::haggle` (module-qualified access to the submodule's
+/// public export), with zero diagnostics: no `E025`/`E087` (unresolved/
+/// private cross-module reference) and no `E088` (the retired silent
+/// no-op's diagnostic).
 #[test]
-fn use_naming_a_module_licenses_its_exports_bare() {
+fn use_naming_a_module_licenses_qualified_access_to_its_exports() {
     let barter = lower_ink(BARTER_FILE, BARTER);
     let main = lower_brink(MAIN_FILE, MAIN);
     let inputs: Vec<(FileId, &HirFile, &SymbolManifest)> = vec![
@@ -148,13 +177,16 @@ fn use_naming_a_module_licenses_its_exports_bare() {
         .filter(|d| {
             matches!(
                 d.code,
-                DiagnosticCode::E025 | DiagnosticCode::E087 | DiagnosticCode::E088
+                DiagnosticCode::E024
+                    | DiagnosticCode::E025
+                    | DiagnosticCode::E087
+                    | DiagnosticCode::E088
             )
         })
         .collect();
     assert!(
         offenders.is_empty(),
-        "`use story::market::barter;` must license the submodule's exports, not flag them: \
+        "`use story::market::barter;` must license `-> barter::haggle`, not flag it: \
          {offenders:?}"
     );
 
@@ -171,7 +203,39 @@ fn use_naming_a_module_licenses_its_exports_bare() {
     assert_eq!(
         haggle_module.get(&MAIN_FILE).and_then(Option::as_deref),
         Some("story::market::barter"),
-        "the bare `-> haggle` in main.brink must resolve into the licensed submodule"
+        "the qualified `-> barter::haggle` in main.brink must resolve into the licensed submodule"
+    );
+}
+
+/// The other (dangerous) half of issue #2287's correction: the exact same
+/// import that licenses `-> barter::haggle` above must NOT also license
+/// the bare `-> haggle` spelling — a module-qualified import brings the
+/// module's name into scope, never its individual exports' bare names.
+#[test]
+fn use_naming_a_module_does_not_license_bare_access_to_its_exports() {
+    let barter = lower_ink(BARTER_FILE, BARTER);
+    let main = lower_brink(MAIN_FILE, MAIN_BARE);
+    let inputs: Vec<(FileId, &HirFile, &SymbolManifest)> = vec![
+        (BARTER_FILE, &barter.0, &barter.1),
+        (MAIN_FILE, &main.0, &main.1),
+    ];
+    let opts = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+
+    let e024: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E024)
+        .collect();
+    assert_eq!(
+        e024.len(),
+        1,
+        "`use story::market::barter;` must leave bare `-> haggle` unresolved — a module import \
+         licenses the module's name, not its exports' bare names: {:?}",
+        result.diagnostics
     );
 }
 
@@ -217,10 +281,12 @@ const MAIN_MODULE: &str = "story::market";
 /// Review finding #1686 (BLOCKING E090 false positive): a **parent** module
 /// (`story::market`) importing its own declared **child** submodule
 /// (`story::market::barter`) via the leaf-item shape must diagnose nothing —
-/// in particular no `E090` — and must still license `haggle` bare, end to
-/// end through the real pipeline (not just the diagnostics-only unit test in
-/// `brink-analyzer/src/modules.rs`). This is the exact repro the review gave:
-/// changing `MAIN_FILE`'s module from `story::main` to `story::market`.
+/// in particular no `E090` — and must still license `-> barter::haggle`
+/// (module-qualified, issue #2287's corrected reading — see the module
+/// doc), end to end through the real pipeline (not just the
+/// diagnostics-only unit test in `brink-analyzer/src/modules.rs`). This is
+/// the exact repro the review gave: changing `MAIN_FILE`'s module from
+/// `story::main` to `story::market`.
 #[test]
 fn parent_importing_its_own_declared_child_submodule_licenses_with_no_e090() {
     let barter = lower_ink(BARTER_FILE, BARTER);
@@ -258,8 +324,8 @@ fn parent_importing_its_own_declared_child_submodule_licenses_with_no_e090() {
     assert_eq!(
         haggle_module.get(&MAIN_FILE).and_then(Option::as_deref),
         Some("story::market::barter"),
-        "licensing must still apply — the bare `-> haggle` must resolve into the child \
-         submodule even when the importer is the parent module"
+        "licensing must still apply — the qualified `-> barter::haggle` must resolve into the \
+         child submodule even when the importer is the parent module"
     );
 }
 

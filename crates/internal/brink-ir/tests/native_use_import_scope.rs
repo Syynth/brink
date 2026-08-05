@@ -226,3 +226,152 @@ fn a_qualified_use_licenses_the_reference_it_names() {
         "an imported public symbol must be licensed, not flagged: {offenders:?}"
     );
 }
+
+// ─── Issue #2287: module-qualified divert resolution ────────────────
+//
+// A self-contained two-file project, separate from the fixtures above —
+// this exercises `use story::market::barter;` (the *module* form, no
+// braces, no leaf item) rather than `use story::market::barter::haggle;`
+// (the bare-item form the fixtures above already cover). Whole-project,
+// end to end through `analyze_with_modules`, not just `resolve.rs`'s own
+// unit tests: this is what actually proves the fix reaches a real native
+// `use` + `-> divert` pair rather than only the hand-built `ImportScope`/
+// `UnresolvedRef` fixtures `brink-analyzer::resolve`'s own tests use.
+
+/// `market/barter.brink` — native, module `story::market::barter`,
+/// exporting a public flow `haggle`.
+const QUALIFIED_MARKET: &str = "\
+pub flow haggle() {
+  You haggle at the market stall.
+  -> DONE
+}
+";
+
+/// `story.brink` — `use story::market::barter;` (module-qualified import)
+/// then the module-qualified divert the maintainer confirmed is the
+/// intended spelling.
+const QUALIFIED_MAIN_ACCEPTED: &str = "\
+use story::market::barter;
+
+flow start() {
+  -> barter::haggle
+}
+";
+
+/// Same import, but the *bare* divert spelling — must stay rejected: a
+/// module-qualified import licenses `barter::haggle`, never bare `haggle`
+/// (issue #2287's bug (b), the more dangerous of the two).
+const QUALIFIED_MAIN_BARE_REJECTED: &str = "\
+use story::market::barter;
+
+flow start() {
+  -> haggle
+}
+";
+
+const QUALIFIED_MARKET_FILE: FileId = FileId(10);
+const QUALIFIED_MAIN_FILE: FileId = FileId(11);
+
+fn qualified_module_map() -> ModuleMap {
+    [
+        (QUALIFIED_MARKET_FILE, "story::market::barter"),
+        (QUALIFIED_MAIN_FILE, "story::story"),
+    ]
+    .into_iter()
+    .map(|(file, name)| {
+        (
+            file,
+            ResolvedModule {
+                name: name.to_string(),
+                declared: true,
+                was: None,
+            },
+        )
+    })
+    .collect()
+}
+
+fn analyze_qualified_project(main_src: &str) -> brink_analyzer::AnalysisResult {
+    let market = lower_brink(QUALIFIED_MARKET_FILE, QUALIFIED_MARKET);
+    let main = lower_brink(QUALIFIED_MAIN_FILE, main_src);
+    let inputs: Vec<(FileId, &HirFile, &SymbolManifest)> = vec![
+        (QUALIFIED_MARKET_FILE, &market.0, &market.1),
+        (QUALIFIED_MAIN_FILE, &main.0, &main.1),
+    ];
+    let opts = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    brink_analyzer::analyze_with_modules(&inputs, &qualified_module_map(), &opts, true)
+}
+
+/// Bug (a): `use story::market::barter;` must license the module-qualified
+/// `-> barter::haggle` divert, end to end — it must resolve, and it must
+/// not raise `E024` (unresolved), `E025` (import-required), or `E087`
+/// (private-across-modules).
+#[test]
+fn qualified_use_licenses_the_module_qualified_divert() {
+    let result = analyze_qualified_project(QUALIFIED_MAIN_ACCEPTED);
+    let offenders: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code,
+                brink_ir::DiagnosticCode::E024
+                    | brink_ir::DiagnosticCode::E025
+                    | brink_ir::DiagnosticCode::E087
+            )
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`use story::market::barter;` must license `-> barter::haggle` \
+         with no unresolved/import-required/private diagnostic: {offenders:?}"
+    );
+}
+
+/// Bug (b): the same import must NOT license the bare `-> haggle` spelling
+/// — it must stay unresolved (`E024`), not silently accepted. This is the
+/// dangerous over-permissive defect issue #2287 reported: reverting either
+/// `lookup_divert`'s `lookup_knot_bare` step or `classify_bare` back to the
+/// old flat `lookup_by_name` makes this fail (the bare name would resolve
+/// and no diagnostic would fire at all).
+#[test]
+fn qualified_use_does_not_license_the_bare_divert() {
+    let result = analyze_qualified_project(QUALIFIED_MAIN_BARE_REJECTED);
+    let e024s: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == brink_ir::DiagnosticCode::E024)
+        .collect();
+    assert_eq!(
+        e024s.len(),
+        1,
+        "a module-qualified-only import must leave bare `-> haggle` \
+         unresolved, exactly one E024: {:?}",
+        result.diagnostics
+    );
+}
+
+/// Issue #2287's "verify before scoping" directive, row 4 of the corrected
+/// table: `use story::market::barter::*;` (a glob import). This is not a
+/// resolution question at all — the native grammar has no glob-`use`
+/// production to lower in the first place. `parser::decl::use_tree` only
+/// recognizes an `IDENT` segment, a `{ … }` group, or a trailing `as`
+/// alias after each `::`; a bare `*` is none of those, so parsing produces
+/// an error rather than a `USE_DECL` with any glob shape. Pinned here so
+/// this finding survives as a structural fact, not just a PR-body claim:
+/// if a future change teaches the grammar a real glob production, this
+/// test's failure is the signal to add the accepting counterpart.
+#[test]
+fn glob_use_is_not_reachable_in_the_native_grammar() {
+    let src = "use story::market::barter::*;\n\nflow start() {\n  -> haggle\n}\n";
+    let parsed = brink_syntax_native::parse(src);
+    assert!(
+        !parsed.errors().is_empty(),
+        "a glob `use ...::*;` must fail to parse cleanly — if this starts \
+         passing, the native grammar has gained glob-`use` support and \
+         issue #2287's row 4 needs a real resolution test, not this pin"
+    );
+}

@@ -250,6 +250,11 @@ impl Projector {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors declare's shape (issue #2287: module_qualified is a plain \
+                  positional passthrough, not a new structural concern)"
+    )]
     fn push_ref(
         &mut self,
         path: String,
@@ -258,6 +263,7 @@ impl Projector {
         knot: Option<&str>,
         stitch: Option<&str>,
         arg_count: Option<usize>,
+        module_qualified: bool,
     ) {
         // Mirrors `EffectSink::add_unresolved`'s empty-path guard — a
         // malformed parse can yield an empty path/identifier.
@@ -270,7 +276,31 @@ impl Projector {
             kind,
             scope: Self::scope_of(knot, stitch),
             arg_count,
+            module_qualified,
         });
+    }
+
+    /// [`Self::push_ref`] for an ordinary (never module-qualified) `Path`
+    /// reference — every ref kind except a divert target, which is the only
+    /// one that can carry `::` (see [`divert_path_text`]). Shrinks
+    /// `walk_expr`'s repeated 7-argument calls back to one line each.
+    fn push_path_ref(
+        &mut self,
+        path: &Path,
+        kind: RefKind,
+        knot: Option<&str>,
+        stitch: Option<&str>,
+        arg_count: Option<usize>,
+    ) {
+        self.push_ref(
+            path_text(path),
+            path.range,
+            kind,
+            knot,
+            stitch,
+            arg_count,
+            false,
+        );
     }
 
     #[expect(
@@ -319,7 +349,15 @@ impl Projector {
         stitch: Option<&str>,
     ) {
         if let crate::TypeExpr::Named { name, range } = ty {
-            self.push_ref(name.clone(), *range, RefKind::Type, knot, stitch, None);
+            self.push_ref(
+                name.clone(),
+                *range,
+                RefKind::Type,
+                knot,
+                stitch,
+                None,
+                false,
+            );
         }
     }
 
@@ -477,13 +515,15 @@ impl Projector {
     fn walk_return(&mut self, r: &Return, knot: Option<&str>, stitch: Option<&str>) {
         match (&r.value, r.kind) {
             (Some(Expr::DivertTarget(p)), ReturnKind::TunnelRedirect) => {
+                let (path, module_qualified) = divert_path_text(p);
                 self.push_ref(
-                    path_text(p),
+                    path,
                     p.range,
                     RefKind::Divert,
                     knot,
                     stitch,
                     Some(r.onwards_args.len()),
+                    module_qualified,
                 );
             }
             (Some(e), _) => self.walk_expr(e, knot, stitch),
@@ -508,13 +548,15 @@ impl Projector {
             // of `target.args.len()`, which is why the check could never
             // fire for a divert on either dialect (see `E176`'s own doc
             // comment in `hir::diagnostics` for the full history).
+            let (path, module_qualified) = divert_path_text(p);
             self.push_ref(
-                path_text(p),
+                path,
                 p.range,
                 RefKind::Divert,
                 knot,
                 stitch,
                 Some(target.args.len()),
+                module_qualified,
             );
         }
         for e in &target.args {
@@ -750,14 +792,23 @@ impl Projector {
                 }
             }
             Expr::Path(p) => {
-                self.push_ref(path_text(p), p.range, RefKind::Variable, knot, stitch, None);
+                self.push_path_ref(p, RefKind::Variable, knot, stitch, None);
             }
             Expr::DivertTarget(p) => {
-                self.push_ref(path_text(p), p.range, RefKind::Divert, knot, stitch, None);
+                let (path, module_qualified) = divert_path_text(p);
+                self.push_ref(
+                    path,
+                    p.range,
+                    RefKind::Divert,
+                    knot,
+                    stitch,
+                    None,
+                    module_qualified,
+                );
             }
             Expr::ListLiteral(items) => {
                 for p in items {
-                    self.push_ref(path_text(p), p.range, RefKind::List, knot, stitch, None);
+                    self.push_path_ref(p, RefKind::List, knot, stitch, None);
                 }
             }
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => {
@@ -773,14 +824,7 @@ impl Projector {
                 // contract four downstream consumers key lookups on
                 // unchanged; see that field's doc (issue #1561). Never
                 // narrow this to a sub-segment.
-                self.push_ref(
-                    path_text(path),
-                    path.range,
-                    RefKind::Function,
-                    knot,
-                    stitch,
-                    Some(args.len()),
-                );
+                self.push_path_ref(path, RefKind::Function, knot, stitch, Some(args.len()));
                 for a in args {
                     self.walk_expr(a, knot, stitch);
                 }
@@ -812,6 +856,7 @@ impl Projector {
                     knot,
                     stitch,
                     None,
+                    false,
                 );
                 for (_, v) in &sl.fields {
                     self.walk_expr(v, knot, stitch);
@@ -823,14 +868,7 @@ impl Projector {
                 // — `#fn` binds a *prefix* of the param row, unlike a direct
                 // call, so full-arity checking doesn't apply (see
                 // `hir::lower::expr::sigils`'s `FnLiteral` lowering doc).
-                self.push_ref(
-                    path_text(&fl.target),
-                    fl.target.range,
-                    RefKind::Function,
-                    knot,
-                    stitch,
-                    None,
-                );
+                self.push_path_ref(&fl.target, RefKind::Function, knot, stitch, None);
                 for a in &fl.args {
                     self.walk_expr(a, knot, stitch);
                 }
@@ -916,6 +954,30 @@ fn path_text(path: &Path) -> String {
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+/// The divert-target twin of [`path_text`] (issue #2287): a divert path
+/// that crossed a module wall (`-> barter::haggle`, `Path::
+/// crosses_module_wall`) is joined with `::` instead of `.`, so the
+/// qualifier prefix and the bare target name split back apart cleanly in
+/// `brink_analyzer::resolve::lookup_qualified_divert` — joining it with `.`
+/// like every other path would make it indistinguishable from ink's own
+/// dotted `knot.stitch` addressing, which is exactly the defect issue #2287
+/// reported (`unresolved divert target: barter.haggle`, note the dot).
+/// Returns the joined text and whether the wall was crossed, both destined
+/// for `UnresolvedRef::path`/`UnresolvedRef::module_qualified`.
+fn divert_path_text(path: &Path) -> (String, bool) {
+    if path.crosses_module_wall {
+        let text = path
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        (text, true)
+    } else {
+        (path_text(path), false)
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

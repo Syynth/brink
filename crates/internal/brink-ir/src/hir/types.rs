@@ -28,6 +28,19 @@ pub struct Name {
 pub struct Path {
     pub segments: Vec<Name>,
     pub range: TextRange,
+    /// `true` when the native source spelled this path with `::` at least
+    /// once (`ast::Path::crosses_module_wall`, charter §13.2: "`::` crosses
+    /// module walls, `.` walks everything inside") — always `false` for the
+    /// ink dialect and every synthesized `Path`, neither of which has a
+    /// module-qualifying separator at all.
+    ///
+    /// This is the bit `hir::lower_native::expr::lower_path` was silently
+    /// dropping before issue #2287: without it, `-> barter::haggle` and
+    /// ink's own `-> knot.stitch` addressing were indistinguishable by the
+    /// time `brink_analyzer::resolve` saw the joined path text, so a
+    /// module-qualified divert could never resolve as one (see
+    /// `resolve::lookup_qualified_divert`).
+    pub crosses_module_wall: bool,
 }
 
 /// A tag attached to content — may contain dynamic inline expressions.

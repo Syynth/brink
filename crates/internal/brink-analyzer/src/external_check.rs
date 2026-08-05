@@ -1526,6 +1526,7 @@ mod tests {
                 range: rng(),
             }],
             range: rng(),
+            crosses_module_wall: false,
         };
         HirFile {
             root_content: Block::from_stmts(vec![Stmt::ExprStmt(Expr::Call(path, args))]),
@@ -1634,6 +1635,7 @@ mod tests {
                 range: rng(),
             }],
             range: rng(),
+            crosses_module_wall: false,
         });
         let diags = run_call_check("tint", vec![var], &meta);
         assert!(
