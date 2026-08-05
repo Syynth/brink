@@ -299,13 +299,13 @@ impl ProjectDb {
     /// Get the HIR for a file.
     pub fn hir(&self, id: FileId) -> Option<&HirFile> {
         let file = self.files.get(&id)?;
-        Some(&lowered_query(&self.salsa, *file).hir)
+        Some(&lowered_query(&self.salsa, self.project, *file).hir)
     }
 
     /// Get the symbol manifest for a file.
     pub fn manifest(&self, id: FileId) -> Option<&SymbolManifest> {
         let file = self.files.get(&id)?;
-        Some(&lowered_query(&self.salsa, *file).manifest)
+        Some(&lowered_query(&self.salsa, self.project, *file).manifest)
     }
 
     /// Get the source text for a file.
@@ -317,7 +317,11 @@ impl ProjectDb {
     /// Get per-file diagnostics (parse + lowering).
     pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
-        Some(lowered_query(&self.salsa, *file).diagnostics.as_slice())
+        Some(
+            lowered_query(&self.salsa, self.project, *file)
+                .diagnostics
+                .as_slice(),
+        )
     }
 
     /// Get the B0.3 HIR admission validator's output for a file
@@ -326,7 +330,11 @@ impl ProjectDb {
     /// (never routed through `apply_suppressions`).
     pub fn admission_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
-        Some(lowered_query(&self.salsa, *file).admission.as_slice())
+        Some(
+            lowered_query(&self.salsa, self.project, *file)
+                .admission
+                .as_slice(),
+        )
     }
 
     /// Get suppression directives for a file — the text-scanned
@@ -468,7 +476,7 @@ impl ProjectDb {
             .iter()
             .filter_map(|&id| {
                 let file = self.files.get(&id)?;
-                let lowered = lowered_query(&self.salsa, *file);
+                let lowered = lowered_query(&self.salsa, self.project, *file);
                 Some((id, lowered.hir.clone(), lowered.manifest.clone()))
             })
             .collect();

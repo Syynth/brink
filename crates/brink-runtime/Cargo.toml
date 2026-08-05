@@ -58,6 +58,13 @@ effect-trace = ["std"]
 # `brink_environment::compile(&Environment)` (#1306, the production road)
 # — gated the same way every such test/bench target is.
 brink-compiler = { path = "../brink-compiler", features = ["test-util"] }
+# `tests/element.rs`'s `story_from_native_source` (issue #2289): passes an
+# explicit `conventions` pointer through `compile_path_with_options` — a
+# fixture that inlines its own `@[convention]` handlers now needs one
+# configured (an unconfigured handler is `E169`), and `compile_path` itself
+# never reads a co-located `brink.toml` (its own doc says it bypasses
+# `Environment`/config entirely), so explicit options are the only way.
+brink-analyzer.workspace = true
 serde_json.workspace = true
 divan.workspace = true
 proptest.workspace = true

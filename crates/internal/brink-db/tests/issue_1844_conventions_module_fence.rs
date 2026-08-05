@@ -93,14 +93,67 @@ fn only_the_non_configured_file_is_flagged_among_siblings() {
 }
 
 /// Unset `conventions` means no conventions module is configured at all —
-/// nothing to confine claiming to, so every project without this key opted
-/// in stays exactly as permissive as it was before `E169` existed.
+/// issue #2289 part 2 (2026-08-05 ruling) corrects this from a silent pass
+/// to `E169`: a declared claim handler names no module to belong to, which
+/// is a misconfiguration, not an opt-out. (Superseded
+/// `unset_conventions_never_fires`, which asserted the pre-#2289 silent
+/// behavior this ruling reverses.)
 #[test]
-fn unset_conventions_never_fires() {
+fn unset_conventions_is_e169() {
     let mut db = ProjectDb::new();
     db.set_analysis_options(AnalysisOptions::default());
     db.set_file(
         "scenes/heading.brink",
+        format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E169], "{diags:?}");
+    assert!(diags[0].message.contains("interior"), "{diags:?}");
+    assert!(
+        diags[0]
+            .message
+            .contains("no conventions module is configured"),
+        "{diags:?}"
+    );
+}
+
+/// A file mounted under the reserved `std/` peer root is exempt from
+/// confinement entirely, even with `conventions` unset (issue #2289, found
+/// while implementing `unset_conventions_is_e169` above): `brink-environment`
+/// unconditionally mounts `std::conventions::screenplay` into every
+/// compiled project's file set (issue #2080), so without this exemption
+/// EVERY project with no `conventions` key configured would suddenly fail
+/// to compile — the mounted preset's own declared handlers would trip the
+/// new unconfigured-`E169` above. This test proves the exemption directly
+/// (a `.brink` file keyed under `std/`, without going through the real
+/// `brink-environment` mounting machinery) rather than only through the
+/// `brink-cli` end-to-end repro that first found the regression.
+#[test]
+fn a_file_mounted_under_the_std_root_is_exempt_even_when_unconfigured() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(AnalysisOptions::default());
+    db.set_file(
+        "std/conventions/screenplay.brink",
+        format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E169),
+        "{diags:?}"
+    );
+}
+
+/// The same exemption also covers the pre-existing "outside the configured
+/// module" half (`E169`) — a project that DOES configure `conventions` to
+/// one of its own files must not also flag the std-mounted preset's own
+/// handlers as misplaced.
+#[test]
+fn a_file_mounted_under_the_std_root_is_exempt_even_when_a_different_module_is_configured() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
+    db.set_file(
+        "std/conventions/screenplay.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
     );
     let diags = db.analysis().diagnostics.clone();

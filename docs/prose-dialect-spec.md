@@ -244,14 +244,27 @@ consumes the module, only the value.
   parsing**: `brink-project-config` parses `[project] conventions` (and
   its `elements` alias) and `brink-analyzer` carries it onto
   `AnalysisOptions` (issue #1844), which also enforces the confinement
-  half of item (4) below (`E169`) for a path-shaped pointer. Resolving it
-  against an *evaluated* `fn conventions()`
-  registry (the dispatch-consuming half, not just the confinement
-  check) has its injection point built (issue #1863:
-  `hir::lower_native::lower_with_conventions` accepts an already-ordered
-  external handler set, joined on `DefinitionId` by
-  `brink_analyzer::conventions_registry`) but not yet live-wired to a
-  real evaluator — that is #1840's own job.
+  half of item (4) below (`E169`) for a path-shaped pointer.
+  **Resolving it against the dispatch-consuming half is RULED and BUILT**
+  (issue #2289, `docs/decision-log.md` 2026-08-05 — correcting the defect
+  that survived #1844: confinement restricted *where a handler may be
+  declared*, but nothing let it claim prose in any *other* file, so a
+  correctly-declared conventions module claimed nothing where it mattered).
+  There is no separate comptime-evaluated identity list to join against —
+  `order` (issue #2164) already makes precedence a static property of the
+  `@[convention]` declaration itself — so `brink_db::queries::analysis::
+  external_claim_handlers_query` reads the configured conventions module's
+  own declared handlers directly and `hir::lower_native::
+  lower_with_conventions` merges them into every OTHER file's dispatch
+  table, sorted by `order` together with that file's own local
+  declarations. This is a full replacement of the earlier #1863 design
+  (deleted by issue #2165 alongside the dissolved `fn conventions()`
+  registration it was built for), not a revival of it: that design chained
+  an injected handler after every local one because it had no real `order`
+  to sort by; this one doesn't. An entirely unset `conventions` key is ALSO
+  no longer silent (issue #2289 part 2): a declared `@[convention]` with no
+  configured module names no module for the declaration to belong to, so it
+  is `E169` too, not an opt-out.
 
 ### 3.6 Element roles & attachment (RULED direction; mechanism leaned)
 Elements declare a **role**:
@@ -373,9 +386,15 @@ fn radio(chan: string, text: content) {
   delivery text is a candidate (issue #1720 widened the set to the
   latter two), and a claiming handler never claims inside its
   own body (§3.5's staging rule). Confinement to the
-  `brink.toml`-named conventions module is not yet enforced — single-file
-  lowering has no project identity to check against, and v1 dispatch is
-  file-local, so a claim is visible in the file it affects.
+  `brink.toml`-named conventions module IS enforced (`E169`, issue #1844) —
+  a claiming `fn` declared outside that one file is an error, and (issue
+  #2289, `docs/decision-log.md` 2026-08-05) so is a `@[convention]` with no
+  `conventions` key configured at all, since there is then no module for it
+  to belong to. Claiming reach is project-WIDE, not file-local: the
+  configured module's declared handlers claim prose in every file of the
+  project, not merely the one that declares them — see item (4)'s own
+  ruling text above and `hir::lower_native::element`'s module doc ("Cross-
+  file claiming reach") for the mechanism.
 - **Dispatch order (RULED, issue #2164, `docs/decision-log.md`
   2026-08-03).** When a module declares more than one claiming handler
   and more than one could match the same line, the lower-`order` one

@@ -130,7 +130,15 @@ fn stdlib_mount_no_longer_collides_with_a_projects_own_scene_entered() {
         .join("tests")
         .join("tier1-native")
         .join("conventions-screenplay-preset");
-    let isolated = brink_compiler::compile_path(&dir.join("story.brink")).expect(
+    let story_path = dir.join("story.brink");
+    // Issue #2289: this fixture's own `heading`/`transition`/`cue`/
+    // `parenthetical` handlers now need `[project] conventions` configured
+    // (an unconfigured `@[convention]` is `E169`) — `native_analysis_options`
+    // discovers the same co-located `brink.toml` `tier1_native.rs`'s own
+    // coverage of this fixture already relies on.
+    let options = brink_test_harness::corpus::native_analysis_options(&story_path)
+        .unwrap_or_else(|e| panic!("load brink.toml for conventions-screenplay-preset: {e}"));
+    let isolated = brink_compiler::compile_path_with_options(&story_path, options).expect(
         "the fixture must still compile in isolation (compile_path, no stdlib mount) — this is \
          the existing tier1_native.rs coverage, unrelated to #2197",
     );
@@ -152,10 +160,18 @@ fn stdlib_mount_no_longer_collides_with_a_projects_own_scene_entered() {
     // Before the #2197 fix this hard-fails with `[E060] internal codegen
     // error: duplicate DefinitionId … assigned to two different
     // containers, at paths "scene_entered" and "scene_entered"`.
-    let tree = InMemory::new(BTreeMap::from([(
-        "story.brink".to_string(),
-        fixture_source(),
-    )]));
+    let tree = InMemory::new(BTreeMap::from([
+        ("story.brink".to_string(), fixture_source()),
+        // Issue #2289: the fixture's own handlers need `[project]
+        // conventions` configured (an unconfigured `@[convention]` is now
+        // `E169`) — mirrors the co-located `brink.toml` the real
+        // `tests/tier1-native/conventions-screenplay-preset` fixture
+        // directory now carries.
+        (
+            "brink.toml".to_string(),
+            "[project]\nconventions = \"story.brink\"\n".to_string(),
+        ),
+    ]));
     let env = Project::load(&tree, "story.brink", &OptionOverrides::default())
         .expect("Environment::load must succeed for a plain native project");
     let mounted = brink_environment::compile(&env).unwrap_or_else(|e| {

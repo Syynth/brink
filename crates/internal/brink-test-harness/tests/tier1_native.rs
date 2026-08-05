@@ -262,7 +262,9 @@ fn annotations_element() {
 #[test]
 fn annotations_element_reaches_story_data() {
     let path = corpus_dir().join("annotations-element").join("story.brink");
-    let output = brink_compiler::compile_path(&path)
+    let options = brink_test_harness::corpus::native_analysis_options(&path)
+        .unwrap_or_else(|e| panic!("load brink.toml for annotations-element: {e}"));
+    let output = brink_compiler::compile_path_with_options(&path, options)
         .unwrap_or_else(|e| panic!("compile annotations-element: {e:?}"));
     let (_program, line_tables) =
         brink_runtime::link(&output.data).expect("link annotations-element");
@@ -379,7 +381,9 @@ fn annotations_element_block_reaches_story_data() {
     let path = corpus_dir()
         .join("annotations-element-block")
         .join("story.brink");
-    let output = brink_compiler::compile_path(&path)
+    let options = brink_test_harness::corpus::native_analysis_options(&path)
+        .unwrap_or_else(|e| panic!("load brink.toml for annotations-element-block: {e}"));
+    let output = brink_compiler::compile_path_with_options(&path, options)
         .unwrap_or_else(|e| panic!("compile annotations-element-block: {e:?}"));
     let (_program, line_tables) =
         brink_runtime::link(&output.data).expect("link annotations-element-block");

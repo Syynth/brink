@@ -46,6 +46,15 @@ brink-source-tree = { workspace = true }
 # (non-dev) dependency because `src/corpus.rs` calls it unconditionally, not
 # just from a test target — the same reasoning as `brink-compiler` above.
 brink-environment = { workspace = true }
+# `corpus::run_native_transcript` (issue #2289): discovers a co-located
+# `brink.toml` (if any) the same way `brink_environment::Project::load`
+# already does, so a `.brink` fixture that needs `[project] conventions`
+# configured (e.g. a conventions module claiming its own file's prose) gets
+# the SAME options on both this crate's `compile_path`-based road and the
+# `Environment`-based one `environment_parallel_gate.rs` compares it
+# against — without this, the two roads would diverge on any fixture that
+# added a `brink.toml` only the `Environment` road would ever read.
+brink-project-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

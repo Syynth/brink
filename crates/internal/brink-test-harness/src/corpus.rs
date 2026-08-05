@@ -175,6 +175,19 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
 /// is a fixture-authoring bug, so this surfaces it as an `Err` rather than
 /// guessing which choice to take.
 ///
+/// Discovers and applies a co-located `brink.toml` (issue #2289), the same
+/// way [`compile_via_environment`] already does via `Project::load` —
+/// without this, a fixture that needs `[project] conventions` configured
+/// (e.g. a conventions module claiming its own file's prose, now that an
+/// unconfigured `@[convention]` is `E169`) would diverge between this
+/// `compile_path`-based road and the `Environment`-based one
+/// `environment_parallel_gate.rs` compares it against: `compile_path`
+/// itself bypasses `Environment`/config entirely (its own doc says so),
+/// so without this discovery step here, only the `Environment` road would
+/// ever see the file. `None`/no config found is byte-identical to the
+/// pre-#2289 behavior (`AnalysisOptions::default()`) — every existing
+/// fixture with no `brink.toml` is unaffected.
+///
 /// Returns `Err` on any compile error, link error, or runtime fault, if
 /// the program ever reaches [`brink_runtime::Step::Choices`], or if it
 /// produces more than [`brink_runtime::FlowInstance::LINE_LIMIT`] lines
@@ -188,9 +201,33 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
 /// `LINE_LIMIT` cap; `continue_single` alone only enforces the per-line
 /// step limit, not a cap on the number of lines produced.
 pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
-    let output = brink_compiler::compile_path(brink_path)
+    let options = native_analysis_options(brink_path)?;
+    let output = brink_compiler::compile_path_with_options(brink_path, options)
         .map_err(|e| format!("compile {}: {e}", brink_path.display()))?;
     drive_native_transcript(&output.data, &brink_path.display().to_string())
+}
+
+/// Discover a `brink.toml` governing `entry`'s project (walking up from it,
+/// [`brink_project_config::load_from_entry`]) and fold it into a fresh
+/// [`brink_analyzer::AnalysisOptions`] the same way every production entry
+/// point does (`dialect`/`types` unset-means-untouched, so passing `false`
+/// for both `_overridden` flags here matches "nothing else has claimed
+/// these yet"). `Ok(AnalysisOptions::default())`, byte-identical to today,
+/// when no `brink.toml` is found — see [`run_native_transcript`]'s own doc
+/// for why this discovery step exists at all.
+///
+/// `pub`: also used directly by `tier1_native.rs`'s compile-level sibling
+/// tests, which link a fixture themselves (via `brink_compiler::
+/// compile_path_with_options` + `brink_runtime::link`) rather than driving
+/// it to a transcript through this module's own [`drive_native_transcript`].
+pub fn native_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOptions, String> {
+    let (loaded, _discovery_warnings) = brink_project_config::load_from_entry(entry)
+        .map_err(|e| format!("load brink.toml governing {}: {e}", entry.display()))?;
+    let mut options = brink_analyzer::AnalysisOptions::default();
+    if let Some(loaded) = loaded {
+        let _config_warnings = options.apply_project_config(&loaded.config, false, false);
+    }
+    Ok(options)
 }
 
 /// Compile a `.ink` file with the brink compiler, link, and explore.

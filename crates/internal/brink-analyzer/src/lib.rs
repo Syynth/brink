@@ -62,7 +62,8 @@ pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
 pub use conventions_confinement::{
-    conventions_module_diagnostics, is_path_shaped_conventions_pointer,
+    conventions_module_diagnostics, conventions_unconfigured_diagnostics,
+    is_path_shaped_conventions_pointer,
 };
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{

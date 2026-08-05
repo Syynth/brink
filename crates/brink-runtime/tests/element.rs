@@ -54,7 +54,17 @@ fn story_from_native_source(src: &str) -> Story<FastRng> {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("main.brink");
     std::fs::write(&path, src).unwrap();
-    let result = brink_compiler::compile_path(&path);
+    // Issue #2289 part 2 (2026-08-05 ruling): a declared `@[convention]`
+    // handler with no configured conventions module is now `E169`, not a
+    // silent pass — `main.brink` inlines its own handlers, so it is its own
+    // conventions module. `compile_path` never reads a co-located
+    // `brink.toml` (its own doc says it bypasses `Environment`/config
+    // entirely), so this has to be an explicit option, not a written file.
+    let options = brink_analyzer::AnalysisOptions {
+        conventions: Some("main.brink".to_owned()),
+        ..brink_analyzer::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&path, options);
     let _ = std::fs::remove_dir_all(&dir);
     let data = result.unwrap().data;
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
