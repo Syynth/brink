@@ -11,10 +11,11 @@ check `barter` against, so the well-formedness check could neither confirm
 nor refute it. Two changes:
 
 - **A trailing segment that resolves to a real submodule now licenses that
-  module** — its public exports become bare-referenceable in the importing
-  file, exactly as an explicit `use story::market::barter;` written as a
-  qualified import would grant. A trailing segment resolving to an item
-  keeps today's behavior unchanged.
+  module** — its public exports become reachable via qualified access
+  (`barter::haggle`, never bare `haggle`) in the importing file, exactly
+  as an explicit `use story::market::barter;` written as a qualified
+  import would grant. A trailing segment resolving to an item keeps
+  today's behavior unchanged.
 - **A trailing segment resolving to neither an item nor a module now raises
   `E088`** (previously silent) — the retired no-op. This guard also widened
   incidentally: `E088` now fires for a bare import naming an item of any
@@ -27,9 +28,9 @@ nor refute it. Two changes:
 - **Precedence, decided and documented**: when a trailing segment resolves
   as *both* an item of the parent module *and* a declared submodule, both
   readings apply — the item is bare-importable under its own name, and the
-  submodule's exports are also licensed. No exclusion between the two
-  (`resolve::import_coverage_for_file`'s doc comment has the full
-  rationale).
+  submodule is also licensed for qualified access under its own name. No
+  exclusion between the two (`resolve::import_coverage_for_file`'s doc
+  comment has the full rationale).
 - Self-import (`E090`) now also fires for the leaf-item shape when the
   resolved module is the importing file's own (previously only the
   qualified `import mod;` form was checked) — except when the trailing
