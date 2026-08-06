@@ -408,11 +408,17 @@ pub enum ElementKind {
     /// which are *claimed*, i.e. matched without any structural marker of
     /// their own).
     BangDispatch,
-    /// A block cue (`CUE`, `docs/prose-dialect-spec.md` §8b.9/§8d.4) — a
-    /// bare `@NAME` speaker line with no tag extension (a cue carrying a
-    /// tag, e.g. `@VENDOR #(v.o.)`, is declined the same way a
-    /// slug/tag-carrying [`Self::SceneHeading`] is — see
-    /// [`crate::hir::lower_native::element::candidate`]'s own doc).
+    /// A cue — either a block cue (`CUE`, `docs/prose-dialect-spec.md`
+    /// §8b.9/§8d.4), a bare `@NAME` speaker line, or a compact cue
+    /// (`COMPACT_CUE`, §8b.9, issue #2079) — `@NAME: text` — matched the
+    /// same way against its name segment alone. Either shape is declined
+    /// when it carries a tag extension (e.g. `@VENDOR #(v.o.)`), the same
+    /// way a slug/tag-carrying [`Self::SceneHeading`] is (see
+    /// [`crate::hir::lower_native::element::candidate`]'s own doc). A
+    /// compact cue's fused dialogue is also declined — the whole claim, not
+    /// just the dialogue — when the dialogue itself is not a plain content
+    /// line (carries a `LABEL` or a fused divert/choice); see
+    /// `element::try_claim`'s own note.
     /// Issue #1720: the built-in screenplay preset's `cue` handler is the
     /// first consumer.
     Cue,
