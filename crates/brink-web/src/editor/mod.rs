@@ -4416,6 +4416,86 @@ mod tests {
         );
     }
 
+    // ── Issue #2318: `brink.toml` sharing a session must not disqualify
+    // `is_all_native` on the COMPILE road ───────────────────────────────
+    //
+    // `crates/internal/brink-ide/tests/issue_2318_std_collision_survives_config_document.rs`
+    // already pins this fix on the ANALYSIS road (`IdeSession::snapshot` ->
+    // `analyze_with_modules`). But the issue's own reported diagnostics came
+    // from a different road: `packages/ink-editor/src/diagnostics.ts`'s
+    // debounced-compile lint -> `document-sessions.ts:828` ->
+    // `project-session.ts:218`'s `session.compileProject(entry)` ->
+    // `EditorSession::compile_project` -> `IdeSession::compile` ->
+    // `brink-db`'s `symbol_index_query`, which reads
+    // `project_is_all_native` (`crates/internal/brink-db/src/queries/mod.rs`).
+    // Both roads read the same fixed predicate, so this pins the road that
+    // otherwise has zero coverage — the exact fixture from
+    // `packages/brink-studio/src/main.tsx`'s `?fixture=native` (`brink.toml`,
+    // `conventions.brink`, `story.brink`, `market/barter.brink`), loaded
+    // into a real `EditorSession::new()` (which mounts the stdlib, #2231)
+    // via `update_file`, exactly as the editor's own file-loading path does.
+    #[test]
+    fn compile_project_std_collision_survives_config_document() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\nentry = \"story.brink\"\nconventions = \"conventions.brink\"\n",
+        );
+        s.update_file(
+            "conventions.brink",
+            "struct Cue {\n  \
+               speaker: string,\n\
+             }\n\n\
+             @[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", attach = Cue, order = 10)]\n\
+             fn cue(name: string): Cue {\n  \
+               return Cue { speaker: name };\n\
+             }\n\n\
+             @[convention(claims = \"^(?<kind>INT|EXT)\\\\. (?<title>.+)$\", order = 20)]\n\
+             fn heading(kind: string, title: string) {\n  \
+               return \"-- {kind}. {title} --\";\n\
+             }\n",
+        );
+        s.update_file(
+            "story.brink",
+            "use story::market::barter;\n\n\
+             pub flow main() {\n  \
+               INT. MARKET SQUARE - NIGHT\n  \
+               The square is empty.\n\n  \
+               VENDOR\n  \
+               You shouldn't be here after dark.\n\n  \
+               -> barter::haggle\n\
+             }\n",
+        );
+        s.update_file(
+            "market/barter.brink",
+            "pub flow haggle() {\n  \
+               KID\n  \
+               How much for the lantern?\n  \
+               -> DONE\n\
+             }\n",
+        );
+
+        let result = s.compile_project("story.brink");
+        let v = json(&result);
+        let offending: Vec<serde_json::Value> = v["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|d| {
+                let code = d["code"].as_str().unwrap_or_default();
+                code == "E022"
+                    || code == "E023"
+                    || d["message"].as_str().unwrap_or_default().contains("std::")
+            })
+            .cloned()
+            .collect();
+        assert!(
+            offending.is_empty(),
+            "the project's own Cue/cue/heading must coexist with the mounted stdlib's \
+             same-named declarations on the compile road too: {offending:#?}\nfull result: {result}"
+        );
+    }
+
     #[test]
     fn compile_project_unknown_entry_reports_an_error_not_a_panic() {
         // Entry not loaded in the session → a clean `ok:false` error, mirroring
