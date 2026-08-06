@@ -459,9 +459,20 @@ export class ProjectSession {
     await this.resolveIncludes();
   }
 
-  /** Request save via provider. */
-  async save(): Promise<void> {
-    await this.provider.requestSave?.();
+  /** Request a canonical save via the provider (optionally narrowed to
+   *  `paths` — see {@link FileProvider.requestSave}). Rejections propagate:
+   *  the save commands rely on that to keep files dirty when the host's
+   *  write fails. */
+  async save(paths?: string[]): Promise<void> {
+    await this.provider.requestSave?.(paths);
+  }
+
+  /** Whether the provider implements a host-side canonical save. The save
+   *  commands branch on this: with a host save they await it and only
+   *  re-baseline on success; without one (the standalone playground) the
+   *  flush-and-re-baseline path runs synchronously as it always has. */
+  hasHostSave(): boolean {
+    return this.provider.requestSave !== undefined;
   }
 
   /** Ask the provider for a file not yet in the session; loads it if found. */

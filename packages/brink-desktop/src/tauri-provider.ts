@@ -78,30 +78,38 @@ export class TauriFileProvider implements FileProvider {
     await invoke("rename_file", { root: this.root, from: oldPath, to: newPath });
   }
 
-  async requestSave(): Promise<void> {
-    const pending = [...this.staged.entries()];
-    this.staged.clear();
+  /**
+   * THE canonical write under the overlay contract (D2): the save commands
+   * await this and only re-baseline on success. `paths` narrows the write
+   * (`file.save` passes the focused path); absent saves everything staged.
+   * A staged entry is only dropped once its write succeeded — a rejected
+   * write stays staged, the command reports the error, and the file stays
+   * dirty for retry.
+   */
+  async requestSave(paths?: string[]): Promise<void> {
+    const wanted = paths === undefined ? null : new Set(paths);
+    const pending = [...this.staged.entries()].filter(
+      ([rel]) => wanted === null || wanted.has(rel),
+    );
     for (const [rel, content] of pending) {
       await invoke("write_file", { root: this.root, rel, content });
+      this.staged.delete(rel);
     }
   }
 
-  /** Persist a #154 egress batch to disk. Called from `onFilesChanged`. */
-  async writeChanges(changes: FileChange[]): Promise<void> {
-    for (const change of changes) {
-      if (change.type === "deleted") {
-        // Binder deletes already went through `deleteFile`; tolerate the
-        // notification arriving for an already-removed file.
-        this.staged.delete(change.path);
-        continue;
-      }
-      this.staged.delete(change.path);
-      await invoke("write_file", {
-        root: this.root,
-        rel: change.path,
-        content: change.content,
-      });
-    }
+  /**
+   * Feed a #154 egress batch to the BACKUP RING (D2 overlay model — the
+   * egress is crash protection, not canonical persistence; canonical
+   * writes happen in {@link requestSave}). Ring bounds are enforced in the
+   * shell command, next to the storage.
+   */
+  async ringBackups(changes: FileChange[]): Promise<void> {
+    const at = Date.now();
+    const entries = changes
+      .filter((c) => c.type !== "deleted" && c.content !== undefined)
+      .map((c) => ({ path: c.path, content: c.content ?? "", at }));
+    if (entries.length === 0) return;
+    await invoke("append_backups", { root: this.root, entries });
   }
 }
 

@@ -537,3 +537,127 @@ describe("StudioApi egress surface", () => {
     unsubscribe();
   });
 });
+
+// ── Host-save under the overlay contract (D2, 2026-08-07 ruling) ────
+//
+// A provider WITH `requestSave` owns the canonical write: the save
+// commands await it and only re-baseline on success. Combined with
+// `egressPersists: false`, the egress flush feeds a ring and dirty
+// survives delivery — only ⌘S clears it. These run against the real wasm
+// session + a real ProjectSession, so they pin the whole-stack contract.
+
+class HostSaveProvider extends InMemoryFileProvider {
+  saves: Array<string[] | undefined> = [];
+  failNext = false;
+  async requestSave(paths?: string[]): Promise<void> {
+    if (this.failNext) {
+      this.failNext = false;
+      throw new Error("disk full");
+    }
+    this.saves.push(paths);
+  }
+}
+
+async function makeOverlayProject(): Promise<Egress & { host: HostSaveProvider }> {
+  await initWasm();
+  const host = new HostSaveProvider({ "main.ink": MAIN_INK, "side.ink": SIDE_INK });
+  const batches: FileChange[][] = [];
+  const project = new ProjectSession({
+    provider: host,
+    entryFile: "main.ink",
+    egressPersists: false,
+    onFilesChanged: (changes) => batches.push(changes),
+  });
+  await project.initialize();
+  return { provider: host, host, project, batches };
+}
+
+async function microtasks(): Promise<void> {
+  for (let i = 0; i < 6; i += 1) await Promise.resolve();
+}
+
+describe("host-save (overlay contract)", () => {
+  function commandHarness(egress: Egress) {
+    const documents = new DocumentSessions(egress.project);
+    const commands = new CommandRegistry();
+    const notifications = new NotificationCenter();
+    registerFileCommands(commands, {
+      project: egress.project,
+      documents,
+      notify: (n) => void notifications.notify(n),
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const dispose = documents.mountView("main.ink", "g1", container);
+    documents.setFocused("main.ink", "g1");
+    const dom = container.querySelector(".cm-editor");
+    const view = dom === null ? null : EditorView.findFromDOM(dom as HTMLElement);
+    if (!view) throw new Error("no editor mounted");
+    return { documents, commands, notifications, container, dispose, view };
+  }
+
+  it("egress delivery does NOT clear dirty — the ring hears, dirty survives", async () => {
+    // No editor view mounted: advancing fake timers with a live CM view
+    // trips its jsdom-hostile measure pass; the overlay contract is a
+    // session-level property anyway.
+    const egress = await makeOverlayProject();
+    egress.project.applyEdit("main.ink", `// overlay\n${MAIN_INK}`);
+    vi.advanceTimersByTime(500); // egress flush = ring feed
+    expect(egress.batches).toHaveLength(1);
+    expect(egress.project.dirtyPaths()).toEqual(["main.ink"]); // STILL dirty
+  });
+
+  it("⌘S canonically saves through the host and re-baselines on success", async () => {
+    const egress = await makeOverlayProject();
+    const h = commandHarness(egress);
+
+    h.view.dispatch({ changes: { from: 0, to: 0, insert: "// overlay\n" } });
+    h.commands.dispatch("file.save");
+    await microtasks();
+    expect(egress.host.saves).toEqual([["main.ink"]]); // canonical, narrowed
+    expect(egress.project.dirtyPaths()).toEqual([]);
+    expect(h.notifications.getState().visible.map((n) => n.message)).toContain(
+      "Saved main.ink",
+    );
+
+    h.dispose();
+    h.container.remove();
+  });
+
+  it("a rejected host save keeps the file dirty and reports; retry succeeds", async () => {
+    const egress = await makeOverlayProject();
+    const h = commandHarness(egress);
+
+    h.view.dispatch({ changes: { from: 0, to: 0, insert: "x" } });
+    egress.host.failNext = true;
+    h.commands.dispatch("file.save");
+    await microtasks();
+    expect(egress.project.dirtyPaths()).toEqual(["main.ink"]); // NOT re-baselined
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.startsWith("Save failed")),
+    ).toBe(true);
+
+    h.commands.dispatch("file.save"); // retry
+    await microtasks();
+    expect(egress.host.saves).toEqual([["main.ink"]]);
+    expect(egress.project.dirtyPaths()).toEqual([]);
+
+    h.dispose();
+    h.container.remove();
+  });
+
+  it("file.saveAll requests a whole-project host save and re-baselines all", async () => {
+    const egress = await makeOverlayProject();
+    const h = commandHarness(egress);
+
+    egress.project.applyEdit("side.ink", "bulk edited");
+    h.view.dispatch({ changes: { from: 0, to: 0, insert: "y" } });
+    h.commands.dispatch("file.saveAll");
+    await microtasks();
+    expect(egress.host.saves).toEqual([undefined]); // unnarrowed = everything
+    expect(egress.project.dirtyPaths()).toEqual([]);
+
+    h.dispose();
+    h.container.remove();
+  });
+});

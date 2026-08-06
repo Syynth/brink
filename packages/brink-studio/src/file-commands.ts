@@ -47,11 +47,33 @@ export function registerFileCommands(
         // save — still flush pending egress so Mod-S always syncs the host.
         const path = documents.flushFocused();
         project.flushFileChanges();
-        if (path !== null) {
+        if (path === null) {
+          notify({ severity: "info", source: "file", message: "No editor focused — nothing to save" });
+          return;
+        }
+        // Host-save branch (the overlay contract, 2026-08-07 D2 ruling): a
+        // provider with `requestSave` owns the canonical write. Await it
+        // and re-baseline ONLY on success — a rejected write keeps the file
+        // dirty for retry instead of silently pretending it saved. Without
+        // a host save (the standalone playground) the synchronous
+        // flush-and-re-baseline path is byte-identical to before.
+        if (project.hasHostSave()) {
+          void project.save([path]).then(
+            () => {
+              project.markFilesSaved([path]);
+              notify({ severity: "info", source: "file", message: `Saved ${path}` });
+            },
+            (e: unknown) => {
+              notify({
+                severity: "error",
+                source: "file",
+                message: `Save failed for ${path}: ${e instanceof Error ? e.message : String(e)}`,
+              });
+            },
+          );
+        } else {
           project.markFilesSaved([path]);
           notify({ severity: "info", source: "file", message: `Saved ${path}` });
-        } else {
-          notify({ severity: "info", source: "file", message: "No editor focused — nothing to save" });
         }
       },
     }),
@@ -65,13 +87,32 @@ export function registerFileCommands(
         documents.flushAll();
         const dirty = project.dirtyPaths();
         project.flushFileChanges();
-        project.markAllSaved();
-        notify({
-          severity: "info",
-          source: "file",
-          message:
-            dirty.length === 0 ? "No unsaved changes" : `Saved ${plural(dirty.length, "file")}`,
-        });
+        const done = (): void =>
+          notify({
+            severity: "info",
+            source: "file",
+            message:
+              dirty.length === 0 ? "No unsaved changes" : `Saved ${plural(dirty.length, "file")}`,
+          });
+        // Same host-save branch as `file.save` — see the comment there.
+        if (project.hasHostSave()) {
+          void project.save().then(
+            () => {
+              project.markAllSaved();
+              done();
+            },
+            (e: unknown) => {
+              notify({
+                severity: "error",
+                source: "file",
+                message: `Save failed: ${e instanceof Error ? e.message : String(e)}`,
+              });
+            },
+          );
+        } else {
+          project.markAllSaved();
+          done();
+        }
       },
     }),
   ];

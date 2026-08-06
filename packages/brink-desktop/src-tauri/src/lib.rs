@@ -136,6 +136,92 @@ async fn rename_file(root: String, from: String, to: String) -> Result<(), Shell
     std::fs::rename(&from_path, &to_path).map_err(|e| io_err(&from_path, e))
 }
 
+// ── Backup ring (docs/desktop-shell-spec.md D2; 2026-08-07 overlay ruling) ──
+
+/// One ring entry from the webview (`TauriBackupSink.append`).
+#[derive(serde::Deserialize)]
+struct BackupEntryIn {
+    path: String,
+    content: String,
+    /// Milliseconds since epoch, from the frontend's clock.
+    at: u64,
+}
+
+/// Ring bounds — enforced HERE, next to the storage (the sink owns its
+/// bounds per the OverlayPersistence contract). Working defaults from the
+/// 2026-08-07 ruling; a Settings surface can adjust later.
+const RING_MAX_ENTRIES: usize = 25;
+const RING_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// A filesystem-safe, deterministic key for one project's ring directory.
+/// The full sanitized path (not a hash): stable forever, debuggable by eye.
+fn project_ring_key(root: &str) -> String {
+    root.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect()
+}
+
+/// Append crash-protection snapshots to the project's backup ring, then
+/// prune oldest-first until the bounds hold. Filenames are
+/// `{at:013}_{seq:02}_{sanitized-rel}.txt` — zero-padded millis make
+/// lexicographic order chronological, so pruning is a sort + truncate.
+#[tauri::command]
+async fn append_backups(
+    app: tauri::AppHandle,
+    root: String,
+    entries: Vec<BackupEntryIn>,
+) -> Result<(), ShellError> {
+    use tauri::Manager;
+
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| ShellError::Io {
+            path: "app-data dir".to_owned(),
+            source: std::io::Error::other(e),
+        })?
+        .join("backups")
+        .join(project_ring_key(&root));
+    std::fs::create_dir_all(&base).map_err(|e| io_err(&base, e))?;
+
+    for (i, entry) in entries.iter().enumerate() {
+        // Guard the rel path exactly like the project commands do; a ring
+        // write must never become a path-escape vector either.
+        resolve(&root, &entry.path)?;
+        let name = format!(
+            "{:013}_{:02}_{}.txt",
+            entry.at,
+            i,
+            project_ring_key(&entry.path)
+        );
+        let file = base.join(name);
+        std::fs::write(&file, &entry.content).map_err(|e| io_err(&file, e))?;
+    }
+
+    // Prune: oldest first (lexicographic == chronological by construction).
+    let mut files: Vec<(PathBuf, u64)> = std::fs::read_dir(&base)
+        .map_err(|e| io_err(&base, e))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            meta.is_file().then(|| (e.path(), meta.len()))
+        })
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|(_, len)| len).sum();
+    let mut count = files.len();
+    for (path, len) in &files {
+        if count <= RING_MAX_ENTRIES && total <= RING_MAX_BYTES {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            count -= 1;
+            total -= len;
+        }
+    }
+    Ok(())
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs

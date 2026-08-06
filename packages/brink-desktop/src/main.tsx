@@ -23,6 +23,8 @@ const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
+/** The autosave ticker for the open project; cleared on close. */
+let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Resolve the tab to open first. `ProjectSession` discovers `brink.toml`
@@ -86,17 +88,31 @@ async function openProject(root: string): Promise<void> {
     files,
     provider,
     entryFile: resolveEntryFile(files),
-    // Persistence (D1): the #154 egress writes through to disk — batches
-    // are debounced ~500 ms and flush immediately on save and unmount.
-    // See TauriFileProvider's doc for why this, and what D2 changes.
+    // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
+    // persistence — dirty means "diverges from the last canonical save".
+    // Canonical writes happen through provider.requestSave, awaited by the
+    // save commands, which only re-baseline on success.
+    egressPersists: false,
+    // The #154 egress feeds the BACKUP RING — crash protection at ~500 ms
+    // granularity, bounded (25 entries / 10 MB) in the shell, orthogonal
+    // to dirty. Backups never clear dirty; ⌘S does.
     onFilesChanged: (changes: FileChange[]) => {
-      void provider.writeChanges(changes).catch((e: unknown) => {
-        // Surfacing write failures properly is D2 (Output channel); for
-        // the D1 spike a console error beats a silent data drop.
-        console.error("[brink-desktop] failed to persist changes", e);
+      void provider.ringBackups(changes).catch((e: unknown) => {
+        // Ring failures must never block editing; Output-channel routing
+        // is queued in the epic. A console error beats a silent drop.
+        console.error("[brink-desktop] backup ring append failed", e);
       });
     },
   });
+
+  // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
+  // class. Clean ticks are no-ops inside the command. 2-minute default
+  // (2026-08-07 ruling); a Settings surface can adjust later.
+  const AUTOSAVE_MS = 120_000;
+  const api = current.api;
+  autosaveTimer = setInterval(() => {
+    if (api.getDirtyFiles().length > 0) api.dispatch("file.saveAll");
+  }, AUTOSAVE_MS);
 }
 
 async function chooseAndOpen(): Promise<void> {
@@ -111,12 +127,21 @@ async function chooseAndOpen(): Promise<void> {
 }
 
 /**
- * Unmount the current project — unmount flushes the #154 egress, so no
- * edit is lost — and restore the landing screen. The dirty-state close
- * prompt is D2.
+ * Unmount the current project and restore the landing screen. Before the
+ * unmount, a best-effort canonical save of anything dirty (the unmount's
+ * own egress flush only feeds the RING under the overlay contract — the
+ * ring protects the work, but close should leave canonical files current
+ * too). The dirty-state close PROMPT is still queued in the epic.
  */
 function closeProject(): void {
   if (current === null) return;
+  if (autosaveTimer !== null) {
+    clearInterval(autosaveTimer);
+    autosaveTimer = null;
+  }
+  if (current.api.getDirtyFiles().length > 0) {
+    current.api.dispatch("file.saveAll");
+  }
   current.unmount();
   current = null;
   document.title = "Brink Studio";
