@@ -516,11 +516,29 @@ export interface ExplainCapture {
   end: number;
 }
 
-/** One handler's classification-time match — the winner or a shadowed runner-up. */
+/**
+ * One handler's classification-time match — the winner or a shadowed
+ * runner-up. `kind` (issue #2310) — the claimed line's compile-time
+ * structural shape — is present only on the `winner` a caller receives via
+ * {@link ExplainMatch.winner}; a shadowed entry never carries one, since
+ * only the actual winning claim has a compiled record to read it from (see
+ * `crates/brink-web/src/editor/explain_match.rs`'s own module doc).
+ *
+ * All five `ElementKind` variants are declared for completeness, but only
+ * `"content_line"` and `"scene_heading"` are reachable today: the native
+ * frontend hands a claiming handler's pattern only the inner `CUE_NAME`/
+ * `TEXT` run (excluding the `@`/parens), which the built-in screenplay
+ * preset's own `cue`/`parenthetical` patterns require and so never match
+ * against the live raw-line walk this field is checked against, and
+ * `!name` dispatch handlers are registered on a path that live walk never
+ * consults at all — so `"cue"`, `"parenthetical"`, and `"bang_dispatch"`
+ * cannot surface through this field yet.
+ */
 export interface ExplainClassifiedMatch {
   handler: ExplainHandler;
   order: number;
   mode: "attach" | "wrap";
+  kind?: "content_line" | "scene_heading" | "bang_dispatch" | "cue" | "parenthetical";
   captures: ExplainCapture[];
 }
 
