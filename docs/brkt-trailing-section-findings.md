@@ -228,7 +228,7 @@ ship on the `.inkb`/save-format side:
 - **`SUSPENDED_FLOW_SECTION_VERSION`.** The save format
   (`crates/internal/brink-format/src/save.rs`) applies the same
   section-local-version idea to `SuspendedFlow`
-  (`pub const SUSPENDED_FLOW_SECTION_VERSION: u16 = 1`), independent of
+  (`pub const SUSPENDED_FLOW_SECTION_VERSION: u16 = 2`), independent of
   `SAVE_FORMAT_VERSION`, showing the pattern is not `.inkb`-specific
   in this codebase.
 

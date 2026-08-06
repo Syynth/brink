@@ -1435,14 +1435,50 @@ their own handler name) needs either new `.inkb` line-table storage or the
 same VM mechanism, and is not attempted here. `BlockId` is not re-derived
 from attach runs either (§7.1's own note stands: it still just counts
 terminator-bounded runs) — a run of adjacent attached lines can span more
-than one `BlockId` if it also crosses a real terminator. Persistence is
-explicitly out of scope: `SaveState` never captured execution position or
-the output buffer to begin with (`brink-runtime::save`'s own module doc),
-so this doesn't newly regress anything there, but a save/resume story for
-`Element.data` specifically (as opposed to `BlockId`, which was already
-never persisted) has not been designed. Oracle CASES/EPISODES measured
-unchanged from the current ratchet (5608 episodes) — expected, since no
-oracle fixture uses `@[convention]`/attach dispatch.
+than one `BlockId` if it also crosses a real terminator. Oracle
+CASES/EPISODES measured unchanged from the current ratchet (5608
+episodes) — expected, since no oracle fixture uses `@[convention]`/attach
+dispatch.
+
+**Persistence — RULED 2026-08-05, `docs/decision-log.md`** ("Two rulings:
+… block metadata persists with `next_block_id`"): **block metadata
+persists, and `next_block_id` persists with it** — for two independent
+reasons, not one. (a) `pending_element` must persist because an open
+attach run's accumulated data lives only in the VM output buffer's
+`pending_element`/the transcript (`resolve_lines_annotated`'s
+`current_element` accumulator, `crates/brink-runtime/src/output/mod.rs`),
+neither of which survives a park — losing it drops the attributed
+speaker/metadata on resume, the exact class this project refuses to ship.
+(b) `next_block_id` must persist on its own account, independent of
+attachment: restarting it at 0 would give the *same* uninterrupted run a
+different id after resume (and could collide with ids already emitted
+before the park), breaking `BlockId`'s documented "same id iff same
+uninterrupted run" contract (`crates/brink-runtime/src/story/types.rs`).
+Attachment and `BlockId` remain the two independent concepts they always
+were (this section's own note above, and `BlockId`'s doc, both stand
+unchanged) — they simply share one park boundary, so both need a
+save-stable value at that boundary.
+
+⚠ This corrects the paragraph's earlier claim that `BlockId` "was
+already never persisted" — that was true, and remains true, for the
+*ordinary* game-state save (`SaveState` still never captures execution
+position or the output buffer — `brink-runtime::save`'s own module doc,
+unchanged), because a host re-entering at a known knot never compares a
+block id across that boundary. It stops being true for a flow parked
+(`Step::Suspended`) *inside* an open attach run: `Step::Suspended` is
+deliberately not a `BlockId` run-terminator, so an `await` mid-`cue` is
+representable, and resuming from `brink_format::SuspendedFlow` (the
+FlowFrame, `docs/flow-suspension-spec.md` §2) continues the *same* run
+rather than re-entering a knot from the top. `SuspendedFlow` now carries
+`next_block_id` and `pending_element` (the run's accumulated attachment
+data at park time) for exactly that boundary — format-only, like the rest
+of `SuspendedFlow` (FS-1 landed; the FS-2/FS-3 compiler synthesis and
+runtime spill/restore that would produce/consume a *live* value are still
+later slices, so `Story::save_state`/`load_state` still always
+produce/consume `suspended: None` and this doesn't change today's
+observable behavior). What was undesigned — *where* attachment's
+save-stable identity lives — is now ruled; the runtime wiring that reads
+and writes it is the next slice.
 
 ## 8. Worked cases (abbreviated; spellings illustrative)
 
