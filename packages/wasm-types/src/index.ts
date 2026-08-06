@@ -175,11 +175,31 @@ export interface SaveState {
   /** Global variables by name. Each value is a tagged ink value
    * (e.g. `{ Int: 10 }`, `{ String: "x" }`, `"Null"`). */
   globals: Record<string, unknown>;
+  /** Each saved global's compiled `DefinitionId` at save time, keyed by the
+   * same name as `globals` (M-3 rehydration miss-path lookup,
+   * `docs/modules-spec.md` §5). A `"$tt_hash"` string, same format as
+   * {@link VisitEntry.id}. A VAR/CONST/LIST living in a *declared* module
+   * hashes its identity as `(module, name)`, so a bare name alone can't
+   * reconstruct the id a `#@was` alias-table entry was compiled against —
+   * this is the id `Story::load_state` consults when a saved global's name
+   * no longer matches any current global slot. Empty for saves predating
+   * this field. */
+  global_ids: Record<string, string>;
   visits: VisitEntry[];
   turns: VisitEntry[];
   turn_index: number;
   rng_seed: number;
   previous_random: number;
+  /** This flow's parked execution position when suspended mid-tunnel/mid-
+   * `await` (`docs/flow-suspension-spec.md` §2/§9, FS-1). Absent for an
+   * ordinary save at a turn boundary, choice, or `-> END` — and for any save
+   * predating this field.
+   *
+   * **Format-only today.** `Story::save_state`/`load_state` always
+   * produce/consume `undefined` as of FS-1; the compiler synthesis that
+   * populates a live frame (FS-2) and the runtime spill/restore that
+   * produces/consumes one (FS-3) are later slices — see #889. */
+  suspended?: SuspendedFlow;
 }
 
 /** A visit/turn count for one scope. `id` (a `"$tt_hash"` string) is the load
@@ -189,6 +209,61 @@ export interface VisitEntry {
   path?: string;
   count: number;
 }
+
+/**
+ * A parked flow's durable, recompile-stable execution position — the
+ * `FlowFrame` (`docs/flow-suspension-spec.md` §2, RULED). Every field is a
+ * name-stable identity (container/`DefinitionId`, never an instruction
+ * offset), so it survives a story recompile the same way the rest of
+ * {@link SaveState} does.
+ *
+ * FS-1 is format-only: today this is exercised only by round-trip tests on
+ * the Rust side. Section-locally versioned independently of
+ * `SaveState.version` (`SuspendedFlow.version`); bumped to `2` for #2108's
+ * `next_block_id`/`pending_element`.
+ */
+export interface SuspendedFlow {
+  /** Section-local format version, independent of `SaveState.version`. */
+  version: number;
+  /** The container the flow is currently parked inside (a `"$tt_hash"`
+   * string). */
+  current: string;
+  /** The tunnel-return chain, outermost first (`"$tt_hash"` strings). */
+  return_stack: string[];
+  /** Every local crossing the yield, name-keyed — a tagged ink value (see
+   * `SaveState.globals`). Treat as opaque unless inspecting in dev. */
+  frame: unknown;
+  /** The wake policy governing when the parked flow resumes. */
+  wake: WakePolicy;
+  /** The flow's `Flow::next_block_id` counter at the instant it was parked
+   * (#2108, 2026-08-05 ruling: a resumed flow continues its block-id
+   * sequence rather than colliding with fresh numbering). `0` for a save
+   * predating this field, identical to the pre-ruling behavior. */
+  next_block_id: number;
+  /** Element-attachment metadata (`@[convention(..., attach = X)]`, #2108)
+   * accumulated on the dialogue run open at the instant this flow parked;
+   * empty when no attach run was open, or for a save predating this
+   * field. */
+  pending_element: Record<string, string>;
+}
+
+/** A parked flow's wake policy (`docs/flow-suspension-spec.md` §2 point 4;
+ * see `docs/effects-spec.md` §13.1 for the wake contract this plugs into). */
+export interface WakePolicy {
+  /** The `await` site's synthesized resume-container id (a `"$tt_hash"`
+   * string). */
+  site: string;
+  /** The condition's compiler-synthesized pure-fn token id (a `"$tt_hash"`
+   * string). Absent when `source` is `"Host"`. */
+  condition?: string;
+  source: WakeSource;
+}
+
+/** The wake policy's host-source discriminant. Only `"Condition"` is
+ * compiler-produced today; `"Host"` is reserved for a future host-driven
+ * wake source (next-frame, external event) with no compiled ink condition
+ * fn — the host owns re-evaluation directly. */
+export type WakeSource = "Condition" | "Host";
 
 /** What a load couldn't apply. `unknown_globals` lists saved globals the
  * current story no longer declares; `unresolved_renames` lists saved
