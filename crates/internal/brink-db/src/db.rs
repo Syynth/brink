@@ -19,11 +19,11 @@ use crate::queries::{
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
     conventions_projection_query, diagnostics_query, effects_query, harvest_completion_index_query,
     harvest_index_query, has_errors_query, include_graph_query, infer_body_query,
-    inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
-    local_signature_query, lowered_query, module_map_query, parse_native_query, parse_query,
-    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
-    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
-    type_inference_query, ufcs_resolution_query, value_meta_query,
+    inferred_signature_query, is_source_file, lir_knot_chunk_query, lir_prelude_decls_query,
+    lir_query, local_signature_query, lowered_query, module_map_query, parse_native_query,
+    parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    type_diagnostics_query, type_inference_query, ufcs_resolution_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -296,15 +296,27 @@ impl ProjectDb {
         Some(parse_native_query(&self.salsa, *file))
     }
 
-    /// Get the HIR for a file.
+    /// Get the HIR for a file. `None` for an unknown file id, or for a
+    /// tracked file [`is_source_file`] excludes (issue #2329 review
+    /// finding): this per-file accessor reads `lowered_query` directly, so
+    /// without this gate a `brink.toml`/`.md`/`.json` document would still
+    /// return its bogus ink-lowered HIR.
     pub fn hir(&self, id: FileId) -> Option<&HirFile> {
         let file = self.files.get(&id)?;
+        if !is_source_file(file.path(&self.salsa)) {
+            return None;
+        }
         Some(&lowered_query(&self.salsa, self.project, *file).hir)
     }
 
-    /// Get the symbol manifest for a file.
+    /// Get the symbol manifest for a file. `None` for an unknown file id, or
+    /// for a tracked file [`is_source_file`] excludes — see [`Self::hir`]'s
+    /// doc (issue #2329 review finding).
     pub fn manifest(&self, id: FileId) -> Option<&SymbolManifest> {
         let file = self.files.get(&id)?;
+        if !is_source_file(file.path(&self.salsa)) {
+            return None;
+        }
         Some(&lowered_query(&self.salsa, self.project, *file).manifest)
     }
 
@@ -314,9 +326,14 @@ impl ProjectDb {
         Some(file.text(&self.salsa).as_str())
     }
 
-    /// Get per-file diagnostics (parse + lowering).
+    /// Get per-file diagnostics (parse + lowering). `None` for an unknown
+    /// file id, or for a tracked file [`is_source_file`] excludes — see
+    /// [`Self::hir`]'s doc (issue #2329 review finding).
     pub fn file_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
+        if !is_source_file(file.path(&self.salsa)) {
+            return None;
+        }
         Some(
             lowered_query(&self.salsa, self.project, *file)
                 .diagnostics
@@ -327,9 +344,14 @@ impl ProjectDb {
     /// Get the B0.3 HIR admission validator's output for a file
     /// (docs/hir-admission-contract.md §4.2, issue #1172) — kept separate
     /// from [`Self::file_diagnostics`] because it is non-suppressible
-    /// (never routed through `apply_suppressions`).
+    /// (never routed through `apply_suppressions`). `None` for an unknown
+    /// file id, or for a tracked file [`is_source_file`] excludes — see
+    /// [`Self::hir`]'s doc (issue #2329 review finding).
     pub fn admission_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {
         let file = self.files.get(&id)?;
+        if !is_source_file(file.path(&self.salsa)) {
+            return None;
+        }
         Some(
             lowered_query(&self.salsa, self.project, *file)
                 .admission

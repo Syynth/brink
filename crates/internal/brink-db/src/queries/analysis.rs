@@ -128,12 +128,21 @@ pub(crate) fn resolutions_index_query(
 /// exactly the way `native_strict_only_error` above is native-conditional.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+///
+/// Gated on [`is_source_file`] (issue #2329 review finding): this is a
+/// direct per-file entry point (`ProjectDb::per_file_diagnostics`), reachable
+/// without going through [`contributor_diagnostics_query`]'s own gate, so a
+/// non-source document must be excluded here too or its bogus ink-lowered
+/// HIR still reaches `brink_analyzer::per_file_diagnostics`.
 #[salsa::tracked(lru = 4096)]
 pub(crate) fn per_file_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
     file: SourceFile,
 ) -> Arc<Vec<Diagnostic>> {
+    if !is_source_file(file.path(db)) {
+        return Arc::new(Vec::new());
+    }
     let file_id = file.file_id(db);
     let hir = &lowered_query(db, project, file).hir;
     let (file_resolutions, _diags) = resolve_query(db, project, file);
@@ -1289,12 +1298,21 @@ pub(crate) fn analysis_query(db: &dyn salsa::Database, project: ProjectInput) ->
 /// memo's dependency fully validated.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+///
+/// Gated on [`is_source_file`] (issue #2329 review finding): this is a
+/// direct per-file entry point (`ProjectDb::diagnostics`), reachable without
+/// going through [`analysis_diagnostics_query`]'s own gate on this same
+/// file's contribution, so a non-source document must be excluded here too
+/// or its bogus ink-lowered `lowered_query` diagnostics still surface.
 #[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
     file: SourceFile,
 ) -> Vec<Diagnostic> {
+    if !is_source_file(file.path(db)) {
+        return Vec::new();
+    }
     let file_id = file.file_id(db);
     let mut out = lowered_query(db, project, file).diagnostics.clone();
     out.extend(
