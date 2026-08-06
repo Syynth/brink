@@ -708,9 +708,44 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
         .is_some_and(|f| file_language(f.path(db)) == Language::Native)
 }
 
-/// Whether every file currently tracked in `project` is a native `.brink`
-/// module — `false` for an empty project or one holding even a single ink
-/// file.
+/// Whether `path` names a file this db treats as compiler source at all —
+/// an ink (`.ink`) or native (`.brink`) extension. [`file_language`]
+/// classifies *every* path as one of its two variants (`.brink` → native,
+/// everything else → ink), which is the right call for lowering dispatch —
+/// an unrecognized extension has to lower as *something*. But
+/// [`project_is_all_native`] asks a narrower question ("is every real
+/// source file in this project native"), and something like a project's own
+/// `brink.toml` is neither: a session that loads it as an ordinary document
+/// alongside real source files — `IdeSession`'s wasm/editor callers do
+/// exactly this, so the Binder can list/edit it (issue #2318) — must not
+/// have it counted as "an ink file" by that check.
+fn has_recognized_source_extension(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext == "brink" || ext == "ink")
+}
+
+/// Whether every *recognized source file* (ink or native) currently tracked
+/// in `project` is a native `.brink` module — `false` for an empty project,
+/// one holding even a single ink source file, or one whose only tracked
+/// files are non-source documents (there is then no native file to be "all"
+/// of).
+///
+/// A tracked file with neither a `.brink` nor an `.ink` extension is
+/// invisible to this check in both directions: it neither disqualifies
+/// nativity nor counts toward it. Before this fix (issue #2318), a
+/// project's own `brink.toml` sharing a session with its native source
+/// files — exactly how `IdeSession`'s editor callers load it, so the Binder
+/// can show/edit it — silently classified as [`Language::Ink`] via
+/// [`file_language`]'s "everything else is ink" fallback and flipped this to
+/// `false`, disabling M-2d cross-declared-module coexistence for a project
+/// that was, in every sense a compile cares about, fully native. The
+/// visible symptom was a self-contradictory pair of diagnostics for any
+/// name a project's own module shared with the mounted stdlib: reported as
+/// both a duplicate definition (the collision fell through to the
+/// undeclared/legacy "true duplicate" arm) and as undeclared outside
+/// `use std::…` (the project's own declaration had just been dropped as
+/// that "duplicate").
 ///
 /// [`project_is_native`]'s "entry file decides the frontend" rule is right
 /// for a codegen-shaped question ("which frontend am I compiling"), which
@@ -719,16 +754,24 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
 /// `dialect` could actually be wrong" — for `ProjectDb`'s single
 /// whole-workspace `ProjectInput`, which a long-lived LSP session never
 /// anchors to an entry at all (`Backend` never calls `ProjectDb::set_entry`;
-/// issue #1562 review finding). A project every one of whose files is native
-/// has no such file, by the same "native has no dialect to be wrong about"
-/// reasoning [`project_is_native`]'s own doc gives — regardless of whether
-/// anything ever called `set_entry`.
+/// issue #1562 review finding). A project every one of whose *source* files
+/// is native has no such file, by the same "native has no dialect to be
+/// wrong about" reasoning [`project_is_native`]'s own doc gives —
+/// regardless of whether anything ever called `set_entry`.
 pub(crate) fn project_is_all_native(db: &dyn salsa::Database, project: ProjectInput) -> bool {
     let files = project.files(db);
-    !files.is_empty()
-        && files
-            .iter()
-            .all(|f| file_language(f.path(db)) == Language::Native)
+    let mut saw_source = false;
+    for f in files {
+        let path = f.path(db);
+        if !has_recognized_source_extension(path) {
+            continue;
+        }
+        saw_source = true;
+        if file_language(path) != Language::Native {
+            return false;
+        }
+    }
+    saw_source
 }
 
 // ─── Layer 2: project-wide names ─────────────────────────────────────

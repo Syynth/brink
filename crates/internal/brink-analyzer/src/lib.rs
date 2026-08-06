@@ -712,9 +712,18 @@ pub fn analyze_with_options(
 /// passes `false`, unchanged from before this parameter existed —
 /// [`analyze_with_options`] always does.
 ///
-/// It is a whole-project flag, so `true` is only correct for a file set that
-/// is *entirely* native; a mixed set must pass `false` (the analyzer has no
-/// file paths and so cannot classify per file itself).
+/// It is a whole-project flag over this call's *source* files, so `true` is
+/// only correct when every `.ink`/`.brink` file lowered here is native; a
+/// mixed ink/native source set must still pass `false` (the analyzer has no
+/// file paths and so cannot classify per file itself). A **non-source**
+/// document riding along in the same input set — a project's own
+/// `brink.toml`, say, which `ProjectDb::analysis_inputs`'s "every tracked
+/// file" sweep hands in and which lowers through the ink frontend purely as
+/// a byproduct, never because it IS ink source (issue #2318) — does not by
+/// itself make `true` wrong: it carries no native-vs-ink question of its
+/// own, so its presence is inert to this flag exactly as it is to its
+/// db-layer counterpart, `ProjectDb::is_all_native` (`brink-db`'s
+/// `queries::project_is_all_native`), which this parameter mirrors.
 pub fn analyze_with_modules(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     modules: &ModuleMap,

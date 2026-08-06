@@ -439,6 +439,81 @@ export class EditorSession {
     return JSON.stringify({ ok: false, error: "cannot rename this symbol" });
   }
 
+  /**
+   * Mock of `apply_project_config` (#1005) — applies TOML text handed to it
+   * directly, without any discovery.
+   */
+  apply_project_config(toml: string): string {
+    return JSON.stringify(this.readProjectConfigWarnings(toml));
+  }
+
+  /**
+   * Mock of `discover_project_config` (#1414, issue #2324's wiring target):
+   * walks up from `entry`'s directory over `this.files` (this session's own
+   * in-memory documents — the mock's stand-in for the real
+   * `brink_source_tree::SourceTree` walk) looking for a `brink.toml` at each
+   * ancestor, exactly like the real op's exact-string-equality ancestor
+   * search. Returns `"[]"` (never an error) when none is found.
+   */
+  discover_project_config(entry: string): string {
+    const slash = entry.lastIndexOf("/");
+    let dir = slash >= 0 ? entry.slice(0, slash) : "";
+    for (;;) {
+      const candidate = dir === "" ? "brink.toml" : `${dir}/brink.toml`;
+      const text = this.files.get(candidate);
+      if (text !== undefined) {
+        return JSON.stringify(this.readProjectConfigWarnings(text));
+      }
+      if (dir === "") break;
+      const idx = dir.lastIndexOf("/");
+      dir = idx >= 0 ? dir.slice(0, idx) : "";
+    }
+    return "[]";
+  }
+
+  /**
+   * Minimal `[project]`/`[lints]` reader backing both config ops above —
+   * mirrors just enough of `brink_project_config::parse_str_at`'s
+   * known-key set (#1005/#1397/#1417/#1880) to drive studio tests:
+   * `dialect`/`types`/`conventions`/`unprune-dirs`/the deprecated
+   * `elements` alias are recognized (accepted silently; nothing else in
+   * this mock reads them back, so there is no session-state effect to
+   * simulate). Every other `[project]` key — including `entry`, which has
+   * no real schema slot either (issue #2324's finding) — is reported as an
+   * unrecognized-key warning, and every `[lints]` key is accepted without
+   * validation (this mock has no diagnostic-code registry to check
+   * against). Deliberately line-oriented, not a real TOML parser — enough
+   * for the flat tables `brink.toml` actually uses in tests/fixtures.
+   */
+  private readProjectConfigWarnings(toml: string): string[] {
+    const KNOWN_PROJECT_KEYS = new Set([
+      "dialect",
+      "types",
+      "conventions",
+      "elements",
+      "unprune-dirs",
+    ]);
+    const warnings: string[] = [];
+    let section: "project" | "lints" | null = null;
+    for (const raw of toml.split("\n")) {
+      const line = raw.trim();
+      if (line === "" || line.startsWith("#")) continue;
+      const sectionMatch = /^\[(.+)\]$/.exec(line);
+      if (sectionMatch) {
+        const name = sectionMatch[1]!.trim();
+        section = name === "project" ? "project" : name === "lints" ? "lints" : null;
+        continue;
+      }
+      const kv = /^([^=]+)=/.exec(line);
+      if (!kv) continue;
+      const key = kv[1]!.trim();
+      if (section === "project" && !KNOWN_PROJECT_KEYS.has(key)) {
+        warnings.push(`unknown key \`project.${key}\` in brink.toml (ignored)`);
+      }
+    }
+    return warnings;
+  }
+
   // Host-capability manifest + value cache (#174) — no-ops in the mock.
   set_host_manifest(_json: string): void { /* no-op */ }
   clear_host_manifest(): void { /* no-op */ }

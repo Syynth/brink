@@ -33,13 +33,22 @@ pub struct IdeSnapshot {
     /// in here a collision a db-driven compile catches never reaches the
     /// editor.
     module_diagnostics: Vec<brink_ir::Diagnostic>,
-    /// Whether every file in this snapshot is native (`.brink`) source
-    /// (issue #1358), read off the db in [`IdeSession::snapshot`]. The
+    /// Whether every *recognized source file* (`.ink` or `.brink`) in this
+    /// snapshot is native (`.brink`) source (issue #1358), read off the db
+    /// in [`IdeSession::snapshot`] via `ProjectDb::is_all_native`. The
     /// analyzer has no file paths, so this classification has to travel with
     /// the inputs — without it the editor's off-db analysis runs the *ink*
     /// arm over native source: the ink-only T1b dialect gate (`E051`) and
     /// `types = strict` config error (`E064`) fire spuriously, and the B0.9
     /// strict-only gate (`E137`) never fires at all.
+    ///
+    /// A non-source document sharing this snapshot's inputs — a project's
+    /// own `brink.toml`, loaded into the same session as an ordinary
+    /// document so the Binder can list/edit it — does not disqualify `true`
+    /// (issue #2318): it is neither `.ink` nor `.brink` by extension, so
+    /// `ProjectDb::is_all_native` skips it entirely rather than counting it
+    /// as an ink file. One `brink.toml` alongside an otherwise fully-native
+    /// project set still yields `true` here, correctly.
     is_native: bool,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
