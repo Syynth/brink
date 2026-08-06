@@ -125,12 +125,15 @@ pub struct LanguageOptions {
     /// resolves this correctly (it runs the file straight through
     /// `AnalysisOptions::apply_project_config`), but until issue #1880
     /// nothing carried the resolved value past `store` into
-    /// `analysis_loop`'s own `AnalysisOptions` — every background pass
-    /// analyzed as if `conventions` were always unset. Harmless while
-    /// `None` meant "nothing to check" for the confinement gate (`E169`);
-    /// #2289 repurposed `None` into "misconfigured", turning this gap into
-    /// a false positive firing on every claim handler in every native
-    /// project the LSP served. Mirrors `dialect`/`types`/`lints` exactly.
+    /// `analysis_loop`'s own `AnalysisOptions` — every background pass fed
+    /// `analysis_inputs_for`'s `lowered_query` a hardcoded `None`
+    /// regardless of what `brink.toml` configured, so a native project's
+    /// `@[convention]` handlers never claimed prose across files in the
+    /// background pass, and unclaimed scene headings hit `lower_native`'s
+    /// `E129` arm and dropped their scene bodies from the LSP's view (the
+    /// confinement gate itself, `E169`, is a `brink-db`-only query this
+    /// loop never calls, so it was never reachable here). Mirrors
+    /// `dialect`/`types`/`lints` exactly.
     conventions: Arc<Mutex<Option<String>>>,
 }
 
@@ -2844,11 +2847,16 @@ pub async fn analysis_loop(
                 .map_or_else(|_| LintPolicy::default(), |g| g.clone()),
             // `[project] conventions` (issue #1880): without this, every
             // background analysis pass fed `snapshot_for_analysis` a
-            // hardcoded `None` regardless of what `brink.toml` configured,
-            // which `conventions_confinement_diagnostics_query` (#2289)
-            // reads as "misconfigured" rather than "nothing to check" —
-            // firing `E169` on every claim handler in every native
-            // project the LSP served.
+            // hardcoded `None` regardless of what `brink.toml` configured.
+            // `analysis_inputs_for`'s `lowered_query` reads this through
+            // `external_claim_handlers_query` to inject cross-file claiming
+            // — with it hardcoded `None`, a configured conventions module's
+            // `@[convention]` handlers claimed nothing outside their own
+            // file, so unclaimed scene headings elsewhere fell to
+            // `lower_native`'s loud `E129` arm and dropped their scene
+            // bodies from the LSP's view (the confinement gate itself,
+            // `E169`, is a `brink-db`-only query this loop never calls, so
+            // it was never reachable here).
             conventions: language
                 .conventions
                 .lock()

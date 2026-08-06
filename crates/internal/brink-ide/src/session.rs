@@ -78,13 +78,17 @@ impl IdeSnapshot {
             // `brink.toml`'s `[project] conventions` pointer (issue #1844;
             // renamed from `elements` by #2180), set via
             // `IdeSession::set_conventions` (issue #1880) and carried into
-            // this snapshot by `IdeSession::snapshot`. Until #1880, this was
-            // hardcoded `None` regardless of what the project configured —
-            // harmless while `None` meant "nothing to check" for the
-            // confinement gate (`E169`), but #2289 repurposed `None` into
-            // "misconfigured", which turned the missing wire into a false
-            // positive firing on every claim handler in every project this
-            // snapshot analyzed. See `conventions` field doc for the wiring.
+            // this snapshot by `IdeSession::snapshot`, mirroring
+            // `dialect`/`types`/`lints` for whole-struct consistency. Note
+            // this is inert on this off-db path: `analyze_with_modules` (the
+            // only thing `IdeSnapshot::analyze` calls) never reads
+            // `opts.conventions` — the confinement gate (`E169`) lives only
+            // in `brink-db`'s `conventions_confinement_diagnostics_query`,
+            // which this analyzer-only snapshot never invokes. Carried here
+            // anyway so the next `AnalysisOptions` field consumer added to
+            // `analyze_with_modules` finds it already wired rather than
+            // silently defaulted. See `conventions` field doc for how the
+            // pointer is actually set.
             conventions: self.conventions.clone(),
         };
         // The snapshot's own native classification (issue #1358) — see
