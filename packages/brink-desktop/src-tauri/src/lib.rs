@@ -96,7 +96,7 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<String>) -> Result<(), ShellError
 }
 
 #[tauri::command]
-fn list_files(root: String) -> Result<Vec<String>, ShellError> {
+async fn list_files(root: String) -> Result<Vec<String>, ShellError> {
     let root_path = Path::new(&root);
     let mut out = Vec::new();
     walk(root_path, root_path, &mut out)?;
@@ -106,13 +106,13 @@ fn list_files(root: String) -> Result<Vec<String>, ShellError> {
 }
 
 #[tauri::command]
-fn read_file(root: String, rel: String) -> Result<String, ShellError> {
+async fn read_file(root: String, rel: String) -> Result<String, ShellError> {
     let path = resolve(&root, &rel)?;
     std::fs::read_to_string(&path).map_err(|e| io_err(&path, e))
 }
 
 #[tauri::command]
-fn write_file(root: String, rel: String, content: String) -> Result<(), ShellError> {
+async fn write_file(root: String, rel: String, content: String) -> Result<(), ShellError> {
     let path = resolve(&root, &rel)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
@@ -121,13 +121,13 @@ fn write_file(root: String, rel: String, content: String) -> Result<(), ShellErr
 }
 
 #[tauri::command]
-fn delete_file(root: String, rel: String) -> Result<(), ShellError> {
+async fn delete_file(root: String, rel: String) -> Result<(), ShellError> {
     let path = resolve(&root, &rel)?;
     std::fs::remove_file(&path).map_err(|e| io_err(&path, e))
 }
 
 #[tauri::command]
-fn rename_file(root: String, from: String, to: String) -> Result<(), ShellError> {
+async fn rename_file(root: String, from: String, to: String) -> Result<(), ShellError> {
     let from_path = resolve(&root, &from)?;
     let to_path = resolve(&root, &to)?;
     if let Some(parent) = to_path.parent() {
@@ -136,11 +136,16 @@ fn rename_file(root: String, from: String, to: String) -> Result<(), ShellError>
     std::fs::rename(&from_path, &to_path).map_err(|e| io_err(&from_path, e))
 }
 
-/// Native folder picker. Blocking variant is fine here: Tauri commands run
-/// off the main thread, and the dialog plugin dispatches to the main thread
-/// itself where the OS requires it.
+/// Native folder picker. ⚠ This command (like every command here) MUST be
+/// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
+/// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
+/// the main thread free to pump its own events. (Observed live: the first
+/// D1 run hung inside the native dialog.) `async` commands run on the
+/// runtime's worker pool, where blocking on the dialog is the documented
+/// pattern; the plugin dispatches the actual NSOpenPanel to the main
+/// thread itself.
 #[tauri::command]
-fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
+async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
     app.dialog()
         .file()
         .blocking_pick_folder()
