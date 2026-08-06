@@ -334,6 +334,7 @@ pub fn run() {
             write_file,
             delete_file,
             rename_file,
+            append_backups,
             pick_project_folder,
         ])
         .run(tauri::generate_context!())
