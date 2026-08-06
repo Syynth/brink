@@ -615,6 +615,7 @@ export class EditorSession {
   hir_spans_doc(_doc: number): string { return mockHirProjectionJson; }
   completions_doc(_doc: number, _offset: number): string { return "[]"; }
   hover_doc(_doc: number, _offset: number): string { return "null"; }
+  explain_match_doc(_doc: number, _offset: number): string { return "null"; }
   goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
   find_references_doc(_doc: number, _offset: number): string { return "[]"; }
   prepare_rename_doc(_doc: number, _offset: number): string { return "null"; }
@@ -635,6 +636,7 @@ export class EditorSession {
   semantic_tokens(): string { return "[]"; }
   completions(_offset: number): string { return "[]"; }
   hover(_offset: number): string { return "null"; }
+  explain_match(_offset: number): string { return "null"; }
   goto_definition(_offset: number): string { return "null"; }
   find_references(_offset: number): string { return "[]"; }
   prepare_rename(_offset: number): string { return "null"; }

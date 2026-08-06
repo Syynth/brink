@@ -150,6 +150,18 @@ fn classify_trimmed(
             continue;
         };
         let Some(captures) = bind_captures(&entry.pattern, &caps, base) else {
+            // Either a capture's byte offset does not fit a `u32` (cannot
+            // be a real span on any line short enough for an editor to
+            // hold in memory), or a named group declared by the pattern
+            // failed to participate in this particular match — e.g. an
+            // alternation branch that did not fire. `try_claim` declines
+            // the claim entirely in that second case (`caps.name(param)?`
+            // returns from the whole function), and this walk mirrors that
+            // exactly: such an entry is neither `matched` nor `shadowed`,
+            // not reported with a partial capture list. This is a
+            // deliberate divergence from a *static* "these patterns could
+            // collide" heuristic — the compiler's refusal is total, so
+            // this walk's is too.
             continue;
         };
         hits.push(ClassifiedMatch {

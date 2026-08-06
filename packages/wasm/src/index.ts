@@ -28,6 +28,7 @@ import type {
   CompletionItem,
   HoverInfo,
   Location,
+  ExplainMatch,
   InlayHint,
   ColorHint,
   CallWidgetSite,
@@ -572,6 +573,16 @@ export class EditorSessionHandle {
     return result ?? null;
   }
 
+  /**
+   * Document-handle variant of {@link explainMatch}. Same raw-byte,
+   * file-absolute range caveat applies — see that method's own docstring.
+   */
+  explainMatchDoc(doc: DocumentId, offset: number): ExplainMatch | null {
+    const json = this.session.explain_match_doc(doc, offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
   gotoDefinitionDoc(doc: DocumentId, offset: number): Location | null {
     const json = this.session.goto_definition_doc(doc, offset);
     const result = JSON.parse(json);
@@ -702,6 +713,26 @@ export class EditorSessionHandle {
 
   getHover(offset: number): HoverInfo | null {
     const json = this.session.hover(offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  /**
+   * Explain what would match the line containing `offset` in the active
+   * file (issue #2113): is it matched, by what handler, what did it bind,
+   * and — on a miss — what patterns were attempted, or — on a hit — what
+   * else matched but was shadowed.
+   *
+   * Every range on the returned {@link ExplainMatch} (handler declaration
+   * ranges, capture ranges) is a **raw byte offset**, not UTF-16 — unlike
+   * every other DTO this class returns — and is **file-absolute**, not
+   * relative to a fragment view set by {@link setViewContext}/
+   * {@link openFragment}. A caller under a fragment view cannot map these
+   * ranges back into its own document as-is; see
+   * `crates/brink-web/src/editor/explain_match.rs`'s own module doc for why.
+   */
+  explainMatch(offset: number): ExplainMatch | null {
+    const json = this.session.explain_match(offset);
     const result = JSON.parse(json);
     return result ?? null;
   }

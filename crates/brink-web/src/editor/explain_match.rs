@@ -22,6 +22,28 @@
 //! *could* convert, being always in the active document) — one convention
 //! for the whole payload beats mixing UTF-16 captures with byte-offset
 //! handler locations in a single response.
+//!
+//! # Every range is also file-absolute, not view-relative (#2113 review, w143)
+//!
+//! This is a second, orthogonal axis from bytes-vs-UTF-16 above, and it
+//! matters to exactly the same fragment/view callers `hover_impl`/
+//! `to_relative` serve: `explain_match_impl` converts its **input** offset
+//! from view-relative to absolute via `to_absolute` (same as `hover_impl`),
+//! but every range in the returned `ExplainMatchJs` — the classified line's
+//! own capture ranges *and* the matched/attempted handler's declaration
+//! range — comes back file-absolute, with no `to_relative` step on the way
+//! out. A caller under `openFragment`/`setViewContext` therefore cannot map
+//! any of these ranges back into its own document without first knowing
+//! the view's own offset — unlike `hover`'s `start`/`end`, which are already
+//! view-relative. Converting the capture ranges (always in the active
+//! document, unlike the handler range) is left as a follow-up rather than
+//! done here: it would make this DTO's payload straddle two conventions at
+//! once (UTF-16, view-relative captures alongside byte, file-absolute
+//! handler locations) for a caller this query has no evidence anyone is
+//! driving through a fragment view yet. Until that follow-up lands, treat
+//! every `ExplainMatchJs` range as file-absolute bytes, full stop — the
+//! same caveat applies to the `explainMatch`/`explainMatchDoc` TS wrappers
+//! in `@brink-lang/web` (`packages/wasm/src/index.ts`).
 
 use rowan::TextSize;
 use wasm_bindgen::prelude::*;

@@ -22,6 +22,14 @@ handler shadowed on a hit.
   range lives in the project's conventions module, a file this session
   may never have opened, so there is no single file to convert against;
   see `editor/explain_match.rs`'s own doc.
+- **`EditorSessionHandle.explainMatch`/`explainMatchDoc`** (new,
+  `@brink-lang/web`'s TS wrapper) mirror `getHover`/`getHoverDoc`'s
+  shape and re-export the new `ExplainMatch`/`ExplainClassifiedMatch`/
+  `ExplainAttempted`/`ExplainHandler`/`ExplainCapture` interfaces from
+  `@brink/wasm-types` — every range on them stays raw-byte and
+  **file-absolute** (not adjusted for a fragment view set by
+  `setViewContext`/`openFragment`); see the docstrings on the two
+  methods for the caveat.
 - **`ElementKind` ("matched kind") composition is deliberately deferred**
   — `crate::ExplainMatchCache`'s own module doc explains why: the one
   function that derives it reads a parsed CST node with surrounding-line

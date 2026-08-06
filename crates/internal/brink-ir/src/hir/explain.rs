@@ -244,11 +244,58 @@ fn rebase(explanation: LineExplanation, delta: TextSize) -> LineExplanation {
 /// ranges. This mirrors [`crate::classify_line`]'s own documented
 /// text-relative-at-`base`-zero convention for a caller with no real source
 /// position yet.
+/// A cached line's classification, stripped of the `attempted` payload a
+/// miss would otherwise carry. Every miss's `attempted` is *exactly*
+/// `self.projection.entries` — see `explain_match_compiled`'s own doc — so
+/// storing that clone in every one of potentially many distinct-miss cache
+/// entries would be O(distinct lines × projection size) for a value that is
+/// byte-identical across every non-blank miss under one projection. `Miss`
+/// carries nothing; the real `attempted` list is materialized from
+/// `self.projection.entries` at lookup time instead (`ExplainMatchCache::explain`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CachedLine {
+    Matched {
+        winner: ClassifiedMatch,
+        shadowed: Vec<ClassifiedMatch>,
+    },
+    Miss,
+}
+
+fn to_cached(explanation: LineExplanation) -> CachedLine {
+    match explanation {
+        LineExplanation::Matched { winner, shadowed } => CachedLine::Matched { winner, shadowed },
+        // The blank-line empty case never reaches here (see `explain`'s own
+        // early return), so this is always a real, attempted-and-failed miss.
+        LineExplanation::Unmatched { .. } => CachedLine::Miss,
+    }
+}
+
+fn from_cached(cached: CachedLine, entries: &[ConventionProjectionEntry]) -> LineExplanation {
+    match cached {
+        CachedLine::Matched { winner, shadowed } => LineExplanation::Matched { winner, shadowed },
+        CachedLine::Miss => LineExplanation::Unmatched {
+            attempted: entries.to_vec(),
+        },
+    }
+}
+
+/// Hard cap on distinct cached line texts (CLAUDE.md: "any loop that
+/// accumulates data must have a limit"). `lines` is keyed on keystroke-driven
+/// text over the lifetime of one wasm session, with no natural revision
+/// boundary to clear it on short of a projection change — an author who
+/// edits a long document line by line for a whole session could otherwise
+/// grow it without bound. Not a real LRU: once the cap is hit the whole map
+/// is cleared and rebuilt from scratch, trading a burst of re-classification
+/// for zero extra bookkeeping — a session churns through far more repeat
+/// classifications of a small working set of lines than it does distinct
+/// line texts, so hitting the cap at all is the uncommon case.
+const MAX_CACHED_LINES: usize = 4096;
+
 #[derive(Debug, Default)]
 pub struct ExplainMatchCache {
     projection: ConventionsProjection,
     compiled: Vec<CompiledEntry>,
-    lines: BTreeMap<String, LineExplanation>,
+    lines: BTreeMap<String, CachedLine>,
 }
 
 impl ExplainMatchCache {
@@ -276,8 +323,19 @@ impl ExplainMatchCache {
             self.compiled = compile_entries(projection);
             self.lines.clear();
         }
+        // A blank line never even starts the walk (`explain_match_compiled`'s
+        // own trim contract) — distinguishable before the cache is consulted,
+        // so it is never cached at all.
+        if text.trim().is_empty() {
+            return LineExplanation::Unmatched {
+                attempted: Vec::new(),
+            };
+        }
         if let Some(cached) = self.lines.get(text) {
-            return rebase(cached.clone(), base);
+            return rebase(from_cached(cached.clone(), &self.projection.entries), base);
+        }
+        if self.lines.len() >= MAX_CACHED_LINES {
+            self.lines.clear();
         }
         let explanation = explain_match_compiled(
             &self.compiled,
@@ -285,7 +343,8 @@ impl ExplainMatchCache {
             TextSize::from(0),
             text,
         );
-        self.lines.insert(text.to_owned(), explanation.clone());
+        self.lines
+            .insert(text.to_owned(), to_cached(explanation.clone()));
         rebase(explanation, base)
     }
 }
@@ -469,6 +528,33 @@ mod tests {
             "the stale `any_line` entry from the old projection must not \
              still win after the projection changed"
         );
+    }
+
+    /// Guard against unbounded growth (CLAUDE.md's own rule): a session that
+    /// classifies more distinct line texts than `MAX_CACHED_LINES` under one
+    /// unchanged projection must never grow `lines` past the cap.
+    #[test]
+    fn the_cache_never_grows_the_line_map_past_its_cap() {
+        let p = projection(&[decl("any_line", 10, "^.*$")]);
+        let mut cache = ExplainMatchCache::new();
+        for i in 0..(MAX_CACHED_LINES + 10) {
+            let _ = cache.explain(&p, TextSize::from(0), &format!("line number {i}"));
+        }
+        assert!(
+            cache.lines.len() <= MAX_CACHED_LINES,
+            "cache grew to {} entries, past its {MAX_CACHED_LINES} cap",
+            cache.lines.len()
+        );
+    }
+
+    /// A blank line is never inserted into the cache at all — it is decided
+    /// before the cache is even consulted, so it must not consume a cap slot.
+    #[test]
+    fn a_blank_line_never_occupies_a_cache_slot() {
+        let p = projection(&[decl("any_line", 10, "^.*$")]);
+        let mut cache = ExplainMatchCache::new();
+        let _ = cache.explain(&p, TextSize::from(0), "   \t  ");
+        assert!(cache.lines.is_empty());
     }
 
     /// A miss must also be memoized correctly — `attempted` reflects the

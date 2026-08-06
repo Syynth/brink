@@ -408,6 +408,61 @@ export interface Location {
   end: number;
 }
 
+/**
+ * A handler location for the explain-match query (#2113) — a name plus its
+ * declaration-site range in the project's conventions module. `start`/`end`
+ * are **raw byte offsets**, not UTF-16, and are **file-absolute**, not
+ * view-relative — see `explainMatch`/`explainMatchDoc`'s own docstrings on
+ * {@link EditorSessionHandle} for why (mirrored from
+ * `crates/brink-web/src/editor/explain_match.rs`'s module doc).
+ */
+export interface ExplainHandler {
+  name: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * One named capture bound by a matched pattern, as a span into the
+ * classified line's own file. Same raw-byte, file-absolute convention as
+ * {@link ExplainHandler} — see there.
+ */
+export interface ExplainCapture {
+  name: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+/** One handler's classification-time match — the winner or a shadowed runner-up. */
+export interface ExplainClassifiedMatch {
+  handler: ExplainHandler;
+  order: number;
+  mode: "attach" | "wrap";
+  captures: ExplainCapture[];
+}
+
+/** One entry the walk attempted but that did not match. */
+export interface ExplainAttempted {
+  handler: ExplainHandler;
+  order: number;
+  pattern: string;
+}
+
+/**
+ * The explain-match query's full per-line answer (issue #2113): is this
+ * line matched, by what, what did it bind, and — on a miss — what was
+ * attempted, or — on a hit — what else matched but was shadowed. `winner`
+ * is present only when `matched` is `true`; `attempted` is populated only
+ * when it is `false`.
+ */
+export interface ExplainMatch {
+  matched: boolean;
+  winner?: ExplainClassifiedMatch;
+  shadowed: ExplainClassifiedMatch[];
+  attempted: ExplainAttempted[];
+}
+
 export interface FileEdit {
   start: number;
   end: number;
