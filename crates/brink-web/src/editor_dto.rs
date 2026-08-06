@@ -698,6 +698,102 @@ pub(crate) struct ExplainCaptureJs {
     pub(crate) end: u32,
 }
 
+/// One resolved field of an `attach = StructName` schema — mirrors
+/// [`brink_ir::ConventionAttachField`] verbatim: a declared field name plus
+/// its resolved type shape, never a value any handler computed (issue
+/// #2311, matching the "schema, never values" contract
+/// `ConventionAttachSchema`'s own doc states).
+#[derive(Serialize)]
+pub(crate) struct ExplainAttachFieldJs {
+    pub(crate) name: String,
+    pub(crate) ty: SchemaTypeShapeJs,
+}
+
+/// A field type's structural shape — mirrors [`brink_ir::SchemaTypeShape`]
+/// verbatim, span-free (issue #2311). Recursive: `Generic`'s `args` and
+/// `Fn`'s `params`/`ret` are themselves [`SchemaTypeShapeJs`].
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum SchemaTypeShapeJs {
+    Named {
+        name: String,
+    },
+    Generic {
+        name: String,
+        args: Vec<SchemaTypeShapeJs>,
+    },
+    Fn {
+        params: Vec<SchemaTypeShapeJs>,
+        ret: Box<SchemaTypeShapeJs>,
+    },
+}
+
+fn schema_type_shape_to_js(ty: brink_ir::SchemaTypeShape) -> SchemaTypeShapeJs {
+    match ty {
+        brink_ir::SchemaTypeShape::Named(name) => SchemaTypeShapeJs::Named { name },
+        brink_ir::SchemaTypeShape::Generic { name, args } => SchemaTypeShapeJs::Generic {
+            name,
+            args: args.into_iter().map(schema_type_shape_to_js).collect(),
+        },
+        brink_ir::SchemaTypeShape::Fn { params, ret } => SchemaTypeShapeJs::Fn {
+            params: params.into_iter().map(schema_type_shape_to_js).collect(),
+            ret: Box::new(schema_type_shape_to_js(*ret)),
+        },
+    }
+}
+
+/// The `attach = StructName` clause's resolution outcome — mirrors
+/// [`brink_ir::ConventionAttachSchema`] verbatim (issue #2311): `Resolved`
+/// carries the struct's declared name plus every field, `Unresolved`
+/// carries just the declared name a consumer can still report even though
+/// it did not resolve to a real struct (house rule: flag silent data
+/// drops — this is the wasm-facing half of that same "never drop it
+/// silently" contract).
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ExplainAttachSchemaJs {
+    Resolved {
+        name: String,
+        fields: Vec<ExplainAttachFieldJs>,
+    },
+    Unresolved {
+        name: String,
+    },
+}
+
+fn explain_attach_schema_to_js(schema: brink_ir::ConventionAttachSchema) -> ExplainAttachSchemaJs {
+    match schema {
+        brink_ir::ConventionAttachSchema::Resolved { name, fields } => {
+            ExplainAttachSchemaJs::Resolved {
+                name,
+                fields: fields
+                    .into_iter()
+                    .map(|f| ExplainAttachFieldJs {
+                        name: f.name,
+                        ty: schema_type_shape_to_js(f.ty),
+                    })
+                    .collect(),
+            }
+        }
+        brink_ir::ConventionAttachSchema::Unresolved(name) => {
+            ExplainAttachSchemaJs::Unresolved { name }
+        }
+    }
+}
+
+fn explain_disposition_to_js(disposition: brink_ir::ElementDisposition) -> &'static str {
+    match disposition {
+        brink_ir::ElementDisposition::Call => "call",
+    }
+}
+
+fn explain_mode_to_js(mode: brink_ir::ConventionMode) -> &'static str {
+    match mode {
+        brink_ir::ConventionMode::Attach => "attach",
+        brink_ir::ConventionMode::Wrap => "wrap",
+    }
+}
+
 /// One handler's classification-time match — the winner or one of the
 /// shadowed runners-up; see `ExplainMatchJs`'s own doc.
 #[derive(Serialize)]
@@ -715,6 +811,9 @@ pub(crate) struct ExplainClassifiedMatchJs {
     /// decline rather than guess).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) kind: Option<&'static str>,
+    pub(crate) disposition: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attach: Option<ExplainAttachSchemaJs>,
     pub(crate) captures: Vec<ExplainCaptureJs>,
 }
 
@@ -738,6 +837,10 @@ fn element_kind_str(kind: brink_ir::ElementKind) -> &'static str {
 pub(crate) struct ExplainAttemptedJs {
     pub(crate) handler: ExplainHandlerJs,
     pub(crate) order: i64,
+    pub(crate) mode: &'static str,
+    pub(crate) disposition: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) attach: Option<ExplainAttachSchemaJs>,
     pub(crate) pattern: String,
 }
 
@@ -772,11 +875,10 @@ fn explain_classified_match_to_js(
     ExplainClassifiedMatchJs {
         handler: explain_handler_to_js(&m.handler),
         order: m.order,
-        mode: match m.mode {
-            brink_ir::ConventionMode::Attach => "attach",
-            brink_ir::ConventionMode::Wrap => "wrap",
-        },
+        mode: explain_mode_to_js(m.mode),
         kind: kind.map(element_kind_str),
+        disposition: explain_disposition_to_js(m.disposition),
+        attach: m.attach.map(explain_attach_schema_to_js),
         captures: m
             .captures
             .into_iter()
@@ -794,6 +896,9 @@ fn explain_attempted_to_js(entry: brink_ir::ConventionProjectionEntry) -> Explai
     ExplainAttemptedJs {
         handler: explain_handler_to_js(&entry.name),
         order: entry.order,
+        mode: explain_mode_to_js(entry.mode),
+        disposition: explain_disposition_to_js(entry.disposition),
+        attach: entry.attach.map(explain_attach_schema_to_js),
         pattern: entry.pattern,
     }
 }
@@ -841,12 +946,13 @@ mod explain_match_to_js_tests {
     }
 
     /// The `Matched` arm: `matched` is `true`, `winner` serializes with its
-    /// handler/order/mode/captures, `shadowed` lists every runner-up in the
-    /// same shape, and `attempted` is the empty array (never populated on a
-    /// hit) — this is the arm nothing else in this crate exercises (issue
-    /// #2113 review, w143). No `kind` is passed here, so — per issue
-    /// #2310's `skip_serializing_if` contract — neither `winner` nor
-    /// `shadowed` carries a `kind` key at all.
+    /// handler/order/mode/disposition/attach/captures, `shadowed` lists
+    /// every runner-up in the same shape, and `attempted` is the empty array
+    /// (never populated on a hit) — this is the arm nothing else in this
+    /// crate exercises (issue #2113 review, w143; `disposition`/`attach`
+    /// added by #2311). No `kind` is passed here, so — per issue #2310's
+    /// `skip_serializing_if` contract — neither `winner` nor `shadowed`
+    /// carries a `kind` key at all.
     #[test]
     fn matched_arm_serializes_winner_and_shadowed_with_attempted_empty() {
         let winner = brink_ir::ClassifiedMatch {
@@ -854,6 +960,13 @@ mod explain_match_to_js_tests {
             order: 10,
             mode: brink_ir::ConventionMode::Attach,
             disposition: brink_ir::ElementDisposition::Call,
+            attach: Some(brink_ir::ConventionAttachSchema::Resolved {
+                name: "Cue".to_owned(),
+                fields: vec![brink_ir::ConventionAttachField {
+                    name: "place".to_owned(),
+                    ty: brink_ir::SchemaTypeShape::Named("string".to_owned()),
+                }],
+            }),
             captures: vec![brink_ir::ClassifiedCapture {
                 name: "place".to_owned(),
                 text: "MARKET SQUARE".to_owned(),
@@ -865,6 +978,7 @@ mod explain_match_to_js_tests {
             order: 20,
             mode: brink_ir::ConventionMode::Wrap,
             disposition: brink_ir::ElementDisposition::Call,
+            attach: None,
             captures: Vec::new(),
         };
         let explanation = brink_ir::LineExplanation::Matched {
@@ -882,6 +996,14 @@ mod explain_match_to_js_tests {
                     "handler": {"name": "interior", "start": 0, "end": 8},
                     "order": 10,
                     "mode": "attach",
+                    "disposition": "call",
+                    "attach": {
+                        "kind": "resolved",
+                        "name": "Cue",
+                        "fields": [
+                            {"name": "place", "ty": {"kind": "named", "name": "string"}},
+                        ],
+                    },
                     "captures": [
                         {"name": "place", "text": "MARKET SQUARE", "start": 105, "end": 118},
                     ],
@@ -891,6 +1013,7 @@ mod explain_match_to_js_tests {
                         "handler": {"name": "any_line", "start": 20, "end": 28},
                         "order": 20,
                         "mode": "wrap",
+                        "disposition": "call",
                         "captures": [],
                     },
                 ],
@@ -910,6 +1033,7 @@ mod explain_match_to_js_tests {
             order: 10,
             mode: brink_ir::ConventionMode::Attach,
             disposition: brink_ir::ElementDisposition::Call,
+            attach: None,
             captures: Vec::new(),
         };
         let shadowed = brink_ir::ClassifiedMatch {
@@ -917,6 +1041,7 @@ mod explain_match_to_js_tests {
             order: 20,
             mode: brink_ir::ConventionMode::Wrap,
             disposition: brink_ir::ElementDisposition::Call,
+            attach: None,
             captures: Vec::new(),
         };
         let explanation = brink_ir::LineExplanation::Matched {
@@ -942,8 +1067,11 @@ mod explain_match_to_js_tests {
 
     /// The `Unmatched` arm: `matched` is `false`, `winner` is omitted
     /// entirely (`skip_serializing_if`), `shadowed` is the empty array, and
-    /// `attempted` lists every tried entry with its pattern (never a
-    /// `ClassifiedMatch` shape — a miss has no captures).
+    /// `attempted` lists every tried entry with its pattern/mode/
+    /// disposition/attach schema (never a `ClassifiedMatch` shape — a miss
+    /// has no captures). An `attach` clause naming a struct that failed to
+    /// resolve serializes as `"unresolved"`, not silently dropped (issue
+    /// #2311, house rule: flag silent data drops).
     #[test]
     fn unmatched_arm_serializes_attempted_with_winner_omitted() {
         let attempted = vec![brink_ir::ConventionProjectionEntry {
@@ -952,7 +1080,9 @@ mod explain_match_to_js_tests {
             order: 10,
             mode: brink_ir::ConventionMode::Attach,
             disposition: brink_ir::ElementDisposition::Call,
-            attach: None,
+            attach: Some(brink_ir::ConventionAttachSchema::Unresolved(
+                "MissingStruct".to_owned(),
+            )),
         }];
         let explanation = brink_ir::LineExplanation::Unmatched { attempted };
 
@@ -967,6 +1097,9 @@ mod explain_match_to_js_tests {
                     {
                         "handler": {"name": "interior", "start": 0, "end": 8},
                         "order": 10,
+                        "mode": "attach",
+                        "disposition": "call",
+                        "attach": {"kind": "unresolved", "name": "MissingStruct"},
                         "pattern": "^INT\\. (?<place>.+)$",
                     },
                 ],

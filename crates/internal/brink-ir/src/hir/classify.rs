@@ -75,7 +75,9 @@ use brink_syntax_native::SyntaxNode;
 use regex::Regex;
 use rowan::{TextRange, TextSize};
 
-use super::types::{ConventionMode, ConventionsProjection, ElementDisposition, Name};
+use super::types::{
+    ConventionAttachSchema, ConventionMode, ConventionsProjection, ElementDisposition, Name,
+};
 
 // ─── Compiled-pattern caching (issue #2113) ──────────────────────────
 //
@@ -101,6 +103,7 @@ pub(crate) struct CompiledEntry {
     order: i64,
     mode: ConventionMode,
     disposition: ElementDisposition,
+    attach: Option<ConventionAttachSchema>,
     pattern: Regex,
 }
 
@@ -123,6 +126,7 @@ pub(crate) fn compile_entries(projection: &ConventionsProjection) -> Vec<Compile
                 order: entry.order,
                 mode: entry.mode,
                 disposition: entry.disposition,
+                attach: entry.attach.clone(),
                 pattern: Regex::new(&entry.pattern).ok()?,
             })
         })
@@ -178,6 +182,7 @@ fn classify_trimmed(
             order: entry.order,
             mode: entry.mode,
             disposition: entry.disposition,
+            attach: entry.attach.clone(),
             captures,
         });
     }
@@ -317,6 +322,13 @@ pub struct ClassifiedMatch {
     /// [`ElementDisposition`]'s own doc for why this is carried as a real
     /// field.
     pub disposition: ElementDisposition,
+    /// The `attach = StructName` clause's resolution outcome, read straight
+    /// off [`crate::ConventionProjectionEntry::attach`] — `None` for a
+    /// handler that only ever emits text. Carried through unchanged, the
+    /// same way `mode`/`disposition` are: this walk composes the
+    /// projection's own declarative data, it never re-resolves it (see this
+    /// module's own doc).
+    pub attach: Option<ConventionAttachSchema>,
     /// This handler's pattern's named captures, bound from the actual
     /// match against the line — real source spans, never computed values
     /// (see this module's own doc).
@@ -561,6 +573,58 @@ mod tests {
         let matched = result.matched.expect("expected a match");
         assert_eq!(matched.mode, ConventionMode::Wrap);
         assert_eq!(matched.disposition, ElementDisposition::Call);
+    }
+
+    /// #2311: a hit's `attach` schema must be the same resolved value the
+    /// projection entry carries — this walk composes #2111's own data, it
+    /// never drops it on the way through `CompiledEntry`/`ClassifiedMatch`.
+    /// Reverting `attach: entry.attach.clone()` in `compile_entries`/
+    /// `classify_trimmed` (leaving the field defaulted or unset) fails this
+    /// test.
+    #[test]
+    fn a_hit_carries_the_resolved_attach_schema_through_from_the_projection_entry() {
+        let mut decl_with_attach = decl("cue", 10, "^(?<who>[A-Z]+)$");
+        decl_with_attach.attach = Some("Cue".to_string());
+        let mut structs = BTreeMap::new();
+        structs.insert(
+            "Cue".to_string(),
+            vec![ConventionAttachField {
+                name: "who".to_string(),
+                ty: crate::SchemaTypeShape::Named("string".to_string()),
+            }],
+        );
+        let p = ConventionsProjection::from_decls(&[decl_with_attach], &structs);
+        let result = classify_line(&p, TextSize::from(0), "VENDOR");
+        let matched = result.matched.expect("expected a match");
+        assert_eq!(
+            matched.attach,
+            Some(ConventionAttachSchema::Resolved {
+                name: "Cue".to_string(),
+                fields: vec![ConventionAttachField {
+                    name: "who".to_string(),
+                    ty: crate::SchemaTypeShape::Named("string".to_string()),
+                }],
+            })
+        );
+    }
+
+    /// The unresolved case (a declared `attach = StructName` naming a struct
+    /// that does not exist) must also survive the walk, carrying the
+    /// declared name rather than being silently dropped or coerced to
+    /// `None` (house rule: flag silent data drops).
+    #[test]
+    fn a_hit_carries_an_unresolved_attach_schema_through_too() {
+        let mut decl_with_attach = decl("cue", 10, "^(?<who>[A-Z]+)$");
+        decl_with_attach.attach = Some("NoSuchStruct".to_string());
+        let p = ConventionsProjection::from_decls(&[decl_with_attach], &no_structs());
+        let result = classify_line(&p, TextSize::from(0), "VENDOR");
+        let matched = result.matched.expect("expected a match");
+        assert_eq!(
+            matched.attach,
+            Some(ConventionAttachSchema::Unresolved(
+                "NoSuchStruct".to_string()
+            ))
+        );
     }
 
     #[test]
