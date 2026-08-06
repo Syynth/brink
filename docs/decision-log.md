@@ -2918,3 +2918,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Build a Rust-level, CI-enforced acceptance test for the editor path: a real multi-file project (the NATIVE_FIXTURE shape — brink.toml, conventions module, cross-file divert, stdlib-colliding names) driven through `EditorSession` with project config applied, asserting zero diagnostics plus positive queries (explain-match entries, completions, cross-file claiming). Wave health monitoring reads this gate alongside the oracle ratchet.
 - **WHY:** The oracle ratchet held at 5608 all day (2026-08-05) while the editor visibly regressed (native fixture: 1 → 3 → 7 diagnostics), because the editor track had no measured invariant — autonomous work optimizes what is measured. Browser-based verification proved untrustworthy as a substitute (#2324: the playground never applied brink.toml at all).
+
+## Slug-bearing headings: strip structure, then match
+- **WHEN:** 2026-08-06
+- **PROJECT:** brink
+- **SYSTEM:** prose-dialect / conventions
+- **SCOPE:** moderate
+- **WHAT:** A scene heading's grammar-parsed `[slug]` and trailing `#tags` are stripped before `@[convention]` pattern matching — the pattern sees only the title text, so preset patterns work unchanged on slugged headings. The slug is delivered as a reserved capture alongside the pattern's own captures, mirroring §8b.5's reserved address-capture role. (Closes the #2077 design question.)
+- **WHY:** Every worked heading in the prose-dialect spec carries a slug, so the previous decline-on-slug rule meant no preset could claim any of the spec's own examples. Stripping keeps the pattern about the prose and the structure structural — and keeps #2078 orthogonal: slug = addressability, claim = presentation/metadata.
