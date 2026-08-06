@@ -21,6 +21,18 @@ import { EditorSessionHandle } from "@brink-lang/web";
 import type { CompileResult } from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 
+// The config filename `discoverProjectConfig`'s walk-up looks for (mirrors
+// `brink_project_config::CONFIG_FILE_NAME` — see crates/internal/brink-project-config/src/lib.rs).
+const PROJECT_CONFIG_FILENAME = "brink.toml";
+
+/** True when `path`'s basename is the project-config filename, wherever in
+ *  the tree it sits — the trigger for re-running `discoverProjectConfig`. */
+function isProjectConfigPath(path: string): boolean {
+  const slash = path.lastIndexOf("/");
+  const base = slash >= 0 ? path.slice(slash + 1) : path;
+  return base === PROJECT_CONFIG_FILENAME;
+}
+
 export interface ProjectSessionOptions {
   provider: FileProvider;
   entryFile: string;
@@ -42,6 +54,31 @@ export interface ProjectSessionOptions {
   onFilesChanged?: (changes: FileChange[]) => void;
   /** Trailing debounce for `onFilesChanged` batches (default 500 ms). */
   changeDebounceMs?: number;
+  /**
+   * Unrecognized-key/lint-code warnings from the most recent `brink.toml`
+   * discovery/apply (issue #2324) — forwarded verbatim from
+   * `EditorSessionHandle.discoverProjectConfig`'s return value. Fires once
+   * after `initialize()` loads the project's files (even with an empty
+   * array — a host that wants to clear a previous warning list can rely on
+   * that), and again every time a `brink.toml` in the session is created,
+   * edited, renamed into/out of, or externally rewritten. Never fires for a
+   * discovery error (malformed TOML / an invalid recognized-key value) — see
+   * {@link onProjectConfigError} instead.
+   */
+  onProjectConfigWarnings?: (warnings: string[]) => void;
+  /**
+   * A `brink.toml` discovery/apply error (issue #2324): `discoverProjectConfig`
+   * throws on malformed TOML or a recognized key with an invalid value (e.g.
+   * `dialect = "brnik"`). Without this callback such an error would otherwise
+   * propagate out of whichever call triggered discovery — `initialize()`,
+   * `notifyFileChanged`/`applyEdit`, `addFile`, `deleteFile`, `renameFile`, or
+   * the external-change handler — and a mid-edit typo in the one file this
+   * feature exists to make effective would take the whole session down with
+   * it. `applyProjectConfig` catches the throw at its single call site and
+   * reports it here instead; the file's *previous* successfully-applied
+   * config (if any) stays in effect until a valid edit re-discovers it.
+   */
+  onProjectConfigError?: (message: string) => void;
 }
 
 export class ProjectSession {
@@ -51,6 +88,8 @@ export class ProjectSession {
   private readonly changes: FileChangeHub;
   private onExternalFileChange?: (path: string, content: string | null) => void;
   private onFileConflict?: (conflict: FileConflict) => void;
+  private onProjectConfigWarnings?: (warnings: string[]) => void;
+  private onProjectConfigError?: (message: string) => void;
   private unsubscribeExternal?: () => void;
   private destroyed = false;
   private lastCompile: { generation: number; result: CompileResult } | null = null;
@@ -61,12 +100,51 @@ export class ProjectSession {
     this.session = options.session ?? new EditorSessionHandle();
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
+    this.onProjectConfigWarnings = options.onProjectConfigWarnings;
+    this.onProjectConfigError = options.onProjectConfigError;
     this.changes = new FileChangeHub({
       getContent: (path) => (this.destroyed ? null : this.session.getFileSource(path)),
       onFlush: options.onFilesChanged,
       onFileConflict: options.onFileConflict,
       debounceMs: options.changeDebounceMs,
     });
+  }
+
+  /**
+   * Re-run `brink.toml` discovery (issue #2324) and forward any warnings.
+   * Uses `discoverProjectConfig` (#1414), not `applyProjectConfig` (#1005):
+   * it walks the session's own already-loaded documents from `entryFile`
+   * up to the tree root, so this class — which already loads every
+   * provider file (including `brink.toml`, an ordinary project file) into
+   * the session — needs no host-specific directory-walk/read code of its
+   * own to locate or read the text. `applyProjectConfig` would require
+   * this class (or its caller) to separately fetch the file's text through
+   * the `FileProvider`, duplicating work `initialize()` already did.
+   *
+   * Safe to call whenever `brink.toml` might have changed — a missing file
+   * is not an error (`discoverProjectConfig` returns `[]`), and a
+   * recognized-key/lint-code warning list is forwarded even when empty.
+   *
+   * `discoverProjectConfig` throws on malformed TOML or a recognized key
+   * with an invalid value (issue #2324's review finding): every caller of
+   * this method — `initialize()`, `notifyFileChanged`/`applyEdit`,
+   * `addFile`, `deleteFile`, `renameFile`, and the external-change handler —
+   * is a place a mid-edit typo in `brink.toml` could otherwise take down,
+   * from a mount-time failure with no editor to fix the file in, to an
+   * uncaught exception on every subsequent keystroke. Caught here, once, at
+   * the single call site all of them share, and reported through
+   * {@link ProjectSessionOptions.onProjectConfigError} instead of
+   * rethrowing.
+   */
+  private applyProjectConfig(): void {
+    let warnings: string[];
+    try {
+      warnings = this.session.discoverProjectConfig(this.entryFile);
+    } catch (err) {
+      this.onProjectConfigError?.(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    this.onProjectConfigWarnings?.(warnings);
   }
 
   /** Load all files from provider and resolve INCLUDEs. */
@@ -81,6 +159,10 @@ export class ProjectSession {
     }
 
     await this.resolveIncludes();
+
+    // `brink.toml` (issue #2324): every project file is loaded above, so
+    // discovery can run once, right here, before anything analyzes/compiles.
+    this.applyProjectConfig();
 
     // Register external change callback if the provider supports it. Keep the
     // unsubscribe so destroy() can detach it — otherwise a later external change
@@ -113,6 +195,10 @@ export class ProjectSession {
       // studio-side change for the path (no echo back to the host).
       this.changes.applyExternal(path, content);
       this.onExternalFileChange?.(path, content);
+      // `brink.toml` rewritten from outside the studio (issue #2324): the
+      // file just landed in the session via `updateFile` above — re-run
+      // discovery so an external edit is not silently ignored either.
+      if (isProjectConfigPath(path)) this.applyProjectConfig();
     });
   }
 
@@ -132,6 +218,10 @@ export class ProjectSession {
     await this.provider.createFile(path, content);
     this.session.updateFile(path, content);
     this.changes.record(path, "created");
+    // A `brink.toml` created after mount (issue #2324) was previously
+    // undiscoverable — the file wasn't there for `initialize()`'s discovery
+    // call, and nothing re-ran it.
+    if (isProjectConfigPath(path)) this.applyProjectConfig();
   }
 
   /** Remove a file from the wasm session (does not delete from provider). */
@@ -153,6 +243,10 @@ export class ProjectSession {
     await this.provider.deleteFile?.(path);
     this.session.removeFile(path);
     this.changes.record(path, "deleted");
+    // A deleted `brink.toml` (issue #2324) may uncover an ancestor
+    // `brink.toml` discovery previously stopped short of (or find none,
+    // which is not an error — see `applyProjectConfig`'s doc comment).
+    if (isProjectConfigPath(path)) this.applyProjectConfig();
   }
 
   /** Whether files can be renamed/moved. True when the provider has an atomic
@@ -202,6 +296,13 @@ export class ProjectSession {
     this.changes.record(newPath, "created");
     this.changes.record(oldPath, "deleted");
 
+    // `brink.toml` moved into or out of the tree (issue #2324): the
+    // ancestor `brink.toml` discovery finds by walk-up depends on exact
+    // paths, so either direction can change what's discovered.
+    if (isProjectConfigPath(oldPath) || isProjectConfigPath(newPath)) {
+      this.applyProjectConfig();
+    }
+
     return referrers;
   }
 
@@ -233,6 +334,11 @@ export class ProjectSession {
       this.provider.onFileChanged?.(path, source);
     }
     this.changes.record(path, "modified");
+    // `brink.toml` edited in the studio (issue #2324) — CM6 edits (this is
+    // the direct caller) and every bulk-edit path (through {@link applyEdit},
+    // which calls this) both land here. The session's content for `path` is
+    // already live by this point, so discovery picks up the new text.
+    if (isProjectConfigPath(path)) this.applyProjectConfig();
   }
 
   /**
