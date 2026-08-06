@@ -99,7 +99,15 @@ pub struct VisitEntry {
 /// suspended-flow section, section-locally versioned"). Bump when the
 /// [`SuspendedFlow`] shape itself changes; the rest of [`SaveState`] is
 /// unaffected.
-pub const SUSPENDED_FLOW_SECTION_VERSION: u16 = 1;
+///
+/// Bumped to 2 for #2108's block-run fields ([`SuspendedFlow::next_block_id`]/
+/// [`SuspendedFlow::pending_element`], 2026-08-05 ruling — see their own
+/// docs). Both new fields carry `#[serde(default)]`, so a version-1 JSON
+/// blob still decodes (a fresh `0`/empty map, exactly the pre-ruling
+/// behavior for a save predating this field); the version bump is a
+/// legibility signal for a reader inspecting the section, not a decode
+/// requirement.
+pub const SUSPENDED_FLOW_SECTION_VERSION: u16 = 2;
 
 /// The `FlowFrame` — a parked flow's durable, recompile-stable representation
 /// (`docs/flow-suspension-spec.md` §2, RULED). No instruction offsets ever
@@ -137,6 +145,37 @@ pub struct SuspendedFlow {
     pub frame: Value,
     /// The wake policy governing when the parked flow resumes (§2 point 4).
     pub wake: WakePolicy,
+    /// The flow's `next_block_id` counter (`brink_runtime`'s
+    /// `Flow::next_block_id`, runtime-side) at the instant it was parked
+    /// (§2 point 5, #2108,
+    /// 2026-08-05 ruling: *"block metadata persists, and `next_block_id`
+    /// persists with it"*). A parked flow's block-run numbering must survive
+    /// the save/resume boundary — unlike an ordinary (non-suspended) save,
+    /// where the host re-enters at a known knot and a fresh `0` is harmless
+    /// because nothing compares an id across that boundary, a *resumed*
+    /// flow continues executing from the exact point it parked, so its
+    /// block-id sequence must continue rather than collide with fresh
+    /// numbering starting over. `#[serde(default)]`: a save predating this
+    /// field decodes as `0`, identical to the pre-ruling behavior it
+    /// replaces.
+    #[serde(default)]
+    pub next_block_id: u64,
+    /// The element-attachment metadata (`@[convention(..., attach = X)]`,
+    /// #2108) accumulated on the run that was open at the instant this flow
+    /// parked — empty when no attach run was open (§2 point 5). A block is
+    /// not just lines: executable statements can interleave with an
+    /// attach-scoped dialogue run, so an `await` can suspend *inside* one
+    /// (`Step::Suspended` is not a `BlockId` run-terminator — see
+    /// `brink_runtime::story::BlockId`'s own doc). Persisting this alongside
+    /// [`Self::next_block_id`] is what lets a resumed flow keep attributing
+    /// the lines it emits after wake to the same speaker/attachment,
+    /// instead of the run's data silently resetting to empty on resume — the
+    /// player-visible loss the ruling explicitly refused to ship.
+    /// `#[serde(default)]` (older save decodes as empty — no open run to
+    /// restore, matching pre-ruling behavior); `skip_serializing_if` keeps
+    /// the common case (no run open at park time) free of wire noise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_element: BTreeMap<String, String>,
 }
 
 /// A parked flow's wake policy (`docs/flow-suspension-spec.md` §2 point 4):
@@ -321,10 +360,13 @@ mod tests {
     }
 
     /// A `SuspendedFlow` — current container, return stack, name-keyed frame
-    /// record, wake policy — round-trips through `serde_json` byte-for-byte
-    /// (`docs/flow-suspension-spec.md` §2, FS-1). Covers both `WakeSource`
-    /// variants: `Condition` (a compiled condition fn token present) and
-    /// `Host` (no condition fn — §3's PROPOSED-only host wake spelling).
+    /// record, wake policy, block-run state — round-trips through
+    /// `serde_json` byte-for-byte (`docs/flow-suspension-spec.md` §2, FS-1).
+    /// Covers both `WakeSource` variants: `Condition` (a compiled condition
+    /// fn token present) and `Host` (no condition fn — §3's PROPOSED-only
+    /// host wake spelling), and (#2108) both a non-empty and an empty
+    /// `pending_element` — a real open attach run on the condition case, no
+    /// open run on the host case.
     #[test]
     fn suspended_flow_round_trips() {
         let mut frame = OrderedMap::new();
@@ -333,6 +375,9 @@ mod tests {
             MapKey::from("party"),
             Value::array(vec![Value::from("hero"), Value::from("mage")]),
         );
+
+        let mut pending_element = BTreeMap::new();
+        pending_element.insert("speaker".to_string(), "VENDOR".to_string());
 
         let suspended_condition = SuspendedFlow {
             version: SUSPENDED_FLOW_SECTION_VERSION,
@@ -347,6 +392,8 @@ mod tests {
                 condition: Some(DefinitionId::new(DefinitionTag::ExternalFn, 5)),
                 source: WakeSource::Condition,
             },
+            next_block_id: 12,
+            pending_element: pending_element.clone(),
         };
         let save_condition = SaveState {
             version: SAVE_FORMAT_VERSION,
@@ -361,6 +408,12 @@ mod tests {
         };
 
         let json = serde_json::to_string(&save_condition).expect("serialize save");
+        assert!(
+            json.contains("next_block_id") && json.contains("pending_element"),
+            "a parked flow's block-run state must actually appear on the \
+             wire, not just round-trip through an in-memory equality check: \
+             {json}"
+        );
         let back: SaveState = serde_json::from_str(&json).expect("deserialize save");
         assert_eq!(back, save_condition);
 
@@ -374,6 +427,8 @@ mod tests {
                 condition: None,
                 source: WakeSource::Host,
             },
+            next_block_id: 0,
+            pending_element: BTreeMap::new(),
         };
         let save_host = SaveState {
             suspended: Some(suspended_host),
@@ -387,6 +442,56 @@ mod tests {
             !json.contains("condition"),
             "absent condition must be omitted, not null: {json}"
         );
+        assert!(
+            !json.contains("pending_element"),
+            "no open attach run at park time must omit the key entirely, \
+             not serialize an empty map: {json}"
+        );
+    }
+
+    /// A version-1 `SuspendedFlow` JSON blob (predating #2108's
+    /// `next_block_id`/`pending_element`) still deserializes — `0` and an
+    /// empty map respectively, identical to the behavior it replaces for a
+    /// save that never carried block-run state at all. Built by serializing
+    /// a real (new-shape) value and stripping the two new keys back out,
+    /// rather than hand-writing `DefinitionId`/`Value`'s wire encoding —
+    /// this proves tolerance of an *absent* key without having to guess
+    /// unrelated types' JSON shape.
+    #[test]
+    fn suspended_flow_tolerates_a_pre_2108_save() {
+        let new_shape = SuspendedFlow {
+            version: 1,
+            current: DefinitionId::new(DefinitionTag::Address, 1),
+            return_stack: Vec::new(),
+            frame: Value::map(OrderedMap::new()),
+            wake: WakePolicy {
+                site: DefinitionId::new(DefinitionTag::Address, 2),
+                condition: None,
+                source: WakeSource::Host,
+            },
+            next_block_id: 99,
+            pending_element: {
+                let mut m = BTreeMap::new();
+                m.insert("speaker".to_string(), "SHOULD_NOT_SURVIVE".to_string());
+                m
+            },
+        };
+        let json = serde_json::to_string(&new_shape).expect("serialize");
+        // A real serde_json::Value round-trip strip, not brittle string
+        // splicing: remove the two #2108 keys, simulating an older save
+        // that never had them.
+        let mut as_map: serde_json::Value = serde_json::from_str(&json).expect("parse to Value");
+        let obj = as_map
+            .as_object_mut()
+            .expect("SuspendedFlow serializes as an object");
+        obj.remove("next_block_id");
+        obj.remove("pending_element");
+        let old_json = serde_json::to_string(&as_map).expect("re-serialize stripped");
+
+        let back: SuspendedFlow =
+            serde_json::from_str(&old_json).expect("deserialize old-shape flow");
+        assert_eq!(back.next_block_id, 0, "{back:?}");
+        assert!(back.pending_element.is_empty(), "{back:?}");
     }
 
     /// Frame-shape drift (`docs/flow-suspension-spec.md` §7): the compiler
@@ -418,6 +523,8 @@ mod tests {
                 condition: Some(DefinitionId::new(DefinitionTag::ExternalFn, 3)),
                 source: WakeSource::Condition,
             },
+            next_block_id: 4,
+            pending_element: BTreeMap::new(),
         };
         let json = serde_json::to_string(&old).expect("serialize old-shape frame");
 

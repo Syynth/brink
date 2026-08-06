@@ -341,9 +341,37 @@ pub(crate) struct Flow {
     /// new run begins: after a choice is selected, after resuming from
     /// `Done`, and on a host-directed jump (`choose_path_string`, which is
     /// itself specified as force-completing the current flow like `->
-    /// DONE`). Never persisted — a resumed save simply continues numbering
-    /// from a fresh `0`, which is fine since ids are only ever compared
-    /// within one flow's own lifetime, never across a save/load boundary.
+    /// DONE`).
+    ///
+    /// ⚠ **Persistence is boundary-dependent, not uniformly "never" (the
+    /// 2026-08-05 ruling on #2108, `docs/decision-log.md`).** This field's
+    /// doc previously said outright that it is *never* persisted — that
+    /// claim was true only for the *ordinary* save (`Story::save_state`/
+    /// `load_state`, `brink_runtime::save`'s free functions): that save
+    /// captures game state only, the host re-enters at a known knot on
+    /// load, and a fresh `0` there is genuinely harmless because nothing
+    /// ever compares a block id *across* that boundary — a brand-new run
+    /// starting fresh is exactly what re-entering a knot means. **That part
+    /// of the old claim still holds and this field is still not part of
+    /// `SaveState` itself.**
+    ///
+    /// It stopped being true unconditionally once element attachment
+    /// (`@[convention(..., attach = X)]`, #2108) could leave a run *open*
+    /// across a suspension: a block is not just lines — executable
+    /// statements can interleave with an attach-scoped dialogue run, and
+    /// `Step::Suspended` is deliberately not one of the run-terminators
+    /// above (an `await` can fire mid-run). A flow parked there is resumed
+    /// from its exact execution position via `brink_format::SuspendedFlow`
+    /// (the `FlowFrame`, `docs/flow-suspension-spec.md` §2/§9) — genuinely
+    /// continuing the SAME run, not re-entering a knot from the top — so a
+    /// numbering restart at `0` there would silently collide with (or just
+    /// diverge from) the pre-park sequence, and the run's element data
+    /// (`crate::output::OutputBuffer`'s carried-forward attachment state)
+    /// would reset to empty, dropping the attributed speaker. For that
+    /// boundary only, this value **is** persisted — see
+    /// `SuspendedFlow::next_block_id`/`SuspendedFlow::pending_element`'s own
+    /// docs — even though the ordinary game-state save still never touches
+    /// it.
     pub next_block_id: u64,
     /// A terminal ([`super::types::Step`] variant with no line payload)
     /// computed but not yet delivered, because its trailing content needed
