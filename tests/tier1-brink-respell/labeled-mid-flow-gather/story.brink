@@ -1,0 +1,19 @@
+flow main() {
+  You enter the room.
+  (look_around)
+  Dust motes drift in the light.
+  {?
+    * Look again. -> look_around
+    + Leave. -> passages
+  }
+}
+
+flow passages() {
+  {?
+    * Go north. -> loop_back
+    + Give up. -> END
+  }
+  (loop_back)
+  A dead end.
+  -> END
+}

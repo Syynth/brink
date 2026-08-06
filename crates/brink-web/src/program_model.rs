@@ -506,6 +506,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::EvalLine(idx, slots) => format!("eval_line #{idx} {slots}"),
         Opcode::BeginFragment => "begin_fragment".to_owned(),
         Opcode::EndFragment => "end_fragment".to_owned(),
+        Opcode::AttachElement => "attach_element".to_owned(),
+        Opcode::EndElementRun => "end_element_run".to_owned(),
 
         // Choices (target resolved)
         Opcode::BeginChoice(flags, target) => {
@@ -637,6 +639,11 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::MapGetOpt => "map_get_opt".to_owned(),
         Opcode::MapContainsValue => "map_contains_value".to_owned(),
         Opcode::MapClear => "map_clear".to_owned(),
+        // B1 `or`-coalescing, short-circuited (issue #1471).
+        Opcode::CoalesceSome(off) => format!("coalesce_some {off}"),
+        Opcode::OptionBind(slot) => format!("option_bind {slot}"),
+        // Seq `remove_at` (issue #1484).
+        Opcode::SeqRemoveAt => "seq_remove_at".to_owned(),
         // NS-A6 rand verbs (#1112).
         Opcode::RandFloat => "rand_float".to_owned(),
         Opcode::RandChance => "rand_chance".to_owned(),
@@ -657,6 +664,10 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         // NS-A7 collections+ (#1113): one opcode, per-kind mnemonic —
         // mirrors the `.inkt` disassembly (`CollectOp::mnemonic`).
         Opcode::Collect(op) => op.mnemonic().to_owned(),
+
+        // The fn-value verbs (#1679): one opcode, per-kind mnemonic —
+        // mirrors the `.inkt` disassembly (`SeqVerbOp::mnemonic`).
+        Opcode::SeqVerb(op) => op.mnemonic().to_owned(),
     }
 }
 

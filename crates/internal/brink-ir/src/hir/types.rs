@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use rowan::TextRange;
 
 use crate::provenance::Provenance;
@@ -26,6 +28,19 @@ pub struct Name {
 pub struct Path {
     pub segments: Vec<Name>,
     pub range: TextRange,
+    /// `true` when the native source spelled this path with `::` at least
+    /// once (`ast::Path::crosses_module_wall`, charter §13.2: "`::` crosses
+    /// module walls, `.` walks everything inside") — always `false` for the
+    /// ink dialect and every synthesized `Path`, neither of which has a
+    /// module-qualifying separator at all.
+    ///
+    /// This is the bit `hir::lower_native::expr::lower_path` was silently
+    /// dropping before issue #2287: without it, `-> barter::haggle` and
+    /// ink's own `-> knot.stitch` addressing were indistinguishable by the
+    /// time `brink_analyzer::resolve` saw the joined path text, so a
+    /// module-qualified divert could never resolve as one (see
+    /// `resolve::lookup_qualified_divert`).
+    pub crosses_module_wall: bool,
 }
 
 /// A tag attached to content — may contain dynamic inline expressions.
@@ -81,6 +96,58 @@ pub struct HirFile {
     /// separately: `ModuleDecl::was` for the module, `DeclaredSymbol::was`
     /// for a definition.
     pub was_directives: Vec<TextRange>,
+    /// Source-level `@[allow(Exxx, …)]` suppression scopes (issue #1161):
+    /// one entry per well-formed `@[allow(…)]` annotation, carrying the
+    /// annotated declaration's own span and the codes it silences inside
+    /// it. Populated by the native frontend's annotation channel
+    /// (`hir::lower_native::annotation`); always empty for the ink
+    /// frontend, whose `@[…]` channel has no `allow` tenant yet.
+    ///
+    /// Consumed by [`crate::suppressions::apply_suppressions`] — the same
+    /// filter the `//brink-disable` comment channel already flows through
+    /// — via `brink-db`'s `suppressions_query`, so every diagnostic
+    /// consumer (CLI, LSP, wasm) gets the filtering from one seam.
+    pub allow_scopes: Vec<crate::suppressions::AllowScope>,
+    /// Every prose line the natural-notation element dispatcher claimed
+    /// (issue #1838), in source order — the per-line classification record
+    /// the no-invisible-expansion ruling requires. Populated by the native
+    /// frontend (`hir::lower_native::element`); always empty for the ink
+    /// frontend, whose grammar has no `@[element]` channel.
+    pub element_matches: Vec<ElementMatch>,
+    /// Every `@NAME` cue payload written in this file, harvested
+    /// independent of whether any conventions handler claims the line
+    /// (issue #2114, `docs/prose-dialect-spec.md` §5's "harvest by
+    /// default" ruling — see [`CueSite`]'s own doc for why this cannot be
+    /// derived from `element_matches`). Populated by the native frontend;
+    /// always empty for the ink frontend, whose grammar has no cue
+    /// channel.
+    pub cue_names: Vec<CueSite>,
+    /// Which frontend produced this file: `true` for the native (`.brink`)
+    /// surface (`hir::lower_native`), `false` for the ink one
+    /// (`hir::lower::structure`).
+    ///
+    /// The two surfaces share every HIR shape below this struct, so a
+    /// downstream pass that must decide a question the *surface* answers
+    /// differently has nowhere else to ask. Today that is exactly one
+    /// question — the 2026-08-01 ruling that a statically-named function in
+    /// expression position **is** a fn value in native (`handler(scene)`,
+    /// no sigil) while the same bare name in ink is a knot's visit count
+    /// (`docs/t1c-spec.md` §2a). `lir::lower::expr::lower_path` and
+    /// `brink-analyzer`'s `fn_values`/`infer` read this flag; see those
+    /// sites for why a per-*file* answer (rather than the project-wide
+    /// `is_native` flag `brink_analyzer::analyze_with_modules` takes) is the
+    /// right granularity: the fact travels with the HIR it describes, so
+    /// every pass that already holds an `HirFile` gets it for free.
+    pub native: bool,
+    /// Every natural-notation claiming handler *declared* in this file
+    /// (issue #1844), in ascending `@[convention]` `order` (issue #2164,
+    /// `docs/decision-log.md` 2026-08-03 — declaration position no longer
+    /// has any bearing on precedence) — independent of whether it ever
+    /// claimed a line; see [`ClaimHandlerDecl`]'s own doc for why this is
+    /// not derivable from `element_matches`. Populated by the native
+    /// frontend (`hir::lower_native::element::collect`); always empty for
+    /// the ink frontend.
+    pub claim_handlers: Vec<ClaimHandlerDecl>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -183,6 +250,872 @@ pub struct EffectsAssertion {
     pub range: TextRange,
 }
 
+/// An `@[element(args = "…", block)]` per-declaration annotation (issue
+/// #1719, `docs/prose-dialect-spec.md` §3.5b) — the **declaration
+/// surface** for a `!name`-dispatched handler: a dispatched content line
+/// rewrites to a call on the annotated `fn`/`flow`, with the pattern's
+/// named captures binding params by name.
+///
+/// Until issue #2164, this struct also carried the natural-notation
+/// `claims = "…"` spelling (a `claims: bool` field distinguished the two).
+/// The 2026-08-03 ruling ("Claiming and `!name` dispatch split into two
+/// annotations: `@[convention]` and `@[element]`", `docs/decision-log.md`)
+/// splits that claiming half out into [`ConventionAnnotation`], declared
+/// under its own `@[convention(claims = "…", order = N)]` name. What
+/// remains here is `!name` dispatch only: self-announcing, legal
+/// anywhere, and carrying **no `order`** — a handler that names itself
+/// never competes for a line, so it needs no precedence over anything.
+/// `§9.1` item 1's "there is ONE element mechanism, not two" still holds
+/// at the *lowering* layer (both annotations still lower to a matched
+/// line, captures bound by name, and exactly one handler call) — only the
+/// authoring surface split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementAnnotation {
+    /// The portable-regex source text of the `args = "…"` clause, anchored
+    /// against the dispatched line's remainder (after the `!name ` prefix
+    /// is stripped).
+    pub pattern: String,
+    /// `pattern`'s named capture groups, in the order `regex::Regex::
+    /// capture_names` yields them — the set a paired `@[style(…)]`'s keys
+    /// are validated against (`E162`), and the set that binds the
+    /// annotated declaration's params by name.
+    pub captures: Vec<String>,
+    /// An explicit dispatch-name alias (`name = "…"` in the same
+    /// annotation), overriding the fn/flow's own name as the `!`-sigil
+    /// dispatch key. `None` when the declaration's own name is the
+    /// dispatch name.
+    pub alias: Option<String>,
+    /// The bare `block` clause (issue #1839, `docs/decision-log.md`
+    /// 2026-07-31 "Conventions are annotated handlers"): `@[element(args =
+    /// "…", block)]` declares that the handler captures the **following
+    /// run** — terminated by a blank line or any element-level line — into
+    /// a trailing `content`-typed parameter, the same first-class
+    /// fragment-capture path (`BeginFragment`…`EndFragment` →
+    /// `Value::FragmentRef`, `brink_format::Opcode`) an ordinary call
+    /// expression already uses, widened in scope rather than a new
+    /// mechanism. The handler **wraps** the block (receives the content,
+    /// decides emission) and does not tag it — an ambient "current
+    /// speaker" was considered and rejected as implicit state.
+    ///
+    /// `true` only when the declaration also has a qualifying trailing
+    /// `content`-typed parameter (`E166` otherwise — see
+    /// [`crate::hir::lower_native::annotation::parse_element`]). The
+    /// terminator search, the fragment capture itself, and the dispatch
+    /// call are `hir::lower_native::element`'s `try_claim`/`try_dispatch`
+    /// (issue #1839) — this field is what tells them to run it.
+    pub block: bool,
+    /// Source range of the whole `@[element(…)]` annotation line.
+    pub range: TextRange,
+}
+
+/// An `@[convention(claims = "…", order = N)]` per-declaration annotation
+/// (issue #2164, `docs/decision-log.md` 2026-08-03) — the **declaration
+/// surface** for a pattern-claiming handler: a claimed prose line (one
+/// that announces nothing of its own — no `!name` sigil) rewrites to a
+/// call on the annotated top-level `fn`, with the pattern's named
+/// captures binding params by name.
+///
+/// Split out of the old `@[element(claims = "…")]` spelling (issue #1838)
+/// by the 2026-08-03 ruling: a claiming handler *competes* for lines it
+/// did not announce, so it needs an explicit precedence (`order`) and it
+/// stays **confined** to the `brink.toml`-named conventions module (§9.1
+/// item 4, issue #1844's `E169`) — properties [`ElementAnnotation`]'s
+/// `!name` dispatch does not share, since a self-announcing handler never
+/// competes for anything. Scene heading, cue, parenthetical are
+/// conventions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionAnnotation {
+    /// The portable-regex source text of the `claims = "…"` clause,
+    /// anchored against the claimed line's whole text.
+    pub pattern: String,
+    /// The claiming precedence (`order = N`) — a bare integer, RULED
+    /// (`docs/decision-log.md` 2026-08-03 "`order` is REQUIRED on
+    /// `@[convention]`…") over a sparse-integer convention or named
+    /// anchors. **Required**: a `@[convention]` with no `order` clause is
+    /// `E178` and yields no `ConventionAnnotation` at all — there is no
+    /// default, because `order` can never be absent. Two declarations in
+    /// one module carrying the same `order` is `E179` (both declarations
+    /// named), enforced across the module's collected handlers
+    /// (`hir::lower_native::element::diagnose_duplicate_order`) rather
+    /// than here, where only one declaration is in view at a time. Lower
+    /// values are tried first — the walk still tries every registered
+    /// pattern against every line, uses the first match, and records the
+    /// rest as shadowed (2026-08-02 match-ordering ruling, unaffected);
+    /// only the *source* of that trial order changed, from declaration
+    /// position to this field.
+    pub order: i64,
+    /// `pattern`'s named capture groups, in the order `regex::Regex::
+    /// capture_names` yields them — the set a paired `@[style(…)]`'s keys
+    /// are validated against (`E162`), and the set every argument of the
+    /// rewritten call comes from (`E167`: a claimed line has no other
+    /// source of arguments).
+    pub captures: Vec<String>,
+    /// The bare `block` clause (issue #1839) — identical meaning to
+    /// [`ElementAnnotation::block`]'s own doc, for a claiming handler
+    /// instead of a `!name`-dispatched one (the built-in screenplay
+    /// preset's `cue`/`parenthetical` handlers both declare it).
+    pub block: bool,
+    /// The `attach = StructName` clause (issue #2178, split from #2164's
+    /// backport comment "item 2"), if declared — the handler's attached
+    /// output **schema**: a declared `struct`'s name, naming which keys
+    /// the handler attaches to the run that follows and their types.
+    /// `docs/decision-log.md` 2026-08-03 "The element output model": *"A
+    /// `struct` is already declarative, statically known, serialized, and
+    /// understood by compiler + editor + host — so the projection
+    /// carries a type and no new declarative sub-language exists."*
+    /// **Declared** here (the schema); the handler body **computes** the
+    /// values — the governing split the same ruling states: "keys are
+    /// declared, values are computed." A handler may never attach a
+    /// computed key *name*: that isn't a check this field needs, because
+    /// nothing about a plain `struct` return type lets a handler invent
+    /// one — the field names are fixed by the struct's own declaration.
+    ///
+    /// `None` when absent: `attach` is optional, unlike `order` — a
+    /// claiming handler that only ever emits text (the pre-#2178 shape)
+    /// still needs no declared schema.
+    ///
+    /// Validated against [`Knot::return_type`]/[`Stitch::return_type`] by
+    /// [`crate::hir::lower_native::annotation::parse_convention`]: the
+    /// declared return type's bare name must equal this clause's name, or
+    /// the mismatch is `E180` and this annotation is not attached at all
+    /// (the same "never a partial one" posture `E159`/`E178` already
+    /// take). This module never resolves whether a struct of this name is
+    /// actually *declared* — the same shallow, declaration-surface-only
+    /// posture the rest of the annotation-lowering module takes for every
+    /// other clause here — that is real name resolution's job, not this
+    /// one's.
+    pub attach: Option<Name>,
+    /// Source range of the whole `@[convention(…)]` annotation line.
+    pub range: TextRange,
+}
+
+/// The prose shape a claimed line was written as — the "matched kind" half
+/// of the per-line classification record (issue #1838).
+///
+/// Deliberately structural, not a preset vocabulary: it names the *grammar*
+/// node the line came from, so an editor can say "this is a scene heading
+/// that matched handler `scene`" without the compiler owning a closed list
+/// of element names. The element's *name* is the handler's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementKind {
+    /// An ordinary prose line (`CONTENT_LINE`) with no structural sigil.
+    ContentLine,
+    /// A scene heading (`SCENE_HEADING`, `docs/prose-dialect-spec.md`
+    /// §8b.2/.3) — the `INT.`/`EXT.` prefixed header line.
+    SceneHeading,
+    /// A `!name` sigil dispatch (`BANG_DISPATCH`, §3.5b, issue #2004) —
+    /// self-announcing, unlike the other two variants above (both of
+    /// which are *claimed*, i.e. matched without any structural marker of
+    /// their own).
+    BangDispatch,
+    /// A cue — either a block cue (`CUE`, `docs/prose-dialect-spec.md`
+    /// §8b.9/§8d.4), a bare `@NAME` speaker line, or a compact cue
+    /// (`COMPACT_CUE`, §8b.9, issue #2079) — `@NAME: text` — matched the
+    /// same way against its name segment alone. Either shape is declined
+    /// when it carries a tag extension (e.g. `@VENDOR #(v.o.)`), the same
+    /// way a slug/tag-carrying [`Self::SceneHeading`] is (see
+    /// [`crate::hir::lower_native::element::candidate`]'s own doc) — unlike
+    /// [`Self::SceneHeading`], a `CUE`'s slug/tag structure is not
+    /// stripped-and-recovered by issue #2077, which is scoped to headings
+    /// only. A compact cue's fused dialogue is also declined — the whole
+    /// claim, not just the dialogue — when the dialogue itself is not a
+    /// plain content line (carries a `LABEL` or a fused divert/choice);
+    /// see `element::try_claim`'s own note.
+    /// Issue #1720: the built-in screenplay preset's `cue` handler is the
+    /// first consumer.
+    Cue,
+    /// A parenthetical delivery line (`PARENTHETICAL`,
+    /// `docs/prose-dialect-spec.md` §8.), chain-gated by the parser (only
+    /// recognized directly after a live cue — `brink-syntax-native`'s
+    /// `at_parenthetical`). Issue #1720: the built-in screenplay preset's
+    /// `parenthetical` handler is the first consumer.
+    Parenthetical,
+}
+
+/// One named capture bound by a claimed line, as a **span into real
+/// source** rather than a copied string alone (issue #1838's
+/// no-invisible-expansion guard).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementCapture {
+    /// The capture group's name — also the handler parameter it binds, for
+    /// an ordinary payload capture in [`ElementMatch::captures`]. The one
+    /// exception is [`ElementMatch::slug`] (issue #2077): its `name` is
+    /// always the reserved literal `"slug"`, and it binds no param at all.
+    pub name: String,
+    /// The captured text.
+    pub text: String,
+    /// Where in the claimed line the capture came from.
+    pub range: TextRange,
+}
+
+/// What the compiler did with a claimed line — the "disposition" column of
+/// the classification record.
+///
+/// One variant today: the ruled rewrite is *exactly one call*. It is an
+/// enum rather than a bare marker because the ruling names the other
+/// dispositions a handler expresses by what its body does ("content" is a
+/// line with no handler; "nothing" is a handler that emits nothing), and a
+/// tooling consumer reading this record should not have to re-derive which
+/// of those it is looking at from the absence of a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementDisposition {
+    /// The line was rewritten to exactly one call on the matched handler,
+    /// emitted in the line's own position.
+    Call,
+}
+
+/// One line the natural-notation element dispatcher claimed, recorded so
+/// nothing the compiler rewrote is invisible to tooling (issue #1838; the
+/// no-invisible-expansion guard, `docs/prose-dialect-spec.md` §3.5b
+/// "Tooling transparency").
+///
+/// Every field points at real source: the claimed line's own range, the
+/// handler's name *and the range of its declaration*, and each capture as a
+/// span. That is what lets `LineContext`/the IDE query family answer "what
+/// happened to this line, and where is the code that did it" without
+/// re-running the match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementMatch {
+    /// The claimed line's own source range.
+    pub line: TextRange,
+    /// The prose shape the line was written as.
+    pub kind: ElementKind,
+    /// The matched handler's name, carrying its own declaration-site range.
+    pub handler: Name,
+    /// The range of the `@[element(claims = "…")]` annotation that claimed
+    /// the line — the declaration a hover jumps to.
+    pub annotation: TextRange,
+    /// The captures bound into the call, in parameter order.
+    pub captures: Vec<ElementCapture>,
+    /// What the compiler did with the line.
+    pub disposition: ElementDisposition,
+    /// The captured block's source range (issue #1839's `block` clause) —
+    /// `None` for an ordinary (non-`block`) match. Covers every source line
+    /// the terminator search absorbed into the trailing `content`-typed
+    /// argument, so a tooling consumer can show "this whole span feeds
+    /// `handler`'s `content` parameter" without re-running the terminator
+    /// search itself — the same no-invisible-expansion guarantee `line`
+    /// already gives the claimed header line alone.
+    pub content: Option<TextRange>,
+    /// `true` when `handler` is one of the project's cross-file conventions
+    /// injections (issue #2289) — matched against a
+    /// `brink_ir::hir::lower_native::element::ClaimHandler` whose own
+    /// `decl` is `None`, never a locally declared handler in this file.
+    /// `false` for every `!name`-dispatched match too (`try_dispatch` is
+    /// file-local, per this crate's own module doc) — the flag means
+    /// specifically "this call was rewritten against a handler declared in
+    /// ANOTHER file".
+    ///
+    /// This is the seam `brink_analyzer::modules::check_cross_module_refs`
+    /// reads to exempt the rewritten call from M-2's cross-module
+    /// visibility gate (`E087`/`E025`): the call is compiler-synthesized
+    /// dispatch to the project's own designated conventions module, sanctioned
+    /// by the very `brink.toml` `[project] conventions` pointer that made the
+    /// injection happen in the first place — not a user-authored reference
+    /// that needs `pub`/`use` to cross a module wall. `line` is the exact
+    /// range the rewritten `Expr::Call`'s `Path` carries (see
+    /// `lower_native::element::try_claim`), which by the `ResolvedRef::range`
+    /// contract (issue #1561) is also the resulting resolved reference's own
+    /// range — so a consumer can match `element_matches` entries against
+    /// `ResolvedRef`s by `(file, range)` alone, with no new identifier
+    /// needed on either side.
+    pub injected: bool,
+    /// A `SceneHeading`'s explicit `[slug]`, when spelled (issue #2077,
+    /// `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+    /// structure, then match") — the *address capture* role
+    /// `docs/prose-dialect-spec.md` §8b.5 reserves, delivered as a
+    /// **reserved capture alongside `captures`, not merged into it**:
+    /// `captures`' own doc says "bound into the call, in parameter order",
+    /// and the slug is never bound into the rewritten call — a caller gets
+    /// a real source span (`ElementCapture::name` is always the literal
+    /// string `"slug"`) and nothing more. Wiring it into structure/
+    /// `DefinitionId` — what would make it load-bearing rather than
+    /// descriptive — is heading→stitch promotion, issue #2078, and is
+    /// deliberately untouched by this field. `None` for every non-heading
+    /// `kind`, and for a heading with no explicit slug (an inferred
+    /// address, §3.3) — the two cases are indistinguishable here on
+    /// purpose, since neither carries a real source span to point at.
+    pub slug: Option<ElementCapture>,
+}
+
+/// One natural-notation claiming handler *declared* in a file — recorded
+/// regardless of whether it ever won a claim (issue #1844, the module half
+/// of the §9.1 confinement ruling: "pattern-claiming is confined to ONE
+/// module — the conventions module named in `brink.toml`"). [`ElementMatch`]
+/// only records lines a handler actually claimed, which is the wrong ground
+/// truth for this check — a claiming handler that matches nothing in its
+/// *own* file (because the lines it targets live elsewhere, or simply don't
+/// occur here) is still a declared claim, and still misplaced if this file
+/// isn't the configured conventions module.
+///
+/// `params`/`pattern` are this file's own CST-derived claiming-handler
+/// payload — [`crate::hir::lower_native::element::collect`]'s output,
+/// consumed directly by [`crate::ConventionsProjection::from_decls`] (issue
+/// #2111) now that precedence is a static `order` property rather than a
+/// comptime-evaluated identity list (issue #2165 deleted the cross-file
+/// injection seam this doc used to describe).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimHandlerDecl {
+    /// The handler's own name, carrying its declaration-site range.
+    pub name: Name,
+    /// Range of the `@[convention(claims = "…", order = N)]` annotation
+    /// line itself — the confinement diagnostic's anchor, matching
+    /// `E112`'s own placement diagnostic (the annotation line, not the
+    /// declaration body).
+    pub annotation: TextRange,
+    /// Parameter names in declaration order — the argument order a
+    /// rewritten call uses. Guaranteed by `E160`/`E167` to be exactly the
+    /// pattern's named-capture set.
+    pub params: Vec<String>,
+    /// The claiming pattern's regex source (uncompiled — `regex::Regex`
+    /// has no `Eq`, which this struct's derive needs).
+    pub pattern: String,
+    /// The bare `block` clause (issue #1839): `true` when the trailing
+    /// declared parameter is a `content`-typed block-capture receiver, not
+    /// a regex-bound capture — see
+    /// [`crate::hir::lower_native::element`]'s `ClaimHandler::block` doc
+    /// for what that changes about argument binding.
+    pub block: bool,
+    /// The claiming precedence (`order = N`), issue #2164 — see
+    /// [`ConventionAnnotation::order`]'s own doc. Required on every
+    /// `@[convention]`, so every `ClaimHandlerDecl` carries one (there is
+    /// no "no order" case to represent).
+    pub order: i64,
+    /// The `attach = StructName` clause (issue #2178), if declared — see
+    /// [`ConventionAnnotation::attach`]'s own doc. This is the field the
+    /// NS-T projection (#2111, landed 2026-08-04 via PR #2212, as
+    /// [`ConventionProjectionEntry::attach`]) reads to surface a handler's
+    /// declared output schema to the editor/host, same "compiler reads the
+    /// conventions module's CST" role `params`/`pattern` already play for
+    /// this struct.
+    pub attach: Option<String>,
+}
+
+// ─── The serialized conventions projection (issue #2111) ────────────
+
+/// The attachment mode a `@[convention]` handler declares — issue #2164's
+/// 2026-08-03 design-backport comment names this axis "mode (attach/wrap)",
+/// tracked separately from the `attach = StructName` schema ruling at
+/// icebox issue #2169 ("the wrap mode… is the natural home for the title
+/// page once claiming can be region-scoped"). It is not a new concept: it is
+/// [`ClaimHandlerDecl::block`] read as a two-value enum for projection
+/// purposes, rather than a bare `bool` a tooling consumer would have to
+/// remember the polarity of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConventionMode {
+    /// The ordinary case: the handler's pattern matches exactly the one
+    /// claimed line. Nothing following it is captured.
+    Attach,
+    /// The `block` clause (issue #1839): the handler's trailing `content`-
+    /// typed parameter captures the run *following* the matched line,
+    /// terminated by a blank line or any element-level line. The handler
+    /// **wraps** the captured run — receives it, decides its emission.
+    Wrap,
+}
+
+/// A field type's structural shape, resolved and span-free — issue #2111's
+/// continuation, finding 1: "the schema is a NAME, not fields... resolved
+/// FIELDS AND TYPES, never a value a handler computed." Mirrors
+/// [`TypeExpr`]'s three shapes, with source ranges stripped: a `.inkb` has
+/// no source text to point a range at, and this is schema, not a
+/// jump-to-declaration target (that's still [`ConventionAttachField::name`]'s
+/// job — it keeps its own field name as a plain `String` because a
+/// `.inkb`-loaded host has no source to carry a [`Name`]'s range against
+/// either; the in-process editor consumer that wants a field's declaration
+/// site re-resolves the owning [`StructDecl`] itself, the same way it
+/// resolves the schema's own name today).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaTypeShape {
+    /// A bare nominal name: `int`, `float`, `bool`, `string`, or a declared
+    /// struct name. Not recursively expanded — a field typed as another
+    /// struct carries that struct's bare name here, one level deep, matching
+    /// [`TypeExpr::Named`]'s own "declared struct names arrive in TM-4"
+    /// note. A consumer that needs the nested struct's own fields resolves
+    /// that name exactly the way this type's own name was resolved.
+    Named(String),
+    /// `name<args…>` — `List<L>`, `Array<T>`, `Map<K, V>`.
+    Generic {
+        name: String,
+        args: Vec<SchemaTypeShape>,
+    },
+    /// `fn(params…): ret`.
+    Fn {
+        params: Vec<SchemaTypeShape>,
+        ret: Box<SchemaTypeShape>,
+    },
+}
+
+impl From<&TypeExpr> for SchemaTypeShape {
+    fn from(ty: &TypeExpr) -> Self {
+        match ty {
+            TypeExpr::Named { name, .. } => Self::Named(name.clone()),
+            TypeExpr::Generic { name, args, .. } => Self::Generic {
+                name: name.clone(),
+                args: args.iter().map(Self::from).collect(),
+            },
+            TypeExpr::Fn { params, ret, .. } => Self::Fn {
+                params: params.iter().map(Self::from).collect(),
+                ret: Box::new(Self::from(&**ret)),
+            },
+        }
+    }
+}
+
+/// One resolved field of an `attach = StructName` schema (issue #2111
+/// finding 1): the field's declared name and type, read straight off the
+/// struct's own [`StructFieldDecl`] — never a value any handler computed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionAttachField {
+    pub name: String,
+    pub ty: SchemaTypeShape,
+}
+
+/// The `attach = StructName` clause's resolution outcome (issue #2111
+/// finding 1, superseding the pre-continuation `Option<String>` shape that
+/// carried only the name). Resolved against the conventions module's own
+/// file plus its transitive `IMPORT` closure (finding 3 —
+/// `brink_db::queries::analysis::import_closure_query`), since
+/// `attach = StructName` may legally name a struct declared in an imported
+/// module, not only the conventions module's own file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConventionAttachSchema {
+    /// The struct resolved: its declared name plus every field, in
+    /// declaration order, with each field's declared type. **Schema, never
+    /// values** — nothing here is computed by running the handler's body;
+    /// an editor or host consuming this never runs brink code.
+    Resolved {
+        name: String,
+        fields: Vec<ConventionAttachField>,
+    },
+    /// `attach = StructName` named a struct that does not exist anywhere in
+    /// the conventions module's own file or its import closure. Carries the
+    /// declared name rather than dropping it silently (house rule: flag
+    /// silent data drops) — a consumer can still report *what* was
+    /// declared even though it could not be resolved to a schema.
+    /// [`ClaimHandlerDecl::attach`]'s own doc: HIR lowering never checks
+    /// struct *existence* itself ("real name resolution's job, not this
+    /// one's"), so the projection query is the first layer that can even
+    /// notice — it warns through the same `tracing::warn!` channel its
+    /// unresolvable-pointer sibling case uses, never silently.
+    Unresolved(String),
+}
+
+/// One `@[convention]` handler's projected, purely declarative shape — the
+/// editor/host-readable half of a claiming declaration (issue #2111).
+///
+/// **Schema, never values** (`docs/decision-log.md` 2026-08-03 "The element
+/// output model"): every field here is read straight off the declaration's
+/// own annotation and return-type syntax. Nothing here is computed by
+/// running the handler's body — an editor consuming this projection never
+/// runs brink code, matching the "the editor reads data and never executes
+/// brink code" boundary the no-world-reads fence (issue #2179, not yet
+/// built) will eventually enforce on the *body* side of the same split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionProjectionEntry {
+    /// The handler's own name, carrying its declaration-site range — what a
+    /// hover/explain-match consumer jumps to.
+    pub name: Name,
+    /// The claiming pattern's regex source, as declared.
+    pub pattern: String,
+    /// The claiming precedence — see [`ConventionAnnotation::order`]'s own
+    /// doc. Every entry in a [`ConventionsProjection`] carries one (`order`
+    /// is required, never absent), and the projection's own `entries` are
+    /// already sorted ascending by it — the same resolution order the
+    /// classification walk uses.
+    pub order: i64,
+    /// Attach (ordinary) or wrap (`block`) — see [`ConventionMode`]'s own
+    /// doc.
+    pub mode: ConventionMode,
+    /// What a match on this handler produces — reuses [`ElementDisposition`]
+    /// verbatim rather than inventing a parallel "resulting kind" concept:
+    /// every claimed line still rewrites to exactly one call, so this is
+    /// [`ElementDisposition::Call`] for every entry today. Carried as a
+    /// real field (not simply omitted because there is only one variant)
+    /// for the same reason [`ElementMatch::disposition`] is: a tooling
+    /// consumer should read what happened, not infer it from a field's
+    /// absence, and this stays exact if a second disposition is ever added.
+    pub disposition: ElementDisposition,
+    /// The `attach = StructName` clause's resolution outcome, if the clause
+    /// was declared at all — see [`ConventionAnnotation::attach`]'s own doc.
+    /// `None` for a handler that only ever emits text (the pre-#2178
+    /// shape). See [`ConventionAttachSchema`]'s own doc for the
+    /// `Resolved`/`Unresolved` split — issue #2111 finding 1's resolved
+    /// field list, superseding the pre-continuation `Option<String>` shape
+    /// that carried only the struct's bare name.
+    pub attach: Option<ConventionAttachSchema>,
+}
+
+/// The conventions projection (issue #2111): every `@[convention]` handler
+/// declared in the project's one configured conventions module, in
+/// ascending `order` — the flat, ordered, purely-declarative record an
+/// editor reads instead of tracing execution.
+///
+/// # What #2111 does NOT yet deliver
+///
+/// Recorded here rather than left to be re-discovered, per the house rule
+/// that a doc must state current state upfront. The 2026-08-04 continuation
+/// closed two of the three gaps the original slice left open:
+///
+/// 1. ~~The attachment schema is a NAME, not a struct.~~ **CLOSED.**
+///    [`ConventionProjectionEntry::attach`] now carries a
+///    [`ConventionAttachSchema`] — the resolved field list (names + declared
+///    types), not merely the struct's bare name. Resolution walks the
+///    conventions module's own file plus its transitive `IMPORT` closure
+///    (item 3, now also closed) — see [`Self::from_decls`]'s doc.
+/// 2. **Still open, deliberately.** Nothing here derives a wire encoding and
+///    nothing emits it into `.inkb`/`StoryData` yet. The wire SHAPE this
+///    projection would serialize to now exists
+///    (`brink_format`'s hand-rolled `.inkb`-section-codec idiom, matching
+///    `StructShapeDef`/`FrameShapeDef` rather than `serde` — this crate's
+///    `.inkb` format is not serde-based anywhere), with a `to_wire()`
+///    conversion (every field the wire shape carries round-trips exactly;
+///    see [`Self::to_wire`]'s own doc for the one field it deliberately
+///    does not carry) and round-trip tests. What does **not** yet
+///    exist is a `StoryData` field / `SectionKind` tag / codegen population —
+///    that requires threading a whole-project claim-handler join
+///    (`brink_analyzer::conventions_registry`) through LIR lowering, which
+///    `brink-compiler`'s production pipeline does not currently do (it never
+///    runs through `brink-db`'s salsa layer at all), and is left to whoever
+///    wires the actual #2108 host binding join — allocating a `.inkb`
+///    section tag ahead of that consumer settling its exact needs would risk
+///    locking in the wrong shape. Tracked as a follow-up, not silently
+///    dropped.
+/// 3. ~~No reusable import closure is computed.~~ **CLOSED.**
+///    `brink_db::queries::analysis::import_closure_query` computes the
+///    transitive `IMPORT` closure of any entry file, generically — not
+///    conventions-specific — so #2167's `E169` confinement relaxation can
+///    call the exact same query.
+///
+/// # Why there is no comptime-fault / last-good-value case here
+///
+/// The issue this type answers was filed against the `fn conventions()`
+/// registration design (issue #1840), where `order` came from
+/// comptime-evaluating a registration function — so the projection could
+/// fault (a step-limit hit, a panic) and the editor needed a last-good
+/// fallback (`docs/decision-log.md` 2026-08-01 "Conventions comptime… Q2").
+/// **That mechanism no longer exists.** The 2026-08-03 ruling "`fn
+/// conventions()` is DISSOLVED" moved `order` onto the `@[convention]`
+/// annotation itself, so every field on [`ConventionProjectionEntry`] is
+/// now read straight off HIR — a pure, total function of source text (now
+/// spanning the conventions module's own file plus its import closure, for
+/// `attach` resolution), with no VM execution anywhere in the path. There is
+/// nothing left to fault: a malformed declaration (a missing `order`, a
+/// duplicate one, an `attach` name/return-type mismatch) is an ordinary
+/// compile diagnostic (`E178`/`E179`/`E180`) reported by the existing
+/// per-file lowering pass; an `attach` name that simply does not resolve to
+/// any declared struct becomes [`ConventionAttachSchema::Unresolved`] plus a
+/// `tracing::warn!`, not a fault this type needs to degrade under.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConventionsProjection {
+    /// Every declared `@[convention]` handler, ascending by `order`.
+    pub entries: Vec<ConventionProjectionEntry>,
+    /// Editor-overlay Tab/Enter/Shift-Tab succession rows (issue #2115) —
+    /// `DialogueDialect` (#368)'s surviving `transitions` field, attached via
+    /// [`Self::with_succession`] and re-keyed against THIS projection's own
+    /// `entries` rather than `DialogueDialect`'s own (dissolving)
+    /// `elements` list. Empty unless [`Self::with_succession`] populated it —
+    /// [`Self::from_decls`] never sets these, since succession rows are not
+    /// part of a `@[convention]` declaration (`@[convention]` "deliberately
+    /// has no succession property", `docs/decision-log.md` 2026-08-03
+    /// backport on #2115).
+    ///
+    /// **In-process only — never rides [`Self::to_wire`].** The 2026-08-05
+    /// ruling *"Succession is EDITOR-OWNED and externally defined"* (issue
+    /// #2277) undid issue #2115's *transport* half: these rows are
+    /// editor-overlay data that "never travels beyond tooling"
+    /// (`crate::dialect`'s own doc), and `.inkb` is beyond tooling. What
+    /// survives is the *validator* half: [`Self::with_succession`] still
+    /// re-keys externally (editor-)supplied rows against this projection's
+    /// real convention kinds, in-process, so a rule naming a nonexistent
+    /// kind still fails loudly.
+    pub transitions: Vec<crate::dialect::TransitionRow>,
+    /// Editor-overlay template/picker metadata (issue #2115) —
+    /// `DialogueDialect`'s surviving `templates` field. See
+    /// [`Self::transitions`]'s own doc for provenance and the
+    /// in-process-only, never-on-the-wire contract.
+    pub templates: crate::dialect::Templates,
+}
+
+impl ConventionsProjection {
+    /// Build a projection from one file's already-collected claim-handler
+    /// declarations (`ClaimHandlerDecl`, ordered ascending by `order` —
+    /// [`crate::hir::lower_native::element::collect`]'s own contract).
+    /// Order is preserved, not re-sorted: this function trusts its input's
+    /// ordering rather than re-deriving it, so a caller that hands in an
+    /// unsorted slice gets an unsorted projection back — re-sorting here
+    /// would silently mask a caller bug instead of surfacing it.
+    ///
+    /// `structs` is the caller-resolved struct-name → field-list map (issue
+    /// #2111 finding 1 + finding 3): every struct visible from the
+    /// conventions module's own file plus its transitive `IMPORT` closure,
+    /// keyed by bare struct name. Building that map — walking the closure,
+    /// breaking name collisions deterministically — is the caller's job
+    /// (`brink_db::queries::analysis::conventions_projection_query`); this
+    /// function only does the per-entry lookup, so it stays a pure function
+    /// of its two inputs with no salsa/project awareness of its own. An
+    /// `attach` name absent from `structs` becomes
+    /// [`ConventionAttachSchema::Unresolved`] — never silently dropped, and
+    /// never a fabricated empty field list.
+    #[must_use]
+    pub fn from_decls(
+        decls: &[ClaimHandlerDecl],
+        structs: &BTreeMap<String, Vec<ConventionAttachField>>,
+    ) -> Self {
+        Self {
+            entries: decls
+                .iter()
+                .map(|decl| ConventionProjectionEntry {
+                    name: decl.name.clone(),
+                    pattern: decl.pattern.clone(),
+                    order: decl.order,
+                    mode: if decl.block {
+                        ConventionMode::Wrap
+                    } else {
+                        ConventionMode::Attach
+                    },
+                    disposition: ElementDisposition::Call,
+                    attach: decl.attach.as_ref().map(|name| match structs.get(name) {
+                        Some(fields) => ConventionAttachSchema::Resolved {
+                            name: name.clone(),
+                            fields: fields.clone(),
+                        },
+                        None => ConventionAttachSchema::Unresolved(name.clone()),
+                    }),
+                })
+                .collect(),
+            transitions: Vec::new(),
+            templates: crate::dialect::Templates::default(),
+        }
+    }
+
+    /// Attach editor-overlay succession rows (issue #2115):
+    /// `DialogueDialect` (#368)'s surviving `transitions`/`templates`
+    /// fields, **re-keyed against this projection's own convention kinds**
+    /// (`entries[].name`) instead of `DialogueDialect`'s own dissolving
+    /// `elements` list. This is the ruled split
+    /// (`docs/decision-log.md` 2026-08-03, "Conventions × the editor"):
+    /// *"The language says what a line IS; the editor overlay says what
+    /// pressing Tab DOES."* A row naming a kind this projection doesn't
+    /// declare (and that isn't a
+    /// [`crate::dialect::reserved_structural_kinds`] structural kind) is
+    /// rejected rather than silently carried — the same
+    /// carry-a-dangling-reference failure mode `set_dialect` already
+    /// produced between editor and compiler when `DialogueDialect` was the
+    /// only ground truth.
+    ///
+    /// The compiler never interprets these rows
+    /// (`docs/prose-dialect-spec.md` §5, "ignored by the compiler") — this
+    /// validation only proves each row points at a real convention kind, it
+    /// never gives the rows compiler-preferred meaning. Nor (as of the
+    /// 2026-08-05 ruling, issue #2277) does the compiler transport them
+    /// anywhere: they stay in-process, attached here for validation only —
+    /// see [`ConventionsProjection::transitions`]'s own doc.
+    ///
+    /// # Errors
+    ///
+    /// Returns every [`crate::dialect::DialectError::TransitionUndeclaredKind`]
+    /// (for a `transitions` row) or
+    /// [`crate::dialect::DialectError::TemplateUndeclaredKind`] (for a
+    /// `templates` entry) found, without attaching anything, if any row or
+    /// template entry names an unknown kind.
+    pub fn with_succession(
+        mut self,
+        transitions: Vec<crate::dialect::TransitionRow>,
+        templates: crate::dialect::Templates,
+    ) -> Result<Self, Vec<crate::dialect::DialectError>> {
+        let known: BTreeSet<&str> = self
+            .entries
+            .iter()
+            .map(|entry| entry.name.text.as_str())
+            .chain(crate::dialect::reserved_structural_kinds().iter().copied())
+            .collect();
+        let errors =
+            crate::dialect::validate_succession(&transitions, &templates, |k| known.contains(k));
+        if errors.is_empty() {
+            self.transitions = transitions;
+            self.templates = templates;
+            Ok(self)
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Convert to the `.inkb`-section-codec wire shape (issue #2111
+    /// finding 2) — a mirror with source spans stripped and (deliberately)
+    /// `disposition` not carried, since every entry is the single existing
+    /// `ElementDisposition::Call` case today; see
+    /// `brink_format::conventions::ConventionEntryDef`'s own doc for that
+    /// omission's reasoning. See `brink_format::conventions`'s own module
+    /// doc for why this exists but is not yet wired into `StoryData`.
+    ///
+    /// `transitions`/`templates` do **not** ride this wire shape (2026-08-05
+    /// ruling *"Succession is EDITOR-OWNED and externally defined"*, issue
+    /// #2277, reversing issue #2115's transport half): they are editor-overlay
+    /// data that "never travels beyond tooling" (`crate::dialect`'s own doc),
+    /// and `.inkb` is beyond tooling — it is what a game host loads, and a
+    /// runtime has no Tab key. [`Self::with_succession`]'s validator half
+    /// survives intact; only the wire transport was undone.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
+        brink_format::ConventionsProjectionDef {
+            entries: self
+                .entries
+                .iter()
+                .map(ConventionProjectionEntry::to_wire)
+                .collect(),
+        }
+    }
+}
+
+impl ConventionProjectionEntry {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionEntryDef {
+        brink_format::ConventionEntryDef {
+            name: self.name.text.clone(),
+            pattern: self.pattern.clone(),
+            order: self.order,
+            mode: match self.mode {
+                ConventionMode::Attach => brink_format::ConventionModeDef::Attach,
+                ConventionMode::Wrap => brink_format::ConventionModeDef::Wrap,
+            },
+            attach: self.attach.as_ref().map(ConventionAttachSchema::to_wire),
+        }
+    }
+}
+
+impl ConventionAttachSchema {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionAttachDef {
+        match self {
+            Self::Resolved { name, fields } => brink_format::ConventionAttachDef::Resolved {
+                name: name.clone(),
+                fields: fields.iter().map(ConventionAttachField::to_wire).collect(),
+            },
+            Self::Unresolved(name) => brink_format::ConventionAttachDef::Unresolved(name.clone()),
+        }
+    }
+}
+
+impl ConventionAttachField {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::ConventionAttachFieldDef {
+        brink_format::ConventionAttachFieldDef {
+            name: self.name.clone(),
+            ty: self.ty.to_wire(),
+        }
+    }
+}
+
+impl SchemaTypeShape {
+    /// See [`ConventionsProjection::to_wire`]'s doc.
+    #[must_use]
+    pub fn to_wire(&self) -> brink_format::SchemaTypeDef {
+        match self {
+            Self::Named(name) => brink_format::SchemaTypeDef::Named(name.clone()),
+            Self::Generic { name, args } => brink_format::SchemaTypeDef::Generic {
+                name: name.clone(),
+                args: args.iter().map(SchemaTypeShape::to_wire).collect(),
+            },
+            Self::Fn { params, ret } => brink_format::SchemaTypeDef::Fn {
+                params: params.iter().map(SchemaTypeShape::to_wire).collect(),
+                ret: Box::new(ret.to_wire()),
+            },
+        }
+    }
+}
+
+/// One `@NAME` cue occurrence, recorded regardless of whether any
+/// conventions handler ever claims the line (`docs/prose-dialect-spec.md`
+/// §5, issue #2114: "harvest by default, declaration upgrades").
+///
+/// This is the harvest counterpart to [`ElementMatch`]: `element_matches`
+/// only records a cue line a claiming handler actually won, so a project
+/// with no conventions module — where every `@NAME` line reports the loud
+/// `E129` and produces no `ElementMatch`/`Stmt` at all — would otherwise
+/// have no record of its own cue names for cross-file completion to read.
+/// [`HirFile::cue_names`] is populated by a whole-tree scan for every
+/// `CUE_NAME` node (nested inside both the block `CUE` and the fused
+/// `COMPACT_CUE`, `docs/prose-dialect-spec.md` §8b.9/§8d.4), independent of
+/// `element`'s claim/dispatch machinery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CueSite {
+    /// The speaker name text, as `ast::CueName::text()` yields it (source
+    /// whitespace trimmed, a recognized inline escape's backslash
+    /// stripped).
+    pub name: String,
+    /// Source range of the `CUE_NAME` node itself.
+    pub range: TextRange,
+}
+
+/// A built-in editor-presentation token (`docs/prose-dialect-spec.md`
+/// §3.5b addenda 3–4) — the closed, LSP-semantic-token-style vocabulary
+/// every conforming editor implements natively. Anything outside this
+/// closed set is [`StyleToken::Custom`], never a diagnostic: "any other
+/// name is a custom hook emitting a stable `brink-*` class for host CSS."
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StyleToken {
+    /// `left` / `center` / `right` — line alignment.
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    /// `bold` / `italic` / `dim` / `mono` — emphasis.
+    Bold,
+    Italic,
+    Dim,
+    Mono,
+    /// `uppercase` — the one built-in case transform.
+    Uppercase,
+    /// `conceal` — rides the shipped hidden-span/atomic-range machinery;
+    /// also the declared spelling for hiding the `!name` dispatch prefix.
+    Conceal,
+    /// A raw hex color (`#rgb` or `#rrggbb`) — "a basic theme-overridable
+    /// default." The narrow, unambiguous shape this v1 recognizes; any
+    /// other spelling (a named CSS color, a preset reference) is a
+    /// [`StyleToken::Custom`] hook instead, per the spec's own fallback
+    /// rule — no closed color-keyword list is invented here.
+    Color(String),
+    /// Any name outside the built-in vocabulary: "a custom hook emitting a
+    /// stable `brink-*` class for host CSS." Never a diagnostic.
+    Custom(String),
+}
+
+/// One `key = "value"` clause of an `@[style(…)]` annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleEntry {
+    /// The clause's key: `"line"`, `"dispatch"`, or the name of a capture
+    /// group declared by the paired [`ElementAnnotation::pattern`] or
+    /// [`ConventionAnnotation::pattern`] (validated at lowering time —
+    /// `E162`).
+    pub key: String,
+    pub value: StyleToken,
+    /// Source range of this one clause (not the whole annotation line).
+    pub range: TextRange,
+}
+
+/// An `@[style(…)]` per-declaration annotation (issue #1719,
+/// `docs/prose-dialect-spec.md` §3.5b addenda 3–4) — declared editor
+/// presentation, mapping a paired [`ElementAnnotation`]'s or
+/// [`ConventionAnnotation`]'s captures (plus the two special keys
+/// `line`/`dispatch`) to [`StyleToken`]s.
+///
+/// **Editor-presentation only.** The consumer of this data is the editor
+/// track (NS-T, issues #1131/#1350), which is held — this struct exists so
+/// the declaration is parsed, validated, and not silently dropped; nothing
+/// in the compiler or runtime reads it yet. Buffer decoration is firmly
+/// distinct from the runtime markup layer (§4) — output styling is the
+/// handler's own emitted markup spans, not this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleAnnotation {
+    /// Clauses in source order. Never empty — an empty argument list is
+    /// `E161` and produces no [`StyleAnnotation`] at all.
+    pub entries: Vec<StyleEntry>,
+    /// Source range of the whole `@[style(…)]` annotation line.
+    pub range: TextRange,
+}
+
 // ─── Containers ─────────────────────────────────────────────────────
 
 /// A knot definition (or a top-level stitch promoted to knot status).
@@ -211,11 +1144,42 @@ pub struct Knot {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// The `@[element(args = "…")]` annotation, if any (issue #1719,
+    /// `docs/prose-dialect-spec.md` §3.5b). Native-only — ink has no
+    /// equivalent tag.
+    pub element_annotation: Option<ElementAnnotation>,
+    /// The `@[convention(claims = "…", order = N)]` annotation, if any
+    /// (issue #2164, split out of `@[element]` by the 2026-08-03 ruling).
+    /// Native-only, and legal only above a top-level `fn` (`E112`
+    /// otherwise) — see [`ConventionAnnotation`]'s own doc. Mutually
+    /// exclusive with `element_annotation` in practice (a declaration
+    /// names one mechanism or the other), but nothing enforces that here;
+    /// both are independent declaration-surface reads.
+    pub convention_annotation: Option<ConventionAnnotation>,
+    /// The `@[style(…)]` annotation, if any (issue #1719, same spec
+    /// section). Requires a paired `element_annotation` OR
+    /// `convention_annotation` on the same declaration (`E163`) — see
+    /// [`StyleAnnotation`].
+    pub style_annotation: Option<StyleAnnotation>,
     /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
     /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
     /// not the same as an explicit `void`, which lowers as
     /// `TypeExpr::Named { name: "void" }` like every other nominal.
     pub return_type: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4,
+    /// docs/hir-admission-contract.md Q3(b)). Additive — carries what
+    /// `declare_full`'s `doc` parameter used to route straight into the
+    /// manifest, so [`crate::symbols::project_manifest`] can rebuild the
+    /// same `SymbolManifest.docs` entry from the HIR node alone.
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (M-2,
+    /// docs/modules-spec.md §4). Additive for B0.4 — mirrors
+    /// `DeclaredSymbol.visibility`.
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (M-3,
+    /// docs/modules-spec.md §5). Additive for B0.4 — mirrors
+    /// `DeclaredSymbol.was`.
+    pub was: Option<(String, TextRange)>,
 }
 
 impl Knot {
@@ -247,6 +1211,33 @@ pub struct Stitch {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// The `@[element(args = "…")]` annotation, if any (issue #1719). See
+    /// [`Knot::element_annotation`].
+    pub element_annotation: Option<ElementAnnotation>,
+    /// The `@[convention(claims = "…", order = N)]` annotation, if any
+    /// (issue #2164). See [`Knot::convention_annotation`].
+    pub convention_annotation: Option<ConventionAnnotation>,
+    /// The `@[style(…)]` annotation, if any (issue #1719). See
+    /// [`Knot::style_annotation`].
+    pub style_annotation: Option<StyleAnnotation>,
+    /// The stitch-header return type annotation (NG-C, issue #1489, widened
+    /// to stitches by #1509: `= name(params): type` for ink, `flow
+    /// name(params): type { … }` for a nested native flow). `None` when
+    /// absent — same "no annotation" vs. explicit-`void` distinction as
+    /// [`Knot::return_type`], and the same coroutine-vs-state toggle: a
+    /// nested native flow that declares one is exempted from the
+    /// implicit-`-> DONE` grace (`lower_native::container::lower_stitch`).
+    pub return_type: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    /// See [`Knot::visibility`].
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4). See [`Knot::was`] —
+    /// note the *stored* old name is already fully qualified
+    /// (`knot.old_stitch_name`) for a nested stitch, matching
+    /// `DeclaredSymbol.was`'s convention (`lower_stitch`'s qualification).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A parameter on a knot, stitch, or function.
@@ -276,7 +1267,7 @@ pub enum TypeExpr {
     /// `void`, or an unrecognized identifier (flagged by a targeted
     /// diagnostic — declared struct names arrive in TM-4).
     Named { name: String, range: TextRange },
-    /// `name<args…>` — `list<L>`, `array<T>`, `map<K, V>`, or an
+    /// `name<args…>` — `List<L>`, `Array<T>`, `Map<K, V>`, or an
     /// unrecognized generic head.
     Generic {
         name: String,
@@ -318,6 +1309,101 @@ pub struct Block {
     /// Pre-assigned container ID for blocks that become LIR containers
     /// (gather continuations, labeled blocks). Stamped by [`super::stamp_container_ids`].
     pub container_id: Option<brink_format::DefinitionId>,
+    /// The block's value/control-flow shape, derived from `stmts`' final
+    /// statement (docs/block-effect-model.md §2, §10 row j — S1 of the
+    /// block/effect migration). **Expand-phase groundwork only:** both
+    /// frontends populate this field, but `stmts` remains the sole source of
+    /// truth for every consumer (analyzer, HIR→LIR lowering, codegen) — `tail`
+    /// is redundant-but-correct data, not yet read by anything. A later
+    /// migrate/contract slice cuts consumers over and lets `stmts` stop
+    /// carrying the terminator. Use [`Block::tail`] to read it and
+    /// [`tail_from_stmts`]/[`Block::recompute_tail`] to (re)derive it.
+    pub tail: Tail,
+}
+
+impl Block {
+    /// Body block with no label/container, `tail` derived from `stmts`.
+    #[must_use]
+    pub fn from_stmts(stmts: Vec<Stmt>) -> Self {
+        let tail = tail_from_stmts(&stmts);
+        Self {
+            label: None,
+            stmts,
+            container_id: None,
+            tail,
+        }
+    }
+
+    /// The block's [`Tail`] — see the field doc for the migration status
+    /// (S1, docs/block-effect-model.md §10 row j: populated, unconsumed).
+    #[must_use]
+    pub fn tail(&self) -> &Tail {
+        &self.tail
+    }
+
+    /// Recompute `tail` from the current `stmts`. Frontends call this after
+    /// mutating an already-built block's `stmts` in place (e.g. appending a
+    /// synthesized divert, or splicing weave-fold content into a choice
+    /// body) so `tail` doesn't go stale relative to the new final statement.
+    pub fn recompute_tail(&mut self) {
+        self.tail = tail_from_stmts(&self.stmts);
+    }
+}
+
+/// The value or control-flow shape a [`Block`] resolves to (the "tail"
+/// taxonomy, docs/block-effect-model.md §2): a value-yielding expression, a
+/// terminator that diverts control away, or neither ("falls through").
+///
+/// S1 of the block/effect migration (docs/block-effect-model.md §10 row j):
+/// populated by both frontends from `stmts`' final statement, consumed by
+/// nothing yet — `stmts` stays authoritative until a later slice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Tail {
+    /// A value-yielding tail (a block-as-expression, e.g. the eventual
+    /// interpolation/value-block case, docs/block-effect-model.md §3). Not
+    /// produced by any construct this slice populates — defined ahead of
+    /// its consumer per the model's tail taxonomy (§2).
+    Value(Expr),
+    /// A terminator: the block's last statement transfers control and
+    /// execution never falls through to whatever follows. Carries the same
+    /// terminator data already recorded on the final `Stmt` — not a
+    /// parallel representation (docs/block-effect-model.md §2).
+    Diverge(Terminator),
+    /// No terminating tail — execution falls through to whatever follows.
+    #[default]
+    Unit,
+}
+
+/// The terminator shapes a [`Tail::Diverge`] carries — the existing
+/// `Divert`/`Return` statement data (DONE/END ride `Divert`'s
+/// `DivertPath::Done`/`End`; explicit-return vs. tunnel-redirect ride
+/// `Return`'s `ReturnKind`), reused verbatim per
+/// docs/block-effect-model.md §2's "already exists" `!`-terminator note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Terminator {
+    /// `-> target`, `-> DONE`, `-> END`.
+    Divert(Divert),
+    /// `~ return expr` or bare `->->` (tunnel return) — see [`ReturnKind`].
+    Return(Return),
+}
+
+/// Compute the [`Tail`] a block with these statements should carry:
+/// `Tail::Diverge` when the last statement is a terminator (`Stmt::Divert`
+/// or `Stmt::Return`), `Tail::Unit` otherwise. `Stmt::TunnelCall` is
+/// deliberately not a terminator here — a tunnel call returns control to the
+/// statement after it once the tunnel pops, so a block ending in one still
+/// falls through (docs/block-effect-model.md §2).
+///
+/// Both frontends call this at construction time; call sites that mutate an
+/// already-built block's `stmts` afterward should call
+/// [`Block::recompute_tail`] instead of re-deriving this inline.
+#[must_use]
+pub fn tail_from_stmts(stmts: &[Stmt]) -> Tail {
+    match stmts.last() {
+        Some(Stmt::Divert(d)) => Tail::Diverge(Terminator::Divert(d.clone())),
+        Some(Stmt::Return(r)) => Tail::Diverge(Terminator::Return(r.clone())),
+        _ => Tail::Unit,
+    }
 }
 
 /// A single statement within a block.
@@ -360,6 +1446,40 @@ pub enum Stmt {
     /// checked effect-free (the purity gate, E105) and lowering to the VM is
     /// fenced (E052) until the runtime spill/restore slice (FS-3) lands.
     Await(AwaitStmt),
+    /// An `attach = StructName` convention handler's claimed line (issue
+    /// #2108, `docs/decision-log.md` 2026-08-03 "The element output model:
+    /// attachment is block-level metadata, delivery is per-line"). Unlike
+    /// the ordinary `Stmt::Content(Content { parts: [Interpolation(call)] })`
+    /// rewrite [`super::lower_native::element::try_claim`] produces for a
+    /// non-attach handler, this consumes its own line entirely: no
+    /// `Content`, no `EndOfLine`, no visible text — ruling item (6), "AN
+    /// EVENT EXISTS IFF A LINE EXISTS" — an attaching convention emits no
+    /// line and so produces no `Step::Line` at all. `call` still has to run
+    /// (a handler may call pure fns/commands, so its return value is not
+    /// always statically known — unlike the handler's own named *captures*,
+    /// which are literal regex-matched source text and fully static): the
+    /// call's *value* (expected to be the declared `attach` struct) is what
+    /// carries the metadata, evaluated at the position this line used to
+    /// occupy and merged into the VM's per-block attachment state rather
+    /// than pushed to the output buffer (`brink_runtime::vm`'s
+    /// `Opcode::AttachElement` handler). Always immediately followed by the
+    /// captured following-run statements (if any — the same terminator scan
+    /// [`super::lower_native::element::capture_block`] already uses for
+    /// `block`-mode) and a closing [`Stmt::EndElementRun`], which the
+    /// caller ([`super::lower_native::element::try_claim`]) splices in as
+    /// ordinary sibling statements, never as this variant's own payload.
+    AttachElement(Expr),
+    /// Closes the run an [`Stmt::AttachElement`] opened: clears the VM's
+    /// accumulated block-attachment data (so content after this point is
+    /// never misattributed to a speaker/attach group it wasn't part of —
+    /// e.g. a `transition` line following a `cue`+dialogue run must not
+    /// still report the previous run's `speaker`) and starts a fresh
+    /// [`super::super::story::types::BlockId`] run, matching that type's
+    /// own "the run IS the block" superset doc. Always emitted in pairs with
+    /// exactly one preceding `Stmt::AttachElement` per
+    /// [`super::lower_native::element::try_claim`]'s attach-mode rewrite —
+    /// never constructed standalone.
+    EndElementRun,
 }
 
 // ─── T1b superset: multi-line `~ { … }` blocks ──────────────────────
@@ -375,6 +1495,53 @@ pub enum Stmt {
 pub struct LogicBlock {
     pub ptr: Provenance,
     pub stmts: Vec<BlockStmt>,
+    /// How this block's T1b lexical scope relates to its neighbors in the
+    /// enclosing `Vec<Stmt>` — always `Standalone` except a code-ground
+    /// body split by a `> text` prose-line escape (issue #1992 review
+    /// finding F1; see `hir::lower_native::body`'s
+    /// `mark_split_logic_block_scopes` doc).
+    pub scope: LogicBlockScope,
+}
+
+/// How a `Stmt::LogicBlock`'s block-scope push/pop bracket relates to its
+/// neighbors in the same statement stream. `lower_stmt_block_as_body`
+/// (`hir::lower_native::body`) splits one code-ground `STMT_BLOCK` into
+/// more than one `LogicBlock` around a `> text` prose-line escape — but a
+/// `let`/`temp` declared in an earlier run must stay visible, for both
+/// reads and writes, in every run after it (and in the `Stmt::Content`
+/// siblings a `> text` line lowers to, including any trailing content
+/// *after* the last split run), so the split runs still need to share
+/// **one** T1b lexical scope spanning the whole body rather than each
+/// opening and closing its own.
+///
+/// `lir::lower::blocks::lower_logic_block` reads this to decide whether to
+/// push a scope for a given run; the matching pop is **not** attached to
+/// any particular run (a `Stmt::Content` sibling can legally come after the
+/// last one and still needs the scope open) — instead
+/// `lir::lower::lower_block_with_children`, which lowers a whole
+/// `hir::Block`'s statements in one call, pops it once after processing
+/// every statement in the block, if and only if an `Opens` was seen. This
+/// is sound because splitting is scoped to *this* function's caller only:
+/// a `PROSE_LINE` nested inside an `if`/`while`/`for` body or a lambda's
+/// braced body never reaches `lower_stmt_block_as_body` and so never
+/// produces an `Opens`/`Continues` tag that could leak into some other,
+/// recursively-processed block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogicBlockScope {
+    /// Push a new scope on entry, pop it on exit — every `LogicBlock`
+    /// except a split code-ground run.
+    #[default]
+    Standalone,
+    /// The first of several runs split from one code-ground body: push a
+    /// new scope on entry. The scope stays open for every later
+    /// `Continues` sibling (and any interleaved `Stmt::Content`) — popped
+    /// once, by the enclosing block's own lowering, after every statement
+    /// in the block has been processed.
+    Opens,
+    /// A run (other than the first) split from one code-ground body:
+    /// neither push nor pop — continues the scope an earlier `Opens`
+    /// sibling pushed.
+    Continues,
 }
 
 /// A single statement inside a `~ { … }` block.
@@ -400,6 +1567,13 @@ pub enum BlockStmt {
 pub struct IfStmt {
     pub ptr: Provenance,
     pub condition: Expr,
+    /// `if EXPR as NAME { … }` — the condition-position Option binding
+    /// (B1b, issue #1475). Immutable, typed `T` from the condition's
+    /// `Option[T]`, and scoped strictly to [`Self::body`]: an
+    /// [`ElseBranch`] never sees it. Native-surface-only — the ink/brink
+    /// dialect `~ { if … }` grammar has no `as` and always leaves this
+    /// `None`.
+    pub binding: Option<Name>,
     pub body: Vec<BlockStmt>,
     pub else_branch: Option<ElseBranch>,
 }
@@ -419,6 +1593,11 @@ pub enum ElseBranch {
 pub struct WhileStmt {
     pub ptr: Provenance,
     pub condition: Expr,
+    /// `while EXPR as NAME { … }` — the same binding [`IfStmt::binding`]
+    /// carries, **rebound on every iteration** (B1b, issue #1475): the
+    /// condition is re-evaluated per pass, so the binding tracks each
+    /// pass's own `some` payload rather than snapshotting the first.
+    pub binding: Option<Name>,
     pub body: Vec<BlockStmt>,
     /// `while await cond { … }`: yield-with-policy — waking IS condition-true
     /// (docs/flow-suspension-spec.md §3, the wake contract). A plain `while`
@@ -443,11 +1622,19 @@ pub struct AwaitStmt {
     pub condition: Option<Expr>,
 }
 
-/// `for name in expr { … }`.
+/// `for name in expr { … }` — or, on the native surface only, `for key,
+/// val in expr { … }` (B2, issue #1461, docs/stdlib-spec.md §5/§9's F10
+/// ruling: two-binding map iteration replaces `entries()`; no pair shape
+/// ever materializes). `val_name` is the one additive HIR field the B0
+/// fence reserved (docs/b0-sequencing.md:356) — no new node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
     pub ptr: Provenance,
     pub var_name: Name,
+    /// The second binding (`for k, v in m`'s `v`) — always `None` for the
+    /// ink `~ { for … }` grammar, which has no two-binding syntax; native
+    /// `.brink` sets this from `for k, v in …`'s comma-separated form.
+    pub val_name: Option<Name>,
     pub iterable: Expr,
     pub body: Vec<BlockStmt>,
 }
@@ -499,6 +1686,19 @@ pub struct Choice {
     pub label: Option<Name>,
     /// Condition expression `{cond}`.
     pub condition: Option<Expr>,
+    /// `* {if EXPR as NAME} [text]` — the guard's Option binding (B1b,
+    /// issue #1475/#1508, decision log 2026-07-26 "Choice-guard `as`
+    /// un-deferred"). Capture-at-presentation, by-value COW: the guard's
+    /// `OptionBind` runs (and writes the payload into its frame-local
+    /// slot) at presentation time, in the same frame `BeginChoice`'s
+    /// `fork_thread` snapshots into the pending choice — so the slot
+    /// value rides the pending choice through selection (even across a
+    /// `StorySnapshot` round trip) with no separate wire-level capture:
+    /// it is the same mechanism that already restores tunnel/function
+    /// temps across a pick. Scoped strictly to [`Self::body`], same as
+    /// [`IfStmt::binding`]. Native-surface-only — the ink/brink dialect
+    /// choice-guard grammar has no `as` and always leaves this `None`.
+    pub binding: Option<Name>,
     /// Text before `[` — appears in both choice list and output.
     pub start_content: Option<Content>,
     /// Text inside `[...]` — appears only in the choice list.
@@ -538,6 +1738,41 @@ pub enum ContentPart {
     InlineConditional(Conditional),
     /// `{&a|b|c}` — inline sequence.
     InlineSequence(Sequence),
+    /// `<name attr="v">…</name>` — an inline markup span
+    /// (`docs/prose-dialect-spec.md` §4, issue #1716). Genuinely nested —
+    /// `children` is the span's own content run, which may itself contain
+    /// another `Span`, `Interpolation`, or (per the nesting doctrine, §4.3)
+    /// a fully-closed `InlineConditional`/`InlineSequence`. Presentational
+    /// only: `attrs` and `name` are never part of a line's translation
+    /// identity (§4.4's hash-transparency ruling — see
+    /// `lir::lower::recognize`, the one place that matters).
+    Span(SpanPart),
+}
+
+/// The payload of a [`ContentPart::Span`] — also the shape
+/// `lir::lower::recognize` mirrors onto the wire `LinePart::Span` when a
+/// span is admitted to line recognition (§4.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanPart {
+    /// This span's own provenance (issue #1782) — the whole `<name …>…
+    /// </name>` (or self-closing `<name …/>`) node's range, `NodeClass::Span`.
+    /// Lets a diagnostic (`E164`/`E165`) anchor to the exact span instead of
+    /// its enclosing content line, so several spans on one line — even
+    /// repeats of the same undeclared tag — each get their own,
+    /// distinguishable range. Never resolved outside IDE tooling (contract
+    /// §4.3): analysis/LIR/codegen consume it as plain range data.
+    pub ptr: Provenance,
+    /// The tag name — freeform (§4.2): never validated against a fixed set
+    /// at this layer. Manifest validation, when a host declares one, is a
+    /// separate, later pass over the same tree.
+    pub name: String,
+    /// `name="value"` pairs, in source order. Static text only — see
+    /// `SyntaxKind::SPAN_ATTR_VALUE`'s doc for why attribute values don't
+    /// support `{expr}` interpolation.
+    pub attrs: Vec<(String, String)>,
+    /// The span's content — empty for a self-closing / point-marker span
+    /// (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
+    pub children: Vec<ContentPart>,
 }
 
 // ─── Sequence types ─────────────────────────────────────────────────
@@ -594,8 +1829,23 @@ pub struct Conditional {
 /// A branch within a multiline conditional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CondBranch {
+    /// This branch's own source span — condition (if any) plus body —
+    /// distinct from the enclosing [`Conditional::ptr`]'s whole-construct
+    /// span (issue #404). Lets a diagnostic or editor decoration (e.g. a
+    /// `- else:` fold anchor) point at this branch specifically instead of
+    /// the entire conditional. Best-effort: a branch shape with no
+    /// dedicated source node (e.g. the branchless-body form's implicit
+    /// first branch) falls back to the narrowest real span available.
+    pub ptr: Provenance,
     /// `None` for the else branch.
     pub condition: Option<Expr>,
+    /// The `as` binding of the template condition form `{if EXPR as NAME:
+    /// … else: …}` (B1b, issue #1475, ruled `docs/decision-log.md`
+    /// 2026-07-26). Native-only: the ink/brink-dialect conditional
+    /// lowerings never set it. Immutable, typed `T` from the condition's
+    /// `Option[T]`, and visible **only** in this branch's own `body` — an
+    /// `else` branch (`condition: None`) always carries `None` here.
+    pub binding: Option<Name>,
     pub body: Block,
     /// Pre-assigned container ID for this branch's container.
     /// Stamped by [`super::stamp_container_ids`].
@@ -607,10 +1857,21 @@ pub struct CondBranch {
 pub struct Sequence {
     pub ptr: Provenance,
     pub kind: SequenceType,
-    pub branches: Vec<Block>,
+    pub branches: Vec<SequenceBranch>,
     /// Pre-assigned container ID for the sequence wrapper container.
     /// Stamped by [`super::stamp_container_ids`].
     pub container_id: Option<brink_format::DefinitionId>,
+}
+
+/// A branch (alternative) within a sequence, paired with its own source
+/// span (issue #404) — mirrors [`CondBranch::ptr`]. Best-effort: native's
+/// pipe-separated inline alternatives (`{~ a|b|c}`) have no dedicated
+/// per-alternative CST node, so their span is the union of the
+/// alternative's own child nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequenceBranch {
+    pub ptr: Provenance,
+    pub body: Block,
 }
 
 // ─── Control flow ───────────────────────────────────────────────────
@@ -655,13 +1916,33 @@ pub enum DivertPath {
 }
 
 /// `~ return expr` or bare `->->` (tunnel return).
+///
+/// The explicit-vs-tunnel distinction is carried by [`ReturnKind`] — never
+/// by `ptr` presence. `ptr` is uniform carrying-or-not provenance with no
+/// semantic load: a frontend may attach provenance to a tunnel return (or
+/// synthesize an explicit return without one) freely (contract D5 / F-I#6,
+/// retired by B0.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Return {
     pub ptr: Option<Provenance>,
+    /// Explicit `~ return` vs tunnel `->->` — the semantic bit formerly
+    /// smuggled through `ptr` presence.
+    pub kind: ReturnKind,
     pub value: Option<Expr>,
     /// Arguments for `->-> target(args)` tunnel onwards — pushed before the
     /// divert target on the value stack so the redirect target can pop them.
     pub onwards_args: Vec<Expr>,
+}
+
+/// Whether a [`Return`] is an explicit `~ return` or a tunnel return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnKind {
+    /// `~ return [expr]` — return from a function knot. `E032` outside one.
+    Explicit,
+    /// `->->` / `->-> target(args)` — pop the tunnel frame, optionally
+    /// redirecting onwards. Never `E032`; lowers to LIR `is_tunnel`. The
+    /// future native `return -> x` respell stamps this explicitly.
+    TunnelRedirect,
 }
 
 // ─── Expressions ────────────────────────────────────────────────────
@@ -689,8 +1970,9 @@ pub enum Expr {
 
     /// Prefix operation (`-x`, `not x`).
     Prefix(PrefixOp, Box<Expr>),
-    /// Infix operation (`x + y`, `x == y`, etc.).
-    Infix(Box<Expr>, InfixOp, Box<Expr>),
+    /// Infix operation (`x + y`, `x == y`, etc.). Carries its own
+    /// [`Provenance`] (issue #1517) — see [`InfixExpr`].
+    Infix(InfixExpr),
     /// Postfix operation (`x++`, `x--`).
     Postfix(Box<Expr>, PostfixOp),
 
@@ -721,6 +2003,15 @@ pub enum Expr {
     /// T1c, docs/t1c-spec.md §2): partial application over the statically
     /// named function `target`, binding a prefix of its declared params.
     FnLiteral(FnLiteral),
+    /// `|x| expr` / `|g: Guest|: bool { … }` — an anonymous fn value
+    /// (native surface, RULED 2026-07-19 "Lambdas ruled: Rust pipes under
+    /// the `RustScript` north star"; issue #1685). Only the native frontend
+    /// produces this shape — ink's grammar cannot spell a lambda at all.
+    ///
+    /// Boxed: a lambda carries params, an annotation and a whole body, and
+    /// leaving it inline would make every `Expr` (and so every `Stmt`,
+    /// `Content`, …) pay for the largest variant in the tree.
+    Lambda(Box<LambdaExpr>),
     /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
     /// docs/t1e-spec.md §2): a symbolic `(root cell, path segments)` value.
     /// Legal only in ref-argument position (calls, `#fn(…)`, `bind(…)`);
@@ -731,6 +2022,25 @@ pub enum Expr {
     /// free: there is no lazy re-evaluation path, only this one owned tree,
     /// evaluated once at the creation site.
     RefArg(RefArgExpr),
+    /// An internal fragment-capture expression — **not constructible from
+    /// surface syntax** (`docs/decision-log.md` 2026-08-01 "Content-as-value:
+    /// an internal `Expr::Fragment` lowering form, turn-scoped — no new
+    /// primitive, no surface syntax"). Evaluates `stmts` through the normal
+    /// statement-lowering path *inside* a `BeginFragment`/`EndFragment`
+    /// bracket and yields the resulting `Value::FragmentRef` — the same
+    /// composition `brink-codegen-inkb::content::emit_slot_expr` already
+    /// uses for a call's side-effect output, widened to hold an arbitrary
+    /// captured run rather than one call's output alone.
+    ///
+    /// The only producer is the block-capture machinery
+    /// (`hir::lower_native::element`, issue #1839): a `@[element(…, block)]`
+    /// handler's trailing `content`-typed parameter binds one of these,
+    /// built from the source lines the terminator search captured. Each
+    /// statement inside keeps its own `Stmt::Content`/`Stmt::EndOfLine`
+    /// shape (and its own line-table entry once lowered) — a captured block
+    /// is never flattened to a single string, which is the whole point of
+    /// `content` staying translation-resident (§3.5b's capture contract).
+    Fragment(Vec<Stmt>),
 }
 
 /// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
@@ -746,6 +2056,326 @@ pub struct FnLiteral {
     /// target's declared param row (over-binding is E081; `ref`-param
     /// binding discipline is E080).
     pub args: Vec<Expr>,
+}
+
+/// `|x, y| expr` / `|g: Guest|: bool { … }` / `||` — an anonymous fn value
+/// (RULED 2026-07-19, `docs/decision-log.md` "Lambdas ruled: Rust pipes
+/// under the `RustScript` north star"; issue #1685).
+///
+/// This is the "real anonymous-body node" the native lowering's `E129`
+/// fence used to wait for. What the ruling fixes and this shape records:
+/// params are optionally annotated (mono-HM infers the rest at concrete
+/// call sites, so an unannotated param is `None`, never a fabricated type);
+/// the return annotation is the ruled colon spelling (`|g|: bool { … }`),
+/// not `->`, which stays purely a divert; the body is either a single
+/// expression or a braced block whose **last expression is the value**
+/// ([`LambdaBody`]).
+///
+/// What this shape deliberately does *not* carry:
+/// - **Captures.** Capture is BY-VALUE always (no `move` keyword, no ref
+///   captures in v1), so there is no capture *mode* to record; *which*
+///   names a body captures is a resolution fact, not a syntax one, and is
+///   left to the layer that resolves names. The one capture rule that is
+///   decidable lexically — assignment to a captured binding is a compile
+///   error, since a snapshot write is always a lost write — is enforced at
+///   lowering (`hir::lower_native::lambda`, `E156`).
+/// - **An effect row.** Lambdas are fn-colored always, and rows compose
+///   through captures (#872). `Ty::Fn` carries an effect row since #1680
+///   step 3, but that row names creation targets by `DefinitionId` — this
+///   node now carries one ([`Self::container_id`]), stamped at HIR time
+///   (#1727), so the identity half of the gap is closed; joining the
+///   effect fixpoint on that identity is #1770's job, not this shape's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaExpr {
+    /// The whole `|…| …` expression's own source range — the identity key a
+    /// side table addresses this node by, same convention as
+    /// [`InfixExpr`]'s `ptr`.
+    pub ptr: Provenance,
+    /// The pipe-delimited parameter row, in source order. Empty for the
+    /// zero-arg form `||`. `is_ref`/`is_divert` are always `false`: the
+    /// native grammar accepts neither on a lambda parameter (ref captures
+    /// do not exist in v1, and there is no divert-typed lambda param).
+    pub params: Vec<Param>,
+    /// The `: type` return annotation, if written — the ruled colon
+    /// spelling. `None` means "infer", not "void".
+    pub return_type: Option<TypeExpr>,
+    /// The body: one expression, or a braced block.
+    pub body: LambdaBody,
+    /// This lambda's lifted-function identity (issue #1727), stamped by
+    /// [`super::stamp_container_ids`] from the exact same content-derived
+    /// scheme `IdAllocator::alloc_lambda_address` used to derive
+    /// independently: `{enclosing scope path}.#lambda-{source start
+    /// offset}`.
+    ///
+    /// RULED 2026-08-02 (`docs/decision-log.md`): HIR **mints** this id;
+    /// LIR lowering (`lir::lower::lambda::lower_lambda`) only **consumes**
+    /// it. Before this ruling, LIR derived the same identity a second time
+    /// from its own live `ctx.scope_path` — which is mutated while
+    /// descending into a `Conditional`/`Sequence`/`ChoiceSet` body, so a
+    /// lambda nested inside one got a path the HIR-time stamping pass (which
+    /// walked only `root_content`/knot/stitch bodies, never expressions)
+    /// could not reproduce. Removing the second derivation removes the
+    /// id-parity problem outright rather than trying to keep two
+    /// derivations in sync.
+    ///
+    /// `None` for a `LambdaExpr` that never ran
+    /// [`super::stamp_container_ids`] — a hand-built test fixture, or a
+    /// file-scope `VAR`/`CONST` lambda default folded from `brink-db`'s
+    /// decl-only projection (issue #1774), which deliberately skips
+    /// stamping to backdate across body-only edits. `lower_lambda` falls
+    /// back to re-deriving the id from the live `ctx.scope_path` in that
+    /// case (not `ctx.root_id`, unlike every other pre-stamped container id
+    /// — see that function's own doc for why a lambda's fallback needs to
+    /// differ).
+    pub container_id: Option<brink_format::DefinitionId>,
+}
+
+/// A [`LambdaExpr`]'s body — the two ruled spellings ("single-expression or
+/// braced-block bodies; `return` leaves the lambda; last expression is the
+/// value").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LambdaBody {
+    /// `|g| g.awake` — the expression *is* the value.
+    Expr(Box<Expr>),
+    /// `|g|: bool { let a = f(g); a }` — statements, then the block's
+    /// trailing expression (the grammar's own blocks-as-values tail,
+    /// `brink_syntax_native::ast::StmtBlock::tail`).
+    Block {
+        /// The `;`-terminated statements, in source order.
+        stmts: Vec<BlockStmt>,
+        /// The block's trailing unterminated expression — "last expression
+        /// is the value". `None` when the body ends in a statement, in
+        /// which case the value comes from an explicit `return` (which
+        /// leaves the lambda, not the enclosing function) or the lambda
+        /// yields nothing.
+        tail: Option<Box<Expr>>,
+    },
+}
+
+impl LambdaBody {
+    /// The body's direct **expression** children: the single-expression
+    /// body, or a braced body's trailing value expression ("last expression
+    /// is the value"). Empty for a braced body that ends in a statement.
+    ///
+    /// A braced body's *statements* are deliberately not exposed here —
+    /// they are statements, not expressions. Consumers that can handle
+    /// statements descend into [`LambdaBody::Block`]'s `stmts` explicitly
+    /// (see [`crate::hir::visit`]'s `walk_expr`, which walks them with the
+    /// same `walk_block_stmt` every code-ground block gets). This helper
+    /// exists so the many walkers that genuinely want only the *value*
+    /// position — a return-type/tail question — spell it one way instead of
+    /// eleven.
+    ///
+    /// **This is not the right helper for a walker that is looking for a
+    /// construct *anywhere* in the body** (issue #1749, #1764). Such a
+    /// walker under-reports on every block-bodied lambda if it stops at the
+    /// tail; [`Self::all_exprs`] is its helper.
+    #[must_use]
+    pub fn value_exprs(&self) -> Vec<&Expr> {
+        match self {
+            Self::Expr(e) => vec![e],
+            Self::Block { tail, .. } => tail.as_deref().into_iter().collect(),
+        }
+    }
+
+    /// Every expression reachable from the body, in source order: a braced
+    /// body's statement-embedded expressions first, then its trailing value
+    /// expression — or, for a single-expression body, just that expression.
+    ///
+    /// This is [`Self::value_exprs`]'s counterpart for the walkers that ask
+    /// "does this construct occur *anywhere* inside?" rather than "what is
+    /// the body's value?". Statements are flattened to the expressions they
+    /// contain (recursively through `if`/`while`/`for` bodies, mirroring
+    /// [`crate::hir::visit`]'s `walk_block_stmt` seam for seam), so an
+    /// expression-only walker can consume them without growing a statement
+    /// vocabulary: an expression does not change meaning for such a walker
+    /// because it sits in statement rather than tail position.
+    ///
+    /// Issue #1764 (the audit umbrella) and #1749 (the effect-row instance
+    /// that proved the shape unsound) are why this exists: eight walkers had
+    /// independently stopped at [`Self::value_exprs`] and so silently skipped
+    /// everything a block-bodied lambda does before its last expression.
+    ///
+    /// The returned expressions are *roots* to recurse from, exactly like
+    /// [`Self::value_exprs`]' — nothing here descends into a nested
+    /// [`Expr`]'s own children.
+    #[must_use]
+    pub fn all_exprs(&self) -> Vec<&Expr> {
+        match self {
+            Self::Expr(e) => vec![e],
+            Self::Block { stmts, tail } => {
+                let mut out = Vec::new();
+                for s in stmts {
+                    push_block_stmt_exprs(s, &mut out);
+                }
+                out.extend(tail.as_deref());
+                out
+            }
+        }
+    }
+}
+
+/// Append every expression `bs` directly contains, descending through nested
+/// statement bodies but not into an [`Expr`]'s own children — the flattening
+/// [`LambdaBody::all_exprs`] hands to expression-only walkers. Mirrors
+/// [`crate::hir::visit`]'s `walk_block_stmt`/`walk_if_stmt` arm for arm; a new
+/// [`BlockStmt`] variant must be added to both.
+fn push_block_stmt_exprs<'a>(bs: &'a BlockStmt, out: &mut Vec<&'a Expr>) {
+    match bs {
+        BlockStmt::TempDecl(t) => out.extend(t.value.as_ref()),
+        BlockStmt::Assignment(a) => {
+            out.push(&a.target);
+            out.push(&a.value);
+        }
+        BlockStmt::Return(r) => {
+            out.extend(r.value.as_ref());
+            out.extend(r.onwards_args.iter());
+        }
+        BlockStmt::If(i) => push_if_stmt_exprs(i, out),
+        BlockStmt::While(w) => {
+            out.push(&w.condition);
+            for s in &w.body {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        BlockStmt::For(f) => {
+            out.push(&f.iterable);
+            for s in &f.body {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
+        BlockStmt::ExprStmt(e) => out.push(e),
+        BlockStmt::Await(a) => out.extend(a.condition.as_ref()),
+    }
+}
+
+/// [`push_block_stmt_exprs`]' `if`/`else if`/`else` arm, split out so the
+/// `else if` chain recurses the same way `visit::walk_if_stmt` does.
+fn push_if_stmt_exprs<'a>(i: &'a IfStmt, out: &mut Vec<&'a Expr>) {
+    out.push(&i.condition);
+    for s in &i.body {
+        push_block_stmt_exprs(s, out);
+    }
+    match &i.else_branch {
+        Some(ElseBranch::ElseIf(inner)) => push_if_stmt_exprs(inner, out),
+        Some(ElseBranch::Else(stmts)) => {
+            for s in stmts {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        None => {}
+    }
+}
+
+/// Every expression directly reachable from a block-capture's statements
+/// (`Expr::Fragment`, issue #1839) — the top-level-[`Stmt`] analogue of
+/// [`push_block_stmt_exprs`]'s `BlockStmt` walk, made `pub` (unlike that
+/// function) because callers outside this crate need it: every
+/// "does this construct occur *anywhere* inside an expression tree" walker
+/// in `brink-analyzer` that already flattens a lambda body via
+/// [`LambdaBody::all_exprs`] needs the identical flattening for a captured
+/// content block — the same audit-driven reason issue #1764 fixed eight
+/// walkers that had independently stopped short. Descends through nested
+/// statement bodies (`LabeledBlock`, `Conditional`/`Sequence` branches,
+/// `ChoiceSet`) but never into an `Expr`'s own children — callers recurse
+/// from these roots themselves, exactly like [`LambdaBody::all_exprs`]'s
+/// own contract.
+#[must_use]
+pub fn fragment_stmt_exprs(stmts: &[Stmt]) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    for s in stmts {
+        push_stmt_exprs(s, &mut out);
+    }
+    out
+}
+
+/// [`fragment_stmt_exprs`]'s per-statement worker — mirrors
+/// [`crate::hir::visit`]'s `walk_stmt` arm for arm; a new [`Stmt`] variant
+/// must be added to both (and to [`push_block_stmt_exprs`] if it is ever
+/// added to the closed `BlockStmt` set instead).
+fn push_stmt_exprs<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Expr>) {
+    match stmt {
+        Stmt::Content(c) => {
+            for part in &c.parts {
+                if let ContentPart::Interpolation(e) = part {
+                    out.push(e);
+                }
+            }
+        }
+        Stmt::Divert(d) => out.extend(d.target.args.iter()),
+        Stmt::TunnelCall(t) => {
+            for target in &t.targets {
+                out.extend(target.args.iter());
+            }
+        }
+        Stmt::ThreadStart(t) => out.extend(t.target.args.iter()),
+        Stmt::TempDecl(t) => out.extend(t.value.as_ref()),
+        Stmt::Assignment(a) => {
+            out.push(&a.target);
+            out.push(&a.value);
+        }
+        Stmt::Return(r) => {
+            out.extend(r.value.as_ref());
+            out.extend(r.onwards_args.iter());
+        }
+        Stmt::ChoiceSet(cs) => {
+            for choice in &cs.choices {
+                out.extend(choice.condition.as_ref());
+                for c in [
+                    &choice.start_content,
+                    &choice.bracket_content,
+                    &choice.inner_content,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for part in &c.parts {
+                        if let ContentPart::Interpolation(e) = part {
+                            out.push(e);
+                        }
+                    }
+                }
+                for s in &choice.body.stmts {
+                    push_stmt_exprs(s, out);
+                }
+            }
+            for s in &cs.continuation.stmts {
+                push_stmt_exprs(s, out);
+            }
+        }
+        Stmt::LabeledBlock(b) => {
+            for s in &b.stmts {
+                push_stmt_exprs(s, out);
+            }
+        }
+        Stmt::Conditional(cond) => {
+            if let CondKind::Switch(e) = &cond.kind {
+                out.push(e);
+            }
+            for branch in &cond.branches {
+                out.extend(branch.condition.as_ref());
+                for s in &branch.body.stmts {
+                    push_stmt_exprs(s, out);
+                }
+            }
+        }
+        Stmt::Sequence(seq) => {
+            for branch in &seq.branches {
+                for s in &branch.body.stmts {
+                    push_stmt_exprs(s, out);
+                }
+            }
+        }
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => out.push(e),
+        Stmt::EndOfLine | Stmt::EndElementRun => {}
+        Stmt::LogicBlock(lb) => {
+            for s in &lb.stmts {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        Stmt::Await(a) => out.extend(a.condition.as_ref()),
+    }
 }
 
 /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
@@ -797,6 +2427,42 @@ pub struct ArrayLiteral {
 pub struct MapLiteral {
     pub ptr: Provenance,
     pub entries: Vec<(Expr, Expr)>,
+}
+
+/// `lhs op rhs` — one infix (binary) operation.
+///
+/// `ptr` is the whole operation's own source range, and it is what makes an
+/// infix node **separately addressable** (issue #1517): before it existed,
+/// a side table could only identify an infix node by the union of the
+/// ranges reachable in its subtree, so a left-associative chain and its own
+/// left spine collided whenever the trailing operand carried no range of
+/// its own (`a or b or 99`). Consumers that record a per-node verdict
+/// (`brink_analyzer::coalesce`, `lir::lower::expr::lower_coalesce_chain`)
+/// key on this range, and a chain root's range strictly contains its left
+/// spine's, so the two can never be confused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InfixExpr {
+    /// The whole `lhs op rhs` operation's provenance.
+    pub ptr: Provenance,
+    /// The left-hand operand.
+    pub lhs: Box<Expr>,
+    /// The operator.
+    pub op: InfixOp,
+    /// The right-hand operand.
+    pub rhs: Box<Expr>,
+}
+
+impl InfixExpr {
+    /// Build an infix node from its parts, boxing the operands.
+    #[must_use]
+    pub fn new(ptr: Provenance, lhs: Expr, op: InfixOp, rhs: Expr) -> Self {
+        Self {
+            ptr,
+            lhs: Box::new(lhs),
+            op,
+            rhs: Box::new(rhs),
+        }
+    }
 }
 
 /// `base[index]`, chainable (`grid[y][x]` lowers as nested `IndexExpr`).
@@ -880,6 +2546,28 @@ pub enum InfixOp {
     Or,
     Has,
     HasNot,
+    /// `or`-coalescing (B1, `docs/stdlib-spec.md` §1.6a, issue #1460):
+    /// `x or default`. Distinct from [`Or`](Self::Or) — ink's boolean
+    /// `||`, oracle-frozen — because the two mean different things on the
+    /// same textual keyword: `Or` is condition-position boolean
+    /// disjunction, `Coalesce` is value-position Option unwrapping
+    /// (`(Option[T],T)->T`, `(Option[T],Option[T])->Option[T]`, ruled
+    /// `docs/decision-log.md` 2026-07-18). Only native lowering produces
+    /// this variant (`hir::lower_native::expr::infix_op`); the legacy
+    /// ink/brink lowering path never does, so it is unreachable from the
+    /// oracle-covered dialects.
+    ///
+    /// **Evaluation strictness: eager, both operands always evaluated —
+    /// an unruled implementation decision** (review finding on PR
+    /// #1469/#1460, raised on #1460 for a ruling). This lowers through the
+    /// same `infix_op_to_opcode` path every other `InfixOp` does, so
+    /// there is no codegen-level short-circuit the way condition-position
+    /// `And`/`Or` get: `x or rand::int(1, 10)` always draws (advancing RNG
+    /// state) and `x or pop(ref s)` always mutates `s`, even when `x` is
+    /// `some(_)` and the fallback's value is discarded. Every convention
+    /// this operator's precedence placement cites (C# `??`, Kotlin `?:`)
+    /// short-circuits the fallback; this implementation does not.
+    Coalesce,
 }
 
 // ─── Expression display ─────────────────────────────────────────────
@@ -920,12 +2608,12 @@ pub fn display_expr(expr: &Expr) -> String {
         Expr::Prefix(op, inner) => {
             format!("{}{}", op.as_str(), display_expr(inner))
         }
-        Expr::Infix(lhs, op, rhs) => {
+        Expr::Infix(ie) => {
             format!(
                 "{} {} {}",
-                display_expr(lhs),
-                op.as_str(),
-                display_expr(rhs)
+                display_expr(&ie.lhs),
+                ie.op.as_str(),
+                display_expr(&ie.rhs)
             )
         }
         Expr::Postfix(inner, op) => {
@@ -961,10 +2649,25 @@ pub fn display_expr(expr: &Expr) -> String {
             }
         }
         Expr::RefArg(ra) => format!("ref {}", display_expr(&ra.operand)),
+        Expr::Lambda(l) => {
+            let params = l
+                .params
+                .iter()
+                .map(|p| p.name.text.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            match &l.body {
+                LambdaBody::Expr(e) => format!("|{params}| {}", display_expr(e)),
+                LambdaBody::Block { .. } => format!("|{params}| {{ ... }}"),
+            }
+        }
         Expr::Range(r) => {
             let op = if r.inclusive { "..=" } else { ".." };
             format!("{}{op}{}", display_expr(&r.start), display_expr(&r.end))
         }
+        // Internal-only (issue #1839) — never constructed from surface
+        // syntax, so there is no author-facing slot name to reconstruct.
+        Expr::Fragment(_) => "{...}".to_string(),
     }
 }
 
@@ -1011,6 +2714,7 @@ impl InfixOp {
             Self::Or => "||",
             Self::Has => "?",
             Self::HasNot => "!?",
+            Self::Coalesce => "or",
         }
     }
 }
@@ -1029,6 +2733,12 @@ pub struct VarDecl {
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
     /// `VAR name: type = expr`), brink-dialect-gated syntax.
     pub annotation: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `CONST x = expr`
@@ -1040,6 +2750,12 @@ pub struct ConstDecl {
     /// The declared type annotation (TM-2, docs/typed-mode-spec.md §3:
     /// `CONST name: type = expr`), brink-dialect-gated syntax.
     pub annotation: Option<TypeExpr>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `~ temp x = expr`
@@ -1077,6 +2793,12 @@ pub struct ListDecl {
     pub ptr: Provenance,
     pub name: Name,
     pub members: Vec<ListMember>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// A single member in a list declaration.
@@ -1105,6 +2827,13 @@ pub struct StructDecl {
     /// `brink_format`'s `Value::Record` flat field vector will follow once
     /// TM-4c's codegen assigns a `ShapeId`.
     pub fields: Vec<StructFieldDecl>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    /// Structs never carry a `#@was` rename (the lowering never parses one
+    /// for `STRUCT` — M-2 only wires visibility for this kind), so there is
+    /// no `was` field here, unlike the other declaration nodes.
+    pub visibility: Option<crate::VisibilityMark>,
 }
 
 /// One `field: type` pair inside a [`StructDecl`]'s body.
@@ -1120,6 +2849,19 @@ pub struct ExternalDecl {
     pub ptr: Provenance,
     pub name: Name,
     pub param_count: u8,
+    /// Per-parameter names (B0.4 addition — `param_count` alone cannot
+    /// reconstruct `DeclaredSymbol.params`, which the manifest carries for
+    /// hover/signature help; `is_ref`/`is_divert` are always `false` for an
+    /// `EXTERNAL` parameter, mirroring the pre-B0.4 manifest population in
+    /// `decl::external::declare_and_lower`). Invariant: `params.len() ==
+    /// usize::from(param_count)`.
+    pub params: Vec<crate::ParamInfo>,
+    /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
+    pub doc: Option<crate::host_manifest::DocBlock>,
+    /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).
+    pub visibility: Option<crate::VisibilityMark>,
+    /// `#@was(old_name)` rename record, if any (B0.4).
+    pub was: Option<(String, TextRange)>,
 }
 
 /// `INCLUDE path/to/file.ink`
@@ -1129,1204 +2871,478 @@ pub struct IncludeSite {
     pub ptr: Provenance,
 }
 
-// ─── Diagnostics ────────────────────────────────────────────────────
+#[cfg(test)]
+mod lambda_body_tests {
+    use super::*;
+    use crate::FileId;
 
-/// A diagnostic produced during HIR lowering or cross-file analysis.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
-    /// Which file this diagnostic belongs to.
-    pub file: FileId,
-    /// The source span this diagnostic points at.
-    pub range: TextRange,
-    /// Human-readable message describing the problem.
-    pub message: String,
-    /// Structured error code for documentation and tooling.
-    pub code: DiagnosticCode,
+    /// The lambda in `src`'s first `var` initializer. Lambdas exist only on
+    /// the native surface, so this goes through `lower_native`.
+    fn lambda_body_of(src: &str) -> LambdaBody {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let tree = parsed.tree();
+        let (hir, _manifest, _diag) = crate::hir::lower_native::lower(FileId(0), &tree);
+        let Expr::Lambda(l) = &hir.variables[0].value else {
+            unreachable!("fixture's initializer is a lambda: {:?}", hir.variables[0]);
+        };
+        l.body.clone()
+    }
+
+    #[test]
+    fn a_single_expression_body_yields_the_same_one_expression_either_way() {
+        let body = lambda_body_of("var f = |x| x + 1\n");
+        assert_eq!(body.value_exprs().len(), 1);
+        assert_eq!(body.all_exprs().len(), 1);
+    }
+
+    /// The #1749/#1764 shape: `value_exprs` sees only the tail; `all_exprs`
+    /// sees the statements too, statements first and the tail last.
+    #[test]
+    fn a_braced_body_hides_its_statements_from_value_exprs_but_not_all_exprs() {
+        let body = lambda_body_of("var f = ||: int {\n  let a = 1;\n  let b = 2;\n  3\n};\n");
+        assert_eq!(body.value_exprs().len(), 1, "just the `3` tail");
+        let all = body.all_exprs();
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_eq!(all[2], &Expr::Int(3), "the tail comes last: {all:?}");
+    }
+
+    /// A statement-terminated body has no value expression at all, so
+    /// `value_exprs` is empty — the worst case for a walker that stops there.
+    #[test]
+    fn a_statement_terminated_body_yields_nothing_from_value_exprs() {
+        let body = lambda_body_of("var f = ||: int {\n  return 7;\n};\n");
+        assert!(body.value_exprs().is_empty());
+        assert_eq!(body.all_exprs().len(), 1, "the `return`'s operand");
+    }
+
+    /// Nested statement bodies are flattened too — `walk_block_stmt`'s own
+    /// recursion, which is what makes this safe to hand an expression walker.
+    #[test]
+    fn nested_statement_bodies_are_flattened() {
+        let body = lambda_body_of(
+            "var f = ||: int {\n  if 1 == 1 {\n    let a = 2;\n  } else {\n    let b = 3;\n  }\n  4\n};\n",
+        );
+        let all = body.all_exprs();
+        // the `if` condition, the two branch initializers, and the tail.
+        assert_eq!(all.len(), 4, "{all:?}");
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Severity {
-    Error,
-    Warning,
-}
+#[cfg(test)]
+mod conventions_projection_tests {
+    use super::*;
 
-/// Stable error codes for brink diagnostics.
-///
-/// Codes are never reused once assigned. Each code has a corresponding
-/// explanation file at `docs/diagnostics/Exxx.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DiagnosticCode {
-    // ── Containers ──────────────────────────────────────────────
-    /// Knot definition is missing a name.
-    E001,
-    /// Stitch definition is missing a name.
-    E002,
-    /// Knot or stitch parameter is missing a name.
-    E003,
-
-    // ── Declarations ────────────────────────────────────────────
-    /// `VAR` declaration is missing a name.
-    E004,
-    /// `VAR` declaration is missing an initializer.
-    E005,
-    /// `CONST` declaration is missing a name.
-    E006,
-    /// `CONST` declaration is missing an initializer.
-    E007,
-    /// `LIST` declaration is missing a name.
-    E008,
-    /// `LIST` member is missing a name.
-    E009,
-    /// `EXTERNAL` declaration is missing a name.
-    E010,
-    /// RETIRED (lane-A audit, #709) — the parser always materializes a
-    /// `FILE_PATH` node inside `INCLUDE_STMT` (possibly empty) and reports
-    /// missing path as E037 (`parser/declaration.rs::include_statement`).
-    /// Code kept reserved, not reused.
-    E011,
-
-    // ── Control flow ────────────────────────────────────────────
-    /// Divert is missing a target.
-    E012,
-    /// RETIRED (lane-A audit, #709) — `parser/divert.rs::path` always creates
-    /// a `PATH` node (empty on error + E037), so `ThreadStart::target()` is
-    /// never `None`. Code kept reserved, not reused.
-    E013,
-    /// Logic line has no effect (bare `~`).
-    E014,
-
-    // ── Expressions ─────────────────────────────────────────────
-    /// Expression is missing an operand.
-    E015,
-    /// Unknown or unsupported operator.
-    E016,
-    /// Function call is missing a name.
-    E017,
-    /// RETIRED (lane-A audit, #709) — `parser/divert.rs::path` always creates
-    /// a `PATH` node (empty on error + E037), so `DivertTargetExpr::target()`
-    /// is never `None`. Code kept reserved, not reused.
-    E018,
-
-    // ── Choices ─────────────────────────────────────────────────
-    /// RETIRED (lane-A audit, #709) — the parser only builds a `CHOICE` node
-    /// after seeing a bullet token, so a bullet-less choice CST cannot exist.
-    /// Code kept reserved, not reused.
-    E019,
-
-    // ── Inline logic ────────────────────────────────────────────
-    /// Inline conditional is missing a condition.
-    E020,
-    /// Inline sequence has no branches.
-    E021,
-
-    // ── Cross-file analysis ──────────────────────────────────────
-    /// Duplicate knot definition.
-    E022,
-    /// Duplicate variable/constant definition.
-    E023,
-    /// Unresolved divert target.
-    E024,
-    /// Unresolved variable reference.
-    E025,
-    /// Duplicate list item.
-    E026,
-    /// Ambiguous bare list item reference.
-    E027,
-    /// RETIRED (lane-A audit, #709) — circular INCLUDE is detected at the
-    /// discovery phase and surfaces as `CompileError::CircularInclude`, not as
-    /// a per-construct diagnostic. Code kept reserved, not reused.
-    E028,
-
-    // ── Compile errors ────────────────────────────────────────────
-    /// Choice nested in conditional without explicit divert.
-    E029,
-
-    // ── Warnings ─────────────────────────────────────────────────
-    /// String interpolation in constant initializer is ignored.
-    E030,
-    /// Function call argument count mismatch.
-    E031,
-
-    // ── Structural validation ───────────────────────────────────
-    /// Return statement outside function.
-    E032,
-    /// Unreachable code after divert.
-    E033,
-    /// Choice set has only fallback choices.
-    E034,
-    /// Name shadows a built-in function.
-    E035,
-    /// Expected diagnostic not produced (`// brink-expect`).
-    E036,
-    /// Syntax error reported by the parser (malformed source).
-    E037,
-    /// Malformed `///` doc-comment tag on a declaration.
-    E038,
-
-    // ── Host manifest (external-function vocabulary) ─────────────
-    /// Registered host manifest disagrees with the ink `EXTERNAL` arity.
-    E039,
-    /// Doc-comment / manifest references an unknown semantic type.
-    E040,
-    /// External call argument type mismatches the manifest signature.
-    E041,
-    /// External call argument violates a closed-domain constraint.
-    E042,
-    /// Well-formed `///` doc-comment tag that doesn't apply to this
-    /// declaration kind (e.g. `@kind` on a knot, `@param` on a VAR).
-    E043,
-
-    // ── Directives (`#@…` — docs/directive-annotations-spec.md) ──
-    /// Unknown directive name (e.g. `#@locale`).
-    E044,
-    /// Directive has no valid target in this position.
-    E045,
-    /// Directive contains dynamic inline logic — directives are static text.
-    E046,
-    /// Directive must be the only tag on its line.
-    E047,
-    /// Duplicate directive on one target.
-    E048,
-    /// Directive not supported on this target (e.g. `@local` on CONST).
-    E049,
-    /// Directive does not take arguments or trailing text.
-    E050,
-
-    // ── T1b dialect gate (docs/t1b-surface-spec.md §1) ────────────
-    /// A brink-extension construct (block, sigil literal, indexing) was
-    /// used under the `strict-ink` dialect.
-    E051,
-    /// A brink-extension construct parses and analyzes cleanly under the
-    /// `brink` dialect, but its LIR lowering hasn't landed yet. Originally
-    /// minted for T1b-1 (every T1b construct lowers since T1b-2, #570), then
-    /// revived by T1c-1 (#699) as the `#fn(…)` lowering fence, retired again by
-    /// T1c-2 (#700). **Now the `await` fence** (FS-2,
-    /// docs/flow-suspension-spec.md §3, issue #928): `await <cond>` /
-    /// `while await <cond>` parse to HIR and pass the effect-free purity gate
-    /// (E105), but their runtime spill/restore semantics are FS-3 — every
-    /// `await` construct is fenced here at LIR lowering until that lands. The
-    /// code stays a general "parses/analyzes before its lowering lands" fence,
-    /// reused as each new extension needs it.
-    E052,
-    /// RETIRED (T1b-2, #570) — previously a non-suppressible backstop
-    /// rejecting T1b brink-extension HIR nodes (`LogicBlock`, `ArrayLiteral`,
-    /// `MapLiteral`, `Index`) at LIR lowering. T1b-2 completed real lowering
-    /// for all such constructs, making the backstop obsolete. Code kept
-    /// reserved, not reused, for diagnostic-code stability.
-    E053,
-    /// A block-scoped `temp` (`~ { … }`, docs/t1b-surface-spec.md §2) or
-    /// `for` loop variable shadows an already-visible temp/param — either an
-    /// enclosing `~ { … }` block scope or an outer classic `~ temp`.
-    E054,
-
-    // ── T1b stdlib slice 1 (docs/t1b-surface-spec.md §5) ──────────────
-    /// `push`/`insert`/`remove`'s first argument is not an lvalue (a
-    /// variable, temp, or indexed path) — mutators require a place to
-    /// write the mutated container back into.
-    E055,
-    /// `push`/`insert`/`remove` was used in expression position — they
-    /// return nothing and are only valid as a statement.
-    E056,
-
-    // ── T1b logic blocks (docs/t1b-surface-spec.md §2) ────────────────
-    /// `break`/`continue` used outside any enclosing `while`/`for` loop.
-    E057,
-    /// Collection mutator (`push`/`insert`/`remove`) called with the wrong
-    /// number of arguments — a targeted compile error naming the expected
-    /// signature (replaces the generic `E031` warning + silently-dropped
-    /// RMW lowering, RULED 2026-07-12, see `docs/decision-log.md`).
-    E058,
-
-    // ── Weave-in-inline-content backstop (sibling of #578, #585) ──────
-    /// A choice set, labeled gather block, multi-line conditional, or
-    /// sequence was found nested inside inline content (e.g. a choice's own
-    /// display/bracket/inner text) where it would need a child container
-    /// that position structurally cannot hold.
-    E059,
-
-    // ── Codegen defense-in-depth backstop (#586) ──────────────────────
-    /// `brink-codegen-inkb` refused to emit bytecode for a `Program` that
-    /// violates an invariant an earlier, non-suppressible compiler stage is
-    /// supposed to guarantee (currently: an out-of-loop `LogicBreak`/
-    /// `LogicContinue`, normally rejected at `E057`). Reaching this from a
-    /// normal compile is a compiler bug, not an authoring mistake — this
-    /// code exists so that bug fails loudly instead of silently corrupting
-    /// bytecode.
-    E060,
-
-    // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────
-    /// A type annotation names something that isn't a recognized nominal
-    /// type (`int`/`float`/`bool`/`string`/`divert`/`void`), a `list<L>`
-    /// naming a declared `LIST`, `array<T>`, or `map<K, V>` — declared
-    /// struct names arrive in TM-4.
-    E061,
-    /// RETIRED (T1c-1, #699): previously "`fn(T…): R` function-type
-    /// annotation used — parses, but types as reserved until T1c". T1c
-    /// unfroze the form (docs/t1c-spec.md §4: "boundary annotations gain
-    /// the `fn(T…): R` form"), so it now resolves to a real checker type.
-    /// Code kept reserved, not reused, for diagnostic-code stability — no
-    /// longer emitted by any pass.
-    E062,
-    /// A param/return/`VAR` type annotation disagrees with the type
-    /// TM-1's body inference would otherwise derive. Advisory only in this
-    /// slice (gradual policy) — strict-mode severity is TM-3's call.
-    E063,
-
-    // ── TM-3 strict typed-mode policy (docs/typed-mode-spec.md §1/§9-3) ──
-    /// `types = strict` was requested but the project's dialect isn't
-    /// `brink` — strict typing is a brink-dialect extension (its annotation
-    /// syntax is extension syntax), so `types = strict` + `dialect =
-    /// strict-ink` is a config error, not a per-construct diagnostic.
-    E064,
-    /// Under `types = strict`, a def's inferred signature or body slot
-    /// (param, return, or temp) resolved to `Unknown` after the SCC
-    /// fixpoint with no annotation to supply a concrete type — "annotate or
-    /// restructure" (spec §1). Legal under `types = gradual`.
-    E065,
-    /// Under `types = strict`, a def's inferred signature or body slot
-    /// resolved to `Ty::Conflicted` (#627) — the body's own uses disagree
-    /// on the slot's type. Legal (advisory-only, unreported) under `types =
-    /// gradual`.
-    E066,
-    /// Under `types = strict`, a `~ x = f()` / `~ temp x = f()` assigns the
-    /// result of a call whose resolved def is a `void`-returning function
-    /// (docs/typed-mode-spec.md §3: "assigning a `void` call is an error in
-    /// strict mode"). Only the assignment/temp-decl's RHS *root* call is
-    /// checked — a statement-position call (`~ f()`) or a call nested inside
-    /// interpolation is never flagged. Never emitted under `types = gradual`.
-    E067,
-
-    // ── TM-4b structs (docs/typed-mode-spec.md §6) ────────────────────
-    /// A struct construction literal's leading shape name (`Name#{…}`)
-    /// doesn't name any declared `STRUCT`.
-    E068,
-    /// Under `types = strict`, a struct construction literal omits a
-    /// declared field — names the missing field.
-    E069,
-    /// A struct construction literal supplies a field the shape doesn't
-    /// declare — names the extra field.
-    E070,
-    /// Under `types = strict`, a struct construction literal's field
-    /// initializer disagrees with the field's declared type — names the
-    /// field.
-    E071,
-    /// RETIRED (TM-4c, #666): previously a non-suppressible backstop
-    /// rejecting *every* struct construct/field access reaching LIR
-    /// lowering, back when codegen for structs didn't exist yet. Structs
-    /// now lower for real (`E073` is TM-4c's narrower replacement
-    /// backstop). Code kept reserved, not reused, for diagnostic-code
-    /// stability — no longer emitted by any pass.
-    E072,
-    /// Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`/
-    /// (former) `E072`: a struct construction literal referencing a shape
-    /// name that doesn't resolve to any declared `STRUCT` reached LIR
-    /// lowering. Reaching this from a normal compile means
-    /// `brink-analyzer`'s `resolve::resolve_struct_ref` diagnostic (`E068`)
-    /// was suppressed (`// brink-disable-all`), not a compiler bug on its
-    /// own — `RecordNew` needs a real `ShapeId` at compile time; there is no
-    /// dynamic "construct with unknown shape" concept in this design.
-    E073,
-    /// A field-write target (`p.field = expr`) is a *chained* projection —
-    /// `p.a.b = v` or a mixed `p.a[i].b = v` — never a bare `ident.field`
-    /// on a resolvable root. TM-4c ships single-level field writes only
-    /// (mirrors `lower_indexed_assignment`'s `n == 1` fast path); chained
-    /// writes are an explicit, permanent T1e boundary (`docs/
-    /// typed-mode-spec.md` §6), not a "not implemented yet" gap — this is a
-    /// real, reachable, non-suppressible diagnostic authors can hit by
-    /// writing ordinary (if currently unsupported) ink, not a defensive
-    /// backstop for a suppressed analysis diagnostic.
-    E074,
-
-    // ── decls constant-folding backstops (#673) ───────────────────────
-    /// A struct construction literal (`Name#{…}`) appears as a `VAR`/`CONST`
-    /// declaration's default. `eval_const_expr` (`brink-ir::lir::lower::
-    /// decls`) has no compile-time representation for a record value — a
-    /// global's default is baked into `StoryData` at compile time, so there
-    /// is no runtime construction path to defer to the way a mid-story
-    /// `p = Point#{…}` assignment has. A real, non-suppressible compile
-    /// error (never a silent `Null`) until declaration-default structs get
-    /// a design (`ConstValue` would need a struct-carrying variant).
-    E075,
-    /// A map literal used as a `VAR`/`CONST` declaration default has a key
-    /// that isn't a compile-time-constant scalar in the ratified map-key
-    /// domain (int/string/bool — value-model-spec §4). Mid-story map
-    /// construction (`MapNew`) faults on this at runtime
-    /// (`InvalidMapKeyType`); a declaration default has no runtime
-    /// construction step to fault at, so this is the compile-time
-    /// equivalent — a real error, never a silent `Null`.
-    E076,
-    /// An array element, map value, struct field, or `#fn` bound `val` arg
-    /// nested inside a `VAR`/`CONST` declaration default has a source
-    /// expression kind that can never constant-fold — a function call,
-    /// postfix indexing, field access, `++`/`--`, or (#743) a bare
-    /// reference to another `VAR`. A declaration default is baked into
-    /// `StoryData` at compile time, so there is no runtime construction
-    /// step left to evaluate the element at; without this diagnostic the
-    /// element recursed into `eval_const_expr`'s `Path`
-    /// (`SymbolKind::Variable`) arm or catch-all and silently became `Null`
-    /// — #673's silent-`Null` bug one level down, inside the literal (#679
-    /// review; the `Path`-to-`Variable` case one level in was left
-    /// deliberately unchanged there and closed by #743). Keyed off the
-    /// source expression *kind*, never the folded result: an `Expr::Null`
-    /// produced by HIR error recovery must not double-report, and a `Path`
-    /// resolving to a `CONST`/list item/knot/stitch/function still folds
-    /// for real and is not flagged — only a resolved `SymbolKind::Variable`
-    /// (or an unresolved path, left to the analyzer's own diagnostic) is
-    /// exempt from the fold-for-real behavior, matching
-    /// `is_const_foldable_decl_default`'s top-level twin (`E083`). (A
-    /// struct literal nested at this position is unconditionally `E075`
-    /// regardless of field content — `ConstValue` has no record variant at
-    /// all — so a bad field inside it never reaches this arm.)
-    E077,
-    // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
-    // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
-    /// Under `types = strict`, an unresolved (builtin, not author-shadowed)
-    /// call to `int(x)`/`float(x)` where `x` is statically a divert-target,
-    /// LIST, array, map, or struct construction literal — outside the
-    /// permissive numeric+bool domain (ruling 2: "compile error under
-    /// `types = strict`, runtime fault under gradual"). `string(x)` accepts
-    /// every type and is never checked here.
-    E078,
-
-    // ── T1c function values (docs/t1c-spec.md §2/§8, issue #699) ─────
-    /// `#fn(name, …)`'s target does not resolve to a statically-named
-    /// function definition (`=== function name ===`) — it resolved to a
-    /// variable/list/external/label/non-function knot or stitch, or it
-    /// names a builtin/stdlib intrinsic (which has no definition to take a
-    /// token of). Only fires under `dialect = brink` — under `strict-ink`
-    /// the whole literal is already rejected as extension syntax (E051),
-    /// and content diagnostics on rejected syntax are noise (the TM-2
-    /// suppression precedent, maintainer ruling 2026-07-13).
-    E079,
-    /// A `ref` param of a `#fn` target is not bound in the creation-site
-    /// prefix, or is bound to a non-durable lvalue. All `ref` params must
-    /// be bound at creation, and each must capture a durable cell — a
-    /// global `VAR` (flow-local `#@local` VARs included); a `temp`/param
-    /// is a compile error (temps die with the frame, value-model §11), a
-    /// `CONST` is not a mutable cell, and a bare (unmarked) rvalue/field
-    /// reference is not a cell at all.
-    ///
-    /// T1e (docs/t1e-spec.md §2/§6, issue #831) extends this same code —
-    /// "reuse the E080-family message shape" — to the explicit `ref
-    /// lvalue-path` projection form (`heal(ref npc.hp, 5)`,
-    /// `#fn(heal, ref party[leader].hp)`, `bind(f, ref inventory[idx])`):
-    /// the *root* of the path (the innermost variable the segments walk
-    /// from) must still be a durable global `VAR`, by the same rule —
-    /// `temp`/param roots remain a compile error, a `CONST` root is not a
-    /// mutable cell. A projection's own *segments* (dotted fields, `[…]`
-    /// indices) are a separate check (`E098`, strict-mode statically-known
-    /// shapes only) — this code is the root-durability obligation alone.
-    E080,
-    /// `#fn(name, args…)` binds more arguments than the target declares —
-    /// the bound-arg row is a *prefix* of the declared param row
-    /// (docs/t1c-spec.md §2: "binding more args than the target declares
-    /// is a compile error").
-    E081,
-
-    // ── T1b block-temp scoping (docs/t1b-surface-spec.md §2, issue #680) ──
-    /// A T1b block-scoped `temp` (`~ { … }`) — or a `for`-loop variable,
-    /// which desugars the same way — was referenced (by value or by `ref`
-    /// argument) after its own `~ { … }`/`while`/`for`/`if` block already
-    /// closed. Root-caused for #680: LIR lowering's fallback for "temp not
-    /// currently visible" (used for inklecate-compat forward-reference
-    /// emulation of *classic* temps) previously also caught this case,
-    /// silently emitting a phantom hashed `GetGlobal`/`RefGlobal` id that
-    /// was never registered as a real global — a runtime-only
-    /// `UnresolvedGlobal` fault with no compile diagnostic.
-    E082,
-
-    // ── Declaration-default constness, top level (issue #692, sibling to
-    // #673/#679's collection-element E075/E076/E077) ─────────────────────
-    /// A scalar `VAR`/`CONST` declaration default whose *source expression
-    /// kind* can never be a compile-time constant — a bare reference to
-    /// another `VAR` (`VAR x = someOtherVar`) or a function call
-    /// (`VAR x = f()`), including either wrapped in a prefix/infix
-    /// operation. `eval_const_expr`'s `Path` arm (`SymbolKind::Variable`)
-    /// and its catch-all previously folded both silently to `Null` with no
-    /// diagnostic — the same silent-fold bug #673/#679 fixed one level
-    /// down, inside array/map/struct literals, left unfixed at this top
-    /// level. Keyed off the source expression kind, never the folded
-    /// result, same as `E077`. Does not fire for a `Path` nested inside a
-    /// collection/struct/fn literal (array element, map value, struct
-    /// field, `#fn` argument) — those recurse through their own existing
-    /// `E075`/`E076`/`E077` per-element checks one level in, which
-    /// deliberately still leave a `VAR`-reference gap unchanged (#679 scope
-    /// notes) pending its own follow-up.
-    E083,
-
-    // ── TM-5 struct construction literals (docs/typed-mode-spec.md §6,
-    // decision-log "Struct construction literals: source-order evaluation,
-    // duplicate field is a compile error" 2026-07-14, issues #675/#676) ──
-    /// A struct construction literal (`Name#{…}`) supplies the same field
-    /// name more than once. Previously a silent last-wins: only the final
-    /// initializer's value was placed, and — because the well-formed
-    /// `RecordNew` lowering path discarded every non-placed lowered
-    /// expression tree wholesale — an earlier duplicate's initializer
-    /// (including any observable side effect, e.g. a function call) never
-    /// actually ran at all, with no diagnostic (#675's RCA). Now a real
-    /// compile error naming the repeated field, under both
-    /// `types = gradual` and `types = strict` — unlike `E069`/`E070`/
-    /// `E071` (which need a resolved shape to check missing/extra/mistyped
-    /// fields against, and are strict-mode-only), a duplicate field is a
-    /// structural authoring mistake detectable from the literal alone,
-    /// independent of type-checking policy or whether the shape name even
-    /// resolves.
-    E084,
-
-    // ── M-1 modules (docs/modules-spec.md §1/§5) ──────────────────
-    /// An *undeclared* file whose module (its file stem) collides with a
-    /// *declared* module's name (`#@module(name)` elsewhere). Accidental
-    /// membership with mixed visibility defaults is the one footgun the
-    /// module model forbids (modules-spec §1). Fix: declare the file with
-    /// the same `#@module(name)`, or rename it.
-    E085,
-    /// A malformed `#@module(…)` directive: a missing or empty name
-    /// argument, or a second `#@module` in the same file. `#@module`
-    /// takes exactly one non-empty module name and appears at most once
-    /// per file (modules-spec §1).
-    E086,
-
-    // ── M-2 imports + visibility (docs/modules-spec.md §2/§4/§7) ───
-    /// A reference resolves to a `#@private` definition in another module.
-    /// Private names are module-internal; the referrer is outside that
-    /// module. Fix: make the definition `#@public` and `IMPORT` it, or move
-    /// the reference into the module (modules-spec §4/§7).
-    E087,
-    /// A bare-form `IMPORT { name } FROM mod` names a definition that the
-    /// *declared* module `mod` does not publicly export. Only enforced
-    /// against declared modules — an import naming an unknown/undeclared
-    /// module is not itself flagged by this code, since this module's
-    /// export set isn't visible to the check (modules-spec §2/§7).
-    E088,
-    /// An `IMPORT` brings the same local name into scope twice (a repeated
-    /// bare import, or two imports whose names/aliases collide) — the
-    /// reference would be ambiguous (modules-spec §2/§7).
-    E089,
-    /// An `IMPORT` names the importing file's own module — a module cannot
-    /// import itself; its own names are already bare (modules-spec §2/§7).
-    E090,
-    /// A qualified access `a.b` is ambiguous: `a` is both a module imported
-    /// in this file and a visible definition. Fix with an `AS` alias — no
-    /// silent precedence (modules-spec §2/§7).
-    E091,
-    /// A `#@public`/`#@private` override that restates the module's default
-    /// (e.g. `#@public` in an undeclared module, `#@private` in a declared
-    /// one) — redundant, no effect (warning, modules-spec §4/§7).
-    E092,
-    /// Conflicting or repeated visibility directives on one declaration
-    /// (both `#@private` and `#@public`, or the same one twice). A
-    /// declaration takes at most one visibility directive (modules-spec §4).
-    E093,
-
-    // ── M-3 renames (docs/modules-spec.md §5/§7) ────────────────────
-    /// A malformed `#@was(…)` directive: a missing or empty old-name
-    /// argument (`#@was`, `#@was()`). `#@was` takes exactly one non-empty
-    /// name (modules-spec §5).
-    E094,
-    /// `#@was(name)` names the thing's own *current* name — a self-alias
-    /// that would be a no-op entry in the compiled alias table. Nothing to
-    /// migrate; likely a stale directive left over from a previous rename
-    /// (warning, modules-spec §5/§7).
-    E095,
-
-    // ── M-2c cross-module collisions (issue #784, decision-log
-    // "Cross-module name collisions" 2026-07-14) ────────────────────────
-    /// Two *declared* modules (`#@module(name)`, different names) each
-    /// define a same-name, same-kind symbol. Escalated from the
-    /// `E022`/`E023`/`E026` inklecate-compat duplicate warning to a hard
-    /// error under `dialect = brink` only: flat resolution (unchanged by
-    /// this stopgap — true import-scoped resolution is #790's job) binds a
-    /// bare name to whichever declared-module definition merge happens to
-    /// see first, so two declared modules sharing a name make that binding
-    /// silently order-dependent for one of them. A duplicate *within* one
-    /// module (same declared module name across its files, or any
-    /// undeclared/legacy file) keeps the existing warning — this code
-    /// fires only when both colliding definitions' owning files declared
-    /// *different* modules. Reported once per colliding definition (both
-    /// spans), under `strict-ink` this code never fires (compat corpus
-    /// untouched).
-    E096,
-
-    // ── T1e-1 path projections (docs/t1e-spec.md §2/§6, issue #831,
-    // tracking #828) ──────────────────────────────────────────────────
-    /// A `ref lvalue-path` projection expression (`ref npc.hp`,
-    /// `ref inventory[idx]`) appears somewhere other than ref-argument
-    /// position (a direct argument of a call, `#fn(…)`, or `bind(…)`) — a
-    /// standalone projection value (`temp r = ref a[0]`), one nested inside
-    /// another expression, or any other position. Deliberate v1 posture
-    /// (t1e-spec §2: "projections exist only where `ref` already exists:
-    /// argument binding"); first-class standalone projection values are a
-    /// future round, tracked as icebox #825 — not a permanent rejection.
-    E097,
-    /// A `ref lvalue-path` projection's segment (a dotted field, or a
-    /// `[…]` index) disagrees with the root's statically-known shape, under
-    /// `types = strict` only — a dotted field the declared `STRUCT` shape
-    /// doesn't have, or a `[…]` index against a declared shape that isn't a
-    /// collection (mirrors `structs::check`'s missing/extra-field
-    /// machinery, `E069`–`E071`, applied to path segments instead of
-    /// construction-literal fields; "Unknown never disagrees" for any
-    /// segment whose base type isn't statically known this way — silently
-    /// unchecked, same spirit as `E071`).
-    E098,
-    /// A `ref lvalue-path` projection with at least one path segment
-    /// (dotted field or `[…]` index — a *real* projection, not a bare
-    /// single-name `ref`) reached LIR lowering. T1e-1 (docs/t1e-spec.md §8
-    /// sequencing item 1) ships grammar + HIR + analyzer only — the
-    /// `MakeProjection`/`ProjRead`/`ProjWrite` opcodes a projection needs to
-    /// actually run land in T1e-2 (tracking #828). The E052-fence pattern:
-    /// every other check (`E080` durable root, `E097` position, `E098`
-    /// strict segment shape) already ran and passed, so this is a clean,
-    /// deliberate "not yet lowerable" stop, not a silent drop or a
-    /// miscompile — see `brink-ir::lir::lower::mod`'s backstop doctrine. A
-    /// bare single-name `ref x` (zero segments) never hits this — it lowers
-    /// exactly like today's unmarked ref-argument binding.
-    E099,
-
-    // ── T2-2 `#@effects(…)` assertion surface (docs/effects-spec.md §10,
-    // issue #861) ──────────────────────────────────────────────────
-    /// `#@effects` with no argument at all (`#@effects`, `#@effects()`, or
-    /// an argument that parses to nothing) — the directive always requires
-    /// either `pure` or at least one `reads:`/`writes:`/`calls:` clause.
-    E100,
-    /// A malformed `#@effects(…)` argument: an unrecognized clause keyword
-    /// (only `reads`/`writes`/`calls` are valid), a value that isn't a bare
-    /// identifier, or a bare value with no preceding clause to attach to.
-    E101,
-    /// A `#@effects(…)` clause names an identifier that isn't a declared
-    /// global `VAR`/`CONST` (for `reads`/`writes`) or a declared `EXTERNAL`
-    /// (for `calls`) anywhere in the project.
-    E102,
-    /// **The exceedance error** (docs/effects-spec.md §10, sitting 2,
-    /// 2026-07-14 ruling): the definition's inferred effect row is not
-    /// covered by (`⊄`) its `#@effects(…)` assertion's declared upper
-    /// bound. Per the ruling, this is the *only* diagnostic the assertion
-    /// surface ever produces — an inferred row that is narrower than the
-    /// bound is silent; there is no drift policy.
-    E103,
-
-    // ── Computed-callee call attempt (docs/t1c-spec.md §3/§10, issue #869) ──
-    /// A call `expr(args…)` whose callee isn't a bare variable/temp/param
-    /// name (an `INDEX_EXPR`, `FIELD_ACCESS_EXPR`, chained call result,
-    /// parenthesized expr, …). Direct-call syntax is RULED (t1c-spec §3) to
-    /// a bare-name callee only; "method-call syntax" through a computed
-    /// callee is explicitly out of T1c (§10). Always rejected — every
-    /// dialect, every mode — pointing at the ratified `call(f, args…)`
-    /// form, which already dispatches through exactly this class of
-    /// expression correctly. Replaces the pre-existing silent drop (the
-    /// parser used to leave `(args…)` unconsumed, so it resurfaced as
-    /// trailing prose text on the content line and the call itself
-    /// vanished) with a loud, unconditional compile error.
-    E104,
-
-    // ── `await` condition purity gate (docs/flow-suspension-spec.md §3/§5, ──
-    // ── issue #928, FS-2) ─────────────────────────────────────────────────
-    /// An `await <cond>` / `while await <cond>` condition is not effect-free.
-    /// The condition is captured as a compiler-synthesized *pure* function
-    /// (docs/flow-suspension-spec.md §5): its effect row must be read-only —
-    /// reads are the wake map's dependency set, but a transitive **write** to a
-    /// global cell, or an effectful host **call**, makes the condition
-    /// re-evaluation itself observable, which the wake contract forbids. Built
-    /// on the effects machinery (#859): the condition's transitive effect row
-    /// (via the whole-project [`crate`]-level effect table) must have empty
-    /// `writes`/`calls` and not be opaque. Brink-only (under strict-ink the
-    /// whole `await` is already `E051`); a bare fn-value reference used as a
-    /// dynamic condition (`await some_fn_value`, no call syntax) is read-only
-    /// by construction and never flagged.
-    E105,
-
-    // ── T1b map-literal key-domain warning (docs/t1b-surface-spec.md §3,
-    // issue #598) ──────────────────────────────────────────────────────
-    /// A `#{key: expr, …}` map-literal key is a statically-classifiable
-    /// literal outside the ratified int/string/bool key domain — a float,
-    /// array (`#[...]`), nested map (`#{...}`), struct (`Name#{...}`),
-    /// function-value (`#fn(...)`), ink `LIST`, or divert-target literal
-    /// used directly as a key. §3 rules the key domain to
-    /// int/string/bool at runtime (`RuntimeError::InvalidMapKeyType`) and
-    /// says the analyzer warns on statically-visible non-key types; this was
-    /// the missing half (`MapLiteral` lowering did zero key-domain checking).
-    /// A dynamic key (a variable, call, index, or any other non-literal
-    /// expression) is not statically visible and is never flagged here —
-    /// the runtime fault remains the sole backstop for those.
-    E106,
-
-    // ── NS-A1 Option[T] (docs/stdlib-spec.md §1.4, issue #1107) ────────
-    /// A fresh, un-annotated declaration (`VAR x = none`, `CONST x = none`,
-    /// `~ temp x = none`) whose initializer is the bare `none` Option
-    /// literal. §1.4's ruled rule: "a bare `none` needs a type from
-    /// context (concrete sites fine; a fresh un-annotated `var x = none`
-    /// errors — the empty-collection posture)." A declaration site IS the
-    /// slot's type origin, so there is no context to take the element type
-    /// from — the fix is to initialize from a real Option-producing
-    /// expression (`some(x)`, or an Option-returning verb like
-    /// `find`/`get`/`pop`). Error in both dialects and both `types`
-    /// policies: the rule is part of the Option package itself, not a
-    /// strict-mode refinement.
-    E107,
-
-    // ── NS-A2 effect-row extension (issue #1108; docs/stdlib-spec.md
-    // §1.2/§9.2, issues #1087/#1097) ───────────────────────────────────
-    /// `@[effects(silent)]` exceedance: the definition's inferred row can
-    /// produce content (`emits`, incl. transitively through callees, or an
-    /// opaque/unbounded row). Exceedance-only, like `E103` — asserting less
-    /// than reality is legal, asserting more is not.
-    E108,
-    /// `@[effects(total)]` exceedance: the definition's inferred row can
-    /// raise a turn-terminating fault (`faults`, incl. transitively, or an
-    /// opaque/unbounded row). Exceedance-only, like `E103`.
-    E109,
-    /// The deprecated `#@effects(…)` tag-channel spelling — superseded by
-    /// the `@[effects(…)]` annotation final form (stdlib-spec §9.2, ruled
-    /// 2026-07-18). Warning: the alias keeps parsing (it shipped in
-    /// released surface, `@brink-lang/web@0.11.1`).
-    E110,
-    /// An `@[…]` annotation line naming anything other than `effects` —
-    /// the annotation channel's recognized name set is closed (v1: exactly
-    /// one member). Tag-channel directive names do not alias into it.
-    E111,
-    /// An `@[…]` annotation line outside its one recognized placement (the
-    /// leading run at the top of a knot/stitch body). Never a silent drop,
-    /// never content — the `E045` posture, on the annotation channel.
-    E112,
-
-    // ── NS-A3 protocol registry (issue #1109; docs/stdlib-spec.md §9.6)
-    /// A declaration named after a registry protocol method — `display`,
-    /// `compare`, or `next` (F6, ruled 2026-07-19): the names are RESERVED
-    /// under the brink dialect, and an author declaration of any callable
-    /// or value-bindable kind (knot/stitch/function, param, temp, VAR,
-    /// CONST, EXTERNAL, for-loop variable) is a **hard error**, not an
-    /// E035-lineage shadowing warning — a shadowed `display` would make
-    /// interpolation untrustworthy.
-    E113,
-    /// A registered protocol impl's inferred effect row exceeds its
-    /// protocol's effect contract (`display`/`compare`: pure·silent·total;
-    /// `iterate`'s `next`: writes-receiver·silent·total — the receiver is
-    /// a `ref` param, invisible to the global row, so every v1 contract
-    /// bounds the *global* row at empty). Exceedance-only, the
-    /// `E103`/`E108`/`E109` posture; an opaque row exceeds every contract.
-    E114,
-    /// An ill-formed protocol impl registration: the named type isn't a
-    /// declared `STRUCT`, the impl target isn't a declared function, the
-    /// signature shape is wrong (arity, `ref`-ness, or a contradicting
-    /// type annotation), or the (protocol, type) pair is already
-    /// registered.
-    E115,
-
-    // ── F27: Option has no truthiness (docs/stdlib-spec.md §1.6, ruled
-    // 2026-07-19, issue #1120) ─────────────────────────────────────────
-    /// A condition-position expression (an `if`/`while` condition, a
-    /// `{cond: …}` conditional branch, a choice guard, an `await`
-    /// condition) whose statically-known type is `Option[T]`. Option has
-    /// **no** truthiness — truthiness is a quiet coercion of exactly the
-    /// kind `Option[T] ≠ T` exists to ban — so a strict-mode author writes
-    /// `== none` / `== some(x)` (or, post-B1, the `as`-binding).
-    /// Strict-mode-only, best-effort static (the "Unknown never disagrees"
-    /// posture: an unclassifiable condition stays silently unchecked);
-    /// under `types = gradual` the same condition is the
-    /// `RuntimeError::OptionTruthiness` turn-terminating fault — the
-    /// runtime backstop that catches every case either way. Supersedes
-    /// NS-A1's shipped falsy-none truthiness.
-    E116,
-    // ── NS-A5 the inhabited-range refinement (issue #1111;
-    // docs/stdlib-spec.md §7, F7/F8 ruled 2026-07-19) ──────────────────
-    /// A range-refinement violation under `types = strict` (the E078
-    /// precedent — strict-only; gradual mode is inert and leaves the
-    /// runtime fault residual, F8's general rule): `int(r)` demands
-    /// `NonEmptyRange` evidence, and either (a) the range literal in
-    /// argument position is **provably empty** (`0..0`, `5..=2` — bounds
-    /// fold statically, CONST refs included), or (b) the argument's type
-    /// carries no inhabitedness evidence (a possibly-empty range — route
-    /// computed bounds through `non_empty(r)`, parse-don't-validate).
-    E117,
-
-    // ── NS-A8: the numeric tower (docs/tower-mini-spec.md, issue #1114) ──
-    /// A protocol impl registration named a numeric-tower kind
-    /// (`vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4`) as its type.
-    /// Tower kinds are compiler-known value kinds, not user structs: their
-    /// `display` is the fixed structural form, their equality is
-    /// componentwise IEEE (T4), and they are NOT orderable — a `compare`
-    /// impl for a tower kind would contradict the ruled §4b doctrine, and
-    /// `display`/`iterate` impls would shadow compiler-owned behavior. The
-    /// rejection is unconditional — it wins even over a user STRUCT
-    /// declared with the same name (tower type names are global like
-    /// `int`).
-    E118,
-
-    // ── NS-A4: the ordering doctrine (docs/stdlib-spec.md §4b, issue
-    // #1110) ─────────────────────────────────────────────────────────────
-    /// A `sort_by`/`sorted_by` comparator provably breaks the pure·silent
-    /// contract (§4b: "the comparator falls under the trio's pure·silent
-    /// rule plus the consistent-total-order LAW"). Exceedance-only, the
-    /// E114 posture: flagged when the comparator is a statically-named
-    /// `#fn(target)` whose inferred row shows a global read/write, an
-    /// external call, a content emission, or a tag touch — an opaque or
-    /// unresolvable comparator is not *proven* in violation and passes
-    /// (the gradual posture; the VM's isolation and
-    /// `ComparatorEscaped` fault are the runtime residual).
-    E119,
-    /// NS-A7 `Weighted[T]` construction refusal (`docs/stdlib-spec.md` §8,
-    /// issue #1113): the compile-classifiable half of the E078-style
-    /// evidence-by-construction split. Fired by the `weighted(…)` lowering
-    /// for a statically-malformed table — an empty pair row, an odd
-    /// (dangling-weight) argument count, or a **literal** weight that is
-    /// not a positive int (zero, negative, float/string/bool). Computed
-    /// weights are not classifiable here; they carry the construction
-    /// *fault* residual instead (`RuntimeError::WeightedBadWeight`), so a
-    /// table that exists is always rollable.
-    E120,
-}
-
-impl DiagnosticCode {
-    /// The stable string representation (e.g., `"E001"`).
-    #[must_use]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat one-arm-per-code table that necessarily grows with the diagnostic set"
-    )]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::E001 => "E001",
-            Self::E002 => "E002",
-            Self::E003 => "E003",
-            Self::E004 => "E004",
-            Self::E005 => "E005",
-            Self::E006 => "E006",
-            Self::E007 => "E007",
-            Self::E008 => "E008",
-            Self::E009 => "E009",
-            Self::E010 => "E010",
-            Self::E011 => "E011",
-            Self::E012 => "E012",
-            Self::E013 => "E013",
-            Self::E014 => "E014",
-            Self::E015 => "E015",
-            Self::E016 => "E016",
-            Self::E017 => "E017",
-            Self::E018 => "E018",
-            Self::E019 => "E019",
-            Self::E020 => "E020",
-            Self::E021 => "E021",
-            Self::E022 => "E022",
-            Self::E023 => "E023",
-            Self::E024 => "E024",
-            Self::E025 => "E025",
-            Self::E026 => "E026",
-            Self::E027 => "E027",
-            Self::E028 => "E028",
-            Self::E029 => "E029",
-            Self::E030 => "E030",
-            Self::E031 => "E031",
-            Self::E032 => "E032",
-            Self::E033 => "E033",
-            Self::E034 => "E034",
-            Self::E035 => "E035",
-            Self::E036 => "E036",
-            Self::E037 => "E037",
-            Self::E038 => "E038",
-            Self::E039 => "E039",
-            Self::E040 => "E040",
-            Self::E041 => "E041",
-            Self::E042 => "E042",
-            Self::E043 => "E043",
-            Self::E044 => "E044",
-            Self::E045 => "E045",
-            Self::E046 => "E046",
-            Self::E047 => "E047",
-            Self::E048 => "E048",
-            Self::E049 => "E049",
-            Self::E050 => "E050",
-            Self::E051 => "E051",
-            Self::E052 => "E052",
-            Self::E053 => "E053",
-            Self::E054 => "E054",
-            Self::E055 => "E055",
-            Self::E056 => "E056",
-            Self::E057 => "E057",
-            Self::E058 => "E058",
-            Self::E059 => "E059",
-            Self::E060 => "E060",
-            Self::E061 => "E061",
-            Self::E062 => "E062",
-            Self::E063 => "E063",
-            Self::E064 => "E064",
-            Self::E065 => "E065",
-            Self::E066 => "E066",
-            Self::E067 => "E067",
-            Self::E068 => "E068",
-            Self::E069 => "E069",
-            Self::E070 => "E070",
-            Self::E071 => "E071",
-            Self::E072 => "E072",
-            Self::E073 => "E073",
-            Self::E074 => "E074",
-            Self::E075 => "E075",
-            Self::E076 => "E076",
-            Self::E077 => "E077",
-            Self::E078 => "E078",
-            Self::E079 => "E079",
-            Self::E080 => "E080",
-            Self::E081 => "E081",
-            Self::E082 => "E082",
-            Self::E083 => "E083",
-            Self::E084 => "E084",
-            Self::E085 => "E085",
-            Self::E086 => "E086",
-            Self::E087 => "E087",
-            Self::E088 => "E088",
-            Self::E089 => "E089",
-            Self::E090 => "E090",
-            Self::E091 => "E091",
-            Self::E092 => "E092",
-            Self::E093 => "E093",
-            Self::E094 => "E094",
-            Self::E095 => "E095",
-            Self::E096 => "E096",
-            Self::E097 => "E097",
-            Self::E098 => "E098",
-            Self::E099 => "E099",
-            Self::E100 => "E100",
-            Self::E101 => "E101",
-            Self::E102 => "E102",
-            Self::E103 => "E103",
-            Self::E104 => "E104",
-            Self::E105 => "E105",
-            Self::E106 => "E106",
-            Self::E107 => "E107",
-            Self::E108 => "E108",
-            Self::E109 => "E109",
-            Self::E110 => "E110",
-            Self::E111 => "E111",
-            Self::E112 => "E112",
-            Self::E113 => "E113",
-            Self::E114 => "E114",
-            Self::E115 => "E115",
-            Self::E116 => "E116",
-            Self::E117 => "E117",
-            Self::E118 => "E118",
-            Self::E119 => "E119",
-            Self::E120 => "E120",
+    fn name(text: &str) -> Name {
+        Name {
+            text: text.to_string(),
+            range: TextRange::default(),
         }
     }
 
-    /// Short human-readable title for this diagnostic code.
-    #[must_use]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat one-arm-per-code message table that necessarily grows with the diagnostic set"
-    )]
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::E001 => "knot is missing a name",
-            Self::E002 => "stitch is missing a name",
-            Self::E003 => "parameter is missing a name",
-            Self::E004 => "VAR declaration is missing a name",
-            Self::E005 => "VAR declaration is missing an initializer",
-            Self::E006 => "CONST declaration is missing a name",
-            Self::E007 => "CONST declaration is missing an initializer",
-            Self::E008 => "LIST declaration is missing a name",
-            Self::E009 => "LIST member is missing a name",
-            Self::E010 => "EXTERNAL declaration is missing a name",
-            Self::E011 => "retired (lane-A audit) — parser always creates FILE_PATH",
-            Self::E012 => "divert is missing a target",
-            Self::E013 | Self::E018 => "retired (lane-A audit) — parser always creates PATH node",
-            Self::E014 => "logic line has no effect",
-            Self::E015 => "expression is missing an operand",
-            Self::E016 => "unknown or unsupported operator",
-            Self::E017 => "function call is missing a name",
-            Self::E019 => "retired (lane-A audit) — parser guarantees bullet markers",
-            Self::E020 => "inline conditional is missing a condition",
-            Self::E021 => "inline sequence has no branches",
-            Self::E022 => "duplicate knot definition",
-            Self::E023 => "duplicate variable/constant definition",
-            Self::E024 => "unresolved divert target",
-            Self::E025 => "unresolved variable reference",
-            Self::E026 => "duplicate list item",
-            Self::E027 => "ambiguous bare list item reference",
-            Self::E028 => "retired (lane-A audit) — circular INCLUDE surfaces as CompileError",
-            Self::E029 => "choice in conditional must explicitly divert",
-            Self::E030 => "string interpolation in constant initializer is ignored",
-            Self::E031 => "function call argument count mismatch",
-            Self::E032 => "return statement outside function",
-            Self::E033 => "unreachable code after divert",
-            Self::E034 => "choice set has only fallback choices",
-            Self::E035 => "name shadows a built-in function",
-            Self::E036 => "expected diagnostic not produced",
-            Self::E037 => "syntax error",
-            Self::E038 => "malformed doc-comment tag",
-            Self::E039 => "manifest disagrees with EXTERNAL arity",
-            Self::E040 => "unknown semantic type",
-            Self::E041 => "external argument type mismatch",
-            Self::E042 => "external argument out of domain",
-            Self::E043 => "doc-comment tag not applicable to this declaration",
-            Self::E044 => "unknown directive",
-            Self::E045 => "directive has no valid target here",
-            Self::E046 => "directive must be static text",
-            Self::E047 => "directive must be the only tag on its line",
-            Self::E048 => "duplicate directive",
-            Self::E049 => "directive not supported on this target",
-            Self::E050 => "directive does not take arguments",
-            Self::E051 => "brink extension used under strict-ink dialect",
-            Self::E052 => "brink extension not yet implemented",
-            Self::E053 => "retired (T1b-2) — T1b extension lowering is complete",
-            Self::E054 => "block-scoped temp shadows an already-visible temp",
-            Self::E055 => "collection mutator's first argument is not an lvalue",
-            Self::E056 => "collection mutator used in expression position",
-            Self::E057 => "break/continue outside a loop",
-            Self::E058 => "collection mutator argument count mismatch",
-            Self::E059 => "choice/gather construct nested inside inline content",
-            Self::E060 => "internal codegen error",
-            Self::E061 => "unknown type name in annotation",
-            Self::E062 => "retired (T1c-1) — fn(T…): R annotations now resolve for real",
-            Self::E063 => "type annotation disagrees with inferred type",
-            Self::E064 => "strict types require the brink dialect",
-            Self::E065 => "type escapes strict inference as Unknown",
-            Self::E066 => "type is Conflicted under strict inference",
-            Self::E067 => "assigning the result of a void function",
-            Self::E068 => "struct construction literal names an undeclared STRUCT",
-            Self::E069 => "struct construction literal is missing a declared field",
-            Self::E070 => "struct construction literal supplies an undeclared field",
-            Self::E071 => "struct construction literal field disagrees with the declared type",
-            Self::E072 => "retired (TM-4c) — struct constructs now lower for real",
-            Self::E073 => {
-                "struct construction literal names an unresolved STRUCT shape at LIR lowering"
-            }
-            Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
-            Self::E075 => {
-                "struct construction literal is not supported as a VAR/CONST declaration default"
-            }
-            Self::E076 => {
-                "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"
-            }
-            Self::E077 => {
-                "array element, map value, or #fn bound value argument in a VAR/CONST declaration default is not a compile-time-constant expression"
-            }
-            Self::E078 => "int()/float() argument is outside the permissive numeric+bool domain",
-            Self::E079 => "#fn target is not a statically-named function definition",
-            Self::E080 => {
-                "ref-argument (#fn, call, or bind) does not bind a durable cell at creation"
-            }
-            Self::E081 => "#fn binds more arguments than the target declares",
-            Self::E082 => "block-scoped temp referenced after its block has closed",
-            Self::E083 => "VAR/CONST declaration default is not a compile-time-constant expression",
-            Self::E084 => "struct construction literal supplies a duplicate field",
-            Self::E085 => {
-                "file's module (its stem) collides with a declared module of the same name"
-            }
-            Self::E086 => {
-                "`#@module` requires exactly one module name and may appear at most once per file"
-            }
-            Self::E087 => "reference to a `#@private` definition in another module",
-            Self::E088 => {
-                "bare `IMPORT { name } FROM mod` names a definition the declared module does not export"
-            }
-            Self::E089 => "`IMPORT` brings the same name into scope more than once",
-            Self::E090 => "a module cannot `IMPORT` itself",
-            Self::E091 => {
-                "qualified access is ambiguous: the name is both an imported module and a definition"
-            }
-            Self::E092 => "redundant `#@public`/`#@private` — restates the module default",
-            Self::E093 => "conflicting or repeated visibility directives on one declaration",
-            Self::E094 => "`#@was` requires exactly one non-empty old-name argument",
-            Self::E095 => "`#@was` names the definition's own current name — nothing to migrate",
-            Self::E096 => "duplicate definition declared in two different modules",
-            Self::E097 => "`ref` projection expression outside ref-argument position",
-            Self::E098 => "ref-argument path segment disagrees with the statically-known shape",
-            Self::E099 => "path-projection ref-argument is not yet lowerable (T1e-2, #828)",
-            Self::E100 => "`#@effects` requires `pure` or at least one reads/writes/calls clause",
-            Self::E101 => "malformed `#@effects` clause (unknown keyword or non-identifier value)",
-            Self::E102 => "`#@effects` clause names an unknown global cell or external",
-            Self::E103 => "inferred effects exceed the `#@effects` assertion's declared bound",
-            Self::E104 => {
-                "direct-call syntax requires a bare variable/temp/param callee — use `call(f, args…)` for a computed callee"
-            }
-            Self::E105 => {
-                "`await` condition must be effect-free (read-only) — it writes a global or performs an effectful call"
-            }
-            Self::E106 => "map-literal key is outside the int/string/bool key domain",
-            Self::E107 => "bare `none` needs a type from context",
-            Self::E108 => {
-                "inferred effects exceed the `@[effects(silent)]` assertion (the definition can produce content)"
-            }
-            Self::E109 => {
-                "inferred effects exceed the `@[effects(total)]` assertion (the definition can raise a turn-terminating fault)"
-            }
-            Self::E110 => {
-                "`#@effects(…)` is deprecated; use the `@[effects(…)]` annotation spelling"
-            }
-            Self::E111 => "unknown annotation name (the `@[…]` channel recognizes only `effects`)",
-            Self::E112 => {
-                "annotation line outside a recognized placement (top of a knot/stitch body)"
-            }
-            Self::E113 => {
-                "reserved protocol method name (`display`/`compare`/`next` belong to the protocol registry)"
-            }
-            Self::E114 => "protocol impl exceeds its protocol's effect contract",
-            Self::E115 => "ill-formed protocol impl registration",
-            Self::E116 => {
-                "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
-            }
-            Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
-            Self::E118 => {
-                "numeric-tower kinds are compiler-known and cannot implement registry protocols"
-            }
-            Self::E119 => "sort comparator must be a pure, silent function",
-            Self::E120 => "`weighted` requires weight/value pairs with positive int weights",
+    fn decl(name_text: &str, order: i64, block: bool, attach: Option<&str>) -> ClaimHandlerDecl {
+        ClaimHandlerDecl {
+            name: name(name_text),
+            annotation: TextRange::default(),
+            params: Vec::new(),
+            pattern: format!("^{name_text}$"),
+            block,
+            order,
+            attach: attach.map(str::to_string),
         }
     }
 
-    /// Default severity for this diagnostic code.
-    #[must_use]
-    pub fn severity(self) -> Severity {
-        match self {
-            Self::E014
-            | Self::E022
-            | Self::E023
-            | Self::E026
-            | Self::E030
-            | Self::E031
-            | Self::E033
-            | Self::E034
-            | Self::E035
-            | Self::E038
-            | Self::E043
-            | Self::E054
-            | Self::E063
-            | Self::E092
-            | Self::E095
-            | Self::E106
-            | Self::E110 => Severity::Warning,
-            _ => Severity::Error,
+    fn no_structs() -> BTreeMap<String, Vec<ConventionAttachField>> {
+        BTreeMap::new()
+    }
+
+    fn field(name: &str, ty: SchemaTypeShape) -> ConventionAttachField {
+        ConventionAttachField {
+            name: name.to_string(),
+            ty,
         }
     }
 
-    /// Parse a diagnostic code from its string representation (e.g., `"E027"`).
-    #[must_use]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a flat one-arm-per-code table that necessarily grows with the diagnostic set"
-    )]
-    pub fn from_str_code(s: &str) -> Option<Self> {
-        match s {
-            "E001" => Some(Self::E001),
-            "E002" => Some(Self::E002),
-            "E003" => Some(Self::E003),
-            "E004" => Some(Self::E004),
-            "E005" => Some(Self::E005),
-            "E006" => Some(Self::E006),
-            "E007" => Some(Self::E007),
-            "E008" => Some(Self::E008),
-            "E009" => Some(Self::E009),
-            "E010" => Some(Self::E010),
-            "E011" => Some(Self::E011),
-            "E012" => Some(Self::E012),
-            "E013" => Some(Self::E013),
-            "E014" => Some(Self::E014),
-            "E015" => Some(Self::E015),
-            "E016" => Some(Self::E016),
-            "E017" => Some(Self::E017),
-            "E018" => Some(Self::E018),
-            "E019" => Some(Self::E019),
-            "E020" => Some(Self::E020),
-            "E021" => Some(Self::E021),
-            "E022" => Some(Self::E022),
-            "E023" => Some(Self::E023),
-            "E024" => Some(Self::E024),
-            "E025" => Some(Self::E025),
-            "E026" => Some(Self::E026),
-            "E027" => Some(Self::E027),
-            "E028" => Some(Self::E028),
-            "E029" => Some(Self::E029),
-            "E030" => Some(Self::E030),
-            "E031" => Some(Self::E031),
-            "E032" => Some(Self::E032),
-            "E033" => Some(Self::E033),
-            "E034" => Some(Self::E034),
-            "E035" => Some(Self::E035),
-            "E036" => Some(Self::E036),
-            "E037" => Some(Self::E037),
-            "E038" => Some(Self::E038),
-            "E039" => Some(Self::E039),
-            "E040" => Some(Self::E040),
-            "E041" => Some(Self::E041),
-            "E042" => Some(Self::E042),
-            "E043" => Some(Self::E043),
-            "E044" => Some(Self::E044),
-            "E045" => Some(Self::E045),
-            "E046" => Some(Self::E046),
-            "E047" => Some(Self::E047),
-            "E048" => Some(Self::E048),
-            "E049" => Some(Self::E049),
-            "E050" => Some(Self::E050),
-            "E051" => Some(Self::E051),
-            "E052" => Some(Self::E052),
-            "E053" => Some(Self::E053),
-            "E054" => Some(Self::E054),
-            "E055" => Some(Self::E055),
-            "E056" => Some(Self::E056),
-            "E057" => Some(Self::E057),
-            "E058" => Some(Self::E058),
-            "E059" => Some(Self::E059),
-            "E060" => Some(Self::E060),
-            "E061" => Some(Self::E061),
-            "E062" => Some(Self::E062),
-            "E063" => Some(Self::E063),
-            "E064" => Some(Self::E064),
-            "E065" => Some(Self::E065),
-            "E066" => Some(Self::E066),
-            "E067" => Some(Self::E067),
-            "E068" => Some(Self::E068),
-            "E069" => Some(Self::E069),
-            "E070" => Some(Self::E070),
-            "E071" => Some(Self::E071),
-            "E072" => Some(Self::E072),
-            "E073" => Some(Self::E073),
-            "E074" => Some(Self::E074),
-            "E075" => Some(Self::E075),
-            "E076" => Some(Self::E076),
-            "E077" => Some(Self::E077),
-            "E078" => Some(Self::E078),
-            "E079" => Some(Self::E079),
-            "E080" => Some(Self::E080),
-            "E081" => Some(Self::E081),
-            "E082" => Some(Self::E082),
-            "E083" => Some(Self::E083),
-            "E084" => Some(Self::E084),
-            "E085" => Some(Self::E085),
-            "E086" => Some(Self::E086),
-            "E087" => Some(Self::E087),
-            "E088" => Some(Self::E088),
-            "E089" => Some(Self::E089),
-            "E090" => Some(Self::E090),
-            "E091" => Some(Self::E091),
-            "E092" => Some(Self::E092),
-            "E093" => Some(Self::E093),
-            "E094" => Some(Self::E094),
-            "E095" => Some(Self::E095),
-            "E096" => Some(Self::E096),
-            "E097" => Some(Self::E097),
-            "E098" => Some(Self::E098),
-            "E099" => Some(Self::E099),
-            "E100" => Some(Self::E100),
-            "E101" => Some(Self::E101),
-            "E102" => Some(Self::E102),
-            "E103" => Some(Self::E103),
-            "E104" => Some(Self::E104),
-            "E105" => Some(Self::E105),
-            "E106" => Some(Self::E106),
-            "E107" => Some(Self::E107),
-            "E108" => Some(Self::E108),
-            "E109" => Some(Self::E109),
-            "E110" => Some(Self::E110),
-            "E111" => Some(Self::E111),
-            "E112" => Some(Self::E112),
-            "E113" => Some(Self::E113),
-            "E114" => Some(Self::E114),
-            "E115" => Some(Self::E115),
-            "E116" => Some(Self::E116),
-            "E117" => Some(Self::E117),
-            "E118" => Some(Self::E118),
-            "E119" => Some(Self::E119),
-            "E120" => Some(Self::E120),
-            _ => None,
+    #[test]
+    fn from_decls_preserves_input_order() {
+        // `collect` hands this function an already-`order`-sorted slice
+        // (issue #2164's own contract) — the builder trusts that, so this
+        // proves it does not re-sort behind the caller's back.
+        let decls = vec![
+            decl("exterior", 20, false, None),
+            decl("interior", 10, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let names: Vec<&str> = projection
+            .entries
+            .iter()
+            .map(|e| e.name.text.as_str())
+            .collect();
+        assert_eq!(names, vec!["exterior", "interior"]);
+    }
+
+    #[test]
+    fn block_flag_becomes_wrap_mode_and_its_absence_becomes_attach_mode() {
+        let decls = vec![
+            decl("cue", 10, true, None),
+            decl("interior", 20, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        assert_eq!(projection.entries[0].mode, ConventionMode::Wrap);
+        assert_eq!(projection.entries[1].mode, ConventionMode::Attach);
+    }
+
+    /// Issue #2111 finding 1: the schema is the RESOLVED FIELD LIST, not
+    /// merely the struct's bare name.
+    #[test]
+    fn attach_schema_resolves_to_the_declared_fields_and_types() {
+        let decls = vec![decl("cue", 10, false, Some("Cue"))];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![
+                field("speaker", SchemaTypeShape::Named("string".to_string())),
+                field("voiceover", SchemaTypeShape::Named("bool".to_string())),
+                field("offscreen", SchemaTypeShape::Named("bool".to_string())),
+            ],
+        );
+        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        assert_eq!(
+            projection.entries[0].attach,
+            Some(ConventionAttachSchema::Resolved {
+                name: "Cue".to_string(),
+                fields: vec![
+                    field("speaker", SchemaTypeShape::Named("string".to_string())),
+                    field("voiceover", SchemaTypeShape::Named("bool".to_string())),
+                    field("offscreen", SchemaTypeShape::Named("bool".to_string())),
+                ],
+            })
+        );
+    }
+
+    /// Mutation-style (rule 20a): reversing the field order must be visible
+    /// — a projection that silently re-sorted fields would pass a looser
+    /// assertion (e.g. a set comparison) but must fail this one.
+    #[test]
+    fn attach_schema_field_order_is_preserved_not_resorted() {
+        let decls = vec![decl("cue", 10, false, Some("Cue"))];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![
+                field("b_field", SchemaTypeShape::Named("bool".to_string())),
+                field("a_field", SchemaTypeShape::Named("string".to_string())),
+            ],
+        );
+        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let Some(ConventionAttachSchema::Resolved { fields, .. }) = &projection.entries[0].attach
+        else {
+            unreachable!(
+                "expected a resolved schema: {:?}",
+                projection.entries[0].attach
+            );
+        };
+        let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["b_field", "a_field"],
+            "field order must not be re-sorted"
+        );
+    }
+
+    /// Issue #2111 finding 1: an `attach` name that resolves to no known
+    /// struct is flagged (`Unresolved`), never silently dropped to `None`
+    /// (house rule: flag silent data drops) and never fabricated into an
+    /// empty-fields `Resolved`.
+    #[test]
+    fn attach_schema_unresolved_struct_name_is_flagged_not_dropped() {
+        let decls = vec![decl("cue", 10, false, Some("Ghost"))];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        assert_eq!(
+            projection.entries[0].attach,
+            Some(ConventionAttachSchema::Unresolved("Ghost".to_string()))
+        );
+    }
+
+    #[test]
+    fn no_attach_clause_projects_to_none() {
+        let decls = vec![decl("interior", 10, false, None)];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        assert_eq!(projection.entries[0].attach, None);
+    }
+
+    #[test]
+    fn every_entry_carries_the_call_disposition() {
+        // There is only one `ElementDisposition` variant today — this pins
+        // that the projection actually reads and carries it, rather than
+        // e.g. hardcoding a literal in a way that would silently stay
+        // correct even if this field were dropped from the struct.
+        let decls = vec![decl("interior", 10, false, None)];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        assert_eq!(projection.entries[0].disposition, ElementDisposition::Call);
+    }
+
+    #[test]
+    fn an_empty_decl_set_projects_to_an_empty_projection() {
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        assert!(projection.entries.is_empty());
+        assert_eq!(projection, ConventionsProjection::default());
+    }
+
+    #[test]
+    fn order_and_pattern_are_carried_through_verbatim() {
+        let decls = vec![decl("interior", 42, false, None)];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        assert_eq!(projection.entries[0].order, 42);
+        assert_eq!(projection.entries[0].pattern, "^interior$");
+    }
+
+    // ─── `to_wire` (issue #2111 finding 2) ──────────────────────────────
+
+    /// The wire conversion is lossless for a resolved schema — mutation-style
+    /// (rule 20a): forcing a wrong field type on either side would fail this
+    /// exact assertion, proving it isn't vacuously true.
+    #[test]
+    fn to_wire_carries_the_resolved_schema_losslessly() {
+        let decls = vec![decl("cue", 5, true, Some("Cue"))];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![field(
+                "speaker",
+                SchemaTypeShape::Named("string".to_string()),
+            )],
+        );
+        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let wire = projection.to_wire();
+        assert_eq!(wire.entries.len(), 1);
+        assert_eq!(wire.entries[0].name, "cue");
+        assert_eq!(wire.entries[0].mode, brink_format::ConventionModeDef::Wrap);
+        assert_eq!(
+            wire.entries[0].attach,
+            Some(brink_format::ConventionAttachDef::Resolved {
+                name: "Cue".to_string(),
+                fields: vec![brink_format::ConventionAttachFieldDef {
+                    name: "speaker".to_string(),
+                    ty: brink_format::SchemaTypeDef::Named("string".to_string()),
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn to_wire_carries_unresolved_attach_as_unresolved_not_none() {
+        let decls = vec![decl("cue", 5, false, Some("Ghost"))];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let wire = projection.to_wire();
+        assert_eq!(
+            wire.entries[0].attach,
+            Some(brink_format::ConventionAttachDef::Unresolved(
+                "Ghost".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn to_wire_round_trips_through_the_inkb_codec() {
+        let decls = vec![
+            decl("cue", 5, true, Some("Cue")),
+            decl("interior", 10, false, None),
+        ];
+        let mut structs = no_structs();
+        structs.insert(
+            "Cue".to_string(),
+            vec![field(
+                "speaker",
+                SchemaTypeShape::Named("string".to_string()),
+            )],
+        );
+        let wire = ConventionsProjection::from_decls(&decls, &structs).to_wire();
+        let mut buf = Vec::new();
+        brink_format::write_conventions_projection(&wire, &mut buf);
+        let mut offset = 0;
+        let decoded = brink_format::read_conventions_projection(&buf, &mut offset)
+            .expect("decode the wire form this crate just encoded");
+        assert_eq!(decoded, wire);
+    }
+
+    // ─── `with_succession` (issue #2115) ────────────────────────────────
+
+    use crate::dialect::{TemplateEntry, Templates, TransitionAction, TransitionRow};
+
+    fn character_row() -> TransitionRow {
+        TransitionRow {
+            on: "character".to_string(),
+            key: "Tab".to_string(),
+            has_content: Some(true),
+            action: TransitionAction::Convert {
+                kind: "dialogue".to_string(),
+            },
+            hint: None,
         }
+    }
+
+    /// A transition row keyed to a real convention kind this projection
+    /// declares (not a `DialogueDialect`-owned `elements` entry) attaches
+    /// cleanly.
+    #[test]
+    fn with_succession_accepts_rows_keyed_to_a_declared_convention_kind() {
+        let decls = vec![
+            decl("character", 1, false, None),
+            decl("dialogue", 2, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let templates = Templates {
+            entries: vec![TemplateEntry {
+                kind: "character".to_string(),
+                label: "Character cue".to_string(),
+                picker_key: Some("@".to_string()),
+                blank_tab: true,
+            }],
+        };
+        let attached = projection
+            .with_succession(vec![character_row()], templates.clone())
+            .expect("both rows key off declared convention kinds");
+        assert_eq!(attached.transitions, vec![character_row()]);
+        assert_eq!(attached.templates, templates);
+    }
+
+    /// Reserved structural kinds (never declared by any `@[convention]`)
+    /// are still legal succession-row targets — the same
+    /// declared-OR-reserved-structural rule `DialogueDialect::validate`
+    /// applies to its own `chain`/`transitions`.
+    #[test]
+    fn with_succession_accepts_reserved_structural_kinds() {
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let row = TransitionRow {
+            on: "narrative".to_string(),
+            key: "Enter".to_string(),
+            has_content: None,
+            action: TransitionAction::Newline,
+            hint: None,
+        };
+        let attached = projection
+            .with_succession(vec![row], Templates::default())
+            .expect("`narrative` is a reserved structural kind");
+        assert_eq!(attached.transitions.len(), 1);
+    }
+
+    /// The re-keying half of issue #2115: a transition row naming a kind
+    /// `DialogueDialect.elements` might have declared, but that this
+    /// projection's own convention kinds do NOT, is rejected — proving the
+    /// row is validated against the projection, never against a
+    /// `DialogueDialect`'s independent element list.
+    #[test]
+    fn with_succession_rejects_a_kind_this_projection_never_declared() {
+        let projection =
+            ConventionsProjection::from_decls(&[decl("character", 1, false, None)], &no_structs());
+        let row = TransitionRow {
+            on: "parenthetical".to_string(),
+            key: "Tab".to_string(),
+            has_content: None,
+            action: TransitionAction::Strip,
+            hint: None,
+        };
+        let errors = projection
+            .with_succession(vec![row], Templates::default())
+            .expect_err(
+                "`parenthetical` is declared by neither this projection nor reserved-structural",
+            );
+        assert_eq!(
+            errors,
+            vec![crate::dialect::DialectError::TransitionUndeclaredKind(
+                "parenthetical".to_string()
+            )]
+        );
+    }
+
+    /// A `Convert { kind }` target is checked independently of the row's own
+    /// `on` — both must resolve, and each unresolved kind is reported.
+    #[test]
+    fn with_succession_rejects_an_undeclared_convert_target() {
+        let projection =
+            ConventionsProjection::from_decls(&[decl("character", 1, false, None)], &no_structs());
+        let row = TransitionRow {
+            on: "character".to_string(),
+            key: "Tab".to_string(),
+            has_content: None,
+            action: TransitionAction::Convert {
+                kind: "dialogue".to_string(),
+            },
+            hint: None,
+        };
+        let errors = projection
+            .with_succession(vec![row], Templates::default())
+            .expect_err("`dialogue` is never declared");
+        assert_eq!(
+            errors,
+            vec![crate::dialect::DialectError::TransitionUndeclaredKind(
+                "dialogue".to_string()
+            )]
+        );
+    }
+
+    /// A `Templates` entry naming an undeclared kind is rejected too — the
+    /// gap `DialogueDialect::validate` itself had before #2115 (templates
+    /// were never checked against `elements` at all; `validate_succession`
+    /// closes it for both callers at once).
+    #[test]
+    fn with_succession_rejects_a_template_entry_for_an_undeclared_kind() {
+        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let templates = Templates {
+            entries: vec![TemplateEntry {
+                kind: "character".to_string(),
+                label: "Character cue".to_string(),
+                picker_key: None,
+                blank_tab: false,
+            }],
+        };
+        let errors = projection
+            .with_succession(Vec::new(), templates)
+            .expect_err("`character` is never declared");
+        assert_eq!(
+            errors,
+            vec![crate::dialect::DialectError::TemplateUndeclaredKind(
+                "character".to_string()
+            )]
+        );
+    }
+
+    /// `to_wire` does **not** carry `transitions`/`templates` (2026-08-05
+    /// ruling, issue #2277 undoing #2115's transport half): `with_succession`
+    /// still attaches and validates them in-process, but the wire mirror
+    /// only ever carries `entries` — proving the wire shape stays unaffected
+    /// by whatever succession rows this projection happens to hold.
+    #[test]
+    fn to_wire_does_not_carry_succession_rows() {
+        let decls = vec![
+            decl("character", 1, false, None),
+            decl("dialogue", 2, false, None),
+        ];
+        let projection = ConventionsProjection::from_decls(&decls, &no_structs())
+            .with_succession(
+                vec![character_row()],
+                Templates {
+                    entries: vec![TemplateEntry {
+                        kind: "character".to_string(),
+                        label: "Character cue".to_string(),
+                        picker_key: Some("@".to_string()),
+                        blank_tab: true,
+                    }],
+                },
+            )
+            .expect("keyed to a declared convention kind");
+        assert_eq!(projection.transitions.len(), 1, "attached in-process");
+        assert_eq!(projection.templates.entries.len(), 1, "attached in-process");
+
+        let wire = projection.to_wire();
+        assert_eq!(wire.entries.len(), 2);
+
+        let mut buf = Vec::new();
+        brink_format::write_conventions_projection(&wire, &mut buf);
+        let mut offset = 0;
+        let decoded = brink_format::read_conventions_projection(&buf, &mut offset)
+            .expect("decode the wire form this crate just encoded");
+        assert_eq!(decoded, wire);
     }
 }

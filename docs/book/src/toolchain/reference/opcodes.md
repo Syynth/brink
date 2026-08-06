@@ -234,10 +234,10 @@ Thread forking clones the current VM state (call stack, variable state) to explo
 
 ## Execution model
 
-The step function executes opcodes in a loop until reaching a yield point: `Done`, `End`, or choice presentation. Each yield produces a `Line` (`Text`/`Done`/`Choices`/`End`) carrying the output text accumulated since the last yield — `continue_single` returns one, `continue_maximally` returns a `Vec<Line>` ending in a terminal variant.
+The step function executes opcodes in a loop until reaching a yield point: `Done`, `End`, or choice presentation. Each yield produces a `Step` (`Line`/`Done`/`Choices`/`End`) — only `Line` carries a payload (the output text accumulated since the last yield); the terminal variants carry none — `continue_single` returns one, `continue_maximally` returns a `Vec<Step>` ending in a terminal variant.
 
 **Call stack**: Function and tunnel calls push frames onto the call stack. Each frame has its own local variable storage (temp slots). `Return` and `TunnelReturn` pop frames.
 
 **Container stack**: Each call frame tracks which containers are currently active. `EnterContainer` pushes, `ExitContainer` pops. This drives visit counting and turn tracking.
 
-**Thread forking**: `ThreadCall` forks the current execution state (stacks, globals, output) to explore a choice branch. All threads run within the same step. At yield, threads are merged: each live thread contributes its choices to the final `Line::Choices`.
+**Thread forking**: `ThreadCall` forks the current execution state (stacks, globals, output) to explore a choice branch. All threads run within the same step. At yield, threads are merged: each live thread contributes its choices to the final `Step::Choices`.

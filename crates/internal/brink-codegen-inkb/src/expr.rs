@@ -1,6 +1,6 @@
 //! Expression compilation: LIR `Expr` → opcodes.
 
-use brink_format::{ListValue, Opcode};
+use brink_format::{ListValue, Opcode, SeqVerbOp};
 use brink_ir::lir;
 
 use crate::ContainerEmitter;
@@ -57,6 +57,29 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(lhs, false);
                 self.emit_expr(rhs, false);
                 self.emit(infix_op_to_opcode(*op));
+            }
+
+            // B1 `or`-coalescing, short-circuited (issue #1471) — a real
+            // branch, not a binary opcode, so `rhs`'s bytecode is only on
+            // the path that actually reaches it (the `none` fall-through).
+            // See `lir::Expr::Coalesce`'s own doc for the full shape.
+            lir::Expr::Coalesce { lhs, rhs, shape } => {
+                self.emit_expr(lhs, false);
+                // Pops `lhs`; `some(v)` pushes the unwrapped `v` and jumps
+                // to `some_site` below; `none` pushes nothing and falls
+                // through into the `rhs` evaluation right here.
+                let some_site = self.emit_jump_placeholder(Opcode::CoalesceSome(0));
+                self.emit_expr(rhs, false);
+                let end_site = self.emit_jump_placeholder(Opcode::Jump(0));
+                self.patch_jump(some_site);
+                // Only reached via the `some(v)` jump, with the unwrapped
+                // `v` on top — re-wrap when the analyzer's recorded typing
+                // says this step keeps its `Option`, so both branches agree
+                // on shape at the join below.
+                if matches!(shape, brink_ir::lir::CoalesceShape::PreserveOption) {
+                    self.emit(Opcode::MakeSome);
+                }
+                self.patch_jump(end_site);
             }
 
             lir::Expr::Postfix(inner, op) => {
@@ -250,6 +273,12 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MapRemove);
             }
 
+            lir::Expr::SeqRemoveAt { base, index } => {
+                self.emit_expr(base, false);
+                self.emit_expr(index, false);
+                self.emit(Opcode::SeqRemoveAt);
+            }
+
             lir::Expr::CharAt { s, index } => {
                 self.emit_expr(s, false);
                 self.emit_expr(index, false);
@@ -262,6 +291,17 @@ impl ContainerEmitter<'_> {
             lir::Expr::OptionSome(inner) => {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::MakeSome);
+            }
+
+            // ── B1b: the `as` binding (issue #1475) ──────────────────
+            // The bind is fused into the condition's own evaluation: push
+            // the `Option[T]`, then one op both tests it and (on `some`)
+            // writes the unwrapped payload to the binding's slot. `name`
+            // is lowering-time provenance only — the slot is what the VM
+            // addresses, exactly as for `GetTemp`/`SetTemp`.
+            lir::Expr::OptionBind { value, slot, .. } => {
+                self.emit_expr(value, false);
+                self.emit(Opcode::OptionBind(*slot));
             }
 
             lir::Expr::StrFind { s, sub } => {
@@ -354,6 +394,45 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(seq, false);
                 self.emit_expr(cmp, false);
                 self.emit(Opcode::SeqSortedBy);
+            }
+
+            // ── The fn-value verbs (#1679, stdlib-spec §4) ───────────
+            // Operands in source order, callback last — the `SeqSortedBy`
+            // stack shape, so the VM pops callback-first.
+            lir::Expr::SeqMap { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Map));
+            }
+            lir::Expr::SeqFilter { seq, pred } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(pred, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Filter));
+            }
+            lir::Expr::SeqFold { seq, init, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(init, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Fold));
+            }
+            // Slice 2 (issue #1679): `filter_map` stays pure (the same
+            // stack shape as `map`/`filter`); `each`/`map_each` are the
+            // effectful spellings — same codegen shape, the runtime op is
+            // what changes their contract.
+            lir::Expr::SeqFilterMap { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::FilterMap));
+            }
+            lir::Expr::SeqEach { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Each));
+            }
+            lir::Expr::SeqMapEach { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::MapEach));
             }
 
             // ── NS-A5: range values (#1111) ──────────────────────────
@@ -501,6 +580,18 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::ConvertString);
             }
+
+            // Block capture (issue #1839): identical bracket to
+            // `emit_slot_expr`'s call-composition case, holding an
+            // arbitrary captured statement run instead of one call's
+            // output — `emit_body` lowers each statement through the
+            // normal per-statement path, so a recognized line inside stays
+            // a real line-table entry.
+            lir::Expr::Fragment(stmts) => {
+                self.emit(Opcode::BeginFragment);
+                self.emit_body(stmts);
+                self.emit(Opcode::EndFragment);
+            }
         }
     }
 
@@ -631,6 +722,14 @@ fn infix_op_to_opcode(op: brink_ir::InfixOp) -> Opcode {
         brink_ir::InfixOp::Or => Opcode::Or,
         brink_ir::InfixOp::Has => Opcode::ListContains,
         brink_ir::InfixOp::HasNot => Opcode::ListNotContains,
+        // Structurally unreachable: `lir::lower::expr::lower_expr`
+        // special-cases `InfixOp::Coalesce` into `lir::Expr::Coalesce`
+        // (issue #1471's short-circuit branch) before it can ever become a
+        // generic `lir::Expr::Infix` — the only shape that reaches this
+        // function. See `lir::Expr::Coalesce`'s own doc.
+        brink_ir::InfixOp::Coalesce => {
+            unreachable!("InfixOp::Coalesce lowers to lir::Expr::Coalesce, never generic Infix")
+        }
     }
 }
 

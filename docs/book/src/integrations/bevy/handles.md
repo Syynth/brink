@@ -97,7 +97,7 @@ let value = registry.mint_value(program, TimerState { remaining_secs: 30.0 });
 
 `mint_value` returns `None` if this compile never interned `"Timer"` — a
 kind name only exists in a program's name table if the source graph
-actually references `handle<Timer>` somewhere (a typed binding signature or
+actually references `Handle<Timer>` somewhere (a typed binding signature or
 annotation).
 
 ## `is_valid` — the standard world-query binding

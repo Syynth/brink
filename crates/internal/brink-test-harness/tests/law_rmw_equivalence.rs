@@ -5,7 +5,7 @@
 //! read-modify-write compiles to *take out of slot → `make_mut` → write
 //! back*". `tests/proptest_t1b.rs` and `tests/take_rmw.rs` already prove this
 //! law for array element writes (`a[i] = v`, chained `grid[y][x] = v`) and
-//! the array mutator stdlib (`push`/`insert`/`remove`) against a `Vec`
+//! the array mutator stdlib (`push`/`insert`/`remove_at`) against a `Vec`
 //! reference. This file extends the same law to the two RMW target shapes
 //! those files don't cover:
 //!
@@ -105,13 +105,26 @@ proptest! {
         }
         ordered_insert(&mut reference, write_key.clone(), new_val);
 
+        // A repeated key can no longer be spelled in a literal (`E138`,
+        // #1103 cascade ruling (A)), so each key's first occurrence goes in
+        // the literal and every repeat is re-inserted through an indexed
+        // write — the same `ordered_insert` path the reference models, and
+        // exactly what this test is comparing against anyway.
         let entries: Vec<String> = keys
             .iter()
             .enumerate()
+            .filter(|(i, k)| keys.iter().position(|other| other == *k) == Some(*i))
             .map(|(i, k)| format!("\"{k}\": {i}"))
             .collect();
+        let mut repeats = String::new();
+        for (i, k) in keys.iter().enumerate() {
+            if keys.iter().position(|other| other == k) != Some(i) {
+                use std::fmt::Write as _;
+                let _ = writeln!(repeats, "    m[\"{k}\"] = {i}");
+            }
+        }
         let source = format!(
-            "VAR m = 0\nVAR out = \"\"\n~ {{\n    m = #{{{}}}\n    m[\"{write_key}\"] = {new_val}\n    for k in m {{\n        out = out + k + \":\" + m[k] + \" \"\n    }}\n}}\n{{out}}\n-> END\n",
+            "VAR m = 0\nVAR out = \"\"\n~ {{\n    m = #{{{}}}\n{repeats}    m[\"{write_key}\"] = {new_val}\n    for k in m {{\n        out = out + k + \":\" + m[k] + \" \"\n    }}\n}}\n{{out}}\n-> END\n",
             entries.join(", "),
         );
         let mut story = compile(&source);

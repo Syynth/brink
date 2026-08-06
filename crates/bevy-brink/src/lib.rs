@@ -7,14 +7,20 @@
 //!
 //! Most games will use the default `()` marker and just do:
 //!
-//! ```ignore
-//! app.add_plugins(BrinkPlugin::default());
+//! ```no_run
+//! # use bevy_app::App;
+//! # use bevy_brink::BrinkPlugin;
+//! # let mut app = App::new();
+//! app.add_plugins(BrinkPlugin::<()>::default());
 //! ```
 //!
 //! Games with multiple concurrent story instances declare marker types
 //! and register a plugin per marker:
 //!
-//! ```ignore
+//! ```no_run
+//! # use bevy_app::App;
+//! # use bevy_brink::BrinkPlugin;
+//! # let mut app = App::new();
 //! struct MainStory;
 //! struct DreamSequence;
 //!
@@ -36,6 +42,8 @@ mod bindings;
 mod brkt;
 mod call;
 mod capability;
+#[cfg(feature = "dev")]
+mod config_warnings;
 mod event;
 mod flow;
 mod globals;
@@ -55,6 +63,7 @@ mod source_loader;
 #[cfg(test)]
 mod test_support;
 mod transcript;
+mod wake_delta;
 
 pub use asset::{
     BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
@@ -73,7 +82,7 @@ pub use bevy_brink_derive::BrinkCommand;
 pub use bindings::{
     BrinkArgError, BrinkBindings, BrinkBindingsAppExt, BrinkCallError, BrinkCommand, BrinkHandler,
     BrinkQueryInput, advance_flow, any_flow_awaiting_external, call_ink_function,
-    call_ink_function_value, resolve_pending_externals,
+    call_ink_function_value, call_ink_functions, resolve_pending_externals,
 };
 /// Re-exported so `#[derive(BrinkCommand)]`-generated code (and binding
 /// authors) can name the ink runtime value type without depending on
@@ -99,7 +108,7 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// The runtime types that appear in `bevy-brink`'s own public signatures,
 /// re-exported so consumers can name them without depending on `brink-runtime`:
 /// [`FlowInstance`](BrinkFlow::inner), [`Program`](crate::ProgramAsset::program),
-/// [`Choice`](crate::BrinkChoicesPresented::choices), [`Line`](advance_flow)'s
+/// [`Choice`](crate::BrinkChoicesPresented::choices), [`Step`](advance_flow)'s
 /// return, [`RuntimeError`](BrinkFlow::choose)'s error,
 /// [`FallbackHandler`] for the "no bindings" advance path, the scoped
 /// story-state types a host needs to build a policy and a per-step routing
@@ -113,14 +122,15 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// `World` is deliberately absent here — it collides with `bevy::prelude::World`
 /// under a glob import, so it is re-exported under the alias [`BrinkWorld`].
 pub use brink_runtime::{
-    Choice, ContextView, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport, PolicyError,
-    Program, RuntimeError, SaveState, Scope, WorldPolicy,
+    BlockId, Choice, ContextView, ExecMode, FallbackHandler, FlowInstance, FlowLocal, LoadReport,
+    OutputLine, PolicyError, Program, RuntimeError, SaveState, Scope, Step, WorldPolicy,
 };
 pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
 };
 pub use call::{
-    BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
+    BrinkCallBatchRequest, BrinkCallBatchResolved, BrinkCallCommandsExt, BrinkCallFailed,
+    BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs, resolve_brink_call_batches,
     resolve_brink_calls,
 };
 pub use capability::{
@@ -130,12 +140,14 @@ pub use capability::{
     dump_container_access, rebuild_capability_table,
 };
 #[cfg(feature = "dev")]
+pub use config_warnings::BrinkConfigWarnings;
+#[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 pub use flow::{Advance, BrinkFlow};
 pub use globals::{
-    BrinkContext, BrinkGlobals, BrinkWorldPolicy, flow_context_view, load_flow_state,
-    save_flow_state,
+    BrinkContext, BrinkExecMode, BrinkGlobals, BrinkWorldPolicy, flow_context_view,
+    load_flow_state, save_flow_state,
 };
 #[cfg(feature = "effect-trace")]
 pub use ground_truth::{AccessKind, GroundTruthLog, ObservedAccess, Violation, check};
@@ -163,3 +175,4 @@ pub use sleep::{
 #[cfg(feature = "dev")]
 pub use source_loader::{CompileStoryInlineError, InkLoader, InkLoaderError, compile_story_inline};
 pub use transcript::{BrinkTranscript, refresh_transcripts};
+pub use wake_delta::{BrinkWorldDelta, WorldDelta};

@@ -55,20 +55,24 @@ mod graph;
 mod intrinsics;
 mod ty;
 
+pub(crate) use body::is_string_numeric_concat;
 pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brink_format::DefinitionId;
+use brink_format::{DefinitionId, DefinitionTag};
 use brink_ir::{
-    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
-    SymbolKind, TypeExpr, TypeRef,
+    AssignOp, BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Name, Param, ResolutionMap,
+    SymbolIndex, SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
 
 pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
-pub use ty::{CoalesceError, TowerTy, Ty, coalesce, unify, unify_all};
+pub use ty::{
+    CoalesceError, FnRow, TowerTy, Ty, assignable, coalesce, erase_fn_rows, ref_assignable, unify,
+    unify_all,
+};
 
 use body::{BodyCtx, infer_def_body};
 use graph::topo_order;
@@ -122,6 +126,344 @@ pub struct BodyTypes {
     /// strict mode** (`strict::check` — gradual stays advisory, the runtime
     /// fault is its backstop, spec §3/§4).
     pub value_calls: Vec<ValueCallFact>,
+    /// Issue #1532: every `remove(a, i)` call site in this body whose first
+    /// argument is statically known to be `Ty::Array` — see
+    /// `body::BodyResult::array_remove_calls`'s doc for why this is
+    /// captured (the pre-#1484 array leg `remove` no longer serves).
+    /// Reported only by strict mode (`strict::check_array_remove_calls`,
+    /// `E149`), the same split as `value_calls`.
+    pub array_remove_calls: Vec<TextRange>,
+    /// Issue #1864: statically-checkable argument-type mismatches at
+    /// **direct** call sites (`h("hi")`, resolving straight to a known
+    /// knot/stitch via `known_sigs` — never a call through a value, which
+    /// [`ValueCallFact`]/[`ValueCallKind::ArgMismatch`] already covers).
+    /// Recorded unconditionally during inference, like `value_calls`;
+    /// reported only by strict mode — gradual mode keeps deferring to the
+    /// existing runtime type-mismatch fault as its backstop.
+    ///
+    /// Deliberately **excludes** an argument that is a bare `Path`
+    /// resolving to a `Param`/`Temp` in the caller's own body — the exact
+    /// set `InferPass::observe` unconditionally joins the callee's declared
+    /// param type into, right after this check runs (see
+    /// `body::InferPass::infer_call`'s doc for why). A genuine disagreement
+    /// there drives that local to `Ty::Conflicted` on its own, which
+    /// `strict::check_escapes` already reports as `E066` — recording a
+    /// second fact here for the identical disagreement would double-report
+    /// it. A `Path` argument resolving to anything else (a literal, a
+    /// nested call's return value, a global `VAR`/`CONST`, an index
+    /// expression, …) is unaffected by `observe` and stays fully checked.
+    pub direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
+    /// Issue #1877 (the remainder of #1864 left after PR #1875's direct-
+    /// call-argument half): statically-checkable type mismatches at a `~
+    /// temp name: T = expr` declaration initializer (against its own
+    /// ascription) or a plain `~ name = expr` assignment (against the
+    /// target's already-known declared type — a VAR/CONST's declaration-
+    /// derived type, or an annotated `~ temp`'s ascription). A `Param`
+    /// assignment target never reaches this fact at all: a param
+    /// annotation is a signature-firewall slot `annotations::mismatches`
+    /// (E063) already owns (compared against the body's *final* inferred
+    /// param type), so checking it again here would double-report the
+    /// identical disagreement. Recorded unconditionally during inference,
+    /// like `direct_call_arg_mismatches`; reported only by strict mode.
+    ///
+    /// A `Temp` assignment target is excluded from this fact whenever
+    /// `InferPass::observe`'s own join (which runs right after, on every
+    /// assignment) is *already* about to drive that local to
+    /// `Ty::Conflicted` on its own — that disagreement is independently
+    /// reported as `E066` by `strict::check_escapes`, so recording a second
+    /// fact here for it would double-report (mirrors
+    /// `DirectCallArgMismatch`'s own `arg_is_observed_local` exclusion, but
+    /// computed per-write rather than a blanket kind exclusion, since an
+    /// assignment to an as-yet-`Unknown` local never goes `Conflicted` and
+    /// would otherwise go unchecked entirely). That per-write guard is
+    /// order-sensitive — a *later* read of the same temp can independently
+    /// conflict it after a fact was already recorded — so
+    /// `body::infer_def_body` also drops, post-walk, any fact whose
+    /// target's *final* type is `Conflicted`. See
+    /// `body::InferPass::check_declared_assign_target`'s doc.
+    pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// Issue #1900 (split from #1864/#1877): a dotted struct-field
+    /// assignment target (`~ p.x = expr`), with the root's declared type
+    /// resolved but the field chain past it left unresolved (no shape table
+    /// in this module — see [`FieldAssignMismatch`]'s own doc). Recorded
+    /// unconditionally during inference, like `typed_assign_mismatches`;
+    /// resolved and reported only by strict mode
+    /// (`structs::check_assignments`, `E063`).
+    pub field_assign_mismatches: Vec<FieldAssignMismatch>,
+    /// Issue #1994 (RULED 2026-08-01, closing #1932): a lambda's own
+    /// written param/return annotation disagreeing with its body-derived
+    /// type — see [`LambdaAnnotationMismatch`]'s own doc for why this is a
+    /// materially different severity posture from `typed_assign_mismatches`/
+    /// `field_assign_mismatches` above (an eager `Error`, not a gradual
+    /// `E063` advisory). Recorded unconditionally during inference, folded
+    /// in from every lambda anywhere in this body (including nested ones);
+    /// reported only by strict mode (`strict::check_lambda_annotation_
+    /// mismatches`, `E174`).
+    pub lambda_annotation_mismatches: Vec<LambdaAnnotationMismatch>,
+    /// Issue #1881: per-call-site *written*-argument types for every
+    /// UFCS-shaped (multi-segment, receiver-resolving) callee found in this
+    /// body — see [`UfcsCallArgs`]'s own doc for why this pass records raw
+    /// argument types here rather than checking them itself (the receiver
+    /// resolves to a value, so this pass's own callee resolution can never
+    /// see the desugared free function's declared param types the way
+    /// `brink_analyzer::ufcs`'s resolution pass can). Recorded
+    /// unconditionally, like `direct_call_arg_mismatches`; consumed by
+    /// `ufcs::UfcsVisitor`, reported only by strict mode
+    /// (`ufcs::check_strict`, `E063`).
+    pub ufcs_call_args: Vec<UfcsCallArgs>,
+    /// Issue #1770: see [`LambdaEscapeSlot`]. Recorded unconditionally,
+    /// folded in from every lambda anywhere in this body (including nested
+    /// ones) exactly like `lambda_annotation_mismatches`; reported only by
+    /// strict mode (`strict::check_def`, the same `E065`/`E066` codes a
+    /// top-level def's own params/temps already use).
+    pub lambda_escapes: Vec<LambdaEscapeSlot>,
+}
+
+/// One UFCS-desugared call site's (`recv.name(args)` → `name(recv, args)`)
+/// *written*-argument types (issue #1881) — the receiver itself is not
+/// included here (its type is already known directly to
+/// `ufcs::UfcsVisitor`, this fact's sole consumer, from receiver-type
+/// resolution). Recorded unconditionally at every multi-segment,
+/// value-resolving call this pass walks (see
+/// `body::InferPass::infer_call`'s own doc for why it cannot check anything
+/// against a UFCS receiver directly) — this is the raw per-argument type
+/// data `brink_analyzer::ufcs`'s own resolution pass needs to complete its
+/// own argument-type check against the desugared free function's
+/// already-known declared param types (`InferenceResult::signatures`, keyed
+/// by the *target*), without a second expression-type inference pass over
+/// the same body.
+///
+/// Issue #1909 gave `body::InferPass` a *narrow* target lookup of its own
+/// (`infer_ufcs_free_fn_result`, enough to type the call's **result**), but
+/// it deliberately declines the ambiguous, struct-receiver, projected-
+/// receiver and prelude cases this fact's consumer resolves properly — so
+/// the split stays: the result type is inference's, the argument-type
+/// *check* remains `ufcs`'s, fed by this fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UfcsCallArgs {
+    /// The callee `Path`'s own source range (`recv.name`'s whole span) —
+    /// same convention as [`DirectCallArgMismatch::range`]; `ufcs::resolve`
+    /// keys its own verdict table on this identical range (the
+    /// `ResolvedRef::range` contract, issue #1561).
+    pub range: TextRange,
+    /// Each written argument's statically inferred type, in source order.
+    pub args: Vec<Ty>,
+}
+
+/// One statically-checkable type mismatch at a **declaration-initializer or
+/// assignment** site against an already-known declared type (issue #1877) —
+/// the `~ temp`/plain-assignment sibling of [`DirectCallArgMismatch`], which
+/// covers only direct-call arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedAssignMismatch {
+    /// The diagnostic site: the temp's own name range for a `~ temp`
+    /// initializer (matching `strict::collect_temps`'s escape-check anchor),
+    /// or the assignment target `Path`'s own range for a plain assignment
+    /// (matching [`DirectCallArgMismatch::range`]'s callee-range
+    /// convention).
+    pub range: TextRange,
+    /// The declared local/global's bare name.
+    pub target: String,
+    /// The target's already-known declared type.
+    pub expected: Ty,
+    /// The initializer/RHS expression's statically classified type.
+    pub found: Ty,
+}
+
+/// One incompatibility between a lambda's own **written annotation** (a
+/// param's `: T` or the lambda's `: R` return annotation) and its
+/// body-derived type (issue #1994, RULED 2026-08-01, closing #1932: "the
+/// written annotation takes priority... an incompatible body is an eager
+/// error at the lambda, not a deferred surprise at the call site").
+///
+/// Unlike [`TypedAssignMismatch`]/[`DirectCallArgMismatch`] (both `E063`,
+/// gradual/advisory — the body-derived type wins regardless, the
+/// annotation-vs-body comparison is only ever a warning), a mismatch
+/// recorded here is reported unconditionally as an `Error`-severity `E174`
+/// by `strict::check_lambda_annotation_mismatches` — the written annotation
+/// *replaces* the body-derived type at this slot (see
+/// `body::InferPass::infer_lambda`'s own doc for the precedence change),
+/// so a disagreement is never merely advisory.
+///
+/// Recorded only when a written annotation exists for this slot *and* the
+/// body-derived type is not itself unresolved (`Ty::is_unresolved`) — an
+/// unannotated slot has nothing to compare against and keeps #1910's
+/// unchanged body-derived-wins behavior, and an `Unknown`/`Conflicted`
+/// body-derived type never disagrees with anything (mirrors
+/// `annotations::report_if_mismatched`'s identical guard for the `fn`/`flow`
+/// case).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaAnnotationMismatch {
+    /// The diagnostic site: the mismatched param's own `: T` annotation
+    /// range, or the lambda's own `: R` return-annotation range.
+    pub range: TextRange,
+    /// `Some(param name)` for a mismatched parameter annotation, `None` for
+    /// the lambda's own return annotation.
+    pub param_name: Option<String>,
+    /// The written annotation's resolved type — what now governs this
+    /// slot's type.
+    pub expected: Ty,
+    /// The body's own independent derivation, which disagreed.
+    pub found: Ty,
+}
+
+/// One lambda-body param or body-declared temp, ready for the same
+/// Unknown-escape (`E065`) / Conflicted-escape (`E066`) treatment
+/// `strict::check_def` already gives a top-level def's own `params`/
+/// `locals` (issue #1770: "lambda bodies are invisible to strict-mode
+/// escape checking... give lambda bodies a per-lambda frame").
+///
+/// A lambda literal still has no `DefinitionId`-keyed `BodyTypes` entry of
+/// its own to run `check_def` against — #1727 minted a lifted lambda a
+/// stable *identity*, not a `SymbolIndex` entry / `DefKey` (see that
+/// issue's ruling), and `infer_project`/`InferPass` run over HIR straight
+/// from `hir::lower`, strictly *before* `hir::stamp_container_ids` (which
+/// only runs as part of LIR lowering / the `normalized_stamped_query`
+/// salsa memo) — so even the identity #1727 does mint is not populated yet
+/// at the point this fact is recorded. Building a per-lambda strict-frame
+/// does not need it: each slot below is already a fully self-contained
+/// `emit_escape` input (final type, declaration range, annotation-exemption
+/// bit, and a ready-made slot label), so `strict::check_def` re-emits it
+/// with no per-lambda grouping or lookup required.
+///
+/// Recorded unconditionally by [`body::InferPass::infer_lambda`] for
+/// **every** lambda anywhere in the enclosing def's body, including one
+/// nested inside another lambda's own body — each nested lambda gets its
+/// own `infer_lambda` call and so contributes its own slots to this same
+/// flat, cumulative vector (mirrors [`LambdaAnnotationMismatch`]'s
+/// identical "folded in from every lambda anywhere in this body"
+/// precedent). Reported only by strict mode.
+///
+/// Deliberately **excludes** a lambda's own return-type slot: unlike a
+/// top-level `fn`'s return-type escape check, "does this lambda's body
+/// ever return a value" has no `E150`-style fall-through analysis defined
+/// for it, and #1994's `LambdaAnnotationMismatch` (`E174`) already owns a
+/// materially different, eager check for a lambda's return-type
+/// *annotation* disagreeing with its body — adding a second, gradual
+/// escape check for the identical slot would double-report the same fact
+/// under a different code. Out of scope for #1770; see that issue's own
+/// "Ask" (params + temps only, matching `BodyTypes::locals`'s own
+/// params-∪-temps membership, not `BodyTypes::return_ty`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaEscapeSlot {
+    /// The slot's own declaration range — a param's name range, or a
+    /// body-declared temp's/`if`-`as`-binding's/`for`-var's own name range.
+    /// The diagnostic anchor, same convention as `check_def`'s own
+    /// per-slot ranges.
+    pub range: TextRange,
+    /// The slot's final, escape-checked type.
+    pub ty: Ty,
+    /// Whether a resolvable annotation/ascription exempts an `Unknown`
+    /// classification (never a `Conflicted` one) — mirrors `check_def`'s
+    /// own `annotated` argument to `emit_escape`. Always `false` for a
+    /// param slot: `infer_lambda`'s own annotation-governs-when-present
+    /// overlay (#1994) already replaces an annotated param's `ty` with the
+    /// resolved annotation itself before this slot is built, so there is
+    /// nothing left for a separate exemption to do there — this field only
+    /// ever does real work for a body-declared temp, which carries no such
+    /// overlay.
+    ///
+    /// That holds only for a param whose name the lambda's own body never
+    /// re-binds. A name the body *does* re-bind (`|t: int| { let t = 1;
+    /// t = "oops"; t }`) never reaches a param slot at all — review finding
+    /// on #1770: the governance overlay's rebound-name branch reads `ty`
+    /// straight from `self.locals[name]`, i.e. the shadowing local's own
+    /// accumulated type, not the annotated param's, so `infer_lambda`
+    /// excludes that name from this loop entirely and reports it only as a
+    /// `` "lambda temp" `` slot instead (built from the same body-declared-
+    /// temps loop every ordinary temp goes through) — the escape belongs to
+    /// the fresh local, not the parameter of the same spelling.
+    pub annotated: bool,
+    /// The slot's own label, ready to hand straight to `emit_escape` — e.g.
+    /// `` "lambda parameter `x`" `` / `` "lambda temp `t`" `` — prefixed so
+    /// the reported message reads distinctly from the enclosing def's own
+    /// same-named slot (`check_def`'s `param_name` and `slot_label`
+    /// convention, one level in).
+    pub slot_label: String,
+}
+
+/// One statically-checkable type mismatch at a **dotted struct-field**
+/// assignment target (issue #1900, split from #1864/#1877 — PR #1899's own
+/// `check_declared_assign_target` explicitly excludes a multi-segment
+/// target, since a dotted target's declared type is its *root's* shape, not
+/// the field's).
+///
+/// Body inference resolves only the ROOT's declared type here (`ctx.globals`
+/// for a `VAR`/`CONST`, or an annotated Param/Temp's ascription — see
+/// `body::InferPass::check_declared_field_assign_target`'s doc) — it has no
+/// struct-shape table of its own (the firewall: a body never reads
+/// project-wide `STRUCT` declarations), so `path` is recorded unresolved.
+/// `structs::check_assignments` (strict-mode-only) walks `path` against
+/// `structs::declared_shapes`/`ShapeInfo` to resolve the specific field's
+/// declared type and reports `E063`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAssignMismatch {
+    /// The root local/global's bare display name (`p` in `p.x = expr`).
+    pub root: String,
+    /// The root's resolved declared type — `Ty::Struct(name)` in the
+    /// classifiable case; anything else (`Unknown`, a scalar/collection) is
+    /// never recorded as a fact at all (see the recording site's own
+    /// "Unknown never disagrees" guard).
+    pub root_ty: Ty,
+    /// The field-access chain past the root, in source order (`p.x` →
+    /// `[x]`, `p.inner.x` → `[inner, x]`) — each segment's own `Name`
+    /// carries the range a per-field diagnostic should point at.
+    pub path: Vec<Name>,
+    /// The assignment's operator (`=`, `+=`, …). Carried alongside `found`
+    /// (issue #1900 review finding) so `structs::check_field_assign_mismatch`
+    /// — the only place the field's *declared* type is ever resolved — can
+    /// apply the same `+=` string-numeric display-concat carve-out
+    /// `Stmt::Assignment`'s own arm applies for a bare target: this body-
+    /// inference pass only knows the ROOT's type when the fact is recorded,
+    /// not the field's, so the carve-out can't be decided here.
+    pub op: AssignOp,
+    /// The RHS's statically inferred type.
+    pub found: Ty,
+}
+
+/// One statically-checkable argument-type mismatch recorded at any of
+/// three producer sites whose callee resolves straight to a known def via
+/// `known_sigs` — so its declared parameter types are already fully known
+/// at the site — unlike the T1c call-through-a-value case
+/// [`ValueCallFact`] exists for:
+///
+/// - a **direct call** (issue #1864) — `f(a, b)` where `f` names a known
+///   knot/stitch/function directly;
+/// - a `#fn(target, args…)` **creation site** (issue #2001) — not a call
+///   at all, but the by-ref *binding* site for a partial application;
+///   `target`'s remaining (unbound) params still go through the ordinary
+///   call-through-a-value check when the resulting `Ty::Fn` value is
+///   later invoked, but the *bound* prefix checked here is only ever
+///   checkable at creation.
+/// - a **divert with arguments** (issue #2127) — `-> knot(a, b)` — also not
+///   a call expression, but a `ref` position it binds is checked exactly
+///   like a direct call's `ref` argument (invariant, via `ref_assignable`).
+///   By-value positions at this site are **not** checked yet (#2127 scoped
+///   that out as its own design call, same posture #2001 took for
+///   `infer_fn_literal`'s by-value params).
+///
+/// `strict::check_direct_call_args`'s rendered message reads "argument N
+/// of call to `name`" for all three producers — accepted as-is for a `#fn`
+/// literal and a divert target too (both still name the target function's
+/// own parameter being populated), rather than adding a site-discriminant
+/// field to distinguish "creation of" / "divert to" from "call to";
+/// revisit if that reads as confusing in practice (#2001 review finding).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectCallArgMismatch {
+    /// The diagnostic site's source range: the callee `Path`'s own range
+    /// for a direct call (same convention as [`ValueCallFact::range`]), the
+    /// `#fn` literal's `target` path range for a creation site, or the
+    /// divert's own target path range (issue #2127).
+    pub range: TextRange,
+    /// The callee's display name (`h` in `h("hi")`; dotted if the resolved
+    /// path had multiple segments, e.g. `Knot.stitch`).
+    pub callee: String,
+    /// The mismatched argument's 0-based position.
+    pub index: usize,
+    /// The callee's declared parameter type at `index`.
+    pub expected: Ty,
+    /// The argument expression's statically classified type.
+    pub found: Ty,
 }
 
 /// One statically-checkable fact about a call through a function value
@@ -220,6 +562,13 @@ pub struct Def<'a> {
     /// the annotated type, so `#fn` rows built from this signature are
     /// concrete). `None` for stitches and unannotated knots.
     pub return_annotation: Option<&'a TypeExpr>,
+    /// Which frontend produced [`Self::file`] — [`HirFile::native`] (issue
+    /// #1862), carried per def because that is the granularity every
+    /// consumer of this struct has: `brink-db`'s narrowed per-def HIR
+    /// projection never holds a whole [`HirFile`]. Reaches inference as
+    /// [`body::BodyCtx::native`], where the native bare-name fn-value rule
+    /// (issue #1876) keys off it.
+    pub native: bool,
 }
 
 /// Per-file resolution lookup: a `Path`'s range is only unique within its
@@ -237,14 +586,56 @@ fn index_resolutions_by_file(
     by_file
 }
 
+/// Every file's own declared module, read off any one symbol the index
+/// already has for it (module is uniform per file — every symbol
+/// `insert_file_symbols` inserts for a given file carries the identical
+/// `SymbolInfo::module`, since it is computed once per file from that
+/// file's own resolved `ModuleMap` entry, not re-derived per symbol). Feeds
+/// [`ProjectCtx::file_modules`] — see that field's own doc for why keying by
+/// [`FileId`] (rather than the def's own [`DefinitionId`], which the
+/// synthetic root-content def never has an index entry for) is required.
+///
+/// A file with zero indexed *global* symbols at all (pure top-level content
+/// with no named declaration) has no entry here and reads as `None` — the
+/// same conservative "absent data reads as empty" default every other
+/// module-blind path in this module already uses; nothing regresses
+/// relative to the pre-#2233 `None`-everywhere behavior for that case.
+///
+/// Skips every **local** (`info.scope.is_some()` — a param/temp) entirely:
+/// `insert_local` always stamps a local's own `SymbolInfo::module` `None`
+/// regardless of its file's real declared status ("locals are never
+/// module-qualified and always module-internal" — `manifest::insert_local`'s
+/// own doc), so folding one in would non-deterministically shadow a file's
+/// real module with `None` depending on `index.symbols`'s (`HashMap`-backed)
+/// iteration order — the exact per-run-flaky bug a first version of this
+/// function had.
+fn index_module_by_file(index: &SymbolIndex) -> BTreeMap<FileId, Option<String>> {
+    let mut by_file: BTreeMap<FileId, Option<String>> = BTreeMap::new();
+    for info in index.symbols.values() {
+        if info.scope.is_some() {
+            continue;
+        }
+        by_file
+            .entry(info.file)
+            .or_insert_with(|| info.module.clone());
+    }
+    by_file
+}
+
 /// Declaration-derived global (VAR/CONST) types — read via `signature()`,
 /// the firewall boundary for every non-callable reference in a body.
 ///
-/// `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
-/// follow-up, issue #712) covers `Ty::Fn` separately since `InferredType`
-/// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
-/// per declaration, so trying `value_type` first and falling back to
-/// `fn_type` never masks either.
+/// Reads [`Sig::value_ty`](crate::Sig::value_ty) — the declaration's type at
+/// full [`Ty`] fidelity. Before issue #1540 this read the narrow
+/// `Sig::value_type` (with a `Sig::fn_type` fallback), which had no
+/// representation for `Array`/`Map`/`Struct`/`Fn`/`Handle`, so a
+/// collection-typed global was invisible to every typed check keyed on this
+/// map — E149 and the TM-3/T1e family all missed `VAR arr = #[…]` entirely.
+/// One field now carries that whole domain, so nothing in it can fall out
+/// again. `option<T>`/`range` are not part of that domain yet: neither has
+/// annotation grammar at all (`crate::annotations::resolve` has no arm for
+/// either), so a `VAR`/`CONST` can't be declared with one in the first
+/// place.
 ///
 /// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
 /// classification can resolve a variable-valued initializer that names a
@@ -259,20 +650,17 @@ pub(crate) fn collect_globals(
     for (&id, info) in &index.symbols {
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files, manifest)
+            && let Some(ty) = sig.value_ty.clone()
         {
-            if let Some(vt) = sig.value_type.clone() {
-                globals.insert(id, Ty::from(vt));
-            } else if let Some(ft) = sig.fn_type.clone() {
-                globals.insert(id, ft);
-            }
+            globals.insert(id, ty);
         }
     }
     globals
 }
 
 /// Declaration-derived `EXTERNAL` signatures (issue #786, docs/t1d-spec.md
-/// §3: "a binding declared to take `handle<AudioInstance>` rejects a
-/// `handle<Timer>` argument at compile time" under `types = strict`; issue
+/// §3: "a binding declared to take `Handle<AudioInstance>` rejects a
+/// `Handle<Timer>` argument at compile time" under `types = strict`; issue
 /// #805 widens this to the manifest's full scalar-semantic-type vocabulary
 /// and to inline-doc-only bindings).
 ///
@@ -306,7 +694,7 @@ pub(crate) fn collect_globals(
 /// [`SemanticTypeDef`](brink_ir::SemanticTypeDef) table regardless of which
 /// source (manifest or inline doc) supplied the ref; a scalar semantic type
 /// (e.g. `switch_id`, `base: Int`) now types as its own `base` (`Ty::Int`)
-/// exactly like a `handle<K>`-based one types as `Ty::Handle(K)` — the same
+/// exactly like a `Handle<K>`-based one types as `Ty::Handle(K)` — the same
 /// `known_sigs`/`observe`/`unify` call-checking path applies to both, so a
 /// literal-typed argument that disagrees with a declared scalar semantic
 /// type folds to `Ty::Conflicted` and reports through the pre-existing
@@ -382,7 +770,7 @@ pub fn collect_external_sigs(
 /// `Ty::Int`/`Ty::Float`/`Ty::Bool` for a scalar specialization (e.g.
 /// `switch_id`, `base: Int`), `Ty::Handle(name)` for a `base: Handle` kind
 /// definition (T1d-2, docs/t1d-spec.md §3 — the def's own `name` *is* the
-/// declared handle-kind name `handle<K>` annotations resolve `K` against).
+/// declared handle-kind name `Handle<K>` annotations resolve `K` against).
 /// `void` (either the bare keyword or a registered `base: Void` def) has no
 /// `Ty` (return-only, same as an annotation's `void`); an unresolved name —
 /// no manifest at all, or a name neither a base keyword nor a registered
@@ -444,6 +832,26 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
 
     let mut defs: Vec<Def<'a>> = Vec::new();
     for &(file_id, hir) in files {
+        // Issue #1903: walk `root_content` statements through inference,
+        // creating a synthetic def so `check_declared_assign_target` and
+        // `check_declared_temp_init` (called from `infer_def_body`) reach them.
+        // Root content has no parameters, no return type, and no DefinitionId
+        // in the symbol table. A synthetic ID is derived from the FileId
+        // (mixing in a tag bit to avoid collision with real definition IDs);
+        // the ID is never looked up in the symbol table, only used to key
+        // `inference.bodies` so that strict checks later read the results.
+        if !hir.root_content.stmts.is_empty() {
+            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file_id.0));
+            defs.push(Def {
+                id: synthetic_id,
+                file: file_id,
+                params: &[],
+                body: &hir.root_content,
+                return_annotation: None,
+                native: hir.native,
+            });
+        }
+
         for knot in &hir.knots {
             let knot_symbol_kind = knot.symbol_kind();
             if let Some(&id) = def_of.get(&(file_id, knot_symbol_kind, knot.name.text.clone())) {
@@ -453,6 +861,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                     params: &knot.params,
                     body: &knot.body,
                     return_annotation: knot.return_type.as_ref(),
+                    native: hir.native,
                 });
             }
             for stitch in &knot.stitches {
@@ -463,7 +872,10 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                         file: file_id,
                         params: &stitch.params,
                         body: &stitch.body,
-                        return_annotation: None,
+                        // #1509 widened `Stitch` with the same `return_type`
+                        // grammar position `Knot` carries.
+                        return_annotation: stitch.return_type.as_ref(),
+                        native: hir.native,
                     });
                 }
             }
@@ -486,10 +898,29 @@ struct ProjectCtx<'a> {
     struct_names: BTreeSet<String>,
     /// Declared handle-kind names from the registered `HostManifest`
     /// (T1d-2b, issue #774, docs/t1d-spec.md §3) — computed once per
-    /// context, same shape as `list_names`/`struct_names`, so `handle<K>`
+    /// context, same shape as `list_names`/`struct_names`, so `Handle<K>`
     /// param/return/temp annotations resolve during body inference too, not
     /// just at the `signature()`/annotation-firewall seam.
     handle_names: BTreeSet<String>,
+    /// Every file's own declared module (`None` for an undeclared
+    /// stem-module or a file with no indexed symbols at all), keyed by
+    /// [`FileId`] rather than [`DefinitionId`] — module is a per-*file*
+    /// fact, not a per-symbol one: every symbol `insert_file_symbols`
+    /// (`brink-analyzer::manifest`) inserts for one file carries the
+    /// identical [`brink_ir::SymbolInfo::module`], derived once from that
+    /// file's own resolved [`crate::ModuleMap`] entry.
+    ///
+    /// Issue #2233 review finding: `body_ctx` used to read this straight off
+    /// `index.symbols.get(&def.id).module`, keyed on the def's own id — which
+    /// always misses for the synthetic root-content def [`collect_defs`]
+    /// mints for `hir.root_content` (issue #1903; that id is "never looked
+    /// up in the symbol table" by its own doc), silently leaving
+    /// `referrer_module: None` for *every* file with non-empty top-level ink
+    /// content, including one declared inside `std…` — exactly the #2233
+    /// disagreement this ctx exists to close. Keying by [`FileId`] instead
+    /// covers both the real and the synthetic def uniformly, since both
+    /// carry [`Def::file`].
+    file_modules: BTreeMap<FileId, Option<String>>,
 }
 
 impl<'a> ProjectCtx<'a> {
@@ -508,6 +939,7 @@ impl<'a> ProjectCtx<'a> {
             list_names: crate::annotations::declared_list_names(index),
             struct_names: crate::annotations::declared_struct_names(index),
             handle_names: crate::annotations::declared_handle_kinds(manifest),
+            file_modules: index_module_by_file(index),
         }
     }
 
@@ -526,6 +958,20 @@ impl<'a> ProjectCtx<'a> {
             list_names: &self.list_names,
             struct_names: &self.struct_names,
             handle_names: &self.handle_names,
+            // Per *def*, not per project: `ProjectCtx` is shared across
+            // every batch, and a project can mix `.ink` and `.brink` files
+            // (INCLUDE/IMPORT across surfaces), so the frontend flag must
+            // follow the body being walked — issue #1876.
+            native: def.native,
+            // Issue #2233 (review finding: keyed by file, not by the def's
+            // own id — see `ProjectCtx::file_modules`'s doc for why the
+            // synthetic root-content def needs this). `None` for a file with
+            // no `file_modules` entry (no indexed symbols at all) or whose
+            // own module is the legacy undeclared-stem-module `None`.
+            referrer_module: self
+                .file_modules
+                .get(&def.file)
+                .and_then(|module| module.as_deref()),
         }
     }
 }
@@ -612,6 +1058,13 @@ fn solve_one_batch(
                     return_ty: result.return_ty,
                     has_value_return: result.has_value_return,
                     value_calls: result.value_calls,
+                    array_remove_calls: result.array_remove_calls,
+                    direct_call_arg_mismatches: result.direct_call_arg_mismatches,
+                    typed_assign_mismatches: result.typed_assign_mismatches,
+                    field_assign_mismatches: result.field_assign_mismatches,
+                    lambda_annotation_mismatches: result.lambda_annotation_mismatches,
+                    ufcs_call_args: result.ufcs_call_args,
+                    lambda_escapes: result.lambda_escapes,
                 },
             )
         })
@@ -625,7 +1078,7 @@ fn solve_one_batch(
 /// signature ([`collect_external_sigs`]), seeded into `known_sigs` before any
 /// batch solves — a call to an external now resolves through the exact same
 /// `known_sigs` lookup + [`body::BodyCtx::observe`] unify path an ordinary
-/// knot/stitch call already uses, so a `handle<K>`-mismatched argument folds
+/// knot/stitch call already uses, so a `Handle<K>`-mismatched argument folds
 /// its local to `Ty::Conflicted` and reports through the pre-existing `E066`
 /// classification, no parallel checking surface. Externals are never SCC
 /// members (never in any `batch`), so this seed is never touched again by
@@ -657,7 +1110,7 @@ fn solve_batches(
 /// tests, and the exact function `type_inference_query` wraps for salsa
 /// memoization. `manifest` (T1d-2b, issue #774): the registered host
 /// manifest, threaded through to `signature()`/annotation resolution so
-/// `handle<K>` param/return/temp annotations resolve to `Ty::Handle(K)`
+/// `Handle<K>` param/return/temp annotations resolve to `Ty::Handle(K)`
 /// during body inference — `None` degrades to an empty handle-kind set,
 /// same posture as every other manifest-driven check. Also threaded to
 /// [`collect_external_sigs`] (issue #786) so a call to a manifest-registered
@@ -853,8 +1306,10 @@ pub fn referenced_globals(
 /// One def's raw effect atoms: the read set (VAR/CONST globals read), the
 /// write set (assignment targets resolving to a VAR/CONST), the call-kind set
 /// (`EXTERNAL` names directly called), the inferable direct-call edges the
-/// effect fixpoint follows, and whether the body calls through a function
-/// value (→ pessimal). Harvested by the exact same body walk
+/// effect fixpoint follows, the fn-value creation targets (Fork A, issue
+/// #1726 — `EffectAtoms::creates_fn_values`), and whether the body calls
+/// through a function value it cannot trace (→ pessimal). Harvested by the
+/// exact same body walk
 /// [`referenced_globals`]/[`call_edges`] drive — the read set here *is*
 /// FG-2.1's `referenced_globals`, and the direct-call edges are `call_edges`'s
 /// set — so no new walk shape is introduced, only the per-def atom bundle T2
@@ -890,11 +1345,14 @@ pub fn def_effect_atoms(
         writes: result.effect_writes,
         calls: result.external_calls,
         direct_calls: result.calls,
+        creates_fn_values: result.created_fn_values,
         opaque: result.effect_opaque,
         emits: result.effect_emits,
         tags: result.effect_tags,
         faults: result.effect_faults,
         faults_refined: result.effect_faults_refined,
+        param_holes: result.param_holes,
+        call_fn_args: result.call_fn_args,
     }
 }
 
@@ -931,7 +1389,19 @@ pub fn effects_project(
     let mut graph = CallGraph::new();
     for (&id, a) in &atoms {
         graph.add_node(id);
-        for &callee in &a.direct_calls {
+        // Fork A (issue #1726): fn-value creation sites are call-graph edges
+        // alongside the direct calls — structurally harvested, so no row is
+        // ever consulted to build this graph. `creates_fn_values` is a subset
+        // of `direct_calls` today (the same walk records both at a `#fn`
+        // literal), but *this monolithic path* (`effects_project`, not the
+        // salsa `call_graph_query` the IDE/`brink check`/@brink-lang/web
+        // actually run — that graph is built from `call_edges_query`/
+        // `direct_calls` alone and never reads `creates_fn_values`) names it
+        // explicitly so batching here does not silently depend on that
+        // coincidence. The salsa path deliberately still relies on the
+        // subset property; `every_fn_value_creation_target_is_also_a_call_graph_edge`
+        // (below) is its guard.
+        for &callee in a.direct_calls.iter().chain(&a.creates_fn_values) {
             graph.add_edge(id, callee);
         }
     }
@@ -972,7 +1442,7 @@ pub fn effects_project(
 /// assembly turn out to be.
 ///
 /// `manifest` (T1d-2b, issue #774): the registered host manifest, threaded
-/// through to `ProjectCtx` so a `handle<K>` param/return/temp annotation
+/// through to `ProjectCtx` so a `Handle<K>` param/return/temp annotation
 /// resolves to `Ty::Handle(K)` here too — this is the seam that makes
 /// strict-mode handle-kind rejection reachable end-to-end (docs/t1d-spec.md
 /// §3, the #767 acceptance criterion): once two locals of different
@@ -1002,6 +1472,19 @@ pub fn effects_project(
 /// edge on `brink-db`'s `solve_scc_query` side — the same coarse,
 /// range-free, `Eq`-cutoff shape `inline_docs_query` already gives every
 /// other reader.
+///
+/// **Does not itself return an `EXTERNAL`'s signature (issue #1921).**
+/// `batch` never contains an `EXTERNAL` — [`inferable_defs_from_index`]
+/// filters the index to `SymbolKind::Knot | SymbolKind::Stitch` only — so
+/// the returned `signatures` map (filtered to `batch`'s own members, see
+/// below) never carries one, even though `known_sigs` is seeded with every
+/// external's signature above. `brink-db`'s `type_inference_query`
+/// re-merges [`collect_external_sigs`]'s seed into its own aggregated
+/// `InferenceResult::signatures` once, after collecting every SCC's own
+/// members' signatures from this function — not per-SCC here — so an
+/// external's signature is exposed exactly once regardless of how many
+/// SCCs a project has, instead of every `solve_scc_query` memo duplicating
+/// the whole external-signature map.
 #[must_use]
 #[expect(
     clippy::too_many_arguments,
@@ -1049,6 +1532,36 @@ mod tests {
         let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
         let (resolutions, _diag) =
             crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        (hir, (*index).clone(), (*resolutions).clone())
+    }
+
+    /// [`build`], but with `FileId(0)` given an explicit **declared** module
+    /// (issue #2233 review finding: `body_ctx`'s `referrer_module` threading
+    /// was never exercised by any test — every `BodyCtx` literal below and
+    /// every `resolve.rs` test passes the module as a hardcoded literal
+    /// rather than reading it off a real `ProjectCtx::body_ctx` call). Mirrors
+    /// `brink-analyzer::manifest`'s own declared-module test shape
+    /// (`ResolvedModule { declared: true, .. }` inserted into a `ModuleMap`).
+    fn build_with_module(src: &str, module_name: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
+        let parsed = brink_syntax::parse(src);
+        let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
+        let mut modules = crate::ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            crate::ResolvedModule {
+                name: module_name.to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        let (index, _diag) = crate::symbol_index_with_modules(
+            &[(FileId(0), &manifest)],
+            &modules,
+            crate::Dialect::Brink,
+            false,
+        );
+        let scope = crate::ImportScope::new(Some(module_name.to_string()), &hir.imports);
+        let (resolutions, _diag) = crate::resolve(FileId(0), &manifest, &index, &scope);
         (hir, (*index).clone(), (*resolutions).clone())
     }
 
@@ -1144,12 +1657,134 @@ mod tests {
         assert_eq!(stitch_a_sig.params, vec![Ty::Int]);
     }
 
+    /// Issue #2233 review finding (rule 19q/20a): `ProjectCtx::body_ctx`'s
+    /// `referrer_module` threading was untested — every `BodyCtx` literal in
+    /// `body.rs`'s own test module and every `resolve.rs` test passes the
+    /// module as a hardcoded literal/argument, so replacing `body_ctx`'s
+    /// computed expression with a hardcoded `None` left the whole suite
+    /// green. This exercises the real `ProjectCtx::new`/`body_ctx` call path
+    /// for an ordinary, indexed def declared inside `std…`.
+    #[test]
+    fn body_ctx_threads_referrer_module_for_a_real_def() {
+        let (hir, index, _res) = build_with_module(
+            "=== heal(hp) ===\n~ temp x = hp + 1\n-> DONE\n",
+            "std::conventions::screenplay",
+        );
+        let id = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal def indexed");
+        let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+        let by_file: BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>> = BTreeMap::new();
+        let inferable: BTreeSet<DefinitionId> = [id].into_iter().collect();
+        let ctx = ProjectCtx::new(&index, &empty_globals, &by_file, &inferable, None);
+        let defs = collect_defs(&[(FileId(0), &hir)], &index);
+        let def = defs.iter().find(|d| d.id == id).expect("def found");
+        let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+        let body_ctx = ctx.body_ctx(def, &no_sigs);
+        assert_eq!(
+            body_ctx.referrer_module,
+            Some("std::conventions::screenplay"),
+            "a real def's referrer_module must come from its own declared module"
+        );
+    }
+
+    /// Issue #2233 review finding: the synthetic root-content def
+    /// (`collect_defs`, issue #1903 — minted for `hir.root_content`'s own
+    /// walk) has no `SymbolIndex` entry of its own. Before this fix,
+    /// `body_ctx`'s `index.symbols.get(&def.id)` lookup always missed for
+    /// it, silently leaving `referrer_module: None` even for a file declared
+    /// inside `std…` — exactly the #2233 disagreement this PR closes.
+    /// `ProjectCtx::file_modules` keys by `def.file` instead, which this def
+    /// carries just like a real one, so it must resolve too.
+    #[test]
+    fn body_ctx_threads_referrer_module_for_the_synthetic_root_content_def() {
+        // The file also needs at least one *named* declaration (`knot_a`
+        // here) — `ProjectCtx::file_modules` derives a file's module from
+        // any symbol the index already has for it, so a file with zero
+        // indexed symbols at all has no entry to derive from at all (the
+        // same "absent data reads as empty" default every other
+        // module-blind path in this module uses, not a regression this fix
+        // introduces). The overwhelmingly common real-world shape this
+        // fixes — a std file's own top-level weave calling a UFCS free
+        // function — always has at least one such declaration.
+        let (hir, index, _res) = build_with_module(
+            "Hello.\n-> DONE\n=== knot_a ===\nworld\n-> DONE\n",
+            "std::conventions::screenplay",
+        );
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture must have non-empty root content to mint the synthetic def"
+        );
+        let empty_globals: BTreeMap<DefinitionId, Ty> = BTreeMap::new();
+        let by_file: BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>> = BTreeMap::new();
+        let inferable: BTreeSet<DefinitionId> = BTreeSet::new();
+        let ctx = ProjectCtx::new(&index, &empty_globals, &by_file, &inferable, None);
+        let defs = collect_defs(&[(FileId(0), &hir)], &index);
+        let synthetic = defs
+            .iter()
+            .find(|d| !index.symbols.contains_key(&d.id))
+            .expect("synthetic root-content def present");
+        let no_sigs: BTreeMap<DefinitionId, InferredSig> = BTreeMap::new();
+        let body_ctx = ctx.body_ctx(synthetic, &no_sigs);
+        assert_eq!(
+            body_ctx.referrer_module,
+            Some("std::conventions::screenplay"),
+            "the synthetic root-content def's referrer_module must still resolve, keyed by \
+             file rather than the def's own (absent) index entry"
+        );
+    }
+
     #[test]
     fn unused_param_is_unknown_and_legal() {
         let (hir, index, res) = build("=== noop(x) ===\nHello.\n-> DONE\n");
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "noop");
         assert_eq!(sig.params, vec![Ty::Unknown]);
+    }
+
+    /// Issue #1532 (#1501 review finding 3): the #1484 `remove`/`remove_at`
+    /// split's advertised latent fix — the array leg no longer narrows its
+    /// *index* argument against the array's *element* type (wrong for an
+    /// index; the pre-split shared `remove` code did this) — shipped with
+    /// no regression test. `arr` is a `temp` — a `VAR` would work equally
+    /// well since issue #1540 gave globals a full-fidelity `Sig::value_ty`,
+    /// but the `temp` spelling is what this test was written against — so
+    /// its `Ty::Array(String)`
+    /// element type is genuinely in hand at the call site. If `remove_at`'s
+    /// index arm regressed to narrowing against it, `i` would come out
+    /// `Ty::String` here instead of staying `Unknown` (`i` is otherwise
+    /// unused — `unused_param_is_unknown_and_legal`'s baseline). Mirrors
+    /// `insert`'s array leg, which is also index-typed and was never
+    /// narrowed (`infer::body`'s `"insert"` arm only narrows the map k/v
+    /// pair).
+    #[test]
+    fn remove_at_index_arg_does_not_narrow_against_the_array_element_type() {
+        let (hir, index, res) = build(
+            "=== function drop_at(i) ===\n~ {\n    temp arr = #[\"a\", \"b\", \"c\"]\n    remove_at(arr, i)\n}\n~ return 0\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let drop_at_id = index
+            .by_name
+            .get("drop_at")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("drop_at");
+        let body = result.bodies.get(&drop_at_id).expect("drop_at body");
+        assert_eq!(
+            body.locals.get("arr"),
+            Some(&Ty::Array(Box::new(Ty::String))),
+            "fixture sanity: arr must actually be known as an array of strings, or this test \
+             can't distinguish the fix from the bug it guards"
+        );
+        let sig = sig_of(&result, &index, "drop_at");
+        assert_eq!(
+            sig.params,
+            vec![Ty::Unknown],
+            "remove_at's index argument must not narrow against the array's element type"
+        );
     }
 
     #[test]
@@ -1161,6 +1796,42 @@ mod tests {
         // under `unify(Unknown, Unknown) == Unknown`; the *return type*
         // still comes out Unknown too (nothing ever pins `x` concrete).
         assert_eq!(sig.return_ty, Ty::Unknown);
+    }
+
+    /// [`build`]'s native-frontend twin — `InfixOp::Coalesce` (B1, issue
+    /// #1460) is produced only by `hir::lower_native`, so the coalescing
+    /// feedback test below (unlike every other test in this module) must
+    /// parse through the native frontend rather than `brink_syntax`.
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
+        let parse = brink_syntax_native::parse(src);
+        assert!(
+            parse.errors().is_empty(),
+            "fixture must parse cleanly: {:?}",
+            parse.errors()
+        );
+        let tree = parse.tree();
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &tree);
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        (hir, (*index).clone(), (*resolutions).clone())
+    }
+
+    /// Review finding on PR #1469/#1460: the `InfixOp::Coalesce` arm's
+    /// one-directional `observe()` feedback (`infer::body::InferPass::
+    /// infer_infix`'s doc: "so if `lhs` is a bare param/temp path, `rhs`'s
+    /// already-inferred type tells us the shape to expect") was asserted in
+    /// the PR body but never pinned by a test. `x` is only ever used as
+    /// `x or 0` — `rhs` is `int`, not itself `Option`, so the collapse-form
+    /// branch feeds `Option[int]` back onto `x`, rather than `x` leaking
+    /// `Unknown` (T1c's un-narrowed-Unknown posture every other bare-unused
+    /// param hits — see `unused_param_is_unknown_and_legal` above).
+    #[test]
+    fn coalesce_lhs_param_narrows_to_option_of_the_rhs_type() {
+        let (hir, index, res) = build_native("fn f(x) {\n  return x or 0;\n}\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.params, vec![Ty::Option(Box::new(Ty::Int))]);
     }
 
     #[test]
@@ -1186,6 +1857,7 @@ mod tests {
 
     fn audio_manifest_with_external(param_kind: &str) -> brink_ir::HostManifest {
         brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -1218,7 +1890,7 @@ mod tests {
     }
 
     /// The #786 mechanism, isolated: a manifest-registered `EXTERNAL`'s
-    /// declared `handle<K>` param type propagates into `known_sigs` exactly
+    /// declared `Handle<K>` param type propagates into `known_sigs` exactly
     /// like a knot/stitch callee's declared param type does
     /// ([`call_site_propagates_callee_param_type_to_caller_local`]'s own
     /// pattern) — a caller's local passed as the argument picks up the
@@ -1227,7 +1899,7 @@ mod tests {
     fn external_call_propagates_declared_handle_kind_to_caller_local() {
         let (hir, index, res) = build(
             "EXTERNAL play_sound(inst)\n=== main ===\n~ temp s = get_sound(1)\n\
-             ~ play_sound(s)\n-> DONE\n=== function get_sound(id): handle<AudioInstance> ===\n~ return id\n",
+             ~ play_sound(s)\n-> DONE\n=== function get_sound(id): Handle<AudioInstance> ===\n~ return id\n",
         );
         let manifest = audio_manifest_with_external("AudioInstance");
         let result = infer_project(
@@ -1262,7 +1934,7 @@ mod tests {
     fn external_call_with_cross_kind_argument_conflicts_the_caller_local() {
         let (hir, index, res) = build(
             "EXTERNAL play_sound(inst)\n=== main ===\n~ temp t = get_timer(1)\n\
-             ~ play_sound(t)\n-> DONE\n=== function get_timer(id): handle<Timer> ===\n~ return id\n",
+             ~ play_sound(t)\n-> DONE\n=== function get_timer(id): Handle<Timer> ===\n~ return id\n",
         );
         let manifest = audio_manifest_with_external("AudioInstance");
         let result = infer_project(
@@ -1360,9 +2032,9 @@ mod tests {
     }
 
     /// Point (1): a manifest-registered `EXTERNAL`'s param declared with a
-    /// *scalar* semantic type (not a `handle<K>` kind) now resolves to its
+    /// *scalar* semantic type (not a `Handle<K>` kind) now resolves to its
     /// own `base` (`switch_id` -> `Ty::Int`) and propagates into the
-    /// caller's local exactly like a `handle<K>`-declared param already did
+    /// caller's local exactly like a `Handle<K>`-declared param already did
     /// (mirrors `external_call_propagates_declared_handle_kind_to_caller_local`).
     #[test]
     fn external_call_scalar_semantic_type_param_propagates_to_caller_local() {
@@ -1405,7 +2077,7 @@ mod tests {
     /// Point (1), negative: a caller's local pinned to a *different*
     /// concrete type (string) than the binding's declared scalar semantic
     /// type (`switch_id`, base int) folds to `Ty::Conflicted` at the call
-    /// site — the same #627 lattice a `handle<K>` mismatch already used, no
+    /// site — the same #627 lattice a `Handle<K>` mismatch already used, no
     /// new diagnostic code.
     #[test]
     fn external_call_scalar_semantic_type_mismatch_conflicts_the_caller_local() {
@@ -1458,9 +2130,10 @@ mod tests {
             "/// @param inst {AudioInstance}\n\
              EXTERNAL play_sound(inst)\n\
              === main ===\n~ temp s = get_sound(1)\n~ play_sound(s)\n-> DONE\n\
-             === function get_sound(id): handle<AudioInstance> ===\n~ return id\n",
+             === function get_sound(id): Handle<AudioInstance> ===\n~ return id\n",
         );
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -1510,9 +2183,10 @@ mod tests {
             "/// @param inst {AudioInstance}\n\
              EXTERNAL play_sound(inst)\n\
              === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n\
-             === function get_timer(id): handle<Timer> ===\n~ return id\n",
+             === function get_timer(id): Handle<Timer> ===\n~ return id\n",
         );
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -1819,6 +2493,131 @@ mod tests {
         assert_eq!(pong_sig.return_ty, Ty::Conflicted);
     }
 
+    // ─── Issue #1680 step 3: the effect row riding `Ty::Fn` ────────────
+    //     (`docs/effects-spec.md` §5/§6.1c)
+
+    /// §5: "a cell accumulates the join of every fn value assigned into it".
+    /// Two `#fn` literals written to one slot leave **both** targets on the
+    /// slot's type — the join is set union, not last-write-wins.
+    #[test]
+    fn a_slot_written_from_two_creation_sites_carries_both_targets() {
+        let (hir, index, res) = build(
+            "=== function bump(n: int): int ===\n~ return n + 1\n\
+             === function twice(n: int): int ===\n~ return n * 2\n\
+             === main ===\n~ temp f = #fn(bump)\n~ f = #fn(twice)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let id_of = |name: &str| {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .copied()
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
+        };
+        let body = result.bodies.get(&id_of("main")).expect("main body");
+        let f = body.locals.get("f").expect("f");
+        let Ty::Fn(_, _, row) = f else {
+            unreachable!("expected a fn type, got {f:?}")
+        };
+        assert_eq!(
+            row.targets(),
+            Some(&BTreeSet::from([id_of("bump"), id_of("twice")]))
+        );
+    }
+
+    /// The top element absorbs (§3): one write whose source the type layer
+    /// cannot name — here a call's return, whose declared `fn(int): int`
+    /// names no creation target — poisons the slot's row for good, in
+    /// either write order. This is the type-layer twin of §6.1a's "a single
+    /// untraced write poisons the name".
+    #[test]
+    fn one_unnameable_creation_site_poisons_the_row() {
+        for order in [
+            "~ temp f = #fn(bump)\n~ f = pick(#fn(bump))\n",
+            "~ temp f = pick(#fn(bump))\n~ f = #fn(bump)\n",
+        ] {
+            let (hir, index, res) = build(&format!(
+                "=== function bump(n: int): int ===\n~ return n + 1\n\
+                 === function pick(cb: fn(int): int): fn(int): int ===\n~ return cb\n\
+                 === main ===\n{order}-> DONE\n"
+            ));
+            let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+            let main_id = index
+                .by_name
+                .get("main")
+                .and_then(|ids| ids.first())
+                .copied()
+                .expect("main");
+            let body = result.bodies.get(&main_id).expect("main body");
+            let f = body.locals.get("f").expect("f");
+            let Ty::Fn(_, _, row) = f else {
+                unreachable!("expected a fn type for {order:?}, got {f:?}")
+            };
+            assert!(row.is_unknown(), "order {order:?} must poison the row");
+        }
+    }
+
+    /// The second minter: a global cell whose initializer is a `#fn`
+    /// literal gets its `Ty::Fn` from `signature::declared_fn_type`, so its
+    /// row must name the target too — declaration-derived, resolved by name
+    /// lookup, never from an inferred row (§6.1a). This is the shape §6
+    /// mechanism 3 (the heap) will read once effects-spec §6.1c's stratum
+    /// question is answered.
+    #[test]
+    fn a_global_fn_cell_carries_its_declared_creation_target() {
+        let (hir, index, res) = build(
+            "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\
+             VAR player_hp = 10\n\
+             VAR healer = #fn(heal, player_hp)\n\
+             === main ===\n-> DONE\n",
+        );
+        let _ = &res;
+        let files = [(FileId(0), &hir)];
+        let id_of = |name: &str| {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .copied()
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
+        };
+        let sig = crate::signature::signature(id_of("healer"), &index, &files, None)
+            .expect("healer signature");
+        let ty = sig.value_ty.clone().expect("healer value_ty");
+        let Ty::Fn(params, _, row) = &ty else {
+            unreachable!("expected a fn type, got {ty:?}")
+        };
+        assert_eq!(params.len(), 1, "the `ref hp` prefix is bound away");
+        assert_eq!(row.targets(), Some(&BTreeSet::from([id_of("heal")])));
+    }
+
+    /// `bind` carries the row through unchanged: partial application never
+    /// changes *which* def eventually runs (§6.1a).
+    #[test]
+    fn bind_preserves_the_creation_target_row() {
+        let (hir, index, res) = build(
+            "=== function add(a: int, b: int): int ===\n~ return a + b\n\
+             === main ===\n~ temp f = #fn(add)\n~ temp g = bind(f, 1)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let id_of = |name: &str| {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .copied()
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
+        };
+        let body = result.bodies.get(&id_of("main")).expect("main body");
+        let g = body.locals.get("g").expect("g");
+        let Ty::Fn(params, _, row) = g else {
+            unreachable!("expected a fn type, got {g:?}")
+        };
+        assert_eq!(params.len(), 1, "one param remains after binding one");
+        assert_eq!(row.targets(), Some(&BTreeSet::from([id_of("add")])));
+    }
+
     // ─── T1c: #fn typing + the annotation-firewall overlay ─────────────
 
     /// The spec's own worked example (docs/t1c-spec.md §2/§4): with the
@@ -1839,10 +2638,23 @@ mod tests {
             .copied()
             .expect("main");
         let body = result.bodies.get(&main_id).expect("main body");
+        let heal_id = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal");
+        let cb = body.locals.get("heal_player").expect("heal_player");
         assert_eq!(
-            body.locals.get("heal_player"),
-            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+            crate::infer::erase_fn_rows(cb),
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown())
         );
+        // Issue #1680 step 3: the `#fn` literal is the creation site, so
+        // the slot's type carries `heal` as its effect row.
+        let Ty::Fn(_, _, row) = cb else {
+            unreachable!("expected a fn type, got {cb:?}")
+        };
+        assert_eq!(row.targets(), Some(&BTreeSet::from([heal_id])));
     }
 
     #[test]
@@ -1860,9 +2672,10 @@ mod tests {
             .copied()
             .expect("main");
         let body = result.bodies.get(&main_id).expect("main body");
+        let f = body.locals.get("f").expect("f");
         assert_eq!(
-            body.locals.get("f"),
-            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+            crate::infer::erase_fn_rows(f),
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown())
         );
     }
 
@@ -1902,6 +2715,106 @@ mod tests {
         assert_eq!(sig.params, vec![Ty::Int], "body derivation wins");
     }
 
+    // ─── Issue #1168: Option-returning functions escape as `Option[Unknown]` ─
+
+    /// The issue's tightest repro: `some(x)` where `x` is an annotated
+    /// param used *only* as `some`'s argument — no comparison/arithmetic
+    /// anywhere else in the body ever gives `x` evidence the old code path
+    /// could pick up. `some`'s arg type is a pure read (never joined
+    /// against a second operand), so it should still see `x`'s own
+    /// declared type, settling the return as `Option[int]`, not
+    /// `Option[Unknown]`.
+    #[test]
+    fn some_of_an_unevidenced_annotated_param_infers_option_of_its_annotation() {
+        let (hir, index, res) = build("=== function f(x: int) ===\n~ return some(x)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
+    }
+
+    /// `get(m, k)` where `m` is an annotated `Map<...>` param, likewise
+    /// never evidenced elsewhere — the confirmation comment's second
+    /// repro ("`get(<any map>)` … infer `Option[Unknown]`").
+    #[test]
+    fn get_of_an_unevidenced_annotated_map_param_infers_option_of_the_value_type() {
+        let (hir, index, res) =
+            build("=== function f(m: Map<string, int>, k: string) ===\n~ return get(m, k)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
+    }
+
+    /// `iteration.md`'s `first_over` fence: a `for` loop over an annotated
+    /// `Array<int>` param used nowhere else, `return some(<the loop var>)`
+    /// on one path and `return none` on the other. Regression for the
+    /// iterable-position half of #1168 (the loop var itself escaped too,
+    /// since its type comes from the iterable's element type).
+    #[test]
+    fn some_of_a_for_loop_var_over_an_unevidenced_annotated_array_param() {
+        let (hir, index, res) = build(
+            "=== function first_over(tab: Array<int>, floor: int) ===\n\
+             ~ {\n    for coins in tab {\n        if coins > floor {\n            return some(coins)\n        }\n    }\n}\n\
+             ~ return none\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "first_over");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
+    }
+
+    /// `infer_infix`'s comparison/arithmetic arms must NOT get the new
+    /// read-site annotation fallback — this is the same fixture as
+    /// `overlay_never_replaces_a_concrete_body_derivation` above, repeated
+    /// here to pin it as the #1168 fix's own regression guard: `hp` is
+    /// annotated `string` but the body's only use compares it against an
+    /// int literal, so body evidence (`int`) must still win outright, not
+    /// `unify(string, int) = Conflicted`.
+    #[test]
+    fn comparison_evidence_still_overrides_the_annotation_after_the_1168_fix() {
+        let (hir, index, res) = build("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "heal");
+        assert_eq!(sig.params, vec![Ty::Int]);
+    }
+
+    /// Review correction (w65, changeset wording): only an ANNOTATED param
+    /// or an ASCRIBED temp reaches `self.annotated` (`infer_def_body`'s
+    /// `annotated` map + `register_ascription`) — an unascribed temp
+    /// merely *copying* an annotated param's value does not inherit that
+    /// annotation transitively. `v` here has no `: T` ascription of its
+    /// own, so `some(v)` still infers `Option[Unknown]`, pinning the
+    /// boundary the `.changeset/issue-1168-option-return-inference.md`
+    /// wording now names explicitly ("annotated param / ascribed temp",
+    /// not any "param/temp passed straight through").
+    #[test]
+    fn unascribed_temp_copy_of_an_annotated_param_does_not_inherit_the_annotation() {
+        let (hir, index, res) =
+            build("=== function f(x: int) ===\n~ temp v = x\n~ return some(v)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Unknown)));
+    }
+
+    /// Review correction (w65): `contains`'s `self.observe(needle, elem)`
+    /// call derives `elem` from `arg_tys[0]` (the container's shape) — if
+    /// that shape were read from `tab`'s own annotation-fallback type
+    /// (`read_tys`) instead of its evidence-only type (`arg_tys`), `tab`'s
+    /// `Array<int>` annotation would become body *evidence* for `needle`
+    /// (the sibling arg), silently discarding `needle`'s own `string`
+    /// annotation. `tab` has no other evidence anywhere in the body, so
+    /// this pins that `contains`'s observe call never reads the
+    /// annotation-shadowed slice: `needle` must still export its own
+    /// declared `string`, not `tab`'s element type `int`.
+    #[test]
+    fn intrinsic_sibling_arg_never_seeds_from_a_containers_own_annotation() {
+        let (hir, index, res) = build(
+            "=== function f(tab: Array<int>, needle: string) ===\n\
+             ~ return contains(tab, needle)\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.params, vec![Ty::Array(Box::new(Ty::Int)), Ty::String]);
+    }
+
     #[test]
     fn return_annotation_overlays_an_unconstrained_return() {
         // `return hp` types Unknown from the body alone (nothing pins hp
@@ -1910,6 +2823,36 @@ mod tests {
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "passthru");
         assert_eq!(sig.return_ty, Ty::Int);
+    }
+
+    /// Issue #1912: the *param*-annotation counterpart of the test above —
+    /// `~ return hp` with `hp: int` annotated and no return annotation at
+    /// all now exports `int` rather than `Unknown`, because
+    /// `infer_return` runs the returned value through `or_own_annotation`
+    /// (a pure read, no counter-evidence). The ink spelling is checked here
+    /// alongside the native one in `strict::tests` because the gap was in
+    /// `infer::body`, shared by both frontends.
+    #[test]
+    fn returning_an_annotated_param_exports_the_params_type() {
+        let (hir, index, res) = build("=== function passthru(hp: int) ===\n~ return hp\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "passthru");
+        assert_eq!(sig.return_ty, Ty::Int);
+    }
+
+    /// The boundary that stays put (issue #1912 must not widen into #1168's
+    /// w65 correction): `or_own_annotation` overlays an `Unknown` only, so
+    /// a *concrete* body derivation still wins outright and
+    /// `annotations::mismatches` keeps two independent derivations to
+    /// compare. `hp` is used as a `string` here, so the return type is
+    /// `string` — the annotation does not launder it back to `int`.
+    #[test]
+    fn a_concrete_body_derivation_still_beats_the_returned_params_annotation() {
+        let (hir, index, res) = build("=== function passthru(hp: int) ===\n~ return hp + \"x\"\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "passthru");
+        assert_eq!(sig.params, vec![Ty::String]);
+        assert_eq!(sig.return_ty, Ty::String);
     }
 
     // ─── Per-def/per-SCC decomposition (FG-2, issue #631) ─────────────
@@ -2100,6 +3043,7 @@ mod tests {
                     params,
                     body,
                     return_annotation: return_annotation.as_ref(),
+                    native: false,
                 })
                 .collect();
 
@@ -2158,7 +3102,10 @@ mod tests {
     /// atoms *and* every direct callee's finalized row — the no-under-report
     /// invariant. Exercised over a mutually-recursive fixture (`ping <-> pong`)
     /// so the check runs against a real multi-round SCC fixpoint, plus a
-    /// higher-order value-call (`apply`) so the pessimal floor is in the mix.
+    /// higher-order value-call (`apply`) so the pessimal floor is in the mix,
+    /// plus a caller (`hocaller`) that **instantiates** `apply`'s §6.1 row
+    /// variable (issue #1680, Fork C) so check (2) below has to reason about a
+    /// holed callee, not only ground ones.
     #[test]
     fn conservative_total_no_under_report_over_mutual_recursion() {
         let src = "VAR gold = 0\nVAR hp = 10\nEXTERNAL play_sfx(x)\n\
@@ -2166,7 +3113,8 @@ mod tests {
                    {n == 0:\n  ~ return 0\n}\n~ play_sfx(n)\n~ return pong(n - 1)\n\
                    === function pong(n) ===\n~ hp = hp - 1\n~ return ping(n)\n\
                    === function apply(cb) ===\n~ return cb(1)\n\
-                   === caller ===\n~ temp x = ping(3)\n-> DONE\n";
+                   === caller ===\n~ temp x = ping(3)\n-> DONE\n\
+                   === hocaller ===\n~ temp y = apply(#fn(pong))\n-> DONE\n";
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
         let inferable = inferable_defs(&files, &index);
@@ -2183,12 +3131,34 @@ mod tests {
                 "def {def:?} row must cover its own body atoms"
             );
 
-            // (2) covers every direct callee's finalized row.
+            // (2) covers every direct callee's finalized row —
+            // instantiation-aware for a holed callee (issue #1680 review
+            // finding). A callee row still carrying a §6.1 hole is itself
+            // pessimal by construction (`is_pessimal`), so it is never a
+            // meaningful target for `covers`: no non-opaque caller could ever
+            // cover it, which would make this gate reject exactly the rows
+            // #1680 ships as sound. What the caller actually owes is the
+            // callee's *instantiated* row — its ground atoms joined with
+            // whatever this call site traced into each hole — the same
+            // computation `solve_scc_effects` folds into `row` itself via
+            // `instantiate_hole`.
             for callee in &atoms.direct_calls {
                 let callee_row = rows.get(callee).cloned().unwrap_or_default();
+                let mut effective = EffectRow {
+                    holes: BTreeSet::new(),
+                    ..callee_row.clone()
+                };
+                for &hole in &callee_row.holes {
+                    effects::instantiate_hole(
+                        &mut effective,
+                        atoms.call_fn_args.get(&(*callee, hole)),
+                        &rows,
+                        &BTreeMap::new(),
+                    );
+                }
                 assert!(
-                    row.covers(&callee_row),
-                    "def {def:?} row must cover callee {callee:?} row"
+                    row.covers(&effective),
+                    "def {def:?} row must cover callee {callee:?}'s instantiated row"
                 );
             }
         }
@@ -2389,14 +3359,170 @@ mod tests {
         // docs/effects-spec.md §4 gradual corollary: an `Unknown`-typed callee
         // slot (here a `cb` param called as `cb(1)`) has no row to read → the
         // enclosing def's row is pessimal.
+        //
+        // §6.1 (issue #1680) changed *how* it is pessimal, not *that* it is:
+        // the param is now a row variable rather than the intrinsic opaque
+        // floor, so the assertion reads `is_pessimal()` — which is what every
+        // consumer of a row reads.
         let src = "=== function apply(cb) ===\n~ return cb(1)\n";
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
         let rows = effects_project(&files, &index, &res, None);
         let apply = id_of(&index, "apply");
         assert!(
-            rows[&apply].opaque,
+            rows[&apply].is_pessimal(),
             "a call through a function value must be pessimal"
+        );
+    }
+
+    /// §6.1 mechanism 1 (issue #1680): a call through an unwritten, non-`ref`
+    /// fn-typed param mints a **row variable** at that param's declaration
+    /// index instead of the intrinsic opaque floor. Read on its own the row
+    /// is still pessimal — that is `is_pessimal`'s whole job — but the hole
+    /// is what lets a caller do better (see the instantiation tests below).
+    #[test]
+    fn a_call_through_a_fn_typed_param_mints_a_row_variable() {
+        let src = "=== function apply(a, cb) ===\n~ return cb(a)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert_eq!(
+            rows[&apply].holes,
+            [1].into_iter().collect::<BTreeSet<u32>>(),
+            "the hole is keyed by the called param's declaration index"
+        );
+        assert!(
+            !rows[&apply].opaque,
+            "the floor is the hole, not intrinsic opacity"
+        );
+        assert!(
+            rows[&apply].is_pessimal(),
+            "an uninstantiated row variable still tops the lattice"
+        );
+    }
+
+    /// §6.1's payoff: the caller passes a traceable `#fn` value, so the
+    /// higher-order callee's row variable is **instantiated** with that
+    /// target's real row and the caller escapes the pessimal floor entirely.
+    #[test]
+    fn a_caller_instantiates_the_callees_row_variable() {
+        let src = "VAR gold = 0\n\
+                   === function writer(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === function main() ===\n~ return apply(#fn(writer))\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let main = id_of(&index, "main");
+        let gold = id_of(&index, "gold");
+        assert!(
+            !rows[&main].is_pessimal(),
+            "a fully-traced higher-order call is not pessimal"
+        );
+        assert!(
+            rows[&main].holes.is_empty(),
+            "a discharged hole belongs to the callee's param space, never the caller's"
+        );
+        assert!(
+            rows[&main].writes.contains(&gold),
+            "the instantiated row must carry the callback's own write"
+        );
+    }
+
+    /// Two call sites, two different callbacks in the same position: the fill
+    /// is the **join** over both (Fork A's join-over-writes rule applied to
+    /// arguments), never a pick.
+    #[test]
+    fn two_call_sites_join_both_callbacks_into_the_hole() {
+        let src = "VAR gold = 0\nVAR hp = 10\n\
+                   === function pays(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function hurts(n) ===\n~ hp = hp - n\n~ return hp\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === function main() ===\n\
+                   ~ temp a = apply(#fn(pays))\n~ temp b = apply(#fn(hurts))\n~ return a + b\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let main = id_of(&index, "main");
+        assert!(!rows[&main].is_pessimal());
+        assert!(rows[&main].writes.contains(&id_of(&index, "gold")));
+        assert!(rows[&main].writes.contains(&id_of(&index, "hp")));
+    }
+
+    /// The soundness guard on the join above: the summary is keyed by
+    /// `(callee, position)` and folded over *every* call site, so one site
+    /// passing something untraceable poisons the position for all of them.
+    /// Were it not, this caller's row would claim to be bounded by `pays`
+    /// while `outside` could hold any fn value the caller was handed.
+    #[test]
+    fn one_untraced_call_site_poisons_the_whole_position() {
+        let src = "VAR gold = 0\n\
+                   === function pays(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === function main(outside) ===\n\
+                   ~ temp a = apply(#fn(pays))\n~ temp b = apply(outside)\n~ return a + b\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let main = id_of(&index, "main");
+        assert!(
+            rows[&main].is_pessimal(),
+            "an untraced argument in a holed position must keep the floor"
+        );
+    }
+
+    /// A param the body **reassigns** no longer holds what the caller passed,
+    /// so it must not carry a row variable — the same soundness argument that
+    /// keeps a Param out of `ValueCallOrigin::Local`.
+    #[test]
+    fn a_reassigned_param_carries_no_row_variable() {
+        let src = "VAR gold = 0\n\
+                   === function pays(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function apply(cb) ===\n~ cb = #fn(pays)\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].holes.is_empty(),
+            "a written param is not a row variable"
+        );
+        assert!(
+            rows[&apply].opaque,
+            "it keeps the intrinsic pessimal floor instead"
+        );
+    }
+
+    /// A `ref` param aliases the caller's own storage, so what it holds at
+    /// the call-through site is not pinned by the argument expression — it is
+    /// excluded from row variables at construction.
+    #[test]
+    fn a_ref_param_carries_no_row_variable() {
+        let src = "=== function apply(ref cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(rows[&apply].holes.is_empty(), "`ref` params are excluded");
+        assert!(rows[&apply].opaque, "so the call keeps the intrinsic floor");
+    }
+
+    /// §6.1 is shallow by ruling ("every value's row is fixed at its creation
+    /// site"): passing one's *own* fn-typed param straight through to another
+    /// higher-order callee would chain a hole into a hole, which is not
+    /// attempted — the forwarding definition takes the floor.
+    #[test]
+    fn forwarding_a_param_into_another_hole_does_not_chain() {
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n\
+                   === function forward(cb) ===\n~ return apply(cb)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let forward = id_of(&index, "forward");
+        assert!(
+            rows[&forward].is_pessimal(),
+            "a forwarded row variable is not chained — the floor stands"
         );
     }
 
@@ -2538,26 +3664,432 @@ mod tests {
         assert!(rows[&user].writes.contains(&total));
     }
 
-    /// Conservative-total's sacred guard: a local reassigned to a *second*,
-    /// different known origin must stay pessimal — the write-once check must
-    /// actually gate on the whole body's write count, not just "some origin
-    /// was seen at some point". Regression shape for the exact hazard the
-    /// ground-truth harness (#885/#891 lineage) exists to catch: narrowing
-    /// this would under-report whichever branch didn't run at analysis time.
+    /// Fork A (`docs/decision-log.md` 2026-07-28, issue #1726) supersedes the
+    /// pre-#1726 write-once guard here. The old rule narrowed to a *single*
+    /// def, so a local reassigned to a second known origin had to stay
+    /// pessimal — picking either origin would under-report whichever branch
+    /// didn't run. Joining **both** creation targets removes the choice: the
+    /// row covers every value the local can hold, which over-reports at worst
+    /// and so keeps the conservative-total direction (spec §3). The two
+    /// origins write two *different* globals here so the join is visible —
+    /// a single shared global would pass even if only one edge were taken.
     #[test]
-    fn a_local_reassigned_to_a_different_known_origin_stays_pessimal() {
-        let src = "VAR total = 0\n\
+    fn a_local_reassigned_to_a_second_known_origin_joins_both_rows() {
+        let src = "VAR total = 0\nVAR extra = 0\n\
                    === function bar() ===\n~ total = total + 1\n~ return total\n\
-                   === function baz() ===\n~ total = total + 100\n~ return total\n\
+                   === function baz() ===\n~ extra = extra + 100\n~ return extra\n\
                    === function user(cond) ===\n~ temp f = #fn(bar)\n\
                    {cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n";
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
         let rows = effects_project(&files, &index, &res, None);
         let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        let extra = id_of(&index, "extra");
+        assert!(
+            !rows[&user].opaque,
+            "every write to f traced to an in-project creation site, so the \
+             row must collapse to a real row instead of the pessimal floor"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the join must cover bar's write to total"
+        );
+        assert!(
+            rows[&user].writes.contains(&extra),
+            "the join must cover baz's write to extra — narrowing to a single \
+             origin would under-report the other branch"
+        );
+    }
+
+    /// The guard Fork A keeps: one write whose value did **not** trace to an
+    /// in-project creation site poisons the whole name. Here `f` is
+    /// reassigned from a param, so the reaching value could have been created
+    /// anywhere — including a host callback (spec §6.2) — and the row must
+    /// stay pessimal even though the *other* write is a perfectly good
+    /// `#fn(bar)`.
+    #[test]
+    fn a_local_with_one_untraced_write_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user(cond, cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ f = cb\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
         assert!(
             rows[&user].opaque,
-            "a reassigned local must not be trusted as write-once — narrowing here would be unsound"
+            "a write from an untraceable source must keep the pessimal floor"
+        );
+    }
+
+    /// Review-finding regression (Fork A, issue #1726): a Temp local passed
+    /// into a `ref` parameter slot is rebound by the *callee* to whatever the
+    /// caller passed for that other position — `poke(f, cb)` below can leave
+    /// `f` holding `cb`, an arbitrary caller-supplied value, exactly like the
+    /// param-assignment case `a_local_with_one_untraced_write_stays_pessimal`
+    /// covers. Before `record_ref_param_writes` folded this into
+    /// `local_fn_origins` too, `f`'s summary saw only its one traced
+    /// `#fn(bar)` write and Fork A's join-over-writes rule narrowed `user`'s
+    /// row to `bar`'s alone — silently dropping the fact that `f` could also
+    /// be `cb` after the `poke` call. The row must stay pessimal instead.
+    #[test]
+    fn a_ref_param_rebind_through_a_call_site_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function poke(ref g, h) ===\n~ g = h\n\
+                   === function user(cond, cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ poke(f, cb)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a ref-param rebind at a call site is an untraced write to the \
+             local — narrowing through it under-reports whatever the caller \
+             actually passed"
+        );
+    }
+
+    // ─── Issue #1735: the fn-value aliasing channel enumeration ──────────
+    //
+    // Filed from the #1726/PR #1731 retro to check whether `ref` projections
+    // and the heap are a genuine gap in `local_fn_origins` or a case
+    // docs/effects-spec.md §5/§6.1a/§6.3 already rules coarse-but-sound. They
+    // are the latter: §5 rules that a cell/collection's element *type*
+    // accumulates the join of every fn value assigned into it — a
+    // completely separate mechanism from this per-local write-set rung, and
+    // "no separate points-to machinery exists or is planned". These two
+    // tests pin that: a heap-sourced call never narrows, and a `ref`-param
+    // write through a *global* root never leaks into (or out of) a Temp's
+    // own write summary. No production change accompanies these — see
+    // docs/effects-spec.md §6.1a's "Aliasing channel enumeration" addendum
+    // for the ruling this pins.
+
+    /// The heap channel (§5/§6.3): a fn value read out of a `VAR`/`CONST`
+    /// cell is never classified as [`ValueCallOrigin::Local`] —
+    /// [`InferPass::local_call_origin`] only recognizes `Temp`/`Param`
+    /// symbol kinds, so a `Variable` falls straight to `Unknown`. Calling
+    /// through it must stay pessimal unconditionally; narrowing it would
+    /// require the points-to machinery §5 rules out, and reading it through
+    /// the type-row join instead is a completely different (type-level, not
+    /// call-graph-level) mechanism from what this test checks.
+    #[test]
+    fn a_call_through_a_heap_stored_fn_value_stays_pessimal() {
+        let src = "VAR cb = #fn(bar)\n\
+                   === function bar() ===\n~ return 1\n\
+                   === function user() ===\n~ return cb()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a call through a VAR-held fn value is the heap channel — \
+             local_fn_origins never sees VAR/CONST writes at all, so it \
+             must stay pessimal rather than attempt to narrow"
+        );
+    }
+
+    /// A `ref`-param write whose root is a *global* (not a Temp) — the same
+    /// call-site mechanism `a_ref_param_rebind_through_a_call_site_stays_pessimal`
+    /// exercises, but aimed at a differently-named `VAR` root (`npc`)
+    /// instead of the Temp being narrowed (`f`). [`InferPass::record_fn_write`]
+    /// only folds a write into `local_fn_origins` for a `Temp`/`Param`
+    /// target — a `Variable` target is a documented no-op there (the heap
+    /// case is §5's job, not this rung's). This pins the common case: `f`'s
+    /// own single, fully traced `#fn(bar)` write is untouched by a sibling
+    /// ref-write to `npc`, so `user`'s row narrows instead of spuriously
+    /// falling to the pessimal floor.
+    ///
+    /// This does **not** pin the no-op's load-bearing case. `local_fn_origins`
+    /// is keyed by `String` name, and `npc`/`f` are different names, so they
+    /// can never collide in that map regardless of whether `record_fn_write`'s
+    /// `Variable` arm is a no-op or is folded into `bump_local_write` —
+    /// deleting the guard leaves this exact test green. A genuine collision
+    /// needs a global root that resolves under the *same* name key as the
+    /// traced local (the hazard `record_fn_write`'s own doc comment calls
+    /// out for its `Param` arm, by the same reasoning). No such fixture is
+    /// pinned here; this is a known gap in this pinning pass, not a claim
+    /// that the guard is unnecessary.
+    #[test]
+    fn a_ref_param_write_to_an_unrelated_global_root_does_not_poison_a_traced_local() {
+        let src = "VAR total = 0\nVAR npc = 5\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function poke(ref g, h) ===\n~ g = h\n\
+                   === function user(cond, new_cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ poke(npc, new_cb)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a ref-param write to an unrelated global root must not poison \
+             `f`'s own fully traced write set: {:?}",
+            rows[&user]
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed call through f must still join bar's own write to \
+             total: {:?}",
+            rows[&user]
+        );
+    }
+
+    // ─── Issue #1755: channel 5's VAR case — the `#fn`-creation-site
+    // `ref` binding ──────────────────────────────────────────────────────
+    //
+    // docs/effects-spec.md §6.1a enumerated this as the one aliasing channel
+    // that was a genuine conservative-total (§3) *under*-report rather than a
+    // deliberate pessimal fallback: `#fn(heal, player_hp)` binds `heal`'s
+    // `ref hp` param to the cell `player_hp` at the **creation** site, a
+    // grammar position distinct from a call site's `ref` argument, and
+    // `infer_fn_literal` never called `record_ref_param_writes`. The write
+    // was therefore recorded nowhere — not at the creation site, not in
+    // `heal`'s own body (where `hp` resolves as a `Param`, never a
+    // `Variable`), and not at the eventual `f(5)` call site (which carries no
+    // record of which cell `heal` was created against).
+
+    /// The under-report itself: creating a fn value that binds a `ref` param
+    /// to a `VAR` must fold that cell into the *creating* body's own write
+    /// set. Option (a) of #1755's ask — sound (the write genuinely happens
+    /// when the value is called) though coarse (it is charged at the creation
+    /// site whether or not the value is ever called). Over-reporting is the
+    /// permitted direction (§3).
+    #[test]
+    fn a_fn_creation_site_ref_binding_records_the_bound_cell_as_a_write() {
+        let src = "VAR player_hp = 10\n\
+                   === function heal(ref hp, amount) ===\n~ hp = hp + amount\n\
+                   === function user() ===\n~ temp f = #fn(heal, player_hp)\n\
+                   ~ return f(5)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let player_hp = id_of(&index, "player_hp");
+        assert!(
+            rows[&user].writes.contains(&player_hp),
+            "the cell bound into `heal`'s ref param at the `#fn` creation site \
+             is genuinely written when the created value runs — omitting it \
+             from `user`'s row is the under-report §3 forbids: {:?}",
+            rows[&user]
+        );
+    }
+
+    /// The same recording must happen even when the created value is never
+    /// called from the creating body at all — the bound cell escapes with the
+    /// value (returned here), so the creating body is the only place that can
+    /// still see which cell was bound. Charging the write at the creation
+    /// site is exactly what makes that possible.
+    #[test]
+    fn a_fn_creation_site_ref_binding_records_the_write_even_when_never_called() {
+        let src = "VAR player_hp = 10\n\
+                   === function heal(ref hp, amount) ===\n~ hp = hp + amount\n\
+                   === function user() ===\n~ return #fn(heal, player_hp)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let player_hp = id_of(&index, "player_hp");
+        assert!(
+            rows[&user].writes.contains(&player_hp),
+            "a created-but-uncalled `#fn` still binds the cell — the creation \
+             site is the only place the binding is visible: {:?}",
+            rows[&user]
+        );
+    }
+
+    /// Channel 4's root-unwrapping applies at this grammar position too: an
+    /// explicit `ref` projection (`ref npc.hp`, T1e) bound at a creation site
+    /// writes through the **root** global's own cell, exactly as
+    /// `record_ref_param_writes` already unwraps it at a call site.
+    #[test]
+    fn a_fn_creation_site_ref_projection_records_its_root_cell() {
+        let src = "VAR npc = 0\n\
+                   === function heal(ref hp, amount) ===\n~ hp = hp + amount\n\
+                   === function user() ===\n~ temp f = #fn(heal, ref npc.hp)\n\
+                   ~ return f(5)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let npc = id_of(&index, "npc");
+        assert!(
+            rows[&user].writes.contains(&npc),
+            "mutating a projection writes through the root global's own cell: \
+             {:?}",
+            rows[&user]
+        );
+    }
+
+    /// The pessimal floor must not *widen* on the way through (the PR #1731
+    /// review lesson): a `#fn` creation site whose bound prefix contains no
+    /// `ref` param at all is untouched by this fix — the local still narrows
+    /// to its traced target rather than falling to `opaque`.
+    #[test]
+    fn a_fn_creation_site_without_a_ref_param_still_narrows() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar, 1)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a non-`ref` bound prefix must not be charged as an untraced \
+             write — the local still narrows to `bar`: {:?}",
+            rows[&user]
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed call through f still joins bar's own write: {:?}",
+            rows[&user]
+        );
+    }
+
+    // ─── Fork A (docs/decision-log.md 2026-07-28, issue #1726): the
+    // structural fn-value creation atom ─────────────────────────────────
+
+    /// The atom itself: `#fn(target, …)` — bare, `bind`-wrapped, or never
+    /// called at all — records `target` in `EffectAtoms::creates_fn_values`,
+    /// and a body with no `#fn` literal records nothing. Harvested by the
+    /// same empty-globals/empty-sigs walk every other structural atom uses,
+    /// so no inferred row or signature is ever consulted to decide an edge.
+    #[test]
+    fn fn_value_creation_sites_are_harvested_as_a_structural_atom() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function baz() ===\n~ return 0\n\
+                   === function creates() ===\n~ temp f = #fn(bar, 1)\n~ return call(f)\n\
+                   === function binds() ===\n~ return call(bind(#fn(bar), 5))\n\
+                   === function hands_out() ===\n~ return #fn(baz)\n\
+                   === function plain() ===\n~ return bar(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+        let bar = id_of(&index, "bar");
+        let baz = id_of(&index, "baz");
+
+        let atoms = |name: &str| {
+            def_effect_atoms(id_of(&index, name), &files, &index, &res, &inferable, None)
+        };
+
+        assert!(
+            atoms("creates").creates_fn_values.contains(&bar),
+            "a bare #fn literal is a creation site"
+        );
+        assert!(
+            atoms("binds").creates_fn_values.contains(&bar),
+            "bind() copies a value rather than naming a target — the nested \
+             #fn literal is what gets recorded"
+        );
+        assert!(
+            atoms("hands_out").creates_fn_values.contains(&baz),
+            "a fn value that is created and returned, never called here, is \
+             still a creation site"
+        );
+        assert!(
+            atoms("plain").creates_fn_values.is_empty(),
+            "a direct call creates no fn value"
+        );
+    }
+
+    /// `creates_fn_values` is a subset of `direct_calls` by construction —
+    /// the same walk records a `#fn` target as a call-graph edge, which is
+    /// exactly how these edges reach the SCC batching and `solve_scc_effects`
+    /// with no change to either. Pinned so a future edit cannot quietly break
+    /// the batching invariant `effects_project`'s graph relies on.
+    #[test]
+    fn every_fn_value_creation_target_is_also_a_call_graph_edge() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function hands_out() ===\n~ return #fn(bar)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+        let atoms = def_effect_atoms(
+            id_of(&index, "hands_out"),
+            &files,
+            &index,
+            &res,
+            &inferable,
+            None,
+        );
+        assert!(
+            atoms.creates_fn_values.is_subset(&atoms.direct_calls),
+            "creation targets must also be call-graph edges: {:?} ⊄ {:?}",
+            atoms.creates_fn_values,
+            atoms.direct_calls
+        );
+    }
+
+    /// An `EXTERNAL` `#fn` target is deliberately not a creation-atom member:
+    /// it has no inferable body, so it is not a legal call-graph edge. The
+    /// call-kind atom is still recorded (`record_call_edge`'s external arm),
+    /// so nothing is silently dropped — see `record_fn_value_creation`'s doc.
+    #[test]
+    fn an_external_fn_value_target_is_a_call_kind_atom_not_a_creation_edge() {
+        let src = "EXTERNAL play_sfx(x)\n\
+                   === function hands_out() ===\n~ return #fn(play_sfx)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+        let atoms = def_effect_atoms(
+            id_of(&index, "hands_out"),
+            &files,
+            &index,
+            &res,
+            &inferable,
+            None,
+        );
+        assert!(
+            atoms.creates_fn_values.is_empty(),
+            "an EXTERNAL target has no row to follow, so it is not an edge"
+        );
+        assert!(
+            atoms.calls.contains("play_sfx"),
+            "the call-kind atom is still harvested — no silent drop"
+        );
+    }
+
+    /// A def that creates a fn value and hands it out without ever calling it
+    /// still carries the target's row, because §6.1 fixes the value's row at
+    /// its creation site. This is what makes a downstream `opaque` collapse
+    /// worth having — the effects are already attributed where the value was
+    /// born.
+    ///
+    /// **This behavior predates #1726** and is pinned here, not introduced:
+    /// `infer_fn_literal` already routed every `#fn` target through
+    /// [`InferPass::record_call_edge`], so the graph edge existed before the
+    /// creation atom did. `creates_fn_values` is therefore a strict subset of
+    /// `direct_calls` and adds no new edge today — its value is making the
+    /// creation fact *addressable* (spec §7's token table, §8 rung 1's
+    /// reachability slicing) and guaranteeing the property stays true. The
+    /// guard is `every_fn_value_creation_target_is_also_a_call_graph_edge`;
+    /// this test pins that the atom did not disturb the row it rides on.
+    #[test]
+    fn creating_a_fn_value_joins_the_targets_row_even_without_a_call() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function hands_out() ===\n~ return #fn(bar)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let hands_out = id_of(&index, "hands_out");
+        let total = id_of(&index, "total");
+        assert!(
+            rows[&hands_out].writes.contains(&total),
+            "the creation edge must pull bar's row into hands_out"
+        );
+        assert!(
+            !rows[&hands_out].opaque,
+            "creating a fn value is not itself an opaque construct"
         );
     }
 
@@ -2590,9 +4122,13 @@ mod tests {
 
     /// The pre-existing pessimal-floor regression must hold unchanged: an
     /// `Unknown`-typed callee (a param with no traceable origin at all) still
-    /// gets no narrowing — `local_call_origin` only recognizes a bare `Temp`
-    /// name, and a param is never classified as `Local` at all now, so the
+    /// gets no narrowing — `local_call_origin` never classifies a param as
+    /// `Local`, so #872's write-summary rung does not apply to it and the
     /// floor holds regardless of write count.
+    ///
+    /// §6.1 (issue #1680) added the *other* way out — a row variable the
+    /// caller instantiates — which is why the assertion is `is_pessimal()`:
+    /// the definition read on its own is exactly as unbounded as it was.
     #[test]
     fn a_call_through_an_unresolvable_param_stays_pessimal() {
         let src = "=== function apply(cb) ===\n~ return cb(1)\n";
@@ -2601,7 +4137,7 @@ mod tests {
         let rows = effects_project(&files, &index, &res, None);
         let apply = id_of(&index, "apply");
         assert!(
-            rows[&apply].opaque,
+            rows[&apply].is_pessimal(),
             "a call through a function value with no known origin must stay pessimal"
         );
     }
@@ -2658,6 +4194,7 @@ mod tests {
         let (_hir, index, _res, inline_docs) =
             build_with_docs("/// @param id {var_id}\nEXTERNAL get_variable(id)\n-> DONE\n");
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![brink_ir::SemanticTypeDef {
                 name: "actor_id".to_string(),
                 base: brink_ir::BaseType::String,

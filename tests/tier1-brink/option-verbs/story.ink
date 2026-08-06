@@ -1,10 +1,16 @@
 ~ temp s = "hello world"
 ~ temp f1 = find(s, "world")
 ~ temp f2 = find(s, "xyz")
+// #1552: Option<T> is now annotatable, not just inferable — proves the
+// annotation itself resolves and agrees with the body under strict.
+~ temp f3: Option<int> = find(s, "again")
 f1 is {f1}.
 f2 is {f2}.
+f3 is {f3}.
 {f1 == some(6): f1 matched at six.}
 {f2 == none: f2 is absent.}
+{f2}
+after bare f2 interpolation.
 ~ temp a = #[3, 1, 2]
 index of 1 is {index_of(a, 1)}, of 9 is {index_of(a, 9)}.
 min {min(a)}, max {max(a)}.
@@ -18,4 +24,26 @@ has ten: {contains_value(m, 10)}, has seven: {contains_value(m, 7)}.
 cleared to {len(m)} entries.
 ~ f2 = some(0)
 {f2 == some(0): f2 holds zero now.}
+~ temp rooms = #{"Mira": 3, "Old Tom": 1}
+~ temp room = room_of(rooms, "Mira")
+room Mira is {room}.
+~ temp room2 = room_of(rooms, "Edda")
+room Edda is {string(room2)}.
+~ temp hit = first_over(#[4, 7, 2, 9], 5)
+first over 5 is {hit}.
+~ temp miss = first_over(#[4, 7, 2, 9], 10)
+first over 10 is {string(miss)}.
 -> END
+
+=== function room_of(rooms: Map<string, int>, name: string) ===
+~ return get(rooms, name)
+
+=== function first_over(tab: Array<int>, floor: int) ===
+~ {
+    for coins in tab {
+        if coins > floor {
+            return some(coins)
+        }
+    }
+}
+~ return none

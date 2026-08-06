@@ -5,18 +5,31 @@
 //! stay as trees, choices and conditionals keep their branch structure, diverts
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
+mod classify;
+pub mod construct;
+mod diagnostics;
+pub(crate) mod doc_block;
+pub mod emit_native;
+mod explain;
 pub mod frame_shape;
 mod ink_provenance;
 pub mod lower;
+pub mod lower_native;
 mod normalize;
+mod spans;
 mod stamp;
 mod types;
 pub mod visit;
 
+pub use classify::{ClassifiedCapture, ClassifiedMatch, LineClassification, classify_line};
+pub use construct::{ConstructForm, ConstructTarget};
+pub use diagnostics::*;
+pub use explain::{ExplainMatchCache, LineExplanation, explain_match};
 pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
 pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
 pub use normalize::normalize_file;
-pub use stamp::stamp_container_ids;
+pub use spans::expr_span;
+pub use stamp::{root_content_scope_path, stamp_container_ids};
 pub use types::*;
 pub use visit::{ContentContext, HirVisitor, walk_block};

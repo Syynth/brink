@@ -140,9 +140,10 @@ over the generated matrix — re-add after regenerating).
 
 `--mode parallel` runs the matrix through BH-3's parallel driver
 (`advance_batch_parallel`, #927: the Step phase on `ComputeTaskPool`
-through an `UnsafeWorldCell`; Collect/Step/Apply shared verbatim with
-`advance_batch`, so the two are byte-identical — the determinism law) and
-writes `parallel-driver.{csv,md}`. Column mapping is identical to batch
+through an `UnsafeWorldCell`; Step and Apply are literally the same
+functions shared with `advance_batch`, while Collect is a hand-duplicated
+query kept filter-identical by hand (#1633), so the two drivers are
+byte-identical — the determinism law) and writes `parallel-driver.{csv,md}`. Column mapping is identical to batch
 mode. The run prints `compute_task_pool_threads=` — bevy's task pools are
 process-global, so record that number with any capture; `--compute-threads
 N` pins the pool size for thread-curve exploration (print-only, one size
@@ -178,7 +179,11 @@ Captured 2026-07-16 on Apple Silicon (`M2`), `cargo bench --features bench-count
 
 **Canonical source:** `crates/bevy-brink/benches/baselines/batch-serial-driver.{csv,md}`
 
-Same axes, story, and seed as serial baselines, but flows advance through `advance_batch` (frame-start read pinning, per-flow buffered writes/commands, flow-id-ordered Apply). Batch is expected to sit above serial (due to per-flow frame-start snapshot clone) until `BH-3`'s borrow-don't-copy optimization lands. **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode batch`** and see the generated file's hand-maintained header section for interpretation.
+Same axes, story, and seed as serial baselines, but flows advance through `advance_batch` (frame-start read pinning, per-flow buffered writes/commands, flow-id-ordered Apply). Since `#937` there is no per-flow frame-start snapshot clone — Step borrows the frame-start world and overlays each flow's own writes (effects-spec §12.2, "borrow, don't copy") — so batch no longer carries a per-flow cost proportional to story-world size. On this matrix that is a parity change, because the generated scenario story declares one to three `VAR`s; the `--story-globals N` axis below is what makes it visible. **Regenerate via `cargo bench -p bevy-brink --bench scenario_bench -- --mode batch`** and see the generated file's hand-maintained header section for interpretation.
+
+#### `--story-globals N` — the brink-`World` size axis (#937)
+
+The harness's `world_size` axis spawns inert **Bevy** entities; `--story-globals N` pads the generated story with N extra declared, never-read `VAR`s, growing the **brink** `World` that batch mode pins its frame-start reads against. It adds no per-turn VM work — only story-world size. Like `--compute-threads`, it is an **exploration-only** flag: a run that passes it prints its rows and never writes the checked-in baseline files (whose canonical captures are hand-maintained and were taken at `story_globals = 0`). The measured before/after for #937 is recorded in `parallel-driver.md`'s "#937 borrow, don't copy" section.
 
 ### Parallel driver (BH-3 — parallel batch Step, determinism proof)
 

@@ -73,8 +73,10 @@ fn visibility_section_omitted_when_empty() {
     // The all-public common case: no Visibility section, so an all-public
     // story's offset table stays at the mandatory `SECTION_COUNT` entries —
     // Visibility itself needs no version bump. (The whole-file `VERSION` is
-    // 5 regardless, because of the unrelated *mandatory* M-3 `AliasTable`
-    // section — see `roundtrip_alias_table`/`missing_alias_table_section_decodes_empty`.)
+    // 6 regardless, because of the unrelated *mandatory* M-3 `AliasTable`
+    // section and the v6 `PART_SPAN` bump — see
+    // `roundtrip_alias_table`/`missing_alias_table_section_decodes_empty`
+    // and `roundtrip_line_part_span`.)
     let data = i001_data();
     assert!(data.private_defs.is_empty());
 
@@ -88,7 +90,7 @@ fn visibility_section_omitted_when_empty() {
             .iter()
             .any(|s| s.kind == SectionKind::Visibility)
     );
-    assert_eq!(index.version, 5);
+    assert_eq!(index.version, 6);
 }
 
 // ── v4 collection value encoding (#526) ─────────────────────────────────────
@@ -766,21 +768,21 @@ fn decode_value_rejects_beyond_max_depth_map_nesting() {
     ));
 }
 
-// The strict reader rejects any version but 5 — a future v6 artifact is not
+// The strict reader rejects any version but 6 — a future v7 artifact is not
 // silently accepted (the version check runs ahead of the content checksum).
 #[test]
-fn strict_reader_rejects_non_v5_version() {
+fn strict_reader_rejects_non_v6_version() {
     let data = i001_data();
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
-    assert!(read_inkb(&buf).is_ok(), "v5 buffer reads cleanly");
+    assert!(read_inkb(&buf).is_ok(), "v6 buffer reads cleanly");
 
-    // Bump the on-wire version field (bytes 4..6, LE) to 6.
-    buf[4] = 6;
+    // Bump the on-wire version field (bytes 4..6, LE) to 7.
+    buf[4] = 7;
     buf[5] = 0;
     assert!(
-        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(6))),
-        "a v6 artifact must be rejected as UnsupportedVersion(6)"
+        matches!(read_inkb(&buf), Err(DecodeError::UnsupportedVersion(7))),
+        "a v7 artifact must be rejected as UnsupportedVersion(7)"
     );
 }
 
@@ -911,7 +913,7 @@ fn index_parsing() {
     write_inkb(&data, &mut buf);
 
     let index = read_inkb_index(&buf).unwrap();
-    assert_eq!(index.version, 5);
+    assert_eq!(index.version, 6);
     assert_eq!(index.file_size as usize, buf.len());
     assert_eq!(index.sections.len(), 14);
 
@@ -1217,6 +1219,197 @@ fn roundtrip_line_entry_with_audio_ref() {
         recovered.line_tables[0].lines[0].audio_ref,
         Some("audio/hello.wav".to_string())
     );
+}
+
+/// `LinePart::Span` (#1716, `docs/prose-dialect-spec.md` §4.4) round-trips
+/// through `.inkb` — nested, with attrs, and with a self-closing
+/// (empty-children, the point-marker shape) sibling — proving the
+/// `PART_SPAN` tag decodes back to the exact structure it encoded. Unlike
+/// the `VAL_VEC2`/`VAL_WEIGHTED` "one-bump rule" precedent (#1519) —
+/// materializing a *pre-reserved* v4 tag needs no further bump — `PART_SPAN`
+/// was never reserved, so its introduction is `.inkb` `VERSION` 6's own
+/// one-bump event (see `VERSION`'s doc comment in `inkb::mod`); this test
+/// exercises the wire shape at that version.
+#[test]
+fn roundtrip_line_part_span() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry, LinePart,
+        NameId, ScopeLineTable, StoryData,
+    };
+
+    let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
+    let parts = vec![
+        LinePart::Literal("He hands you ".to_string()),
+        LinePart::Span {
+            name: "item".to_string(),
+            attrs: vec![("id".to_string(), "lantern".to_string())],
+            children: vec![
+                LinePart::Literal("the ".to_string()),
+                LinePart::Span {
+                    name: "b".to_string(),
+                    attrs: vec![],
+                    children: vec![LinePart::Literal("old".to_string())],
+                },
+                LinePart::Literal(" lantern".to_string()),
+            ],
+        },
+        LinePart::Literal(". ".to_string()),
+        LinePart::Span {
+            name: "pause".to_string(),
+            attrs: vec![],
+            children: vec![],
+        },
+    ];
+    let content = LineContent::Template(parts);
+    let flags = brink_format::LineFlags::from_content(&content);
+
+    let data = StoryData {
+        containers: vec![ContainerDef {
+            id: scope_id,
+            scope_id,
+            name: Some(NameId(0)),
+            bytecode: vec![],
+            counting_flags: CountingFlags::empty(),
+            path_hash: 0,
+            param_count: 0,
+            params: vec![],
+            local: false,
+        }],
+        line_tables: vec![ScopeLineTable {
+            scope_id,
+            lines: vec![LineEntry {
+                content,
+                flags,
+                source_hash: 0xF00D,
+                audio_ref: None,
+                slot_info: Vec::new(),
+                source_location: None,
+            }],
+        }],
+        variables: vec![],
+        list_defs: vec![],
+        list_items: vec![],
+        externals: vec![],
+        addresses: vec![],
+        address_paths: vec![],
+        name_table: vec!["root".to_string()],
+        list_literals: vec![],
+        literal_pool: vec![],
+        struct_shapes: vec![],
+        private_defs: vec![],
+        alias_table: vec![],
+        effect_rows: vec![],
+        frame_shapes: Vec::new(),
+        source_checksum: 0,
+    };
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+
+    assert_eq!(data, recovered);
+}
+
+// `LineFlags` is derived, not stored — `.inkb` decoding recomputes it from
+// the decoded `LineContent` via `LineFlags::from_content` (see
+// `decode_line_entry`). Round-trip templates whose first/last part is an
+// interpolation slot (conservative — `ALL_WS` must stay unset) and an
+// all-whitespace-literal template (`ALL_WS` must be set) through
+// encode+decode and confirm the recomputed flags match what a fresh
+// `LineFlags::from_content` call gives, i.e. flags survive the wire format,
+// not just in-memory computation.
+//
+// `STARTS_WITH_WS`/`ENDS_WITH_WS` (previously exercised here as a #1444
+// regression) were removed: they had no production consumer in
+// `brink-runtime` (grep-confirmed — the only reader was `#[cfg(test)]`-only
+// `OutputBuffer::ends_in_whitespace`), and the C# reference runtime's
+// whitespace handling never operates at the sub-token leading/trailing
+// granularity those flags encoded either, so there was no conformance gap
+// behind the missing consumer.
+#[test]
+fn roundtrip_line_flags_for_template_content() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry,
+        LineFlags, LinePart, NameId, ScopeLineTable, StoryData,
+    };
+
+    let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
+
+    // Leading Slot alongside a whitespace-only literal — conservative:
+    // the Slot's resolved content is unknown at compile time, so ALL_WS
+    // must stay unset even though the only inspectable literal is
+    // whitespace-only.
+    let leading_slot =
+        LineContent::Template(vec![LinePart::Slot(0), LinePart::Literal("  ".to_string())]);
+    // Every part is a whitespace-only literal — ALL_WS must be set.
+    let all_whitespace_template = LineContent::Template(vec![
+        LinePart::Literal("  ".to_string()),
+        LinePart::Literal("\t".to_string()),
+    ]);
+
+    let data = StoryData {
+        containers: vec![ContainerDef {
+            id: scope_id,
+            scope_id,
+            name: Some(NameId(0)),
+            bytecode: vec![],
+            counting_flags: CountingFlags::empty(),
+            path_hash: 0,
+            param_count: 0,
+            params: vec![],
+            local: false,
+        }],
+        line_tables: vec![ScopeLineTable {
+            scope_id,
+            lines: vec![
+                LineEntry {
+                    content: leading_slot.clone(),
+                    flags: LineFlags::from_content(&leading_slot),
+                    source_hash: 1,
+                    audio_ref: None,
+                    slot_info: Vec::new(),
+                    source_location: None,
+                },
+                LineEntry {
+                    content: all_whitespace_template.clone(),
+                    flags: LineFlags::from_content(&all_whitespace_template),
+                    source_hash: 2,
+                    audio_ref: None,
+                    slot_info: Vec::new(),
+                    source_location: None,
+                },
+            ],
+        }],
+        variables: vec![],
+        list_defs: vec![],
+        list_items: vec![],
+        externals: vec![],
+        addresses: vec![],
+        address_paths: vec![],
+        name_table: vec!["root".to_string()],
+        list_literals: vec![],
+        literal_pool: vec![],
+        struct_shapes: vec![],
+        private_defs: vec![],
+        alias_table: vec![],
+        effect_rows: vec![],
+        frame_shapes: Vec::new(),
+        source_checksum: 0,
+    };
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+
+    assert_eq!(data, recovered);
+
+    let recovered_leading_slot = &recovered.line_tables[0].lines[0];
+    assert!(!recovered_leading_slot.flags.contains(LineFlags::ALL_WS));
+
+    let recovered_all_whitespace = &recovered.line_tables[0].lines[1];
+    assert!(recovered_all_whitespace.flags.contains(LineFlags::ALL_WS));
 }
 
 // Regression for #954, sibling of the `.inkt` reader's guard (#745): a

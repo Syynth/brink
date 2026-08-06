@@ -272,16 +272,18 @@ pub fn ink_camera_system(
 ///
 /// **Why two calls instead of one `#[derive(BrinkCommand)]`-fired alarm**:
 /// the plan (`docs/drive-app-plan.md` §3) sketched cameras raising the alarm
-/// via an ink→engine command. `call_ink_function`'s evaluation handler
-/// (`bevy_brink::bindings::EvalHandler`, the driver behind every call this
-/// function makes) only resolves `bind_brink_fn` and `bind_brink_query`
-/// bindings inline — `bind_brink_command` triggers are buffered and flushed
-/// only on the serial `BrinkHandler` story-stepping path (`advance_flow`/
-/// `step_one`), which a per-frame function-call loop like this one never
-/// runs. Calling a command-bound EXTERNAL from here would silently fall back
-/// instead of firing the event, so this port reads the boolean return
-/// instead and writes `SpottedEvent` itself — filed as a new drive-it issue
-/// (`MIGRATION.md`'s Phase 1c entry).
+/// via an ink→engine command. At the time this port was written,
+/// `call_ink_function`'s evaluation handler only resolved `bind_brink_fn`
+/// and `bind_brink_query` bindings inline — a `bind_brink_command`-bound
+/// `EXTERNAL` reached this way would silently fall back instead of firing
+/// the event, so this port reads the boolean return instead and writes
+/// `SpottedEvent` itself — filed as a new drive-it issue (`MIGRATION.md`'s
+/// Phase 1c entry). **#1096 has since closed that gap**: a command binding
+/// reached via `call_ink_function` now buffers and fires correctly, mirroring
+/// the serial `step_one`/`advance_flow` path. This port is left on the
+/// boolean-return shape rather than switched to the originally-planned
+/// command — that would be an architecture change to this demo, not a bug
+/// fix, and belongs in its own pass.
 ///
 /// Logs (never silently swallows) a call failure and falls back to "doesn't
 /// see the player" / "facing unchanged" so a broken binding surfaces instead

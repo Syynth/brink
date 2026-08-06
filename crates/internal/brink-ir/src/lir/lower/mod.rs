@@ -4,6 +4,7 @@ mod content;
 mod context;
 mod decls;
 mod expr;
+mod lambda;
 mod recognize;
 mod stmts;
 mod structs;
@@ -20,7 +21,9 @@ use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
 pub use chunk::ScopeChunk;
-pub use context::TypeMode;
+pub use context::{
+    AnalyzerTables, CoalesceLookup, CoalesceShape, TypeMode, UfcsLookup, UfcsVerdict,
+};
 pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_struct_shape_data};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
@@ -84,6 +87,10 @@ pub fn lower_to_program(
         resolutions,
         file_paths,
         context::TypeMode::Gradual,
+        context::AnalyzerTables {
+            ufcs: &context::UfcsLookup::new(),
+            coalesce: &context::CoalesceLookup::new(),
+        },
     )
 }
 
@@ -129,6 +136,7 @@ pub fn lower_to_program_with_type_mode(
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
+    tables: context::AnalyzerTables<'_>,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // FG-4d/e: this whole-project entry runs the same three pure phases
     // `brink-db`'s production link phase (`lir_lowering_query`) composes
@@ -139,7 +147,7 @@ pub fn lower_to_program_with_type_mode(
     // `lir_lowering.rs` tests, `compile_bench`, `golden_i078.rs`) keep a
     // single whole-project call; `brink-db` caches the per-knot phase
     // individually, per `DefinitionId`, instead.
-    let prelude = build_prelude(files, index, resolutions, type_mode);
+    let prelude = build_prelude(files, index, resolutions, file_paths, type_mode, tables);
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
 
@@ -153,6 +161,7 @@ pub fn lower_to_program_with_type_mode(
         prelude.root_id,
         file_paths,
         &struct_ctx,
+        tables,
     );
 
     // Diagnostic order mirrors the old monolithic path exactly: declaration
@@ -175,6 +184,7 @@ pub fn lower_to_program_with_type_mode(
                 &struct_ctx,
                 prelude.root_id,
                 file_id,
+                tables,
             );
             ordered_chunks.push(chunk);
             lir_diagnostics.extend(diags);
@@ -216,6 +226,12 @@ pub struct LirPrelude {
     /// Declaration-phase diagnostics (`collect_globals`'s constant-eval
     /// errors) — the diagnostics the monolithic path pushes before any chunk.
     pub decl_diagnostics: Vec<crate::Diagnostic>,
+    /// Lambda-lifted containers synthesized while folding a `VAR`/`CONST`
+    /// declaration default that is itself a lambda literal (issue #1774) —
+    /// see [`PreludeDecls`]'s matching field for why no relocation is
+    /// needed. [`assemble_program`] appends these to the assembled root's
+    /// children.
+    lifted: Vec<lir::Container>,
 }
 
 impl LirPrelude {
@@ -276,6 +292,15 @@ pub struct PreludeDecls {
     private_defs: Vec<brink_format::DefinitionId>,
     aliases: Vec<brink_format::AliasEntry>,
     decl_diagnostics: Vec<crate::Diagnostic>,
+    /// Lambda-lifted containers synthesized while folding a `VAR`/`CONST`
+    /// declaration default that is itself a lambda literal (issue #1774).
+    /// Siblings of the project's knots — [`assemble_program`] appends them
+    /// to the assembled root's children directly, with no relocation: they
+    /// were interned against this same seeded `NameTable`
+    /// ([`decls::collect_globals`]'s `names` parameter), not a per-chunk
+    /// local one, so their `NameId`s are already valid in the table
+    /// [`assemble_program`] reconstructs from [`Self::name_seed`].
+    lifted: Vec<lir::Container>,
 }
 
 impl PreludeDecls {
@@ -296,6 +321,7 @@ impl PreludeDecls {
             private_defs: Vec::new(),
             aliases: Vec::new(),
             decl_diagnostics: Vec::new(),
+            lifted: Vec::new(),
         }
     }
 }
@@ -307,31 +333,86 @@ impl PreludeDecls {
 /// steps 1–2 of the old monolithic `build_prelude` (name collection +
 /// struct-shape table), factored out so `brink-db` can memoize it
 /// independently of the normalize+stamp step (step 0).
+///
+/// `file_paths` reaches [`decls::collect_globals`]'s lambda-lifting path
+/// (issue #1774) — a lambda-literal `VAR`/`CONST` default qualifies its
+/// synthesized function's address by the owning file, the same #1504
+/// collision-avoidance every other per-file anonymous container gets.
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn build_prelude_decls(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
+    tables: context::AnalyzerTables<'_>,
 ) -> PreludeDecls {
     let resolutions_lookup = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
     let root_id = context::root_definition_id();
 
+    // The struct-shape table is built *first* (issue #1530): a `VAR`/`CONST`
+    // whose default is a construction literal folds into
+    // `lir::ConstValue::Record`, which needs the shape's id and declaration
+    // field order. Nothing in the shape table depends on the collected
+    // declarations, so this is a pure reordering — it only moves the struct
+    // and field names ahead of the declaration names in the seeded
+    // `NameTable`, and a `NameId` is an index into that same seed, emitted
+    // alongside it.
+    //
+    // `decl_diagnostics` is allocated here (rather than after, as it used to
+    // be) so `build_shape_table` can push its own `E181` backstop (issue
+    // #2240) into the same accumulator every other decl-collection pass
+    // below shares — declaration diagnostics lead in emission order, and a
+    // struct-shape drop is exactly as early as it gets.
     let mut decl_diagnostics = Vec::new();
+    let shape_table = structs::build_shape_table(
+        files,
+        &mut names,
+        index,
+        &resolutions_lookup,
+        &mut decl_diagnostics,
+    );
+    let global_shapes =
+        structs::build_global_shape_map(files, index, &resolutions_lookup, &shape_table);
+
+    let mut ids = context::IdAllocator::new();
+    let mut lifted: Vec<lir::Container> = Vec::new();
+    let struct_ctx = context::StructCtx {
+        shapes: &shape_table,
+        global_shapes: &global_shapes,
+        type_mode,
+    };
+    // The real, caller-supplied UFCS/`or`-coalescing verdict tables (issue
+    // #1774 review) — a decl-default lambda body is lowered through the same
+    // `lower_lambda` machinery as any other lambda, so it needs the same
+    // analyzer side-tables any other lambda body gets, not a placeholder
+    // empty pair. See [`decls::GlobalLambdaCtx::tables`]'s doc.
+    let mut lambda_ctx = decls::GlobalLambdaCtx {
+        ids: &mut ids,
+        lifted: &mut lifted,
+        file_paths,
+        structs: &struct_ctx,
+        tables,
+        root_id,
+    };
     let mut globals = decls::collect_globals(
         files,
         index,
         &mut names,
         &resolutions_lookup,
+        &shape_table,
         &mut decl_diagnostics,
+        &mut lambda_ctx,
     );
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
 
-    let shape_table = structs::build_shape_table(files, &mut names);
-    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
     let name_seed = names.into_entries();
 
     let mut private_defs: Vec<brink_format::DefinitionId> = index
@@ -358,6 +439,7 @@ pub fn build_prelude_decls(
         private_defs,
         aliases,
         decl_diagnostics,
+        lifted,
     }
 }
 
@@ -385,6 +467,7 @@ pub fn assemble_prelude(
         private_defs: decls.private_defs,
         aliases: decls.aliases,
         decl_diagnostics: decls.decl_diagnostics,
+        lifted: decls.lifted,
     }
 }
 
@@ -395,12 +478,22 @@ pub fn assemble_prelude(
 /// [`build_prelude_decls`] (steps 1–2) over the normalized files (step 0) —
 /// see [`PreludeDecls`]'s doc for why running decl collection on normalized
 /// vs. raw HIR is byte-identical.
+///
+/// `file_paths` reaches the stamping pass, which qualifies each file's
+/// root-content scope path with it (#1504 — see
+/// [`hir::root_content_scope_path`]).
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn build_prelude(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
+    tables: context::AnalyzerTables<'_>,
 ) -> LirPrelude {
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
@@ -410,11 +503,18 @@ pub fn build_prelude(
             (*id, h)
         })
         .collect();
-    hir::stamp_container_ids(&mut normalized, index);
+    hir::stamp_container_ids(&mut normalized, index, file_paths);
 
     let normalized_refs: Vec<(FileId, &hir::HirFile)> =
         normalized.iter().map(|(id, h)| (*id, h)).collect();
-    let decls = build_prelude_decls(&normalized_refs, index, resolutions, type_mode);
+    let decls = build_prelude_decls(
+        &normalized_refs,
+        index,
+        resolutions,
+        file_paths,
+        type_mode,
+        tables,
+    );
     assemble_prelude(decls, normalized)
 }
 
@@ -423,6 +523,10 @@ pub fn build_prelude(
 /// call frame — `LowerCtx::next_block_slot`). Returns each `(chunk,
 /// lowering-diagnostics)` pair in `files` order plus the total root temp-slot
 /// count. This is the root-content half of the old `lower_root`, unchanged.
+///
+/// The synthesized root terminus ([`attach_root_final_gather`]) is attached to
+/// the **last** chunk only — see that function's doc for why that is the one
+/// place C# puts it.
 #[must_use]
 fn lower_root_content_chunks(
     files: &[(FileId, &hir::HirFile)],
@@ -431,6 +535,7 @@ fn lower_root_content_chunks(
     root_id: brink_format::DefinitionId,
     file_paths: &LookupMap<FileId, String>,
     struct_ctx: &context::StructCtx<'_>,
+    tables: context::AnalyzerTables<'_>,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let mut chunks = Vec::new();
 
@@ -443,12 +548,29 @@ fn lower_root_content_chunks(
     let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
     let mut block_slot = temp_map.total_slots();
 
-    for &(file_id, hir_file) in files {
+    // Only the last root-content chunk — the tail of the assembled root body —
+    // may carry the synthesized terminus (issue #1502). See
+    // `attach_root_final_gather`.
+    let last_chunk = files.len().saturating_sub(1);
+
+    for (chunk_index, &(file_id, hir_file)) in files.iter().enumerate() {
         let mut local_names = NameTable::new();
         let mut diagnostics = Vec::new();
-        let (stmts, block_children) = {
+        // #1504: every path this allocator mints for the chunk below (inline
+        // sequence wrappers, the synthesized terminus) restarts per file, so
+        // qualify them by the owning file — the same qualifier the stamping
+        // pass gave this file's anonymous choice/gather containers. `ctx
+        // .scope_path` deliberately stays empty: it also drives author-label
+        // lookup (`LowerCtx::qualify_label`), and a root-level label is
+        // addressed by its bare name.
+        ids.set_path_prefix(hir::root_content_scope_path(
+            file_paths.get(&file_id).map(String::as_str),
+        ));
+        let mut lifted: Vec<lir::Container> = Vec::new();
+        let (stmts, mut block_children) = {
             let mut ctx = make_ctx(
                 file_id,
+                hir_file.native,
                 resolutions,
                 index,
                 &temp_map,
@@ -456,17 +578,28 @@ fn lower_root_content_chunks(
                 &mut ids,
                 root_id,
                 String::new(),
+                true,
                 &[],
                 file_paths,
                 &mut block_slot,
                 &mut diagnostics,
                 struct_ctx,
+                tables,
+                &mut lifted,
             );
             let mut cc = 0;
             let mut gc = 0;
             ctx.ids.reset_seq_counter();
             lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
         };
+        if chunk_index == last_chunk {
+            attach_root_final_gather(&mut block_children, &mut ids);
+        }
+        // Lambda-lifted functions (issue #1709) are appended *after* the
+        // terminus so the root weave's own container order is untouched:
+        // nothing enters a container by falling off a sibling, so their
+        // position among root children is inert.
+        block_children.append(&mut lifted);
         chunks.push((
             chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
             diagnostics,
@@ -491,11 +624,13 @@ fn lower_knot_chunk(
     struct_ctx: &context::StructCtx<'_>,
     root_id: brink_format::DefinitionId,
     file_id: FileId,
+    tables: context::AnalyzerTables<'_>,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let mut local_names = NameTable::new();
     let mut ids = context::IdAllocator::new();
     let _ = ids.alloc_address("");
     let mut diagnostics = Vec::new();
+    let mut lifted = Vec::new();
     let knot_container = lower_knot(
         file_id,
         hir_file,
@@ -508,56 +643,93 @@ fn lower_knot_chunk(
         file_paths,
         &mut diagnostics,
         struct_ctx,
+        tables,
+        &mut lifted,
     );
     (
-        chunk::ScopeChunk::knot(knot_container, local_names.into_entries()),
+        chunk::ScopeChunk::knot(knot_container, lifted, local_names.into_entries()),
         diagnostics,
     )
 }
 
+/// The part of a knot chunk's lowering environment that is the *same* for
+/// every knot in the project: the flattened resolution lookup, the
+/// reconstructed throwaway `ShapeTable`/`GlobalShapeMap`, the `FileId`→path
+/// map, and the type mode.
+///
+/// Built once per project revision and shared by every
+/// [`lower_knot_chunk_incremental`] call (issue #460 — `brink-db` memoizes it
+/// in `chunk_lowering_ctx_query`). Before this existed, each per-knot memo
+/// rebuilt all of it from scratch, so a K-knot project paid
+/// `K × O(project resolutions + struct shapes + files)` on every cold compile
+/// and on every recompile that invalidated the chunk memos — the measured
+/// dominant cost of the per-knot LIR layer.
+///
+/// Contents are byte-identical to what the per-knot build produced: same
+/// inputs, same constructors, and the throwaway `NameTable` the shape table
+/// is interned into is never read (every name is re-interned into the
+/// chunk's own local table), so sharing one instance across knots cannot
+/// change a chunk's bytes.
+pub struct ChunkLoweringCtx {
+    resolutions: ResolutionLookup,
+    shapes: structs::ShapeTable,
+    global_shapes: structs::GlobalShapeMap,
+    file_paths: LookupMap<FileId, String>,
+    type_mode: context::TypeMode,
+}
+
+impl ChunkLoweringCtx {
+    /// Build the shared context from the same cutoff-friendly inputs the
+    /// per-knot memo already depends on.
+    #[must_use]
+    pub fn new(
+        resolutions: &ResolutionMap,
+        shape_data: &StructShapeData,
+        file_paths: LookupMap<FileId, String>,
+        type_mode: context::TypeMode,
+    ) -> Self {
+        let mut throwaway = NameTable::new();
+        let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
+        let global_shapes = structs::rebuild_global_shape_map(shape_data);
+        Self {
+            resolutions: ResolutionLookup::build(resolutions),
+            shapes,
+            global_shapes,
+            file_paths,
+            type_mode,
+        }
+    }
+}
+
 /// Incremental entry point (`brink-db`'s per-knot salsa memo): lower a single
 /// knot from cutoff-friendly inputs — the declaring file's already
-/// normalized+stamped HIR, the whole-project resolutions/index, and the
-/// [`StructShapeData`] projection (which the memo reads through an
-/// `Eq`-backdating query, so an unrelated edit leaves this chunk
-/// pointer-identical). Reconstructs the throwaway `NameTable`/`ShapeTable` the
-/// core lowering needs internally (their `NameId`s are never read — every
-/// name is re-interned into the chunk's own local table — so throwaway
-/// numbering is byte-identical after assembly relocation).
-#[expect(
-    clippy::implicit_hasher,
-    reason = "internal API called only by brink-db"
-)]
-#[expect(clippy::too_many_arguments)]
+/// normalized+stamped HIR, the whole-project symbol index, and the
+/// project-wide [`ChunkLoweringCtx`] (which the memo reads through its own
+/// query, so every knot shares one build of it).
 #[must_use]
 pub fn lower_knot_chunk_incremental(
     hir_file: &hir::HirFile,
     knot: &hir::Knot,
     index: &SymbolIndex,
-    resolutions: &ResolutionMap,
-    file_paths: &LookupMap<FileId, String>,
-    shape_data: &StructShapeData,
-    type_mode: context::TypeMode,
+    ctx: &ChunkLoweringCtx,
     file_id: FileId,
+    tables: context::AnalyzerTables<'_>,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
-    let resolutions = ResolutionLookup::build(resolutions);
-    let mut throwaway = NameTable::new();
-    let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
-    let global_shapes = structs::rebuild_global_shape_map(shape_data);
     let struct_ctx = context::StructCtx {
-        shapes: &shapes,
-        global_shapes: &global_shapes,
-        type_mode,
+        shapes: &ctx.shapes,
+        global_shapes: &ctx.global_shapes,
+        type_mode: ctx.type_mode,
     };
     lower_knot_chunk(
         hir_file,
         knot,
         index,
-        &resolutions,
-        file_paths,
+        &ctx.resolutions,
+        &ctx.file_paths,
         &struct_ctx,
         context::root_definition_id(),
         file_id,
+        tables,
     )
 }
 
@@ -577,6 +749,7 @@ pub fn lower_root_content_for_prelude(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
+    tables: context::AnalyzerTables<'_>,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
@@ -587,6 +760,7 @@ pub fn lower_root_content_for_prelude(
         prelude.root_id,
         file_paths,
         &struct_ctx,
+        tables,
     )
 }
 
@@ -606,7 +780,14 @@ pub fn assemble_program(
     _index: &SymbolIndex,
 ) -> lir::Program {
     let mut names = NameTable::from_entries(prelude.name_seed.clone());
-    let (mut root_body, root_children) = chunk::assemble_scopes(chunks, &mut names);
+    let (mut root_body, mut root_children) = chunk::assemble_scopes(chunks, &mut names);
+
+    // Issue #1774: lambda-lifted functions synthesized from a VAR/CONST
+    // decl default (`decls::collect_globals`'s lambda path) are siblings of
+    // the project's knots, same placement `lower::lambda`'s own lifted
+    // functions get. No relocation needed — see `PreludeDecls::lifted`'s
+    // doc for why their `NameId`s are already valid against `names` above.
+    root_children.extend(prelude.lifted.iter().cloned());
 
     let ends_with_divert = root_body
         .last()
@@ -655,7 +836,7 @@ pub fn assemble_program(
 #[expect(clippy::too_many_arguments)]
 fn lower_knot(
     file_id: FileId,
-    _hir_file: &hir::HirFile,
+    hir_file: &hir::HirFile,
     knot: &hir::Knot,
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
@@ -665,9 +846,11 @@ fn lower_knot(
     file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
+    tables: context::AnalyzerTables<'_>,
+    lifted: &mut Vec<lir::Container>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
-    let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
+    let knot_id = lookup_container_id(index, file_id, knot_name).unwrap_or(root_id);
 
     let mut scope_blocks: Vec<&hir::Block> = vec![&knot.body];
     for stitch in &knot.stitches {
@@ -684,6 +867,7 @@ fn lower_knot(
     let knot_param_names: Vec<&str> = knot.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
         file_id,
+        hir_file.native,
         resolutions,
         index,
         &temp_map,
@@ -691,21 +875,26 @@ fn lower_knot(
         ids,
         root_id,
         knot_name.clone(),
+        false,
         &knot_param_names,
         file_paths,
         &mut block_slot,
         diagnostics,
         structs,
+        tables,
+        lifted,
     );
     let mut cc = 0;
     let mut gc = 0;
     ctx.ids.reset_seq_counter();
     let (body, mut children) = lower_block_with_children(&knot.body, &mut ctx, &mut cc, &mut gc);
+    drop(ctx);
 
     // Add stitches as children
     for stitch in &knot.stitches {
         children.push(lower_stitch(
             file_id,
+            hir_file.native,
             knot,
             stitch,
             &temp_map,
@@ -718,6 +907,8 @@ fn lower_knot(
             &mut block_slot,
             diagnostics,
             structs,
+            tables,
+            lifted,
         ));
     }
 
@@ -754,6 +945,7 @@ fn lower_knot(
 #[expect(clippy::too_many_arguments)]
 fn lower_stitch(
     file_id: FileId,
+    native: bool,
     knot: &hir::Knot,
     stitch: &hir::Stitch,
     temp_map: &TempMap,
@@ -766,16 +958,19 @@ fn lower_stitch(
     block_slot: &mut u16,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
+    tables: context::AnalyzerTables<'_>,
+    lifted: &mut Vec<lir::Container>,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
-    let stitch_id = lookup_container_id(index, &stitch_path).unwrap_or(root_id);
+    let stitch_id = lookup_container_id(index, file_id, &stitch_path).unwrap_or(root_id);
     let params = lower_params(&stitch.params, names, temp_map);
 
     let stitch_param_names: Vec<&str> =
         stitch.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
         file_id,
+        native,
         resolutions,
         index,
         temp_map,
@@ -783,11 +978,14 @@ fn lower_stitch(
         ids,
         root_id,
         stitch_path,
+        false,
         &stitch_param_names,
         file_paths,
         block_slot,
         diagnostics,
         structs,
+        tables,
+        lifted,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -825,6 +1023,18 @@ fn lower_block_with_children(
     let mut stmts = Vec::new();
     let mut children = Vec::new();
     let mut pos = 0;
+    // Issue #1992 review finding F1: a code-ground body's `> text` split
+    // (`hir::lower_native::body::mark_split_logic_block_scopes`) opens one
+    // shared T1b scope across every split `LogicBlock` run, but leaves the
+    // matching pop to *this* function rather than to any particular run —
+    // a `Stmt::Content` sibling from a trailing `> text` line can legally
+    // follow the last split run in `block.stmts` and still needs the scope
+    // open. Sound because splitting only ever happens at the top level of
+    // the one `hir::Block` `lower_stmt_block_as_body` produces, never
+    // inside a nested block this function recurses into — so an `Opens`
+    // seen here is always matched by a pop here, never by a caller further
+    // up or a recursive call further down.
+    let mut pending_split_scope = false;
 
     while pos < block.stmts.len() {
         let stmt = &block.stmts[pos];
@@ -962,7 +1172,21 @@ fn lower_block_with_children(
                     .iter()
                     .enumerate()
                     .map(|(branch_idx, b)| {
-                        let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
+                        // B1b (issue #1475): the block-level `{if EXPR as
+                        // n: … else: …}` template form. The branch body
+                        // becomes its own container, but containers share
+                        // the enclosing call frame's temp slots, so the
+                        // binding's slot is visible inside it — the scope
+                        // bracket below is the lowering-time name scope,
+                        // and it closes before the next branch is walked.
+                        ctx.push_block_scope();
+                        let condition = match (b.condition.as_ref(), b.binding.as_ref()) {
+                            (Some(e), Some(binding)) => {
+                                Some(blocks::lower_bound_condition(e, binding, ctx))
+                            }
+                            (Some(e), None) => Some(expr::lower_expr(e, ctx)),
+                            (None, _) => None,
+                        };
 
                         // Set scope_path for this branch so nested containers
                         // (choices, gathers, nested conditionals) get unique IDs.
@@ -997,6 +1221,9 @@ fn lower_block_with_children(
                             local: false,
                         };
                         children.push(branch_container);
+                        // Closes the `as`-binding scope opened above — the
+                        // next branch (an `else`) must not see the name.
+                        ctx.pop_block_scope();
 
                         // The branch body in the Conditional struct is just EnterContainer
                         lir::CondBranch {
@@ -1041,10 +1268,10 @@ fn lower_block_with_children(
                         let mut bc = 0;
                         let mut gc = 0;
                         let (body, branch_children) =
-                            lower_block_with_children(b, ctx, &mut bc, &mut gc);
+                            lower_block_with_children(&b.body, ctx, &mut bc, &mut gc);
 
                         // Read pre-stamped container ID from HIR branch block.
-                        let branch_id = b.container_id.unwrap_or(ctx.root_id);
+                        let branch_id = b.body.container_id.unwrap_or(ctx.root_id);
 
                         let branch_container = lir::Container {
                             id: branch_id,
@@ -1126,7 +1353,10 @@ fn lower_block_with_children(
                 // flat statement sequence (never a child container: block
                 // bodies never contain weave concepts, so there's nothing
                 // that needs container isolation).
-                stmts.extend(blocks::lower_logic_block(&lb.stmts, ctx));
+                if matches!(lb.scope, hir::LogicBlockScope::Opens) {
+                    pending_split_scope = true;
+                }
+                stmts.extend(blocks::lower_logic_block(lb, ctx));
                 pos += 1;
             }
 
@@ -1136,9 +1366,31 @@ fn lower_block_with_children(
             // possibly-multiple `lir::Stmt`s here since `stmts::lower_stmt`'s
             // `Option<Stmt>` return can't express that. Falls through to the
             // ordinary `stmts::lower_stmt` path (the `_` arm below) for
-            // every other assignment (plain variable, indexed).
+            // every other assignment (plain variable) — indexed targets are
+            // caught by the arm just below instead.
             hir::Stmt::Assignment(assign)
                 if blocks::try_lower_field_assignment(assign, ctx, &mut stmts) =>
+            {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
+            // A classic (non-block) `~ a[i] = expr` logic line whose target
+            // is an index expression (issue #2174) — the same dispatch
+            // `lower_block_assignment` already gives the `~ { … }` block
+            // form, factored into `try_lower_indexed_assignment` so both
+            // surfaces share it rather than the classic-line dispatch
+            // growing a second, divergent copy. Before this arm existed,
+            // an `Index` target fell through to `stmts::lower_stmt`, whose
+            // `lower_assign_target` only recognizes a bare `Path` — the
+            // statement silently vanished with no diagnostic, for *every*
+            // classic-line indexed assignment (not only the struct-field-
+            // projected-root shape #2121 fixed for the block surface).
+            // Handles a bare-variable root correctly and rejects a
+            // struct-field-projected root with `E074`
+            // (`reject_field_projection_index_root`), mirroring #2121.
+            hir::Stmt::Assignment(assign)
+                if blocks::try_lower_indexed_assignment(assign, ctx, &mut stmts) =>
             {
                 children.append(&mut ctx.pending_children);
                 pos += 1;
@@ -1157,6 +1409,18 @@ fn lower_block_with_children(
                 pos += 1;
             }
 
+            // A classic (non-block) frame-local projection auto-ref
+            // (`g.hp.heal(5)`, issue #1531) — same RMW splicing the block
+            // form (`blocks::lower_block_stmt`'s `ExprStmt` arm) uses, and
+            // for the same reason: the read/call/write-back sequence needs
+            // more than one `lir::Stmt`.
+            hir::Stmt::ExprStmt(expr)
+                if blocks::try_lower_frame_local_auto_ref_stmt(expr, ctx, &mut stmts) =>
+            {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);
@@ -1166,6 +1430,10 @@ fn lower_block_with_children(
                 pos += 1;
             }
         }
+    }
+
+    if pending_split_scope {
+        ctx.pop_block_scope();
     }
 
     (stmts, children)
@@ -1197,16 +1465,29 @@ fn build_continuation_container(
         .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
     if continuation.stmts.is_empty() && continuation.label.is_none() {
-        // Empty continuation with no label — implicit gather with Done
+        // Empty continuation with no label — the choice set is the last
+        // thing in its enclosing block. At the story's root content this
+        // is a safe implicit end (real ink lets root content run out), so
+        // emit the same `-> DONE` a genuine `-> DONE` statement would
+        // produce. Inside a knot/stitch, though, running off the end
+        // without an explicit `-> DONE`/`-> END` is a real ink runtime
+        // error ("ran out of content") — leaving the body empty here lets
+        // the VM's normal frame-exhaustion path (`handle_frame_exhaustion`)
+        // surface that instead of masking it as a safe exit (issue #1503).
+        let body = if ctx.is_root_content_scope {
+            vec![lir::Stmt::Divert(lir::Divert {
+                target: lir::DivertTarget::Done,
+                args: Vec::new(),
+            })]
+        } else {
+            Vec::new()
+        };
         return lir::Container {
             id,
             name: Some(display_name),
             kind: lir::ContainerKind::Gather,
             params: Vec::new(),
-            body: vec![lir::Stmt::Divert(lir::Divert {
-                target: lir::DivertTarget::Done,
-                args: Vec::new(),
-            })],
+            body,
             children: Vec::new(),
             counting_flags: CountingFlags::empty(),
             temp_slot_count: 0,
@@ -1247,6 +1528,29 @@ fn lower_choice_with_child(
     *choice_counter += 1;
 
     let target = choice.container_id.unwrap_or(ctx.root_id);
+
+    // The block scope opens BEFORE the condition (so a guard-`as` binding,
+    // B1b issue #1508, can declare into it) and stays open across the
+    // choice's own content (start/bracket/inner) AND the *body* lowering
+    // below — unlike `blocks::lower_if_branch`'s bracket (which closes
+    // after the success arm and never reaches an `else`), a choice has no
+    // sibling arm to hide the binding from, so the scope simply wraps
+    // condition -> content -> body together. Every choice pushes/pops a
+    // scope, whether it binds or not, exactly like an ordinary `if`.
+    //
+    // This ordering matters: `{n}` appearing in the choice's own
+    // start/bracket/inner content (not just its body) must resolve
+    // through the same block-scoped temp slot the binding declares, so
+    // the content lowering below MUST happen after `push_block_scope`
+    // and the condition/binding lowering, not before.
+    ctx.push_block_scope();
+    let condition = match (choice.condition.as_ref(), choice.binding.as_ref()) {
+        (Some(cond_hir), Some(binding)) => {
+            Some(blocks::lower_bound_condition(cond_hir, binding, ctx))
+        }
+        (Some(cond_hir), None) => Some(expr::lower_expr(cond_hir, ctx)),
+        (None, _) => None,
+    };
 
     // Preserve the three-part content split for codegen backends.
     let start_content = choice
@@ -1298,7 +1602,6 @@ fn lower_choice_with_child(
             .and_then(|c| recognize::try_recognize(c, ctx))
     };
 
-    let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
     let tags: Vec<Vec<lir::ContentPart>> = choice
         .tags
         .iter()
@@ -1319,6 +1622,7 @@ fn lower_choice_with_child(
     let (body_stmts, mut children) = lower_block_with_children(&choice.body, ctx, &mut cc, &mut gc);
     ctx.scope_path = old_scope;
     ctx.choice_gather_target = old_gather_target;
+    ctx.pop_block_scope();
 
     // Build the choice target container body. The output after selecting
     // a choice is: ChoiceOutput(content) + body stmts.
@@ -1435,6 +1739,7 @@ fn lower_choice_with_child(
 #[expect(clippy::too_many_arguments)]
 fn make_ctx<'a>(
     file: FileId,
+    native: bool,
     resolutions: &'a ResolutionLookup,
     index: &'a SymbolIndex,
     temps: &'a TempMap,
@@ -1442,20 +1747,25 @@ fn make_ctx<'a>(
     ids: &'a mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
     scope_path: String,
+    is_root_content_scope: bool,
     param_names: &[&str],
     file_paths: &'a LookupMap<FileId, String>,
     next_block_slot: &'a mut u16,
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
+    tables: context::AnalyzerTables<'a>,
+    lifted: &'a mut Vec<lir::Container>,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
+        native,
         resolutions,
         index,
         temps,
         names,
         ids,
         scope_path,
+        is_root_content_scope,
         pending_children: Vec::new(),
         visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
         file_paths,
@@ -1463,11 +1773,14 @@ fn make_ctx<'a>(
         choice_gather_target: None,
         next_block_slot,
         block_scopes: Vec::new(),
+        as_binding_slots: LookupSet::new(),
         block_scoped_temp_names: LookupSet::new(),
         diagnostics,
         loop_depth: 0,
         structs,
         temp_shapes: LookupMap::new(),
+        tables,
+        lifted,
     }
 }
 
@@ -1491,21 +1804,54 @@ fn lower_params(
         .collect()
 }
 
-/// Look up a container `DefinitionId` by name in the symbol index.
+/// Look up a container's own `DefinitionId` by name in the symbol index —
+/// "what id did the analyzer already assign to the knot/stitch/label THIS
+/// FILE is lowering right now."
 ///
 /// Checks for knot, stitch, or label symbols — the same container
 /// types the analyzer registers.
-fn lookup_container_id(index: &SymbolIndex, name: &str) -> Option<brink_format::DefinitionId> {
+///
+/// **File-scoped, not project-flat** (issue #2197): with M-2d
+/// (`is_cross_declared_module_collision`) letting same-name definitions in
+/// different *declared* modules coexist in `index.by_name`, a bare
+/// unscoped `.find()` here would pick whichever candidate happens to sort
+/// first for *every* file lowering a container of that name — so two
+/// distinctly-hashed, distinctly-declared knots (e.g. a project's own
+/// `scene_entered` and `brink_environment`'s mounted
+/// `std/conventions/screenplay.brink`'s own `scene_entered`) both mint the
+/// SAME container id, which trips the `#1673` duplicate-`DefinitionId`
+/// codegen guard (`E060`) the moment both are walked into the container
+/// tree. Preferring the entry declared in `file` is the correct semantic
+/// regardless of module visibility policy — a container's own identity is
+/// always the one *this file* declared — and it is what actually resolves
+/// the collision, since the two files' own entries are already correctly
+/// distinct per-module hashes (`brink_analyzer::manifest::insert_symbol`).
+/// Falling back to the unscoped first match preserves byte-identical
+/// behavior for every pre-#2197 call, where `by_name` never held more than
+/// one Knot/Stitch/Label candidate for a given name.
+fn lookup_container_id(
+    index: &SymbolIndex,
+    file: FileId,
+    name: &str,
+) -> Option<brink_format::DefinitionId> {
     use crate::symbols::SymbolKind;
+    fn is_container(info: &crate::symbols::SymbolInfo) -> bool {
+        matches!(
+            info.kind,
+            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+        )
+    }
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
             .find(|&&id| {
-                index.symbols.get(&id).is_some_and(|info| {
-                    matches!(
-                        info.kind,
-                        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
-                    )
-                })
+                index
+                    .symbols
+                    .get(&id)
+                    .is_some_and(|info| is_container(info) && info.file == file)
+            })
+            .or_else(|| {
+                ids.iter()
+                    .find(|&&id| index.symbols.get(&id).is_some_and(is_container))
             })
             .copied()
     })
@@ -1757,7 +2103,11 @@ fn collect_counting_refs_expr(
         lir::Expr::Prefix(_, inner) | lir::Expr::Postfix(inner, _) => {
             collect_counting_refs_expr(inner, visit_ids, turns_ids);
         }
-        lir::Expr::Infix(lhs, _, rhs) => {
+        // B1 `or`-coalescing (#1471) is a dedicated variant, not generic
+        // `Infix` — but the walk is identical (both operands, `shape`
+        // carries no reference), so it rides the same arm rather than a
+        // duplicate one, matching `chunk::remap_expr`'s precedent.
+        lir::Expr::Infix(lhs, _, rhs) | lir::Expr::Coalesce { lhs, rhs, shape: _ } => {
             collect_counting_refs_expr(lhs, visit_ids, turns_ids);
             collect_counting_refs_expr(rhs, visit_ids, turns_ids);
         }
@@ -1780,6 +2130,150 @@ fn collect_counting_refs_expr(
         }
         _ => {}
     }
+}
+
+/// Display name of the synthesized root terminus container. `-` is not a
+/// legal character in an ink label and the auto-gather convention is the
+/// numeric `g-{index}`, so this segment can never collide with an authored
+/// or auto-generated gather name.
+const ROOT_TERMINUS_NAME: &str = "g-final";
+
+/// Mirror inklecate's **implicit final gather** at the end of the root weave
+/// (`FlowBase.SplitWeaveAndSubFlowContent`, `FlowBase.cs:69-72`, which appends
+/// `Gather(null, 1)` + `-> DONE` when lowering the root story): a branch that
+/// simply runs out of root-weave content ends the flow cleanly instead of
+/// faulting with `RanOutOfContent`.
+///
+/// The root container's own trailing `Divert(Done)`
+/// ([`assemble_program`]) cannot serve this purpose: a gather is reached by
+/// `goto`, which clears the container stack, so once execution lands in a
+/// gather container the root body is no longer on the frame and its `Done`
+/// can never run.
+///
+/// **Root scope only** (#1448). A knot, stitch, tunnel or function whose
+/// content runs out is a genuine authoring error that C# ink reports and
+/// brink must keep reporting — extending a terminus to every weave terminus
+/// regresses those cases.
+///
+/// **Entry file only** (#1502). C# appends the implicit gather exactly once,
+/// to the *root story's* weave — `SplitWeaveAndSubFlowContent`'s
+/// `if (isRootStory)` guard. An `INCLUDE`d file is parsed as
+/// `Story(isInclude: true)` and gets none: `Story.PreProcessTopLevelObjects`
+/// splices its non-flow content in as the included story's own already-built
+/// `Weave`, which becomes a nested weave *container* in the root — so a
+/// trailing gather there is entered by divert (clearing the container stack)
+/// and running out of it faults with `RanOutOfContent`, exactly as it does in
+/// brink. Terminating included files individually would silently end the flow
+/// mid-story instead, which is strictly worse than the loud fault it replaces.
+///
+/// Callers therefore apply this to the **last** root-content chunk only. For
+/// an ink project that is the entry file by construction:
+/// `compilation_closure_files` orders the closure with
+/// `IncludeGraph::topological_order(entry)`, a post-order DFS from `entry`
+/// that pushes `entry` after everything it includes, so `entry` is always the
+/// final element. (A native project's closure is `FileId`-ordered instead,
+/// but `.brink` modules have no root weave to terminate.) Positionally this
+/// is also the only correct spot: the chunks concatenate into one root body,
+/// and C#'s implicit gather sits at the very end of it.
+fn attach_root_final_gather(children: &mut Vec<lir::Container>, ids: &mut context::IdAllocator) {
+    // `#` never appears in a lowering scope path, so this key cannot collide
+    // with a real container address. Content-pure since #1504: it used to be
+    // keyed `#root-terminus.{file_id}`, the one `alloc_address` call in this
+    // crate keyed by a `FileId` — an allocation-history-derived id (the
+    // editor mints a different `FileId` for the same file when a sibling is
+    // registered first), which `docs/fine-grained-salsa-proposal.md` §FG-4d
+    // forbids. The owning file now reaches the key through the allocator's
+    // path prefix (`IdAllocator::set_path_prefix`), which is derived from
+    // that file's project path instead.
+    let terminus_id = ids.alloc_address("#root-terminus");
+
+    if !patch_root_loose_end(children, terminus_id) {
+        return;
+    }
+
+    children.push(lir::Container {
+        id: terminus_id,
+        name: Some(ROOT_TERMINUS_NAME.to_string()),
+        kind: lir::ContainerKind::Gather,
+        params: Vec::new(),
+        body: vec![lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        })],
+        children: Vec::new(),
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+        labeled: false,
+        inline: false,
+        is_function: false,
+        local: false,
+    });
+}
+
+/// Divert the root weave's outermost loose end to `terminus`, returning
+/// whether one was found (and therefore whether the terminus container is
+/// reachable and worth emitting).
+///
+/// HIR nests each choice set's post-gather content into that set's
+/// continuation, so the root weave's outermost loose end is the tail of the
+/// gather chain hanging off the last root-level child: descend while a gather
+/// ends with another `ChoiceSet` (its continuation gather holds the deeper
+/// content), then patch the first gather that does not.
+///
+/// Nothing is patched when the tail already ends in a terminal — an authored
+/// `-> DONE` / `-> END` / divert is not a loose end, and unlike
+/// [`patch_innermost_gather`] this must never overwrite one.
+///
+/// An `inline` gather (the wrapper a source-level standalone gather lowers to)
+/// is never patched in its own right: it is entered with `EnterContainer` and
+/// returns to its parent when exhausted, so it already falls through to the
+/// root body's own `Done`. Its *children* are still descended into, because a
+/// choice set inside it diverts — clearing the container stack — into a
+/// continuation gather that is a genuine loose end.
+fn patch_root_loose_end(
+    children: &mut [lir::Container],
+    terminus: brink_format::DefinitionId,
+) -> bool {
+    let Some(gather) = children
+        .last_mut()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+    else {
+        return false;
+    };
+
+    if gather
+        .body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+    {
+        return patch_root_loose_end(&mut gather.children, terminus);
+    }
+
+    if gather.inline {
+        return false;
+    }
+
+    let ends_terminal = gather.body.last().is_some_and(|s| {
+        matches!(
+            s,
+            lir::Stmt::Divert(d)
+                if matches!(
+                    d.target,
+                    lir::DivertTarget::End
+                        | lir::DivertTarget::Done
+                        | lir::DivertTarget::Address(_)
+                )
+        )
+    });
+    if ends_terminal {
+        return false;
+    }
+
+    gather.body.push(lir::Stmt::Divert(lir::Divert {
+        target: lir::DivertTarget::Address(terminus),
+        args: Vec::new(),
+    }));
+    true
 }
 
 /// Recursively find the innermost gather container in a chain of

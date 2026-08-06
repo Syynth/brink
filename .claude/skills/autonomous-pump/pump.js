@@ -23,7 +23,7 @@ export const meta = {
     { title: "Merge train" },
     { title: "Fix loop" },
     { title: "Lessons" },
-    { title: "Scope reconciliation" },
+    { title: "Retro / scope reconciliation" },
   ],
 };
 
@@ -32,7 +32,11 @@ const REPO = "OWNER/REPO";
 // Gate: build shared deps -> test -> typecheck. CACHE is prepended to every
 // gate invocation so all agents share one build cache (turbo/nx: unchanged
 // packages become cache hits — this is the pump's single biggest speed lever).
-const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache";
+// CARGO_INCREMENTAL=0: every build agent works in a FRESH worktree, so the
+// incremental dep-graph cache is written and never read — pure disk write for
+// zero benefit, multiplied by ~5 agents per wave across thousands of builds.
+// (Local human iteration is unaffected; this only applies to agent gates.)
+const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache CARGO_INCREMENTAL=0";
 const GATE = "pnpm install --prefer-offline && pnpm turbo run test typecheck";
 const MILESTONE = null; // optional milestone name for scope reconciliation
 const LEDGER = null; // optional: standing wave-ledger issue number (durable-by-default rule) — brink: 967
@@ -104,6 +108,7 @@ const SCOPE = {
     assessment: { type: "string", enum: ["scope-held", "under-captured", "over-captured"] },
     discoveredWork: { type: "array", items: { type: "object", additionalProperties: false, required: ["title", "why"], properties: {
       title: { type: "string" }, why: { type: "string" }, suggestedMilestone: { type: "string" } } } },
+    trackerActions: { type: "array", items: { type: "string" }, description: "true-up actions actually TAKEN (issues closed, remainders commented, follow-ons filed) — actions, not proposals" },
     recommendation: { type: "string", enum: ["scope-held", "file-issues", "expand-milestone", "add-milestone"] },
     proposal: { type: "string", description: "concrete proposal for the HUMAN to approve: which issues to file + which milestone to expand or add, with rationale" },
   },
@@ -160,7 +165,7 @@ Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed),
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
 READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`gh pr checkout\`, \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via \`gh pr diff\`/\`gh api\`/\`gh pr view\` and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
-DO: \`gh pr diff ${build.pr} --repo ${REPO}\` + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
+DO: \`gh pr diff ${build.pr} --repo ${REPO}\` + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? **SPEC DRIFT** — does this PR leave a SPEC disagreeing with reality? Two shapes: (a) a decision-log PR that rules something but amends NO spec, so the ruling's only home is history nobody reads; (b) an implementation PR whose behavior contradicts, or is absent from, the spec that owns that territory. A 2026-07-27 ledger audit of 296 rulings found 29 ORPHANED and 15 CONTRADICTED precisely here — including a same-day ruling PR that touched only the decision log while the spec kept carrying the spelling that ruling rejected. Name the spec file+section in your findings. Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
 DISCIPLINE: every \`findings\` entry must be a REAL, actionable fix to THIS PR's diff — never placeholders. If your only material notes are follow-up scope (work outside this PR's fence), the decision is "approve" and those notes go in \`scopeGaps\`; "changes" with an empty/junk findings list wastes a fix-agent run.
 ALWAYS post your verdict as ONE comment on the PR (\`gh pr comment ${build.pr} --repo ${REPO} --body "…"\`) — decision, findings, and scope gaps, INCLUDING approvals (durable-by-default rule, decision 2026-07-18: an approval's scope gaps are exactly the context that evaporates otherwise). Commenting is allowed under the read-only mandate; git state mutation is not. ALSO: note in \`scopeGaps\` anything the issue (or its milestone) UNDER-captured — work that clearly belongs but no issue covers. Return {pr, decision, findings, scopeGaps}.`,
       { label: `review#${b.n}`, phase: "Review", effort: effortFor(b), model: REVIEW_MODEL, schema: VERDICT })
@@ -204,22 +209,58 @@ const lessons = allFindings.length
   ? await agent(`Distill HOUSE-RULE candidates from this wave's review findings for ${REPO}. A lesson qualifies only if it GENERALIZES (would prevent a class of mistake in future builds), not a one-off fix. Merge duplicates; imperative voice; one line each ("use only tokens from X", "wire features into the UI, not just a hook"). 0-6 lessons — an empty list is a valid answer.
 FINDINGS:\n${allFindings.map((s) => "- " + s).join("\n")}
 Current house rules (don't repeat):\n${RULES || "(none)"}
-Return {lessons}.`,
+Return {lessons}.
+
+⚠ THEN PERSIST THEM — this is the whole point, and it has historically been the broken link. Measured across 671 agents: **fix cycles are 18.3% of all token spend, and ~80% of reviewed PRs need one** (133 fix agents against 165 reviews). Those fixes are triggered by findings that RECUR wave after wave. Returning lessons as text that a human must remember to copy forward is why the same mistakes kept costing full re-read/re-gate/re-push cycles.
+
+So: open a PR adding each GRADUATED lesson to the "Recurring build-quality rules" section of .claude/skills/autonomous-pump/BRINK-CONFIG.md, in a fresh worktree off origin/main (never the user's live checkout), and enable auto-merge. Rules:
+- Append only; do NOT rewrite or reorder existing rules.
+- MERGE with an existing rule when it is the same lesson said differently — a list of 40 near-duplicates is worse than 15 sharp ones, because nobody reads it.
+- Each rule states the FAILURE it prevents, not just the principle — agents follow "a test that passes on both commits proves nothing; revert the fix and watch it fail" far better than "write good tests".
+- If nothing generalizes this wave, open NO PR and say so. An empty result is a valid, honest outcome.`,
       { label: "lessons", phase: "Lessons", effort: "medium", model: "sonnet", schema: LESSONS })
   : { lessons: [] };
 
-phase("Scope reconciliation"); // did building reveal work the plan didn't capture? PROPOSE, don't auto-restructure.
+phase("Retro / scope reconciliation"); // did building reveal work the plan didn't capture? PROPOSE, don't auto-restructure.
 const scopeSignals = [
   ...built.filter((b) => b && b.scopeNotes && b.scopeNotes.trim()).map((b) => `#${b.issue} (build): ${b.scopeNotes}`),
   ...reviewed.flatMap((v) => (v?.scopeGaps ?? []).map((g) => `${v.pr} (review): ${g}`)),
 ];
-const scopeReconciliation = await agent(`You reconcile PLANNED scope against what this batch's building actually revealed, for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}. The pump SURFACES; the human decides milestone structure — so PROPOSE, do NOT create issues or milestones.
-Discovered-scope signals from this batch:
+// Per-item tracker facts: the retro compares DELIVERED vs REQUESTED, so it
+// needs every ATTEMPTED item's issue/PR/merge state. Built from BATCH, not
+// from `results` — a build that dies (API error, killed agent) is dropped
+// from `results`, and a retro that only sees survivors reports a wave where
+// EVERYTHING failed as "scope-held". An item that never ran must say so.
+const trackerFacts = BATCH.map((b) => {
+  const r = results.find((x) => x && x.issue === b.n);
+  const cl = closesList(b).map((x) => "#" + x).join(",");
+  if (!r) return `#${b.n} -> NEVER RAN (agent died or was skipped — no build result at all; NOT evidence the issue is fine)`;
+  const state = r.land?.merged ? "MERGED" : (r.build?.pr ? "NOT MERGED" : "no PR opened");
+  return `#${b.n} -> ${r.build?.pr ?? "(no PR)"} | ${state} | verdict ${r.verdict?.decision ?? "-"} | claims: ${cl}`;
+}).join("\n");
+
+const scopeReconciliation = await agent(`You are running this wave's RETRO for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}. An agent landed a deliverable for each item below. Your job is to TRUE UP what was actually built against what was actually requested, item by item, and leave both the tracker and the plan honest.
+
+THIS WAVE'S ITEMS (issue -> PR -> merge state -> what the PR claims to close):
+${trackerFacts || "(none)"}
+
+DISCOVERED-SCOPE SIGNALS reported by the builds and reviews:
 ${scopeSignals.length ? scopeSignals.map((s) => "- " + s).join("\n") : "(none reported)"}
-DO: weigh those signals; \`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\` (and read the roadmap/plan doc if the repo has one) to see what's already captured. Judge whether ${MILESTONE ? `the "${MILESTONE}" milestone` : "this batch"}'s scope HELD, UNDER-captured, or OVER-captured. List concrete NEW work no existing issue covers (dedup against the board). Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone — with a crisp \`proposal\` the human can act on.${LEDGER ? `
-FINALLY (durable-by-default rule): append ONE compact wave-ledger comment to issue #${LEDGER} (\`gh issue comment ${LEDGER} --repo ${REPO}\`): wave id ${WAVE_ID}; the batch; landed/parked; the lessons harvested this wave (the orchestrator passes them below if any); your scope assessment + proposal summary. Issues later filed from the proposal carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
-Return {assessment, discoveredWork:[{title,why,suggestedMilestone}], recommendation, proposal}.`,
-  { label: "scope-reconcile", phase: "Scope reconciliation", effort: "high", model: "sonnet", schema: SCOPE });
+
+For EACH item, compare DELIVERED against REQUESTED and land the difference somewhere real:
+- **Delivered the whole fence and the PR merged** — close the issue if it is still open.
+- **Delivered less than the fence** (the PR says "Part of", or the review/scope notes name a missing piece) — the remainder is INVISIBLE unless you record it. Comment on the issue with what shipped, what is left, and what blocks it, and file the follow-on issue (or name the existing one that covers it). A "Part of" with an untracked remainder reads exactly like "not started" — that is how six issues in one month ended up with state that lied about the code.
+- **PR did not merge** — say why in one line: conflict, auto-merge armed but never completed, or review parked it. An auto-merge that arms and then conflicts leaves work LOOKING landed while its issue stays open; that has silently lost two PRs here.
+- **The build found the premise already false** (already implemented, already ruled) — verify the delivering PR, comment naming it, and close the issue if nothing remains. Reporting it only to the pump means the next wave rediscovers it at the cost of another build agent.
+- **Something this wave ruled or shipped supersedes a DIFFERENT open issue's premise** — update that issue too. A ruling that lands only in a doc leaves the tracker lying.
+- **The item NEVER RAN** (agent died mid-flight) — say so plainly and recommend a re-queue. Do NOT report the wave as scope-held on the strength of items that never executed; absence of a result is absence of evidence, not evidence of health.\n- **Genuinely new work no existing issue covers** — file it, after deduping against the board (\`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\`; read the roadmap/plan doc if the repo has one).
+
+You MAY act on all of the above — it is truing up the record of work that already happened, not rewriting the plan. The one thing you may NOT do unilaterally is restructure MILESTONES (add or expand one): propose that with rationale and let the human decide.
+
+Finally judge the batch as a whole: did its scope HOLD, UNDER-capture, or OVER-capture? Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone, with a crisp \`proposal\` the human can act on.${LEDGER ? `
+Then (durable-by-default rule) append ONE compact wave-ledger comment to issue #${LEDGER} (\`gh issue comment ${LEDGER} --repo ${REPO}\`): wave id ${WAVE_ID}; the batch; landed/parked; the lessons harvested this wave (passed below if any); your true-up actions and scope assessment. Issues filed here carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
+Return {assessment, trackerActions, discoveredWork:[{title,why,suggestedMilestone}], recommendation, proposal}.`,
+  { label: "retro", phase: "Retro / scope reconciliation", effort: "high", model: "sonnet", schema: SCOPE });
 
 // Reconciliation: every built+ok PR must be accounted for — merged, or parked
 // WITH a reason. No silent drops. (v3: verdict + landing ride each item, so

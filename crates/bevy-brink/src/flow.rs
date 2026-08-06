@@ -7,8 +7,8 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::system::Commands;
 use brink_format::LineEntry;
 use brink_runtime::{
-    ContextAccess, DriveOutcome, ExternalFnHandler, FastRng, FlowInstance, Line, Program,
-    RuntimeError, StepOutcome,
+    ContextAccess, DriveOutcome, ExternalFnHandler, FastRng, FlowInstance, Program, RuntimeError,
+    Step, StepOutcome,
 };
 #[cfg(feature = "dev")]
 use brink_runtime::{RecordingHandler, ReplayRecorder};
@@ -18,8 +18,8 @@ use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, B
 /// Result of advancing a flow one step via [`BrinkFlow::step_one`].
 #[derive(Debug, Clone)]
 pub enum Advance {
-    /// A line was produced (and its observer event fired).
-    Line(Line),
+    /// A step was produced (and its observer event fired).
+    Step(Step),
     /// The flow paused on a world-access query binding (`bind_brink_query`),
     /// which can't be resolved from a non-exclusive system. The plugin's
     /// resolver (gated on
@@ -132,16 +132,16 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
             .inner
             .advance::<FastRng>(program, line_tables, context, handler, None)?
         {
-            StepOutcome::Line(line) => {
-                emit_event::<M>(&line, entity, commands);
-                Ok(Advance::Line(line))
+            StepOutcome::Step(step) => {
+                emit_event::<M>(&step, entity, commands);
+                Ok(Advance::Step(step))
             }
             StepOutcome::AwaitingExternal => Ok(Advance::AwaitingQuery),
         }
     }
 
-    /// Step the VM until reaching a terminal line ([`Line::Done`],
-    /// [`Line::Choices`], or [`Line::End`]), queuing observer events
+    /// Step the VM until reaching a terminal step ([`Step::Done`],
+    /// [`Step::Choices`], or [`Step::End`]), queuing observer events
     /// for every line produced along the way.
     ///
     /// Delegates to the shared Layer-2 [`FlowInstance::drive`] op (F6.2):
@@ -204,9 +204,9 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
             .inner
             .advance::<FastRng>(program, line_tables, context, &recording, None)?
         {
-            StepOutcome::Line(line) => {
-                emit_event::<M>(&line, entity, commands);
-                Ok(Advance::Line(line))
+            StepOutcome::Step(step) => {
+                emit_event::<M>(&step, entity, commands);
+                Ok(Advance::Step(step))
             }
             StepOutcome::AwaitingExternal => Ok(Advance::AwaitingQuery),
         }
@@ -245,7 +245,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
     }
 }
 
-/// Fire the per-line observer event for every [`Line`] a
+/// Fire the per-line observer event for every [`Step`] a
 /// [`FlowInstance::drive`] call produced, then report the result as an
 /// [`Advance`]: the last (terminal) line for [`DriveOutcome::Terminal`], or
 /// [`Advance::AwaitingQuery`] for [`DriveOutcome::AwaitingExternal`] (having
@@ -270,7 +270,7 @@ fn emit_drive_outcome<M: Send + Sync + 'static>(
                 emit_event::<M>(&line, entity, commands);
                 last = line;
             }
-            Ok(Advance::Line(last))
+            Ok(Advance::Step(last))
         }
         DriveOutcome::AwaitingExternal(lines) => {
             for line in &lines {
@@ -281,44 +281,42 @@ fn emit_drive_outcome<M: Send + Sync + 'static>(
     }
 }
 
-/// Trigger the appropriate observer event for the produced [`Line`].
+/// Trigger the appropriate observer event for the produced [`Step`].
 ///
 /// Internal helper used by both [`BrinkFlow::step_one`] and the replay
 /// system so that the same set of events fires whether the flow is
 /// being advanced in response to player input or replayed during a
 /// hot-reload.
+///
+/// Terminals carry no payload of their own (`docs/prose-dialect-spec.md`
+/// §7, RULED) — `BrinkTurnDone`/`BrinkStoryEnded` always fire with empty
+/// `text`/`tags` now; any trailing content already arrived as its own
+/// preceding `BrinkLineDelivered` event, matching the accumulate-until-
+/// terminal consumer pattern this module already documents.
 pub(crate) fn emit_event<M: Send + Sync + 'static>(
-    line: &Line,
+    step: &Step,
     entity: Entity,
     commands: &mut Commands,
 ) {
-    match line {
-        Line::Text { text, tags } => commands.trigger(BrinkLineDelivered::<M>::new(
+    match step {
+        Step::Line(line) => commands.trigger(BrinkLineDelivered::<M>::new(
             entity,
-            text.clone(),
-            tags.clone(),
+            line.text.clone(),
+            line.tags.clone(),
         )),
-        Line::Choices {
-            text,
-            tags,
-            choices,
-        } => commands.trigger(BrinkChoicesPresented::<M>::new(
+        Step::Choices(choices) => commands.trigger(BrinkChoicesPresented::<M>::new(
             entity,
-            text.clone(),
-            tags.clone(),
+            String::new(),
+            Vec::new(),
             choices.clone(),
         )),
-        // A park (`Line::Suspended`, FS-3r) is a turn boundary like `Done`;
+        // A park (`Step::Suspended`, FS-3r) is a turn boundary like `Done`;
         // runtime-unreachable today behind the E052 fence, grouped here so
         // the exhaustive match keeps compiling as the variant lands.
-        Line::Done { text, tags } | Line::Suspended { text, tags } => {
-            commands.trigger(BrinkTurnDone::<M>::new(entity, text.clone(), tags.clone()));
+        Step::Done | Step::Suspended => {
+            commands.trigger(BrinkTurnDone::<M>::new(entity, String::new(), Vec::new()));
         }
-        Line::End { text, tags } => commands.trigger(BrinkStoryEnded::<M>::new(
-            entity,
-            text.clone(),
-            tags.clone(),
-        )),
+        Step::End => commands.trigger(BrinkStoryEnded::<M>::new(entity, String::new(), Vec::new())),
     }
 }
 
@@ -335,9 +333,10 @@ mod tests {
 
     /// Recorder for observer events; tests assert against its contents.
     ///
-    /// Note: terminal `Line` variants (`Done`, `Choices`, `End`) carry
-    /// accumulated text in their own `text` field, not as a separate
-    /// preceding `Line::Text`. So we capture text from every event and
+    /// Note: terminal `Step` variants (`Done`, `Choices`, `End`) carry no
+    /// payload — their events always fire with empty text/tags now; any
+    /// trailing content already arrived as its own preceding
+    /// `BrinkLineDelivered`. So we capture text from every event and
     /// expose it as `all_text` for tests that just want "did this string
     /// appear anywhere."
     #[derive(Resource, Default)]
@@ -584,9 +583,9 @@ mod tests {
             "should have fired StoryEnded once; rec={:?}",
             (&rec.text_lines, rec.turn_done, rec.story_ended)
         );
-        // The "goodbye" text is delivered as part of the End event's own
-        // text field, not as a preceding Line::Text — terminal lines
-        // bundle accumulated content.
+        // The "goodbye" text is delivered as its own preceding
+        // `BrinkLineDelivered` event — terminals (`Step::End` here) carry
+        // no payload of their own (§7).
         assert!(
             rec.all_text().contains("goodbye"),
             "expected 'goodbye' somewhere in events; story_ended_text={:?} text_lines={:?}",
@@ -1063,19 +1062,26 @@ mod tests {
         app.update(); // fulfill
 
         // Drive one line at a time to the choice via the exclusive driver
-        // (this is the recording path).
-        let advance_to_terminal = |app: &mut bevy_app::App| -> Line {
+        // (this is the recording path). Terminals carry no text of their
+        // own (§7) — any trailing content already arrived as its own
+        // preceding `Step::Line`, so this accumulates text across the
+        // whole drive rather than reading it off the terminal.
+        let advance_to_terminal = |app: &mut bevy_app::App| -> (String, Step) {
+            let mut text = String::new();
             loop {
-                let line = advance_flow::<()>(app.world_mut(), entity).expect("advance");
-                if line.is_terminal() {
-                    return line;
+                let step = advance_flow::<()>(app.world_mut(), entity).expect("advance");
+                if let Step::Line(ref line) = step {
+                    text.push_str(&line.text);
+                }
+                if step.is_terminal() {
+                    return (text, step);
                 }
             }
         };
 
-        let at_choice = advance_to_terminal(&mut app);
+        let (_, at_choice) = advance_to_terminal(&mut app);
         assert!(
-            matches!(at_choice, Line::Choices { .. }),
+            matches!(at_choice, Step::Choices(_)),
             "expected the choice page; got {at_choice:?}"
         );
 
@@ -1101,11 +1107,10 @@ mod tests {
             flow.choose_recording(&mut view, &mut log, 0)
                 .expect("choose");
         }
-        let ended = advance_to_terminal(&mut app);
+        let (ended_text, _ended) = advance_to_terminal(&mut app);
         assert!(
-            ended.text().contains("Switch is ON."),
-            "live play should take the ON branch; got {:?}",
-            ended.text()
+            ended_text.contains("Switch is ON."),
+            "live play should take the ON branch; got {ended_text:?}"
         );
 
         // The query result must have been recorded.

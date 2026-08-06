@@ -1,0 +1,22 @@
+// Issue #2289 (2026-08-05 ruling): "it's never file local. you configure
+// conventions for a project, that's why they're conventions and not 'local
+// patterns'." This is the project's ONE configured conventions module
+// (`brink.toml`'s `[project] conventions = "conventions.brink"`) — it
+// declares a single claiming handler and NOTHING ELSE (no `flow` of its
+// own): the whole point of this fixture is that `story.brink`, a
+// completely separate file with no `use`/`IMPORT` of this module, still
+// gets ITS prose claimed by a handler declared HERE.
+//
+// Deliberately left `pub`-less: a native declared module defaults `Private`
+// (`manifest::effective_visibility`), and this fixture's whole reason for
+// existing is proving that the injected call reaches `cue` WITHOUT
+// requiring `pub` + a per-file `use` in every claiming file — the exact
+// file-local opt-in the 2026-08-05 ruling rejects (this fixture is driven
+// through `brink_test_harness::corpus::run_native_transcript_via_environment`,
+// the real multi-file `Project::load` road, not the single-file
+// `compile_path` every OTHER tier1-native case uses — see this directory's
+// own registration in `tier1_native.rs` for why).
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", order = 10)]
+fn cue(name: string) {
+  return "-- " + name + " enters --";
+}

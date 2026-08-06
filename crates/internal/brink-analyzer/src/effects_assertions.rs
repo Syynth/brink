@@ -145,13 +145,17 @@ fn check_one(
     // ── NS-A2 (issue #1108): the output/fault dimension assertions —
     // `silent` (no emits) and `total` (no faults), each exceedance-only
     // with its own code. Opaque rows are unbounded on every dimension
-    // (spec §3), so they exceed any concrete assertion.
-    if assertion.silent && (inferred.emits || inferred.opaque) {
+    // (spec §3), so they exceed any concrete assertion — and so does a row
+    // still carrying a §6.1 row variable (issue #1680), which is why every
+    // check here reads `is_pessimal()` rather than the intrinsic `opaque`
+    // bit: a higher-order definition's own effects are not bounded until a
+    // caller instantiates its hole.
+    if assertion.silent && (inferred.emits || inferred.is_pessimal()) {
         out.push(Diagnostic {
             file,
             range: assertion.range,
             code: DiagnosticCode::E108,
-            message: if inferred.opaque {
+            message: if inferred.is_pessimal() {
                 "inferred effects are unbounded (a call through a function value, or an                  unresolved callee) — the `silent` assertion cannot cover this definition"
                     .to_string()
             } else {
@@ -160,12 +164,12 @@ fn check_one(
             },
         });
     }
-    if assertion.total && (inferred.faults || inferred.opaque) {
+    if assertion.total && (inferred.faults || inferred.is_pessimal()) {
         out.push(Diagnostic {
             file,
             range: assertion.range,
             code: DiagnosticCode::E109,
-            message: if inferred.opaque {
+            message: if inferred.is_pessimal() {
                 "inferred effects are unbounded (a call through a function value, or an                  unresolved callee) — the `total` assertion cannot cover this definition"
                     .to_string()
             } else {
@@ -238,6 +242,12 @@ fn check_one(
         // bit (F29) is not part of `covers` semantics and never
         // assertable.
         faults_refined: inferred.faults_refined,
+        // An author-written assertion is always a ground row — §6.1 row
+        // variables are checker-minted and never spellable (spec §14.5/§11:
+        // rows are never author-written). An inferred row that still holds
+        // one is pessimal, so `covers` rejects it here exactly as it rejects
+        // an opaque one.
+        holes: BTreeSet::new(),
     };
     if !declared_row.covers(inferred) {
         out.push(Diagnostic {
@@ -327,7 +337,7 @@ fn unknown_name_diagnostic(file: FileId, range: TextRange, name: &str) -> Diagno
 /// message; otherwise the message lists every atom the assertion under-
 /// declares.
 fn exceedance_message(declared: &EffectRow, inferred: &EffectRow, index: &SymbolIndex) -> String {
-    if inferred.opaque {
+    if inferred.is_pessimal() {
         return "inferred effects are unbounded (a call through a function value, or an \
                  unresolved callee) — no effects assertion can cover this definition"
             .to_string();

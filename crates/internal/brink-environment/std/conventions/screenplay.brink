@@ -1,0 +1,312 @@
+// `std::conventions::screenplay` — the built-in screenplay preset
+// (issue #1720, Track 1 step 8 of #1351).
+//
+// `docs/prose-dialect-spec.md` §3.4/§3.5: "Presets ship as modules
+// (`std::conventions::screenplay`)... The producer compiles and evaluates
+// it (existing machinery: the compiler + `begin_function_eval`) and
+// freezes the resulting *value* into the `Environment` — the compiler
+// never consumes the module, only the value." §9.1's 2026-07-31 ruling
+// ("Conventions are annotated handlers") dissolved the `Conventions` type
+// and the `lower:` column this file used to need: a preset element is
+// literally an annotated handler — matched line, named captures bound to
+// params by name, exactly one call — the same three steps `!name`
+// dispatch takes, minus the sigil.
+//
+// ⚠ STATUS (honest, as of this issue): this file is the preset's SOURCE
+// FORM, matching §3.5's authored shape. It is NOT YET REACHABLE via
+// `use std::conventions::screenplay` in any real project, for two
+// independent, already-tracked reasons:
+//
+//   1. No `std::`-namespaced module resolution exists in the compiler at
+//      all. #2080 (ruled 2026-08-03) mounts this file's source into every
+//      compiled project's `Environment` manifest (`crates/internal/
+//      brink-environment`), so it now sits alongside a project's own
+//      sources in the same hash-addressed, string-keyed home — but that
+//      is only the mount. There is still no `use`-resolution mechanism
+//      that lets a project's own code reach an item inside it: nothing
+//      here is marked `pub`, and no confinement rule scopes what a
+//      project's `use` may reach (needs #1582's pub marker and #2167's
+//      closure-scoped confinement). The closest existing precedent, the
+//      T1b stdlib slice, is Rust-side bare-name recognition
+//      (`brink_analyzer::resolve::is_t1b_stdlib_name`), not a real
+//      `.brink` source file anyone imports.
+//   2. `fn conventions()` registration + comptime evaluation (issue
+//      #1840, "Conventions v1c") was RULED DISSOLVED entirely
+//      (`docs/decision-log.md` 2026-08-03, "`fn conventions()` is
+//      DISSOLVED") in favor of the `order`-based precedence issue #2164
+//      delivered — there is no registration step to land, and there
+//      never will be one. Precedence among this file's four handlers is
+//      total, explicit, and authored on each declaration's own `order =
+//      N` (see each handler below for its own justification), never
+//      inferred from declaration position.
+//
+//      This preset's handlers are NOT all side-effect-free: `heading`
+//      calls the `scene_entered` host extern (issue #2092, below). That
+//      is compatible with a claiming handler's own effect row (checked
+//      like any ordinary called function, since there is no comptime
+//      registration step to fence) — see issue #2179's disposition for
+//      why a "convention handlers may never read world state" legality
+//      fence was investigated and declined for now.
+//
+// **What IS proven end to end today**: every handler below is byte-for-
+// byte the same shape as `tests/tier1-native/conventions-screenplay-
+// preset/story.brink`, a project that inlines these exact declarations
+// (the only reachable way to exercise a claiming handler before
+// `std::`-resolution lands — single-file `@[convention(claims = …, order
+// = N)]` dispatch, issues #1838/#1839/#2164) and pins the resulting
+// transcript against a real compile + run. That test is this preset's
+// regression coverage; keep the two in sync.
+//
+// # Element inventory covered (docs/prose-dialect-spec.md §8, §8b, §8d)
+//
+// - `heading` — scene headings (`INT.`/`EXT.` prefix, §3.3/§8b.7). Scene
+//   entry is ruled a lowered host call (issue #2092; `docs/decision-
+//   log.md`'s 2026-07-31 "Conventions are annotated handlers" §9.1
+//   entry, item 6: "an engine listening for `scene_entered` against a
+//   module that never calls it is a *host-manifest* mismatch" — the
+//   manifest owns that boundary, not a second registry) — the handler
+//   now declares `extern scene_entered(title, slug)` and calls it as an
+//   ordinary logic-line statement
+//   before returning its display text, riding the existing Track-A
+//   bind-by-name + `Value` external-call machinery
+//   (`docs/host-capability-manifest.md`'s "Runtime relationship"
+//   section — the manifest itself is tooling/author-time only and never
+//   gates this call). A no-op `fn scene_entered(title: string, slug:
+//   string) { }` fallback ships alongside the `extern` so a project with
+//   no host `ExternalFnHandler` bound (bare `brink play`, this preset's
+//   own golden fixture) still runs cleanly — a real host's handler
+//   intercepts the call before that empty body ever executes. **Claims a
+//   heading with or without an explicit `[slug]`/trailing `#tag`s**
+//   (issue #2077, `docs/decision-log.md` 2026-08-06 "Slug-bearing
+//   headings: strip structure, then match" — before this ruling,
+//   `hir::lower_native::element::candidate`'s literalness rule declined a
+//   heading carrying either, the same way it still declines a
+//   `CONTENT_LINE` carrying interpolation; every worked-page heading in
+//   the spec — `[market]`, `[chapel_found]`, `[alley_escape]` — uses an
+//   explicit slug, so this handler could not claim any of the spec's own
+//   examples until this ruling landed). The slug is now captured and
+//   delivered to `HirFile::element_matches` as a reserved capture
+//   (`ElementMatch::slug`) — tooling-visible, but **not** wired into this
+//   call: `slug` below is still always passed through as an empty
+//   string, a deliberate non-choice, not a derived/materialized value.
+//   Wiring the captured slug into this call — what would make it
+//   load-bearing rather than descriptive — is heading→stitch promotion,
+//   issue #2078, deliberately untouched here (slug materialization on
+//   fmt is the separate #1718, blocked on #1730's missing `.brink` fmt
+//   pipeline; this preset does not build that here either). Promoting a
+//   heading to a real HIR stitch (a
+//   genuine divert target, §3.2/§3.3's "a scene heading may declare a
+//   stitch") is not built anywhere in the compiler — issue #1717, which
+//   would have owned that, was closed as superseded by the §9.1 ruling
+//   without delivering it. So `-> chapel_found`-style diverts into a
+//   heading-declared stitch, as §8c's worked case writes them, are not
+//   reachable through any preset; a project wanting that today still
+//   needs an ordinary `flow chapel_found() { … }`.
+// - `transition` — a bare, all-caps line ending in `:` (`CUT TO:`,
+//   `SMASH CUT TO:`, §8b.7/§8d). Re-emits its own text verbatim; diverts
+//   stay absolutely invisible either way (RULED, unconditionally — a
+//   transition dresses the divert that follows, it never touches it).
+// - `cue` — a bare `@NAME` speaker line (§8b.9/§8d.4). **Migrated to
+//   ATTACH MODE by issue #2166** (was `block`-capturing wrap-and-re-emit
+//   before this issue, spelled out below). `cue` claims and consumes
+//   *only its own line* — it never receives the dialogue that follows,
+//   the way a `block` handler would. It declares `attach = Cue`
+//   (issue #2178: a plain `struct` naming the handler's declared output
+//   schema) and returns a `Cue` value. **Issue #2108 built the runtime
+//   consumer**: `cue`'s claimed line produces no visible text at all
+//   (ruling item 6, "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
+//   convention emits no line) — its `Cue` value's fields merge into the
+//   VM's per-block attachment state instead, and the dialogue line(s)
+//   that follow each carry a copy (`OutputLine.element.data`). Only
+//   claims a cue with no trailing tag extension (`@VENDOR #(v.o.)`
+//   declines — the tag is structure the pattern is never shown, and
+//   unlike `heading` above, a `CUE`'s structure is not stripped-and-
+//   recovered by issue #2077, which is scoped to headings only).
+// - `parenthetical` — a chain-gated `(delivery)` line (parser-enforced:
+//   only recognized directly after a live cue). **Also migrated to
+//   ATTACH MODE by issue #2166**, for the identical reason `cue` was:
+//   it claims and consumes only its own line, declares `attach =
+//   Parenthetical`, and returns a `Parenthetical` value — same #2108
+//   runtime consumer as `cue`.
+//
+// ⚠ **Cue, parenthetical, and the dialogue that follows are three
+// independent CLAIMS, but the first two ATTACH to the third — not three
+// unrelated events.** Before issue #2166, `cue`/`parenthetical` were
+// `block`-capturing handlers that WRAPPED the run following their matched
+// line into their own template output — this is exactly the shape the
+// ruled attach/wrap split (`docs/decision-log.md` 2026-08-03, "The element
+// output model") retires for a pattern-claiming handler that only ever
+// wants to tag *itself*, not re-emit someone else's dialogue. Under attach
+// mode, `cue`/`parenthetical` consume nothing beyond their own matched
+// line as CONTENT; the dialogue line(s) that follow are ordinary
+// `CONTENT_LINE`s, lowered and displayed through the same unclaimed path
+// any other prose line takes (verbatim, exactly as authored) — `cue` and
+// `parenthetical` never receive that dialogue as a call argument, and
+// never learn what the other claimed. What they DO reach it by is
+// runtime-accumulated METADATA (issue #2108): both attach onto the SAME
+// following run (ruling item 3 — cue's `speaker` and parenthetical's
+// `delivery` both land in that run's `Element.data`), not by any
+// content-level joining. `attach = Cue`/`attach = Parenthetical`'s
+// consumer is the VM's block-attachment state (`brink_runtime::vm`'s
+// `Opcode::AttachElement`/`Opcode::EndElementRun`); a typed host binding
+// (`bind_brink_element`, `bevy-brink`) and an editor projection (#2111)
+// are both still unbuilt — see this issue's own tracked follow-up notes.
+//
+// ⚠ **`try_claim` matches purely on extracted TEXT against a handler's
+// pattern — it never restricts a handler to only the grammar kind its
+// author had in mind.** `candidate()` decides whether a node offers
+// literal text to match at all; it does not gate WHICH handler may claim
+// it. A permissive `parenthetical` pattern (the obvious `.+`) would also
+// re-claim an ordinary dialogue line that happens to be lowercase and
+// punctuation-free — `parenthetical`'s pattern below is therefore
+// deliberately narrow (lowercase-initial only, no punctuation) — real
+// screenplay parenthetical deliveries (`(hushed)`, `(beat)`, `(to Kid)`
+// excepted — capitalized names inside a delivery are NOT covered by this
+// pattern, a known, documented narrowing) satisfy this; ordinary
+// dialogue (capitalized, punctuated) does not. Widening this pattern
+// safely needs either a kind-aware dispatch restriction (a mechanism
+// change beyond this issue's fence) or a token that survives the
+// parens/braces some other way — not attempted here.
+//
+// ⚠ **This is not just a self-re-claim hazard — it is the real constraint
+// on this preset's patterns.** Because `try_claim` is kind-blind (see
+// above: `candidate()` gates which NODE KINDS offer text to match, not
+// which handler may claim a given match), `parenthetical`'s
+// `^[a-z][a-z' -]*$` pattern will claim ANY all-lowercase,
+// punctuation-free line anywhere a `CONTENT_LINE` is itself a claim
+// candidate — not only a chain-gated `PARENTHETICAL` node. An ordinary,
+// unrelated action/prose line elsewhere in the same project (`she
+// waits`, `he nods slowly`) matches the same pattern and gets wrongly
+// rewritten through `parenthetical`. Keeping every ordinary prose line
+// either capitalized, punctuated, or otherwise outside this exact shape
+// is the only guard today — there is no kind restriction to fall back
+// on.
+//
+// ⚠ **Compact cues (`@NAME: text`, §8b.9) ARE covered by `cue` itself, as
+// of issue #2079 (RULED 2026-08-06, "Compact cue desugars to cue +
+// content line").** `COMPACT_CUE` fuses a `CUE_NAME` and an ordinary
+// `CONTENT_LINE` (which may itself carry markup) into one node;
+// `candidate()` now offers just the `CUE_NAME` segment to matching —
+// exactly as it would for a block cue's own name — so `cue`'s pattern
+// above claims `@KID: …` the same way it claims a bare `@KID`. The fused
+// dialogue is never shown to the pattern (literalness applies to the name
+// segment only) and lowers as an ordinary content line **inside** the
+// attached run `cue`'s `AttachElement` opens, keeping full markup/
+// interpolation rights — `@KID: I have {count} coins.` claims exactly
+// like `@KID` followed by `I have {count} coins.` on its own line would.
+// A `CUE`/`COMPACT_CUE` carrying a tag extension (`@VENDOR #(v.o.)`) is
+// still NOT covered — the tag is structure the pattern is never shown,
+// and unlike a `SCENE_HEADING`, a cue's slug/tag structure is not
+// stripped-and-recovered by issue #2077, which is scoped to headings
+// only. A `SCENE_HEADING` carrying a `[slug]` and/or trailing `#tag`s IS
+// covered, since issue #2077 (above).
+//
+// # `@[style]` — deliberately NOT declared here
+//
+// `docs/prose-dialect-spec.md` §3.5b names the screenplay preset as the
+// example that would make itself self-describing via `@[style(... =
+// "[right, uppercase]")]` (transitions right-aligned + uppercase, cues
+// uppercase). That section's own Deferred list states plainly that
+// **multi-token style values are not built**: a `key = "a b"` value
+// lowers to one `StyleToken::Custom("a b")`, not two tokens — so writing
+// `[right, uppercase]` here would silently ship a decorative annotation
+// that lies about what it does. Left off entirely rather than shipping
+// a half-working one; add it once multi-token values land.
+//
+// # Dispatch order — chosen deliberately (issue #2166)
+//
+// Every handler's `order` below is total, explicit, and authored
+// (issue #2164: no default, no tie-break, `E179` on a duplicate). None
+// of these four patterns actually overlap on any input today — `heading`
+// requires a literal `INT.`/`EXT.` prefix, `transition` requires a
+// trailing `:` that neither of `cue`/`parenthetical`'s character classes
+// admit, and `cue`/`parenthetical` are disjoint on case (`[A-Z…]` vs
+// `[a-z…]`) — so no relative ordering among these four changes which
+// handler claims which line *today*. The values are still chosen to
+// reflect the precedence a screenplay actually needs if that ever
+// stops being true (a future convention narrowing one of these
+// classes, or a project overriding one pattern to widen it):
+//
+// - `heading = 10` — the most narrowly anchored pattern (a literal
+//   prefix token), and the only one a widened neighbour could never
+//   plausibly subsume. Tried first.
+// - `transition = 20` — also anchored (a trailing literal `:`), second
+//   most specific.
+// - `cue = 30` — an unanchored, whole-line character-class pattern
+//   (`[A-Z '-]*`). Broader than the two above, so tried only after they
+//   have had first refusal.
+// - `parenthetical = 40` — the single widest, most permissive pattern
+//   this file declares (documented above: it will claim ANY lowercase,
+//   punctuation-free line anywhere a claim candidate appears, not only a
+//   real chain-gated parenthetical). Ordered last on purpose, so every
+//   more specific pattern in this module gets to run first.
+//
+// Gaps of 10 between values are left deliberately, so a future handler
+// can be inserted between any two without renumbering the rest.
+
+/// The host-facing scene-entry notification (issue #2092). Fires once per
+/// claimed heading, before the handler's display text returns. `title` is
+/// the claimed heading's title text verbatim (e.g. `MARKET SQUARE -
+/// NIGHT`); `slug` is always the empty string today — NOT because a
+/// slug-bearing heading declines the claim (#2077 ruled and landed "Slug-
+/// bearing headings: strip structure, then match": a heading's `[slug]`/
+/// `#tag`s are stripped before pattern matching, so this handler claims a
+/// slugged heading exactly as it claims an unslugged one), but because the
+/// `heading` handler below still hardcodes `scene_entered(title, "")` — the
+/// captured slug is delivered to `HirFile::element_matches` but not yet
+/// wired into this call. That wiring is heading→stitch promotion, #2078,
+/// still open and deliberately untouched here. No fallback
+/// body is written inline on the `extern` itself — native `extern`
+/// declarations never carry one (`brink-syntax-native`'s own
+/// `extern_decl` doc: "no body, ever"). Instead a same-named `fn` below
+/// supplies the ink-side fallback the linker binds when no host
+/// `ExternalFnHandler` resolves the call (mirrors ink's own
+/// `EXTERNAL`+matching-knot fallback idiom, `lir::lower::decls::
+/// collect_externals`).
+/// @param title {string}
+/// @param slug {string}
+extern scene_entered(title, slug)
+
+/// No-op fallback for `scene_entered` — runs only when nothing bound a
+/// real host handler. Keeps this preset (and its own golden fixture)
+/// playable standalone; a real host's `ExternalFnHandler` intercepts the
+/// call before this body ever executes.
+fn scene_entered(title: string, slug: string) {
+}
+
+@[convention(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$", order = 10)]
+fn heading(kind: string, title: string) {
+  scene_entered(title, "");
+  return "-- {kind}. {title} --";
+}
+
+@[convention(claims = "^(?<text>[A-Z][A-Z '-]*:)$", order = 20)]
+fn transition(text: string) {
+  return text;
+}
+
+/// `cue`'s declared attach schema (issue #2178). One field today — just
+/// the speaker name `cue`'s own `claims` pattern captures. No `voiceover`/
+/// `offscreen`-style field is declared here: this preset does not claim a
+/// cue's tag extension (`@VENDOR #(v.o.)` is deliberately left unclaimed,
+/// see the module doc above), so there is nothing captured to populate
+/// such a field with — adding one would be a dead, permanently-false key.
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 30)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+/// `parenthetical`'s declared attach schema (issue #2178) — the claimed
+/// delivery text, verbatim.
+struct Parenthetical {
+  delivery: string,
+}
+
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", attach = Parenthetical, order = 40)]
+fn parenthetical(delivery: string): Parenthetical {
+  return Parenthetical { delivery: delivery };
+}

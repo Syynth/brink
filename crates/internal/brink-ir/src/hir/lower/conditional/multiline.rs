@@ -58,11 +58,14 @@ fn lower_if_else_branches(
             } else {
                 b.condition().and_then(|e| e.lower_expr(scope, sink).ok())
             };
+            let branch_ptr = scope.prov(NodeClass::ConditionalBranch, b.syntax());
             let body = b.body().map_or_else(Block::default, |body| {
                 lower_branch_body(body.syntax(), scope, sink)
             });
             CondBranch {
+                ptr: branch_ptr,
                 condition,
+                binding: None,
                 body,
                 container_id: None,
             }

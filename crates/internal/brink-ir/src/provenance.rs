@@ -75,6 +75,8 @@ pub enum NodeClass {
     Expr = 1,
 
     // ── Specific classes (16..) — append-only, never reused ─────────
+    // (Appending one also means adding its `from_u16` arm and bumping the
+    // `node_class_u16_round_trips` sentinel to the new last variant.)
     /// A `Tag` attached to content.
     Tag = 16,
     /// A knot definition (`== knot`). A `hir::Knot` carries this class only
@@ -147,6 +149,27 @@ pub enum NodeClass {
     ExternalDecl = 48,
     /// An `INCLUDE` site.
     Include = 49,
+    /// An infix (binary) operation — `lhs op rhs` (issue #1517).
+    Infix = 50,
+    /// One branch of a multiline/inline conditional (issue #404) — the
+    /// branch's condition-plus-body span, distinct from the enclosing
+    /// [`Self::Conditional`]'s whole-construct span. Lets a diagnostic or
+    /// editor decoration (e.g. a fold run) anchor to a single `- else:`
+    /// arm instead of the entire `{ ... }` block.
+    ConditionalBranch = 51,
+    /// One branch (alternative) of a sequence/alternation block (issue
+    /// #404), mirroring [`Self::ConditionalBranch`] for `- ...` sequence
+    /// arms and `|`-separated inline alternatives.
+    SequenceBranch = 52,
+    /// A `|x| …` lambda expression — the native surface's anonymous fn
+    /// value (RULED 2026-07-19, issue #1685). Native-only: ink's grammar
+    /// cannot spell a lambda.
+    Lambda = 53,
+    /// An inline markup span (`<name attr="v">…</name>`, issue #1716).
+    /// Native-only: ink's grammar cannot spell markup. Stamped per-span so
+    /// diagnostics (`E164`/`E165`, issue #1782) can point at the exact span
+    /// rather than its enclosing content line.
+    Span = 54,
 }
 
 impl NodeClass {
@@ -198,6 +221,11 @@ impl NodeClass {
             47 => Self::StructDecl,
             48 => Self::ExternalDecl,
             49 => Self::Include,
+            50 => Self::Infix,
+            51 => Self::ConditionalBranch,
+            52 => Self::SequenceBranch,
+            53 => Self::Lambda,
+            54 => Self::Span,
             _ => return None,
         })
     }
@@ -362,7 +390,11 @@ mod tests {
                 assert_eq!(class.as_u16(), v);
             }
         }
-        assert_eq!(NodeClass::from_u16(NodeClass::Include.as_u16() + 1), None);
+        // One past the *last* assigned class is unknown. Appending a class
+        // to the enum means bumping this name to the new last variant —
+        // otherwise the sentinel starts naming an assigned value and this
+        // assertion fails.
+        assert_eq!(NodeClass::from_u16(NodeClass::Span.as_u16() + 1), None);
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 

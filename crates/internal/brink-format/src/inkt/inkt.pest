@@ -126,10 +126,12 @@ source_field = { "(" ~ "source" ~ string ~ integer ~ ".." ~ integer ~ ")" }
 source_hash = @{ "@" ~ ASCII_HEX_DIGIT{16} }
 line_content = { string | template }
 template = { "(" ~ "template" ~ template_part+ ~ ")" }
-template_part = { literal_part | slot_part | select_part }
+template_part = { literal_part | slot_part | select_part | span_part }
 literal_part = { "(" ~ "lit" ~ string ~ ")" }
 slot_part = { "(" ~ "slot" ~ integer ~ ")" }
 select_part = { "(" ~ "select" ~ "slot=" ~ integer ~ select_variant* ~ select_default ~ ")" }
+span_part = { "(" ~ "span" ~ string ~ span_attr* ~ template_part* ~ ")" }
+span_attr = { "(" ~ "attr" ~ string ~ string ~ ")" }
 select_variant = { "(" ~ select_key ~ string ~ ")" }
 select_default = { "(" ~ "default" ~ string ~ ")" }
 select_key = { cardinal_key | ordinal_key | exact_key | keyword_key }

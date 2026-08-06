@@ -151,6 +151,22 @@ pub fn iterate_element_ty(iterable: &Ty) -> Option<Ty> {
     }
 }
 
+/// The value type bound by `for k, v in m`'s second binding (B2, issue
+/// #1461, docs/stdlib-spec.md §5/§9's F10 ruling — two-binding map
+/// iteration is the pair story `entries()` never got). Only maps have a
+/// "value at key"; arrays and ranges iterate a single element with no
+/// paired value, so they're not represented here at all — a caller
+/// (`infer::body`'s `BlockStmt::For` arm) falls back to `Ty::Unknown` for
+/// anything this returns `None` for, the same permissive-at-compile
+/// posture [`iterate_element_ty`]'s own callers already rely on.
+#[must_use]
+pub fn iterate_val_ty(iterable: &Ty) -> Option<Ty> {
+    match iterable {
+        Ty::Map(_, val) => Some((**val).clone()),
+        _ => None,
+    }
+}
+
 // ─── F6: reserved-name declarations (E113) ──────────────────────────────
 
 /// Check one file for author declarations of the reserved protocol method
@@ -224,6 +240,13 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             Stmt::Content(c) => walk_content(c, push),
             Stmt::ChoiceSet(cs) => {
                 for choice in &cs.choices {
+                    // Guard-`as` binding (issue #1508) — same treatment as
+                    // `Stmt::Conditional`'s `branch.binding` a few arms
+                    // down: it's a declaration site a temp/loop variable
+                    // can hide behind, per this function's own doc.
+                    if let Some(binding) = &choice.binding {
+                        push(binding, "binding");
+                    }
                     walk_stmts(&choice.body.stmts, push);
                 }
                 walk_stmts(&cs.continuation.stmts, push);
@@ -231,12 +254,15 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             Stmt::LabeledBlock(b) => walk_stmts(&b.stmts, push),
             Stmt::Conditional(c) => {
                 for branch in &c.branches {
+                    if let Some(binding) = &branch.binding {
+                        push(binding, "binding");
+                    }
                     walk_stmts(&branch.body.stmts, push);
                 }
             }
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    walk_stmts(&branch.stmts, push);
+                    walk_stmts(&branch.body.stmts, push);
                 }
             }
             Stmt::LogicBlock(lb) => walk_block_stmts(&lb.stmts, push),
@@ -247,29 +273,42 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             | Stmt::Return(_)
             | Stmt::ExprStmt(_)
             | Stmt::EndOfLine
-            | Stmt::Await(_) => {}
+            | Stmt::Await(_)
+            | Stmt::AttachElement(_)
+            | Stmt::EndElementRun => {}
         }
     }
 }
 
 fn walk_content(content: &Content, push: &mut impl FnMut(&Name, &str)) {
     for part in &content.parts {
-        match part {
-            ContentPart::InlineConditional(c) => {
-                for branch in &c.branches {
-                    walk_stmts(&branch.body.stmts, push);
-                }
+        walk_content_part(part, push);
+    }
+}
+
+fn walk_content_part(part: &ContentPart, push: &mut impl FnMut(&Name, &str)) {
+    match part {
+        ContentPart::InlineConditional(c) => {
+            for branch in &c.branches {
+                walk_stmts(&branch.body.stmts, push);
             }
-            ContentPart::InlineSequence(s) => {
-                for branch in &s.branches {
-                    walk_stmts(&branch.stmts, push);
-                }
-            }
-            ContentPart::Interpolation(_)
-            | ContentPart::Text(_)
-            | ContentPart::Glue
-            | ContentPart::Spring => {}
         }
+        ContentPart::InlineSequence(s) => {
+            for branch in &s.branches {
+                walk_stmts(&branch.body.stmts, push);
+            }
+        }
+        // A span can nest a conditional/sequence (§4.3), each with its own
+        // statement bodies to walk.
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                walk_content_part(child, push);
+            }
+        }
+        ContentPart::Interpolation(_)
+        | ContentPart::Text(_)
+        | ContentPart::Glue
+        | ContentPart::Spring => {}
     }
 }
 
@@ -280,9 +319,17 @@ fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
         match stmt {
             BlockStmt::TempDecl(t) => push(&t.name, "temp"),
             BlockStmt::If(i) => walk_if(i, push),
-            BlockStmt::While(w) => walk_block_stmts(&w.body, push),
+            BlockStmt::While(w) => {
+                if let Some(binding) = &w.binding {
+                    push(binding, "binding");
+                }
+                walk_block_stmts(&w.body, push);
+            }
             BlockStmt::For(f) => {
                 push(&f.var_name, "for-loop variable");
+                if let Some(val_name) = &f.val_name {
+                    push(val_name, "for-loop variable");
+                }
                 walk_block_stmts(&f.body, push);
             }
             BlockStmt::Assignment(_)
@@ -296,6 +343,11 @@ fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
 }
 
 fn walk_if(i: &IfStmt, push: &mut impl FnMut(&Name, &str)) {
+    // B1b (issue #1475): the `as` binding declares a name, so it is a
+    // reserved-protocol-name site exactly like a `temp` or a `for` variable.
+    if let Some(binding) = &i.binding {
+        push(binding, "binding");
+    }
     walk_block_stmts(&i.body, push);
     match &i.else_branch {
         Some(ElseBranch::ElseIf(inner)) => walk_if(inner, push),
@@ -574,7 +626,7 @@ fn contract_error(
     // applies only when the impl's own row is opaque (already a contract
     // violation above) or genuinely fault-bearing.
     let faults_exceed = row.faults_refined && !matches!(proto, Protocol::Iterate);
-    if !row.opaque
+    if !row.is_pessimal()
         && row.reads.is_empty()
         && row.writes.is_empty()
         && row.calls.is_empty()
@@ -585,7 +637,7 @@ fn contract_error(
         return None;
     }
     let mut parts = Vec::new();
-    if row.opaque {
+    if row.is_pessimal() {
         parts.push(
             "calls through a function value or unresolved callee (unbounded row)".to_string(),
         );

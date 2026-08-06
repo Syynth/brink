@@ -1,8 +1,8 @@
 //! Episode-based behavioral testing for brink ink runtime.
 //!
 //! Records full execution traces (episodes) including text output, choices,
-//! tags, state mutations, and external function calls. Supports branch
-//! exploration via DFS with `Story` cloning and structural diffing of episodes.
+//! tags, and state mutations. Supports branch exploration via DFS with
+//! `Story` cloning and structural diffing of episodes.
 
 pub mod corpus;
 pub mod diff;
@@ -12,6 +12,7 @@ pub mod ground_truth;
 pub mod oracle;
 pub mod runner;
 pub mod snapshot_fmt;
+mod termination;
 
 pub use diff::{EpisodeDiff, StepDiff, diff};
 pub use episode::*;

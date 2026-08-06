@@ -16,10 +16,10 @@ through the RMW discipline, and `#@`-channel annotations. Track B (native
 surface) waits on the prototype parser (the season's next artifact).
 
 **Why the current brink dialect is the early host (load-bearing).** The
-oracle/test-harness machinery (`brink-test-harness`, the 5,577-episode
+oracle/test-harness machinery (`brink-test-harness`, the 5,598-episode
 ratchet, insta snapshots) already covers the brink dialect end-to-end. A
-verb implemented as a brink-dialect intrinsic — `Option[T]`, the
-heap verbs, `Weighted[T]`, the effect-row extensions — gets **oracle and
+verb implemented as a brink-dialect intrinsic — `Option<T>`, the
+heap verbs, `Weighted<T>`, the effect-row extensions — gets **oracle and
 snapshot coverage the day it lands**, years before the native parser can
 exercise it. Every Track A wave should ship its verbs/machinery gated to
 the brink dialect (the T1b stdlib-slice-1 precedent: lowercase free
@@ -34,13 +34,13 @@ behavior rather than co-developing it.
 ```mermaid
 graph TD
   subgraph TrackA["TRACK A — substrate (pump now, brink-dialect-hosted)"]
-    A1["A1: Option[T] builtin<br/>checker enum + wire + or-coalescing typing"]
+    A1["A1: Option<T> builtin<br/>checker enum + wire + or-coalescing typing"]
     A2["A2: effect-row extension wave<br/>emits+tags+faults (#1087/#1097) — one PR wave"]
     A3["A3: protocol registry machinery<br/>display / compare / iterate + contracts"]
     A4["A4: ordering doctrine in the VM<br/>NaN dev-fault / prod pinned order + dev/prod plumbing"]
     A5["A5: inhabited-range refinement<br/>+ nonempty() validator + gradual residual"]
     A6["A6: rng-as-cell formalization<br/>state cell + draw=write + determinism/save"]
-    A7["A7: Weighted[T] + heap verbs<br/>brink-dialect intrinsics"]
+    A7["A7: Weighted<T> + heap verbs<br/>brink-dialect intrinsics"]
     A8["A8: numeric tower value kinds<br/>(mini-spec prerequisite)"]
   end
 
@@ -75,7 +75,6 @@ graph TD
   B0 --> B1
   B0 --> B2
   B0 --> B3
-  B0 --> B4
   B0 --> B5
 
   classDef block fill:#fdd,stroke:#c00;
@@ -99,12 +98,12 @@ Sized to the repo's pump conventions (single reviewed, oracle-gated
 PRs; spine slices serial, tails as pump waves — the T1b/FS-3 method).
 Each wave is issue-shaped with an explicit scope and a green gate.
 
-### Wave A1 — `Option[T]` as the third parameterized builtin
+### Wave A1 — `Option<T>` as the third parameterized builtin
 **Scope.** Compiler-owned enum type; checker-known polymorphic
-signatures; wire form (V4 section, `none` + `some(T)`); the `Option[T] ≠
+signatures; wire form (V4 section, `none` + `some(T)`); the `Option<T> ≠
 T` strictness everywhere except the display boundary; bare-`none`-needs-
-context rule; the `or`-coalescing **typing** rule (`(Option[T],T)→T` and
-`(Option[T],Option[T])→Option[T]` — F19). **Excludes** the surface
+context rule; the `or`-coalescing **typing** rule (`(Option<T>,T)→T` and
+`(Option<T>,Option<T>)→Option<T>` — F19). **Excludes** the surface
 *spelling* of `or` and `as` (Track B). **Host dialect:** brink dialect —
 `get`/`find`/`index_of` flips land here as intrinsics returning `Option`,
 immediately oracle-covered. **Gate:** oracle byte-identical (Option is
@@ -160,7 +159,7 @@ F15 (compare/equality coherence).
 ### Wave A5 — the inhabited-range refinement
 **Scope.** The refinement type; literal-bounds free coercion (const-fold);
 statically-empty literal = compile error; `(a..b).nonempty() →
-Option[<inhabited range>]` validator; **the gradual-mode runtime residual
+Option<<inhabited range>>` validator; **the gradual-mode runtime residual
 (F8)** — `rand::int` faults on empty in gradual, inert under strict;
 recorded as the general refinement→gradual rule. **Depends:** A1 (Option
 return of nonempty), A6 (rand::int is the consumer). **Blocks:** B5
@@ -184,8 +183,8 @@ visible). Verbs `int`/`float`/`chance`/`pick`/`shuffle`/`shuffled`/`seed`.
 verb specifically; the rest of A6 can proceed without it), F4 (float name
 disambiguation — trivial, resolve in-wave).
 
-### Wave A7 — `Weighted[T]` + heap verbs
-**Scope.** `Weighted[T]` parameterized builtin; `Weighted { weight:
+### Wave A7 — `Weighted<T>` + heap verbs
+**Scope.** `Weighted<T>` parameterized builtin; `Weighted { weight:
 value }` literal (**multiset** duplicate policy — F17); evidence-by-
 construction refusal of empty/zero/negative (compile error where
 classifiable, **NEW construction-fault diagnostic** for computed weights —
@@ -217,11 +216,38 @@ These cannot pump until the prototype native parser (B0) exists; each
 also depends on its Track A substrate being green so the surface lowers to
 *tested* semantics.
 
-### Wave B1 — `or`-coalescing spelling + `as`-binding unwrap
+### Wave B1 — `or`-coalescing spelling + `as`-binding unwrap (BUILT)
 `x or default` surface (typing from A1); the `EXPR as NAME` Option-unwrap
 in `if`/`while` (F16 — the primary consumer of every Option-returning
 verb, `while heap_pop(ref h) as node`, `if m.get(k) as v`). **Depends:**
 B0, A1.
+
+**Landed in two slices.** B1 (#1460) shipped `x or default` as
+`InfixOp::Coalesce` + a binary `Opcode::Coalesce` that evaluated both
+operands eagerly, honestly flagging that as an unruled decision; the
+maintainer then ruled **short-circuit** (issue #1471), so the binary opcode
+was retired for the branching `Opcode::CoalesceSome(rel)` (`rhs` runs only
+on `none`) and the collapse-vs-preserve typing decision moved to lowering,
+which consumes the analyzer's recorded per-step types (issue #1492) instead
+of re-deriving them from syntax. B1 also honestly *declined* the
+`as`-binding: its grammar existed only as illustrative sketches, in two
+mutually inconsistent shapes. The reconciliation was ruled 2026-07-26
+("The `as` binding: one construct, both condition positions, `{if}`
+spelling") and built as **B1b (#1475)** — one grammar rule
+(`AS_BINDING`) serving the statement condition position (`if`/`while`)
+and the template one (`{if EXPR as NAME: … else: …}`), lowered to one
+fused test-and-bind opcode (`Opcode::OptionBind`). Binding immutable
+(**E148**), typed `T` from `Option<T>`, scoped strictly to the success
+arm, rebinding per iteration in `while`; whole-condition-only for v1
+(**E145** — let-chains stay additively available later); a non-Option
+condition is **E147** (runtime residual:
+`RuntimeError::AsBindingNotOption`). `as` in a choice guard — ruled the
+same day (capture-at-presentation, by value, riding the pending choice's
+existing thread-fork snapshot) — **is now implemented** (issue #1508):
+the guard's `OptionBind` writes into the same frame the choice's
+`BeginChoice` snapshots, so the captured value reaches the picked body
+with no separate wire-level capture. **E146** ("not yet supported") is
+retired.
 
 ### Wave B2 — `for k, v in m` / `for ref x in xs` / `for` over `iterate`
 The two-binding map desugar (**F10** — exact lowering + snapshot-keys
@@ -239,21 +265,83 @@ signatures). **Findings:** F0 (sort_by's ref-ness decides its rvalue-
 receiver behavior — **must be ruled** so UFCS knows whether `a.sort_by(c)`
 on an rvalue is an error).
 
-### Wave B4 — display-boundary None-render in interpolation
-The §1.6 forgiveness: a final-None interpolation renders as nothing;
-everywhere else `Option[T] ≠ T` strict; nested compositions never
-forgiven; the traceability rider (transcript/debug records None-renders).
-**Depends:** B0, A1. **Findings:** F1 (does the boundary also govern
-`string()`), F12 (emits still fires on None-interp).
+**B3a — the resolution pass itself (SHIPPED, issue #1482).** The wave split
+once the pass was designed (D1–D5 RULED 2026-07-26): `brink-analyzer::ufcs`
+is the type-directed pass that decides `recv.name(args)` — field access wins
+outright (`E140` when the matching field is not callable), else a free
+function in ordinary lexical scope is desugared to `name(recv, args)`
+(`E141` when neither, `E142` when the receiver's type is unknown), with the
+verdict recorded in a `node → verdict` side table for LIR lowering and IDE
+hover. Auto-ref was explicitly not in it: a free function with a `ref` first
+parameter reached through method syntax was refused rather than desugared by
+value, and lifting that fence was the remaining B3 work.
 
-### Wave B5 — construction grammar `TypeName { … }`
+**B3b — auto-ref (SHIPPED, issue #1462).** D5 landed on top of the pass: a
+`ref` first parameter now makes the receiver an explicit ref-argument
+internally — `gold.bump(1)` → `bump(ref gold, 1)` in desugar notation (the
+native surface has no call-site `ref` keyword; the spellable equivalent is
+the unmarked `bump(gold, 1)`), `party.leader.heal(5)` →
+`heal(ref party.leader, 5)` — riding the T1e ref-argument/projection
+machinery for a **durable** root, or (**RULED 2026-07-27**, issue #1531) a
+frame-local read/call/write-back RMW expansion for a **frame-local** root
+one field deep. `E143` is the ruled refusal for a receiver that still
+cannot be written through (a `CONST`; a frame-local projection deeper than
+one field; and the ruled rvalue receivers `[1,2].push(3)`/
+`a.sorted().push(x)` once the grammar can spell them at all). A non-`ref`
+first parameter is untouched — plain by-value desugar, no lvalue
+requirement. The **durable-root** projection receiver is reachable end to
+end since issue #1530 made a struct-typed durable global spellable (a
+well-formed construction literal is now a legal `VAR` default); the
+**frame-local** projection receiver is reachable end to end since issue
+#1531's ruling narrowed T1e's durable-root requirement to the durable case
+only — a frame-local mutation is unobservable outside the frame and needs
+no effect row.
+`brink-test-harness/tests/b3a_ufcs_e2e.rs`'s
+`auto_ref_mutates_a_projection_off_a_durable_global_end_to_end` and
+`auto_ref_mutates_a_projection_off_a_frame_local_end_to_end` drive both
+arms through the real `.brink` pipeline, alongside the LIR-lowering
+coverage in `brink-ir/tests/ufcs_auto_ref.rs`.
+
+### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
+The §1.6b forgiveness: a final-None interpolation renders as nothing;
+everywhere else `Option<T> ≠ T` strict; nested compositions never
+forgiven; the traceability rider (transcript/debug records None-renders).
+**Turned out not to depend on B0** — `{…}` interpolation and `Option<T>`
+already exist on the current brink dialect (the same "early host" pattern
+§0's opening note argues for), so the boundary shipped as a
+`brink-runtime` value-display change (`value_ops::stringify_display`),
+oracle- and brink-corpus-covered immediately, with no native-parser
+surface involved at all; the graph above no longer draws a `B0 --> B4`
+edge, reflecting that. **Findings:** F1 — RESOLVED, the boundary does **not** govern
+`string()` (§1.6's own text: "`string()`'s ruled totality is preserved");
+F12 — RESOLVED by inspection, `note_effect_emit` fires unconditionally in
+`vm.rs` before the output push, independent of whether the pushed value
+later resolves to empty text. **Deferred as named-edge riders (not
+implemented here):** the always-None-interpolation lint; choice-text/tag
+surfaces distinguishing an accidental empty choice/tag from a deliberate
+`* []` (choice display text shares the fragment-resolution path this wave
+touches, so it inherits the same forgiveness — whether that is the
+intended edge behavior is still open).
+
+### Wave B5 — construction grammar `TypeName { … }` (BUILT, #1464)
 The one initializer grammar, per-type meaning: struct fields / map pairs /
 flags members / `Weighted` multiset / enum-variant payloads / tower
-components. **The protocol-vs-grammar question is #1103** (code-dialect
-sitting) — B5 v1 implements grammar dispatch over the closed set;
-#1103 may later promote it to a construction protocol. **Depends:** B0,
-A5 (refined-literal coercion at construction), A7 (Weighted). **Findings:**
-F17 (Weighted multiset), F5/duplicate policies.
+components. **The protocol-vs-grammar question was #1103 — RULED
+2026-07-23**: construction is **protocol dispatch**, the registry's 4th
+entry (`construct`), not grammar dispatch over a closed set.
+
+**Landed (#1464):** the native grammar (`CONSTRUCT_LITERAL` /
+`CONSTRUCT_ENTRY` — one shape for the element and pair/field forms) plus
+the registry (`brink_ir::hir::construct::ConstructTarget`, std-only:
+`Map`/`Flags`/`Weighted`, with an unregistered name falling through to the
+declared-struct reading). Duplicate map keys are a compile error (**E138**,
+cascade ruling A); a form mismatch is **E139**. Enum-variant payloads and
+tower components are not registered — enums have no HIR node yet
+(`docs/b0-sequencing.md`), and the tower has its own NS-A8 call grammar.
+**Deferred with the ruling:** user-type opt-in (the `impl` spelling), the
+validating `construct → Option` member's spelling, and the spread form.
+**Depends:** B0, A5 (refined-literal coercion at construction), A7
+(Weighted). **Findings:** F17 (Weighted multiset), F5/duplicate policies.
 
 ---
 

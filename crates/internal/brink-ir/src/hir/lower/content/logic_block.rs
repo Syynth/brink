@@ -10,8 +10,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::hir::types::{AwaitStmt, BlockStmt, ElseBranch, ForStmt, IfStmt, WhileStmt};
 use crate::provenance::NodeClass;
-use crate::symbols::LocalSymbol;
-use crate::{AssignOp, Assignment, DiagnosticCode, Return, SymbolKind, TempDecl};
+use crate::{AssignOp, Assignment, DiagnosticCode, Return, ReturnKind, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
@@ -80,13 +79,6 @@ fn lower_block_temp_decl(
     let annotation = temp
         .type_annotation()
         .and_then(|ta| lower_type_annotation(&ta));
-    sink.add_local(LocalSymbol {
-        name: name.text.clone(),
-        range: name.range,
-        scope: scope.to_scope(),
-        kind: SymbolKind::Temp,
-        param_detail: None,
-    });
     Ok(BlockStmt::TempDecl(TempDecl {
         ptr: scope.prov(NodeClass::TempDecl, temp.syntax()),
         name,
@@ -132,6 +124,7 @@ fn lower_block_return(
     let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());
     BlockStmt::Return(Return {
         ptr: Some(scope.prov(NodeClass::Return, ret.syntax())),
+        kind: ReturnKind::Explicit,
         value,
         onwards_args: Vec::new(),
     })
@@ -154,6 +147,9 @@ fn lower_while_stmt(
     Ok(BlockStmt::While(WhileStmt {
         ptr: scope.prov(NodeClass::While, w.syntax()),
         condition,
+        // The `as` binding is native-surface-only (B1b, issue #1475): the
+        // ink/brink-dialect `~ { while … }` grammar has no `as`.
+        binding: None,
         body,
         is_await: w.is_await(),
     }))
@@ -174,13 +170,6 @@ fn lower_for_stmt(
         .iterable()
         .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
         .and_then(|e| e.lower_expr(scope, sink))?;
-    sink.add_local(LocalSymbol {
-        name: var_name.text.clone(),
-        range: var_name.range,
-        scope: scope.to_scope(),
-        kind: SymbolKind::Temp,
-        param_detail: None,
-    });
     let body = f
         .body()
         .map(|b| lower_stmt_block(&b, scope, sink))
@@ -188,6 +177,10 @@ fn lower_for_stmt(
     Ok(BlockStmt::For(ForStmt {
         ptr: scope.prov(NodeClass::For, f.syntax()),
         var_name,
+        // The ink `~ { for … }` T1b grammar has no two-binding syntax
+        // (`ast::ForStmt::identifier` is single-binding only) — `val_name`
+        // is a native-`.brink`-only spelling (B2, issue #1461).
+        val_name: None,
         iterable,
         body,
     }))
@@ -227,6 +220,8 @@ fn lower_if_stmt(
     Ok(IfStmt {
         ptr: scope.prov(NodeClass::If, if_stmt.syntax()),
         condition,
+        // Native-surface-only — see `lower_while_stmt`'s twin note.
+        binding: None,
         body,
         else_branch,
     })

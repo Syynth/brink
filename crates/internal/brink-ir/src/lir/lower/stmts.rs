@@ -14,6 +14,7 @@ use super::lir;
 /// `ChoiceSet`, `LabeledBlock`, `Conditional`, and `Sequence` are handled
 /// by the caller (`lower_block_with_children`) since they may produce child
 /// containers. This function handles all remaining statement types.
+#[expect(clippy::too_many_lines)]
 pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
     match stmt {
         hir::Stmt::Divert(divert) => {
@@ -64,9 +65,9 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 
         hir::Stmt::Return(ret) => {
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
-            // `->->` (tunnel return) has ptr: None in the HIR;
-            // `~ return expr` has ptr: Some(...).
-            let is_tunnel = ret.ptr.is_none();
+            // `->->` (tunnel return) vs `~ return expr` — classified by the
+            // explicit `ReturnKind`, never by `ptr` presence.
+            let is_tunnel = ret.kind == hir::ReturnKind::TunnelRedirect;
             let args = ret
                 .onwards_args
                 .iter()
@@ -169,6 +170,14 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             emit_await_lowering_fence(ctx, a.ptr.text_range());
             None
         }
+
+        // Issue #2108: straight expression-to-statement lowering, mirroring
+        // `ExprStmt` above — the difference from an ordinary call-for-
+        // side-effects is entirely in what codegen emits after evaluating
+        // it (`Opcode::AttachElement` vs `Pop`), not in how the call
+        // expression itself lowers.
+        hir::Stmt::AttachElement(expr) => Some(lir::Stmt::AttachElement(lower_expr(expr, ctx))),
+        hir::Stmt::EndElementRun => Some(lir::Stmt::EndElementRun),
     }
 }
 
@@ -311,6 +320,13 @@ pub(super) fn lower_assign_target(
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {
+                // B1b (issue #1475): an `as` binding is immutable — see
+                // `reject_as_binding_write`'s doc for the full choke-point
+                // story (issue #2122: this is no longer the *only* site
+                // that calls it).
+                if reject_as_binding_write(slot, &name, path.range, ctx) {
+                    return None;
+                }
                 let name_id = ctx.names.intern(&name);
                 return Some(lir::AssignTarget::Temp(slot, name_id));
             }
@@ -326,4 +342,43 @@ pub(super) fn lower_assign_target(
         }
         _ => None,
     }
+}
+
+/// Issue #2122: the `as`-binding-immutability half of `lower_assign_target`'s
+/// refusal, factored out so `blocks::lower_single_level_field_write` and
+/// `blocks::lower_field_mutator` can call it too.
+///
+/// Those two functions resolve a `Param`/`Temp` root's slot themselves
+/// (`ctx.temp_slot(&head_name)`, the *head* of a two-segment `p.field`
+/// path) rather than routing through `lower_assign_target` — the resolution
+/// that function performs for a bare path is keyed on the **whole**
+/// dotted-path string (`path_to_string`, e.g. `"b.items"`), which is a
+/// different (and for these two callers, wrong) lookup than the head-only
+/// one they need, so calling `lower_assign_target` itself is not a drop-in
+/// substitute here. This helper is the "equivalent shared check" the issue
+/// asks for instead: the actual E148-diagnosing logic lives in exactly one
+/// place, even though each caller still derives its own slot.
+///
+/// Returns `true` (diagnosed, caller must stop and lower nothing) when
+/// `slot` is an immutable `as`-binding; `false` otherwise.
+pub(super) fn reject_as_binding_write(
+    slot: u16,
+    name: &str,
+    range: TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> bool {
+    if ctx.as_binding_slots.contains(&slot) {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range,
+            message: format!(
+                "{}: `{name}` is an `as` binding — it is immutable and cannot be \
+                 assigned to or mutated in place",
+                crate::DiagnosticCode::E148.title(),
+            ),
+            code: crate::DiagnosticCode::E148,
+        });
+        return true;
+    }
+    false
 }

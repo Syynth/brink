@@ -5,6 +5,38 @@ on:
     # Weekly schedule: Monday at 00:00 UTC
     - cron: '0 0 * * 1'
   workflow_dispatch:
+  # demos/compound is workspace-excluded (see its Cargo.toml) and gets zero
+  # signal from the main `ci.yml` gate (#1386). Path-filtered so it only
+  # fires on pushes/PRs that could actually affect it, keeping it off the
+  # critical path for every other PR (#1077, decision 2026-07-22 / #1237).
+  # Not in branch protection's required-checks list, so it's advisory: it
+  # goes red on a relevant PR but does not block the merge by itself.
+  # `crates/internal/**` is included alongside `crates/brink-*/**`: the demo's
+  # Cargo.lock pins several crates/internal/* packages transitively (e.g.
+  # brink-analyzer, brink-ir, brink-syntax), so a change there can stale the
+  # lockfile exactly like a change to a front-door crate (#1402 — DEMO_GATE
+  # went red only after merge because this filter missed that). Root
+  # `Cargo.toml` is included too: it holds `[workspace.package] version` and
+  # `[workspace.dependencies]`, which every brink package version and
+  # transitive dep in demos/compound/Cargo.lock resolves from, so a bump
+  # there is the same staling vector one directory up.
+  pull_request:
+    paths:
+      - 'demos/**'
+      - 'crates/bevy-brink/**'
+      - 'crates/brink-*/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/demo.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'demos/**'
+      - 'crates/bevy-brink/**'
+      - 'crates/brink-*/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/demo.yml'
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
 permissions: {}
@@ -38,14 +70,19 @@ jobs:
       - name: Format check (demos/compound)
         working-directory: demos/compound
         run: cargo fmt --all -- --check
-      # Clippy inside demos/compound
+      # Clippy inside demos/compound. `--locked` is load-bearing: without it
+      # a stale demos/compound/Cargo.lock (e.g. after a brink crate's deps
+      # change) is silently refreshed by cargo and the job exits 0, which is
+      # exactly how the drift this gate exists to catch went unnoticed
+      # before. Every PR that changes a brink crate's dependency set must
+      # now also refresh this lockfile, or this step fails.
       - name: Clippy (demos/compound)
         working-directory: demos/compound
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       # Test inside demos/compound
       - name: Test (demos/compound)
         working-directory: demos/compound
-        run: cargo test
+        run: cargo test --locked
       # Verify the demo stays excluded from the workspace: root cargo check
       # must not build the demo
       - name: Check (root workspace)

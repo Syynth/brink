@@ -1,0 +1,25 @@
+@[local]
+@[effects(pure)]
+flow f() {
+}
+
+fn heal(hp) >{
+  @[effects(pure, silent, reads(gold, hp))]
+  var x = hp
+}
+
+@[name(a, b,)]
+flow g() {
+}
+
+@[name(
+  a,
+  b
+)]
+flow h() {
+}
+
+@[note(2.5)]
+@[note("hi there")]
+flow narrate2() {
+}

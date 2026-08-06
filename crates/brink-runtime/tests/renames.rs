@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 /// Compile brink-dialect source (`#@module`/`#@was` and T1c `#fn`/type
 /// annotations are brink-only extensions — see `docs/directive-annotations-spec.md`
@@ -32,15 +32,9 @@ fn link_story(data: &brink_format::StoryData) -> Story<DotNetRng> {
 #[expect(clippy::unwrap_used)]
 fn run_to_terminal(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
-    for line in story.continue_maximally().unwrap() {
-        match line {
-            Line::Text { text, .. }
-            | Line::Done { text, .. }
-            | Line::End { text, .. }
-            | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-            }
-            Line::Choices { text, .. } => out.push_str(&text),
+    for step in story.continue_maximally().unwrap() {
+        if let Step::Line(line) = step {
+            out.push_str(&line.text);
         }
     }
     out
@@ -321,6 +315,80 @@ divert={target == -> new_name:same|different}
     assert!(
         output.contains("divert=same"),
         "loaded divert-target value must rebind to the renamed knot: {output:?}"
+    );
+}
+
+/// The transitive case #1671 fixes: renaming a knot re-keys every stitch
+/// beneath it too, because the stitch's qualified name embeds the knot's
+/// name. A save taken while a *descendant stitch* was visited must still
+/// rebind that stitch's own visit count after the knot's `#@was` rename —
+/// not just the knot-level visit count the sibling test above covers.
+#[test]
+fn knot_rename_rebinds_descendant_stitch_visit_count_and_divert_value() {
+    let v1_src = r"
+VAR target = -> old_name.market
+
+-> old_name.market
+
+=== old_name ===
+Here.
+-> DONE
+
+= market
+Market.
+-> DONE
+
+=== reader ===
+{READ_COUNT(-> old_name.market)}
+-> DONE
+";
+    let v1_data = compile(v1_src);
+    let mut v1 = link_story(&v1_data);
+    run_to_terminal(&mut v1);
+
+    let save = v1.save_state();
+    assert_eq!(
+        save.visits.len(),
+        1,
+        "old_name.market should have one visit"
+    );
+
+    let v2_src = r"
+VAR target = -> new_name.market
+
+-> reader
+
+=== new_name ===
+#@was(old_name)
+Here.
+-> DONE
+
+= market
+Market.
+-> DONE
+
+=== reader ===
+visits={READ_COUNT(-> new_name.market)}
+divert={target == -> new_name.market:same|different}
+-> DONE
+";
+    let v2_data = compile(v2_src);
+    let mut v2 = link_story(&v2_data);
+
+    let report = v2.load_state(&save);
+    assert!(
+        report.is_clean(),
+        "knot rename with #@was must transitively rebind a descendant stitch's visit count: {report:?}"
+    );
+
+    let output = run_to_terminal(&mut v2);
+    assert!(
+        output.contains("visits=1"),
+        "loaded descendant stitch visit count must rebind to the renamed knot's stitch: {output:?}"
+    );
+    assert!(
+        output.contains("divert=same"),
+        "loaded divert-target value must rebind to the renamed knot's descendant stitch: {output:?}"
     );
 }
 

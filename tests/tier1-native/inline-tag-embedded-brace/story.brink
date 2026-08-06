@@ -1,0 +1,4 @@
+flow main() {
+  Bell tolls #sound {clang} in the tower.
+  Door creaks. -> END
+}

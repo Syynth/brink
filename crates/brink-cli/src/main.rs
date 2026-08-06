@@ -1,5 +1,6 @@
 mod batch;
 mod ide;
+mod lint_overrides;
 mod tui;
 
 use std::io::{BufRead, IsTerminal, Write as _};
@@ -86,10 +87,33 @@ enum Commands {
         /// this flag to use the file's value, if any.
         #[arg(long, value_enum)]
         types: Option<TypesArg>,
+        /// Deny a diagnostic code, promoting it to a hard compile error
+        /// (issue #1373). Repeatable. Only codes whose *default* severity is
+        /// `Warning` are overridable (#1160) — an unrecognized or
+        /// non-overridable code is ignored with a warning through the usual
+        /// channel, never silently. The special code `warnings` (`-D
+        /// warnings`, mirroring rustc) is `deny-warnings`: promote every
+        /// diagnostic that would otherwise resolve to `Warning` up to
+        /// `Error`, the CLI equivalent of `[lints] deny-warnings = true`.
+        /// Always wins over the same code in a discovered `brink.toml`'s
+        /// `[lints]` table (#1005 `CLI/API > file > default` precedence).
+        #[arg(short = 'D', long = "deny", value_name = "CODE")]
+        deny: Vec<String>,
+        /// Force a diagnostic code to `Warning`, promotable back to `Error`
+        /// by `-D warnings`/`deny-warnings` like any unconfigured warning
+        /// (issue #1373). Repeatable; same overridability rules and
+        /// precedence as `--deny`.
+        #[arg(long = "warn", value_name = "CODE")]
+        warn: Vec<String>,
+        /// Never escalate a diagnostic code past `Warning`, even under `-D
+        /// warnings`/`deny-warnings` (issue #1373). Repeatable; same
+        /// overridability rules and precedence as `--deny`.
+        #[arg(long = "allow", value_name = "CODE")]
+        allow: Vec<String>,
     },
     /// Convert between ink formats (.inkb, .inkt)
     Convert {
-        /// Input file (.ink, .inkb, or .inkt)
+        /// Input file (.ink, .brink, .inkb, or .inkt)
         input: PathBuf,
         /// Output file (format inferred from extension, defaults to stdout as .inkt)
         #[arg(short, long)]
@@ -97,7 +121,7 @@ enum Commands {
     },
     /// Export line tables from a compiled story as XLIFF 2.0
     ExportXliff {
-        /// Input story file (.inkb, .ink, or .inkt)
+        /// Input story file (.inkb, .ink, .brink, or .inkt)
         input: PathBuf,
         /// BCP 47 source language tag (e.g. "en")
         #[arg(long, default_value = "en")]
@@ -139,6 +163,19 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Migrate an existing XLIFF file's unit ids to the canonical
+    /// scope-id-based scheme, preserving every translation, state, and hash
+    /// in place. Safe to run unconditionally — units already on the new
+    /// scheme are left untouched. Not needed after a `#@was` rename:
+    /// `compile-locale` and `regenerate-xliff` rebind moved scope ids
+    /// themselves.
+    MigrateXliff {
+        /// Existing .xlf file (any unit-id scheme)
+        input: PathBuf,
+        /// Output migrated .xlf file (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Format .ink source files
     Fmt {
         /// .ink files to format
@@ -152,7 +189,7 @@ enum Commands {
     },
     /// Play an ink story interactively
     Play {
-        /// Story file (.ink source, .inkb, or .inkt)
+        /// Story file (.ink or .brink source, .inkb, or .inkt)
         file: PathBuf,
         /// Read choice inputs from a file (one 1-indexed choice per line)
         #[arg(short, long)]
@@ -171,7 +208,7 @@ enum Commands {
     Replay {
         /// Transcript file (.brkt)
         transcript: PathBuf,
-        /// Story file (.ink source, .inkb, or .inkt)
+        /// Story file (.ink or .brink source, .inkb, or .inkt)
         #[arg(short, long)]
         story: PathBuf,
         /// Locale overlay file (.inkl) to apply before rendering
@@ -209,6 +246,19 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Log an `Err` via `tracing::error!` and collapse a fallible command's
+/// result down to the process exit code `main` returns. Pulled out of
+/// `run_command` so each match arm is one line — the match was tripping
+/// `clippy::too_many_lines` on its own repeated `if let Err(e) = … { … }`
+/// boilerplate well before it was doing anything complex per-command.
+fn report_result(result: Result<(), Box<dyn std::error::Error>>) -> ExitCode {
+    if let Err(e) = result {
+        tracing::error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_command(command: Commands) -> ExitCode {
     match command {
         Commands::Compile {
@@ -216,68 +266,55 @@ fn run_command(command: Commands) -> ExitCode {
             output,
             dialect,
             types,
-        } => {
-            if let Err(e) = run_compile(
-                &input,
-                output.as_deref(),
-                dialect.map(Into::into),
-                types.map(Into::into),
-            ) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        Commands::Convert { input, output } => {
-            if let Err(e) = run_convert(&input, output.as_deref()) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+            deny,
+            warn,
+            allow,
+        } => run_compile_command(
+            &input,
+            output.as_deref(),
+            dialect.map(Into::into),
+            types.map(Into::into),
+            &deny,
+            &warn,
+            &allow,
+        ),
+        Commands::Convert { input, output } => run_convert_command(&input, output.as_deref()),
         Commands::ExportXliff {
             input,
             src_lang,
             trg_lang,
             output,
-        } => {
-            if let Err(e) =
-                run_export_xliff(&input, &src_lang, trg_lang.as_deref(), output.as_deref())
-            {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+        } => report_result(run_export_xliff(
+            &input,
+            &src_lang,
+            trg_lang.as_deref(),
+            output.as_deref(),
+        )),
         Commands::CompileLocale {
             base,
             xliff,
             locale,
             output,
-        } => {
-            if let Err(e) = run_compile_locale(&base, &xliff, &locale, &output) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+        } => report_result(run_compile_locale(&base, &xliff, &locale, &output)),
         Commands::RegenerateXliff {
             base,
             existing,
             src_lang,
             output,
-        } => {
-            if let Err(e) = run_regenerate_xliff(&base, &existing, &src_lang, output.as_deref()) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
+        } => report_result(run_regenerate_xliff(
+            &base,
+            &existing,
+            &src_lang,
+            output.as_deref(),
+        )),
+        Commands::MigrateXliff { input, output } => {
+            report_result(run_migrate_xliff(&input, output.as_deref()))
         }
         Commands::Fmt {
             files,
             check,
             stdin,
-        } => {
-            if let Err(e) = run_fmt(&files, check, stdin) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+        } => report_result(run_fmt(&files, check, stdin)),
         Commands::Play {
             file,
             input,
@@ -286,70 +323,181 @@ fn run_command(command: Commands) -> ExitCode {
             save_transcript,
         } => {
             let locale_refs: Vec<&std::path::Path> = locale.iter().map(PathBuf::as_path).collect();
-            if let Err(e) = run_play(
+            report_result(run_play(
                 &file,
                 input.as_deref(),
                 speed,
                 &locale_refs,
                 save_transcript.as_deref(),
-            ) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
+            ))
         }
         Commands::Replay {
             transcript,
             story,
             locale,
-        } => {
-            if let Err(e) = run_replay(&transcript, &story, locale.as_deref()) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        Commands::Ide { command } => return ide::run(&command),
+        } => report_result(run_replay(&transcript, &story, locale.as_deref())),
+        Commands::Ide { command } => ide::run(&command),
     }
-
-    ExitCode::SUCCESS
 }
 
-/// Resolve `AnalysisOptions` for `entry`, layering (in increasing priority):
-/// 1. `AnalysisOptions::default()` (`strict-ink`; `types` unset — the
-///    effective policy is dialect-keyed per #1127: brink → strict,
-///    strict-ink → gradual);
-/// 2. a discovered `brink.toml`'s `[project] dialect`/`types` (#1005) — the
-///    file walks up from `entry`'s directory to the nearest ancestor
-///    containing `brink.toml`; a missing file changes nothing;
-/// 3. `--dialect`/`--types`, if the user actually passed them — an explicit
-///    flag always overrides the file (never the other way around).
+/// Log one compile diagnostic at the `tracing` level matching its actual
+/// resolved severity (`ResolvedDiagnostic::severity`, issue #1162) — a
+/// `[lints]` code down-leveled to `info`/`hint` must render at the matching
+/// tier here rather than every `CompileOutput::warnings` entry printing as
+/// `warn!` regardless of what it actually resolved to. Used for both the
+/// non-fatal `CompileOutput::warnings` set and — since #1957 — the fatal
+/// `CompileError::Diagnostics` payload (see [`render_fatal_compile_error`]),
+/// so `Severity::Error` is a real, common case here now, not the dead arm
+/// the match used to carry defensively.
 ///
-/// Unknown keys in the file are logged as warnings, never treated as
-/// errors (forward compat: an older `brink` shouldn't refuse to compile a
-/// `brink.toml` written for a newer schema).
-fn resolve_analysis_options(
+/// Renders `path:start..end [CODE] message`. `ResolvedDiagnostic` carries a
+/// byte-offset `range` and the file's `path`, but not a resolved line/column
+/// or the quoted source line — `range` is deliberately left as raw byte
+/// offsets (see its doc comment) because column units are consumer-specific
+/// and the consumer already holds the source text to resolve them in the
+/// unit it needs. A terminal-friendly line:column + source-quoting
+/// presentation is possible (the CLI does still hold the source text at the
+/// `compile_entry` call site) but is a follow-up, not this fix — this is the
+/// "at least tell me the code, message, and where" bar, not a rustc-style
+/// renderer.
+fn log_diagnostic(d: &brink_compiler::ResolvedDiagnostic) {
+    let start = u32::from(d.range.start());
+    let end = u32::from(d.range.end());
+    match d.severity {
+        brink_ir::Severity::Error => {
+            tracing::error!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
+        }
+        brink_ir::Severity::Warning => {
+            tracing::warn!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
+        }
+        brink_ir::Severity::Info => {
+            tracing::info!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
+        }
+        brink_ir::Severity::Hint => {
+            tracing::debug!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
+        }
+    }
+}
+
+/// Render a fatal [`brink_compiler::CompileError::Diagnostics`] payload
+/// through [`log_diagnostic`] before it is boxed and bubbles up through
+/// [`compile_entry`] to `report_result`/`run_compile_command`'s generic
+/// `tracing::error!("{e}")` (issue #1957).
+///
+/// Without this, every caller only ever sees `CompileError`'s `Display` —
+/// `"N diagnostic(s) prevented compilation"`, the count and nothing else —
+/// even though the fully-resolved diagnostic set (code, message, severity,
+/// path, byte range) already exists on the error value. `compile_entry` is
+/// the one seam every `brink compile`/`convert`/`play`/`replay`/
+/// `export-xliff` invocation flows through (see its own doc comment), so
+/// wiring the render in here — rather than in each subcommand — covers all
+/// of them at once. The count line still prints afterward, now as a
+/// trailing summary under the individual `[CODE] message` lines instead of
+/// the only thing printed.
+fn render_fatal_compile_error(err: brink_compiler::CompileError) -> Box<dyn std::error::Error> {
+    if let brink_compiler::CompileError::Diagnostics(diags) = &err {
+        for d in diags {
+            log_diagnostic(d);
+        }
+    }
+    Box::new(err)
+}
+
+/// Build the #1306 [`Environment`](brink_environment::Environment) for `entry`
+/// and run the pure compile over it — `Project::load` → `compile(&env)`, the
+/// one path every `brink compile`/`convert`/`play`/`replay`/`export-xliff`
+/// invocation flows through now. A fatal `CompileError::Diagnostics` is
+/// routed through [`render_fatal_compile_error`] here — the shared seam —
+/// so every one of those subcommands renders the resolved diagnostic set
+/// instead of only the bare count (issue #1957).
+///
+/// The CLI mounts a [`RealFs::new`](brink_driver::RealFs::new) tree
+/// rooted at [`native_source_root`] — a lazy real-filesystem `SourceTree`, not
+/// a whole-tree eager drain (issue #1357): `list` enumerates `.brink`
+/// keys by stat alone (never descending into `target/`, `.git/`, or
+/// `node_modules/` — issue #1381), and `read` serves any one of them off
+/// disk only when `Project::load` actually needs it (an ink entry's
+/// `INCLUDE`-reachable set, a native entry's whole `.brink` universe, and
+/// whichever single `brink.toml` config discovery resolves). An unrelated
+/// malformed/non-UTF8 file elsewhere under the root is therefore never read
+/// and can no longer fail an otherwise-valid compile — config discovery and
+/// source enumeration both still run over the one seam inside the producer
+/// (rather than the CLI resolving `AnalysisOptions` itself). Policy layers, in
+/// increasing priority:
+/// 1. `AnalysisOptions::default()` (`strict-ink`; `types` dialect-keyed per
+///    #1127);
+/// 2. a discovered `brink.toml`'s `[project] dialect`/`types`/`[lints]`
+///    (#1005), walked up from `entry`; a missing file changes nothing;
+/// 3. `--dialect`/`--types`/`--deny`/`--warn`/`--allow`/`-D warnings`, as
+///    [`OptionOverrides`](brink_environment::OptionOverrides) that always
+///    win over the file (#1373).
+///
+/// Unknown keys in the file — and unrecognized or non-overridable
+/// `--deny`/`--warn`/`--allow` codes — are logged as warnings by the
+/// producer, never treated as errors (forward compat / #1160).
+///
+/// [`native_source_root`]: brink_driver::native_source_root
+fn compile_entry(
     entry: &std::path::Path,
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
-) -> Result<brink_compiler::AnalysisOptions, Box<dyn std::error::Error>> {
-    let mut options = brink_compiler::AnalysisOptions::default();
-    if let Some(loaded) = brink_project_config::load_from_entry(entry)? {
-        for warning in &loaded.warnings {
-            tracing::warn!("[{}] {warning}", loaded.path.display());
-        }
-        brink_project_config::apply_to_options(
-            &mut options,
-            &loaded.config,
-            dialect.is_some(),
-            types.is_some(),
-        );
+    lints: std::collections::BTreeMap<String, brink_driver::LintLevel>,
+    deny_warnings: Option<bool>,
+) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
+    let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
+    for warning in &warnings {
+        let _ = writeln!(std::io::stderr(), "warning: {warning}");
     }
-    if let Some(dialect) = dialect {
-        options.dialect = dialect;
+    let tree = brink_driver::RealFs::new(&root);
+    let entry_key = brink_driver::relative_key(&root, entry);
+    let overrides = brink_environment::OptionOverrides {
+        dialect,
+        types,
+        lints,
+        deny_warnings,
+    };
+    let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
+    brink_environment::compile(&env).map_err(render_fatal_compile_error)
+}
+
+/// `Commands::Compile`'s dispatch, factored out of [`run_command`] (matching
+/// the `Commands::Ide => return ide::run(&command)` shape already used
+/// there) — [`run_command`]'s `match` arms stay one-liners, keeping the
+/// function within `clippy::too_many_lines`.
+fn run_compile_command(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+    dialect: Option<brink_compiler::Dialect>,
+    types: Option<brink_compiler::TypePolicy>,
+    deny: &[String],
+    warn: &[String],
+    allow: &[String],
+) -> ExitCode {
+    if let Err(e) = run_compile(input, output, dialect, types, deny, warn, allow) {
+        tracing::error!("{e}");
+        return ExitCode::FAILURE;
     }
-    if let Some(types) = types {
-        options.types = Some(types);
-    }
-    Ok(options)
+    ExitCode::SUCCESS
 }
 
 fn run_compile(
@@ -357,11 +505,14 @@ fn run_compile(
     output: Option<&std::path::Path>,
     dialect: Option<brink_compiler::Dialect>,
     types: Option<brink_compiler::TypePolicy>,
+    deny: &[String],
+    warn: &[String],
+    allow: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let options = resolve_analysis_options(input, dialect, types)?;
-    let output_result = brink_compiler::compile_path_with_options(input, options)?;
+    let (lints, deny_warnings) = lint_overrides::resolve_lint_overrides(deny, warn, allow);
+    let output_result = compile_entry(input, dialect, types, lints, deny_warnings)?;
     for w in &output_result.warnings {
-        tracing::warn!("[{}] {}", w.code.as_str(), w.message);
+        log_diagnostic(w);
     }
     let data = output_result.data;
 
@@ -398,18 +549,35 @@ fn load_story_data(
     input: &std::path::Path,
 ) -> Result<brink_format::StoryData, Box<dyn std::error::Error>> {
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext == "ink" {
-        // Raw .ink source — compile in-memory via the native pipeline,
-        // discovering + applying a `brink.toml` (#1005) just like `brink
-        // compile` does. Every mount that compiles from source (`brink
-        // convert`, `brink play`, `brink replay`, `brink export-xliff`) reads
-        // the same file `brink compile` does, rather than silently falling
-        // back to `AnalysisOptions::default()` and rejecting extension
-        // syntax on a `dialect = "brink"` project.
-        let options = resolve_analysis_options(input, None, None)?;
-        let output_result = brink_compiler::compile_path_with_options(input, options)?;
+    if ext == "ink" || ext == "brink" {
+        // Raw .ink or .brink source — compile in-memory via the native
+        // pipeline (no temp artifact written to disk; the `StoryData` goes
+        // straight from `compile_entry` to the runtime, exactly like `brink
+        // compile -o -` piped into `brink play` would, minus the round
+        // trip), discovering + applying a `brink.toml` (#1005) just like
+        // `brink compile` does. Every mount that compiles from source
+        // (`brink convert`, `brink play`, `brink replay`, `brink
+        // export-xliff`) reads the same file `brink compile` does, rather
+        // than silently falling back to `AnalysisOptions::default()` and
+        // rejecting extension syntax on a `dialect = "brink"` project.
+        //
+        // A `.brink` entry is routed through the exact same `compile_entry`
+        // call as `.ink` (issue #1949) — `compile_entry` is already
+        // extension-agnostic: `native_source_root_with_warnings` discovers
+        // the project root + `brink.toml` from `entry`'s directory
+        // regardless of `entry`'s own extension, and
+        // `brink_environment::Project::load` dispatches on `entry`'s
+        // extension internally (`collect_sources`) to compile the *whole*
+        // native source tree under that root as one project (tree-is-
+        // universe, unlike `.ink`'s `INCLUDE`-reachable set) — the same
+        // discovery `brink compile scene.brink` already performs and that
+        // the respell fixtures oracle-verify. `play`/`replay`/`convert`/
+        // `export-xliff` on a `.brink` entry therefore get identical
+        // project discovery to `compile`, not a standalone-file compile.
+        let output_result =
+            compile_entry(input, None, None, std::collections::BTreeMap::new(), None)?;
         for w in &output_result.warnings {
-            tracing::warn!("[{}] {}", w.code.as_str(), w.message);
+            log_diagnostic(w);
         }
         Ok(output_result.data)
     } else if ext == "inkb" {
@@ -420,12 +588,22 @@ fn load_story_data(
         Ok(brink_format::read_inkt(&text)?)
     } else {
         Err(format!(
-            "unsupported story format: {} (expected .ink, .inkb, or .inkt; \
+            "unsupported story format: {} (expected .ink, .brink, .inkb, or .inkt; \
              .ink.json ingestion was retired — compile the .ink source instead)",
             input.display()
         )
         .into())
     }
+}
+
+/// `Commands::Convert`'s dispatch — same one-line-arm rationale as
+/// [`run_compile_command`].
+fn run_convert_command(input: &std::path::Path, output: Option<&std::path::Path>) -> ExitCode {
+    if let Err(e) = run_convert(input, output) {
+        tracing::error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_convert(
@@ -523,6 +701,46 @@ fn run_regenerate_xliff(
 
     let merged_doc = brink_intl::regenerate_locale(&data, index.checksum, src_lang, &existing_doc)?;
     let xml = xliff2::write::to_string(&merged_doc)?;
+
+    if let Some(path) = output {
+        std::fs::write(path, &xml)?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle.write_all(xml.as_bytes())?;
+        handle.write_all(b"\n")?;
+    }
+
+    Ok(())
+}
+
+fn run_migrate_xliff(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(input)?;
+    let mut doc = xliff2::read::read_xliff(&text)?;
+
+    for file in &doc.files {
+        let has_scope_id = file
+            .extensions
+            .attributes
+            .iter()
+            .any(|a| a.namespace == "brink" && a.local_name == "scope-id");
+        if !has_scope_id {
+            tracing::warn!(
+                "file {:?} has no brink:scope-id extension; migration falls back to \
+                 file.id ({:?}) as the scope id, which will not match a freshly \
+                 exported .xlf for the same scope",
+                file.id,
+                file.id
+            );
+        }
+    }
+
+    let changed = brink_intl::migrate_unit_ids(&mut doc)?;
+    tracing::info!("migrated {changed} unit id(s)");
+    let xml = xliff2::write::to_string(&doc)?;
 
     if let Some(path) = output {
         std::fs::write(path, &xml)?;

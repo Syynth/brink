@@ -11,7 +11,7 @@ export interface Diagnostic {
   start: number;
   end: number;
   message: string;
-  severity: "Error" | "Warning";
+  severity: "Error" | "Warning" | "Info" | "Hint";
   /**
    * Structured diagnostic code, e.g. `"E065"` (issue #1004). Lets consumers
    * filter or group diagnostics programmatically instead of string-matching
@@ -116,9 +116,11 @@ export type LineType =
   | "end"
   /**
    * A flow parked at an `await` (`docs/flow-suspension-spec.md` §10.1).
-   * Like `"done"`, a park is a turn boundary — text accumulated before it
-   * flushes with the line. Drive the flow again via `continueFlow`/
-   * `wakeCheck` when the host wants output; a park never auto-continues.
+   * Like `"done"`, a park is a turn boundary. Terminals carry no payload
+   * of their own (`docs/prose-dialect-spec.md` §7, RULED) — any trailing
+   * text already arrived as its own preceding `"text"` line. Drive the
+   * flow again via `continueFlow`/`wakeCheck` when the host wants output;
+   * a park never auto-continues.
    *
    * **Runtime-unreachable until FS-3r.** No `Line` the runtime produces
    * today carries this type (the E052 fence keeps `await` from lowering).
@@ -131,9 +133,29 @@ export interface Line {
   type: LineType;
   text: string;
   tags: string[];
+  /** The run of adjacent content this line belongs to
+   * (`brink_runtime::BlockId`). Present only for `"text"`; terminals
+   * carry no line payload, so no block id. */
+  block_id?: number;
+  /** This line's classification (`brink_runtime::Element`, issue #1683).
+   * Present only for `"text"`, mirroring `block_id` above. `kind` still
+   * always reports the degenerate `"narrative"` case — no `@[element]`
+   * handler's own classification reaches `kind` yet. `data` is populated
+   * as of issue #2108: an `@[convention(..., attach = StructName)]`
+   * handler's returned struct fields merge into `data` on every line in
+   * the run that follows it. */
+  element?: ElementJs;
   choices?: Choice[];
   /** External name, present only on an `awaiting_external` line. */
   name?: string;
+}
+
+/** A line's classification (`brink_runtime::Element`). `kind` is an open
+ * vocabulary owned by whichever preset/handler classified the line, not a
+ * closed enum; `data` is an open, handler-defined payload. */
+export interface ElementJs {
+  kind: string;
+  data: Record<string, string>;
 }
 
 export interface Choice {
@@ -153,11 +175,33 @@ export interface SaveState {
   /** Global variables by name. Each value is a tagged ink value
    * (e.g. `{ Int: 10 }`, `{ String: "x" }`, `"Null"`). */
   globals: Record<string, unknown>;
+  /** Each saved global's compiled `DefinitionId` at save time, keyed by the
+   * same name as `globals` (M-3 rehydration miss-path lookup,
+   * `docs/modules-spec.md` §5). A `"$tt_hash"` string, same format as
+   * {@link VisitEntry.id}. A VAR/CONST/LIST living in a *declared* module
+   * hashes its identity as `(module, name)`, so a bare name alone can't
+   * reconstruct the id a `#@was` alias-table entry was compiled against —
+   * this is the id `Story::load_state` consults when a saved global's name
+   * no longer matches any current global slot. Older saves predating this
+   * field carry no `global_ids` key at all on the wire
+   * (`#[serde(default)]` on the Rust side); the loader defaults it to
+   * empty rather than the key being present-but-empty. */
+  global_ids: Record<string, string>;
   visits: VisitEntry[];
   turns: VisitEntry[];
   turn_index: number;
   rng_seed: number;
   previous_random: number;
+  /** This flow's parked execution position when suspended mid-tunnel/mid-
+   * `await` (`docs/flow-suspension-spec.md` §2/§9, FS-1). Absent for an
+   * ordinary save at a turn boundary, choice, or `-> END` — and for any save
+   * predating this field.
+   *
+   * **Format-only today.** `Story::save_state`/`load_state` always
+   * produce/consume `undefined` as of FS-1; the compiler synthesis that
+   * populates a live frame (FS-2) and the runtime spill/restore that
+   * produces/consumes one (FS-3) are later slices — see #889. */
+  suspended?: SuspendedFlow;
 }
 
 /** A visit/turn count for one scope. `id` (a `"$tt_hash"` string) is the load
@@ -168,10 +212,77 @@ export interface VisitEntry {
   count: number;
 }
 
-/** What a load couldn't apply. Empty `unknown_globals` means a clean load;
- * listed names are saved globals the current story no longer declares. */
+/**
+ * A parked flow's durable, recompile-stable execution position — the
+ * `FlowFrame` (`docs/flow-suspension-spec.md` §2, RULED). Every field is a
+ * name-stable identity (container/`DefinitionId`, never an instruction
+ * offset), so it survives a story recompile the same way the rest of
+ * {@link SaveState} does.
+ *
+ * FS-1 is format-only: today this is exercised only by round-trip tests on
+ * the Rust side. Section-locally versioned independently of
+ * `SaveState.version` (`SuspendedFlow.version`); bumped to `2` for #2108's
+ * `next_block_id`/`pending_element`.
+ */
+export interface SuspendedFlow {
+  /** Section-local format version, independent of `SaveState.version`. */
+  version: number;
+  /** The container the flow is currently parked inside (a `"$tt_hash"`
+   * string). */
+  current: string;
+  /** The tunnel-return chain, outermost first (`"$tt_hash"` strings). */
+  return_stack: string[];
+  /** Every local crossing the yield, name-keyed — a tagged ink value (see
+   * `SaveState.globals`). Treat as opaque unless inspecting in dev. */
+  frame: unknown;
+  /** The wake policy governing when the parked flow resumes. */
+  wake: WakePolicy;
+  /** The flow's `Flow::next_block_id` counter at the instant it was parked
+   * (#2108, 2026-08-05 ruling: a resumed flow continues its block-id
+   * sequence rather than colliding with fresh numbering). A save predating
+   * this field carries no `next_block_id` key at all on the wire
+   * (`#[serde(default)]` on the Rust side); the loader defaults it to `0`,
+   * identical to the pre-ruling behavior. */
+  next_block_id: number;
+  /** Element-attachment metadata (`@[convention(..., attach = X)]`, #2108)
+   * accumulated on the dialogue run open at the instant this flow parked.
+   * `#[serde(skip_serializing_if = "BTreeMap::is_empty")]` on the Rust side
+   * means the key is entirely ABSENT from the wire (not present as `{}`)
+   * whenever no attach run was open, or for a save predating this field —
+   * which is every save today, since `Story::save_state` always produces
+   * `suspended: None` (no runtime spill/restore yet, FS-3/#889). */
+  pending_element?: Record<string, string>;
+}
+
+/** A parked flow's wake policy (`docs/flow-suspension-spec.md` §2 point 4;
+ * see `docs/effects-spec.md` §13.1 for the wake contract this plugs into). */
+export interface WakePolicy {
+  /** The `await` site's synthesized resume-container id (a `"$tt_hash"`
+   * string). */
+  site: string;
+  /** The condition's compiler-synthesized pure-fn token id (a `"$tt_hash"`
+   * string). Absent when `source` is `"Host"`. */
+  condition?: string;
+  source: WakeSource;
+}
+
+/** The wake policy's host-source discriminant. Only `"Condition"` is
+ * compiler-produced today; `"Host"` is reserved for a future host-driven
+ * wake source (next-frame, external event) with no compiled ink condition
+ * fn — the host owns re-evaluation directly. */
+export type WakeSource = "Condition" | "Host";
+
+/** What a load couldn't apply. `unknown_globals` lists saved globals the
+ * current story no longer declares; `unresolved_renames` lists saved
+ * fn/divert/visit-turn-count keys that still didn't match after consulting
+ * the compiled rename-alias table; `anonymous_states_dropped` counts saved
+ * visit/turn-count entries for an *anonymous* scope (an unlabeled once-only
+ * choice or a sequence — no name an alias table entry could ever be written
+ * against) that could not be placed. All empty/zero means a clean load. */
 export interface LoadReport {
   unknown_globals: string[];
+  unresolved_renames: string[];
+  anonymous_states_dropped: number;
 }
 
 // ── Story Session (#370/#387) ────────────────────────────────────
@@ -197,6 +308,15 @@ export interface SessionLine {
   type: "text" | "done" | "choices" | "end" | "suspended";
   text: string;
   tags: string[];
+  /** The run of adjacent content this line belongs to
+   * (`brink_runtime::BlockId`). Present only for `"text"`; terminals
+   * carry no payload of their own (`docs/prose-dialect-spec.md` §7,
+   * RULED), so `text`/`tags` are always empty and `block_id` is absent. */
+  block_id?: number;
+  /** This line's classification (`brink_runtime::Element`, issue #1683) —
+   * present only for `"text"`, mirroring `block_id`. See {@link Line}'s
+   * `element` field doc for today's scoping. */
+  element?: ElementJs;
   choices?: Choice[];
 }
 
@@ -368,6 +488,79 @@ export interface Location {
   file: string;
   start: number;
   end: number;
+}
+
+/**
+ * A handler location for the explain-match query (#2113) — a name plus its
+ * declaration-site range in the project's conventions module. `start`/`end`
+ * are **raw byte offsets**, not UTF-16, and are **file-absolute**, not
+ * view-relative — see `explainMatch`/`explainMatchDoc`'s own docstrings on
+ * {@link EditorSessionHandle} for why (mirrored from
+ * `crates/brink-web/src/editor/explain_match.rs`'s module doc).
+ */
+export interface ExplainHandler {
+  name: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * One named capture bound by a matched pattern, as a span into the
+ * classified line's own file. Same raw-byte, file-absolute convention as
+ * {@link ExplainHandler} — see there.
+ */
+export interface ExplainCapture {
+  name: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * One handler's classification-time match — the winner or a shadowed
+ * runner-up. `kind` (issue #2310) — the claimed line's compile-time
+ * structural shape — is present only on the `winner` a caller receives via
+ * {@link ExplainMatch.winner}; a shadowed entry never carries one, since
+ * only the actual winning claim has a compiled record to read it from (see
+ * `crates/brink-web/src/editor/explain_match.rs`'s own module doc).
+ *
+ * All five `ElementKind` variants are declared for completeness, but only
+ * `"content_line"` and `"scene_heading"` are reachable today: the native
+ * frontend hands a claiming handler's pattern only the inner `CUE_NAME`/
+ * `TEXT` run (excluding the `@`/parens), which the built-in screenplay
+ * preset's own `cue`/`parenthetical` patterns require and so never match
+ * against the live raw-line walk this field is checked against, and
+ * `!name` dispatch handlers are registered on a path that live walk never
+ * consults at all — so `"cue"`, `"parenthetical"`, and `"bang_dispatch"`
+ * cannot surface through this field yet.
+ */
+export interface ExplainClassifiedMatch {
+  handler: ExplainHandler;
+  order: number;
+  mode: "attach" | "wrap";
+  kind?: "content_line" | "scene_heading" | "bang_dispatch" | "cue" | "parenthetical";
+  captures: ExplainCapture[];
+}
+
+/** One entry the walk attempted but that did not match. */
+export interface ExplainAttempted {
+  handler: ExplainHandler;
+  order: number;
+  pattern: string;
+}
+
+/**
+ * The explain-match query's full per-line answer (issue #2113): is this
+ * line matched, by what, what did it bind, and — on a miss — what was
+ * attempted, or — on a hit — what else matched but was shadowed. `winner`
+ * is present only when `matched` is `true`; `attempted` is populated only
+ * when it is `false`.
+ */
+export interface ExplainMatch {
+  matched: boolean;
+  winner?: ExplainClassifiedMatch;
+  shadowed: ExplainClassifiedMatch[];
+  attempted: ExplainAttempted[];
 }
 
 export interface FileEdit {
@@ -631,7 +824,7 @@ export interface CrossFileEdit {
 /** One entry in a structural op's breakage report — a diagnostic the op would
  * introduce. Locations are 1-based, matching the editor's status surfaces. */
 export interface RenameDiagnostic {
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "info" | "hint";
   /** Stable diagnostic code, e.g. `E022`. */
   code: string;
   message: string;
@@ -986,6 +1179,7 @@ export interface LineSource {
 export type LinePart =
   | { slot: number }
   | { select: LineSelect }
+  | { span: LineSpan }
   | string;
 
 /** A plural/keyword select over a slot value. Each `variants` entry is a
@@ -995,6 +1189,22 @@ export interface LineSelect {
   slot: number;
   variants: Record<string, string>[];
   default: string;
+}
+
+/** One `name="value"` attribute on a {@link LineSpan}. */
+export interface LineAttr {
+  name: string;
+  value: string;
+}
+
+/** An inline markup span (#1716, `docs/prose-dialect-spec.md` §4.4) —
+ *  mirrors the Rust `SpanJson` field-for-field. `attrs`/`children` are
+ *  omitted entirely (not just empty) when there are none, matching the
+ *  Rust side's `skip_serializing_if = "Vec::is_empty"`. */
+export interface LineSpan {
+  name: string;
+  attrs?: LineAttr[];
+  children?: LinePart[];
 }
 
 /** A line's content — a plain string, or a template (literal/slot/select parts). */
@@ -1124,10 +1334,64 @@ export interface ManifestExternal {
   path?: string[];
 }
 
+/**
+ * One attribute a {@link ManifestSpanKind} accepts (docs/prose-dialect-spec.md
+ * §4.2, issue #1780 gap 1, ruled by issue #1997).
+ *
+ * Widens the old bare attribute-name-string shape into a record so
+ * `required` has somewhere to live, and so a future attribute-value type has
+ * somewhere to land later without another wire-format break (issue #1780
+ * gap 2) — **schema headroom only: attribute-value typing is NOT
+ * implemented**. Span attribute values stay static text by construction, so
+ * nothing parses, resolves, or checks a value against a type today.
+ */
+export interface ManifestSpanAttr {
+  /** The attribute name, e.g. "amount" for `<wave amount="3">`. */
+  name: string;
+  /** Whether a span of this kind must carry this attribute (`E173`).
+   *  Defaults to `false` (optional) when absent. */
+  required?: boolean;
+}
+
+/**
+ * One declared inline-markup span kind (docs/prose-dialect-spec.md §4.2,
+ * issue #1733; required attributes, issue #1780/#1997). A tag name plus the
+ * attributes that tag accepts. Attribute *values* are static text by
+ * construction, so they are never type-checked — only the attribute name
+ * (and now whether it is required) is vocabulary.
+ */
+export interface ManifestSpanKind {
+  /** The tag name as written in source, e.g. "wave" for `<wave>…</wave>`. */
+  name: string;
+  /** Attributes this kind accepts, e.g. `[{ name: "amount" }]` for
+   *  `<wave amount="3">`. Empty/absent = the kind takes no attributes.
+   *
+   *  Issue #1997 widened this from `string[]` to `ManifestSpanAttr[]` — a
+   *  bare attribute-name array is no longer accepted; migrate `"amount"` to
+   *  `{ "name": "amount" }`. */
+  attrs?: ManifestSpanAttr[];
+}
+
 /** The host-owned, project-wide external vocabulary. */
 export interface HostManifest {
   externals?: ManifestExternal[];
   types?: SemanticTypeDef[];
+  /**
+   * The host's inline markup vocabulary (docs/prose-dialect-spec.md §4.2).
+   * Host-authored and co-located with `externals` by §3.4's authorship test
+   * — a text-effect plugin can generate its tag declarations the way
+   * bindings generate externals. Element conventions are project-authored
+   * and live on a different surface; do not conflate them.
+   *
+   * **Empty/absent means freeform**, which is the default: markup passes
+   * through unchecked unless at least one span kind is declared here — an
+   * externals-only manifest never enables markup checking. Once declared,
+   * an undeclared tag reports `E164`, an undeclared attribute on a declared
+   * kind reports `E165`, and a declared kind's span omitting one of its
+   * `required` attributes reports `E173`; all three are warnings by
+   * default, so a host tightens them with `[lints] E164 = "deny"`.
+   */
+  markup?: ManifestSpanKind[];
 }
 
 // ── Dialogue dialect (#368, tooling / author-time) ──────────────
@@ -1343,7 +1607,9 @@ export type SpeculationKinds = Record<string, "query" | "effect">;
 
 /** Options for `StoryRunnerHandle.speculate()`. All fields optional. */
 export interface SpeculationOptions {
-  /** VM step budget for a single `advance()` call. Default 100,000. */
+  /** VM step budget for a single `advance()`, `evalFunction()`, or
+   * `resumeFunctionEval()` call — each call gets its own fresh allowance.
+   * Default 100,000. */
   steps?: number;
   /** Total visible-line budget across this speculation's lifetime. Default 1,000. */
   lines?: number;
@@ -1409,6 +1675,21 @@ export interface ProjectSource {
    * recompiling; every other file is served verbatim. */
   entry: string;
   /** Every source file in the project, keyed by path exactly as its
-   * `INCLUDE` directives name it. */
+   * `INCLUDE` directives name it.
+   *
+   * `brink.toml` is **not** implicitly included — this map becomes the
+   * literal file set `compile_fragment` compiles over, and its `brink.toml`
+   * discovery is a direct read probe of each `{ancestor}/brink.toml`
+   * candidate walking up from `entry`'s directory (an O(depth) ancestor
+   * probe — it never lists/enumerates this map). That means the key must
+   * sit at `entry`'s own directory or one of its ancestors within this map
+   * (e.g. entry `"src/main.ink"` with a key at `"src/chapters/brink.toml"`
+   * is never on that ancestor chain and is silently ignored); a bare root
+   * `"brink.toml"` key is always on the chain and always safe. Include the
+   * right `"brink.toml"` key (with the project's real config text) if the
+   * fragment compile should honor the project's `dialect`/`types`/`[lints]`
+   * policy; omit it and the fragment compiles under
+   * `AnalysisOptions::default()` instead — never an error, just the
+   * unconfigured defaults, exactly as if no `brink.toml` existed. */
   files: Record<string, string>;
 }

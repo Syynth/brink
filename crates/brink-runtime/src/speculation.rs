@@ -38,15 +38,17 @@ use brink_format::Value;
 use crate::error::RuntimeError;
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
-use crate::story::{ExternalFnHandler, FlowInstance, FunctionEval, Line, StepOutcome};
+use crate::story::{ExternalFnHandler, FlowInstance, FunctionEval, Step, StepOutcome};
 use crate::world::{ContextView, FlowLocal, Mode, World};
 
 /// Caller-supplied cap on a [`Speculation`]'s VM stepping, in place of the
 /// runtime's hardcoded `STEP_LIMIT`/`LINE_LIMIT` ceilings.
 ///
-/// - `steps` bounds a single [`Speculation::advance`] call's inner VM step
-///   loop (mirrors [`FlowInstance`]'s private `STEP_LIMIT`, 1,000,000 in
-///   production).
+/// - `steps` bounds a single call's inner VM step loop — for
+///   [`Speculation::advance`], [`Speculation::eval_function`], and
+///   [`Speculation::resume_function_eval`] alike (mirrors [`FlowInstance`]'s
+///   private `STEP_LIMIT`, 1,000,000 in production). Each call gets its own
+///   fresh allowance; the budget does not accumulate across calls.
 /// - `lines` bounds the total number of visible lines a `Speculation` may
 ///   produce over its lifetime, across however many `advance` calls the
 ///   caller makes (mirrors [`FlowInstance::LINE_LIMIT`], 10,000 in
@@ -75,15 +77,15 @@ impl Default for Budget {
 /// Outcome of a single [`Speculation::advance`] call.
 ///
 /// Mirrors [`StepOutcome`], the [`FlowInstance::advance`] equivalent: a
-/// [`Line`] (including a terminal `Done`/`Choices`/`End` variant), or a
+/// [`Step`] (including a terminal `Done`/`Choices`/`End` variant), or a
 /// cleanly-surfaced pending external for the caller to resolve (see
 /// [`Speculation::resolve_external`]) before calling `advance` again. A
 /// budget-exhausted call is an `Err`, not a variant here — see
 /// [`RuntimeError::StepLimitExceeded`]/[`RuntimeError::LineLimitExceeded`].
 #[derive(Debug, Clone)]
 pub enum SpeculationStep {
-    /// A line of output, or a yield point (`Done`/`Choices`/`End`).
-    Line(Line),
+    /// A step of output, or a yield point (`Done`/`Choices`/`End`).
+    Step(Step),
     /// The speculation paused on a deferred external; resolve it and
     /// `advance` again.
     AwaitingExternal,
@@ -108,6 +110,19 @@ pub struct Speculation<R: StoryRng = FastRng> {
     flow: FlowInstance,
     /// Running count of lines produced across every `advance` call so far
     /// on this speculation, checked against each call's `budget.lines`.
+    ///
+    /// **Post-#1684 note (#2104):** since the `Step`/`OutputLine`
+    /// terminal-split, a bare bounced-back terminal (a `pending_terminal`
+    /// stash, delivered on the call right after a yield's trailing content —
+    /// see `FlowInstance::advance_with_limit`'s doc comment) is itself one
+    /// more `StepOutcome::Step` — and so counts as one more increment here —
+    /// than the old fused `Line` model produced for the same run of story
+    /// content. A configured `Budget::lines` therefore buys marginally fewer
+    /// *turns* than it did before the split (one line's worth of budget is
+    /// spent on the content-then-terminal pair instead of a single fused
+    /// step). Harmless in practice — no case is near any budget — but worth
+    /// knowing if a speculative probe's line budget is ever tuned tightly
+    /// against a real story.
     lines_advanced: usize,
     _rng: PhantomData<R>,
 }
@@ -211,12 +226,12 @@ impl<R: StoryRng> Speculation<R> {
             budget.steps,
         )?;
 
-        if let StepOutcome::Line(_) = &outcome {
+        if let StepOutcome::Step(_) = &outcome {
             self.lines_advanced += 1;
         }
 
         Ok(match outcome {
-            StepOutcome::Line(line) => SpeculationStep::Line(line),
+            StepOutcome::Step(step) => SpeculationStep::Step(step),
             StepOutcome::AwaitingExternal => SpeculationStep::AwaitingExternal,
         })
     }
@@ -227,15 +242,23 @@ impl<R: StoryRng> Speculation<R> {
     /// any engine→ink call) and, being on the sandboxed fork, can never
     /// escape to the live story either way.
     ///
+    /// `budget.steps` bounds this call's VM stepping (#1868) — until this
+    /// fix, function evaluation on a `Speculation` silently ran under the
+    /// runtime's hardcoded 1,000,000-step ceiling instead of the caller's
+    /// own `Budget`, unlike [`advance`](Self::advance). `budget.lines` is
+    /// not consulted here: a function evaluation never produces visible
+    /// lines (output is isolated), so there is nothing for it to bound.
+    ///
     /// # Errors
     /// [`RuntimeError::FunctionNotFound`] for an unknown name;
     /// [`RuntimeError::ArgCountMismatch`] if `args.len()` doesn't match the
     /// function's declared parameter count; any error
-    /// [`FlowInstance::begin_function_eval`] itself can produce.
+    /// [`FlowInstance::begin_function_eval_with_limit`] itself can produce.
     pub fn eval_function(
         &mut self,
         name: &str,
         args: &[Value],
+        budget: Budget,
         handler: &dyn ExternalFnHandler,
     ) -> Result<FunctionEval, RuntimeError> {
         let container_idx = self
@@ -252,7 +275,7 @@ impl<R: StoryRng> Speculation<R> {
             });
         }
         let mut view = ContextView::new(&mut self.world, &mut self.local);
-        self.flow.begin_function_eval::<R>(
+        self.flow.begin_function_eval_with_limit::<R>(
             &self.program,
             &self.line_tables,
             &mut view,
@@ -260,6 +283,7 @@ impl<R: StoryRng> Speculation<R> {
             container_idx,
             args,
             None,
+            budget.steps,
         )
     }
 
@@ -275,21 +299,28 @@ impl<R: StoryRng> Speculation<R> {
     /// `resolve_external(value)` → `resume_function_eval` →
     /// `Returned(value)`.
     ///
+    /// `budget.steps` bounds this resume call's own step loop, same as
+    /// [`eval_function`](Self::eval_function) — pass the same `Budget` used
+    /// to begin the evaluation to keep one consistent per-call allowance.
+    ///
     /// # Errors
     /// [`RuntimeError::NotEvaluatingFunction`] if no evaluation is in
     /// progress on this speculation; any error
-    /// [`FlowInstance::resume_function_eval`] itself can produce.
+    /// [`FlowInstance::resume_function_eval_with_limit`] itself can
+    /// produce.
     pub fn resume_function_eval(
         &mut self,
+        budget: Budget,
         handler: &dyn ExternalFnHandler,
     ) -> Result<FunctionEval, RuntimeError> {
         let mut view = ContextView::new(&mut self.world, &mut self.local);
-        self.flow.resume_function_eval::<R>(
+        self.flow.resume_function_eval_with_limit::<R>(
             &self.program,
             &self.line_tables,
             &mut view,
             handler,
             None,
+            budget.steps,
         )
     }
 

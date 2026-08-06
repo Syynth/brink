@@ -147,7 +147,7 @@ fn struct_decl_single_field() {
 
 #[test]
 fn struct_decl_generic_field_type() {
-    check("STRUCT Bag = #{items: array<int>}\n");
+    check("STRUCT Bag = #{items: Array<int>}\n");
 }
 
 /// `STRUCT` is a contextual keyword — a plain identifier everywhere else,

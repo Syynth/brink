@@ -40,6 +40,45 @@
 //!    `lir_knot_chunk_query` memos for real. Fixed at
 //!    [`PROJECTDB_WARM_RUNS`] runs regardless of `--runs` — the "10-run
 //!    protocol" #672 lane E calls for so this row is conclusive on its own.
+//! 7. **Diagnostic-heavy synthetic project** (issue #663, Wave-22
+//!    reconciliation follow-up to FG-3 / PR #661): (2)-(6)'s project has no
+//!    brink-extension syntax, no annotation content, and almost no
+//!    diagnostics, so `validate`/`dialect_gate`/`annotations::check`'s
+//!    per-file contributor split (FG-3) is only proven by pointer-identity
+//!    tests, never by a wall-clock number a human can read off this bench.
+//!    [`generate_diag_project`] is the same 50-file × 20-knot shape, but
+//!    knot templates cycle through the original four plus three new ones:
+//!    a `~ { … }` block exercising every `dialect_gate`-recognized
+//!    expression form at once (`#[…]`/`#{…}` sigils, postfix indexing, a
+//!    struct construction literal, field access, an unresolved stdlib
+//!    call), an all-fallback choice set (`validate`'s E034), and content
+//!    unreachable after a divert (`validate`'s E033) — plus, every
+//!    [`DIAG_FN_STRIDE`]'th file, one annotated `function` knot
+//!    (`int`/`string`/`List<L>`/`fn(T…): R` params + return, all
+//!    *recognized* names) for `annotations::check`'s content-resolution
+//!    walk. E033/E034 are warnings (never block compilation); the
+//!    extension constructs and annotations are only `E051` errors under
+//!    `StrictInk` — so this project compiles clean under `Dialect::Brink`
+//!    (rows 7a/7b/7c below) and is reused, unmodified, as the "both
+//!    dialects" comparison under `Dialect::StrictInk` (row 7d) — that leg
+//!    is necessarily analyze-only (no LIR/codegen): a strict-ink project
+//!    with brink-extension content is *supposed* to fail compilation there,
+//!    which is exactly the point (real `E051`s, not zero). Row 7e is a
+//!    small dedicated fixture with deliberately unrecognized annotation
+//!    names, kept separate from 7a-7d's project because it must produce
+//!    real `E061`s (an error), which would otherwise break that project's
+//!    "compiles clean" invariant.
+//!
+//! 8. **`ProjectDb` stage profile** (issue #460): (6) reports the warm
+//!    `story_data()` re-pull as one opaque number, so it cannot say *where*
+//!    a recompile's time goes. [`bench_projectdb_stage_profile`] splits both
+//!    the cold and the warm pull along the query graph's own layer
+//!    boundaries — resolutions / prelude / per-knot chunks / diagnostics /
+//!    link / T2-3 effect inference / codegen — using public `ProjectDb`
+//!    accessors and salsa's memoization, so each row is that layer's
+//!    marginal cost. This is the profile #460 is gated on ("invest only if
+//!    measured"); its conclusions are written up in
+//!    `docs/compile-time-profile-findings.md`.
 //!
 //! Stability over rigor: medians of N runs (default 5), fixed deterministic
 //! inputs, one stable greppable row per metric. Run with:
@@ -77,6 +116,13 @@ const EDIT_KNOT: usize = 10;
 /// ("... so rows ... get conclusive answers") applied to this new row.
 const PROJECTDB_WARM_RUNS: usize = 10;
 
+/// Every `DIAG_FN_STRIDE`th file in [`generate_diag_project`] gets one extra
+/// annotated `function` knot appended — dense enough for `annotations::check`
+/// (~10 functions × 4 annotated slots each across the 50-file project) to be
+/// non-trivial, sparse enough that the project stays dominated by ordinary
+/// content rather than becoming a degenerate all-annotations fixture.
+const DIAG_FN_STRIDE: usize = 5;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runs = parse_runs()?;
     let root = workspace_root();
@@ -98,6 +144,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_synthetic_warm(&project, runs)?;
     bench_synthetic_warm_strict(&project, runs)?;
     bench_synthetic_warm_projectdb(&project)?;
+    bench_projectdb_stage_profile(&project)?;
+
+    let diag_project = generate_diag_project();
+    verify_diag_compiles(&diag_project)?;
+    bench_diag_cold(&diag_project, runs)?;
+    bench_diag_warm(&diag_project, runs)?;
+    bench_diag_warm_strict(&diag_project, runs)?;
+    bench_diag_dialect_gate_strict(&diag_project, runs)?;
+    bench_diag_unknown_annotations(runs)?;
 
     Ok(())
 }
@@ -231,22 +286,18 @@ fn bench_corpus_cold(root: &Path, runs: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Recursively find directories containing `story.ink`, sorted for determinism.
+/// Recursively find directories containing `story.ink`, via the shared
+/// [`brink_source_tree::Walk`] (issue #1433) — deterministic order, and the
+/// ignored-directory policy applied by construction rather than by a
+/// hand-written recursion that has to remember it. The caller sorts.
 fn collect_story_ink(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
     if dir.join("story.ink").is_file() {
         out.push(dir.to_path_buf());
     }
-    let mut subdirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .map(|e| e.path())
-        .collect();
-    subdirs.sort();
-    for sub in subdirs {
-        collect_story_ink(&sub, out);
+    for entry in brink_source_tree::Walk::new(dir).flatten() {
+        if entry.is_dir() && entry.path().join("story.ink").is_file() {
+            out.push(entry.into_path());
+        }
     }
 }
 
@@ -607,9 +658,9 @@ fn bench_synthetic_stages_cold(project: &BTreeMap<String, String>, runs: usize) 
 ///
 /// `update_file` is today's entire incremental layer: it re-parses the edited
 /// file and re-lowers only its changed knots (green-node identity diff).
-/// Everything downstream — analysis, LIR, codegen — recomputes from scratch,
-/// which is precisely the situation #498 exists to document and slice C
-/// (#460) exists to fix.
+/// Everything downstream — analysis, LIR, codegen — recomputes from scratch;
+/// see `docs/compile-time-profile-findings.md` for what that costs and why
+/// the per-container/symbolic-ref split (slice C / #460) stays deferred.
 ///
 /// Reported rows:
 /// - `update_file` — the per-knot-cached re-parse/re-lower of one file
@@ -896,5 +947,819 @@ fn bench_synthetic_warm_projectdb(project: &BTreeMap<String, String>) -> Result<
         "update_file + story_data() re-pull (vs #498 full_recompile)",
         &full,
     );
+    Ok(())
+}
+
+// ── 8. ProjectDb stage profile (issue #460) ──────────────────────────
+
+/// Where the `ProjectDb` compile path's time actually goes, cold and warm —
+/// the measurement issue #460 asks for before any further incremental
+/// investment ("invest only if measured"). (6) reports `story_data()` as one
+/// opaque number; this row set splits it along the query graph's own layer
+/// boundaries, using only public `ProjectDb` accessors and salsa's own
+/// memoization to attribute cost: each pull below is timed *after* its
+/// dependencies are already memoized, so its time is that layer's marginal
+/// cost, not a cumulative total.
+///
+/// Pull order (dependency order through `story_data_query`):
+/// 1. `resolutions_index()` — layer 0-2: parse + HIR lowering of every file,
+///    symbol index, resolutions.
+/// 2. `lir_prelude_decls()` — FG-4e's whole-project prelude (globals, lists,
+///    externals, struct shapes).
+/// 3. every `knot_chunk(file, k)` — FG-4d's per-knot LIR chunk memos, the
+///    unit a per-def incremental path reuses. Reported with the knot count so
+///    the per-knot marginal cost is readable off the row.
+/// 4. `story_data()` — the remainder: the diagnostics gate, the link phase
+///    that assembles chunks into one `lir::Program`, codegen, effect rows.
+///
+/// Warm rows repeat the same pulls after a one-line body edit to a single
+/// knot of a single file, on the same long-lived db — so a row that stays
+/// large warm is work the incremental layer is *not* saving.
+fn bench_projectdb_stage_profile(project: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut db = ProjectDb::new();
+    for (path, source) in project {
+        db.set_file(path, source.clone());
+    }
+    db.set_entry("main.ink")
+        .ok_or_else(|| "stage profile setup: set_entry(main.ink) failed".to_string())?;
+
+    report_cold_stage_rows(&profile_pulls(&db, &[]));
+
+    // Warm: one-line body edit to a single knot, then the same pulls.
+    let edit_path = format!("file_{EDIT_FILE:02}.ink");
+    let mut resolutions = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut prelude = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut chunks = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut diagnostics = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut link = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut effects = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut story_data = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut totals = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+
+    // Offset from every other bench's revision counter.
+    let mut revision: u64 = 5000;
+    let mut dirty: Vec<FileId> = Vec::new();
+    for _ in 0..PROJECTDB_WARM_RUNS {
+        revision += 1;
+        db.update_file(&edit_path, generate_file(EDIT_FILE, revision));
+        if dirty.is_empty() {
+            dirty = db
+                .file_id(&edit_path)
+                .map(|id| vec![id])
+                .ok_or_else(|| format!("stage profile: {edit_path} missing after edit"))?;
+        }
+        let warm = profile_pulls(&db, &dirty);
+        resolutions.push(warm.resolutions);
+        prelude.push(warm.prelude);
+        chunks.push(warm.chunks);
+        diagnostics.push(warm.diagnostics);
+        link.push(warm.link);
+        effects.push(warm.effects);
+        story_data.push(warm.story_data);
+        totals.push(warm.total());
+    }
+
+    row(
+        "projectdb_warm.resolutions_index",
+        "re-parse edited file + symbol index + resolve",
+        &resolutions,
+    );
+    row(
+        "projectdb_warm.prelude_decls",
+        "FG-4e prelude (decl-HIR cutoff should hold)",
+        &prelude,
+    );
+    row(
+        "projectdb_warm.edited_file_knot_chunks",
+        &format!("chunks of the edited file only (knots={SYN_KNOTS})"),
+        &chunks,
+    );
+    row(
+        "projectdb_warm.diagnostics",
+        "analysis diagnostics + suppression partition",
+        &diagnostics,
+    );
+    row(
+        "projectdb_warm.link",
+        "lir_lowering link: chunks -> one lir::Program",
+        &link,
+    );
+    row(
+        "projectdb_warm.effect_inference",
+        "T2-3 effects(def) fixpoint over every inferable def",
+        &effects,
+    );
+    row(
+        "projectdb_warm.story_data_rest",
+        "codegen emit + effect-row assembly",
+        &story_data,
+    );
+    row("projectdb_warm.total", "sum of stages", &totals);
+    Ok(())
+}
+
+/// The cold half of [`bench_projectdb_stage_profile`]'s table. Cold rows are
+/// single-sample by construction: a db is cold exactly once, so there is no
+/// second run to take a median over.
+fn report_cold_stage_rows(cold: &PullMs) {
+    let knots = cold.knot_count;
+    row(
+        "projectdb_cold.resolutions_index",
+        "parse + HIR + symbol index + resolve",
+        &[cold.resolutions],
+    );
+    row(
+        "projectdb_cold.prelude_decls",
+        "FG-4e prelude: globals/lists/externals/shapes",
+        &[cold.prelude],
+    );
+    row(
+        "projectdb_cold.knot_chunks",
+        &format!("FG-4d per-knot LIR chunk memos (knots={knots})"),
+        &[cold.chunks],
+    );
+    row(
+        "projectdb_cold.diagnostics",
+        "analysis diagnostics + suppression partition",
+        &[cold.diagnostics],
+    );
+    row(
+        "projectdb_cold.link",
+        "lir_lowering link: chunks -> one lir::Program",
+        &[cold.link],
+    );
+    row(
+        "projectdb_cold.effect_inference",
+        "T2-3 effects(def) fixpoint over every inferable def",
+        &[cold.effects],
+    );
+    row(
+        "projectdb_cold.story_data_rest",
+        "codegen emit + effect-row assembly",
+        &[cold.story_data],
+    );
+    row("projectdb_cold.total", "sum of stages", &[cold.total()]);
+}
+
+/// One pass of the [`bench_projectdb_stage_profile`] pull sequence.
+struct PullMs {
+    resolutions: f64,
+    prelude: f64,
+    chunks: f64,
+    diagnostics: f64,
+    link: f64,
+    effects: f64,
+    story_data: f64,
+    knot_count: usize,
+}
+
+impl PullMs {
+    fn total(&self) -> f64 {
+        self.resolutions
+            + self.prelude
+            + self.chunks
+            + self.diagnostics
+            + self.link
+            + self.effects
+            + self.story_data
+    }
+}
+
+/// Time the four pulls in dependency order. `chunk_files` restricts the
+/// per-knot chunk pulls to those files (the warm case pulls only the edited
+/// file's chunks — the untouched files' memos are what the incremental layer
+/// is supposed to be keeping); an empty slice means every file.
+fn profile_pulls(db: &ProjectDb, chunk_files: &[FileId]) -> PullMs {
+    let start = Instant::now();
+    let resolved = db.resolutions_index();
+    let resolutions = ms(start);
+    std::hint::black_box(&resolved);
+
+    let start = Instant::now();
+    let decls = db.lir_prelude_decls();
+    let prelude = ms(start);
+    std::hint::black_box(&decls);
+
+    let files: Vec<FileId> = if chunk_files.is_empty() {
+        db.file_ids().collect()
+    } else {
+        chunk_files.to_vec()
+    };
+    let knot_counts: Vec<(FileId, usize)> = files
+        .iter()
+        .map(|&id| (id, db.hir(id).map_or(0, |h| h.knots.len())))
+        .collect();
+    let knot_count = knot_counts.iter().map(|&(_, n)| n).sum();
+
+    let start = Instant::now();
+    for &(id, n) in &knot_counts {
+        for k in 0..n {
+            let chunk = db.knot_chunk(id, u32::try_from(k).unwrap_or(u32::MAX));
+            std::hint::black_box(&chunk);
+        }
+    }
+    let chunks = ms(start);
+
+    let start = Instant::now();
+    let errors = db.has_errors();
+    let diagnostics = ms(start);
+    std::hint::black_box(errors);
+
+    let start = Instant::now();
+    let lir = db.lir_product();
+    let link = ms(start);
+    std::hint::black_box(&lir);
+
+    // T2-3 effect inference (#862): `story_data_query` populates the
+    // `EffectRows` section by pulling `effects(def)` for every inferable def,
+    // so pull them here first — what stays in `story_data` afterwards is
+    // codegen emit plus the row assembly itself, not the fixpoint.
+    let defs = brink_analyzer::inferable_defs_from_index(&db.symbol_index());
+    let start = Instant::now();
+    for &def in &defs {
+        std::hint::black_box(db.effects(def));
+    }
+    let effects = ms(start);
+
+    let start = Instant::now();
+    let product = db.story_data();
+    let story_data = ms(start);
+    std::hint::black_box(&product);
+
+    PullMs {
+        resolutions,
+        prelude,
+        chunks,
+        diagnostics,
+        link,
+        effects,
+        story_data,
+        knot_count,
+    }
+}
+
+// ── 7. Diagnostic-heavy synthetic project (issue #663) ───────────────
+
+/// Same 50-file × 20-knot shape as [`generate_project`], generated by the
+/// same seeded-per-file [`Lcg`] discipline (a one-line edit to file N never
+/// changes any other file), but knot templates cycle through *seven* shapes
+/// instead of four: the original text/mutation/choices/conditional mix,
+/// plus a brink-extension-heavy `~ { … }` block, an all-fallback choice set,
+/// and unreachable-after-divert content. Declares one project-wide `STRUCT`
+/// and `LIST` (needed for the struct-literal/`List<L>` content above and the
+/// annotated function knots below) once, in `diag_main.ink`.
+///
+/// Every [`DIAG_FN_STRIDE`]th file also gets one annotated `function` knot —
+/// `int`/`string`/`List<Signals>`/`fn(int): string` param + return
+/// annotations, every name recognized so `annotations::check` resolves them
+/// without flagging `E061` (the whole point: this project must compile
+/// clean under `Dialect::Brink` — see the module doc's item 7 for why
+/// unknown-name `E061` content lives in a separate dedicated fixture,
+/// [`generate_unknown_annotation_project`]).
+fn generate_diag_project() -> BTreeMap<String, String> {
+    let mut files = BTreeMap::new();
+    for f in 0..SYN_FILES {
+        files.insert(format!("diag_file_{f:02}.ink"), generate_diag_file(f, 0));
+    }
+
+    let mut main =
+        String::from("// Diagnostic-heavy synthetic project (#663) — generated, deterministic.\n");
+    main.push_str("STRUCT Beacon = #{\n    level: int,\n    label: string,\n}\n\n");
+    main.push_str("LIST Signals = active, idle, alarm\n\n");
+    for f in 0..SYN_FILES {
+        let _ = writeln!(main, "INCLUDE diag_file_{f:02}.ink");
+    }
+    main.push_str("VAR diag_main_counter = 0\n");
+    main.push_str("The opening line of the diagnostic-heavy synthetic project. # generated\n");
+    main.push_str("~ diag_main_counter = diag_main_counter + 1\n");
+    main.push_str("-> dk00_00\n");
+    files.insert("diag_main.ink".to_string(), main);
+    files
+}
+
+/// Generate one included diagnostic-heavy file. `revision > 0` inserts the
+/// same one-line warm edit as [`generate_file`], at the same
+/// ([`EDIT_FILE`], [`EDIT_KNOT`]) coordinates, into whichever template that
+/// knot happens to carry.
+fn generate_diag_file(f: usize, revision: u64) -> String {
+    let mut rng = Lcg::new();
+    for _ in 0..=f {
+        rng.next();
+    }
+
+    let mut s = format!("// Generated diagnostic-heavy file {f:02}.\n");
+    for v in 0..3 {
+        let _ = writeln!(s, "VAR var_f{f:02}_{v} = {}", rng.pick(0, 9));
+    }
+    s.push('\n');
+
+    for k in 0..SYN_KNOTS {
+        let _ = writeln!(s, "=== dk{f:02}_{k:02} ===");
+        if revision > 0 && f == EDIT_FILE && k == EDIT_KNOT {
+            let _ = writeln!(s, "A revised line, edit number {revision}.");
+        }
+        let next = if k + 1 < SYN_KNOTS {
+            format!("-> dk{f:02}_{:02}", k + 1)
+        } else {
+            "-> DONE".to_string()
+        };
+        match (f * SYN_KNOTS + k) % 7 {
+            0 => {
+                // Text-heavy knot (same shape as generate_file's arm 0).
+                for _ in 0..rng.pick(3, 5) {
+                    s.push_str(&sentence(&mut rng, 5, 11));
+                    s.push('\n');
+                }
+                s.push_str("-> DONE\n");
+            }
+            1 => {
+                // Var mutation + divert chain.
+                s.push_str(&sentence(&mut rng, 4, 8));
+                s.push('\n');
+                let _ = writeln!(s, "~ var_f{f:02}_0 = var_f{f:02}_0 + 1");
+                let _ = writeln!(s, "The counter reads {{var_f{f:02}_0}} at this point.");
+                s.push_str(&next);
+                s.push('\n');
+            }
+            2 => {
+                // Choices + gather.
+                s.push_str(&sentence(&mut rng, 4, 8));
+                s.push('\n');
+                let _ = writeln!(s, "* [{}]", sentence(&mut rng, 2, 4));
+                let _ = writeln!(s, "    {}", sentence(&mut rng, 4, 8));
+                let _ = writeln!(s, "* [{}]", sentence(&mut rng, 2, 4));
+                let _ = writeln!(s, "    {} # aside", sentence(&mut rng, 4, 8));
+                let _ = writeln!(s, "- {}", sentence(&mut rng, 3, 6));
+                s.push_str(&next);
+                s.push('\n');
+            }
+            3 => {
+                // Inline conditional.
+                let _ = writeln!(
+                    s,
+                    "{{var_f{f:02}_1 > 4: {}|{}}}",
+                    sentence(&mut rng, 3, 5),
+                    sentence(&mut rng, 3, 5)
+                );
+                s.push_str(&next);
+                s.push('\n');
+            }
+            4 => push_diag_extension_block(&mut s, f, &next),
+            5 => push_diag_fallback_choice(&mut s, &mut rng, &next),
+            _ => push_diag_unreachable_after_divert(&mut s, &mut rng, &next),
+        }
+        s.push('\n');
+    }
+
+    if f.is_multiple_of(DIAG_FN_STRIDE) {
+        push_diag_annotated_function(&mut s, f);
+    }
+
+    s
+}
+
+/// Brink-extension block: `~ { … }` containing a `#[…]` array sigil, a
+/// `#{…}` map sigil, postfix indexing, an unresolved stdlib call (`len`), a
+/// struct construction literal, and field access — every `dialect_gate`-
+/// recognized expression form `dialect_gate`'s module doc lists except
+/// `#fn(…)`/`ref`/module directives, which have their own dedicated corpora
+/// already and aren't per-knot-body shaped.
+///
+/// Field access is deliberately `beacons[0].level` (an `Index` base), not
+/// `beacon.level` (a bare temp base) — the latter lowers to a multi-segment
+/// `Path` rather than `Expr::FieldAccess`, which under `types = strict`
+/// resolves through `ty_of_def` to the *base's own* `Ty::Struct(..)` instead
+/// of `Ty::Unknown`, so unifying it against an `int` sibling in the same
+/// arithmetic expression folds to `Ty::Conflicted` (`E066`) — a real
+/// `infer::body` gap discovered while building this fixture, reported
+/// separately (issue #663's scope is bench tooling, not analyzer fixes).
+/// The `Index`-based form here goes through the real `Expr::FieldAccess`
+/// arm, which correctly returns `Ty::Unknown` — safe to unify with anything.
+fn push_diag_extension_block(s: &mut String, f: usize, next: &str) {
+    s.push_str("~ {\n");
+    s.push_str("    temp local_items = #[1, 2, 3]\n");
+    s.push_str("    temp local_map = #{\"first\": 1, \"second\": 2}\n");
+    s.push_str("    temp idx = local_items[0]\n");
+    s.push_str("    temp count = len(local_items)\n");
+    s.push_str(
+        "    temp beacons = #[Beacon#{level: 1, label: \"a\"}, Beacon#{level: 2, label: \"b\"}]\n",
+    );
+    s.push_str("    temp picked = beacons[0].level\n");
+    let _ = writeln!(
+        s,
+        "    var_f{f:02}_0 = var_f{f:02}_0 + idx + count + local_map[\"first\"] + picked"
+    );
+    s.push_str("}\n");
+    let _ = writeln!(s, "The beacon counter now reads {{var_f{f:02}_0}}.");
+    s.push_str(next);
+    s.push('\n');
+}
+
+/// All-fallback choice set — `validate::validate`'s E034 (warning, never
+/// blocks compilation).
+fn push_diag_fallback_choice(s: &mut String, rng: &mut Lcg, next: &str) {
+    s.push_str(&sentence(rng, 4, 8));
+    s.push('\n');
+    s.push_str("* ->\n");
+    let _ = writeln!(s, "    {}", sentence(rng, 3, 6));
+    let _ = writeln!(s, "- {}", sentence(rng, 3, 6));
+    s.push_str(next);
+    s.push('\n');
+}
+
+/// Unreachable-after-divert — `validate::validate`'s E033 (warning, never
+/// blocks compilation). The divert transfers control before the trailing
+/// sentence, which is why this is *safe* dead code, not a broken divert
+/// chain.
+fn push_diag_unreachable_after_divert(s: &mut String, rng: &mut Lcg, next: &str) {
+    s.push_str(&sentence(rng, 4, 8));
+    s.push('\n');
+    s.push_str(next);
+    s.push('\n');
+    s.push_str(&sentence(rng, 3, 6));
+    s.push('\n');
+}
+
+/// One annotated `function` knot per [`DIAG_FN_STRIDE`]'th file —
+/// `int`/`string`/`List<Signals>`/`fn(int): string` param + return
+/// annotations, every name recognized (see [`generate_diag_project`]'s doc
+/// for why unrecognized names live in a separate fixture).
+fn push_diag_annotated_function(s: &mut String, f: usize) {
+    let _ = writeln!(
+        s,
+        "=== function diag_sig_{f:02}(count: int, label: string, items: List<Signals>, \
+         transform: fn(int): string): string ==="
+    );
+    s.push_str("~ {\n");
+    s.push_str("    if count > 0 {\n");
+    s.push_str("        return label\n");
+    s.push_str("    }\n");
+    s.push_str("    return \"none\"\n");
+    s.push_str("}\n\n");
+}
+
+/// The diagnostic-heavy project must still compile clean under
+/// `Dialect::Brink` (E033/E034 warnings expected and fine — see the module
+/// doc's item 7) — a project full of *errors* would measure the diagnostic
+/// path, not the compile path, same rationale as
+/// [`verify_synthetic_compiles`].
+fn verify_diag_compiles(project: &BTreeMap<String, String>) -> Result<(), String> {
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    match brink_compiler::compile_with_options("diag_main.ink", read_from(project), options) {
+        Ok(output) => {
+            println!(
+                "compile_bench | diag.verify | ok warnings={}",
+                output.warnings.len()
+            );
+            if output.warnings.is_empty() {
+                return Err(
+                    "diag project compiled with zero warnings — expected E033/E034 from its \
+                     structural-edge-case knots, so validate isn't being exercised"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let detail = match &e {
+                brink_compiler::CompileError::Diagnostics(diags) => diags
+                    .iter()
+                    .take(5)
+                    .map(|d| format!("{}: {}", d.path, d.message))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                other => other.to_string(),
+            };
+            Err(format!("diag project failed to compile: {detail}"))
+        }
+    }
+}
+
+fn bench_diag_cold(project: &BTreeMap<String, String>, runs: usize) -> Result<(), String> {
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let mut samples = Vec::with_capacity(runs);
+    for _ in 0..runs {
+        let start = Instant::now();
+        brink_compiler::compile_with_options("diag_main.ink", read_from(project), options.clone())
+            .map_err(|e| format!("diag compile failed mid-benchmark: {e}"))?;
+        samples.push(ms(start));
+    }
+    row(
+        "diag_cold.compile",
+        "brink dialect, gradual types",
+        &samples,
+    );
+    Ok(())
+}
+
+/// Warm one-line-edit loop under `Dialect::Brink`, same shape as
+/// [`bench_synthetic_warm`] — the real per-file `validate`/`dialect_gate`/
+/// `annotations::check` load this project variant exists to produce, under
+/// the dialect the project actually compiles clean with.
+fn bench_diag_warm(project: &BTreeMap<String, String>, runs: usize) -> Result<(), String> {
+    let mut driver = Driver::new();
+    driver
+        .discover("diag_main.ink", read_from(project))
+        .map_err(|e| format!("diag warm setup discovery failed: {e}"))?;
+    let entry = driver
+        .db()
+        .file_id("diag_main.ink")
+        .ok_or_else(|| "diag warm setup: diag_main.ink missing after discovery".to_string())?;
+    driver.set_analysis_options(AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    });
+    let mut db = driver.into_db();
+
+    let edit_path = format!("diag_file_{EDIT_FILE:02}.ink");
+    let mut update = Vec::with_capacity(runs);
+    let mut reanalyze = Vec::with_capacity(runs);
+    let mut analyze = Vec::with_capacity(runs);
+    let mut diagnostics = Vec::with_capacity(runs);
+    let mut lir_lower = Vec::with_capacity(runs);
+    let mut codegen = Vec::with_capacity(runs);
+    let mut full = Vec::with_capacity(runs);
+
+    // Offset from every other bench's revision counter so no two benches
+    // ever compare identical edit content.
+    let mut revision: u64 = 3000;
+    for _ in 0..runs {
+        revision += 1;
+        let edited = generate_diag_file(EDIT_FILE, revision);
+        let mut d = Driver::from_db(db);
+
+        let start = Instant::now();
+        d.db_mut().update_file(&edit_path, edited);
+        let update_ms = ms(start);
+
+        let stages = staged_back_half(&mut d, entry)?;
+
+        update.push(update_ms);
+        analyze.push(stages.analyze);
+        diagnostics.push(stages.diagnostics);
+        lir_lower.push(stages.lir_lower);
+        codegen.push(stages.codegen);
+        reanalyze.push(update_ms + stages.analyze);
+        full.push(update_ms + stages.total());
+
+        db = d.into_db();
+    }
+
+    row(
+        "diag_warm.update_file",
+        "1-line edit, per-knot HIR cache",
+        &update,
+    );
+    row(
+        "diag_warm.reanalyze_ide",
+        "update_file + analyze, brink dialect",
+        &reanalyze,
+    );
+    row(
+        "diag_warm.stage.analyze",
+        "validate + dialect_gate + annotations::check",
+        &analyze,
+    );
+    row(
+        "diag_warm.stage.diagnostics",
+        "collect+partition (E033/E034 warnings present)",
+        &diagnostics,
+    );
+    row(
+        "diag_warm.stage.lir_lower",
+        "HIR normalize + LIR lowering",
+        &lir_lower,
+    );
+    row("diag_warm.stage.codegen", "LIR -> StoryData emit", &codegen);
+    row(
+        "diag_warm.full_recompile",
+        "update_file .. codegen (StoryData)",
+        &full,
+    );
+    Ok(())
+}
+
+/// Same warm loop as [`bench_diag_warm`], but with `types = strict` —
+/// "plus a strict-mode variant with annotation density" (issue #663): unlike
+/// [`bench_synthetic_warm_strict`]'s annotation-free project, this project's
+/// `DIAG_FN_STRIDE`-spaced annotated function knots give `strict::check` /
+/// `annotations::mismatches` real per-file annotation content to consume
+/// through the memoized `type_inference_query`, not zero-annotation
+/// boilerplate.
+fn bench_diag_warm_strict(project: &BTreeMap<String, String>, runs: usize) -> Result<(), String> {
+    let mut driver = Driver::new();
+    driver
+        .discover("diag_main.ink", read_from(project))
+        .map_err(|e| format!("diag strict warm setup discovery failed: {e}"))?;
+    let entry = driver.db().file_id("diag_main.ink").ok_or_else(|| {
+        "diag strict warm setup: diag_main.ink missing after discovery".to_string()
+    })?;
+    driver.set_analysis_options(AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(TypePolicy::Strict),
+        ..AnalysisOptions::default()
+    });
+    let mut db = driver.into_db();
+
+    let edit_path = format!("diag_file_{EDIT_FILE:02}.ink");
+    let mut update = Vec::with_capacity(runs);
+    let mut reanalyze = Vec::with_capacity(runs);
+    let mut analyze = Vec::with_capacity(runs);
+    let mut diagnostics = Vec::with_capacity(runs);
+    let mut full = Vec::with_capacity(runs);
+
+    let mut revision: u64 = 4000;
+    for _ in 0..runs {
+        revision += 1;
+        let edited = generate_diag_file(EDIT_FILE, revision);
+        let mut d = Driver::from_db(db);
+
+        let start = Instant::now();
+        d.db_mut().update_file(&edit_path, edited);
+        let update_ms = ms(start);
+
+        let stages = staged_back_half(&mut d, entry)?;
+
+        update.push(update_ms);
+        analyze.push(stages.analyze);
+        diagnostics.push(stages.diagnostics);
+        reanalyze.push(update_ms + stages.analyze);
+        full.push(update_ms + stages.total());
+
+        db = d.into_db();
+    }
+
+    row(
+        "diag_warm_strict.update_file",
+        "1-line edit, per-knot HIR cache",
+        &update,
+    );
+    row(
+        "diag_warm_strict.reanalyze_ide",
+        "update_file + analyze, types=strict, annotation-dense",
+        &reanalyze,
+    );
+    row(
+        "diag_warm_strict.stage.analyze",
+        "cross-file analysis incl. strict::check + annotations::mismatches",
+        &analyze,
+    );
+    row(
+        "diag_warm_strict.stage.diagnostics",
+        "collect+partition diagnostics",
+        &diagnostics,
+    );
+    row(
+        "diag_warm_strict.full_recompile",
+        "update_file .. codegen (StoryData)",
+        &full,
+    );
+    Ok(())
+}
+
+/// The "both dialects" half of the `dialect_gate` comparison: the *same*
+/// diag project, unmodified, compiled under the default `Dialect::StrictInk`
+/// instead of `Dialect::Brink`. Every brink-extension construct and every
+/// annotation this project contains is now a real `E051` — analyze-only (no
+/// LIR/codegen: a strict-ink project with brink-extension content is
+/// *supposed* to fail compilation here, which is exactly what's measured).
+fn bench_diag_dialect_gate_strict(
+    project: &BTreeMap<String, String>,
+    runs: usize,
+) -> Result<(), String> {
+    let mut analyze_ms = Vec::with_capacity(runs);
+    let mut diagnostics_ms = Vec::with_capacity(runs);
+    let mut error_count = 0usize;
+
+    for run in 0..runs {
+        // Independent cold Driver per run (default AnalysisOptions =
+        // StrictInk dialect, gradual types) — no persistent-db warm reuse
+        // here, this leg only needs to show the gate firing for real.
+        let mut driver = Driver::new();
+        driver
+            .discover("diag_main.ink", read_from(project))
+            .map_err(|e| format!("diag strict-gate discovery failed: {e}"))?;
+        let entry = driver
+            .db()
+            .file_id("diag_main.ink")
+            .ok_or_else(|| "diag strict-gate: diag_main.ink missing after discovery".to_string())?;
+
+        let start = Instant::now();
+        let analysis = driver.analyze().clone();
+        analyze_ms.push(ms(start));
+
+        let start = Instant::now();
+        let report = driver.collect_diagnostics(&analysis, Some(entry));
+        diagnostics_ms.push(ms(start));
+
+        if run == 0 {
+            error_count = report.errors.len();
+        }
+    }
+
+    row(
+        "diag_dialect_gate_strict.analyze_cold",
+        &format!("strict-ink dialect, E051 errors={error_count}"),
+        &analyze_ms,
+    );
+    row(
+        "diag_dialect_gate_strict.diagnostics_cold",
+        "collect+partition (all E051-class)",
+        &diagnostics_ms,
+    );
+
+    if error_count == 0 {
+        return Err(
+            "diag strict-gate: expected E051 diagnostics from brink-extension content under \
+             strict-ink, found none — dialect_gate isn't being exercised"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Dedicated fixture with deliberately unrecognized type-annotation names —
+/// kept separate from [`generate_diag_project`] because it must produce real
+/// `E061`s (an error), which would otherwise break that project's "compiles
+/// clean" invariant. `annotations::check` only runs under `Dialect::Brink`
+/// (see its module doc), so every case here is also exercised for real.
+fn generate_unknown_annotation_project() -> BTreeMap<String, String> {
+    let mut files = BTreeMap::new();
+    let body = "\
+// Dedicated fixture (issue #663): deliberately unknown type names so
+// annotations::check's E061 path fires for real.
+Root text, never reached by anything below. # generated
+-> DONE
+
+=== function bogus_leaf(x: Frobnicator): int ===
+~ {
+    return 0
+}
+
+=== function bogus_generic(items: List<NotDeclared>): int ===
+~ {
+    return 0
+}
+
+=== function bogus_fn_component(cb: fn(Bogus): AlsoBogus): int ===
+~ {
+    return 0
+}
+"
+    .to_string();
+    files.insert("unknown_annotations.ink".to_string(), body);
+    files
+}
+
+fn bench_diag_unknown_annotations(runs: usize) -> Result<(), String> {
+    let project = generate_unknown_annotation_project();
+    let mut analyze_ms = Vec::with_capacity(runs);
+    let mut error_count = 0usize;
+
+    for run in 0..runs {
+        let mut driver = Driver::new();
+        driver.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        driver
+            .discover("unknown_annotations.ink", read_from(&project))
+            .map_err(|e| format!("unknown-annotation fixture discovery failed: {e}"))?;
+        let entry = driver
+            .db()
+            .file_id("unknown_annotations.ink")
+            .ok_or_else(|| {
+                "unknown-annotation fixture: entry file missing after discovery".to_string()
+            })?;
+
+        let start = Instant::now();
+        let analysis = driver.analyze().clone();
+        analyze_ms.push(ms(start));
+
+        let report = driver.collect_diagnostics(&analysis, Some(entry));
+        if run == 0 {
+            error_count = report.errors.len();
+        }
+    }
+
+    row(
+        "diag_unknown_annotations.analyze",
+        &format!("brink dialect, E061 errors={error_count}"),
+        &analyze_ms,
+    );
+
+    if error_count == 0 {
+        return Err(
+            "expected E061 diagnostics from unknown annotation names, found none — \
+             annotations::check isn't being exercised"
+                .to_string(),
+        );
+    }
     Ok(())
 }

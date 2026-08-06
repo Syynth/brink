@@ -5,8 +5,8 @@
 use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode};
 
-use crate::provenance::NodeClass;
-use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixOp, Stmt, SymbolKind, Tag};
+use crate::provenance::{KindToken, NodeClass, Provenance};
+use crate::{Block, Choice, Content, ContentPart, Divert, Expr, InfixExpr, InfixOp, Stmt, Tag};
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
@@ -38,19 +38,29 @@ impl LowerChoice for ast::Choice {
 
         let label = self.label().and_then(|l| name_from_ident(&l.identifier()?));
 
-        if let Some(ref label_name) = label {
-            let qualified = scope.qualify_label(&label_name.text);
-            sink.declare(SymbolKind::Label, &qualified, label_name.range);
-        }
-
         let is_fallback = self.start_content().is_none()
             && self.bracket_content().is_none()
             && self.inner_content().is_none();
 
+        // Several `{cond}` guards on one choice fold into an `and` chain.
+        // The folded nodes are *synthesized* — no single CST node spells
+        // them — but they still carry real provenance (issue #1517): the
+        // range covering the two operands, in this file, with the synthetic
+        // raw kind that marks "no live syntax node to resolve back to".
         let condition = self
             .conditions()
-            .filter_map(|c| c.expr().and_then(|e| e.lower_expr(scope, sink).ok()))
-            .reduce(|a, b| Expr::Infix(Box::new(a), InfixOp::And, Box::new(b)));
+            .filter_map(|c| {
+                let expr = c.expr()?;
+                let range = expr.syntax().text_range();
+                expr.lower_expr(scope, sink).ok().map(|e| (range, e))
+            })
+            .reduce(|(a_range, a), (b_range, b)| {
+                let range = a_range.cover(b_range);
+                let ptr =
+                    Provenance::new(scope.file_id, range, KindToken::synthetic(NodeClass::Infix));
+                (range, Expr::Infix(InfixExpr::new(ptr, a, InfixOp::And, b)))
+            })
+            .map(|(_, e)| e);
 
         let mut start_content = self.start_content().map(|sc| {
             let mut parts = lower_content_node_children(sc.syntax(), scope, sink);
@@ -147,6 +157,10 @@ impl LowerChoice for ast::Choice {
             is_fallback,
             label,
             condition,
+            // The ink grammar has no `as` binding anywhere — `AS_BINDING`
+            // is a `brink-syntax-native`-only node (`hir::Choice::binding`'s
+            // doc) — so this is always `None` for an ink-sourced choice.
+            binding: None,
             start_content,
             bracket_content,
             inner_content,
@@ -231,11 +245,6 @@ pub fn lower_gather_to_block(
         .label()
         .and_then(|l| name_from_ident(&l.identifier()?));
 
-    if let Some(ref label_name) = label {
-        let qualified = scope.qualify_label(&label_name.text);
-        sink.declare(SymbolKind::Label, &qualified, label_name.range);
-    }
-
     let content = gather.mixed_content().map(|mc| Content {
         ptr: None,
         parts: lower_content_node_children(mc.syntax(), scope, sink),
@@ -269,10 +278,12 @@ pub fn lower_gather_to_block(
         stmts.push(Stmt::EndOfLine);
     }
 
+    let tail = crate::tail_from_stmts(&stmts);
     Block {
         label,
         stmts,
         container_id: None,
+        tail,
     }
 }
 

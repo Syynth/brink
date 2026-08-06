@@ -10,11 +10,13 @@ The `.inkb` and `.inkl` formats carry a `(MAGIC, VERSION)` header; the reader **
 
 Today these are **regenerable build artifacts** — produced from `.ink` on every compile, never decoupled from the compiler that made them — so the policy is deliberately simple: **regenerate on mismatch; no multi-version readers.** Maintaining back-compat parsers for bytes nobody persists would be premature complexity.
 
-**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags. (The optional `Visibility` section, M-2b, also landed on the v4 line — it is omitted entirely when empty, so it needed no bump of its own.) **v5** added the mandatory `AliasTable` section (M-3, `docs/modules-spec.md` §5): unlike `Visibility`, it is always present (possibly empty) and was not part of the v4 RFC's pre-reserved inventory, so its introduction is its own one-bump event.
+**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags. (The optional `Visibility` section, M-2b, also landed on the v4 line — it is omitted entirely when empty, so it needed no bump of its own.) **v5** added the mandatory `AliasTable` section (M-3, `docs/modules-spec.md` §5): unlike `Visibility`, it is always present (possibly empty) and was not part of the v4 RFC's pre-reserved inventory, so its introduction is its own one-bump event. **v6** added the `PART_SPAN` `LinePart` tag (#1716, inline markup spans — `docs/prose-dialect-spec.md` §4.4/§4.5): a `LinePart` tag was never part of the v4 RFC's pre-reserved inventory either (that inventory reserved *value* tags and whole sections, not `LinePart` variants), so — like `AliasTable` — this is its own one-bump event, not a free ride on the `Array`/`Map`-style no-bump precedent. Ruled directly by issue #1716 ("`LinePart::Span` is a v6 payload") and coordinated with #1683, the v6 bump manifest for the full markup-wire batch (spans, element data, universal block id, choice captured environment); this PR lands only the `Span` payload, and `VERSION` 6 stays open to absorb #1683's remaining payloads without a further bump, one batched break rather than a bump per payload. `.inkl` bumped its own header version in lockstep (1 → 2) — see `.inkl` header layout below — since `.inkl` shares the same `encode_line_content`/`decode_line_content` dispatch and an old `.inkl` reader is just as unable to decode `PART_SPAN` as an old `.inkb` reader.
 
 This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), which *is* durable — written by players and expected to survive runtime updates — and is therefore *tolerant* by design (`LoadReport` reports what it couldn't apply rather than failing). Program metadata such as container layout does not affect save compatibility: saves reference visit counts and variables by `DefinitionId`, not by container byte layout.
 
 **When to revisit:** the single-version policy holds until a compiled artifact is first **shipped or cached decoupled from its compiler** — e.g. a game bundles a prebuilt `.inkb` against an independently-updating runtime, or the studio persists compiled bytes across versions. At that point, prefer making sections **length-framed and append-only (TLV-style)** — new fields always appended, sections self-describing — so an older reader can skip what it doesn't recognize, rather than maintaining N full parsers. (The container section's length-prefixed bytecode is already partway there.) Make that call when the first durable consumer appears, not before.
+
+`.brkt` (the runtime transcript format, `crates/brink-runtime/src/transcript.rs`) is such a durable consumer already — it tolerates old files by design, unlike `.inkb`'s hard-reject-and-regenerate policy above. `docs/brkt-trailing-section-findings.md` traces exactly what `.brkt`'s current positional trailing-section probe would break for the `.inkb` v6 bump's new sections, and catalogs this repo's existing self-describing-layout precedents (the section offset table above, section-local version bytes) as prior art for that gap.
 
 ## Definitions and DefinitionId
 
@@ -85,7 +87,7 @@ Root container
 
 - The first stitch in a knot is auto-entered via an implicit divert. Other stitches require explicit `-> stitch_name`.
 - Stitches do NOT fall through to each other.
-- The root story container gets an implicit final gather + `-> DONE` appended by the compiler.
+- The root story container gets an implicit final gather + `-> DONE` appended by the compiler — once, for the entry file's root weave only. An `INCLUDE`d file's own trailing weave gets none, matching C# ink's `isRootStory` guard, so running off the end of one is still a `RanOutOfContent` fault (issues #1448, #1502).
 
 ## Global variables (tag `0x02`)
 
@@ -574,6 +576,20 @@ row encoding itself stays section-locally versioned so it can still evolve
 without a further whole-file bump). `0x0E` is taken by `Visibility`, so this
 takes the next free tag, `0x0F`.
 
+A `#@was` on a knot or stitch mints **one entry per descendant** whose
+qualified name (and so `DefinitionId`) changed too — every stitch and label
+beneath a renamed knot, every label beneath a renamed stitch — not just one
+entry for the renamed declaration itself (issue #1671): a rename's own id
+is recoverable only from the declared `#@was`, but a descendant's stale id
+can never be derived at load time (a `DefinitionId` is a hash; no path can
+be recovered from one), so the compiler must materialize the whole bridge
+set while it still knows every descendant's path. Table growth is therefore
+bounded by the renamed container's subtree size, not by 1 per `#@was`
+directive — a knot with many stitches and labels renamed once produces one
+entry per descendant, additively (a stitch renamed *simultaneously* with
+its own enclosing knot produces one edge per level, not a doubly-old
+composite path).
+
 **`FrameShapes` section (`0x10`, FS-3)** — carries per-`await`-site frame
 shapes (`docs/flow-suspension-spec.md` §4/§11): a one-byte section-local
 version, then a `u32` count, then that many entries, each the site's stable
@@ -678,6 +694,19 @@ enum LinePart {
         variants: Vec<(SelectKey, String)>,
         default: String,
     },
+    // `<name attr="v">…</name>` — an inline markup span (#1716,
+    // `docs/prose-dialect-spec.md` §4.4). Genuinely nested: `children` is
+    // itself a `Vec<LinePart>`, so a span can contain literals, slots,
+    // other spans, or (structurally, though the compiler never emits it —
+    // §4.4/§4.5) a select. Empty `children` is the self-closing /
+    // point-marker shape (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
+    // Hash-transparent: `name`/`attrs` never contribute to `source_hash`,
+    // only `children`'s own text/slots do, recursively.
+    Span {
+        name: String,
+        attrs: Vec<(String, String)>,
+        children: Vec<LinePart>,
+    },
 }
 
 enum SelectKey {
@@ -690,7 +719,18 @@ enum SelectKey {
 enum PluralCategory { Zero, One, Two, Few, Many, Other }
 ```
 
-A line's content is either plain text (`Plain`) or a `LineTemplate` with slots and selectors. The runtime's line resolver walks the `LinePart` tree, reads slot values from the VM stack, picks select variants (using the `PluralResolver` trait for plural categories), and appends formatted text to the output buffer. Select variants and defaults are flat `String` values — not nested `LinePart` trees.
+A line's content is either plain text (`Plain`) or a `LineTemplate` with slots, selectors, and spans. The runtime's line resolver walks the `LinePart` tree, reads slot values from the VM stack, picks select variants (using the `PluralResolver` trait for plural categories), recurses into `Span` children the same way, and appends formatted text to the output buffer. Select variants and defaults are flat `String` values — not nested `LinePart` trees. `Span` is the one variant that *is* nested (`children: Vec<LinePart>`) — see its doc comment above.
+
+#### `LinePart` wire tags
+
+| Tag | Variant | Encoding |
+|-----|---------|----------|
+| `0x00` | `Literal` | length-prefixed UTF-8 string |
+| `0x01` | `Slot` | `u8` slot index |
+| `0x02` | `Select` | `u8` slot, then variant count + `(SelectKey, String)` pairs, then default `String` |
+| `0x03` | `Span` | name `String`, attr count + `(String, String)` pairs, then child count + that many recursively-encoded `LinePart`s (v6, #1716) |
+
+`Span` was introduced at `.inkb` `VERSION` 6 / `.inkl` version 2 (see Versioning above) — unlike a *reserved* tag materializing an already-frozen slot, `0x03` was a genuinely new tag on the `LinePart` dispatch, so its addition is its own one-bump event, not a free ride on the v4 reserved-tag precedent. An old reader hard-rejects `0x03` via the same unrecognized-tag path every out-of-range tag already takes (`InvalidLinePart`).
 
 ### Plural resolution
 

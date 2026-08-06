@@ -71,7 +71,58 @@ fn arb_ref_kind() -> impl Strategy<Value = RefKind> {
         Just(RefKind::Variable),
         Just(RefKind::Function),
         Just(RefKind::List),
+        Just(RefKind::Struct),
+        Just(RefKind::Type),
     ]
+}
+
+/// [`arb_ref_kind`] narrowed to the kinds that **always** diagnose on a
+/// miss (issue #2249) — every kind except `RefKind::Type`, whose own doc
+/// (`resolve::resolve_type_ref`) explains why "unresolved" is not
+/// synonymous with "invalid" for a TM-2 annotation (`int`, `List`, … are
+/// equally legal `Named` leaves that were never meant to resolve as a
+/// struct at all). Used by properties like `missing_ref_always_diagnosed`
+/// that assert the unconditional "a ref to something that isn't declared
+/// always gets a diagnostic" contract — true for four of five kinds, not
+/// this one.
+fn arb_diagnosing_ref_kind() -> impl Strategy<Value = RefKind> {
+    prop_oneof![
+        Just(RefKind::Divert),
+        Just(RefKind::Variable),
+        Just(RefKind::Function),
+        Just(RefKind::List),
+        Just(RefKind::Struct),
+    ]
+}
+
+/// Structural exhaustiveness guard (issue #1542, extending the same
+/// exhaustiveness-guard pattern — #667/#883, most recently extended by
+/// #1521 in `brink-runtime`'s `law_transcript_roundtrip.rs`): a match over
+/// every current [`RefKind`] variant with no wildcard arm, so this fails to
+/// compile the moment a new variant is added to the enum. Never called —
+/// the forcing function is the compile error itself. `arb_ref_kind` above
+/// used to hand-list only 4 of `RefKind`'s 5 variants — `Struct` (TM-4b) was
+/// added to the enum without a matching `prop_oneof!` arm, so every
+/// `proptest!` in this file that exercises `arb_ref_kind`/`arb_manifest` ran
+/// 500+ generated cases per run and never once generated a struct-kind ref.
+/// Whoever adds a `RefKind` variant must now also add an arm here — and
+/// extend `arb_ref_kind` to generate it. `RefKind::Type` (issue #2249) is
+/// the first documented-exclusion precedent for this enum, the
+/// `OutputPart::Checkpoint` pattern `law_transcript_roundtrip.rs` (#1521)
+/// established: it stays listed here (never a wildcard) so the guard still
+/// trips if it is ever removed or split, but see `completeness`'s own doc
+/// below for why it needs special handling in that one property, not a
+/// blanket exclusion from generation.
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_ref_kind_variants_exhaustive(kind: RefKind) {
+    match kind {
+        RefKind::Divert
+        | RefKind::Variable
+        | RefKind::Function
+        | RefKind::List
+        | RefKind::Struct
+        | RefKind::Type => {}
+    }
 }
 
 /// Strategy that generates a manifest with 1-5 knots, 0-3 variables,
@@ -99,13 +150,15 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
             0..=2,
         ),
         prop::collection::vec(arb_ident(), 0..=2), // externals
+        prop::collection::vec(arb_ident(), 0..=2), // struct names
     )
-        .prop_flat_map(|(knots, vars, lists, externals)| {
+        .prop_flat_map(|(knots, vars, lists, externals, structs)| {
             let knot_names = knots.clone();
             let all_names: Vec<String> = knots
                 .iter()
                 .chain(vars.iter())
                 .chain(externals.iter())
+                .chain(structs.iter())
                 .chain(lists.iter().map(|(name, _)| name))
                 .chain(lists.iter().flat_map(|(_, items)| items.iter()))
                 .cloned()
@@ -167,6 +220,13 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                     offset += name.len() as u32 + 1;
                 }
 
+                for name in &structs {
+                    manifest
+                        .structs
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
+                    offset += name.len() as u32 + 1;
+                }
+
                 // Each unresolved ref gets a unique offset so ranges don't collide
                 let mut ref_offset = 10_000u32;
                 for (path, kind, scope) in &refs {
@@ -176,6 +236,7 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                         kind: *kind,
                         scope: scope.clone(),
                         arg_count: None,
+                        module_qualified: false,
                     });
                     ref_offset += path.len() as u32 + 100;
                 }
@@ -198,6 +259,7 @@ fn arb_two_file_manifests() -> impl Strategy<Value = Vec<(FileId, SymbolManifest
             .chain(m2.variables.iter_mut())
             .chain(m2.lists.iter_mut())
             .chain(m2.externals.iter_mut())
+            .chain(m2.structs.iter_mut())
             .chain(m2.labels.iter_mut())
             .chain(m2.list_items.iter_mut())
         {
@@ -226,6 +288,11 @@ fn empty_hir() -> HirFile {
         imports: Vec::new(),
         visibility: Vec::new(),
         was_directives: Vec::new(),
+        allow_scopes: Vec::new(),
+        element_matches: Vec::new(),
+        cue_names: Vec::new(),
+        native: false,
+        claim_handlers: Vec::new(),
     }
 }
 
@@ -236,8 +303,30 @@ proptest! {
 
     /// Every unresolved ref either resolves to a valid ID or produces exactly
     /// one diagnostic. No ref is silently dropped.
+    ///
+    /// **`RefKind::Type` is excluded from this count (issue #2249).** Every
+    /// other `RefKind` names something that must be declared to be valid —
+    /// an unresolved one is unconditionally an error. A TM-2 type
+    /// annotation is not: `int`, `float`, `List`, … are equally legal
+    /// `Named` leaves that were never meant to resolve as a struct at all
+    /// (`resolve::resolve_type_ref`'s own doc), so "no declared struct
+    /// named this" is the overwhelmingly common, entirely legal outcome —
+    /// diagnosing it would misfire on every scalar-typed annotation in
+    /// every corpus file. This property's "resolved xor diagnosed, never
+    /// neither" dichotomy genuinely does not hold for this one kind; a
+    /// third, legal "resolved to nothing, nothing wrong" state is included
+    /// in coverage (via `arb_ref_kind`/`resolved_ids_are_valid`) but
+    /// excluded from this specific count.
     #[test]
     fn completeness(manifest in arb_manifest()) {
+        let manifest = SymbolManifest {
+            unresolved: manifest
+                .unresolved
+                .into_iter()
+                .filter(|r| r.kind != RefKind::Type)
+                .collect(),
+            ..manifest
+        };
         let total_refs = manifest.unresolved.len();
         let ref_ranges: Vec<_> = manifest.unresolved.iter().map(|r| r.range).collect();
 
@@ -255,7 +344,10 @@ proptest! {
             .filter(|r| resolved_ranges.contains(r))
             .count();
 
-        // Diagnostics that are resolution errors (E024, E025, or E027)
+        // Diagnostics that are resolution errors — one per `RefKind` variant
+        // (E024 divert, E025 variable/function, E027 list, E068 struct).
+        // Function refs also land on E025 (`resolve_function`'s own
+        // `unresolved_diag` call site) — no separate code of its own.
         let unresolved_diag_ranges: HashSet<_> = result
             .diagnostics
             .iter()
@@ -263,6 +355,7 @@ proptest! {
                 d.code == DiagnosticCode::E024
                     || d.code == DiagnosticCode::E025
                     || d.code == DiagnosticCode::E027
+                    || d.code == DiagnosticCode::E068
             })
             .map(|d| d.range)
             .collect();
@@ -464,12 +557,14 @@ proptest! {
     }
 
     /// A ref that is NOT among the declared symbols always produces an
-    /// unresolved diagnostic.
+    /// unresolved diagnostic. `kind` is drawn from
+    /// [`arb_diagnosing_ref_kind`], not [`arb_ref_kind`] — see that
+    /// function's doc for why `RefKind::Type` is excluded.
     #[test]
     fn missing_ref_always_diagnosed(
         knots in prop::collection::vec(arb_ident(), 1..=3),
         suffix in arb_ident(),
-        kind in arb_ref_kind(),
+        kind in arb_diagnosing_ref_kind(),
     ) {
         // Prefix guarantees it won't collide with any generated names
         let missing = format!("zzz_{suffix}");
@@ -492,6 +587,7 @@ proptest! {
             kind,
             scope: Scope::default(),
             arg_count: None,
+            module_qualified: false,
         });
 
         let hir = empty_hir();
@@ -508,7 +604,8 @@ proptest! {
         let has_diag = result.diagnostics.iter().any(|d| {
             (d.code == DiagnosticCode::E024
                 || d.code == DiagnosticCode::E025
-                || d.code == DiagnosticCode::E027)
+                || d.code == DiagnosticCode::E027
+                || d.code == DiagnosticCode::E068)
                 && d.range == range(5000, missing.len() as u32)
         });
         prop_assert!(

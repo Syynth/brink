@@ -13,14 +13,25 @@ crate-type = ["cdylib"]
 [dependencies]
 brink-compiler = { workspace = true }
 brink-db = { workspace = true }
+# The #1306 producer: `Project::load(&tree, entry, &overrides)` ->
+# `compile(&env)` — the pure/effectful split `compile()`/`compile_fragment()`
+# (crates/brink-web/src/compile.rs) migrate onto, replacing the throwaway
+# `Driver` + `set_file`/`set_entry`/`set_analysis_options` imperative path.
+brink-environment = { workspace = true }
 brink-ide = { workspace = true }
 brink-runtime = { workspace = true }
 brink-syntax = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
-# `brink.toml` project settings file (#1005): `parse_str` only (no fs use —
-# the wasm sandbox has none of its own; the embedder reads the file with its
-# own host APIs and hands the text to `EditorSession::apply_project_config`).
+# `InMemory`: the map-backed `SourceTree` — the web mount's natural home,
+# since compile.rs's documents already live in memory.
+brink-source-tree = { workspace = true }
+# `brink.toml` project settings file (#1005): `parse_str` for
+# `EditorSession::apply_project_config` (text handed in by an embedder that
+# reads the file with its own host APIs) and, since #1414,
+# `discover_from_entry_in_tree` for `EditorSession::discover_project_config`
+# (walks the session's in-memory `SourceTree` — still no real fs use, since
+# the wasm sandbox has none of its own).
 brink-project-config = { workspace = true }
 # `inkt-write` exposes the dependency-free `.inkt` writer for the Program
 # Explorer (`StoryRunner::program_inkt`) — no `pest` reader pulled into the wasm.
@@ -34,6 +45,7 @@ brink-intl = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 wasm-bindgen = "0.2"
 # `js-sys` provides `Function`/`Array` for the synchronous external-function
 # binding boundary (ink EXTERNAL → JS callback). Values are hand-mapped to
@@ -52,6 +64,12 @@ web-sys = { version = "0.3", features = ["console"] }
 wasm-bindgen-test = "0.3"
 # Lets the async wasm test `await` a JS `Promise` (`JsFuture`) on the Rust side.
 wasm-bindgen-futures = "0.4"
+# The `[dependencies]` entry above is feature-bare (no `test-util`) — this
+# crate's real compile road is `brink_environment::compile(&Environment)`
+# (#1306). This crate's own `#[cfg(test)]` wasm modules still compile inline
+# ink source directly, so they need `brink_compiler::compile`'s `test-util`
+# feature (issue #2168) — enabled only for test builds via this dev-dep edge.
+brink-compiler = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

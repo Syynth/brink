@@ -1,2 +1,0 @@
-(knot) @fold
-(stitch) @fold

@@ -236,8 +236,11 @@ impl Analyzer {
             Stmt::LabeledBlock(b) => self.walk_block(b),
             Stmt::Conditional(c) => self.walk_conditional(c),
             Stmt::Sequence(s) => self.walk_sequence(s),
-            Stmt::ExprStmt(e) => self.record_reads(e, pos),
-            Stmt::EndOfLine => {}
+            // Issue #2108: `AttachElement`'s call expression is a read site
+            // like any other `ExprStmt`; `EndElementRun` carries none, like
+            // `EndOfLine`.
+            Stmt::ExprStmt(e) | Stmt::AttachElement(e) => self.record_reads(e, pos),
+            Stmt::EndOfLine | Stmt::EndElementRun => {}
             Stmt::LogicBlock(lb) => {
                 for bs in &lb.stmts {
                     self.walk_block_stmt(bs);
@@ -316,6 +319,12 @@ impl Analyzer {
 
     fn walk_if_stmt(&mut self, i: &IfStmt, pos: usize) {
         self.record_reads(&i.condition, pos);
+        // B1b (issue #1475): an `as` binding declares a local at the
+        // condition, in scope for the success arm — the same shape a `for`
+        // variable has at the loop head (`walk_for_stmt`).
+        if let Some(binding) = &i.binding {
+            self.decls.push((binding.text.clone(), pos));
+        }
         for s in &i.body {
             self.walk_block_stmt(s);
         }
@@ -343,6 +352,9 @@ impl Analyzer {
             self.record_await(pos, cond_reads);
         }
         self.record_reads(&w.condition, pos);
+        if let Some(binding) = &w.binding {
+            self.decls.push((binding.text.clone(), pos));
+        }
         for s in &w.body {
             self.walk_block_stmt(s);
         }
@@ -353,6 +365,11 @@ impl Analyzer {
     fn walk_for_stmt(&mut self, f: &ForStmt, pos: usize) {
         // The iterator binds at the loop head, in scope for the whole body.
         self.decls.push((f.var_name.text.clone(), pos));
+        // Two-binding map iteration (`for k, v in m`, B2 issue #1461): the
+        // second binding is in scope alongside the first.
+        if let Some(val_name) = &f.val_name {
+            self.decls.push((val_name.text.clone(), pos));
+        }
         self.record_reads(&f.iterable, pos);
         let loop_id = self.loops.len();
         self.loops.push((pos, pos));
@@ -377,12 +394,25 @@ impl Analyzer {
 
     fn walk_content(&mut self, content: &Content, pos: usize) {
         for part in &content.parts {
-            match part {
-                ContentPart::Interpolation(e) => self.record_reads(e, pos),
-                ContentPart::InlineConditional(c) => self.walk_conditional_at(c, pos),
-                ContentPart::InlineSequence(s) => self.walk_sequence(s),
-                ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
+            self.walk_content_part(part, pos);
+        }
+    }
+
+    fn walk_content_part(&mut self, part: &ContentPart, pos: usize) {
+        match part {
+            ContentPart::Interpolation(e) => self.record_reads(e, pos),
+            ContentPart::InlineConditional(c) => self.walk_conditional_at(c, pos),
+            ContentPart::InlineSequence(s) => self.walk_sequence(s),
+            // Presentational, not opaque (§4.3) — a variable read inside a
+            // span (`<b>{name}</b>`) must still be recorded, or this frame-
+            // shape analysis would under-report captures for any line an
+            // author bolds a word in.
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.walk_content_part(child, pos);
+                }
             }
+            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
     }
 
@@ -420,13 +450,16 @@ impl Analyzer {
             if let Some(e) = &branch.condition {
                 self.record_reads(e, pos);
             }
+            if let Some(binding) = &branch.binding {
+                self.decls.push((binding.text.clone(), pos));
+            }
             self.walk_block(&branch.body);
         }
     }
 
     fn walk_sequence(&mut self, seq: &Sequence) {
         for branch in &seq.branches {
-            self.walk_block(branch);
+            self.walk_block(&branch.body);
         }
     }
 }
@@ -442,9 +475,9 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => collect_reads(inner, sink),
-        Expr::Infix(lhs, _, rhs) => {
-            collect_reads(lhs, sink);
-            collect_reads(rhs, sink);
+        Expr::Infix(ie) => {
+            collect_reads(&ie.lhs, sink);
+            collect_reads(&ie.rhs, sink);
         }
         Expr::Call(_path, args) => {
             for arg in args {
@@ -485,10 +518,31 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             }
         }
         Expr::RefArg(ra) => collect_reads(&ra.operand, sink),
+        // A lambda captures BY VALUE at its creation site (RULED
+        // 2026-07-19, issue #1685), so every local name its body reads is
+        // read *here*, in the enclosing frame, the moment the lambda value
+        // is made — exactly what this collection is for. Descending is
+        // therefore not conservatism, it is the capture semantics.
+        Expr::Lambda(l) => match &l.body {
+            crate::LambdaBody::Expr(e) => collect_reads(e, sink),
+            crate::LambdaBody::Block { stmts, tail } => {
+                for s in stmts {
+                    collect_stmt_reads(s, sink);
+                }
+                if let Some(t) = tail {
+                    collect_reads(t, sink);
+                }
+            }
+        },
         Expr::Range(r) => {
             collect_reads(&r.start, sink);
             collect_reads(&r.end, sink);
         }
+        // Block capture (issue #1839): a self-contained `Vec<Stmt>` embedded
+        // inside an expression tree (a `content`-typed call argument),
+        // exactly like `Expr::Lambda`'s braced body above — descend for the
+        // same soundness reason.
+        Expr::Fragment(stmts) => collect_fragment_reads(stmts, sink),
         // Leaves with no local reads: literals, and static references (a
         // divert-target value / list literal names targets/items, not locals).
         Expr::Int(_)
@@ -497,6 +551,85 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
         | Expr::Null
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_) => {}
+    }
+}
+
+/// Collect the single-segment names read within a captured content block's
+/// statements (`Expr::Fragment`, issue #1839) — needed for the same reason
+/// [`Expr::Lambda`]'s braced body above is: a fragment capture is a
+/// self-contained statement list embedded inside an expression tree, so the
+/// stateful per-def walker (`FrameShapeWalker::walk_block` and friends)
+/// never visits it on its own. Built on [`super::types::fragment_stmt_exprs`]
+/// — the shared "every expression a captured `Stmt` run directly contains"
+/// flattening `brink-analyzer`'s own walkers use for the identical reason
+/// (issue #1764) — rather than re-deriving the per-`Stmt`-variant descent
+/// here too.
+fn collect_fragment_reads(stmts: &[Stmt], sink: &mut impl FnMut(&String)) {
+    for e in super::types::fragment_stmt_exprs(stmts) {
+        collect_reads(e, sink);
+    }
+}
+
+/// Collect the single-segment names read by one code-ground statement —
+/// the statement half of [`collect_reads`], reached only through a lambda's
+/// braced body (issue #1685), the one place a statement list hangs off an
+/// expression.
+fn collect_stmt_reads(stmt: &super::types::BlockStmt, sink: &mut impl FnMut(&String)) {
+    use super::types::BlockStmt as B;
+    match stmt {
+        B::TempDecl(t) => {
+            if let Some(e) = &t.value {
+                collect_reads(e, sink);
+            }
+        }
+        B::Assignment(a) => {
+            collect_reads(&a.target, sink);
+            collect_reads(&a.value, sink);
+        }
+        B::Return(r) => {
+            if let Some(e) = &r.value {
+                collect_reads(e, sink);
+            }
+            for a in &r.onwards_args {
+                collect_reads(a, sink);
+            }
+        }
+        B::If(i) => {
+            collect_reads(&i.condition, sink);
+            for s in &i.body {
+                collect_stmt_reads(s, sink);
+            }
+            match &i.else_branch {
+                Some(super::types::ElseBranch::ElseIf(nested)) => {
+                    collect_stmt_reads(&B::If((**nested).clone()), sink);
+                }
+                Some(super::types::ElseBranch::Else(body)) => {
+                    for s in body {
+                        collect_stmt_reads(s, sink);
+                    }
+                }
+                None => {}
+            }
+        }
+        B::While(w) => {
+            collect_reads(&w.condition, sink);
+            for s in &w.body {
+                collect_stmt_reads(s, sink);
+            }
+        }
+        B::For(f) => {
+            collect_reads(&f.iterable, sink);
+            for s in &f.body {
+                collect_stmt_reads(s, sink);
+            }
+        }
+        B::ExprStmt(e) => collect_reads(e, sink),
+        B::Await(a) => {
+            if let Some(e) = &a.condition {
+                collect_reads(e, sink);
+            }
+        }
+        B::Break(_) | B::Continue(_) => {}
     }
 }
 

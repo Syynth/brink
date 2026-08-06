@@ -17,7 +17,7 @@
 //   getting in the way") — and it held up exactly that way. Four
 //   DIFFERENT named functions (`score_health_low`, `score_enemy_close`,
 //   `score_ammo_available`, `score_baseline`), each with a different
-//   body, get stored side by side in one `array<Consideration>` and
+//   body, get stored side by side in one `Array<Consideration>` and
 //   called through the exact same line, `call(c.score_fn)`, inside
 //   `score_action`'s loop — the loop has no idea which specific function
 //   it's about to invoke, and doesn't need to. That is real polymorphism
@@ -78,7 +78,7 @@ STRUCT Consideration = #{
 
 STRUCT ActionOption = #{
     name: string,
-    considerations: array<Consideration>,
+    considerations: Array<Consideration>,
 }
 
 ~ {
@@ -146,7 +146,7 @@ STRUCT ActionOption = #{
     return weighted_sum / weight_total
 }
 
-=== function best_action_index(options: array<ActionOption>): int ===
+=== function best_action_index(options: Array<ActionOption>): int ===
 ~ {
     temp best_idx = 0
     temp best_score = score_action(options[0])
@@ -162,7 +162,7 @@ STRUCT ActionOption = #{
     return best_idx
 }
 
-=== function run_scenario(options: array<ActionOption>, label: string): string ===
+=== function run_scenario(options: Array<ActionOption>, label: string): string ===
 ~ {
     temp line = label + ": "
     temp i = 0

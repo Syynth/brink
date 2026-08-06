@@ -36,23 +36,44 @@ use crate::{AssignOp, Diagnostic, DiagnosticCode, InfixOp};
 
 use super::context::LowerCtx;
 use super::context::TypeMode;
+use super::context::UfcsVerdict;
 use super::expr::lower_expr;
 use super::lir;
 
 /// Lower a `~ { … }` block's statements into the enclosing body's flat
-/// statement sequence. Opens a new T1b lexical scope for the block's own
-/// `temp` declarations (and any nested scopes it opens), popped on return.
-pub(super) fn lower_logic_block(
+/// statement sequence, honoring [`hir::LogicBlock::scope`] — almost always
+/// [`hir::LogicBlockScope::Standalone`] (push a new T1b lexical scope for
+/// the block's own `temp` declarations on entry, pop it on return), except
+/// when a code-ground body's `> text` prose-line escape has split it into
+/// several sibling `LogicBlock`s (issue #1992 review finding F1,
+/// `hir::lower_native::body::mark_split_logic_block_scopes`'s doc): those
+/// siblings share one scope, so only the first (`Opens`) pushes; a
+/// `Continues` sibling neither pushes nor pops. **Neither `Opens` nor
+/// `Continues` pops here** — the matching pop is the enclosing block's
+/// responsibility ([`super::lower_block_with_children`]), since a
+/// `Stmt::Content` sibling produced by a trailing `> text` line can
+/// legally come after the last split run and still needs the scope open.
+pub(super) fn lower_logic_block(lb: &hir::LogicBlock, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
+    use hir::LogicBlockScope as Scope;
+    match lb.scope {
+        Scope::Standalone => {
+            ctx.push_block_scope();
+            let out = lower_block_stmt_list(&lb.stmts, ctx);
+            ctx.pop_block_scope();
+            out
+        }
+        Scope::Opens => {
+            ctx.push_block_scope();
+            lower_block_stmt_list(&lb.stmts, ctx)
+        }
+        Scope::Continues => lower_block_stmt_list(&lb.stmts, ctx),
+    }
+}
+
+pub(super) fn lower_block_stmt_list(
     stmts: &[hir::BlockStmt],
     ctx: &mut LowerCtx<'_>,
 ) -> Vec<lir::Stmt> {
-    ctx.push_block_scope();
-    let out = lower_block_stmt_list(stmts, ctx);
-    ctx.pop_block_scope();
-    out
-}
-
-fn lower_block_stmt_list(stmts: &[hir::BlockStmt], ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
     let mut out = Vec::new();
     for stmt in stmts {
         lower_block_stmt(stmt, ctx, &mut out);
@@ -68,7 +89,7 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             let value = ret.value.as_ref().map(|e| lower_expr(e, ctx));
             out.push(lir::Stmt::Return {
                 value,
-                is_tunnel: false,
+                is_tunnel: ret.kind == hir::ReturnKind::TunnelRedirect,
                 args: Vec::new(),
             });
         }
@@ -89,8 +110,16 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
                 super::stmts::emit_await_lowering_fence(ctx, w.ptr.text_range());
                 return;
             }
-            let condition = lower_expr(&w.condition, ctx);
+            // Same bracket shape as `lower_if_branch`: the scope opens
+            // before the condition so an `as` binding declares into it.
+            // `LogicWhile` re-evaluates `condition` each pass, so the
+            // binding rebinds per iteration with no extra machinery (B1b,
+            // issue #1475).
             ctx.push_block_scope();
+            let condition = match &w.binding {
+                Some(binding) => lower_bound_condition(&w.condition, binding, ctx),
+                None => lower_expr(&w.condition, ctx),
+            };
             ctx.loop_depth += 1;
             let body = lower_block_stmt_list(&w.body, ctx);
             ctx.loop_depth -= 1;
@@ -109,7 +138,9 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             lower_loop_control(ptr, "continue", lir::Stmt::LogicContinue, ctx, out);
         }
         hir::BlockStmt::ExprStmt(expr) => {
-            if !try_lower_mutator_stmt(expr, ctx, out) {
+            if !try_lower_mutator_stmt(expr, ctx, out)
+                && !try_lower_frame_local_auto_ref_stmt(expr, ctx, out)
+            {
                 out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
             }
         }
@@ -160,8 +191,15 @@ fn lower_if_branch(
     ctx: &mut LowerCtx<'_>,
     branches: &mut Vec<lir::CondBranch>,
 ) {
-    let condition = Some(lower_expr(&if_stmt.condition, ctx));
+    // The scope opens BEFORE the condition so an `as` binding (B1b, issue
+    // #1475) can declare into it; it closes after the success arm, which is
+    // exactly the binding's ruled scope — the `else`/`else if` arms below
+    // are lowered outside the bracket and never see the name.
     ctx.push_block_scope();
+    let condition = Some(match &if_stmt.binding {
+        Some(binding) => lower_bound_condition(&if_stmt.condition, binding, ctx),
+        None => lower_expr(&if_stmt.condition, ctx),
+    });
     let body = lower_block_stmt_list(&if_stmt.body, ctx);
     ctx.pop_block_scope();
     branches.push(lir::CondBranch { condition, body });
@@ -178,6 +216,39 @@ fn lower_if_branch(
             });
         }
         None => {}
+    }
+}
+
+/// Lower a condition that carries an `as` binding (B1b, issue #1475) into
+/// the `OptionBind` condition expression, with the binding's scope already
+/// open.
+///
+/// The caller **must** be inside its own `push_block_scope` bracket when it
+/// calls this and must pop it after lowering the success arm — that bracket
+/// IS the "scoped strictly to the success arm" rule (an `else`/`else if`
+/// arm is lowered outside it, so the name is invisible there).
+///
+/// The binding shares `declare_shadow_checked`'s slot allocation and E054
+/// shadow warning with an ordinary block `let`: an `as` binding is a
+/// block-scoped immutable local, so shadowing an outer temp is legal and
+/// warned about in exactly the same way.
+pub(super) fn lower_bound_condition(
+    condition: &hir::Expr,
+    binding: &crate::Name,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    // The condition is evaluated before the name becomes visible, so
+    // `if find(s) as s { … }` reads the OUTER `s` in its own condition —
+    // the same rule `lower_block_temp_decl` applies to `let x = x`.
+    let value = lower_expr(condition, ctx);
+    let (slot, name) = declare_shadow_checked(&binding.text, binding.range, ctx);
+    // The binding is immutable by ruling — record the slot so every write
+    // path refuses it (`stmts::lower_assign_target`, E148).
+    ctx.as_binding_slots.insert(slot);
+    lir::Expr::OptionBind {
+        value: Box::new(value),
+        slot,
+        name,
     }
 }
 
@@ -295,6 +366,45 @@ pub(super) fn try_lower_field_assignment(
     false
 }
 
+/// Issue #2174 — the classic-line remainder of #2121/PR #2171.
+///
+/// `lower_block_assignment` (the `~ { … }` T1b block surface, just below)
+/// dispatches an `Index` assignment target straight to
+/// [`lower_indexed_assignment`] — which is where
+/// [`reject_field_projection_index_root`]'s guard lives. But the
+/// classic-line (non-block) statement dispatch (`mod.rs`'s `hir::Stmt`
+/// match) only ever tried [`try_lower_field_assignment`]'s `Path`/
+/// `FieldAccess` targets before falling through to `stmts::lower_stmt`,
+/// whose own `lower_assign_target` recognizes only a bare `Path` — an
+/// `Index` target (`a[i] = v`) fell through its `_ => None` arm and
+/// **silently dropped the whole statement**, with no diagnostic at all.
+///
+/// This isn't only the field-projected-root shape (`a.items[0] = v`) #2121
+/// fixed for the block surface — reproduced against a real compile+run
+/// (rule 20a): even the *bare-variable* classic-line spelling (`~ a[0] =
+/// 99`, `a: Array<int>`, no struct involved) compiled clean and the write
+/// never happened, because the classic-line dispatch never reached
+/// `lower_indexed_assignment` at all, for any `Index` target.
+///
+/// Factored out here (mirroring `try_lower_field_assignment`'s guard-arm
+/// shape) so both surfaces share the exact same call into
+/// `lower_indexed_assignment`, instead of the classic-line dispatch growing
+/// a second, divergent copy: a bare-variable root now lowers correctly, and
+/// a struct-field-projected root gets the identical non-suppressible
+/// `E074` the block form already raises via
+/// `reject_field_projection_index_root`.
+pub(super) fn try_lower_indexed_assignment(
+    assign: &hir::Assignment,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    let hir::Expr::Index(idx) = &assign.target else {
+        return false;
+    };
+    lower_indexed_assignment(idx, assign.op, &assign.value, ctx, out);
+    true
+}
+
 fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) {
     ctx.diagnostics.push(Diagnostic {
         file: ctx.file,
@@ -302,6 +412,71 @@ fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerC
         message: DiagnosticCode::E074.title().to_string(),
         code: DiagnosticCode::E074,
     });
+}
+
+/// Issue #2121 — the "one level down" remainder of #1495/PR #2106's fix.
+/// `push(a.items[0], v)` and `a.items[0] = v` reach
+/// [`lower_indexed_assignment`]/[`lower_lvalue_container_chain`] with an
+/// `Index` lvalue whose *root* (after [`flatten_index_chain`] unwinds the
+/// index chain) is still a raw multi-segment `hir::Expr::Path` — `a.items`
+/// parses as one `Path` (never `hir::Expr::FieldAccess`, same TM-4b shape
+/// [`try_lower_field_assignment`]'s doc describes), and PR #2106 only taught
+/// the *bare* Path-lvalue dispatch (`lower_mutator_call`'s own `if let
+/// hir::Expr::Path` arm) and `try_lower_field_assignment` to split on
+/// `segments.len() > 1` — neither of those call sites is on this Index-root
+/// path, so `super::stmts::lower_assign_target` still resolves the whole
+/// `a.items` range down to the **root** symbol `a` (a `Record`), routing the
+/// write onto `a` itself instead of `a.items` (the `Array`) — reproduced
+/// against a real compile+run: compiles clean (no diagnostic) and faults at
+/// runtime with `NotIndexable("record")`, the identical silent-misroute
+/// symptom #1495's own repro had.
+///
+/// Rejected here with the same non-suppressible `E074`
+/// `try_lower_field_assignment`/`lower_mutator_call` already raise for a
+/// chained field *write*/*mutator*, mirroring that fix's shape exactly
+/// rather than inventing a second approach: a correct lowering here would
+/// need to route the index op through the field's `RecordGet`/`RecordSet`
+/// take-then-write-back discipline first (there is no `AssignTarget` shape
+/// for "a field of a record" today), which is exactly the general
+/// lvalue-resolution extension the issue asks to avoid unless it's the only
+/// option — a targeted hard-reject closes the silent-misroute hole without
+/// it.
+///
+/// Also catches the one-level-deeper variant of the same hole (review
+/// finding on #2171): an index chain whose root is not a bare `Path` at all
+/// but a `hir::Expr::FieldAccess` — `arr[0].items[1] = v`/`push(arr[0].items,
+/// v)`, the #674 grammar's Index-then-field target with one more trailing
+/// index. `flatten_index_chain` stops unwinding as soon as it hits a
+/// non-`Index` base, so this root reaches here as a `FieldAccess` node, not
+/// a `Path` — the `Path` arm above never matches it, and without this arm it
+/// fell through to `lower_assign_target`, silently resolving to whatever
+/// root symbol the `FieldAccess`'s own base resolves to. Mirrors
+/// `try_lower_field_assignment`'s existing `hir::Expr::FieldAccess` arm
+/// exactly (same diagnostic, same non-suppressible `E074`).
+///
+/// Returns `true` (diagnosed, caller must stop and lower nothing) when
+/// `root_expr` is either of these shapes — a multi-segment `Path` that
+/// resolves to an assignable root (`Variable`/`Constant`/`Param`/`Temp`), or
+/// a `FieldAccess`; `false` otherwise (a bare single-segment `Path`, or one
+/// that doesn't resolve to an assignable root at all — the analyzer's
+/// `E025` handles that case, same as every other call site in this module).
+fn reject_field_projection_index_root(root_expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> bool {
+    if let hir::Expr::Path(path) = root_expr
+        && path.segments.len() > 1
+        && let Some(info) = ctx.resolve_path(path.range)
+        && matches!(
+            info.kind,
+            SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+        )
+    {
+        emit_chained_field_write_diagnostic(path.range, ctx);
+        return true;
+    }
+    if let hir::Expr::FieldAccess(fa) = root_expr {
+        emit_chained_field_write_diagnostic(fa.ptr.text_range(), ctx);
+        return true;
+    }
+    false
 }
 
 /// The single-level case (`path.segments.len() == 2`) — `p.field = v`/`p.field
@@ -337,26 +512,35 @@ fn lower_single_level_field_write(
     let (root_target, root_shape) = match head_info.kind {
         SymbolKind::Variable | SymbolKind::Constant => (
             lir::AssignTarget::Global(head_info.id),
-            ctx.global_shape(head_info.id).map(str::to_string),
+            ctx.global_shape(head_info.id),
         ),
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return;
             };
+            // Issue #2122: `if get(bag) as b { b.field = v }` — `b`'s slot
+            // is an immutable `as` binding. This root-cell resolution
+            // never went through `stmts::lower_assign_target` (see this
+            // function's own header doc), so the E148 refusal that guards
+            // every *other* write path silently didn't apply here; see
+            // `stmts::reject_as_binding_write`'s doc for why that shared
+            // helper — not a direct call to `lower_assign_target` — is the
+            // right fix.
+            if super::stmts::reject_as_binding_write(slot, &head_name, path.range, ctx) {
+                return;
+            }
             let name_id = ctx.names.intern(&head_name);
-            (
-                lir::AssignTarget::Temp(slot, name_id),
-                ctx.temp_shape(slot).map(str::to_string),
-            )
+            (lir::AssignTarget::Temp(slot, name_id), ctx.temp_shape(slot))
         }
         // `try_lower_field_assignment` only reaches here for these four kinds.
         _ => return,
     };
 
+    // `root_shape` is already a resolved shape `DefinitionId` (issue
+    // #2238) — no referrer needed to look it up.
     let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
         root_shape
-            .as_deref()
-            .and_then(|s| ctx.structs.shapes.get(s))
+            .and_then(|d| ctx.structs.shapes.get_by_def(d))
             .and_then(|shape| shape.field(&field_name))
             .map(|(offset, _)| offset)
     } else {
@@ -496,6 +680,14 @@ fn lower_indexed_assignment(
     out: &mut Vec<lir::Stmt>,
 ) {
     let (root_expr, indices_hir) = flatten_index_chain(idx);
+    // Issue #2121: `a.items[0] = v` — the root of the index chain is itself
+    // a struct-field projection (`a.items`, a multi-segment `Path`), not a
+    // bare variable. See `reject_field_projection_index_root`'s doc for why
+    // this must be checked *before* `lower_assign_target` gets a chance to
+    // silently misroute it onto the root `a`.
+    if reject_field_projection_index_root(root_expr, ctx) {
+        return;
+    }
     let Some(root_target) = super::stmts::lower_assign_target(root_expr, ctx) else {
         // Unresolvable root — same silent-skip discipline as plain
         // assignment (analyzer's E025 is the author-facing signal).
@@ -554,8 +746,8 @@ fn lower_indexed_assignment(
 /// take-based mutate step rather than before it, so the root can be left
 /// `Value::Null` on one of those — the same documented, deliberate
 /// no-precheck trade-off `fault_during_insert_leaves_root_null`/
-/// `fault_during_remove_leaves_root_null` (runtime crate) already accept for
-/// `insert`/`remove`'s author-supplied keys ("a fault anywhere mid-turn
+/// `fault_during_remove_at_leaves_root_null` (runtime crate) already accept for
+/// `insert`/`remove`/`remove_at`'s author-supplied keys ("a fault anywhere mid-turn
 /// already leaves earlier same-turn mutations applied"). See
 /// `fault_during_flat_index_assignment_leaves_root_null` (runtime crate,
 /// renamed by #856 from `..._leaves_root_unchanged`) for the property test.
@@ -615,7 +807,7 @@ fn lower_flat_indexed_assignment(
     //    `IndexSet` can still fault (array OOB, invalid-domain map key,
     //    non-collection root) — the documented, deliberate trade-off
     //    `fault_during_insert_leaves_root_null` already accepts for
-    //    `insert`/`remove`'s author-supplied keys applies here too.
+    //    `insert`/`remove`/`remove_at`'s author-supplied keys applies here too.
     let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
 
     // 5. Mutate in place: base is a *take* from `c_slot` too — `c_slot`'s
@@ -750,18 +942,45 @@ fn lower_chained_indexed_assignment(
     });
 }
 
-/// Lower `for x in arr { … }` / `for k in map { … }` (§2). Desugars to an
-/// index-based `LogicWhile` — dedicated iterator opcodes are deliberately
-/// not part of the T1b surface (`docs/format-v4-rfc.md` §3 note); the
-/// iterable is snapshotted once via `CollectionKeys` (which returns the
-/// array unchanged for an array input — see that opcode's doc — so one
-/// snapshot expression correctly covers both "iterate values" and "iterate
-/// keys" without a static array/map type distinction).
+/// Lower `for x in arr { … }` / `for k in map { … }` — or, on the native
+/// surface, `for k, v in map { … }` (§2, plus B2 issue #1461 for the
+/// two-binding form). Desugars to an index-based `LogicWhile` — dedicated
+/// iterator opcodes are deliberately not part of the T1b surface
+/// (`docs/format-v4-rfc.md` §3 note); the iterable is snapshotted once via
+/// `CollectionKeys` (which returns the array unchanged for an array input
+/// — see that opcode's doc — so one snapshot expression correctly covers
+/// both "iterate values" and "iterate keys" without a static array/map
+/// type distinction).
+///
+/// The two-binding form (`f.val_name.is_some()`) is exactly the F10-ruled
+/// desugar (`docs/stdlib-spec.md` §5/§9: "`for k, v in m` ... desugars to
+/// key-iteration + `let v = m[k]`, total by construction, no pair shape
+/// ever materializes") — an extra `DeclareTemp` reading `container[key]`
+/// at the top of the body, right after `key` itself is declared. The
+/// container is evaluated exactly once, into its own synthetic temp,
+/// *before* the keys snapshot — it's read twice (once to snapshot its
+/// keys, once per-iteration to index it), and `f.iterable` may be an
+/// arbitrary expression (e.g. a call) that must not run twice. The
+/// single-binding form keeps the original one-snapshot shape byte-for-byte
+/// unchanged (no synthetic container temp) since it only ever reads the
+/// snapshot.
+#[expect(
+    clippy::similar_names,
+    reason = "var_name/val_name are the ForStmt field names (k/v's HIR spelling, B2 #1461) — \
+              not a pair a rename would clarify"
+)]
 fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::Stmt>) {
     let iterable = lower_expr(&f.iterable, ctx);
+    let snapshot_source = if f.val_name.is_some() {
+        let (container_slot, container_name) =
+            declare_synthetic("__for_container", iterable, ctx, out);
+        lir::Expr::GetTemp(container_slot, container_name)
+    } else {
+        iterable
+    };
     let (snap_slot, snap_name) = declare_synthetic(
         "__for_snapshot",
-        lir::Expr::CollectionKeys(Box::new(iterable)),
+        lir::Expr::CollectionKeys(Box::new(snapshot_source.clone())),
         ctx,
         out,
     );
@@ -785,6 +1004,17 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
             index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
         }),
     }];
+    if let Some(val_name) = &f.val_name {
+        let (val_slot, val_name_id) = declare_shadow_checked(&val_name.text, val_name.range, ctx);
+        body.push(lir::Stmt::DeclareTemp {
+            slot: val_slot,
+            name: val_name_id,
+            value: Some(lir::Expr::Index {
+                base: Box::new(snapshot_source),
+                index: Box::new(lir::Expr::GetTemp(var_slot, var_name)),
+            }),
+        });
+    }
     ctx.loop_depth += 1;
     body.extend(lower_block_stmt_list(&f.body, ctx));
     ctx.loop_depth -= 1;
@@ -805,12 +1035,13 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
 
 // ─── T1b stdlib slice 1 mutators (§5) ──────────────────────────────────
 //
-// `push(a, v)` / `insert(x, k_or_i, v)` / `remove(x, k_or_i)` require an
-// lvalue first argument and lower through the same take → `make_mut` →
-// write-back RMW discipline as indexed assignment (§4) — desugaring to a
-// chain of synthetic-temp `Assign`s exactly like `lower_indexed_assignment`
-// above, just with a `CollectionInsert`/`CollectionRemove` mutate step
-// instead of the deepest level's `IndexSet`.
+// `push(a, v)` / `insert(x, k_or_i, v)` / `remove(m, k)` / `remove_at(a, i)`
+// require an lvalue first argument and lower through the same take →
+// `make_mut` → write-back RMW discipline as indexed assignment (§4) —
+// desugaring to a chain of synthetic-temp `Assign`s exactly like
+// `lower_indexed_assignment` above, just with a
+// `CollectionInsert`/`CollectionRemove`/`SeqRemoveAt` mutate step instead
+// of the deepest level's `IndexSet`.
 
 /// The chain state [`lower_lvalue_container_chain`] returns: the root
 /// assign target, the materialized index temps, and the materialized
@@ -829,8 +1060,14 @@ enum MutatorKind {
     Push,
     /// `insert(x, k_or_i, v)` — 3 args.
     Insert,
-    /// `remove(x, k_or_i)` — 2 args.
+    /// `remove(m, k)` — 2 args. Map-only as of issue #1484: `remove`
+    /// uniformly names identity-based, idempotent-total removal (map keys,
+    /// flags values). The array-index leg lives at `RemoveAt` now.
     Remove,
+    /// `remove_at(a, i)` — 2 args (issue #1484, joining the `_at`
+    /// faulting-index family with `char_at`): removes the array element at
+    /// `i`, faulting out of bounds.
+    RemoveAt,
     /// `clear(m)` — 1 arg (NS-A1, `docs/stdlib-spec.md` §5): empty the map
     /// in place, total.
     Clear,
@@ -857,16 +1094,16 @@ enum MutatorKind {
 }
 
 impl MutatorKind {
-    /// The three mutator names are a subset of
-    /// `super::expr::is_t1b_stdlib_name` (which also covers the four pure
-    /// functions) — kept as an explicit `matches!` here rather than
-    /// depending on that function so this module doesn't need to filter out
-    /// the pure names on every call.
+    /// The mutator names are a subset of `super::expr::is_t1b_stdlib_name`
+    /// (which also covers the pure functions) — kept as an explicit
+    /// `matches!` here rather than depending on that function so this
+    /// module doesn't need to filter out the pure names on every call.
     fn from_name(name: &str) -> Option<Self> {
         match name {
             "push" => Some(Self::Push),
             "insert" => Some(Self::Insert),
             "remove" => Some(Self::Remove),
+            "remove_at" => Some(Self::RemoveAt),
             "clear" => Some(Self::Clear),
             "shuffle" => Some(Self::Shuffle),
             "sort" => Some(Self::Sort),
@@ -879,7 +1116,7 @@ impl MutatorKind {
     fn expected_argc(self) -> usize {
         match self {
             Self::Clear | Self::Shuffle | Self::Sort => 1,
-            Self::Push | Self::Remove | Self::SortBy | Self::HeapPush => 2,
+            Self::Push | Self::Remove | Self::RemoveAt | Self::SortBy | Self::HeapPush => 2,
             Self::Insert => 3,
         }
     }
@@ -890,7 +1127,8 @@ impl MutatorKind {
         match self {
             Self::Push => "push(container, value)",
             Self::Insert => "insert(container, key_or_index, value)",
-            Self::Remove => "remove(container, key_or_index)",
+            Self::Remove => "remove(map, key)",
+            Self::RemoveAt => "remove_at(array, index)",
             Self::Clear => "clear(map)",
             Self::Shuffle => "shuffle(array)",
             Self::Sort => "sort(array)",
@@ -912,10 +1150,11 @@ fn is_lvalue_expr(expr: &hir::Expr) -> bool {
     }
 }
 
-/// Recognize and fully lower a `push`/`insert`/`remove` call statement
-/// (§5), splicing its RMW expansion into `out`. Returns `false` (nothing
-/// pushed) when `expr` isn't one of these three calls, or resolves to a
-/// real user symbol — a temp/param holding a divert target, or a resolved
+/// Recognize and fully lower a `push`/`insert`/`remove`/`remove_at` call
+/// statement (§5), splicing its RMW expansion into `out`. Returns `false`
+/// (nothing pushed) when `expr` isn't one of these mutator calls, or
+/// resolves to a real user symbol — a temp/param holding a divert target,
+/// or a resolved
 /// knot/external/list/variable (shadowed; the caller falls through to
 /// ordinary call lowering, and `brink-analyzer`'s symbol-declaration pass
 /// separately emits the E035 shadow warning at the declaration site).
@@ -963,10 +1202,6 @@ fn try_lower_seed_stmt(
     true
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one desugar arm per mutator kind — the NS-A7 heap_push arm pushed this past 100"
-)]
 pub(super) fn try_lower_mutator_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -984,6 +1219,35 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     }
 
+    // B3a UFCS (issue #1506): `m.insert(k, v)` reaches here as a
+    // multi-segment `Call` path. `path_to_string` on a multi-segment path
+    // yields the dotted string ("m.insert"), which never matches
+    // `MutatorKind::from_name` (it only recognizes the bare verb) — so
+    // without this arm, every mutator verb spelled as method-call syntax
+    // fell through to `lower_call`'s UFCS dispatch
+    // (`lower_ufcs_prelude_desugar` → `lower_t1b_stdlib_call`), which
+    // unconditionally refuses every mutator name with E056 ("used in
+    // expression position") even from statement position. A UFCS call site
+    // always carries a resolution at `path.range` naming the *receiver*
+    // (see `expr::lower_ufcs_call`'s own doc), so the ordinary
+    // `ctx.resolve_path(path.range).is_some()` shadow check below would
+    // always bail out for one of these — this arm runs first, reading the
+    // analyzer's verdict directly instead of that resolution, and splices
+    // the receiver in as the mutator's first argument before running the
+    // same RMW expansion a bare `insert(m, k, v)` statement gets.
+    if path.segments.len() > 1
+        && let Some(UfcsVerdict::PreludeDesugar { name: verb }) =
+            ctx.tables.ufcs.get(ctx.file, path.range).cloned()
+        && let Some(kind) = MutatorKind::from_name(&verb)
+    {
+        let receiver = super::expr::ufcs_receiver_path(path);
+        let mut desugared_args = Vec::with_capacity(args.len() + 1);
+        desugared_args.push(hir::Expr::Path(receiver));
+        desugared_args.extend(args.iter().cloned());
+        lower_mutator_call(kind, &verb, path, &desugared_args, ctx, out);
+        return true;
+    }
+
     let Some(kind) = MutatorKind::from_name(&name) else {
         return false;
     };
@@ -991,6 +1255,193 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     }
 
+    lower_mutator_call(kind, &name, path, args, ctx, out);
+    true
+}
+
+/// Frame-local projection auto-ref (issue #1531, RULED 2026-07-27 —
+/// `docs/decision-log.md`): `g.hp.heal(5)` where `g` is a temp/param and
+/// `heal`'s first parameter is `ref`. `brink-analyzer::ufcs::
+/// auto_ref_fault` now accepts a frame-local, single-field-deep receiver
+/// like this one as a legal `FreeFnAutoRef` verdict — a frame-local cell is
+/// a valid projection root, and the mutation needs no effect row because it
+/// is unobservable outside the frame.
+///
+/// There is still no *expression*-shaped lowering for it, though:
+/// [`lir::CallArg::RefProjection`]'s root is a durable global
+/// [`brink_format::DefinitionId`] only (`docs/format-v4-rfc.md` §1) — using
+/// a frame-local's `LocalVar`-tagged id there would fault at runtime as
+/// `UnresolvedGlobal` with no compile diagnostic (the same hazard
+/// `expr::lower_ref_path_call_arg`'s block-scoped-temp guard already
+/// documents for the bare-receiver case). So this recognizes the shape at
+/// **statement** position only and expands it as the same RMW discipline
+/// `try_lower_field_assignment` already established for `g.hp = v`: read
+/// the field into a synthetic temp, call the target passing that temp by
+/// `ref` (an ordinary bare [`lir::CallArg::RefTemp`], never a projection),
+/// then write the temp back into the field. `expr::lower_ref_projection_arg`
+/// carries the matching defense-in-depth refusal for the same verdict
+/// reached from *expression* position (nested inside a larger expression,
+/// where this recognizer never gets a chance to run) — see that function's
+/// own frame-local guard.
+///
+/// Returns `false` (nothing lowered) for every other call shape, so the
+/// caller falls through to ordinary call lowering — including a
+/// `FreeFnAutoRef` verdict whose receiver is a durable global or a bare
+/// (non-projection) frame-local, both of which
+/// `expr::lower_ufcs_desugared_call` already handles correctly, and a
+/// receiver more than one field deep, which `brink-analyzer`'s own gate
+/// still refuses with `E143` before lowering ever sees it.
+pub(super) fn try_lower_frame_local_auto_ref_stmt(
+    expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    let hir::Expr::Call(path, args) = expr else {
+        return false;
+    };
+    let Some(UfcsVerdict::FreeFnAutoRef { target }) =
+        ctx.tables.ufcs.get(ctx.file, path.range).cloned()
+    else {
+        return false;
+    };
+    let receiver = super::expr::ufcs_receiver_path(path);
+    if receiver.segments.len() != 2 {
+        return false;
+    }
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "just proved receiver.segments.len() == 2"
+    )]
+    let head_name = receiver.segments[0].text.clone();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "just proved receiver.segments.len() == 2"
+    )]
+    let field_name = receiver.segments[1].text.clone();
+    // A durable global (or an unresolved name) falls through to the
+    // ordinary `RefProjection` desugar — only a genuine frame-local takes
+    // this path.
+    let Some(root_slot) = ctx.temp_slot(&head_name) else {
+        return false;
+    };
+    // B1b (issue #1475): the same `ref`-bypasses-immutability hole
+    // `lower_ref_path_call_arg` and `lower_ref_projection_arg` both guard —
+    // this recognizer writes the receiver back into `root_slot` too (step
+    // 3 below), so an `as` binding must be refused here as well. Return
+    // `true` (handled) rather than `false`: falling through would let this
+    // same call reach `expr::lower_ref_projection_arg`'s frame-local guard
+    // instead, which emits the misleading "must be its own statement"
+    // `E143` — this call *is* its own statement; the real problem is the
+    // `as` binding's immutability.
+    if ctx.as_binding_slots.contains(&root_slot) {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `{head_name}` is an `as` binding — it is immutable and cannot be passed \
+                 by `ref`",
+                DiagnosticCode::E148.title(),
+            ),
+            code: DiagnosticCode::E148,
+        });
+        return true;
+    }
+    let Some(target_info) = ctx.index.symbols.get(&target) else {
+        // Structurally unreachable — `target` came from the analyzer's own
+        // resolution against this same project index, exactly like
+        // `expr::lower_ufcs_desugared_call`'s identical guard. Falling
+        // through lets that function's own copy of this guard handle it.
+        return false;
+    };
+
+    let head_name_id = ctx.names.intern(&head_name);
+    let field = ctx.names.intern(&field_name);
+    let root_target = lir::AssignTarget::Temp(root_slot, head_name_id);
+
+    let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
+        ctx.temp_shape(root_slot)
+            .and_then(|d| ctx.structs.shapes.get_by_def(d))
+            .and_then(|shape| shape.field(&field_name))
+            .map(|(offset, _)| offset)
+    } else {
+        None
+    };
+
+    // 1. Read the field into a synthetic temp — the call's receiver
+    //    argument. A non-mutating read, so it can't itself trigger a COW.
+    let current = lir::Expr::RecordGet {
+        base: Box::new(get_expr_for_target(&root_target)),
+        field,
+        static_offset,
+    };
+    let (recv_slot, recv_name) = declare_synthetic("__recv", current, ctx, out);
+
+    // 2. The call: `target(ref __recv, args…)` — a bare receiver, so it
+    //    rides the ordinary `RefTemp` write-through (`Opcode::
+    //    PushTempPointer`/`SetTemp`'s `Value::TempPointer` arm), never a
+    //    projection.
+    let rest_params = target_info.params.get(1..).unwrap_or(&[]);
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(lir::CallArg::RefTemp(recv_slot, recv_name));
+    call_args.extend(super::expr::lower_call_args(args, rest_params, ctx));
+    let call_expr = if target_info.kind == SymbolKind::External {
+        lir::Expr::CallExternal {
+            target,
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ink externals have <=255 params"
+            )]
+            arg_count: target_info.params.len() as u8,
+            args: call_args,
+        }
+    } else {
+        lir::Expr::Call {
+            target,
+            args: call_args,
+        }
+    };
+    out.push(lir::Stmt::ExprStmt(call_expr));
+
+    // 3. Write the (possibly mutated) receiver back into the field. No
+    //    fault pre-check is needed here — step 1's read already proved this
+    //    exact field is valid on this exact root, and nothing between then
+    //    and now could have invalidated that.
+    let write_back = lir::Expr::RecordSet {
+        base: Box::new(take_expr_for_target(&root_target)),
+        field,
+        static_offset,
+        value: Box::new(lir::Expr::GetTemp(recv_slot, recv_name)),
+    };
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: write_back,
+    });
+
+    true
+}
+
+/// The arity check / lvalue check / RMW-expansion body shared by
+/// [`try_lower_mutator_stmt`]'s two call shapes: the direct call
+/// (`insert(m, k, v)`) and the UFCS desugar (`m.insert(k, v)`, issue
+/// #1506) — in the UFCS case the caller has already spliced the receiver
+/// into `args[0]`, so from here on both shapes are identical. `name` is the
+/// bare mutator verb (never the dotted UFCS spelling) — used only for
+/// diagnostic messages.
+#[expect(
+    clippy::too_many_lines,
+    reason = "arity/lvalue checks plus the three lvalue-shape dispatches \
+              (bare variable, struct field, indexed chain) read better as \
+              one function than split across an arbitrary line boundary"
+)]
+fn lower_mutator_call(
+    kind: MutatorKind,
+    name: &str,
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
     // RULED 2026-07-12 (#581, docs/decision-log.md): a mutator arity
     // mismatch is a targeted compile error naming the expected signature
     // (E058), replacing the generic E031 warning this used to share with
@@ -1001,7 +1452,7 @@ pub(super) fn try_lower_mutator_stmt(
     // failure). E058 is Error-severity, so `brink-db`'s `lir_query` now
     // refuses to hand back a `Program` for it, exactly like E055/E056.
     // Pure-function arity checking (ordinary knot/external calls) is
-    // untouched — this only covers the three mutator names.
+    // untouched — this only covers the mutator names.
     let expected = kind.expected_argc();
     if args.len() != expected {
         ctx.diagnostics.push(Diagnostic {
@@ -1016,7 +1467,7 @@ pub(super) fn try_lower_mutator_stmt(
             ),
             code: DiagnosticCode::E058,
         });
-        return true;
+        return;
     }
 
     let lvalue_expr = &args[0];
@@ -1030,7 +1481,7 @@ pub(super) fn try_lower_mutator_stmt(
             ),
             code: DiagnosticCode::E055,
         });
-        return true;
+        return;
     }
 
     // Bare-variable lvalue (`push(a, v)`, not `push(grid[y], v)`) — the
@@ -1040,24 +1491,59 @@ pub(super) fn try_lower_mutator_stmt(
     // scopes its own fast path to `n == 1`: a nested element is still
     // referenced from inside its parent until the write-back cascade
     // completes, so Take buys nothing at any level but the root.
-    if let hir::Expr::Path(_) = lvalue_expr {
+    //
+    // A bare `ident.ident` chain (`push(a.items, v)`) always parses as one
+    // multi-segment `hir::Expr::Path` too — never `hir::Expr::FieldAccess`
+    // (see `try_lower_field_assignment`'s doc) — so it lands in this same
+    // arm. Issue #1495: without this split, `path.segments.len() > 1`
+    // silently fell into the bare-variable path below, whose
+    // `lower_assign_target` resolves the *whole path's range* to the
+    // **root** variable (the TM-4b resolution-fallback shape) — routing
+    // the mutator onto `a` (a `Record`) instead of `a.items` (the `Array`),
+    // a silent misroute that only surfaced as a runtime `NotIndexable`
+    // fault. Mirrors `try_lower_field_assignment`'s own split exactly: a
+    // single-segment path (or one that doesn't resolve to a struct-field
+    // root) keeps the bare-variable fast path; a struct-field projection
+    // routes through `lower_field_mutator`; a chained projection (3+
+    // segments) is rejected with the same non-suppressible `E074` that
+    // function's chained-write case already raises, rather than silently
+    // miscompiled.
+    if let hir::Expr::Path(path) = lvalue_expr {
+        if path.segments.len() > 1
+            && let Some(info) = ctx.resolve_path(path.range)
+            && matches!(
+                info.kind,
+                SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+            )
+        {
+            if path.segments.len() > 2 {
+                emit_chained_field_write_diagnostic(path.range, ctx);
+            } else {
+                lower_field_mutator(kind, path, info, args, ctx, out);
+            }
+            return;
+        }
         lower_bare_mutator(kind, lvalue_expr, args, ctx, out);
-        return true;
+        return;
     }
 
     let Some((root_target, idx_slots, c_slots)) =
         lower_lvalue_container_chain(lvalue_expr, ctx, out)
     else {
-        // Structurally unreachable given the `is_lvalue_expr` guard above —
-        // guarded rather than asserted so a future grammar change can't
-        // corrupt output instead of doing nothing (same discipline as
-        // `lower_indexed_assignment`'s `n == 0` guard).
-        return true;
+        // Two ways here: (1) genuinely structurally unreachable given the
+        // `is_lvalue_expr` guard above — guarded rather than asserted so a
+        // future grammar change can't corrupt output instead of doing
+        // nothing (same discipline as `lower_indexed_assignment`'s `n == 0`
+        // guard); (2) issue #2121 — `reject_field_projection_index_root`
+        // fired inside `lower_lvalue_container_chain` and already pushed the
+        // `E074` diagnostic, so returning here without pushing anything
+        // *is* the handling.
+        return;
     };
     // `lower_lvalue_container_chain` always pushes the root as `c_slots[0]`
     // before ever returning `Some`, so `c_slots` is never empty.
     let Some(&(last_slot, last_name)) = c_slots.last() else {
-        return true;
+        return;
     };
     let container = || lir::Expr::GetTemp(last_slot, last_name);
 
@@ -1086,6 +1572,13 @@ pub(super) fn try_lower_mutator_stmt(
                 key: Box::new(key),
             }
         }
+        MutatorKind::RemoveAt => {
+            let index = lower_expr(&args[1], ctx);
+            lir::Expr::SeqRemoveAt {
+                base: Box::new(container()),
+                index: Box::new(index),
+            }
+        }
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
         MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
         MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
@@ -1105,17 +1598,17 @@ pub(super) fn try_lower_mutator_stmt(
         value: new_container,
     });
     writeback_lvalue_container_chain(root_target, &idx_slots, &c_slots, out);
-    true
 }
 
-/// Fast path for a mutator (`push`/`insert`/`remove`) whose lvalue is a
-/// bare variable — mirrors [`lower_flat_indexed_assignment`]'s Take-based
-/// RMW (issue #576): the root is taken (not cloned) only *after* every
-/// mutator argument is fully evaluated into its own synthetic temp, since
-/// any of them may reference the root by name (e.g. `insert(a, 0, a[0])`);
-/// the container fed to `CollectionInsert`/`CollectionRemove` is itself a
-/// take from the synthetic root temp, so `array_make_mut`/`map_make_mut`
-/// sees a unique `Arc` whenever nothing else aliases the container.
+/// Fast path for a mutator (`push`/`insert`/`remove`/`remove_at`) whose
+/// lvalue is a bare variable — mirrors [`lower_flat_indexed_assignment`]'s
+/// Take-based RMW (issue #576): the root is taken (not cloned) only *after*
+/// every mutator argument is fully evaluated into its own synthetic temp,
+/// since any of them may reference the root by name (e.g. `insert(a, 0,
+/// a[0])`); the container fed to
+/// `CollectionInsert`/`CollectionRemove`/`SeqRemoveAt` is itself a take
+/// from the synthetic root temp, so `array_make_mut`/`map_make_mut` sees a
+/// unique `Arc` whenever nothing else aliases the container.
 ///
 /// **Fault-during-RMW slot state**: `push`'s key is always `len(container)`
 /// — by construction always a valid insert index — so `push` can only ever
@@ -1125,8 +1618,8 @@ pub(super) fn try_lower_mutator_stmt(
 /// root, giving `push` the same "root is never lost to a fault" guarantee
 /// `lower_flat_indexed_assignment` has — and for free, since that same
 /// `CollectionLen` read also IS the value `push`'s key needs. `insert`/
-/// `remove` at an arbitrary author-supplied key don't get an equivalent
-/// cheap pre-check (validating an arbitrary key/index without mutating
+/// `remove`/`remove_at` at an arbitrary author-supplied key don't get an
+/// equivalent cheap pre-check (validating an arbitrary key/index without mutating
 /// would need a dedicated "is this key valid" primitive this issue doesn't
 /// add — see the PR's scope notes): a fault there leaves the root holding
 /// `Value::Null`, a deliberate, documented, and tested trade-off consistent
@@ -1197,6 +1690,10 @@ fn lower_bare_mutator(
             base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
+        MutatorKind::RemoveAt => lir::Expr::SeqRemoveAt {
+            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            index: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
         MutatorKind::Shuffle => {
             lir::Expr::RandShuffle(Box::new(lir::Expr::TakeTemp(c_slot, c_name)))
@@ -1221,6 +1718,274 @@ fn lower_bare_mutator(
         target: root_target,
         op: AssignOp::Set,
         value: lir::Expr::TakeTemp(c_slot, c_name),
+    });
+}
+
+/// Struct-field-projection sibling of [`lower_bare_mutator`] (issue #1495):
+/// `push`/`insert`/`remove`/… whose lvalue is a single-level struct-field
+/// projection (`push(a.items, v)`, `a: Bag`, `Bag.items: Array<int>`) — a
+/// bare `ident.ident` chain, which always parses as one multi-segment
+/// `hir::Expr::Path`, never a `hir::Expr::FieldAccess` (see
+/// `try_lower_field_assignment`'s doc for why).
+///
+/// #1495 shipped this reading `current = root.field` via an ordinary
+/// *cloning* `RecordGet`, leaving the root record fully intact until the
+/// very end. That meant the field's `Arc` was always doubly referenced by
+/// the time the RMW ran — once still embedded in the intact root, once in
+/// `current`'s own temp — so `array_make_mut`/`map_make_mut` always saw
+/// `strong_count >= 2` and paid the O(n) copy on *every* call: an O(n²)
+/// loop-append cliff one field deeper than #576 closed (issue #2123). There
+/// is still no dedicated field-level "take" opcode — the fix below answers
+/// #2123's ask without adding one, using only the existing `RecordSet` to
+/// null out the record's *own* reference to the field immediately after
+/// taking the root, so nothing but `current`'s temp holds the field's `Arc`
+/// by the time the RMW mutates it:
+///
+/// 1. The mutator's own args (key/value), evaluated once each — mirrors
+///    `lower_bare_mutator`'s step 1, since any of them may reference the
+///    root or the field by name and both are still intact.
+/// 2. `current = root.field`, via a non-taking `RecordGet` (the fault
+///    pre-check — proves root is genuinely a record with this field,
+///    exactly like `lower_single_level_field_write`'s `current`) — also
+///    `push`'s key (`CollectionLen(current)`), read here while the field's
+///    current value is still cheaply at hand. Root is still fully intact.
+/// 3. **De-alias (issue #2123's fix)**: take the root, overwrite *its own*
+///    copy of the mutated field with `Value::Null` via `RecordSet`, and
+///    write this "husk" record straight back into `root_target` —
+///    *before* the RMW below runs. This drops the record's own reference
+///    to the field's `Arc`, so `current`'s temp becomes the sole owner
+///    whenever nothing else aliases the field specifically (the ordinary,
+///    non-shared case) — closing the cliff. Writing the husk back
+///    immediately (rather than holding it in a temp until step 5) means a
+///    fault in step 4 leaves `root_target` a *structurally valid record*
+///    with only this one field blown away to `Value::Null` — a narrower,
+///    field-scoped version of `lower_bare_mutator`'s already-ratified,
+///    tested "fault leaves the root holding `Value::Null`" trade-off
+///    (`fault_during_insert_leaves_root_null` et al.,
+///    `crates/internal/brink-test-harness/tests/take_rmw.rs`), not a new
+///    kind of risk — see the mirrored field-scoped tests in
+///    `field_mutator_take_rmw.rs`.
+/// 4. The mutator's RMW expansion (`CollectionInsert`/`CollectionRemove`/…)
+///    runs against `current`'s temp, now uniquely owned by construction
+///    whenever nothing else aliases the field — `array_make_mut`/
+///    `map_make_mut` mutates in place instead of COW-copying. This can
+///    still fault on an author-supplied key/index (`insert`/`remove`/
+///    `remove_at`/`sort_by`/…), which is exactly the field-scoped
+///    `Value::Null` trade-off step 3 sets up for.
+/// 5. The root (the husk from step 3) is taken again, the mutated field
+///    written back via `RecordSet`, and the result written back into
+///    `root_target`. This second take/`RecordSet` pair stays cheap even
+///    when the record itself is shared (e.g. `b = a`): step 3 already
+///    forked the record's own field vector once if that was needed, so by
+///    this point the husk is uniquely owned and this `record_make_mut` is
+///    free (an `Arc::make_mut` uniqueness check, not a copy).
+#[expect(
+    clippy::too_many_lines,
+    reason = "mirrors lower_bare_mutator's own per-MutatorKind RMW dispatch, \
+              plus the field-projection take/RecordSet/write-back steps —\
+              now twice, once to de-alias the field before the RMW runs and \
+              once to write the mutated field back — lower_single_level_field_write \
+              needs a single instance of for a plain field write; reads \
+              better as one function than split across an arbitrary line \
+              boundary"
+)]
+fn lower_field_mutator(
+    kind: MutatorKind,
+    path: &hir::Path,
+    head_info: &crate::symbols::SymbolInfo,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "caller already proved path.segments.len() == 2"
+    )]
+    let field_name = path.segments[1].text.clone();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "caller already proved path.segments.len() == 2"
+    )]
+    let head_name = path.segments[0].text.clone();
+
+    let (root_target, root_shape) = match head_info.kind {
+        SymbolKind::Variable | SymbolKind::Constant => (
+            lir::AssignTarget::Global(head_info.id),
+            ctx.global_shape(head_info.id),
+        ),
+        SymbolKind::Param | SymbolKind::Temp => {
+            let Some(slot) = ctx.temp_slot(&head_name) else {
+                return;
+            };
+            // Issue #2122: `if get(bag) as b { push(b.items, 1) }` — same
+            // hole and same fix as `lower_single_level_field_write`'s
+            // identical arm; see that function's comment and
+            // `stmts::reject_as_binding_write`'s doc.
+            if super::stmts::reject_as_binding_write(slot, &head_name, path.range, ctx) {
+                return;
+            }
+            let name_id = ctx.names.intern(&head_name);
+            (lir::AssignTarget::Temp(slot, name_id), ctx.temp_shape(slot))
+        }
+        // The caller only reaches here for these four kinds (mirrors
+        // `lower_single_level_field_write`'s identical match).
+        _ => return,
+    };
+
+    // `root_shape` is already a resolved shape `DefinitionId` (issue
+    // #2238) — no referrer needed to look it up.
+    let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
+        root_shape
+            .and_then(|d| ctx.structs.shapes.get_by_def(d))
+            .and_then(|shape| shape.field(&field_name))
+            .map(|(offset, _)| offset)
+    } else {
+        None
+    };
+    let field = ctx.names.intern(&field_name);
+
+    // 1. The mutator's own args (key/value), evaluated once each — root and
+    //    field both still intact.
+    let arg_slots: Vec<(u16, brink_format::NameId)> = args[1..]
+        .iter()
+        .map(|a| {
+            let v = lower_expr(a, ctx);
+            declare_synthetic("__arg", v, ctx, out)
+        })
+        .collect();
+
+    // 2. `current = root.field`, ALWAYS computed via a non-taking read (the
+    //    fault pre-check, exactly like `lower_single_level_field_write`).
+    let current = lir::Expr::RecordGet {
+        base: Box::new(get_expr_for_target(&root_target)),
+        field,
+        static_offset,
+    };
+    let (current_slot, current_name) = declare_synthetic("__current", current, ctx, out);
+    let container = || lir::Expr::GetTemp(current_slot, current_name);
+
+    // `push`'s fault pre-check doubles as its key (see `lower_bare_mutator`'s
+    // doc) — read from the field's current value, before anything is taken.
+    let push_len = matches!(kind, MutatorKind::Push).then(|| {
+        declare_synthetic(
+            "__len",
+            lir::Expr::CollectionLen(Box::new(container())),
+            ctx,
+            out,
+        )
+    });
+
+    // 3. De-alias (issue #2123): take the root, null out *its own* copy of
+    //    the field via `RecordSet`, write the husk straight back into
+    //    `root_target` — before the RMW below ever runs. After this,
+    //    `current_slot` is the field's sole owner whenever nothing else
+    //    aliases it, which is the entire point of this fix (see the
+    //    function doc's step 3).
+    let (dealias_slot, dealias_name) =
+        declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(dealias_slot, dealias_name),
+        op: AssignOp::Set,
+        value: lir::Expr::RecordSet {
+            base: Box::new(lir::Expr::TakeTemp(dealias_slot, dealias_name)),
+            field,
+            static_offset,
+            value: Box::new(lir::Expr::Null),
+        },
+    });
+    out.push(lir::Stmt::Assign {
+        target: root_target.clone(),
+        op: AssignOp::Set,
+        value: lir::Expr::TakeTemp(dealias_slot, dealias_name),
+    });
+
+    // The RMW's own mutating operand takes `current_slot` (issue #2123) —
+    // `container()` above is a *cloning* `GetTemp`, deliberately kept for
+    // `push_len`'s pre-mutation read, but feeding that same clone into the
+    // mutate step itself would leave `current_slot`'s own copy of the field
+    // as a second, un-consumed owner at exactly the moment
+    // `array_make_mut`/`map_make_mut` runs — recreating the cliff step 3
+    // just closed, independent of the record's own reference. Taking it
+    // instead means the value handed to the opcode is `current_slot`'s
+    // *only* reference, so uniqueness (and step 3's de-alias) is what
+    // `array_make_mut` actually sees.
+    let take_container = || lir::Expr::TakeTemp(current_slot, current_name);
+
+    let new_field = match kind {
+        MutatorKind::Push => {
+            let Some((len_slot, len_name)) = push_len else {
+                // Structurally unreachable: `push_len` is always `Some` for
+                // `MutatorKind::Push` by the `matches!` guard above.
+                return;
+            };
+            lir::Expr::CollectionInsert {
+                base: Box::new(take_container()),
+                key: Box::new(lir::Expr::GetTemp(len_slot, len_name)),
+                value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+            }
+        }
+        MutatorKind::Insert => lir::Expr::CollectionInsert {
+            base: Box::new(take_container()),
+            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+            value: Box::new(lir::Expr::GetTemp(arg_slots[1].0, arg_slots[1].1)),
+        },
+        MutatorKind::Remove => lir::Expr::CollectionRemove {
+            base: Box::new(take_container()),
+            key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::RemoveAt => lir::Expr::SeqRemoveAt {
+            base: Box::new(take_container()),
+            index: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(take_container())),
+        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(take_container())),
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(take_container())),
+        MutatorKind::SortBy => lir::Expr::SeqSortedBy {
+            seq: Box::new(take_container()),
+            cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::HeapPush => lir::Expr::HeapPush {
+            seq: Box::new(take_container()),
+            value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+    };
+
+    // 4. Materialize the RMW result into its own temp — reads only
+    //    `current` (now uniquely owned whenever nothing else aliases the
+    //    field, per step 3 above) and the arg temps, never the root. Any
+    //    fault it raises (an out-of-range `remove_at`, an absent `remove`
+    //    key, …) leaves `root_target` holding the step-3 husk — a
+    //    structurally valid record missing only this one field, per the
+    //    function doc's field-scoped trade-off.
+    let (new_slot, new_name) = declare_synthetic("__new", new_field, ctx, out);
+
+    // 5. Take the root (the husk from step 3) back, write the mutated
+    //    field via `RecordSet`, write the resulting record back. `new_slot`
+    //    is taken, not cloned (issue #2123): this statement is its only
+    //    remaining use, but a loop body is the *same* compiled statement
+    //    re-executed every iteration, so a `GetTemp` here would leave
+    //    `new_slot` holding a live reference to this iteration's mutated
+    //    array that outlives the statement — still there, unconsumed, the
+    //    *next* time this same code runs and reads the field back out via
+    //    step 2's `RecordGet`, permanently pinning every iteration's array
+    //    at `strong_count == 2` and reintroducing the cliff this whole fix
+    //    exists to close.
+    let (writeback_slot, writeback_name) =
+        declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(writeback_slot, writeback_name),
+        op: AssignOp::Set,
+        value: lir::Expr::RecordSet {
+            base: Box::new(lir::Expr::TakeTemp(writeback_slot, writeback_name)),
+            field,
+            static_offset,
+            value: Box::new(lir::Expr::TakeTemp(new_slot, new_name)),
+        },
+    });
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: lir::Expr::TakeTemp(writeback_slot, writeback_name),
     });
 }
 
@@ -1259,6 +2024,18 @@ fn lower_lvalue_container_chain(
         hir::Expr::Path(_) => (lvalue, Vec::new()),
         _ => return None,
     };
+    // Issue #2121: `push(a.items[0], v)` — the root of the index chain is
+    // itself a struct-field projection (`a.items`). See
+    // `reject_field_projection_index_root`'s doc for why this must be
+    // checked *before* `lower_assign_target` gets a chance to silently
+    // misroute it onto the root `a`. Returning `None` here reaches the
+    // caller's (`lower_mutator_call`) "structurally unreachable" `else`
+    // branch, which is now reachable *for this one diagnosed reason* — it
+    // returns without pushing anything, which is correct: the diagnostic
+    // already emitted is the handling.
+    if reject_field_projection_index_root(root_expr, ctx) {
+        return None;
+    }
     let root_target = super::stmts::lower_assign_target(root_expr, ctx)?;
 
     let idx_slots: Vec<(u16, brink_format::NameId)> = indices_hir

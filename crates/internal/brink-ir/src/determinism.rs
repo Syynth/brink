@@ -31,9 +31,10 @@
 /// the one iteration site's order-independence proof), the LIR lowering
 /// context's per-file/per-name/per-slot maps (`context.rs`), `decls.rs`'s
 /// `const_values` (keyed const-eval memo, `.get()`-only), and
-/// `structs.rs`'s shape tables (`field_index`, `by_name`, `GlobalShapeMap` —
-/// all keyed lookup; `struct_shape_defs` places each entry by its own
-/// `ShapeId`, independent of iteration order).
+/// `structs.rs`'s shape tables (`field_index`, `by_def`, `by_name`,
+/// `GlobalShapeMap` — all keyed lookup; `struct_shape_defs` iterates
+/// `by_def.values()` but only to place each entry at its own fixed
+/// `ShapeId` index, independent of iteration order).
 #[expect(
     clippy::disallowed_types,
     reason = "the crate's audited allow-list — see module doc"
@@ -42,8 +43,8 @@ pub(crate) type LookupMap<K, V> = std::collections::HashMap<K, V>;
 
 /// A hashed set used only for membership tests. Current uses:
 /// `lir::lower::mod`'s `block_scoped_temp_names` (declared-name guard,
-/// `.contains()`/`.insert()` only) and `structs.rs`'s `struct_names`
-/// (duplicate-declaration guard, same shape).
+/// `.contains()`/`.insert()` only) and `structs.rs`'s `build_struct_shape_data`
+/// `seen` set (identity-scoped duplicate-declaration guard, same shape).
 #[expect(
     clippy::disallowed_types,
     reason = "the crate's audited allow-list — see module doc"

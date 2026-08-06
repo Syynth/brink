@@ -61,8 +61,19 @@ pub enum ContentJson {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PartJson {
-    Slot { slot: u8 },
-    Select { select: SelectJson },
+    Slot {
+        slot: u8,
+    },
+    Select {
+        select: SelectJson,
+    },
+    /// An inline markup span (#1716, `docs/prose-dialect-spec.md` §4.4) —
+    /// mirrors `brink_format::LinePart::Span` field-for-field. The
+    /// `{"span": {...}}` shape is structurally distinct from every other
+    /// variant here, so `#[serde(untagged)]` never confuses it with them.
+    Span {
+        span: SpanJson,
+    },
     Literal(String),
 }
 
@@ -72,4 +83,21 @@ pub struct SelectJson {
     pub slot: u8,
     pub variants: Vec<serde_json::Map<String, serde_json::Value>>,
     pub default: String,
+}
+
+/// The JSON shape of an inline markup span (#1716).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpanJson {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attrs: Vec<AttrJson>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<PartJson>,
+}
+
+/// One `name="value"` attribute in a [`SpanJson`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttrJson {
+    pub name: String,
+    pub value: String,
 }

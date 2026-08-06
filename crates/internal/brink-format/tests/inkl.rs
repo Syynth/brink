@@ -139,6 +139,53 @@ fn roundtrip_template_content() {
     assert_eq!(data, recovered);
 }
 
+/// `LinePart::Span` (#1716, `docs/prose-dialect-spec.md` §4.4) round-trips
+/// through `.inkl` — a translated line can carry the same nested markup as
+/// its source line, decoded back to the exact structure it encoded. This
+/// file had no `Span` case before (reviewer finding on #1732): the
+/// round-trip only exercised `Literal`/`Slot`/`Select`, leaving `.inkl`'s
+/// share of `encode_line_content`/`decode_line_content` (`inkb::write`)
+/// untested for the tag `.inkb`'s own `roundtrip_line_part_span` already
+/// covers.
+#[test]
+fn roundtrip_template_content_with_span() {
+    let data = LocaleData {
+        locale_tag: "de".to_string(),
+        base_checksum: 0,
+        line_tables: vec![LocaleScopeTable {
+            scope_id: scope_id(1),
+            lines: vec![LocaleLineEntry {
+                content: LineContent::Template(vec![
+                    LinePart::Literal("Er reicht dir die ".to_string()),
+                    LinePart::Span {
+                        name: "item".to_string(),
+                        attrs: vec![("id".to_string(), "lantern".to_string())],
+                        children: vec![
+                            LinePart::Literal("alte ".to_string()),
+                            LinePart::Span {
+                                name: "b".to_string(),
+                                attrs: vec![],
+                                children: vec![LinePart::Literal("Laterne".to_string())],
+                            },
+                        ],
+                    },
+                    LinePart::Literal(". ".to_string()),
+                    LinePart::Span {
+                        name: "pause".to_string(),
+                        attrs: vec![],
+                        children: vec![],
+                    },
+                ]),
+                audio_ref: None,
+            }],
+        }],
+    };
+    let mut buf = Vec::new();
+    write_inkl(&data, &mut buf);
+    let recovered = read_inkl(&buf).unwrap();
+    assert_eq!(data, recovered);
+}
+
 #[test]
 fn bad_magic() {
     let mut buf = vec![0u8; 32];

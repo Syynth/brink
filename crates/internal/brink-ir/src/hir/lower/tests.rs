@@ -5,8 +5,7 @@ use brink_syntax::parse;
 use rowan::TextRange;
 
 use crate::hir::lower::{
-    BodyChild, DeclareSymbols, EffectSink, LowerScope, LowerSink, classify_body_child,
-    lower_simple_body,
+    BodyChild, EffectSink, LowerScope, LowerSink, classify_body_child, lower_simple_body,
 };
 use crate::*;
 
@@ -21,28 +20,31 @@ fn make_sink() -> EffectSink {
 }
 
 /// Parse source and lower the root body.
-fn lower_body(source: &str) -> (Block, Vec<Diagnostic>, SymbolManifest) {
+fn lower_body(source: &str) -> (Block, Vec<Diagnostic>) {
     let parsed = parse(source);
     let tree = parsed.tree();
     let scope = make_scope();
     let mut sink = make_sink();
     let block = lower_simple_body(tree.syntax(), &scope, &mut sink);
-    let (manifest, diagnostics) = sink.finish();
-    (block, diagnostics, manifest)
+    let diagnostics = sink.finish();
+    (block, diagnostics)
 }
 
 // ─── Mock sink for testing trait abstraction ────────────────────────
+//
+// Post-B0.4, `LowerSink` only carries diagnostics — symbol declarations are
+// no longer a sink-write concern (`brink_ir::symbols::project_manifest`
+// derives the whole `SymbolManifest` from the finished `HirFile` instead),
+// so this mock only needs to record diagnostics.
 
 struct TestSink {
     diagnostics: Vec<(TextRange, DiagnosticCode)>,
-    symbols: Vec<(SymbolKind, String)>,
 }
 
 impl TestSink {
     fn new() -> Self {
         Self {
             diagnostics: Vec::new(),
-            symbols: Vec::new(),
         }
     }
 }
@@ -52,30 +54,6 @@ impl LowerSink for TestSink {
         self.diagnostics.push((range, code));
         crate::hir::lower::Diagnosed::test_token()
     }
-
-    fn declare_full(
-        &mut self,
-        kind: SymbolKind,
-        name: &str,
-        _range: TextRange,
-        _params: Vec<ParamInfo>,
-        _detail: Option<String>,
-        _doc: Option<DocBlock>,
-    ) {
-        self.symbols.push((kind, name.to_string()));
-    }
-
-    fn add_local(&mut self, _local: crate::symbols::LocalSymbol) {}
-
-    fn add_unresolved(
-        &mut self,
-        _path: &str,
-        _range: TextRange,
-        _kind: crate::symbols::RefKind,
-        _scope: &Scope,
-        _arg_count: Option<usize>,
-    ) {
-    }
 }
 
 // ─── Expression lowering tests ──────────────────────────────────────
@@ -83,7 +61,7 @@ impl LowerSink for TestSink {
 #[test]
 fn lower_integer_literal() {
     let source = "~ temp x = 42\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 1);
     match &block.stmts[0] {
@@ -102,7 +80,7 @@ fn lower_integer_literal() {
 #[test]
 fn lower_infix_expression() {
     let source = "~ temp y = 3 + 4\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 1);
     match &block.stmts[0] {
@@ -111,9 +89,10 @@ fn lower_infix_expression() {
             assert!(
                 matches!(
                     &td.value,
-                    Some(Expr::Infix(lhs, InfixOp::Add, rhs))
-                    if matches!(lhs.as_ref(), Expr::Int(3))
-                    && matches!(rhs.as_ref(), Expr::Int(4))
+                    Some(Expr::Infix(ie))
+                    if ie.op == InfixOp::Add
+                    && matches!(ie.lhs.as_ref(), Expr::Int(3))
+                    && matches!(ie.rhs.as_ref(), Expr::Int(4))
                 ),
                 "expected 3 + 4, got {:?}",
                 td.value
@@ -127,7 +106,7 @@ fn lower_infix_expression() {
 
 #[test]
 fn simple_text_line() {
-    let (block, diags, _) = lower_body("Hello, world!\n");
+    let (block, diags) = lower_body("Hello, world!\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2, "expected Content + EndOfLine");
     assert!(matches!(&block.stmts[0], Stmt::Content(c) if !c.parts.is_empty()));
@@ -136,7 +115,7 @@ fn simple_text_line() {
 
 #[test]
 fn expression_interpolation() {
-    let (block, diags, _) = lower_body("Value is {x}\n");
+    let (block, diags) = lower_body("Value is {x}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2);
     match &block.stmts[0] {
@@ -155,7 +134,7 @@ fn expression_interpolation() {
 
 #[test]
 fn tag_on_content_line() {
-    let (block, diags, _) = lower_body("Hello #greeting\n");
+    let (block, diags) = lower_body("Hello #greeting\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2);
     match &block.stmts[0] {
@@ -174,7 +153,7 @@ fn tag_on_content_line() {
 #[test]
 fn logic_line_assignment() {
     let source = "~ temp x = 0\n~ x = 5\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(block.stmts.len(), 2, "expected TempDecl + Assignment");
     assert!(matches!(&block.stmts[0], Stmt::TempDecl(_)));
@@ -187,7 +166,7 @@ fn logic_line_assignment() {
 fn logic_line_emits_diagnostic_on_malformed() {
     // A logic line with just `~` and nothing else should emit E014.
     let source = "~\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E014),
         "expected E014 diagnostic, got: {:?}",
@@ -208,7 +187,7 @@ fn logic_line_emits_diagnostic_on_malformed() {
 #[test]
 fn computed_callee_indexed_emits_e104() {
     let source = "~ temp x = handlers[state](event)\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "expected E104 diagnostic, got: {:?}",
@@ -219,7 +198,7 @@ fn computed_callee_indexed_emits_e104() {
 #[test]
 fn computed_callee_field_access_emits_e104() {
     let source = "~ temp x = obj.field()\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "expected E104 diagnostic, got: {:?}",
@@ -230,7 +209,7 @@ fn computed_callee_field_access_emits_e104() {
 #[test]
 fn computed_callee_call_result_emits_e104() {
     let source = "~ temp x = get_handler()()\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "expected E104 diagnostic, got: {:?}",
@@ -243,7 +222,7 @@ fn bare_name_direct_call_never_emits_e104() {
     // The bare-name Direct-call fast path (RULED, t1c-spec §3) must never
     // trip the new rejection.
     let source = "~ temp x = bare(1, 2)\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "bare-name call incorrectly rejected: {:?}",
@@ -257,7 +236,7 @@ fn explicit_call_form_never_emits_e104() {
     // ordinary named call (`Expr::Call(path = "call", …)`), never as the
     // new `CALL_EXPR` shape, so it must stay untouched by E104.
     let source = "~ temp x = call(handlers[state], event)\n";
-    let (_, diags, _) = lower_body(source);
+    let (_, diags) = lower_body(source);
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E104),
         "call(f, args…) incorrectly rejected: {:?}",
@@ -279,29 +258,6 @@ fn mock_sink_records_diagnostics() {
             .iter()
             .any(|(_, code)| *code == DiagnosticCode::E014),
         "expected E014 in mock sink"
-    );
-}
-
-#[test]
-fn mock_sink_records_symbol_declarations() {
-    let parsed = parse("VAR x = 5\n");
-    let tree = parsed.tree();
-    let scope = make_scope();
-    let mut sink = TestSink::new();
-
-    // Declarations are hoisted, not part of body lowering.
-    // Directly test the DeclareSymbols trait.
-    for node in tree.syntax().descendants() {
-        if let Some(var) = brink_syntax::ast::VarDecl::cast(node) {
-            let _ = var.declare_and_lower(&scope, &mut sink);
-        }
-    }
-    assert!(
-        sink.symbols
-            .iter()
-            .any(|(kind, name)| *kind == SymbolKind::Variable && name == "x"),
-        "expected variable 'x' in mock sink, got: {:?}",
-        sink.symbols
     );
 }
 
@@ -338,7 +294,7 @@ fn classify_recognizes_logic_line() {
 #[test]
 fn accumulator_content_with_glue_suppresses_eol() {
     let source = "Hello<>\n";
-    let (block, diags, _) = lower_body(source);
+    let (block, diags) = lower_body(source);
     assert!(diags.is_empty());
     // Glue suppresses EndOfLine — should have Content only, no EndOfLine
     assert!(
@@ -356,7 +312,7 @@ fn accumulator_content_with_glue_suppresses_eol() {
 fn accumulator_logic_line_with_call_emits_eol() {
     // A function call in a logic line triggers EndOfLine
     let source = "=== function f() ===\n~ return 1\n=== main ===\n~ f()\n";
-    let (block, _, _) = lower_body(source);
+    let (block, _) = lower_body(source);
     // Root body might be empty (knots handle their own bodies),
     // so just verify it compiles and doesn't panic.
     let _ = block;
@@ -1022,15 +978,40 @@ fn void_return_type_lowers_to_named_void_not_none() {
 }
 
 #[test]
-fn stitch_header_never_carries_a_return_type() {
-    // `= stitch` headers have no return-type grammar position (TM-2 §3
-    // scopes `): type ===` to `== knot ==` headers) — a promoted top-level
-    // stitch's `Knot.return_type` is always `None`.
+fn unannotated_stitch_header_has_no_return_type() {
     let (hir, diags) = lower_hir("=== camp ===\nText.\n= fire\nMore.\n-> DONE\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let camp = hir.knots.iter().find(|k| k.name.text == "camp").unwrap();
     assert_eq!(camp.return_type, None);
     assert_eq!(camp.stitches[0].name.text, "fire");
+    assert_eq!(camp.stitches[0].return_type, None);
+}
+
+#[test]
+fn return_type_annotation_lowers_onto_nested_stitch() {
+    // #1509: `= name(params): type` on a *nested* stitch header (widening
+    // NG-C's `Knot.return_type` grammar to `Stitch`).
+    let (hir, diags) = lower_hir("=== camp ===\nText.\n= fire(logs): int\n~ return logs\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let camp = hir.knots.iter().find(|k| k.name.text == "camp").unwrap();
+    match &camp.stitches[0].return_type {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn return_type_annotation_lowers_onto_promoted_top_level_stitch() {
+    // A top-level `= stitch` is promoted to `Knot` status during lowering
+    // (`lower_top_level_stitch`), so its return type rides the same
+    // `Knot::return_type` field a real `== knot ==` header's does.
+    let (hir, diags) = lower_hir("= fire(logs): int\n~ return logs\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let fire = hir.knots.iter().find(|k| k.name.text == "fire").unwrap();
+    match &fire.return_type {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
 }
 
 #[test]
@@ -1083,22 +1064,22 @@ fn block_scoped_temp_ascription_lowers_onto_block_temp_decl() {
 
 #[test]
 fn generic_list_and_map_annotations_lower_with_args() {
-    let (hir, diags) = lower_hir("VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n");
+    let (hir, diags) = lower_hir("VAR w: List<Weathers> = 0\nVAR m: Map<string, int> = 0\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     match &hir.variables[0].annotation {
         Some(TypeExpr::Generic { name, args, .. }) => {
-            assert_eq!(name, "list");
+            assert_eq!(name, "List");
             assert_eq!(args.len(), 1);
             assert!(matches!(&args[0], TypeExpr::Named { name, .. } if name == "Weathers"));
         }
-        other => panic!("expected Generic(\"list\", ...), got {other:?}"),
+        other => panic!("expected Generic(\"List\", ...), got {other:?}"),
     }
     match &hir.variables[1].annotation {
         Some(TypeExpr::Generic { name, args, .. }) => {
-            assert_eq!(name, "map");
+            assert_eq!(name, "Map");
             assert_eq!(args.len(), 2);
         }
-        other => panic!("expected Generic(\"map\", ...), got {other:?}"),
+        other => panic!("expected Generic(\"Map\", ...), got {other:?}"),
     }
 }
 
@@ -1278,5 +1259,75 @@ fn conflicting_visibility_directives_is_e093() {
     assert!(
         codes(&diags).contains(&DiagnosticCode::E093),
         "expected E093, got {diags:?}"
+    );
+}
+
+// ─── Block::tail (S1, docs/block-effect-model.md §10 row j) ────────
+//
+// Expand-phase groundwork only: `tail` is populated from `stmts`' final
+// statement but consumed by nothing yet — `stmts` stays authoritative.
+// These tests pin the ink frontend's half of that population.
+
+#[test]
+fn block_ending_in_divert_has_diverge_tail() {
+    let (hir, diags) = lower_hir("== a ==\nHello\n-> b\n== b ==\nDone.\n-> END\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let a_body = &hir.knots[0].body;
+    assert!(
+        matches!(a_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "expected Diverge(Divert) tail, got {:?}",
+        a_body.tail()
+    );
+    let b_body = &hir.knots[1].body;
+    assert!(
+        matches!(b_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "-> END is still a Divert (DivertPath::End), got {:?}",
+        b_body.tail()
+    );
+}
+
+#[test]
+fn block_ending_in_explicit_return_has_diverge_tail() {
+    let (hir, diags) = lower_hir("=== function f() ===\n~ return 1\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[0].body;
+    assert!(
+        matches!(body.tail(), Tail::Diverge(Terminator::Return(_))),
+        "expected Diverge(Return) tail, got {:?}",
+        body.tail()
+    );
+}
+
+#[test]
+fn plain_content_block_has_unit_tail() {
+    let (block, diags) = lower_body("Hello, world!\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(*block.tail(), Tail::Unit);
+}
+
+#[test]
+fn weave_choice_body_ending_in_divert_has_diverge_tail() {
+    // Weave folding appends trailing choice-body content statement-by-
+    // statement (`weave.rs`'s `WeaveItem::Stmt` arm mutates `c.body.stmts`
+    // in place after the choice's own construction) — `flush_choices` must
+    // re-derive `tail` from the final body before sealing it into the
+    // `ChoiceSet`, or this would still read the stale value from
+    // construction time.
+    let (hir, diags) =
+        lower_hir("== a ==\n* Choice.\n  more text\n  -> b\n== b ==\nDone.\n-> END\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected ChoiceSet, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let choice_body = &cs.choices[0].body;
+    assert!(
+        matches!(choice_body.stmts.last(), Some(Stmt::Divert(_))),
+        "expected the weave-folded content to end in the divert, got {:?}",
+        choice_body.stmts
+    );
+    assert!(
+        matches!(choice_body.tail(), Tail::Diverge(Terminator::Divert(_))),
+        "expected Diverge(Divert) tail, got {:?}",
+        choice_body.tail()
     );
 }

@@ -4,12 +4,38 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Merge-queue candidates (2026-08-06 decision, docs/decision-log.md "Move
+  # toward a GitHub merge queue for main"): the queue tests each candidate on
+  # a temporary gh-readonly-queue/main/… ref, which fires a `merge_group`
+  # event — not `push` or `pull_request`. Without this trigger, queued PRs
+  # wait forever for required checks that never start. A no-op until a merge
+  # queue is actually enabled on the repo.
+  merge_group:
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
 permissions: {}
 
+# Cancel a branch's in-flight run when a new commit supersedes it (#1237).
+# Without this, pushing to a PR left the previous run's whole job matrix
+# competing for runners: during one multi-PR wave, 3 of the queued runs were
+# superseded and cancelling them alone dropped the backlog from 72 to 37
+# queued jobs — roughly half the queue was work nobody would ever read.
+#
+# `main` is deliberately EXEMPT: superseded pushes there are rare, and
+# cancelling them would leave individual main commits with no CI record,
+# which weakens bisecting. PR branches are where repeated pushes actually
+# happen (a fix agent pushing three times triggers three full matrices).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Incremental compilation is PURE OVERHEAD on a CI runner: every job starts
+  # from a cold checkout, so the per-CGU dependency-graph cache is written and
+  # never read. (Context in #1695: a full `--workspace --tests` build is 15G at
+  # default settings; incremental is part of that write volume.)
+  CARGO_INCREMENTAL: 0
 
 # Third-party actions are pinned to full commit SHAs (mutable tags can be
 # repointed at malicious code). The trailing comment tracks the version;
@@ -69,27 +95,88 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # bevy-brink's `bevy` dev-dependency (windowed `play_story` example) pulls
-      # in wayland-sys/winit/alsa, whose build scripts need these system libs.
-      # `cargo test` compiles examples, so they're required here.
-      - name: Install Linux dependencies (bevy)
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      # No "Install Linux dependencies (bevy)" step here: this job excludes
+      # bevy-brink (below), and no other workspace member (the workspace's
+      # `members` glob excludes `demos/*`, the only other crate that depends
+      # on `bevy`) links the bevy umbrella, so `cargo test --workspace`
+      # never touches wayland-sys/winit/alsa's build scripts. The jobs that
+      # genuinely need these system libs — because they build or test
+      # bevy-brink directly — are `test-bench-counters`, `determinism-law`,
+      # and `book`; each installs them itself.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - run: cargo test --workspace
+      # bevy-brink is EXCLUDED from THIS job: the bevy dependency graph is
+      # the dominant build cost and `cargo test` LINKS the examples — a
+      # 300+ rlib binary that intermittently crashed the runner's linker
+      # (ld bus error), hitting parser/compiler PRs that never touch bevy
+      # 3x in one day. (2026-07-20 ruling, still in force.) bevy-brink-derive
+      # is not excluded — see the `static-checks` job for why.
+      #
+      # It is NOT unchecked: the required `Test (bench-counters)` job below
+      # lints every bevy-brink target and runs its lib + integration tests in
+      # its own runner slot, in parallel with this one, without linking the
+      # examples (#1641). Do not re-add bevy-brink here — put coverage there.
+      - run: cargo test --workspace --exclude bevy-brink
 
-  # `--features bench-counters` is off by default (it's a compile-time cut,
-  # not a runtime toggle — see `crates/brink-runtime/src/bench_counters.rs`),
-  # so the `test` job above never builds or runs anything gated on it. PR
-  # #921's counter-forwarding proofs
-  # (`collection_global_axis_forwards_nonzero_counters` plus the
-  # bench-counters-gated scenario-story compile+run) only ever ran locally
-  # until this job existed (#923, tracked from #897). A separate job (not a
-  # step folded into `test`) so its own distinct feature/cache combination is
-  # visible in the checks list and a failure here can't be masked by the
-  # default-feature run passing.
+  # The feature-gated / bevy lane. Two things live here, both invisible to the
+  # `test` job above, and both cheap to co-locate because they share one
+  # dependency-graph build:
+  #
+  # 1. `--features bench-counters` is off by default (a compile-time cut, not
+  #    a runtime toggle — see `crates/brink-runtime/src/bench_counters.rs`),
+  #    so the `test` job never builds or runs anything gated on it. PR #921's
+  #    counter-forwarding proofs only ever ran locally until this job existed
+  #    (#923, tracked from #897).
+  #
+  # 2. bevy-brink, which the `test`, `test-all-features` and `static-checks`
+  #    jobs all exclude (2026-07-20: build cost + an ld bus error linking the
+  #    300+ rlib `play_story` example). bevy-brink-derive is NOT excluded
+  #    anywhere — it's `proc-macro = true` with only syn/quote/proc-macro2 as
+  #    dependencies, so it pays none of the cost the exclusion exists to
+  #    avoid and stays covered by the cheap jobs. The bevy-brink exclusion
+  #    left a CRATE-SIZED HOLE in the merge gate — ~a dozen bevy-brink PRs
+  #    landed against a gate that ran exactly one of its tests (#1641). The
+  #    two steps below close it without reversing the ruling:
+  #      * clippy `--all-targets` TYPE-CHECKS the examples but never links
+  #        them, so the bus error cannot occur — and it restores the
+  #        compile-check of `examples/book_flows.rs`, which the book's Bevy
+  #        flows page `{{#include}}`s and which no job had checked since the
+  #        exclusion landed.
+  #      * `cargo test --lib --tests` deliberately omits `--examples`, so
+  #        `play_story` itself is never linked. But it does NOT eliminate
+  #        link-crash exposure: `tests/scenario_bench_model.rs` and
+  #        `tests/scenario_baseline_tripwire.rs` both `#[path]`-include
+  #        `benches/scenario/model.rs`, which pulls in the `bevy` umbrella
+  #        (MinimalPlugins, AssetPlugin, ComputeTaskPool, …) — the same
+  #        dev-dependency (`bevy = { version = "0.19.0", features =
+  #        ["file_watcher"] }`, default features on) that `play_story`
+  #        links. So this step still links two headless test binaries
+  #        against the full bevy graph; exposure to the 2026-07-20 ld bus
+  #        error is NARROWED to those two binaries, not removed. If it
+  #        recurs here, the escape hatch is either narrowing
+  #        `benches/scenario/model.rs`'s imports to the granular bevy_*
+  #        crates it actually needs instead of the umbrella, or dropping
+  #        this job from branch protection's required-checks list.
+  #    Both run under `--all-features`, which for bevy-brink is a strict
+  #    superset of its default `dev` feature and turns ON `bench-counters`
+  #    (so `scenario_bench_model.rs`'s counter-forwarding test finally runs in
+  #    CI) and `effect-trace`. One feature configuration, therefore one bevy
+  #    graph build, is the whole cost lever: adding a second default-feature
+  #    pass would rebuild the entire bevy graph again for a handful of extra
+  #    test functions. bevy-brink's default-feature COMPILE is still covered
+  #    by the `Check` job's `cargo check --workspace`.
+  #
+  # This is a separate job (not steps folded into `test`) so it claims its own
+  # runner slot and runs in PARALLEL with `test` rather than serializing the
+  # bevy graph onto the critical path, and so a failure here names itself in
+  # the checks list instead of hiding inside a huge workspace test blob.
+  #
+  # The job NAME is load-bearing: "Test (bench-counters)" is in branch
+  # protection's required-checks list, so renaming it would silently drop this
+  # lane out of the merge gate. Change the name only together with the
+  # branch-protection setting.
+  #
+  # Steps use `if: '!cancelled()'` (same rationale as `static-checks`): a
+  # clippy failure must not hide a test failure behind it.
   test-bench-counters:
     name: Test (bench-counters)
     runs-on: ubuntu-latest
@@ -108,52 +195,34 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: bench-counters
-      - run: cargo test -p bevy-brink -p brink-runtime --features bench-counters
-
-  # #956 (tracked from #897): the standard `clippy`/`test` jobs below only
-  # ever build the workspace's *default* feature sets, so a feature-gated
-  # module can bitrot invisibly. That's exactly how #765's xliff2 CDATA gap
-  # (found by a hand-run `clippy --all-features`) and #923's bench-counters
-  # gap got in — each closed one feature at a time (`test-bench-counters`
-  # above). One `--all-features` leg closes the whole class at once instead
-  # of chasing each gap after the fact.
-  #
-  # Feature unification across the workspace made `--workspace --all-features`
-  # feasible here (verified: no combination conflicts among xliff2's
-  # `metadata`, brink-format's `inkt`/`std`, brink-runtime's
-  # `bench-counters`/`effect-trace`/`testing`, bevy-brink's
-  # `dev`/`bench-counters`/`effect-trace`, brink-db's `memory-introspection`,
-  # or brink-test-harness's `effect-trace` forwarding) — if a future feature
-  # ever proves mutually exclusive workspace-wide, fall back to a per-crate
-  # `-p` matrix here rather than dropping the leg.
-  #
-  # This subsumes #947 (a proposed `--features effect-trace` leg for
-  # brink-runtime + bevy-brink): both crates' `effect-trace` feature is part
-  # of `--all-features`, so their ground-truth tests
-  # (`brink-runtime::effect_trace`'s recorder-backed assertions and
-  # `bevy-brink::ground_truth`'s `#[cfg(test)]` module, gated by
-  # `#[cfg(feature = "effect-trace")] mod ground_truth;` in
-  # `crates/bevy-brink/src/lib.rs`) already run here — no separate job
-  # needed.
-  clippy-all-features:
-    name: Clippy (all features)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      # Same bevy-brink dev-dependency system libs as the `test` job above.
-      - name: Install Linux dependencies (bevy)
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: all-features
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Cheapest first: brink-runtime's bench-counters coverage is bevy-free.
+      - name: Test (brink-runtime, bench-counters)
+        id: runtime_bench_counters
+        run: cargo test -p brink-runtime --features bench-counters
+      # `--all-targets` covers lib + tests + examples + benches. Clippy only
+      # type-checks, so the examples are compile-checked without ever being
+      # linked (see this job's header comment).
+      - name: Clippy (bevy-brink, all features)
+        id: bevy_clippy
+        if: '!cancelled()'
+        run: cargo clippy -p bevy-brink -p bevy-brink-derive --all-targets --all-features -- -D warnings
+      # `--lib --tests` and NOT `--all-targets`: running the suite must not
+      # link the `play_story` example (the 2026-07-20 ld bus error).
+      - name: Test (bevy-brink, all features)
+        id: bevy_test
+        if: '!cancelled()'
+        run: cargo test -p bevy-brink -p bevy-brink-derive --all-features --lib --tests
+      # Doctests are a separate cargo invocation from `--lib --tests` above
+      # (cargo has no combined flag for lib+tests+doc), so they need their
+      # own step, but they carry the same 2026-07-20 link-crash exemption:
+      # `--doc` builds one merged doctest binary from the crate's `///`/`//!`
+      # examples and never touches `examples/play_story.rs`, so it does not
+      # reopen that bus error (verified locally under `--all-features`: all
+      # 17 bevy-brink doctests compile and link in ~9s, #1700).
+      - name: Test (bevy-brink, doc)
+        id: bevy_doc
+        if: '!cancelled()'
+        run: cargo test -p bevy-brink -p bevy-brink-derive --all-features --doc
 
   # Companion to `clippy-all-features` above — see its comment for why this
   # leg exists and how it subsumes #947. Runtime cost measured comparable to
@@ -169,19 +238,31 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # Same bevy-brink dev-dependency system libs as the `test` job above.
-      - name: Install Linux dependencies (bevy)
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      # No "Install Linux dependencies (bevy)" step here either, for the same
+      # reason as the `test` job above: this job also excludes bevy-brink
+      # (below), so nothing it builds touches bevy's system libs.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: all-features
-      - run: cargo test --workspace --all-features
+      # Same bevy-brink exclusion as the `test` job (build cost + the example
+      # link crash). bevy-brink's own `--all-features` test run lives in the
+      # required `Test (bench-counters)` job (#1641).
+      - run: cargo test --workspace --all-features --exclude bevy-brink
 
-  clippy:
-    name: Clippy
+  # Consolidated static checks (decision 2026-07-22, #1237). Previously six
+  # separate jobs — Format, Clippy, Clippy (all features), no_std ×2, and the
+  # publishable pre-flight — each under a minute of real work but each paying
+  # a full runner slot, checkout, and cache restore. At ~29 jobs a single push
+  # nearly saturated the account's 20-job concurrency ceiling, so wave
+  # throughput was bounded by job COUNT rather than by work. Coverage is
+  # identical; only the packaging changed.
+  #
+  # Steps run in cheapest-first order so the fastest signal fails first, and
+  # every step runs even if an earlier one fails (`if: always()`) — otherwise
+  # consolidating would hide a clippy failure behind a fmt failure, which is
+  # exactly the granularity loss worth avoiding.
+  static-checks:
+    name: Static checks (fmt, clippy, no_std, publishable)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -197,18 +278,115 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          persist-credentials: false
-      - run: cargo fmt --all -- --check
+          shared-key: static-checks
+
+      - name: Format
+        id: fmt
+        run: cargo fmt --all -- --check
+
+      # Both clippy legs exclude bevy-brink so this job never pays for the
+      # bevy dependency graph. bevy-brink-derive is NOT excluded: it's
+      # `proc-macro = true` with only syn/quote/proc-macro2 as dependencies —
+      # zero bevy, zero tests — so it pays none of the build cost the
+      # exclusion exists to avoid and stays covered by this cheap job instead
+      # of being parked behind the 7-minute bevy job. bevy-brink itself is
+      # NOT unlinted: `Test (bench-counters)` runs `clippy -p bevy-brink -p
+      # bevy-brink-derive --all-targets --all-features -- -D warnings` in its
+      # own runner slot, where the graph is already built for that job's test
+      # run (#1641). Lint changes that must reach bevy-brink go there.
+      - name: Clippy
+        id: clippy
+        if: '!cancelled()'
+        run: cargo clippy --workspace --all-targets --exclude bevy-brink -- -D warnings
+
+      - name: Clippy (all features)
+        id: clippy_all
+        if: '!cancelled()'
+        run: cargo clippy --workspace --all-targets --all-features --exclude bevy-brink -- -D warnings
+
+      - name: no_std (brink-format)
+        id: nostd_format
+        if: '!cancelled()'
+        run: cargo check -p brink-format --no-default-features
+
+      - name: no_std (brink-runtime)
+        id: nostd_runtime
+        if: '!cancelled()'
+        run: cargo check -p brink-runtime --no-default-features
+
+      # `test-util` fence (#2168): `brink-compiler`'s legacy closure/path
+      # compile entry points are gated behind the `test-util` feature so a
+      # new production consumer can't reach for them by accident — but that
+      # only holds for a build that never resolves `brink-test-harness` (a
+      # normal, non-dev dependency there enables the feature and unifies it
+      # across the whole `--workspace` resolve). This isolated `-p` check
+      # covers every crate that consumes `brink-compiler` in production
+      # (`brink-cli`, `brink-web`, `brink-lsp`, `bevy-brink`,
+      # `brink-environment`) without pulling in the test harness, so it
+      # actually proves the fence a `--workspace` check cannot.
+      - name: Compiler test-util fence holds in isolation
+        id: test_util_fence
+        if: '!cancelled()'
+        run: cargo check --locked -p brink-cli -p brink-web -p brink-lsp -p bevy-brink -p brink-environment
+
+      # Publishability pre-flight (#1232). crates.io Trusted Publishing tokens
+      # can publish a new VERSION of an existing crate but CANNOT CREATE one —
+      # the first publish of any new crate must be done by hand. When
+      # `brink-syntax-native` landed as a publishable crate crates.io had never
+      # heard of, release-plz aborted the ENTIRE workspace release on it and
+      # every crate release failed for days before anyone noticed (npm-release
+      # kept succeeding, so nothing looked broken). This makes that failure
+      # loud on the PR that introduces the crate.
+      - name: Publishable crates exist on crates.io
+        id: publishable
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          crates=$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.publish == null) | .name' | sort)
+          echo "Publishable workspace crates:"; echo "$crates" | sed 's/^/  - /'
+          missing=""
+          for crate in $crates; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A "brink-ci (https://github.com/Syynth/brink)" \
+              "https://crates.io/api/v1/crates/${crate}")
+            case "$code" in
+              200) echo "ok: ${crate}" ;;
+              404) echo "MISSING: ${crate}"; missing="${missing} ${crate}" ;;
+              *)   echo "::warning::${crate}: unexpected status ${code} from crates.io; skipping" ;;
+            esac
+            sleep 1
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::These crates are publishable but have never been published to crates.io:${missing}"
+            echo "::error::crates.io Trusted Publishing CANNOT create a new crate, so release-plz will abort the whole workspace release."
+            echo "::error::Fix by EITHER setting 'publish = false' in the crate's Cargo.toml, OR having a maintainer run 'cargo publish -p <crate>' once by hand."
+            exit 1
+          fi
+
+      # #2080 review finding: `brink-environment` embeds
+      # `std/conventions/screenplay.brink` via `include_str!(concat!(
+      # env!("CARGO_MANIFEST_DIR"), ...))`. `include_str!` cannot reach
+      # outside its own package root, so that path — and any future one
+      # like it — must resolve to a file `cargo package` actually ships;
+      # an out-of-package path builds and tests fine locally (cargo runs
+      # from the workspace checkout, where the path still resolves) but
+      # breaks for every consumer once published, because the packaged
+      # tarball never contained the file. `cargo package`'s own verify
+      # build doesn't catch this either — it happens to unpack to
+      # `target/package/<pkg>-<ver>/`, where a `../../..`-shaped path can
+      # accidentally resolve back into the surrounding checkout and still
+      # find the file. Listing the tarball's real contents and grepping
+      # for the mounted file is the only way to catch this before
+      # release-plz does.
+      - name: brink-environment package contains its embedded stdlib source
+        id: environment_package_list
+        if: '!cancelled()'
+        run: |
+          set -euo pipefail
+          cargo package -p brink-environment --locked --list \
+            | grep -F 'std/conventions/screenplay.brink'
 
   deny:
     name: cargo-deny
@@ -223,72 +401,26 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           command: check
-
   # Bounded fuzz smoke runs (#672 workstream C) — not continuous fuzzing
-  # campaigns. Each target gets a fresh ephemeral corpus dir (uncommitted;
-  # new finds land there, never in the committed seed corpus under
-  # `fuzz/seeds/<target>/`) plus the curated seeds, and a short
-  # `-max_total_time` budget. This catches panics/hangs in the parser and
-  # the VM's malformed-bytecode handling cheaply on every PR; a real
-  # coverage-guided campaign is a local/scheduled concern, not a per-PR one.
+  # campaigns. Consolidated from a 9-entry matrix into ONE job (decision
+  # 2026-07-22, #1237): each leg was only ~30s of actual fuzzing, but every
+  # leg re-installed cargo-fuzz and claimed its own runner slot, so the matrix
+  # alone consumed 9 of the account's 20 concurrent jobs — 45% of total CI
+  # capacity for ~17 minutes of work. One job installs cargo-fuzz once and
+  # loops the targets.
   #
-  # One job per target (matrix, fail-fast: false) rather than sequential
-  # steps in a shared job: a crash in one target must not skip the others —
-  # sequential steps stop at the first failing step, silently leaving later
-  # targets (e.g. the VM's vm_no_panic) unexercised while CI still reports
-  # red for an unrelated reason.
-  #
-  # `-seed=` is pinned per target so the mutation sequence explored each
-  # run is reproducible for a given corpus/binary — libFuzzer's default
-  # randomized seed would otherwise let each PR (including unrelated ones)
-  # explore a different slice of the input space and risk surfacing a fresh
-  # shallow crash as a flake, in tension with #672 workstream F's zero-flake
-  # mandate.
+  # The loop records failures and reports ALL of them at the end rather than
+  # stopping at the first, preserving the old matrix's `fail-fast: false`
+  # semantics — without that, consolidating would hide every target after the
+  # first failure.
   fuzz:
-    name: Fuzz (smoke) — ${{ matrix.target }}
+    name: Fuzz (smoke)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: parse_no_panic
-            crate_dir: crates/internal/brink-syntax/fuzz
-            seed_dir: seeds/ink
-          - target: parse_lossless
-            crate_dir: crates/internal/brink-syntax/fuzz
-            seed_dir: seeds/ink
-          - target: vm_no_panic
-            crate_dir: crates/brink-runtime/fuzz
-            seed_dir: seeds/vm_no_panic
-          # brink-format's 6 targets (#745) — never previously wired into
-          # this matrix despite existing in-tree. The two shared seed
-          # dirs mirror the shape above: `seeds/inkb` for the four targets
-          # that take a `.inkb` byte buffer, `seeds/inkt` for the two that
-          # take a `.inkt` string, same as brink-syntax's single
-          # `seeds/ink` dir shared by its two `&str`-input targets.
-          - target: read_no_panic
-            crate_dir: crates/internal/brink-format/fuzz
-            seed_dir: seeds/inkb
-          - target: write_read_roundtrip
-            crate_dir: crates/internal/brink-format/fuzz
-            seed_dir: seeds/inkb
-          - target: read_index_no_panic
-            crate_dir: crates/internal/brink-format/fuzz
-            seed_dir: seeds/inkb
-          - target: section_reads_no_panic
-            crate_dir: crates/internal/brink-format/fuzz
-            seed_dir: seeds/inkb
-          - target: read_inkt_no_panic
-            crate_dir: crates/internal/brink-format/fuzz
-            seed_dir: seeds/inkt
-          - target: inkt_write_read_roundtrip
-            crate_dir: crates/internal/brink-format/fuzz
-            seed_dir: seeds/inkt
-    # Hard backstop independent of the target's own `-max_total_time`
-    # budget (30s of intended fuzz time) — if a target ever fails to
-    # self-terminate, the job dies here instead of burning CI minutes
-    # silently.
-    timeout-minutes: 10
+    # Hard backstop independent of each target's own `-max_total_time` budget
+    # (30s of intended fuzz time apiece) — if a target ever fails to
+    # self-terminate, the job dies here instead of burning CI minutes silently.
+    # Scaled for the whole set now that they share one job.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -297,16 +429,83 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: fuzz-${{ matrix.target }}
+          shared-key: fuzz
       - name: Install nightly + cargo-fuzz
         run: |
           rustup toolchain install nightly --profile minimal
           cargo install cargo-fuzz --locked
-      - name: Fuzz ${{ matrix.target }}
-        working-directory: ${{ matrix.crate_dir }}
+      # Lockfile-drift gate (#1396 gap 2, house rule 19o): `cargo +nightly
+      # fuzz run` below has no `--locked` of its own — cargo-fuzz doesn't
+      # expose one — so a stale fuzz-crate Cargo.lock (e.g. after a parent
+      # crate's deps change) would otherwise be silently refreshed and the
+      # job would exit 0, same drift shape #1386 fixed for demos/compound.
+      # `cargo metadata --locked` fails loudly instead of refreshing when a
+      # committed lockfile no longer matches its manifest. All four
+      # workspace-excluded fuzz crates now carry a committed Cargo.lock.
+      - name: Verify fuzz crate lockfiles are not stale
         run: |
-          mkdir -p corpus/${{ matrix.target }}
-          cargo +nightly fuzz run ${{ matrix.target }} corpus/${{ matrix.target }} ${{ matrix.seed_dir }} -- -seed=1 -max_total_time=30 -max_len=8192
+          set -uo pipefail
+          dirs="
+          crates/internal/brink-syntax/fuzz
+          crates/internal/brink-syntax-native/fuzz
+          crates/internal/brink-format/fuzz
+          crates/brink-runtime/fuzz
+          "
+          failed=""
+          for dir in $dirs; do
+            if ! cargo metadata --locked --no-deps --format-version 1 \
+                 --manifest-path "${dir}/Cargo.toml" >/dev/null; then
+              echo "::error::stale or missing Cargo.lock in ${dir}"
+              failed="${failed} ${dir}"
+            fi
+          done
+          if [ -n "${failed}" ]; then
+            echo "::error::stale fuzz lockfiles:${failed}"
+            exit 1
+          fi
+      - name: Fuzz all targets
+        run: |
+          set -uo pipefail
+          # target|crate_dir|seed_dir — the two shared seed dirs mirror the
+          # input shapes: `seeds/inkb` for the four targets taking a `.inkb`
+          # byte buffer, `seeds/inkt` for the two taking an `.inkt` string,
+          # same as brink-syntax's single `seeds/ink` and brink-syntax-native's
+          # single `seeds/brink`, each for its own pair of &str targets.
+          targets="
+          parse_no_panic|crates/internal/brink-syntax/fuzz|seeds/ink
+          parse_lossless|crates/internal/brink-syntax/fuzz|seeds/ink
+          parse_no_panic|crates/internal/brink-syntax-native/fuzz|seeds/brink
+          parse_lossless|crates/internal/brink-syntax-native/fuzz|seeds/brink
+          vm_no_panic|crates/brink-runtime/fuzz|seeds/vm_no_panic
+          read_no_panic|crates/internal/brink-format/fuzz|seeds/inkb
+          write_read_roundtrip|crates/internal/brink-format/fuzz|seeds/inkb
+          read_index_no_panic|crates/internal/brink-format/fuzz|seeds/inkb
+          section_reads_no_panic|crates/internal/brink-format/fuzz|seeds/inkb
+          read_inkt_no_panic|crates/internal/brink-format/fuzz|seeds/inkt
+          inkt_write_read_roundtrip|crates/internal/brink-format/fuzz|seeds/inkt
+          "
+          failed=""
+          root="$PWD"
+          for entry in $targets; do
+            target="${entry%%|*}"; rest="${entry#*|}"
+            crate_dir="${rest%%|*}"; seed_dir="${rest#*|}"
+            echo "::group::fuzz ${target}"
+            cd "$root/$crate_dir"
+            mkdir -p "corpus/${target}"
+            if cargo +nightly fuzz run "${target}" "corpus/${target}" "${seed_dir}" \
+                 -- -seed=1 -max_total_time=30 -max_len=8192; then
+              echo "ok: ${target}"
+            else
+              echo "::error::fuzz target ${target} FAILED"
+              failed="${failed} ${target}"
+            fi
+            echo "::endgroup::"
+          done
+          cd "$root"
+          if [ -n "${failed}" ]; then
+            echo "::error::failing fuzz targets:${failed}"
+            exit 1
+          fi
 
   # BH-3's determinism law (#927, closing #926): the parallel batch driver
   # must be byte-identical to the serial driver, in flow-id order, over
@@ -344,7 +543,9 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      # This job runs `cargo test -p bevy-brink` directly (below), so unlike
+      # `test` / `test-all-features` (which exclude bevy-brink and no longer
+      # install these), it genuinely needs bevy's Linux system libs.
       - name: Install Linux dependencies (bevy)
         run: |
           sudo apt-get update
@@ -374,8 +575,11 @@ jobs:
       # breaks the run. The build below is always fresh.
       #
       # The Bevy *flows* page is `{{#include}}`d from crates/bevy-brink/examples/
-      # book_flows.rs and compile-checked by the `test` job (cargo test compiles
-      # examples), so it needs no step here.
+      # book_flows.rs, which is compile-checked by the `Test (bench-counters)`
+      # job's `clippy -p bevy-brink --all-targets` step, so it needs no step
+      # here. (That was previously the `test` job, but bevy-brink has been
+      # excluded from it since 2026-07-20 — leaving this example checked by
+      # nothing at all until #1641.)
       - name: Install Linux dependencies (bevy)
         run: |
           sudo apt-get update
@@ -390,7 +594,15 @@ jobs:
       # One cargo invocation for the whole package set: rustdoc resolves the
       # examples off -L, and two builds of a crate with different hashes make
       # it bail with E0464. See the `book-test` recipe in the justfile.
-      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config
+      #
+      # `--features brink-compiler/test-util`: four chapters' fences call
+      # `compile_path`/`compile_path_with_options` (#2168 gated these behind
+      # `test-util`, off by default). This is the interim unblock, not the
+      # fix — those chapters teach an API surface an external crates.io
+      # consumer cannot call. Tracked in #2175: migrate the fences to
+      # `brink_environment::Project::load` + `compile`, add `-p
+      # brink-environment` here, and drop this flag.
+      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config --features brink-compiler/test-util
         env:
           CARGO_TARGET_DIR: target/book-doctest
       # Run mdbook under the pinned toolchain (rust-toolchain.toml). `cargo

@@ -18,7 +18,7 @@
 //! ## The seams
 //!
 //! * **The flow entity IS the door entity.** [`attach_ink_door_flows`]
-//!   attaches a [`BrinkFlowRequest<DoorsStory>`] + a dormant, one-shot
+//!   attaches a [`BrinkFlowRequest<DoorsStory>`] + a dormant, reversible-latch
 //!   [`FlowSleep<DoorsStory>`] straight onto the same entity
 //!   `doors::spawn_doors_from_layout` already spawned (sprite, `Collider`,
 //!   `Door`, `RoundScoped` — none of that changes). No id-mirroring plumbing
@@ -42,23 +42,28 @@
 //!   lifting the must-poll interim this port originally documented. This is
 //!   the exact `is_player_nearby`-reading-`Transform` case the `sleep` module's
 //!   own docs anticipate, now a real consumer of the change-tick wiring.
-//! * **Open is a PERMANENT signal (`WakeArming::Once`).** A door's flow runs
-//!   its one turn and parks for good at `-> END`;
-//!   [`ink_door_sync_system`] treats `StoryStatus::Ended` as "open". This is
-//!   a deliberate simplification versus the Rust baseline
-//!   (`doors::door_sync_system`), which is fully bidirectional — it
-//!   RE-LOCKS a door if its switch is flipped back off. See the divergence
-//!   test in this module and `MIGRATION.md` for why modeling the reversible
-//!   case would need per-flow `Local`-scoped ink state
-//!   (`docs/scoped-flow-state-spec.md`), out of scope for this minimal port.
+//! * **Fully reversible (`WakeArming::Latch`, issue #1081).** `doors.ink`
+//!   never ends — it loops via `-> DONE` / `-> door_watch` (the same
+//!   self-looping idiom `bevy-brink`'s own `sleep` module test fixtures
+//!   use), and the flow's [`FlowSleep`] policy is a
+//!   [`WakeArming::Latch`](bevy_brink::WakeArming::Latch): it wakes on
+//!   switch-on, then re-arms watching for switch-off, then switch-on again,
+//!   indefinitely. The `Latch` mode does the edge detection host-side, so
+//!   `should_open` stays a plain level predicate (`is_switch_on()`) — no
+//!   ink-side "was I previously open" state is needed. [`ink_door_sync_system`]
+//!   reads which edge the policy currently watches for via
+//!   [`FlowSleep::latch_waiting_for`] to derive [`Door::open`]. This closes
+//!   the divergence from the Rust baseline (`doors::door_sync_system`, fully
+//!   bidirectional) that an earlier `WakeArming::Once` version of this port
+//!   had to accept — see the parity test in this module and `MIGRATION.md`'s
+//!   G5 entry.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
 
 use bevy::prelude::*;
-use bevy_brink::runtime::StoryStatus;
 use bevy_brink::{
-    BrinkFlow, BrinkFlowRequest, BrinkQueryInput, BrinkStoryAsset, DetectSummary, FlowSleep, Value,
+    BrinkFlowRequest, BrinkQueryInput, BrinkStoryAsset, DetectSummary, FlowSleep, Value,
 };
 
 use crate::doors::{Door, Switch, accent_color};
@@ -133,8 +138,8 @@ fn switch_detect_summary() -> DetectSummary {
     DetectSummary::from_bits(BTreeMap::from([("Switch".to_string(), true)]))
 }
 
-/// Ink mode only (`--doors-impl ink`): attach a dormant, one-shot ink flow to
-/// every freshly spawned locked-door entity. `doors::spawn_doors_from_layout`
+/// Ink mode only (`--doors-impl ink`): attach a dormant, reversible-latch ink
+/// flow to every freshly spawned locked-door entity. `doors::spawn_doors_from_layout`
 /// is unmodified and still runs for BOTH implementations (it also spawns the
 /// `Switch` entities, untouched by this port); this system only decorates
 /// the `Door` entities it produces.
@@ -153,7 +158,7 @@ pub fn attach_ink_door_flows(
             BrinkFlowRequest::<DoorsStory>::builder()
                 .story(story)
                 .build(),
-            FlowSleep::<DoorsStory>::once("should_open")
+            FlowSleep::<DoorsStory>::latch("should_open")
                 .dormant()
                 .with_detect(switch_detect_summary()),
         ));
@@ -177,21 +182,26 @@ pub fn is_switch_on(
 }
 
 /// The ink counterpart of `doors::door_sync_system`: mirrors each ink-mode
-/// door's [`BrinkFlow`] status into its [`Door::open`] + sprite color, at the
-/// same nanosecond-timed [`BehaviorTimings::doors`] slot the Rust baseline
-/// fills, so the HUD's `doors` line reports whichever impl is live.
+/// door's [`FlowSleep`] latch state into its [`Door::open`] + sprite color, at
+/// the same nanosecond-timed [`BehaviorTimings::doors`] slot the Rust
+/// baseline fills, so the HUD's `doors` line reports whichever impl is live.
 ///
-/// Reaching `StoryStatus::Ended` is a PERMANENT "open" signal
-/// (`WakeArming::Once`) — see the module docs for why this diverges from the
-/// Rust baseline's bidirectional (re-lockable) behavior.
+/// `Door::open` is derived from [`FlowSleep::latch_waiting_for`] (issue
+/// #1081's `WakeArming::Latch`), not from the flow's `StoryStatus` — the
+/// flow never ends (see `assets/doors.ink`'s `door_watch` loop), so `Ended`
+/// is no longer a signal at all here. `latch_waiting_for() == true` means
+/// the policy is watching for the switch to turn ON (the door is currently
+/// locked); `false` means it is watching for the switch to turn OFF (the
+/// door is currently open) — fully bidirectional, matching the Rust
+/// baseline (`doors::door_sync_system`'s `door.open = switches.any(|s| s.on)`).
 pub fn ink_door_sync_system(
-    mut doors: Query<(&mut Door, &mut Sprite, &BrinkFlow<DoorsStory>)>,
+    mut doors: Query<(&mut Door, &mut Sprite, &FlowSleep<DoorsStory>)>,
     mut timings: ResMut<BehaviorTimings>,
 ) {
     let start = Instant::now();
 
-    for (mut door, mut sprite, flow) in &mut doors {
-        let open = flow.inner.status() == StoryStatus::Ended;
+    for (mut door, mut sprite, sleep) in &mut doors {
+        let open = !sleep.latch_waiting_for();
         door.open = open;
         sprite.color = if open {
             let mut c = accent_color(door.switch_id);
@@ -245,7 +255,7 @@ mod tests {
     /// Spawn a door entity exactly the way [`attach_ink_door_flows`] decorates
     /// a real `spawn_doors_from_layout` door: `Door` + `Sprite` (the read
     /// seam requires one, matching `door_sync_system`'s own shape) + the
-    /// dormant, one-shot flow.
+    /// dormant, reversible-latch flow.
     fn spawn_door(app: &mut App, story: &Handle<BrinkStoryAsset>, switch_id: u8) -> Entity {
         app.world_mut()
             .spawn((
@@ -257,7 +267,7 @@ mod tests {
                 BrinkFlowRequest::<DoorsStory>::builder()
                     .story(story.clone())
                     .build(),
-                FlowSleep::<DoorsStory>::once("should_open")
+                FlowSleep::<DoorsStory>::latch("should_open")
                     .dormant()
                     .with_detect(switch_detect_summary()),
             ))
@@ -344,42 +354,36 @@ mod tests {
         let _ = switch;
     }
 
-    /// The documented divergence (MIGRATION.md): the Rust baseline
+    /// The G5 closure (issue #1081, `MIGRATION.md`): the Rust baseline
     /// (`door_sync_system`) is bidirectional — flipping the switch back off
-    /// RE-LOCKS the door. The ink port's `WakeArming::Once` semantics never
-    /// re-lock once opened. This test proves that's a deliberate, tested
-    /// simplification, not a silent bug.
+    /// RE-LOCKS the door. The `WakeArming::Latch`-based ink port now matches
+    /// it exactly, cycling through several full open/close rounds — where an
+    /// earlier `WakeArming::Once` version of this port had to accept a
+    /// documented divergence (never re-locking) instead.
     #[test]
-    fn ink_door_diverges_from_rust_baseline_on_relock() {
+    fn ink_door_matches_rust_baseline_on_relock() {
         let mut app = build_app();
         let story = build_doors_story(&mut app);
         let switch = spawn_switch(&mut app, 7, false);
         let door = spawn_door(&mut app, &story, 7);
+        pump(&mut app, 4); // fulfill; starts locked (switch off)
+        assert!(!app.world().get::<Door>(door).unwrap().open);
 
-        // Flip sequence: closed, closed, ON (opens), stays on, then back OFF.
-        let script = [false, false, true, true, true, false, false, false];
-        let mut rust_open = false;
-        for &on in &script {
+        // Several full cycles: on (opens) -> off (re-locks) -> on -> off ...
+        // — `door_sync_system`'s predicate is `switches.any(|s| s.on)`, so the
+        // Rust-baseline expectation at each step is simply the switch's own
+        // live value.
+        let script = [true, false, true, false, true, false];
+        for (i, &on) in script.iter().enumerate() {
             app.world_mut().get_mut::<Switch>(switch).unwrap().on = on;
-            app.update();
-            rust_open = on; // door_sync_system: door.open = switches.any(|s| s.on)
+            pump(&mut app, 8); // let the wake settle (dirty -> evaluate -> Woken -> Collect -> Done -> re-park)
+            let ink_open = app.world().get::<Door>(door).unwrap().open;
+            assert_eq!(
+                ink_open, on,
+                "step {i}: the ink door must track the switch bidirectionally, exactly like \
+                 the Rust door_sync_system baseline (switch on={on})"
+            );
         }
-        // Let the wake settle over a few more frames (dormant → Woken →
-        // Collect → Ended can straddle a frame boundary beyond the raw flip
-        // sequence above).
-        pump(&mut app, 6);
-
-        let ink_open = app.world().get::<Door>(door).unwrap().open;
-        assert!(ink_open, "the ink door opened once the switch went true");
-        assert!(
-            !rust_open,
-            "fixture sanity: the flip sequence ends with the switch off"
-        );
-        assert_ne!(
-            ink_open, rust_open,
-            "documented divergence: WakeArming::Once never re-locks an ink \
-             door once opened; the Rust door_sync_system baseline does"
-        );
     }
 
     /// Measure the `should_open` wake condition's per-evaluation cost — the

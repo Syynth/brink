@@ -11,6 +11,7 @@ categories.workspace = true
 
 [dependencies]
 brink-syntax = { workspace = true }
+brink-syntax-native = { workspace = true }
 brink-ir = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-format = { workspace = true }
@@ -21,8 +22,16 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-brink-compiler = { path = "../../brink-compiler" }
+# `test-util` (issue #2168): `extract.rs`'s tests compile inline ink source
+# directly, bypassing `brink_environment::compile(&Environment)` (#1306,
+# the production road) — gated the same way every such test target is.
+brink-compiler = { path = "../../brink-compiler", features = ["test-util"] }
 brink-runtime = { path = "../../brink-runtime" }
+# `stdlib_sources()` (issue #2318): the regression test for the std-mount /
+# `is_all_native` collision needs the SAME mounted stdlib text the editor
+# itself feeds `IdeSession::update_source` with — a hand-copied stand-in
+# would drift from the real preset the moment it changes.
+brink-environment = { workspace = true }
 insta.workspace = true
 serde_json.workspace = true
 

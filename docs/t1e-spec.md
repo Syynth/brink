@@ -103,6 +103,33 @@ An **optimizer, not a gatekeeper**: soundness never depends on it
 exclusivity it may hold the `make_mut` spine across a region. It can
 be incomplete and arrive later — backlog item, not in this milestone.
 
+## 5b. Ref-parameter argument checking is invariant — RULED 2026-08-01 (#1920/#1995)
+
+A `ref` slot both reads *and* writes through the caller's own storage
+cell, so `assignable`'s covariant widening (an `int` argument fits a
+`float` slot) is unsound there: `assignable(Float, Int)` is `true`,
+so `fn scale(ref x: float)` accepted an `int` cell and the callee
+wrote a `float` back through storage statically declared `int`. Ruled:
+`ref` parameter arguments are checked **invariantly** — the erased
+argument type must match the erased parameter type exactly
+(`infer::ty::ref_assignable`, row-insensitive for the same reason
+`assignable` is, issue #1680 step 2). By-value arguments keep the ordinary
+covariant `assignable` widening; only a `ref` slot needs the stricter
+twin. Applies uniformly to every by-ref call-checking site: the
+direct-call check (#1864), the UFCS-desugared receiver/argument check
+(#1881), the `#fn(target, args…)` partial-application binding site
+(`infer_fn_literal`, closed by #2001), which per §2 above is itself a
+by-ref *binding* site, and — closed by #2127 — the `-> knot(args)`
+divert-with-args site (`infer_target`), which is not a call expression
+at all but binds the target's `ref` params exactly like one.
+`infer_fn_literal` and `infer_target` both now run the same
+`ref_assignable` invariant check the direct-call/UFCS sites do, at
+their respective argument loops. By-value (non-`ref`) arguments at
+either of these two sites are **still deliberately left unchecked**:
+#2001 and #2127 each named that as new checking needing its own scope
+call, not an assumed yes, and declined to add it — a separate follow-up
+if ever wanted.
+
 ## 6. Diagnostics — PROPOSED
 
 From the next free code: non-durable projection root (reuse the E080

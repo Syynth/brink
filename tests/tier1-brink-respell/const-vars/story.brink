@@ -1,0 +1,7 @@
+var x = c
+
+const c = 5
+
+flow main() {
+  {x}
+}

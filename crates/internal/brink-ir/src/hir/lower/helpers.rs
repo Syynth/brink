@@ -31,15 +31,10 @@ pub fn lower_path(path: &ast::Path) -> Path {
     Path {
         segments,
         range: path.syntax().text_range(),
+        // ink has no `::` module-qualifying separator at all — always
+        // `false` (see `hir::Path::crosses_module_wall`'s doc).
+        crosses_module_wall: false,
     }
-}
-
-pub fn path_full_name(path: &Path) -> String {
-    path.segments
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(".")
 }
 
 pub fn lower_prefix_op(pe: &ast::PrefixExpr) -> Option<PrefixOp> {
@@ -92,7 +87,7 @@ pub fn expr_contains_call(expr: &Expr) -> bool {
     match expr {
         Expr::Call(..) => true,
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => expr_contains_call(inner),
-        Expr::Infix(lhs, _, rhs) => expr_contains_call(lhs) || expr_contains_call(rhs),
+        Expr::Infix(ie) => expr_contains_call(&ie.lhs) || expr_contains_call(&ie.rhs),
         Expr::String(s) => s
             .parts
             .iter()

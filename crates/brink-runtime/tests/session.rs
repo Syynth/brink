@@ -18,9 +18,9 @@ use std::path::Path;
 
 use brink_format::{ListValue, SaveState, Value};
 use brink_runtime::{
-    DotNetRng, EventKind, ExternalFnHandler, ExternalReplayMode, ExternalResult, FailReason, Line,
+    DotNetRng, EventKind, ExternalFnHandler, ExternalReplayMode, ExternalResult, FailReason,
     OutputPart, Program, ReplayOutcome, ReplayWarning, SESSION_JOURNAL_CAP, SessionError,
-    SessionJournal, StepOutcome, Story, StorySession, diff,
+    SessionJournal, Step, StepOutcome, Story, StorySession, diff,
 };
 
 /// Link a program from a tier `.ink` fixture path (relative to the repo),
@@ -42,7 +42,7 @@ const FUNCTION_STORY: &str = "tests/tier2/function/func-none/story.ink";
 
 /// Bounded run of a session to its first choice set (or terminal). Returns the
 /// collected text.
-fn run_to_pause(session: &mut StorySession<DotNetRng>) -> Vec<Line> {
+fn run_to_pause(session: &mut StorySession<DotNetRng>) -> Vec<Step> {
     session.continue_to_pause().unwrap()
 }
 
@@ -335,8 +335,8 @@ fn external_collection_survives_transcript_round_trip() {
         steps += 1;
         assert!(steps < 1000, "step budget");
         match session.advance_with(&handler).unwrap() {
-            StepOutcome::Line(l) if l.is_terminal() => break,
-            StepOutcome::Line(_) => {}
+            StepOutcome::Step(s) if s.is_terminal() => break,
+            StepOutcome::Step(_) => {}
             StepOutcome::AwaitingExternal => panic!("handler resolves inline"),
         }
     }
@@ -411,8 +411,8 @@ fn recorded_replay_does_not_reinvoke_live_does() {
         steps += 1;
         assert!(steps < 1000, "step budget");
         match session.advance_with(&record_handler).unwrap() {
-            StepOutcome::Line(l) if l.is_terminal() => break,
-            StepOutcome::Line(_) => {}
+            StepOutcome::Step(s) if s.is_terminal() => break,
+            StepOutcome::Step(_) => {}
             StepOutcome::AwaitingExternal => panic!("handler resolves inline"),
         }
     }
@@ -644,7 +644,7 @@ fn mutation_mid_turn_is_rejected() {
         StorySession::<DotNetRng>::new(Story::new(std::sync::Arc::clone(&program), tables), None);
     // Advance exactly one step: the story is now Active (mid-turn), not paused.
     match session.advance().unwrap() {
-        StepOutcome::Line(l) => assert!(!l.is_terminal(), "expected non-terminal first line"),
+        StepOutcome::Step(s) => assert!(!s.is_terminal(), "expected non-terminal first line"),
         StepOutcome::AwaitingExternal => panic!("no external here"),
     }
     // A mid-turn mutation is rejected.
@@ -811,8 +811,8 @@ fn live_replay_parks_on_pending_external() {
         steps += 1;
         assert!(steps < 1000);
         match session.advance_with(&rec).unwrap() {
-            StepOutcome::Line(l) if l.is_terminal() => break,
-            StepOutcome::Line(_) => {}
+            StepOutcome::Step(s) if s.is_terminal() => break,
+            StepOutcome::Step(_) => {}
             StepOutcome::AwaitingExternal => panic!(),
         }
     }
@@ -919,7 +919,7 @@ fn live_replay_resumes_tail_after_external_between_choices() {
     );
     let lines = session.continue_to_pause().unwrap();
     assert!(
-        matches!(lines.last(), Some(Line::Choices { .. })),
+        matches!(lines.last(), Some(Step::Choices(_))),
         "expected first choice set, got {lines:?}",
     );
     session.choose(0).unwrap(); // "one" → probe(1) fires next turn
@@ -928,8 +928,8 @@ fn live_replay_resumes_tail_after_external_between_choices() {
         steps += 1;
         assert!(steps < 1000, "step budget");
         match session.advance_with(&record).unwrap() {
-            StepOutcome::Line(l) if l.is_terminal() => break,
-            StepOutcome::Line(_) => {}
+            StepOutcome::Step(s) if s.is_terminal() => break,
+            StepOutcome::Step(_) => {}
             StepOutcome::AwaitingExternal => panic!("recording handler resolves inline"),
         }
     }

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use rowan::TextRange;
 
 use super::{Scope, SymbolKind};
+use crate::TypeExpr;
 use crate::host_manifest::DocBlock;
 
 /// Per-file symbol collection for cross-file resolution by the analyzer.
@@ -69,6 +70,15 @@ pub struct LocalSymbol {
     pub kind: super::SymbolKind,
     /// For params: ref/divert metadata.
     pub param_detail: Option<super::ParamInfo>,
+    /// The TM-2 (docs/typed-mode-spec.md §3) inline `: type` annotation on
+    /// this local's own declaration, if any — a param's `name: type` or a
+    /// `~ temp name: type = expr`'s ascription (issue #530: the per-file
+    /// locals path `brink_analyzer::local_signature` reads to serve a
+    /// `Param`/`Temp` `DefinitionId` a real signature instead of the
+    /// `None` `signature_query` returns for one). `None` for a local with
+    /// no annotation grammar at all (a `for`-loop binding, an `as` binding)
+    /// as well as an unannotated param/temp.
+    pub annotation: Option<TypeExpr>,
 }
 
 /// An unresolved reference that needs cross-file resolution.
@@ -81,6 +91,15 @@ pub struct UnresolvedRef {
     pub scope: Scope,
     /// For `RefKind::Function` calls, the number of arguments at the call site.
     pub arg_count: Option<usize>,
+    /// `true` only for a `RefKind::Divert` whose source path crossed a
+    /// module wall (`hir::Path::crosses_module_wall`, issue #2287) —
+    /// `-> barter::haggle`, never ink's own dotted `-> knot.stitch`
+    /// addressing, which reuses the same joined `path` string but never sets
+    /// this. When `true`, `path` is joined with `::` (not `.`) so the
+    /// qualifier prefix and bare target name split back apart cleanly
+    /// (`resolve::lookup_qualified_divert`). Always `false` for every other
+    /// `RefKind` — module-qualified access is a divert-only concern today.
+    pub module_qualified: bool,
 }
 
 /// What kind of reference this is, for diagnostic context.
@@ -94,4 +113,17 @@ pub enum RefKind {
     /// TM-4b, docs/typed-mode-spec.md §6) — resolved against declared
     /// `SymbolKind::Struct` symbols.
     Struct,
+    /// A TM-2 type annotation's bare nominal leaf name (docs/typed-mode-spec.md
+    /// §3) — a struct field's declared type, or a `VAR`/`CONST`/`temp`
+    /// annotation (issue #2249). Resolved against declared
+    /// `SymbolKind::Struct` symbols exactly like `RefKind::Struct`, but
+    /// unlike that kind, **not every occurrence names a struct**: `int`,
+    /// `float`, `List`, … are equally legal `Named` leaves that were never
+    /// meant to resolve here at all (`brink_ir::TypeExpr::Named`'s own doc).
+    /// A miss is therefore never diagnosed by this reference's own
+    /// resolution — `brink_analyzer::annotations::check` (`E061`) is the
+    /// annotation-content diagnostic, run separately and project-flat (not
+    /// referrer-scoped; issue #2249 leaves that asymmetry unresolved, same
+    /// posture as issue #2233's `lookup_unique_by_name`).
+    Type,
 }

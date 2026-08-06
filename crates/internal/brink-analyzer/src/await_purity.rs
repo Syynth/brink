@@ -164,9 +164,9 @@ fn collect_call_callees(
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => {
             collect_call_callees(inner, by_range, out);
         }
-        Expr::Infix(l, _, r) => {
-            collect_call_callees(l, by_range, out);
-            collect_call_callees(r, by_range, out);
+        Expr::Infix(ie) => {
+            collect_call_callees(&ie.lhs, by_range, out);
+            collect_call_callees(&ie.rhs, by_range, out);
         }
         Expr::Index(idx) => {
             collect_call_callees(&idx.base, by_range, out);
@@ -197,8 +197,12 @@ fn collect_call_callees(
                 collect_call_callees(v, by_range, out);
             }
         }
-        // A `FnLiteral` (lambda) is *not* recursed: its body is not invoked
-        // during condition re-evaluation, only the surrounding expression is.
+        // Neither fn-value shape is recursed: a `FnLiteral`'s target and a
+        // lambda's body (issue #1685) are not invoked during condition
+        // re-evaluation, only the surrounding expression is. `Fragment`
+        // (issue #1839) is never a syntactic part of an `await` condition
+        // either — block capture only ever appears inside a `Stmt::Content`
+        // a claim/dispatch rewrite produces.
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -208,7 +212,9 @@ fn collect_call_callees(
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_)
         | Expr::FnLiteral(_)
-        | Expr::RefArg(_) => {}
+        | Expr::Lambda(_)
+        | Expr::RefArg(_)
+        | Expr::Fragment(_) => {}
     }
 }
 
@@ -249,9 +255,9 @@ impl Ctx<'_> {
                 }
             }
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => self.walk_expr(inner, effectful),
-            Expr::Infix(l, _, r) => {
-                self.walk_expr(l, effectful);
-                self.walk_expr(r, effectful);
+            Expr::Infix(ie) => {
+                self.walk_expr(&ie.lhs, effectful);
+                self.walk_expr(&ie.rhs, effectful);
             }
             Expr::Index(idx) => {
                 self.walk_expr(&idx.base, effectful);
@@ -286,9 +292,10 @@ impl Ctx<'_> {
             }
             // Leaves and other expression kinds carry no call atoms of their
             // own (a bare `Path` — including a fn-value reference used as a
-            // dynamic condition — is read-only by construction, spec §3). A
-            // `FnLiteral` (lambda) is deliberately *not* recursed: its body is
-            // not invoked during condition re-evaluation.
+            // dynamic condition — is read-only by construction, spec §3).
+            // Neither fn-value shape is recursed: a `FnLiteral`'s target
+            // and a lambda's body (issue #1685) are not invoked during
+            // condition re-evaluation.
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Bool(_)
@@ -298,7 +305,11 @@ impl Ctx<'_> {
             | Expr::DivertTarget(_)
             | Expr::ListLiteral(_)
             | Expr::FnLiteral(_)
-            | Expr::RefArg(_) => {}
+            | Expr::Lambda(_)
+            | Expr::RefArg(_)
+            // Internal-only (issue #1839) — see `collect_call_callees`'s
+            // identical arm above for why this can never appear here.
+            | Expr::Fragment(_) => {}
         }
     }
 
@@ -332,7 +343,9 @@ impl Ctx<'_> {
             return false;
         };
         if let Some(row) = self.rows.get(&def) {
-            return row.opaque || !row.writes.is_empty() || !row.calls.is_empty();
+            // `is_pessimal`, not the intrinsic `opaque` bit: a row still
+            // carrying a §6.1 row variable (issue #1680) is unbounded too.
+            return row.is_pessimal() || !row.writes.is_empty() || !row.calls.is_empty();
         }
         // Not an inferable knot/stitch — is it a declared EXTERNAL?
         matches!(
@@ -377,7 +390,7 @@ fn collect_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<AwaitSite<'a>>) {
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_block(branch, out);
+                collect_block(&branch.body, out);
             }
         }
         Stmt::Content(_)
@@ -388,7 +401,12 @@ fn collect_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<AwaitSite<'a>>) {
         | Stmt::Assignment(_)
         | Stmt::Return(_)
         | Stmt::ExprStmt(_)
-        | Stmt::EndOfLine => {}
+        | Stmt::EndOfLine
+        // Issue #2108: `AttachElement`'s call expression can't embed an
+        // `await` (a statement-level construct, never an expression), and
+        // `EndElementRun` carries no expression at all.
+        | Stmt::AttachElement(_)
+        | Stmt::EndElementRun => {}
     }
 }
 

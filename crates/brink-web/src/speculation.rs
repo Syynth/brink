@@ -103,11 +103,13 @@ impl WebSpeculation {
         self.merge_report(&tiered);
 
         let resp = match outcome {
-            brink_runtime::SpeculationStep::Line(line) => line_to_js(line),
+            brink_runtime::SpeculationStep::Step(step) => line_to_js(step),
             brink_runtime::SpeculationStep::AwaitingExternal => LineJs {
                 r#type: "awaiting_external",
                 text: String::new(),
                 tags: Vec::new(),
+                block_id: None,
+                element: None,
                 choices: None,
                 name: speculation.pending_external_name().map(str::to_owned),
             },
@@ -183,7 +185,7 @@ impl WebSpeculation {
         );
         let mut speculation = self.speculation.borrow_mut();
         let outcome = speculation
-            .eval_function(name, &ink_args, &tiered)
+            .eval_function(name, &ink_args, self.budget, &tiered)
             .map_err(|e| JsError::new(&format!("eval_function error: {e}")))?;
         self.merge_report(&tiered);
         let resp = self.function_eval_to_js(outcome, &speculation);
@@ -211,7 +213,7 @@ impl WebSpeculation {
         );
         let mut speculation = self.speculation.borrow_mut();
         let outcome = speculation
-            .resume_function_eval(&tiered)
+            .resume_function_eval(self.budget, &tiered)
             .map_err(|e| JsError::new(&format!("resume_function_eval error: {e}")))?;
         self.merge_report(&tiered);
         let resp = self.function_eval_to_js(outcome, &speculation);

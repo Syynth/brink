@@ -89,11 +89,12 @@ const POINT_SRC: &str = "STRUCT Point = #{x: float, y: float}\n";
 // `eval_const_expr` (`brink-ir::lir::lower::decls`, the compile-time
 // constant-folding path `VAR`/`CONST` defaults go through) silently compiled
 // a struct/array/map literal default to `Value::Null` with no diagnostic.
-// Fixed by #673: a struct literal used as a declaration default is now a
-// real, non-suppressible compile error (`E075`) instead of a silent drop —
-// so the fixtures below keep this shape not because it's still required to
-// dodge a bug, but because it's still the natural way to give a struct-typed
-// global a real starting value before constructing it.
+// Fixed by #673 (a real, non-suppressible `E075` instead of a silent drop),
+// then by #1530, which folds a well-formed construction literal into
+// `lir::ConstValue::Record` so it *is* a legal declaration default — see
+// `brink-ir/tests/lir_lowering/collection_struct_literal_declaration_
+// defaults.rs`. The fixtures below keep the placeholder shape not because
+// it's required, but because construct-then-mutate is what they exercise.
 
 #[test]
 fn construction_read_and_write_run_end_to_end() {
@@ -109,8 +110,8 @@ fn construction_read_and_write_run_end_to_end() {
 
 #[test]
 fn struct_shapes_table_is_populated_and_ordered_by_declaration() {
-    // #673: a struct construction literal is no longer legal as a `VAR`
-    // declaration default (a real E075 now, not a silent `Value::Null`) —
+    // Since #1530, a well-formed construction literal IS a legal `VAR`
+    // declaration default (it folds into `lir::ConstValue::Record`) —
     // `build_shape_table` populates every declared `STRUCT` unconditionally
     // from the declarations themselves (`hir_file.structs`), independent of
     // any construction site, so this test never needed one; `A` is
@@ -166,9 +167,19 @@ fn strict_and_gradual_produce_equivalent_output_for_well_formed_program() {
     // equivalent observable semantics — even though strict emits static
     // `RecordGet`/`RecordSet` offset ops here (the VAR is struct-typed) and
     // gradual emits the by-name `RecordGetDyn`/`RecordSetDyn` forms.
+    //
+    // Issue #1877 (review correction): `p`'s declaration default was
+    // originally a bare `0` — a genuine, previously-uncaught `Point` vs
+    // `int` mismatch against its own `: Point` annotation, incidental to
+    // what this test verifies (strict/gradual codegen equivalence). Before
+    // #1877, strict mode never checked a VAR's initializer against its own
+    // annotation at all. Fixed to a well-typed `Point#{...}` default — the
+    // very next statement overwrites it before any read, so the observable
+    // behavior (and the `RecordGet`/`RecordSet` vs `RecordGetDyn`/
+    // `RecordSetDyn` codegen split this test exists to prove) is unchanged.
     let src = format!(
-        "{POINT_SRC}VAR p: Point = 0\n~ p = Point#{{x: 1.0, y: 2.0}}\n~ p.y = 5.0\n\
-        {{p.x}} {{p.y}}\n-> DONE\n"
+        "{POINT_SRC}VAR p: Point = Point#{{x: 0.0, y: 0.0}}\n~ p = Point#{{x: 1.0, y: 2.0}}\n\
+        ~ p.y = 5.0\n{{p.x}} {{p.y}}\n-> DONE\n"
     );
     let gradual = compile_mem(&src, Dialect::Brink, TypePolicy::Gradual).unwrap();
     let strict = compile_mem(&src, Dialect::Brink, TypePolicy::Strict).unwrap();

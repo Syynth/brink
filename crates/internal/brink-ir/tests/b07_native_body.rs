@@ -1,0 +1,465 @@
+//! B0.7 exit-criterion tests: native `.brink` prose-dialect **body**
+//! lowering (`docs/b0-sequencing.md` §B0.7, issue #1176).
+//!
+//! Lives as an integration test for the same reason `b06_native_declarations.rs`
+//! does (see that file's module doc): admission checking needs
+//! `brink-analyzer`, a dev-dependency that itself depends on `brink-ir`, so
+//! an in-`lib` unit test would produce two non-interchangeable `brink_ir`
+//! instances.
+//!
+//! # The gate, honestly
+//!
+//! The flagship "respelled-differential episode test" the B0.7 slice spec
+//! asks for needs a native CST → HIR → LIR → codegen → runtime path.
+//! `crates/brink-compiler/Cargo.toml` does not depend on
+//! `brink-syntax-native` at all — the native front end is not wired into
+//! the compiler driver (that wiring is its own slice; grepped to confirm
+//! before writing this file). So the episode-level differential is
+//! **blocked**, not attempted here. What this file *does* prove, per the
+//! B0.7 spec's own fallback instruction ("build the HIR-differential gate,
+//! and clearly report... episode-level differential is blocked"):
+//!
+//! 1. `admission_clean_for_a_body_exercising_every_construct_group` — a
+//!    single fixture exercising every construct group B0.7 owns (content/
+//!    glue/interpolation/tags, conditional, sequence, choice set/fallback/
+//!    splice, dissolved gather, diverts/tunnels/labels, return/tunnel-
+//!    redirect) lowers with zero diagnostics AND passes the B0.3 admission
+//!    validator with zero diagnostics.
+//! 2. `cross_frontend_choice_shape_matches_ink` /
+//!    `cross_frontend_conditional_shape_matches_ink` — true differential
+//!    tests: the same semantic content, authored once in ink and once in
+//!    its native respelling, lowered through each frontend's own `lower_*`
+//!    entry point, produces the same *shape* (variant sequence, sticky/
+//!    once flags, branch counts, condition presence) modulo provenance
+//!    (`Provenance`/`ptr`/`container_id`/`gather_id` are frontend-specific
+//!    or pipeline-stamped-later, so they're excluded from the comparison,
+//!    not because they don't matter but because they're not this test's
+//!    job — `docs/hir-admission-contract.md` §1.3's "no dialect tag on any
+//!    HIR node").
+//! 3. `fogg_passage_exhibit_lowers_and_is_admission_clean` — the charter's
+//!    own named exhibit (`tests/tier1-brink-respell/exhibit-fogg-passage/story.brink`)
+//!    parses, lowers, and passes admission with zero diagnostics.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use brink_ir::hir::lower_native;
+use brink_ir::{FileId, Stmt};
+
+fn lower_native_fixture(
+    src: &str,
+) -> (
+    brink_ir::HirFile,
+    brink_ir::SymbolManifest,
+    Vec<brink_ir::Diagnostic>,
+) {
+    let parse = brink_syntax_native::parse(src);
+    assert!(
+        parse.errors().is_empty(),
+        "fixture must parse cleanly: {:?}",
+        parse.errors()
+    );
+    let tree = parse.tree();
+    lower_native::lower(FileId(0), &tree)
+}
+
+/// A single, real-shaped `flow` body exercising every B0.7 construct group.
+const RICH_BODY_FIXTURE: &str = "\
+flow start() {
+  -> travel
+}
+
+flow travel() {
+  We set out. <> #mood: hopeful
+  {?
+    * {if true} (rich) The scenic route. -> arrived
+    + Stay on the highway.
+    <- detour()
+    else { Wing it. }
+  }
+  We continue on.
+  (checkpoint)
+  Reconverged here.
+  {if true {
+    All is well.
+  } else {
+    Something's wrong.
+  }}
+  {~ A passing bird. | A gust of wind.}
+  -> onward ->
+  return -> travel
+}
+
+flow detour() {
+  {?
+    * A detour choice.
+  }
+}
+
+flow onward() {
+  return
+}
+";
+
+#[test]
+fn admission_clean_for_a_body_exercising_every_construct_group() {
+    let (hir, manifest, diags) = lower_native_fixture(RICH_BODY_FIXTURE);
+    assert!(
+        diags.is_empty(),
+        "unexpected lowering diagnostics: {diags:?}"
+    );
+
+    let file_len = rowan::TextSize::of(RICH_BODY_FIXTURE);
+    let admission_diags = brink_analyzer::validate_admission(FileId(0), &hir, &manifest, file_len);
+    assert!(
+        admission_diags.is_empty(),
+        "native body HIR must pass B0.3 admission with zero diagnostics: {admission_diags:?}"
+    );
+}
+
+#[test]
+fn fogg_passage_exhibit_lowers_and_is_admission_clean() {
+    let src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tests/tier1-brink-respell/exhibit-fogg-passage/story.brink"
+    ))
+    .expect("exhibit-fogg-passage/story.brink must exist");
+
+    let (hir, manifest, diags) = lower_native_fixture(&src);
+    // The fixture's opening flow is named `main` (the ruled 2026-07-21
+    // story-entry convention, `docs/decision-log.md`, #1106 G-batch) — no
+    // top-level divert is written at all, so this fixture lowers with zero
+    // diagnostics: the three flow bodies, the choice point, the dissolved
+    // gather, and the `{if}`/`else` conditional are all clean.
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let file_len = rowan::TextSize::of(src.as_str());
+    let admission_diags = brink_analyzer::validate_admission(FileId(0), &hir, &manifest, file_len);
+    assert!(
+        admission_diags.is_empty(),
+        "the Fogg passage exhibit must be admission-clean: {admission_diags:?}"
+    );
+
+    // A structural sanity check on the exhibit's own centerpiece: the
+    // dissolved gather. `main`'s body is `[Content, ChoiceSet]` (no
+    // sibling after the choice point) with two choices, each diverting out
+    // — the flagship shape the charter names for this exhibit.
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main knot");
+    let choice_set = main
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs.as_ref()),
+            _ => None,
+        })
+        .expect("main must contain a ChoiceSet");
+    assert_eq!(choice_set.choices.len(), 2);
+
+    // The `main`-flow entry convention itself: `root_content` is the
+    // synthesized divert into `main`.
+    assert_eq!(hir.root_content.stmts.len(), 1);
+    assert!(matches!(hir.root_content.stmts[0], Stmt::Divert(_)));
+}
+
+// ─── Cross-frontend structural differential ───────────────────────────
+//
+// The same semantic content, authored once in ink and once in its native
+// respelling. Compares *shape* (see the module doc's point 2) — this is
+// the honest substitute for a full episode-identity check while the
+// native front end isn't wired into the compiler driver.
+
+fn stmt_kind(s: &Stmt) -> &'static str {
+    match s {
+        Stmt::Content(_) => "Content",
+        Stmt::Divert(_) => "Divert",
+        Stmt::TunnelCall(_) => "TunnelCall",
+        Stmt::ThreadStart(_) => "ThreadStart",
+        Stmt::TempDecl(_) => "TempDecl",
+        Stmt::Assignment(_) => "Assignment",
+        Stmt::Return(_) => "Return",
+        Stmt::ChoiceSet(_) => "ChoiceSet",
+        Stmt::LabeledBlock(_) => "LabeledBlock",
+        Stmt::Conditional(_) => "Conditional",
+        Stmt::Sequence(_) => "Sequence",
+        Stmt::ExprStmt(_) => "ExprStmt",
+        Stmt::EndOfLine => "EndOfLine",
+        Stmt::LogicBlock(_) => "LogicBlock",
+        Stmt::Await(_) => "Await",
+        Stmt::AttachElement(_) => "AttachElement",
+        Stmt::EndElementRun => "EndElementRun",
+    }
+}
+
+fn stmt_shape(stmts: &[Stmt]) -> Vec<&'static str> {
+    stmts.iter().map(stmt_kind).collect()
+}
+
+fn lower_ink_knot(src: &str) -> brink_ir::Knot {
+    use brink_syntax::ast::AstNode as _;
+
+    let parse = brink_syntax::parse(src);
+    assert!(
+        parse.errors().is_empty(),
+        "ink fixture must parse cleanly: {:?}",
+        parse.errors()
+    );
+    let tree = parse.tree();
+    let knot_ast = tree
+        .syntax()
+        .children()
+        .find_map(brink_syntax::ast::KnotDef::cast)
+        .expect("ink fixture must contain one knot");
+    let (knot, diags) = brink_ir::hir::lower::lower_single_knot(FileId(0), &knot_ast);
+    assert!(
+        diags.is_empty(),
+        "unexpected ink lowering diagnostics: {diags:?}"
+    );
+    knot.expect("knot must lower")
+}
+
+#[test]
+fn cross_frontend_choice_shape_matches_ink() {
+    let ink_src = "\
+== choices ==
+Pick one.
+* Once choice.
++ Sticky choice.
+* -> elsewhere
+- (again) Reconverged.
+-> END
+
+== elsewhere ==
+Elsewhere.
+-> END
+";
+    let native_src = "\
+flow choices() {
+  Pick one.
+  {?
+    * Once choice.
+    + Sticky choice.
+    else { -> elsewhere }
+  }
+  (again) Reconverged.
+}
+
+flow elsewhere() {
+  Elsewhere.
+}
+";
+    let ink_knot = lower_ink_knot(ink_src);
+    let (native_hir, _m, diags) = lower_native_fixture(native_src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let native_knot = native_hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "choices")
+        .expect("choices knot");
+
+    // Both share the [Content, EndOfLine, ChoiceSet] prefix. Native then
+    // carries a trailing implicit `-> DONE` (charter §15: a flow that falls
+    // off the end ends implicitly) where ink instead expresses termination
+    // as `-> END` *inside* the gather continuation — an expected
+    // cross-frontend divergence introduced by the native implicit-end
+    // ruling, not a shape bug. Strip that one trailing terminator and the
+    // top-level shapes match exactly.
+    let mut native_shape = stmt_shape(&native_knot.body.stmts);
+    assert_eq!(
+        native_shape.last(),
+        Some(&"Divert"),
+        "native flow body must gain a trailing implicit `-> DONE`: {native_shape:?}"
+    );
+    native_shape.pop();
+    assert_eq!(stmt_shape(&ink_knot.body.stmts), native_shape);
+
+    let ink_cs = ink_knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs.as_ref()),
+            _ => None,
+        })
+        .expect("ink ChoiceSet");
+    let native_cs = native_knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::ChoiceSet(cs) => Some(cs.as_ref()),
+            _ => None,
+        })
+        .expect("native ChoiceSet");
+
+    // The third choice is a FALLBACK on both sides, reached through different
+    // surfaces: ink's implicit-fallback idiom (`* -> x`, a choice with no
+    // display text that only diverts → is_fallback: true) corresponds to
+    // native's explicit `else { -> x }` (also is_fallback: true). Native does
+    // not overload bare `* -> x` as fallback — it uses `else`. The is_fallback
+    // assertion below guards this correspondence (#1176 review).
+    assert_eq!(ink_cs.choices.len(), native_cs.choices.len());
+    for (ink_c, native_c) in ink_cs.choices.iter().zip(native_cs.choices.iter()) {
+        assert_eq!(
+            ink_c.is_sticky, native_c.is_sticky,
+            "sticky/once flag must match: ink={ink_c:?} native={native_c:?}"
+        );
+        assert_eq!(
+            ink_c.is_fallback, native_c.is_fallback,
+            "fallback flag must match: ink={ink_c:?} native={native_c:?}"
+        );
+    }
+    // Both gathers are labeled "again" and attach directly to the
+    // continuation (not a nested LabeledBlock) on both frontends.
+    assert_eq!(
+        ink_cs.continuation.label.as_ref().map(|n| n.text.as_str()),
+        Some("again")
+    );
+    assert_eq!(
+        native_cs
+            .continuation
+            .label
+            .as_ref()
+            .map(|n| n.text.as_str()),
+        Some("again")
+    );
+}
+
+/// Cross-frontend finding (see `cond::lower_conditional`'s doc comment): a
+/// simple native `{if cond {…} else {…}}` must compare against ink's own
+/// natural spelling of the same shape — `{cond: body - else: body2}`
+/// (`ConditionalWithExpr` + a branchless first body) — which is what a
+/// real writer authors for "if X then A else B" and what B0.8b's future
+/// mechanical converter would actually emit. That ink shape lowers to
+/// `CondKind::InitialCondition`, not `IfElse` (`IfElse` is reserved for
+/// ink's independently-chained 3+-condition form — a *flat* multi-branch
+/// shape native's own lowering never constructs, since a native `else if`
+/// chain lowers through nesting instead, not because the grammar lacks
+/// `else if`: #1258/#1261 (2026-07-22) added it, and it works; see the
+/// correction on `cond::lower_conditional`'s doc, issue #1951). This test
+/// is what caught the `InitialCondition`-vs-`IfElse` mapping and pinned it.
+#[test]
+fn cross_frontend_conditional_shape_matches_ink() {
+    let ink_src = "\
+== weather ==
+{ raining:
+    It is raining.
+- else:
+    It is dry.
+}
+-> END
+";
+    let native_src = "\
+var raining = true
+flow weather() {
+  {if raining {
+    It is raining.
+  } else {
+    It is dry.
+  }}
+}
+";
+    let ink_knot = lower_ink_knot(ink_src);
+    let (native_hir, _m, diags) = lower_native_fixture(native_src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let native_knot = native_hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "weather")
+        .expect("weather knot");
+
+    let ink_cond = ink_knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Conditional(c) => Some(c),
+            _ => None,
+        })
+        .expect("ink Conditional");
+    let native_cond = native_knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Conditional(c) => Some(c),
+            _ => None,
+        })
+        .expect("native Conditional");
+
+    assert_eq!(ink_cond.kind, brink_ir::CondKind::InitialCondition);
+    assert_eq!(native_cond.kind, brink_ir::CondKind::InitialCondition);
+    assert_eq!(ink_cond.branches.len(), 2);
+    assert_eq!(native_cond.branches.len(), 2);
+    assert!(ink_cond.branches[0].condition.is_some());
+    assert!(native_cond.branches[0].condition.is_some());
+    assert!(ink_cond.branches[1].condition.is_none());
+    assert!(native_cond.branches[1].condition.is_none());
+}
+
+/// Pins the nesting contract `lower_native::cond::lower_conditional`'s doc
+/// comment asserts for a flat native `else if` chain (issue #1951's 2026-08-01
+/// re-triage, "Hole 5"): a 3-armed `{if … } else if … { … } else { … }}`
+/// lowers to a `CondKind::InitialCondition` with exactly 2 branches, whose
+/// `else` branch's `Block` body contains exactly one further `Stmt`, itself
+/// a nested `Conditional` — never a flat 3-branch list and never
+/// `CondKind::IfElse` (that variant is reserved for ink's own independently-
+/// chained multi-condition form; see `cross_frontend_conditional_shape_matches_ink`
+/// above). Before this test, that nesting shape was asserted only in prose —
+/// `docs/ruling-ledger.md`'s "Native grammar supports flat `else if` chains"
+/// row recorded "'Lowers identically' holds by construction, with no
+/// dedicated lowering test."
+#[test]
+fn else_if_chain_lowers_to_nested_initial_condition() {
+    let native_src = "\
+var score = 2
+flow main() {
+  {if score == 1 { One. } else if score == 2 { Two. } else { Other. }}
+}
+";
+    let (native_hir, _m, diags) = lower_native_fixture(native_src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let knot = native_hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main knot");
+    let outer_cond = knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Conditional(c) => Some(c),
+            _ => None,
+        })
+        .expect("outer Conditional");
+
+    assert_eq!(outer_cond.kind, brink_ir::CondKind::InitialCondition);
+    assert_eq!(
+        outer_cond.branches.len(),
+        2,
+        "flat else-if chain must lower to a 2-branch nesting, not a flat 3-branch list"
+    );
+    assert!(outer_cond.branches[0].condition.is_some());
+    assert!(outer_cond.branches[1].condition.is_none());
+
+    // The `else` branch's body must contain exactly one further Stmt: a
+    // nested Conditional carrying the `else if`'s condition and the final
+    // `else`'s body as its own 2-branch InitialCondition.
+    let else_body_stmts = &outer_cond.branches[1].body.stmts;
+    assert_eq!(
+        else_body_stmts.len(),
+        1,
+        "else arm's body must contain exactly one nested Stmt::Conditional: {else_body_stmts:?}"
+    );
+    let inner_cond = match &else_body_stmts[0] {
+        Stmt::Conditional(c) => c,
+        other => panic!("expected a nested Stmt::Conditional, got {other:?}"),
+    };
+    assert_eq!(inner_cond.kind, brink_ir::CondKind::InitialCondition);
+    assert_eq!(inner_cond.branches.len(), 2);
+    assert!(inner_cond.branches[0].condition.is_some());
+    assert!(inner_cond.branches[1].condition.is_none());
+}

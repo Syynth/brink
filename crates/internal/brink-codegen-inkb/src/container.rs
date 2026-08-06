@@ -175,6 +175,15 @@ impl ContainerEmitter<'_> {
                 }
             }
 
+            lir::Stmt::AttachElement(expr) => {
+                self.emit_expr(expr, false);
+                self.emit(Opcode::AttachElement);
+            }
+
+            lir::Stmt::EndElementRun => {
+                self.emit(Opcode::EndElementRun);
+            }
+
             lir::Stmt::LogicContinue => {
                 // See `LogicBreak` above — identical reasoning, `continue`'s
                 // own jump target.

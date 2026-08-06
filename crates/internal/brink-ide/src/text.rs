@@ -1,3 +1,4 @@
+use brink_syntax::{SyntaxKind, SyntaxNode};
 use rowan::{TextRange, TextSize};
 
 /// Extract the identifier word surrounding `offset` in `source`.
@@ -93,7 +94,7 @@ pub fn builtin_hover_text(name: &str) -> Option<String> {
 
 /// Return hover markdown for a T1b stdlib slice 1 function
 /// (docs/t1b-surface-spec.md §5 — `len`/`keys`/`values`/`contains`/`push`/
-/// `insert`/`remove`), or `None` if `name` isn't one.
+/// `insert`/`remove`/`remove_at`), or `None` if `name` isn't one.
 ///
 /// Dialect-agnostic by design, like [`builtin_hover_text`]: hovering a name
 /// is informational even in a strict-ink file, where a resolved use of the
@@ -179,6 +180,27 @@ pub fn diff_to_edits(old: &str, new: &str) -> Vec<(TextRange, String)> {
     let len = u32::try_from(old.len()).unwrap_or(u32::MAX);
     let range = TextRange::new(TextSize::from(0), TextSize::from(len));
     vec![(range, new.to_owned())]
+}
+
+/// Byte offset of `node`'s own closing `)` token, or `None` if parse-error
+/// recovery left it out (an unterminated arg list at EOF or before a token
+/// the parser couldn't consume as `R_PAREN`).
+///
+/// Never assume a node's `text_range().end() - 1` is a `)` byte — that only
+/// holds when the parser actually found and consumed the paren; `Parser::
+/// expect` emits a diagnostic and leaves the node unclosed otherwise, so the
+/// node's range can end right after its last argument instead. Callers that
+/// splice source around a node's closing paren (creation-site and
+/// value-call quick-fix resolution) must re-locate the real `R_PAREN` token
+/// here rather than trusting the range arithmetic, or they silently fuse
+/// adjacent source text when the paren is missing.
+#[must_use]
+pub fn closing_paren_offset(node: &SyntaxNode) -> Option<usize> {
+    node.children_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::R_PAREN)
+        .last()
+        .map(|t| usize::from(t.text_range().start()))
 }
 
 /// Byte offset where a declaration's *ownership* starts: the start of the

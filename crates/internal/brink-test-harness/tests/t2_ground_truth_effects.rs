@@ -269,21 +269,17 @@ fn check_source(label: &str, source: &str) {
 /// per-case `#[test]` fn).
 #[test]
 fn tier1_brink_corpus_never_under_reports_effects() {
+    // Descent via the shared `brink_source_tree::Walk` (issue #1433) rather
+    // than a hand-written `read_dir` recursion, so this enumerator can't be
+    // the next one to forget the ignored-directory prune.
     fn collect_story_ink_dirs(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
         if dir.join("story.ink").is_file() {
             out.push(dir.to_path_buf());
         }
-        let mut subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-            .map(|e| e.path())
-            .collect();
-        subdirs.sort();
-        for sub in subdirs {
-            collect_story_ink_dirs(&sub, out);
+        for entry in brink_source_tree::Walk::new(dir).flatten() {
+            if entry.is_dir() && entry.path().join("story.ink").is_file() {
+                out.push(entry.into_path());
+            }
         }
     }
 
@@ -514,5 +510,34 @@ fn fn_value_indirect_call_ground_truth_checks_the_concrete_callee() {
          {total}\n-> END\n\n\
          === function apply(cb) ===\n~ return cb()\n\n\
          === function bar() ===\n~ total = total + 1\n~ return total\n",
+    );
+}
+
+/// Issue #1755 — the `#fn`-**creation**-site `ref` binding, the aliasing
+/// channel `docs/effects-spec.md` §6.1a enumerates as channel 5. `#fn(heal,
+/// player_hp)` binds `heal`'s `ref hp` parameter to the cell `player_hp` at
+/// creation, a grammar position distinct from a *call* site's `ref` argument
+/// (channel 4), and the write happens for real when the created value is
+/// later invoked. Attribution is the same construction-site rule this
+/// module's own doc states: the `PushVarPointer` for the bound cell is
+/// emitted inside `knot`'s bytecode at the `#fn` literal, so `knot` is the
+/// def the ground truth charges — and the def whose static row must
+/// therefore admit the write. Before #1755's fix `record_ref_param_writes`
+/// was never called from `infer_fn_literal`, so `knot`'s static row carried
+/// an empty `writes` set while this run wrote `player_hp` — precisely the
+/// both-rows-silently-agree-on-too-small under-report this harness exists to
+/// catch, and the same shape as #866's original ref-param regression one
+/// grammar position over.
+#[test]
+fn fn_creation_site_ref_binding_ground_truth() {
+    check_source(
+        "fn_creation_site_ref_binding",
+        "VAR player_hp = 10\n-> knot\n\n\
+         === knot ===\n\
+         ~ temp f = #fn(heal, player_hp)\n\
+         ~ temp x = f(5)\n\
+         {player_hp}\n-> END\n\n\
+         === function heal(ref hp, amount) ===\n\
+         ~ hp = hp + amount\n~ return hp\n",
     );
 }

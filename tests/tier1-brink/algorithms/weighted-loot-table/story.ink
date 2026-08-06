@@ -18,8 +18,8 @@
 // draw sequence too) — the same rationale pcg.ink's header documents.
 INCLUDE ../pcg-rng/pcg.ink
 
-// TYPES POLICY: gradual (default). `array<LootEntry>`, `array<int>`
-// (cumulative weights), `map<string, int>` (tally) — gradual inference
+// TYPES POLICY: gradual (default). `Array<LootEntry>`, `Array<int>`
+// (cumulative weights), `Map<string, int>` (tally) — gradual inference
 // resolves all of it without annotation ceremony.
 //
 // ERGONOMICS-FINDINGS:
@@ -38,7 +38,7 @@ INCLUDE ../pcg-rng/pcg.ink
 //   alternative (Vose's algorithm) and its own, different, friction
 //   profile. Two techniques for the same problem, two different
 //   friction shapes — worth reading both findings together.
-// - `remove(small_or_large, ...)`-style pop-from-array-as-stack is NOT
+// - `remove_at(small_or_large, ...)`-style pop-from-array-as-stack is NOT
 //   needed here (that's `alias-method`'s table-construction phase) —
 //   `weighted-loot-table` only needs a forward scan, which is the
 //   simpler of the two randomness-lane data-shape stories.

@@ -9,8 +9,8 @@
 //! the recognizer can match as `Plain` or `Template`.
 
 use super::types::{
-    Block, CondBranch, Conditional, Content, ContentPart, HirFile, Sequence, SequenceType, Stmt,
-    Tag,
+    Block, CondBranch, Conditional, Content, ContentPart, HirFile, Sequence, SequenceBranch,
+    SequenceType, Stmt, Tag,
 };
 
 // ─── Public entry point ─────────────────────────────────────────────
@@ -76,7 +76,7 @@ fn normalize_block(block: &mut Block) {
             }
             Stmt::Sequence(mut seq) => {
                 for branch in &mut seq.branches {
-                    normalize_block(branch);
+                    normalize_block(&mut branch.body);
                 }
                 new_stmts.push(Stmt::Sequence(seq));
             }
@@ -92,7 +92,7 @@ fn normalize_block(block: &mut Block) {
         match stmt {
             Stmt::Sequence(seq) => {
                 for branch in &mut seq.branches {
-                    normalize_block(branch);
+                    normalize_block(&mut branch.body);
                 }
             }
             Stmt::Conditional(cond) => {
@@ -134,12 +134,20 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
         ContentPart::InlineSequence(seq) => {
             let mut branches = Vec::with_capacity(seq.branches.len() + 1);
             for branch in &seq.branches {
-                let mut b = branch.clone();
+                let mut b = branch.body.clone();
                 splice_around(&mut b, &prefix, &suffix, tags, ptr);
                 if trailing_eol {
                     b.stmts.push(Stmt::EndOfLine);
                 }
-                branches.push(b);
+                // `splice_around` (suffix) and the EndOfLine push can both
+                // change the trailing stmt, so the cloned branch's `tail` may
+                // be stale — recompute it (harmless today, load-bearing at the
+                // S3 cutover). This pass runs on cloned HIR right before LIR.
+                b.recompute_tail();
+                branches.push(SequenceBranch {
+                    ptr: branch.ptr,
+                    body: b,
+                });
             }
 
             // `once` sequences exhaust their branches and then produce nothing.
@@ -158,7 +166,15 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     exhausted.stmts.push(Stmt::EndOfLine);
                 }
-                branches.push(exhausted);
+                exhausted.recompute_tail();
+                // Synthesized branch, not sourced from a real arm — the
+                // whole sequence's own span is the narrowest available
+                // fallback (matches the "no dedicated source node" posture
+                // documented on `SequenceBranch`).
+                branches.push(SequenceBranch {
+                    ptr: seq.ptr,
+                    body: exhausted,
+                });
                 // Replace `once` with `stopping` so the exhausted branch repeats.
                 (seq.kind & !SequenceType::ONCE) | SequenceType::STOPPING
             } else {
@@ -180,8 +196,15 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     body.stmts.push(Stmt::EndOfLine);
                 }
+                body.recompute_tail();
                 branches.push(CondBranch {
+                    ptr: branch.ptr,
+                    // B1b (issue #1475): a lifted inline `{if EXPR as n: …}`
+                    // keeps its binding — this rebuild is a body rewrite
+                    // (prefix/suffix splice), not a re-lowering, so dropping
+                    // it here would silently unbind the arm.
                     condition: branch.condition.clone(),
+                    binding: branch.binding.clone(),
                     body,
                     container_id: None,
                 });
@@ -198,8 +221,14 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 if trailing_eol {
                     else_body.stmts.push(Stmt::EndOfLine);
                 }
+                else_body.recompute_tail();
+                // Synthesized branch, not sourced from a real arm — falls
+                // back to the whole conditional's own span (see
+                // `SequenceBranch`'s doc for the same posture).
                 branches.push(CondBranch {
+                    ptr: cond.ptr,
                     condition: None,
+                    binding: None,
                     body: else_body,
                     container_id: None,
                 });
@@ -216,6 +245,39 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
 }
 
 // ─── Splice helper ──────────────────────────────────────────────────
+
+/// Append `extra` onto `parts`, merging into the last element when both the
+/// last element of `parts` and the next element of `extra` are `Text`
+/// (collapsing doubled whitespace at the seam, e.g. `"Hello "` + `" world"`
+/// → `"Hello world"`) — otherwise identical to `parts.extend_from_slice`.
+///
+/// Splicing prefix/branch/suffix content parts (below) used to leave them
+/// as separate adjacent `Text` entries — structurally fine, but it meant a
+/// spliced branch's recognizer pass (`lir::lower::recognize::try_recognize`,
+/// which only matches a *single* `Text` part as `Plain`, or an
+/// interpolation-bearing run as `Template`) could never match a spliced
+/// line, no matter how plain its text was. Every branch fell back to
+/// `EmitContent`, which still emits one line-table entry **per fragment**
+/// — the exact "runtime assembles text from parts, translators see shredded
+/// fragments" shape the 2026-03-15 ruling (issue #1667) retired. Merging
+/// here, at the one place every splice funnels through, is what actually
+/// lets the recognizer see one flat line and produce one `LineEntry` per
+/// branch — this pass already did the structural half of the ruling (branch
+/// lifting + splicing, added the same day as the ruling); merging was the
+/// missing half.
+fn extend_merging_text(parts: &mut Vec<ContentPart>, extra: &[ContentPart]) {
+    for part in extra {
+        if let (Some(ContentPart::Text(last)), ContentPart::Text(next)) = (parts.last_mut(), part) {
+            if last.ends_with(char::is_whitespace) && next.starts_with(char::is_whitespace) {
+                last.push_str(next.trim_start());
+            } else {
+                last.push_str(next);
+            }
+        } else {
+            parts.push(part.clone());
+        }
+    }
+}
 
 /// Splice prefix/suffix text around a branch block's content.
 ///
@@ -242,7 +304,7 @@ fn splice_around(
     // Empty block — create a new Content with prefix + suffix.
     if block.stmts.is_empty() {
         let mut parts = prefix.to_vec();
-        parts.extend_from_slice(suffix);
+        extend_merging_text(&mut parts, suffix);
         if !parts.is_empty() || !tags.is_empty() {
             block.stmts.push(Stmt::Content(Content {
                 ptr,
@@ -258,8 +320,9 @@ fn splice_around(
         && let Stmt::Content(ref mut c) = block.stmts[0]
     {
         let mut new_parts = prefix.to_vec();
-        new_parts.append(&mut c.parts);
-        new_parts.extend_from_slice(suffix);
+        let original = std::mem::take(&mut c.parts);
+        extend_merging_text(&mut new_parts, &original);
+        extend_merging_text(&mut new_parts, suffix);
         c.parts = new_parts;
         c.tags.extend_from_slice(tags);
         if c.ptr.is_none() {
@@ -282,7 +345,8 @@ fn splice_around(
         // Prepend prefix to first Content.
         if has_prefix && let Stmt::Content(ref mut c) = block.stmts[first] {
             let mut new_parts = prefix.to_vec();
-            new_parts.append(&mut c.parts);
+            let original = std::mem::take(&mut c.parts);
+            extend_merging_text(&mut new_parts, &original);
             c.parts = new_parts;
             c.tags.extend_from_slice(tags);
             if c.ptr.is_none() {
@@ -295,12 +359,12 @@ fn splice_around(
         }
         // Append suffix to last Content.
         if has_suffix && let Stmt::Content(ref mut c) = block.stmts[last] {
-            c.parts.extend_from_slice(suffix);
+            extend_merging_text(&mut c.parts, suffix);
         }
     } else {
         // No Content stmts at all — insert a new Content at position 0.
         let mut parts = prefix.to_vec();
-        parts.extend_from_slice(suffix);
+        extend_merging_text(&mut parts, suffix);
         if !parts.is_empty() || !tags.is_empty() {
             block.stmts.insert(
                 0,
@@ -370,9 +434,8 @@ mod tests {
             kind,
             branches: branches
                 .into_iter()
-                .map(|parts| Block {
-                    label: None,
-                    stmts: if parts.is_empty() {
+                .map(|parts| {
+                    let stmts = if parts.is_empty() {
                         Vec::new()
                     } else {
                         vec![Stmt::Content(Content {
@@ -380,8 +443,17 @@ mod tests {
                             parts,
                             tags: Vec::new(),
                         })]
-                    },
-                    container_id: None,
+                    };
+                    let tail = crate::tail_from_stmts(&stmts);
+                    SequenceBranch {
+                        ptr,
+                        body: Block {
+                            label: None,
+                            stmts,
+                            container_id: None,
+                            tail,
+                        },
+                    }
                 })
                 .collect(),
             container_id: None,
@@ -395,22 +467,29 @@ mod tests {
             kind: CondKind::InitialCondition,
             branches: branches
                 .into_iter()
-                .map(|(condition, parts)| CondBranch {
-                    condition,
-                    body: Block {
-                        label: None,
-                        stmts: if parts.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![Stmt::Content(Content {
-                                ptr: Some(ptr),
-                                parts,
-                                tags: Vec::new(),
-                            })]
+                .map(|(condition, parts)| {
+                    let stmts = if parts.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Stmt::Content(Content {
+                            ptr: Some(ptr),
+                            parts,
+                            tags: Vec::new(),
+                        })]
+                    };
+                    let tail = crate::tail_from_stmts(&stmts);
+                    CondBranch {
+                        ptr,
+                        condition,
+                        binding: None,
+                        body: Block {
+                            label: None,
+                            stmts,
+                            container_id: None,
+                            tail,
                         },
                         container_id: None,
-                    },
-                    container_id: None,
+                    }
                 })
                 .collect(),
         })
@@ -424,10 +503,12 @@ mod tests {
     }
 
     fn mk_block(stmts: Vec<Stmt>) -> Block {
+        let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
             stmts,
             container_id: None,
+            tail,
         }
     }
 
@@ -445,6 +526,11 @@ mod tests {
             imports: Vec::new(),
             visibility: Vec::new(),
             was_directives: Vec::new(),
+            allow_scopes: Vec::new(),
+            element_matches: Vec::new(),
+            cue_names: Vec::new(),
+            native: false,
+            claim_handlers: Vec::new(),
         }
     }
 
@@ -464,6 +550,64 @@ mod tests {
     }
 
     // ─── Tests ──────────────────────────────────────────────────────
+
+    /// Regression (S1 review F1): an inline-conditional branch whose body is
+    /// a bare divert carries `tail == Diverge` at construction. The lift
+    /// prepends surrounding text and appends a trailing `EndOfLine`, so the
+    /// lifted branch no longer ends in a terminator — its `tail` must flip to
+    /// `Unit`. `normalize.rs` runs on cloned HIR right before LIR, so a stale
+    /// `tail` here is the closest one to the eventual consumer.
+    #[test]
+    fn lifted_conditional_branch_with_divert_recomputes_tail() {
+        let divert_body = mk_block(vec![Stmt::Divert(Divert {
+            ptr: None,
+            target: DivertTarget {
+                path: DivertPath::End,
+                args: Vec::new(),
+            },
+        })]);
+        assert!(
+            matches!(divert_body.tail, Tail::Diverge(_)),
+            "precondition: a bare-divert body has a Diverge tail"
+        );
+        let inline_cond = ContentPart::InlineConditional(Conditional {
+            ptr: dummy_ptr(),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                ptr: dummy_ptr(),
+                condition: Some(Expr::Bool(true)),
+                binding: None,
+                body: divert_body,
+                container_id: None,
+            }],
+        });
+        // Surrounding text forces the prefix/else-synthesis path; the trailing
+        // EndOfLine drives the trailing-eol append inside the lift.
+        let content = mk_content(vec![text("A "), inline_cond]);
+        let mut hir = mk_hir(vec![Stmt::Content(content), Stmt::EndOfLine]);
+
+        normalize_file(&mut hir);
+
+        let cond = hir
+            .root_content
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Conditional(c) => Some(c),
+                _ => None,
+            })
+            .expect("inline conditional lifted to a Conditional stmt");
+        // Every lifted branch body's tail must match its stmts — no stale
+        // Diverge left behind after the EndOfLine append.
+        for branch in &cond.branches {
+            assert_eq!(
+                branch.body.tail,
+                crate::tail_from_stmts(&branch.body.stmts),
+                "lifted branch tail must match its stmts (not stale): {:?}",
+                branch.body
+            );
+        }
+    }
 
     #[test]
     fn simple_sequence_lift() {
@@ -488,19 +632,19 @@ mod tests {
         assert_eq!(seq.branches.len(), 2);
 
         // Branch 0: Content("It's a fine day.") + EndOfLine
-        assert_eq!(seq.branches[0].stmts.len(), 2);
-        let Stmt::Content(c0) = &seq.branches[0].stmts[0] else {
+        assert_eq!(seq.branches[0].body.stmts.len(), 2);
+        let Stmt::Content(c0) = &seq.branches[0].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(content_text(c0), "It's a fine day.");
-        assert!(matches!(seq.branches[0].stmts[1], Stmt::EndOfLine));
+        assert!(matches!(seq.branches[0].body.stmts[1], Stmt::EndOfLine));
 
         // Branch 1: Content("It's a good day.") + EndOfLine
-        let Stmt::Content(c1) = &seq.branches[1].stmts[0] else {
+        let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(content_text(c1), "It's a good day.");
-        assert!(matches!(seq.branches[1].stmts[1], Stmt::EndOfLine));
+        assert!(matches!(seq.branches[1].body.stmts[1], Stmt::EndOfLine));
     }
 
     #[test]
@@ -555,12 +699,12 @@ mod tests {
         };
 
         // Tags should be on the first content of each branch.
-        let Stmt::Content(c0) = &seq.branches[0].stmts[0] else {
+        let Stmt::Content(c0) = &seq.branches[0].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(c0.tags.len(), 1);
 
-        let Stmt::Content(c1) = &seq.branches[1].stmts[0] else {
+        let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(c1.tags.len(), 1);
@@ -584,7 +728,7 @@ mod tests {
             panic!("expected Sequence");
         };
         // No EndOfLine since there was no trailing EOL.
-        assert_eq!(seq.branches[0].stmts.len(), 1);
+        assert_eq!(seq.branches[0].body.stmts.len(), 1);
     }
 
     #[test]
@@ -606,11 +750,25 @@ mod tests {
         };
         assert_eq!(seq.branches.len(), 3);
 
-        // Branch 1 (empty) should still get "It's  fine".
-        let Stmt::Content(c1) = &seq.branches[1].stmts[0] else {
+        // Branch 1 (empty) should still get prefix+suffix, seam-collapsed to
+        // a single space — issue #1667: `extend_merging_text` now merges
+        // adjacent `Text` parts at every splice seam (prefix/branch/suffix)
+        // so the recognizer sees one flat `Text` part and can match `Plain`.
+        // Before that fix, "It's " + "" + " fine" stayed three separate
+        // parts (never recognized, always `EmitContent`); at runtime the
+        // unrecognized path's `Spring` opcodes collapsed the same double
+        // whitespace anyway, so this also matches actual rendered output,
+        // not just the new intermediate shape.
+        let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content in empty branch");
         };
-        assert_eq!(content_text(c1), "It's  fine");
+        assert_eq!(content_text(c1), "It's fine");
+        assert_eq!(
+            c1.parts.len(),
+            1,
+            "prefix+suffix should merge into a single Text part so the \
+             recognizer can match Plain"
+        );
     }
 
     #[test]
@@ -641,6 +799,7 @@ mod tests {
             is_fallback: false,
             label: None,
             condition: None,
+            binding: None,
             start_content: Some(mk_content(vec![text("Pick")])),
             bracket_content: None,
             inner_content: None,
@@ -676,7 +835,9 @@ mod tests {
             ptr: dummy_ptr(),
             kind: CondKind::IfElse,
             branches: vec![CondBranch {
+                ptr: dummy_ptr(),
                 condition: Some(Expr::Bool(true)),
+                binding: None,
                 body: mk_block(vec![Stmt::Content(body_content), Stmt::EndOfLine]),
                 container_id: None,
             }],

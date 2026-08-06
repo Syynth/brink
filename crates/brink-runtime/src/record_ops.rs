@@ -270,6 +270,7 @@ mod tests {
     use super::*;
     use crate::output::OutputBuffer;
     use crate::program::{LinkedContainer, StructShapeEntry};
+    use crate::story::PendingTerminal;
     use brink_format::{CountingFlags, DefinitionId, DefinitionTag};
     use std::collections::HashMap;
 
@@ -284,8 +285,11 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: crate::story::ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
+            next_block_id: 0,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 

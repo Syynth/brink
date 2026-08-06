@@ -438,6 +438,7 @@ mod tests {
     #[expect(clippy::too_many_lines, reason = "test fixture: a manifest literal")]
     fn manifest() -> HostManifest {
         HostManifest {
+            markup: Vec::new(),
             externals: vec![
                 ManifestExternal {
                     name: "set_tint".into(),
@@ -751,6 +752,7 @@ mod tests {
         let mut session = IdeSession::new();
         session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![],
             types: vec![SemanticTypeDef {
                 name: "actor_id".to_string(),
@@ -803,6 +805,7 @@ mod tests {
         let mut session = IdeSession::new();
         session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![],
             types: vec![SemanticTypeDef {
                 name: "actor_id".to_string(),

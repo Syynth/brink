@@ -1,7 +1,9 @@
+use brink_format::DefinitionId;
+
 use crate::hir;
 use crate::symbols::SymbolKind;
 
-use super::context::LowerCtx;
+use super::context::{self, LowerCtx};
 use super::decls::list_def_to_global_var;
 use super::lir;
 
@@ -79,10 +81,17 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // PrefixOp, InfixOp, PostfixOp are shared types — pass through directly
         hir::Expr::Prefix(op, inner) => lir::Expr::Prefix(*op, Box::new(lower_expr(inner, ctx))),
 
-        hir::Expr::Infix(lhs, op, rhs) => lir::Expr::Infix(
-            Box::new(lower_expr(lhs, ctx)),
-            *op,
-            Box::new(lower_expr(rhs, ctx)),
+        // B1 `or`-coalescing, short-circuited (issue #1471) — the one
+        // `InfixOp` that does not fall through to the generic form below.
+        // Handled a whole chain at a time; see `lower_coalesce_chain`.
+        hir::Expr::Infix(ie) if ie.op == crate::InfixOp::Coalesce => {
+            lower_coalesce_chain(expr, ctx)
+        }
+
+        hir::Expr::Infix(ie) => lir::Expr::Infix(
+            Box::new(lower_expr(&ie.lhs, ctx)),
+            ie.op,
+            Box::new(lower_expr(&ie.rhs, ctx)),
         ),
 
         hir::Expr::Postfix(inner, op) => lir::Expr::Postfix(Box::new(lower_expr(inner, ctx)), *op),
@@ -135,7 +144,114 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // fallback arm into this one. T1e-2 lands `MakeProjection`; until
         // then this is a clean, targeted stop, not a silent drop.
         hir::Expr::RefArg(ra) => lower_ref_arg_fence(ra, ctx),
+
+        // Lambdas (issue #1685 for the HIR half, #1709 for this one): the
+        // native surface's anonymous fn value is **lifted** into a
+        // synthesized top-level function and created here as an ordinary
+        // T1c function value over it — `PushFnRef` with no captures,
+        // `MakeClosure` (a `VAL_CLOSURE`) with them. The E052 codegen fence
+        // that stood here through #1685 is retired: an anonymous body has a
+        // runtime representation now. See `super::lambda`.
+        hir::Expr::Lambda(l) => super::lambda::lower_lambda(l, ctx),
+
+        // Block capture (issue #1839, `docs/decision-log.md` 2026-08-01
+        // "Content-as-value"): the captured run lowers through the exact
+        // same per-statement path an ordinary body uses
+        // (`super::stmts::lower_stmt`) — interior lines keep their own
+        // `Stmt::Content`/`Stmt::EndOfLine` shape (and, once recognized,
+        // their own line-table entry) rather than being flattened. Codegen
+        // (`brink-codegen-inkb::content`) wraps the result in
+        // `BeginFragment`/`EndFragment`.
+        hir::Expr::Fragment(stmts) => {
+            let lowered = stmts
+                .iter()
+                .filter_map(|s| super::stmts::lower_stmt(s, ctx))
+                .collect();
+            lir::Expr::Fragment(lowered)
+        }
     }
+}
+
+/// Lower a whole `or`-coalescing chain (B1, issue #1460; short-circuited
+/// per issue #1471's ruling) from its **root**, consuming the analyzer's
+/// recorded per-step shapes (issue #1492).
+///
+/// `a or b or c` parses left-associatively as `Infix(Infix(a, or, b), or,
+/// c)`. The chain is lowered here in one pass rather than by recursing into
+/// the left spine, because that is the unit the analyzer folds and records:
+/// one entry per chain, keyed at its root by `hir::expr_span` (since issue
+/// #1517, the root infix node's *own* provenance range, which is distinct
+/// from every spine node's). Operand subtrees are lowered through the
+/// ordinary [`lower_expr`], so a chain nested inside an operand
+/// (`a or (b or c)`) is reached as its own root, exactly as the analyzer
+/// records it.
+///
+/// Operands are lowered in source order (innermost `lhs`, then each `rhs`
+/// outward), byte-identical to what the old recursive `Infix` lowering
+/// produced, so nothing that depends on lowering order (name interning,
+/// sequence-id allocation) shifts.
+///
+/// A chain with no recorded verdict — an ill-typed chain the analyzer
+/// abandoned, an analysis that never ran, or a length disagreement between
+/// the recorded steps and the spine — falls back to
+/// [`context::CoalesceShape::RuntimeCheck`]
+/// for every step. Absence is always safe: that verdict is exactly the
+/// gradual-mode posture, where the runtime check *is* the semantics.
+fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let spine = coalesce_chain_spine(root);
+    let shapes = crate::hir::expr_span(root)
+        .and_then(|range| ctx.tables.coalesce.get(ctx.file, range))
+        .filter(|shapes| shapes.len() == spine.len());
+
+    // `spine` is outermost-first; walk it in reverse so the fold runs
+    // innermost-first, the order `CoalesceChain::steps` is recorded in.
+    let mut steps = spine.iter().rev();
+    let Some((innermost_lhs, innermost_rhs)) = steps.next().copied() else {
+        // Structurally unreachable: the caller only dispatches here for an
+        // `InfixOp::Coalesce` node, and `coalesce_chain_spine` always yields
+        // at least one entry for such a node (its `while` loop matches the
+        // root itself before ever advancing). Falling back to
+        // `lower_expr(root, ctx)` here would NOT be total — `lower_expr`'s
+        // `InfixOp::Coalesce` arm dispatches straight back into this
+        // function, so an empty spine would recurse unboundedly (stack
+        // overflow) rather than terminate. `unreachable!` matches the
+        // precedent this same change sets in
+        // `brink_codegen_inkb::expr::infix_op_to_opcode`.
+        unreachable!("InfixOp::Coalesce always has a non-empty chain spine")
+    };
+    let mut fallbacks = vec![innermost_rhs];
+    fallbacks.extend(steps.map(|&(_, rhs)| rhs));
+
+    let mut acc = lower_expr(innermost_lhs, ctx);
+    for (index, fallback) in fallbacks.into_iter().enumerate() {
+        let rhs = lower_expr(fallback, ctx);
+        acc = lir::Expr::Coalesce {
+            lhs: Box::new(acc),
+            rhs: Box::new(rhs),
+            shape: shapes
+                .and_then(|shapes| shapes.get(index))
+                .copied()
+                .unwrap_or_default(),
+        };
+    }
+    acc
+}
+
+/// The `(lhs, rhs)` operand pair of each step in the coalescing chain rooted
+/// at `root`, **outermost first** — `root` itself, then its left-hand
+/// operand for as long as that is a coalescing node too. Mirrors
+/// `brink_analyzer::coalesce::chain_spine` exactly, so producer and consumer
+/// agree on what one chain is.
+fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(&hir::Expr, &hir::Expr)> {
+    let mut spine = Vec::new();
+    let mut cursor = root;
+    while let hir::Expr::Infix(ie) = cursor
+        && ie.op == crate::InfixOp::Coalesce
+    {
+        spine.push((ie.lhs.as_ref(), ie.rhs.as_ref()));
+        cursor = &ie.lhs;
+    }
+    spine
 }
 
 /// The T1e-1 E052-fence backstop for a `ref lvalue-path` that reached
@@ -233,7 +349,24 @@ const CONSTRUCTION_FAULT_SHAPE_ID: u32 = u32::MAX;
 ///   runtime code needed; see `record_ops::record_new`).
 fn lower_struct_literal(sl: &hir::StructLiteral, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let structs = ctx.structs;
-    let Some(shape) = structs.shapes.get(&sl.shape.text) else {
+    let file = ctx.file;
+    // Issue #2246: `sl.shape` is a `RefKind::Struct` reference the analyzer
+    // already resolved against the referrer's module scope
+    // (`brink_analyzer::resolve::resolve_struct_ref`, full `Candidacy`
+    // semantics — same span key `resolutions` uses everywhere else in this
+    // module) — consume that recorded resolution directly instead of
+    // re-deriving it via `ShapeTable::resolve`'s own narrower file-scoped
+    // fallback. When the project and a mounted std preset both declare a
+    // `Cue`-shaped struct, the analyzer's answer is exactly the same one
+    // `ShapeTable::resolve` used to compute; when the analyzer failed to
+    // resolve the reference at all (an undeclared/un-imported shape name),
+    // there is no entry here either, so the `E073` backstop below still
+    // fires the same as before.
+    let shape = ctx
+        .resolutions
+        .resolve(file, sl.shape.range)
+        .and_then(|id| structs.shapes.get_by_def(id));
+    let Some(shape) = shape else {
         for (_name, val) in &sl.fields {
             lower_expr(val, ctx);
         }
@@ -318,42 +451,47 @@ fn static_offset_for(base: &hir::Expr, field_name: &str, ctx: &LowerCtx<'_>) -> 
     if ctx.structs.type_mode != crate::lir::TypeMode::Strict {
         return None;
     }
-    let shape_name = known_shape(base, ctx)?;
-    let shape = ctx.structs.shapes.get(&shape_name)?;
+    let shape_def = known_shape(base, ctx)?;
+    let shape = ctx.structs.shapes.get_by_def(shape_def)?;
     shape.field(field_name).map(|(offset, _)| offset)
 }
 
-/// Chase `expr` to a compile-time-known struct shape name, if any — the
-/// entire "known shape" story is: a construction literal (trivially known),
-/// a `Path` naming a struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation,
-/// tracked in `structs::GlobalShapeMap`/`LowerCtx::temp_shapes`), or a
-/// `FieldAccess` whose base has a known shape *and* whose accessed field is
-/// itself declared with a struct-typed annotation (chases through nested
-/// struct fields using only the shape table — never type inference, and
-/// never anything requiring `brink-analyzer`, which `brink-ir` cannot
-/// depend on). Every other expression (a call, an index, a literal-typed
-/// value, …) returns `None` — always safe, just misses the optimization.
-fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<String> {
+/// Chase `expr` to a compile-time-known struct shape's own `DefinitionId`,
+/// if any — the entire "known shape" story is: a construction literal
+/// (its `RefKind::Struct` reference, already resolved by the analyzer —
+/// issue #2246, `lower_struct_literal`'s doc), a `Path` naming a
+/// struct-typed `VAR`/`CONST`/`temp` (TM-2 annotation, already resolved to
+/// a `DefinitionId` in `structs::GlobalShapeMap`/`LowerCtx::temp_shapes`),
+/// or a `FieldAccess` whose base has a known shape *and* whose accessed
+/// field is itself declared with a struct-typed annotation (chases through
+/// nested struct fields using only the shape table — never type inference,
+/// and never anything requiring `brink-analyzer`, which `brink-ir` cannot
+/// depend on). Every hop already carries a resolved identity (issue #2238)
+/// rather than a bare name, so there is no re-resolution — and no
+/// referrer-file tracking — needed at any point in the chase. Every other
+/// expression (a call, an index, a literal-typed value, …) returns `None`
+/// — always safe, just misses the optimization.
+fn known_shape(expr: &hir::Expr, ctx: &LowerCtx<'_>) -> Option<DefinitionId> {
     match expr {
-        hir::Expr::StructLiteral(sl) => ctx
-            .structs
-            .shapes
-            .get(&sl.shape.text)
-            .map(|_| sl.shape.text.clone()),
+        // Issue #2246: the analyzer already resolved this `RefKind::Struct`
+        // reference (see `lower_struct_literal`'s matching doc) — its
+        // target *is* the shape's own `DefinitionId`, so there is nothing
+        // further to look up here, not even `ShapeTable::get_by_def`.
+        hir::Expr::StructLiteral(sl) => ctx.resolutions.resolve(ctx.file, sl.shape.range),
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {
-                ctx.temp_shape(slot).map(str::to_string)
+                ctx.temp_shape(slot)
             } else {
                 let info = ctx.resolve_path(path.range)?;
-                ctx.global_shape(info.id).map(str::to_string)
+                ctx.global_shape(info.id)
             }
         }
         hir::Expr::FieldAccess(fa) => {
             let base_shape = known_shape(&fa.base, ctx)?;
-            let shape = ctx.structs.shapes.get(&base_shape)?;
+            let shape = ctx.structs.shapes.get_by_def(base_shape)?;
             let (_, nested) = shape.field(&fa.field.text)?;
-            nested.map(str::to_string)
+            nested
         }
         _ => None,
     }
@@ -496,26 +634,23 @@ fn lower_ambiguous_dotted_path(
     let (mut expr, mut current_shape) = match head_info.kind {
         SymbolKind::Variable | SymbolKind::Constant => (
             lir::Expr::GetGlobal(head_info.id),
-            ctx.global_shape(head_info.id).map(str::to_string),
+            ctx.global_shape(head_info.id),
         ),
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return lir::Expr::Null;
             };
             let name_id = ctx.names.intern(&head_name);
-            (
-                lir::Expr::GetTemp(slot, name_id),
-                ctx.temp_shape(slot).map(str::to_string),
-            )
+            (lir::Expr::GetTemp(slot, name_id), ctx.temp_shape(slot))
         }
         // The caller only reaches here for these four kinds.
         _ => return lir::Expr::Null,
     };
 
     for seg in &path.segments[1..] {
-        let shape_info = current_shape
-            .as_deref()
-            .and_then(|s| ctx.structs.shapes.get(s));
+        // `current_shape` is already a resolved `DefinitionId` (issue
+        // #2238) — no referrer needed to look it up.
+        let shape_info = current_shape.and_then(|d| ctx.structs.shapes.get_by_def(d));
         let static_offset = if ctx.structs.type_mode == crate::lir::TypeMode::Strict {
             shape_info.and_then(|s| s.field(&seg.text)).map(|(o, _)| o)
         } else {
@@ -523,7 +658,7 @@ fn lower_ambiguous_dotted_path(
         };
         let nested_shape = shape_info
             .and_then(|s| s.field(&seg.text))
-            .and_then(|(_, nested)| nested.map(str::to_string));
+            .and_then(|(_, nested)| nested);
         let field = ctx.names.intern(&seg.text);
         expr = lir::Expr::RecordGet {
             base: Box::new(expr),
@@ -560,6 +695,28 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
             )
         {
             return lower_ambiguous_dotted_path(path, info, ctx);
+        }
+        // Native bare-name fn value (RULED 2026-08-01, `docs/t1c-spec.md`
+        // §2a, issue #1862): on the **native** surface a statically-named
+        // function in expression position *is* a fn value — `handler(
+        // screenplay::scene)` — with no sigil, because a call keeps its
+        // parentheses (`screenplay::scene()`, `lower_call`'s job) and so
+        // reference-vs-call is unambiguous. Zero bound args by
+        // construction: the `#fn(f, a)` partial-application form has no
+        // native spelling and stays ink-only, so this always lowers to the
+        // `MakeFnValue`-with-empty-`bound` shape codegen emits as
+        // `PushFnRef`.
+        //
+        // Deliberately **not** applied to ink: there, the same bare name is
+        // a knot's visit count (the `Knot | Stitch | Label` arm below), and
+        // ink function knots are visit-counted like any other. A local of
+        // the same name still wins — `temp_slot` is consulted at the top of
+        // this function, before any resolution.
+        if ctx.native && info.is_function_definition() {
+            return lir::Expr::MakeFnValue {
+                target: info.id,
+                bound: Vec::new(),
+            };
         }
         match info.kind {
             SymbolKind::Variable | SymbolKind::Constant => lir::Expr::GetGlobal(info.id),
@@ -628,7 +785,7 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
                 lir::Expr::Null
             }
             SymbolKind::Temp => {
-                use brink_format::{DefinitionId, DefinitionTag};
+                use brink_format::DefinitionTag;
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
@@ -684,8 +841,34 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         };
     }
 
-    // Resolve via resolution map
+    // Resolve via resolution map. `path.range` here is a load-bearing key —
+    // it must be the callee `Path`'s own whole span, exactly what the
+    // analyzer's `ResolvedRef::range` produced (issue #1561; see that
+    // field's doc for the other three consumers keying on the same range,
+    // including `ufcs_receiver_path` just below, which deliberately
+    // preserves this same range on the receiver sub-path it builds).
     if let Some(info) = ctx.resolve_path(path.range) {
+        // B3a UFCS (issue #1482/#1506): a *multi-segment* callee path
+        // resolving to a value is method-call syntax — the resolution
+        // record deliberately names the **receiver**, and the real target
+        // lives in `brink-analyzer::ufcs`'s verdict side table
+        // (`ctx.tables.ufcs`, threaded in as `brink-ir`'s own `UfcsVerdict`
+        // mirror — see that type's doc). Falling through would take the
+        // `Variable`/`Constant` or catch-all arm below and emit a call
+        // against the receiver's own id: a silently wrong program (the
+        // pre-#1482 behavior was an `E025` compile refusal, and that
+        // refusal must not become a miscompile). `lower_ufcs_call` reads
+        // the verdict and lowers each ruled outcome for real; see its own
+        // doc for the E144 fallback this branch still refuses with when no
+        // verdict was recorded.
+        if path.segments.len() > 1
+            && matches!(
+                info.kind,
+                SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
+            )
+        {
+            return lower_ufcs_call(&name, path, args, ctx);
+        }
         match info.kind {
             SymbolKind::List => {
                 // list(n) → ListFromInt; list() → empty list with origin.
@@ -749,6 +932,239 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
     }
 }
 
+/// B3a UFCS lowering (issue #1506): consume `ctx.tables.ufcs`'s verdict (threaded
+/// in from `brink-analyzer::ufcs`'s side table — see [`context::UfcsVerdict`]'s
+/// doc) to lower a call site that resolved as method-call syntax, for real.
+///
+/// Reached only for a *resolved* multi-segment callee path whose head is a
+/// param/temp/variable/constant — `lower_call`'s caller has already
+/// established that. Every such site the analyzer's `ufcs` pass *visited*
+/// carries a verdict (it is, by construction, UFCS-shaped); a project
+/// compiled through `brink-db` reaches the `None` arm below only when a call
+/// site exists that the `ufcs` pass never visited in the first place. Before
+/// issue #1774 that was true of every production caller (`ufcs::resolve`
+/// walks `visit::visit`'s block-tree only), so the arm was dead in
+/// production. #1774 changed that: a `VAR`/`CONST` decl default may now be a
+/// lambda literal, and its body is walked by `visit::visit` too — a decl
+/// default's own initializer is not (`ufcs::resolve` has no hand-recursion
+/// over `hir.variables`/`hir.constants` the way `coalesce::resolve` does),
+/// so a method call there is genuinely unvisited and reaches this refusal in
+/// production now. Still a safe hard refusal (`E144`), never a silent
+/// miscompile — see [`super::decls::GlobalLambdaCtx::tables`]'s doc for the
+/// follow-up that would close this. The other production route to this arm
+/// stays the callers that lower HIR directly without running analysis first
+/// (this crate's own tests/benches, `golden_i078.rs`) — see #1482's PR
+/// description for the miscompile this guards against.
+/// The shared E144 refusal: `name` resolves as method-call syntax that this
+/// UFCS lowering cannot turn into a real call, so refuse loudly rather than
+/// silently folding to `Null`. Two call sites reach this — [`lower_ufcs_call`]
+/// itself, when no verdict was recorded at all (only possible for a caller
+/// that lowers HIR directly without running analysis first, e.g. this
+/// crate's own tests/benches), and [`lower_ufcs_prelude_desugar`], when a
+/// verdict *was* recorded as `PreludeDesugar` but neither this crate's
+/// `recognize_builtin` nor its `is_t1b_stdlib_name`/`lower_t1b_stdlib_call`
+/// copy recognizes the name — meaning it drifted out of sync with
+/// `brink-analyzer`'s own `is_t1b_stdlib_name`/`is_builtin_function` copies
+/// (both pairs' own docs say they're hand-synced across the crate boundary
+/// with no shared source of truth).
+fn push_ufcs_lowering_refusal(
+    name: &str,
+    range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
+             lower it yet — spell the call explicitly as a free call for now",
+            crate::DiagnosticCode::E144.title(),
+        ),
+        code: crate::DiagnosticCode::E144,
+    });
+    lir::Expr::Null
+}
+
+fn lower_ufcs_call(
+    name: &str,
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let Some(verdict) = ctx.tables.ufcs.get(ctx.file, path.range).cloned() else {
+        return push_ufcs_lowering_refusal(name, path.range, ctx);
+    };
+    match verdict {
+        // Field access wins (`brink-analyzer::ufcs` D1): the whole path,
+        // head through the final segment, is an ordinary field-access
+        // chain reading the field's (function-typed) value — exactly what
+        // `lower_path`'s own TM-4b/4c dotted-path handling
+        // (`lower_ambiguous_dotted_path`) already builds for `p.x.y` field
+        // reads. Reusing it here means a receiver chain of any depth
+        // (`a.b.c()`) lowers through the one RecordGet-chain builder.
+        context::UfcsVerdict::FieldCall => {
+            let callee = lower_expr(&hir::Expr::Path(path.clone()), ctx);
+            let call_args = args.iter().map(|a| lower_expr(a, ctx)).collect();
+            lir::Expr::CallValue {
+                callee: Box::new(callee),
+                args: call_args,
+            }
+        }
+        // A free function in ordinary lexical scope (D4) — `target(recv,
+        // args…)`. By value, or (D5 auto-ref, issue #1462) with the receiver
+        // passed by `ref` when the target's first parameter is declared
+        // `ref`; the two share one lowering, since which shape the receiver
+        // argument takes is exactly what `lower_call_args` already decides
+        // from the target's own param row.
+        context::UfcsVerdict::FreeFnDesugar { target }
+        | context::UfcsVerdict::FreeFnAutoRef { target } => {
+            lower_ufcs_desugared_call(path, args, target, ctx)
+        }
+        // A T1b/NS stdlib prelude verb, or a classic ink builtin, with no
+        // index symbol of its own (D4's other candidate) — `name(recv,
+        // args…)` through the same dispatch an ordinary bare call of that
+        // name already reaches.
+        context::UfcsVerdict::PreludeDesugar { name } => {
+            lower_ufcs_prelude_desugar(path, args, &name, ctx)
+        }
+    }
+}
+
+/// The receiver half of a UFCS desugar: `path` minus its final (method-name)
+/// segment, as a synthetic `hir::Path` reusing `path`'s own range — the
+/// exact range `brink-analyzer::ufcs` recorded the head's resolution
+/// against (`value_receiver_def`), so `lower_path`/`lower_ambiguous_dotted_
+/// path`'s existing `ctx.resolve_path`/`ctx.temp_slot` lookups resolve it
+/// correctly whether the receiver is one segment (`x`) or a dotted chain
+/// (`a.b`).
+///
+/// This is deliberate reuse of the call-path `ResolvedRef::range` contract
+/// (issue #1561, see that field's doc): `range: path.range` here — never a
+/// receiver-only sub-range — is *why* `resolve_path(path.range)` still hits
+/// the entry `brink-analyzer` recorded for the whole call. Narrowing this
+/// to, say, `TextRange::new(path.range.start(), head_end)` would silently
+/// miss that lookup for every UFCS call site.
+pub(super) fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
+    let receiver_segs = path.segments.split_last().map_or(&[][..], |(_, rest)| rest);
+    hir::Path {
+        segments: receiver_segs.to_vec(),
+        range: path.range,
+        crosses_module_wall: path.crosses_module_wall,
+    }
+}
+
+/// The receiver as a desugared *argument* expression: the plain path when
+/// the target takes it by value, or (**D5 auto-ref**, issue #1462) the same
+/// path wrapped in an explicit `ref` — the HIR-level desugar spelling
+/// (`ref` is never written at a UFCS call site; the native surface has no
+/// call-site `ref` keyword at all).
+///
+/// The synthesized [`hir::Expr::RefArg`] is what routes the receiver into
+/// [`lower_call_args`]'s existing T1e arm; its provenance is
+/// [`Provenance::synthetic`] over the call path's own range (the node has no
+/// syntax of its own — `ref` is never written at a UFCS call site — but a
+/// real range keeps the defensive `E099` fence's diagnostic anchored at the
+/// call).
+fn ufcs_receiver_arg(path: &hir::Path, auto_ref: bool) -> hir::Expr {
+    let receiver = hir::Expr::Path(ufcs_receiver_path(path));
+    if auto_ref {
+        hir::Expr::RefArg(hir::RefArgExpr {
+            ptr: crate::Provenance::synthetic(crate::NodeClass::RefArg, path.range),
+            operand: Box::new(receiver),
+        })
+    } else {
+        receiver
+    }
+}
+
+/// `target(receiver, args…)` — the `UfcsVerdict::FreeFnDesugar` and
+/// `UfcsVerdict::FreeFnAutoRef` shapes. `target` is always a `Knot` or
+/// `External` symbol (`brink-analyzer::ufcs::try_free_fn_desugar` only looks
+/// those two kinds up).
+///
+/// The receiver occupies `target`'s **first declared parameter**, so the
+/// whole desugared argument row — receiver included — goes through
+/// [`lower_call_args`] against `target`'s unshifted params. That is what
+/// makes **D5 auto-ref** (issue #1462) fall out of the existing machinery
+/// rather than a parallel path: when that first parameter is `ref`, the
+/// receiver is spelled as an explicit `hir::Expr::RefArg`, which
+/// `lower_call_args` binds exactly as an explicitly written `ref` argument —
+/// `RefTemp`/`RefGlobal` for a bare receiver, a real T1e
+/// [`lir::CallArg::RefProjection`] for a dotted one
+/// (`party.leader.heal(5)` → `heal(ref party.leader, 5)`). When it is not
+/// `ref`, the receiver lowers by value, exactly as before.
+fn lower_ufcs_desugared_call(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    target: brink_format::DefinitionId,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let Some(target_info) = ctx.index.symbols.get(&target) else {
+        // Structurally unreachable — `target` came from the analyzer's own
+        // `resolve::lookup_by_name` against this same project index. Guard
+        // rather than panic, per the E053-backstop lesson.
+        return lir::Expr::Null;
+    };
+    let auto_ref = target_info.params.first().is_some_and(|p| p.is_ref);
+    let mut desugared_args = Vec::with_capacity(args.len() + 1);
+    desugared_args.push(ufcs_receiver_arg(path, auto_ref));
+    desugared_args.extend(args.iter().cloned());
+    let call_args = lower_call_args(&desugared_args, &target_info.params, ctx);
+
+    if target_info.kind == SymbolKind::External {
+        lir::Expr::CallExternal {
+            target,
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ink externals have <=255 params"
+            )]
+            arg_count: target_info.params.len() as u8,
+            args: call_args,
+        }
+    } else {
+        lir::Expr::Call {
+            target,
+            args: call_args,
+        }
+    }
+}
+
+/// `name(receiver, args…)` — the `UfcsVerdict::PreludeDesugar` shape.
+/// Dispatches through the same two tables an ordinary bare call of `name`
+/// already reaches: the classic ink builtin table first
+/// ([`recognize_builtin`], `CallBuiltin` — takes already-lowered args), then
+/// the T1b/NS stdlib table ([`lower_t1b_stdlib_call`], which lowers its own
+/// HIR args internally) — mirroring `lower_call`'s own dispatch order.
+fn lower_ufcs_prelude_desugar(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    name: &str,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let receiver_path = ufcs_receiver_path(path);
+
+    if let Some(builtin) = recognize_builtin(name) {
+        let mut lowered = vec![lower_expr(&hir::Expr::Path(receiver_path), ctx)];
+        lowered.extend(args.iter().map(|a| lower_expr(a, ctx)));
+        return lir::Expr::CallBuiltin {
+            builtin,
+            args: lowered,
+        };
+    }
+
+    let mut desugared_args = Vec::with_capacity(args.len() + 1);
+    desugared_args.push(hir::Expr::Path(receiver_path));
+    desugared_args.extend(args.iter().cloned());
+    // `lower_t1b_stdlib_call` returning `None` here means `name` passed the
+    // analyzer's `is_t1b_stdlib_name`/`is_builtin_function` check (that's
+    // the only way a `PreludeDesugar` verdict is recorded) but missed both
+    // of this crate's own hand-synced copies — a drift bug, not a normal
+    // compile outcome. Refuse loudly (E144) instead of silently dropping
+    // the call to `Null`.
+    lower_t1b_stdlib_call(name, &desugared_args, path.range, ctx)
+        .unwrap_or_else(|| push_ufcs_lowering_refusal(name, path.range, ctx))
+}
+
 /// Recognize a T1b stdlib call (`docs/t1b-surface-spec.md` §5) reached with
 /// no resolved symbol. An author-defined function of the same name always
 /// wins — `lower_call`'s `ctx.resolve_path` branch above already handles
@@ -763,10 +1179,11 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 /// `brink-analyzer`'s dialect gate, extended in T1b-3 to flag an unresolved
 /// call to one of these names under `strict-ink`).
 ///
-/// `push`/`insert`/`remove` (the mutators) are statement-only — recognized
-/// and fully lowered by `blocks::try_lower_mutator_stmt` *before* a call
-/// expression ever reaches here. Reaching here with one of those three names
-/// means the author used it in expression position (`~ x = push(a, v)`),
+/// `push`/`insert`/`remove`/`remove_at` (the mutators) are statement-only —
+/// recognized and fully lowered by `blocks::try_lower_mutator_stmt` *before*
+/// a call expression ever reaches here. Reaching here with one of those
+/// mutator names means the author used it in expression position (`~ x =
+/// push(a, v)`),
 /// which is invalid since mutators return nothing (§5) — E056.
 #[expect(
     clippy::too_many_lines,
@@ -853,7 +1270,7 @@ fn lower_t1b_stdlib_call(
         // same E056 misuse the original three get. NS-A4 adds `sort`/
         // `sort_by` (F0: imperative = in-place, `void` — `sorted`/
         // `sorted_by` are the expression twins below).
-        "push" | "insert" | "remove" | "clear" | "sort" | "sort_by" | "heap_push" => {
+        "push" | "insert" | "remove" | "remove_at" | "clear" | "sort" | "sort_by" | "heap_push" => {
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
                 range: call_range,
@@ -1187,6 +1604,76 @@ fn lower_t1b_stdlib_call(
                 cmp: Box::new(lower_expr(&args[1], ctx)),
             })
         }
+
+        // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue
+        // #1679): the pure trio. All three are ordinary expressions — no
+        // statement/mutator twin exists, because the ruled naming law
+        // reserves the imperative spelling for in-place mutation and none
+        // of these mutates its receiver. The callbacks' pure·silent
+        // contract is enforced (where provable) by
+        // `brink_analyzer::comparator_contract`'s E119; the runtime ops
+        // carry the dispatch faults. ────────────────────────────────────
+        "map" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqMap {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "filter" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFilter {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                pred: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "fold" => {
+            if !arity_ok(ctx, 3) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFold {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                init: Box::new(lower_expr(&args[1], ctx)),
+                f: Box::new(lower_expr(&args[2], ctx)),
+            })
+        }
+        // The fn-value verb layer, slice 2 (`docs/stdlib-spec.md` §4, issue
+        // #1679): `filter_map` stays pure-required (the Option-mapper
+        // companion of `map`); `each`/`map_each` are the ruled effectful
+        // spellings — ordinary expressions like their pure siblings (none of
+        // the three mutates a receiver, so the imperative/past-participle
+        // naming law doesn't apply here either). ─────────────────────────
+        "filter_map" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFilterMap {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "each" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqEach {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "map_each" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqMapEach {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
         // array; the argument itself is never written back.
@@ -1385,6 +1872,11 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "push"
             | "insert"
             | "remove"
+            // `remove_at(a, i)` (issue #1484, `docs/stdlib-spec.md` §4/§10):
+            // faulting array-index removal, split off `remove` (now
+            // map-only — identity-based, idempotent-total, matching flags
+            // `remove`) so one name no longer spans two removal postures.
+            | "remove_at"
             | "int"
             | "float"
             | "string"
@@ -1455,6 +1947,20 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "cross"
             | "clamp"
             | "lerp"
+            // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
+            // §4): the pure quartet, callbacks pure-required per the
+            // 2026-07-18 ruling — `filter_map` is the Option-mapper
+            // companion of `map` (§1.4's Option ruling). Plus the ruled
+            // effectful spellings `each`/`map_each` (slice 2): same
+            // slice-1 machinery (shadowable with E035, `strict-ink`
+            // rejection via the dialect gate), deliberately NOT E119-gated
+            // — see `brink_analyzer::comparator_contract`.
+            | "map"
+            | "filter"
+            | "fold"
+            | "filter_map"
+            | "each"
+            | "map_each"
     )
 }
 
@@ -1483,6 +1989,27 @@ fn lower_ref_path_call_arg(
 ) -> lir::CallArg {
     let name = path_to_string(path);
     if let Some(slot) = ctx.temp_slot(&name) {
+        // B1b (issue #1475): `ref` must not bypass an `as` binding's
+        // immutability. `lower_assign_target` is the write-target choke
+        // point for ordinary assignment, but `ref x` never routes through
+        // it — it hands the callee a raw pointer to the slot
+        // (`Opcode::PushTempPointer`), and a `ref`-param write-through
+        // (`Opcode::SetTemp`'s `Value::TempPointer` arm) mutates it
+        // directly. Refuse here too so every write path is actually
+        // covered, not just the ones that go through assignment lowering.
+        if ctx.as_binding_slots.contains(&slot) {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: path.range,
+                message: format!(
+                    "{}: `{name}` is an `as` binding — it is immutable and cannot be passed \
+                     by `ref`",
+                    crate::DiagnosticCode::E148.title(),
+                ),
+                code: crate::DiagnosticCode::E148,
+            });
+            return lir::CallArg::Value(lir::Expr::Null);
+        }
         let name_id = ctx.names.intern(&name);
         return lir::CallArg::RefTemp(slot, name_id);
     }
@@ -1611,9 +2138,61 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
     let Some((root, src_segments)) = decompose_projection(&ra.operand) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
     };
+    // B1b (issue #1475): the same `ref`-bypasses-immutability hole as
+    // `lower_ref_path_call_arg`, but for a projection's *root* (`ref
+    // n.field`, `ref n[0]`) — the root is still the `as` binding's own
+    // slot, so a projection off it is exactly as much a write-through as
+    // a bare `ref n` would be.
+    let root_name = path_to_string(root);
+    if let Some(slot) = ctx.temp_slot(&root_name)
+        && ctx.as_binding_slots.contains(&slot)
+    {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: root.range,
+            message: format!(
+                "{}: `{root_name}` is an `as` binding — it is immutable and cannot be passed \
+                 by `ref`",
+                crate::DiagnosticCode::E148.title(),
+            ),
+            code: crate::DiagnosticCode::E148,
+        });
+        return lir::CallArg::Value(lir::Expr::Null);
+    }
     let Some(info) = ctx.resolve_path(root.range) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
     };
+    // Issue #1531 (RULED 2026-07-27, docs/decision-log.md): a frame-local
+    // projection root is now legal, but only as a *statement*
+    // (`blocks::try_lower_frame_local_auto_ref_stmt` splices the
+    // read/call/write-back RMW sequence a frame-local root needs — there is
+    // no expression-shaped representation of one, since `RefProjection`'s
+    // root is a durable global `DefinitionId` only,
+    // `docs/format-v4-rfc.md` §1). Reaching this arm with a `Param`/`Temp`
+    // root means the statement-level recognizer never got a chance to run
+    // (the call is nested inside a larger expression) — refuse loudly
+    // rather than emit a `RefProjection` whose root is a `LocalVar`-tagged
+    // id the linker never registers as a global, which would fault at
+    // runtime as `UnresolvedGlobal` with no compile diagnostic (the same
+    // hazard `lower_ref_path_call_arg`'s block-scoped-temp guard documents
+    // for the bare-receiver case). The explicit `ref n.field` syntax never
+    // reaches here with a frame-local root at all — the analyzer's own
+    // `E080` durable-root check refuses it before lowering ever sees it;
+    // this is purely the UFCS auto-ref desugar's own synthetic `RefArg`.
+    if matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: root.range,
+            message: format!(
+                "{}: `{root_name}` is a temp/param — a frame-local projection receiver \
+                 (`{root_name}.field`) is legal only when the call is its own statement, not \
+                 nested inside a larger expression",
+                crate::DiagnosticCode::E143.title(),
+            ),
+            code: crate::DiagnosticCode::E143,
+        });
+        return lir::CallArg::Value(lir::Expr::Null);
+    }
     let root_id = if info.kind == SymbolKind::List {
         list_def_to_global_var(info.id)
     } else {
@@ -1697,6 +2276,72 @@ mod tests {
         assert!(
             recognize_builtin("TURNS").is_some(),
             "TURNS() should be recognized as a built-in function"
+        );
+    }
+
+    /// Fabricated provenance for a hand-built infix node: these spine
+    /// tests build HIR directly, with no syntax tree to stamp from, and
+    /// nothing here reads the range back.
+    fn synthetic_infix_prov() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::NodeClass::Infix,
+            rowan::TextRange::new(0.into(), 1.into()),
+        )
+    }
+
+    /// The consumer half of the `or`-coalescing side-channel contract
+    /// (issue #1471/#1492): a chain's spine must be enumerated exactly the
+    /// way `brink_analyzer::coalesce::chain_spine` enumerates it —
+    /// outermost first, descending the *left* operand only — or the
+    /// recorded (innermost-first) per-step shapes would be applied to the
+    /// wrong steps. `a or b or c` is one chain of two steps; a coalescing
+    /// node hanging off a `rhs` is a separate chain, not part of this one.
+    #[test]
+    fn coalesce_chain_spine_walks_the_left_spine_outermost_first() {
+        fn coalesce(lhs: hir::Expr, rhs: hir::Expr) -> hir::Expr {
+            hir::Expr::Infix(hir::InfixExpr::new(
+                synthetic_infix_prov(),
+                lhs,
+                crate::InfixOp::Coalesce,
+                rhs,
+            ))
+        }
+
+        // `a or b or c` → Infix(Infix(a, or, b), or, c).
+        let chain = coalesce(
+            coalesce(hir::Expr::Int(1), hir::Expr::Int(2)),
+            hir::Expr::Int(3),
+        );
+        let spine = coalesce_chain_spine(&chain);
+        assert_eq!(spine.len(), 2, "two steps: `1 or 2`, then `… or 3`");
+        // Outermost first: its fallback is the trailing `3`.
+        assert!(matches!(spine[0].1, hir::Expr::Int(3)));
+        // Then the innermost step: `1 or 2`.
+        assert!(matches!(spine[1].0, hir::Expr::Int(1)));
+        assert!(matches!(spine[1].1, hir::Expr::Int(2)));
+
+        // A coalescing node in `rhs` position is *not* part of this spine
+        // — it is its own chain root, keyed and recorded separately.
+        let nested = coalesce(
+            hir::Expr::Int(1),
+            coalesce(hir::Expr::Int(2), hir::Expr::Int(3)),
+        );
+        assert_eq!(coalesce_chain_spine(&nested).len(), 1);
+    }
+
+    /// A non-coalescing expression has no spine at all — the guard that
+    /// keeps `lower_coalesce_chain` from being entered for anything else.
+    #[test]
+    fn coalesce_chain_spine_is_empty_for_a_non_coalescing_expr() {
+        assert!(coalesce_chain_spine(&hir::Expr::Int(1)).is_empty());
+        assert!(
+            coalesce_chain_spine(&hir::Expr::Infix(hir::InfixExpr::new(
+                synthetic_infix_prov(),
+                hir::Expr::Int(1),
+                crate::InfixOp::Or,
+                hir::Expr::Int(2),
+            )))
+            .is_empty()
         );
     }
 }

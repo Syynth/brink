@@ -148,21 +148,41 @@ pub fn arb_wake_policy() -> impl Strategy<Value = WakePolicy> {
 
 /// A [`SuspendedFlow`] (the `FlowFrame`, `docs/flow-suspension-spec.md` §2):
 /// current container, a bounded tunnel-return stack, a name-keyed frame
-/// record (an arbitrary [`Value`], typically a map), and a wake policy.
+/// record (an arbitrary [`Value`], typically a map), a wake policy, and
+/// (#2108) the block-run state (`next_block_id` + whatever element-
+/// attachment data was open on the run at park time — empty when no run
+/// was open).
 pub fn arb_suspended_flow() -> impl Strategy<Value = SuspendedFlow> {
     (
         arb_def_id(),
         prop::collection::vec(arb_def_id(), 0..4),
         arb_value_full(),
         arb_wake_policy(),
+        any::<u64>(),
+        arb_pending_element(),
     )
-        .prop_map(|(current, return_stack, frame, wake)| SuspendedFlow {
-            version: SUSPENDED_FLOW_SECTION_VERSION,
-            current,
-            return_stack,
-            frame,
-            wake,
-        })
+        .prop_map(
+            |(current, return_stack, frame, wake, next_block_id, pending_element)| SuspendedFlow {
+                version: SUSPENDED_FLOW_SECTION_VERSION,
+                current,
+                return_stack,
+                frame,
+                wake,
+                next_block_id,
+                pending_element,
+            },
+        )
+}
+
+/// An arbitrary open-attach-run snapshot (#2108): 0-4 string/string pairs,
+/// with 0 entries exercising the empty (`skip_serializing_if`-omitted) case
+/// as often as any other size.
+fn arb_pending_element() -> impl Strategy<Value = std::collections::BTreeMap<String, String>> {
+    prop::collection::vec(
+        ("[a-z][a-z_]{0,10}", ".{0,12}".prop_map(String::from)),
+        0..4,
+    )
+    .prop_map(|entries| entries.into_iter().collect())
 }
 
 /// Every [`Value`] variant, with `Array`/`Map`/`Record` (value-model-spec §4)

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic, clippy::unwrap_used)]
 
 use brink_format::{read_inkb_index, read_inkl, write_inkb};
 use brink_intl::{ContentJson, IntlError, LinesJson, compile_locale, export_lines};
@@ -152,6 +152,36 @@ fn error_invalid_scope_id() {
 }
 
 #[test]
+fn error_slot_index_out_of_range() {
+    let inkb = make_base_inkb();
+    let mut lines = export_from_inkb(&inkb);
+
+    // I001's line has plain content — zero slots in the base. A translated
+    // template referencing slot 0 has no corresponding base slot.
+    assert!(!lines.scopes.is_empty());
+    assert!(!lines.scopes[0].lines.is_empty());
+    lines.scopes[0].lines[0].content = Some(ContentJson::Template {
+        template: vec![
+            brink_intl::PartJson::Literal("Hola ".to_string()),
+            brink_intl::PartJson::Slot { slot: 0 },
+        ],
+    });
+
+    let err = compile_locale(&inkb, &lines, "es").unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IntlError::SlotIndexOutOfRange {
+                slot: 0,
+                slot_count: 0,
+                ..
+            }
+        ),
+        "expected SlotIndexOutOfRange{{slot: 0, slot_count: 0, ..}}, got {err:?}"
+    );
+}
+
+#[test]
 fn error_empty_locale_tag() {
     let inkb = make_base_inkb();
     let lines = export_from_inkb(&inkb);
@@ -165,7 +195,7 @@ fn error_empty_locale_tag() {
 
 #[test]
 fn end_to_end_localize_and_run() {
-    use brink_runtime::{DotNetRng, Line, LocaleMode, Story};
+    use brink_runtime::{DotNetRng, LocaleMode, Step, Story};
 
     let inkb = make_base_inkb();
     let data = make_base_data();
@@ -208,9 +238,124 @@ fn end_to_end_localize_and_run() {
     // Run the story and verify the localized text appears
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
-    let text: String = lines.iter().map(Line::text).collect();
+    let text: String = lines.iter().map(Step::text).collect();
     assert!(
         text.contains("[ES]"),
         "expected localized text containing '[ES]', got: {text}"
     );
+}
+
+// ── #1442/#1671: `#@was` rebinding at compile-locale time ──
+//
+// A stale locale file carries pre-rename scope ids. `compile_locale` reads
+// the base `.inkb`'s own `AliasTable` section and rebinds; the happy path is
+// covered end-to-end in `rename_identity.rs`, so these pin the two edges.
+
+/// A knot plus a stitch. Renaming the knot re-keys both, and `#@was` on the
+/// knot mints an edge for each — the knot's own plus the stitch's
+/// transitive bridge (#1671).
+const RENAME_BEFORE: &str = "\
+== hub ==
+Welcome to the hub.
+-> END
+
+= market
+Fish, mostly.
+-> END
+";
+
+const RENAME_AFTER: &str = "\
+== plaza ==
+#@was(hub)
+Welcome to the hub.
+-> END
+
+= market
+Fish, mostly.
+-> END
+";
+
+/// `#@was` is a brink-dialect extension (`E051` under strict ink).
+fn compile_brink(src: &str) -> brink_format::StoryData {
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    brink_compiler::compile_with_options("story.ink", |_p| Ok(src.to_owned()), options)
+        .unwrap()
+        .data
+}
+
+fn scope_id_of(story: &brink_format::StoryData, name: &str) -> String {
+    export_lines(story, 0)
+        .scopes
+        .into_iter()
+        .find(|s| s.name.as_deref() == Some(name))
+        .unwrap()
+        .id
+}
+
+/// The stitch is re-keyed by the rename too (its qualified name embeds the
+/// knot's), and #1671 gives it its own transitive alias entry, so a locale
+/// file carrying only its pre-rename id still rebinds through
+/// `compile_locale` — it is not left to report `ScopeNotInBase`.
+#[test]
+fn a_transitively_rekeyed_scope_still_rebinds_through_compile_locale() {
+    let before = compile_brink(RENAME_BEFORE);
+    let after = compile_brink(RENAME_AFTER);
+    let mut inkb = Vec::new();
+    write_inkb(&after, &mut inkb);
+
+    let old_stitch = scope_id_of(&before, "hub.market");
+    let mut stale = export_lines(&before, 0);
+    stale.scopes.retain(|s| s.id == old_stitch);
+    assert_eq!(stale.scopes.len(), 1);
+
+    let locale_bytes = compile_locale(&inkb, &stale, "es")
+        .expect("the stitch's transitive alias entry (#1671) must rebind it");
+    let locale = read_inkl(&locale_bytes).unwrap();
+
+    let new_stitch = scope_id_of(&after, "plaza.market");
+    let bound: Vec<String> = locale
+        .line_tables
+        .iter()
+        .map(|t| format!("0x{:016x}", t.scope_id.to_raw()))
+        .collect();
+    assert_eq!(
+        bound,
+        vec![new_stitch],
+        "the overlay must be keyed on the post-rename stitch id"
+    );
+}
+
+/// A hand-merged file carrying *both* the pre- and post-rename ids for the
+/// same knot would silently drop one of them if the last write won. It is
+/// rejected instead.
+#[test]
+fn two_scopes_rebinding_onto_one_base_scope_are_rejected() {
+    let before = compile_brink(RENAME_BEFORE);
+    let after = compile_brink(RENAME_AFTER);
+    let mut inkb = Vec::new();
+    write_inkb(&after, &mut inkb);
+
+    let old_knot = scope_id_of(&before, "hub");
+    let new_knot = scope_id_of(&after, "plaza");
+
+    let mut merged = export_lines(&before, 0);
+    merged.scopes.retain(|s| s.id == old_knot);
+    let mut post_rename = merged.scopes[0].clone();
+    post_rename.id = new_knot.clone();
+    merged.scopes.push(post_rename);
+
+    let err = compile_locale(&inkb, &merged, "es").unwrap_err();
+    match err {
+        IntlError::AmbiguousScopeRebind {
+            scope_ids,
+            base_scope_id,
+        } => {
+            assert_eq!(scope_ids, format!("{old_knot}, {new_knot}"));
+            assert_eq!(base_scope_id, new_knot);
+        }
+        other => panic!("expected AmbiguousScopeRebind, got {other:?}"),
+    }
 }

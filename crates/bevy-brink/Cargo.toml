@@ -19,6 +19,9 @@ brink-format = { workspace = true }
 bevy-brink-derive = { workspace = true }
 brink-compiler = { workspace = true, optional = true }
 brink-syntax = { workspace = true, optional = true }
+brink-project-config = { workspace = true, optional = true }
+brink-environment = { workspace = true, optional = true }
+brink-source-tree = { workspace = true, optional = true }
 
 bevy_app = { version = "0.19.0", default-features = false }
 bevy_asset = { version = "0.19.0", default-features = false }
@@ -47,7 +50,13 @@ default = ["dev"]
 # Without this feature only compiled `.inkb` (and eventually `.inkl`,
 # `.brkt`) assets are loadable — suitable for shipping a release binary
 # that doesn't carry the brink compiler.
-dev = ["dep:brink-compiler", "dep:brink-syntax"]
+dev = [
+  "dep:brink-compiler",
+  "dep:brink-syntax",
+  "dep:brink-project-config",
+  "dep:brink-environment",
+  "dep:brink-source-tree",
+]
 # Bench-only #821 Arc-clone/COW-copy debug counters, forwarded to
 # brink-runtime (see `crates/brink-runtime/src/bench_counters.rs`,
 # `docs/runtime-bench.md`). Off by default — compile-time cut, not a
@@ -74,8 +83,12 @@ bevy = { version = "0.19.0", features = ["file_watcher"] }
 # Tests compile small inline ink stories to exercise the loader/replay
 # code paths. brink-compiler is also pulled in via the `dev` feature
 # in the regular dependency set, but adding it as a dev-dep means
-# tests work even when someone disables default features.
-brink-compiler = { path = "../brink-compiler" }
+# tests work even when someone disables default features. `test-util`
+# (issue #2168) gates the legacy closure-based `compile`/`compile_with_options`
+# entry points these tests and the `examples/` call directly, bypassing
+# `brink_environment::compile(&Environment)` (#1306, the production road
+# `source_loader.rs` actually uses) on purpose.
+brink-compiler = { path = "../brink-compiler", features = ["test-util"] }
 # Enable brink-runtime's `testing` feature so tests can introspect
 # globals by name (Program::global_count, Program::global_name).
 brink-runtime = { path = "../brink-runtime", features = ["testing"]  }
@@ -89,9 +102,24 @@ brink-intl = { path = "../internal/brink-intl" }
 # file) — already a transitive dependency via the `brink-compiler` dev-dep
 # above, so this adds no new build work, just a direct path to it.
 brink-ir = { path = "../internal/brink-ir" }
+# #1416: `config_discovery_tests` (source_loader.rs) installs a capturing
+# `tracing::Subscriber` to prove an unknown/non-overridable `[lints]` code
+# passed through `InkLoader::override_config` actually reaches the ambient
+# tracing dispatcher — the same channel `bevy_log::LogPlugin` subscribes to
+# in a real app (`bevy_log` re-exports `tracing`'s macros verbatim, and is
+# already a non-optional dependency of this crate, so this isn't needed for
+# thread visibility — a `tracing::Subscriber` installed via
+# `set_global_default` sees every thread regardless of which crate path
+# emitted the `warn!`). This is a direct dependency on the `Subscriber`
+# trait / `subscriber` module the test implements against, rather than
+# reaching for those through `bevy_log`'s re-export.
+tracing.workspace = true
 # serde_json is a regular dependency now (handle.rs's SaveKey erasure); the
 # `book_saves` example also round-trips a composed save map through it to
 # prove `SaveState` really is Serialize/Deserialize end to end.
+# `benches/batch_call.rs` (#1058) times the engine→ink batch entry point
+# (call_ink_functions) against a loop of single call_ink_function calls.
+divan.workspace = true
 
 [[example]]
 name = "play_story"
@@ -131,6 +159,15 @@ name = "async_external"
 # `tests/scenario_bench_model.rs` instead (includes the same source).
 [[bench]]
 name = "scenario_bench"
+harness = false
+test = false
+
+# Engine→ink batch entry point (#1058, BH-5): times call_ink_functions
+# (one VM-eval setup for N calls) against a loop of single call_ink_function
+# calls (N setups), reporting the amortized µs/call. `harness = false` — divan
+# provides its own `main`. `test = false` — `cargo test` must not run it.
+[[bench]]
+name = "batch_call"
 harness = false
 test = false
 

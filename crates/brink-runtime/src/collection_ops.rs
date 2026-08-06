@@ -126,7 +126,8 @@ pub(crate) fn index_set(flow: &mut Flow) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// `CollectionLen`: `[container]` → `Int(len)`. Array or map.
+/// `CollectionLen`: `[container]` → `Int(len)`. Array, map, range, or
+/// string.
 pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
     let container = flow.pop_value()?;
     #[expect(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
@@ -138,6 +139,13 @@ pub(crate) fn collection_len(flow: &mut Flow) -> Result<(), RuntimeError> {
         // long exceeds the VM step limit regardless; `rand::int` uses the
         // exact i64 length internally, never this op).
         Value::Range { .. } => container.range_len().unwrap_or(0).min(i64::from(i32::MAX)) as i32,
+        // Strings (#1171): char count, i.e. Unicode scalar values via
+        // `str::chars`, never UTF-8 byte length. Matches every other
+        // string-indexing op in this runtime — `char_at` and `find`
+        // (`string_ops.rs`) both count USVs, per the ruled "author sanity"
+        // posture (`docs/stdlib-spec.md`, issue #857) and the verb table's
+        // `len(… | string): int` = char count.
+        Value::String(s) => s.chars().count() as i32,
         other => return Err(RuntimeError::NotIndexable(type_name(other))),
     };
     flow.value_stack.push(Value::Int(len));
@@ -274,16 +282,14 @@ pub(crate) fn map_insert(flow: &mut Flow) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// `MapRemove`: `[container, key_or_index]` → updated container. The stdlib
-/// `remove()` mutator's primitive (T1b-3) — generalized like `MapInsert`
-/// above:
-///
-/// - **Map**: remove by key, no-op if the key was already absent.
-/// - **Array**: `Vec::remove(index)`, shifting later elements left. `index`
-///   must be an `Int` in `[0, len)` — strictly less than `len`, unlike
-///   `MapInsert`'s append-friendly `<=`, since there is no element to remove
-///   at `len`. Out-of-range is a fault (`IndexOutOfBounds`), matching
-///   `IndexGet`/`IndexSet`.
+/// `MapRemove`: `[map, key]` → updated map with `key` removed, no-op if the
+/// key was already absent. The stdlib `remove()` mutator's primitive
+/// (T1b-3). **Map-only as of issue #1484** (decision log "Quick-docket
+/// closures" 2026-07-26): `remove` uniformly names identity-based,
+/// idempotent-total removal (map keys, flags values), so a non-map
+/// container is a fault (`NotIndexable`) rather than falling back to
+/// index-based removal — the array-index leg this op used to generalize
+/// over is [`seq_remove_at`], the faulting-index `remove_at()` primitive.
 pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
     let key = flow.pop_value()?;
     let mut container = flow.pop_value()?;
@@ -296,9 +302,28 @@ pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
             };
             map.remove(&map_key);
         }
+        _ => return Err(RuntimeError::NotIndexable(type_name(&container))),
+    }
+    flow.value_stack.push(container);
+    Ok(())
+}
+
+/// `SeqRemoveAt`: `[a, i]` → updated array with the element at `i` removed,
+/// shifting later elements left (`Vec::remove(i)`). The stdlib
+/// `remove_at()` mutator's primitive (issue #1484, joining the `_at`
+/// faulting-index family with `char_at`) — the array leg [`map_remove`]
+/// generalized over before this PR. Array-only: a non-array `a` is a fault
+/// (`NotIndexable`). `i` must be an `Int` in `[0, len)` — strictly less
+/// than `len`, unlike `MapInsert`'s append-friendly `<=`, since there is no
+/// element to remove at `len`. Out-of-range is a fault
+/// (`IndexOutOfBounds`), matching `IndexGet`/`IndexSet`.
+pub(crate) fn seq_remove_at(flow: &mut Flow) -> Result<(), RuntimeError> {
+    let index = flow.pop_value()?;
+    let mut container = flow.pop_value()?;
+    match container.value_type() {
         ValueType::Array => {
             let len = container.as_array().map_or(0, |items| items.len());
-            let idx = array_index(&key, len)?;
+            let idx = array_index(&index, len)?;
             note_array_mutation(&container);
             let Some(items) = container.array_make_mut() else {
                 return Err(RuntimeError::NotIndexable(type_name(&container)));
@@ -312,7 +337,9 @@ pub(crate) fn map_remove(flow: &mut Flow) -> Result<(), RuntimeError> {
 }
 
 /// `MapContains`: `[container, needle]` → `Bool`. The stdlib `contains(x,
-/// v)` primitive (T1b-3) — generalized like `MapInsert`/`MapRemove`:
+/// v)` primitive (T1b-3) — generalized like `MapInsert` (`MapRemove` was
+/// generalized the same way until issue #1484 split it into map-only
+/// `MapRemove` / array-only `SeqRemoveAt`):
 ///
 /// - **Map**: key containment — `needle` is coerced through the ratified key
 ///   domain (int/string/bool), matching `MapGet`/`IndexGet`'s key handling.
@@ -1169,8 +1196,8 @@ fn array_index(index: &Value, len: usize) -> Result<usize, RuntimeError> {
 /// the one array write allowed to reach the end (`MapInsert`'s array
 /// branch: `index == len` means "insert at the end", the `push()` stdlib
 /// mutator's primitive). Distinct from [`array_index`]'s strict `< len`,
-/// used by `IndexGet`/`IndexSet`/`MapRemove`'s array branch, none of which
-/// ever grow the array.
+/// used by `IndexGet`/`IndexSet`/`SeqRemoveAt`, none of which ever grow the
+/// array.
 fn insert_index(index: &Value, len: usize) -> Result<usize, RuntimeError> {
     let Value::Int(i) = index else {
         return Err(RuntimeError::InvalidArrayIndex(type_name(index)));
@@ -1186,19 +1213,21 @@ fn insert_index(index: &Value, len: usize) -> Result<usize, RuntimeError> {
 // ── Tests ────────────────────────────────────────────────────────────────
 //
 // T1b-3 stdlib slice 1 (`docs/t1b-surface-spec.md` §5) is VM-native: the
-// compiler emits `MapInsert`/`MapRemove`/`MapContains` for the generalized
-// array/map semantics these tests prove directly against hand-assembled
-// `Value` trees, one level below full bytecode — the same "op function,
-// not full VM" granularity T1b-2's fault-semantics tests used. End-to-end
-// compile+run coverage (source `.ink` -> bytecode -> VM) lives in the
-// `tests/tier1-brink` corpus wing and `brink-test-harness`'s T1b property
+// compiler emits `MapInsert`/`MapContains` for their generalized array/map
+// semantics, and (as of issue #1484) `MapRemove` (map-only) / `SeqRemoveAt`
+// (array-only) for the split `remove`/`remove_at` pair — these tests prove
+// them directly against hand-assembled `Value` trees, one level below full
+// bytecode — the same "op function, not full VM" granularity T1b-2's
+// fault-semantics tests used. End-to-end compile+run coverage (source
+// `.ink` -> bytecode -> VM) lives in the `tests/tier1-brink` corpus wing
+// and `brink-test-harness`'s T1b property
 // tests, which exercise these same primitives via the real
-// `push`/`insert`/`remove`/`contains` call sites.
+// `push`/`insert`/`remove`/`remove_at`/`contains` call sites.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::output::OutputBuffer;
-    use crate::story::Flow;
+    use crate::story::{Flow, PendingTerminal};
     use alloc::sync::Arc;
 
     /// A `Flow` with nothing but an empty value stack — every function in
@@ -1214,8 +1243,11 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: crate::story::ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
+            next_block_id: 0,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 
@@ -1323,6 +1355,38 @@ mod tests {
         assert_eq!(m.get(&MapKey::Str(Arc::from("b"))), Some(&Value::Int(2)));
     }
 
+    // ── CollectionLen: string arm (issue #1171) ───────────────────────────
+
+    #[test]
+    fn collection_len_string_counts_chars_not_bytes() {
+        // "café" is 4 USVs but 5 UTF-8 bytes — proves the char-count
+        // semantics, not `str::len`.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("café")]);
+        collection_len(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, Value::Int(4));
+    }
+
+    #[test]
+    fn collection_len_string_ascii() {
+        // {len("cider")} — the issue's minimal repro.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("cider")]);
+        collection_len(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, Value::Int(5));
+    }
+
+    #[test]
+    fn collection_len_empty_string_is_zero() {
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![Value::from("")]);
+        collection_len(&mut flow).unwrap();
+        let result = flow.pop_value().unwrap();
+        assert_eq!(result, Value::Int(0));
+    }
+
     // ── IndexSet: map[newKey] = value inserts (issue #856, ruled 2026-07-15) ──
 
     #[test]
@@ -1414,10 +1478,15 @@ mod tests {
         );
     }
 
-    // ── MapRemove generalized for Array ───────────────────────────────────
+    // ── MapRemove / SeqRemoveAt split (issue #1484) ───────────────────────
+    //
+    // `MapRemove` used to generalize over Array (index-based, faulting) the
+    // same way `MapInsert`/`MapContains` still do. Issue #1484 splits that
+    // one name into two: `MapRemove` is map-only now, and the array-index
+    // leg moves to its own primitive, `SeqRemoveAt`.
 
     #[test]
-    fn map_remove_array_shifts_elements_left() {
+    fn seq_remove_at_array_shifts_elements_left() {
         let mut flow = test_flow();
         push_args(
             &mut flow,
@@ -1426,19 +1495,33 @@ mod tests {
                 Value::Int(1),
             ],
         );
-        map_remove(&mut flow).unwrap();
+        seq_remove_at(&mut flow).unwrap();
         let result = flow.pop_value().unwrap();
         assert_eq!(result, arr(vec![Value::Int(1), Value::Int(3)]));
     }
 
     #[test]
-    fn map_remove_array_index_equal_to_len_faults() {
-        // Unlike MapInsert's push-friendly `<= len`, remove has no element
-        // to remove at `len` — strictly `< len`, same as IndexGet/IndexSet.
+    fn seq_remove_at_index_equal_to_len_faults() {
+        // Unlike MapInsert's push-friendly `<= len`, remove_at has no
+        // element to remove at `len` — strictly `< len`, same as
+        // IndexGet/IndexSet.
         let mut flow = test_flow();
         push_args(&mut flow, vec![arr(vec![Value::Int(1)]), Value::Int(1)]);
-        let err = map_remove(&mut flow).unwrap_err();
+        let err = seq_remove_at(&mut flow).unwrap_err();
         assert_eq!(err, RuntimeError::IndexOutOfBounds { index: 1, len: 1 });
+    }
+
+    #[test]
+    fn seq_remove_at_on_a_map_faults() {
+        // The split's whole point: `remove_at` no longer accepts a map —
+        // that's `remove`'s domain now.
+        let mut flow = test_flow();
+        push_args(
+            &mut flow,
+            vec![Value::map(OrderedMap::new()), Value::Int(0)],
+        );
+        let err = seq_remove_at(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::NotIndexable("map"));
     }
 
     #[test]
@@ -1454,6 +1537,16 @@ mod tests {
             unreachable!("map_remove on a map must return a map")
         };
         assert_eq!(m.len(), 0);
+    }
+
+    #[test]
+    fn map_remove_on_an_array_faults() {
+        // The split's other half: `remove` no longer accepts an array —
+        // that's `remove_at`'s domain now.
+        let mut flow = test_flow();
+        push_args(&mut flow, vec![arr(vec![Value::Int(1)]), Value::Int(0)]);
+        let err = map_remove(&mut flow).unwrap_err();
+        assert_eq!(err, RuntimeError::NotIndexable("array"));
     }
 
     // ── MapContains generalized for Array (element containment) ──────────
@@ -1561,12 +1654,12 @@ mod tests {
     }
 
     #[test]
-    fn map_remove_array_cows_when_shared() {
+    fn seq_remove_at_cows_when_shared() {
         let original = arr(vec![Value::Int(1), Value::Int(2)]);
         let snapshot = original.clone();
         let mut flow = test_flow();
         push_args(&mut flow, vec![original, Value::Int(0)]);
-        map_remove(&mut flow).unwrap();
+        seq_remove_at(&mut flow).unwrap();
         let mutated = flow.pop_value().unwrap();
         assert_eq!(
             snapshot,

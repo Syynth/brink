@@ -1,0 +1,10 @@
+flow lex_edges() {
+  # a tag
+  Lone at symbol: a @ b
+  Escaped backslash: a \ b
+  héllo wörld
+}
+
+fn quoted() {
+  "line one\nline two"
+}

@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use brink_format::{DefinitionId, LineContent, LinePart, SelectKey, StoryData};
 
 use crate::json_model::{
-    ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SlotJson, SourceJson,
+    AttrJson, ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SlotJson,
+    SourceJson, SpanJson,
 };
 
 /// Export line tables from a compiled story as a `LinesJson` structure.
@@ -105,6 +106,23 @@ fn convert_part(part: &LinePart) -> PartJson {
                     })
                     .collect(),
                 default: default.clone(),
+            },
+        },
+        LinePart::Span {
+            name,
+            attrs,
+            children,
+        } => PartJson::Span {
+            span: SpanJson {
+                name: name.clone(),
+                attrs: attrs
+                    .iter()
+                    .map(|(name, value)| AttrJson {
+                        name: name.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+                children: children.iter().map(convert_part).collect(),
             },
         },
     }

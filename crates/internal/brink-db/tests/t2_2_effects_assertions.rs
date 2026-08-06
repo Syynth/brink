@@ -86,6 +86,30 @@ fn exceedance_via_ref_param_indirect_write() {
     assert!(diags[0].message.contains("writes val"), "{diags:?}");
 }
 
+/// Issue #1755 — the sibling of the test above, one grammar position over.
+/// `ref` binds at a `#fn` **creation** site's bound prefix as well as at a
+/// call's argument list (docs/t1c-spec.md §2, docs/effects-spec.md §6.1a
+/// channel 5), and until #1755 only the call site recorded the write. The
+/// assertion here declares only `reads: player_hp`, so the write `heal`
+/// performs through its `ref hp` param — bound to the cell `player_hp` at
+/// the creation site — must exceed it. Before the fix this fixture was
+/// silently *clean*: a false negative on the one diagnostic this whole
+/// surface exists to produce, reached through exactly the `db.analysis()`
+/// salsa path the IDE, `brink check`, and `@brink-lang/web` run.
+#[test]
+fn exceedance_via_a_fn_creation_site_ref_binding() {
+    let diags = analyze(
+        "VAR player_hp = 10\n\
+         === knot ===\n@[effects(reads(player_hp))]\n\
+         ~ temp f: fn(int): int = #fn(heal, player_hp)\n\
+         ~ temp x: int = f(5)\n{player_hp}\n->->\n\
+         === function heal(ref hp: int, amount: int): int ===\n\
+         ~ hp = hp + amount\n~ return hp\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("writes player_hp"), "{diags:?}");
+}
+
 #[test]
 fn pure_sugar_is_satisfied_by_a_genuinely_pure_body() {
     let diags = analyze("=== function double(x) ===\n@[effects(pure)]\n~ return x * 2\n");
@@ -279,7 +303,7 @@ fn tag_only_line_does_not_exceed_silent() {
 #[test]
 fn total_exceedance_on_an_indexing_construct_is_e109() {
     let diags = analyze(
-        "=== function pick_first(a: array<int>): int ===\n@[effects(total)]\n~ return a[0]\n",
+        "=== function pick_first(a: Array<int>): int ===\n@[effects(total)]\n~ return a[0]\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
@@ -296,7 +320,7 @@ fn total_exceedance_on_a_faulting_stdlib_verb_is_e109() {
     // `min` carries `NotOrderable`/`StdlibWrongType` fault paths — §4b's
     // "orderings carry faults unconditionally" (mode-independent rows).
     let diags = analyze(
-        "=== function lowest(a: array<int>) ===\n@[effects(total)]\n~ return min(a) or 0\n",
+        "=== function lowest(a: Array<int>) ===\n@[effects(total)]\n~ return min(a) or 0\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
@@ -326,6 +350,76 @@ fn opaque_row_exceeds_both_silent_and_total() {
     // which function flows in), which is exactly the subject here.
     let diags = analyze(
         "=== function apply(cb: fn(): int) ===\n@[effects(silent, total)]\n~ return cb()\n",
+    );
+    assert_eq!(
+        codes(&diags),
+        vec![DiagnosticCode::E108, DiagnosticCode::E109],
+        "{diags:?}"
+    );
+}
+
+// ── Fork A (docs/decision-log.md 2026-07-28, issue #1726): the opaque
+// floor collapses to a real row when every reaching fn value was created
+// in-project ─────────────────────────────────────────────────────────────
+//
+// These are the end-to-end proof that the analyzer-level narrowing reaches a
+// *user* through the real salsa pipeline: the row is what `E103` judges an
+// `@[effects(…)]` bound against, so a collapsed row is directly visible as a
+// diagnostic that no longer fires.
+
+#[test]
+fn two_known_fn_origins_collapse_to_the_joined_row_instead_of_the_opaque_floor() {
+    // `f` is written twice, each write a known `#fn` creation site. Before
+    // Fork A the write-once rule refused to narrow a twice-written local, so
+    // the row was the pessimal floor and *every* bound was exceeded. Now the
+    // row is the join over both targets — `bar`'s (total) and `baz`'s
+    // (extra) — which this bound declares exactly, so the check is silent.
+    //
+    // The two origins touch *different* globals on purpose: a shared global
+    // would still pass if only one edge were followed, proving nothing about
+    // the join.
+    let diags = analyze(
+        "VAR total = 0\nVAR extra = 0\n\
+         === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+         === function baz(): int ===\n~ extra = extra + 100\n~ return extra\n\
+         === function user(cond: int): int ===\n\
+         @[effects(reads(total), reads(extra), writes(total), writes(extra))]\n\
+         ~ temp f = #fn(bar)\n{cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n",
+    );
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn the_joined_row_still_reports_a_bound_that_names_only_one_origin() {
+    // The collapse is not a free pass: narrowing to the join means the bound
+    // must cover *both* targets. Declaring only `bar`'s cell leaves `baz`'s
+    // write uncovered — still an exceedance, and the message names the atom
+    // the join contributed, not a generic "calls through a function value".
+    let diags = analyze(
+        "VAR total = 0\nVAR extra = 0\n\
+         === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+         === function baz(): int ===\n~ extra = extra + 100\n~ return extra\n\
+         === function user(cond: int): int ===\n\
+         @[effects(reads(total), writes(total))]\n\
+         ~ temp f = #fn(bar)\n{cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("extra"), "{diags:?}");
+}
+
+#[test]
+fn one_untraced_write_keeps_the_opaque_floor_end_to_end() {
+    // The guard Fork A keeps. `f`'s second write comes from a parameter, so
+    // the reaching value could have been created anywhere — including a host
+    // callback (docs/effects-spec.md §6.2). The row stays pessimal, and the
+    // `silent`/`total` dimensions it is unbounded on still report, exactly
+    // as `opaque_row_exceeds_both_silent_and_total` pins for the plain case.
+    let diags = analyze(
+        "VAR total = 0\n\
+         === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+         === function user(cond: int, cb: fn(): int): int ===\n\
+         @[effects(silent, total)]\n\
+         ~ temp f = #fn(bar)\n{cond:\n  ~ f = cb\n}\n~ return f()\n",
     );
     assert_eq!(
         codes(&diags),
@@ -402,4 +496,83 @@ fn user_var_named_rng_shadows_the_cell_name_in_clauses() {
          === function bump() ===\n@[effects(reads(rng), writes(rng))]\n~ rng = rng + 1\n~ return rng\n",
     );
     assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+// ── The native `.brink` surface (issue #1563) ────────────────────────────
+//
+// A per-declaration `@[effects(…)]` above a native `fn`/`flow` used to be a
+// hard `E129` compile failure in `hir::lower_native`, so this whole surface
+// was unreachable from a `.brink` file. Now that the annotation channel
+// lowers, the *same* frontend-agnostic exceedance check that judges ink
+// assertions judges native ones — these tests are the end-to-end proof that
+// the channel reaches a user through the real salsa pipeline, not just the
+// HIR unit tests in `brink-ir`.
+
+/// `.brink` files route through `lower_native`; the fixtures below need
+/// exactly the same `Dialect::Brink` posture `analyze` already sets (which
+/// also resolves `types` to `Strict`, native's requirement — `E137`).
+fn analyze_native(source: &str) -> Vec<brink_ir::Diagnostic> {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(brink_opts());
+    db.set_file("main.brink", source.to_owned());
+    db.analysis().diagnostics.clone()
+}
+
+#[test]
+fn native_pure_assertion_is_exceeded_by_a_global_read() {
+    let diags =
+        analyze_native("var gold = 0\n\n@[effects(pure)]\nfn spend() {\n  return gold;\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("reads gold"), "{diags:?}");
+}
+
+#[test]
+fn native_assertion_that_covers_the_body_is_silent() {
+    let diags = analyze_native(
+        "var gold = 0\n\n@[effects(reads(gold))]\nfn spend() {\n  return gold;\n}\n",
+    );
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn native_writes_clause_exceedance_names_the_written_cell() {
+    let diags = analyze_native(
+        "var gold = 0\n\n@[effects(reads(gold))]\nfn spend(cost) {\n  gold = gold - cost;\n  return gold;\n}\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("writes gold"), "{diags:?}");
+}
+
+#[test]
+fn native_unknown_cell_name_in_an_assertion_is_e102() {
+    let diags = analyze_native(
+        "var gold = 0\n\n@[effects(reads(nonexistent))]\nfn spend() {\n  return gold;\n}\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E102], "{diags:?}");
+}
+
+#[test]
+fn native_stitch_silent_assertion_is_exceeded_by_an_emitting_nested_flow() {
+    // The `Stitch` half of the channel (`container::lower_stitch` calling
+    // `annotation::effects_assertion`) needs its own end-to-end proof that
+    // the analyzer resolves it. Every other native fixture in this file
+    // attaches `@[effects(…)]` to a top-level `fn`/`flow`, which is
+    // satisfied identically whether or not
+    // `effects_assertions::find_def_id(..., SymbolKind::Stitch, ...)` ever
+    // finds the nested def — the golden corpus case has the same gap (its
+    // stitch assertion is satisfied, not exceeded). A nested `flow` whose
+    // body emits content is not `silent`, so this can only go green if the
+    // stitch path actually reaches the exceedance checker.
+    let diags = analyze_native(
+        "flow main() {\n  @[effects(silent)]\n  flow tally() {\n    Gold falls.\n  }\n  -> tally\n}\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E108], "{diags:?}");
+}
+
+#[test]
+fn native_silent_assertion_is_exceeded_by_a_flow_that_emits() {
+    // The NS-A2 output dimension, on the native surface: a `flow` whose
+    // body writes a line is not `silent`.
+    let diags = analyze_native("@[effects(silent)]\nflow garden() {\n  Petals fall.\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E108], "{diags:?}");
 }

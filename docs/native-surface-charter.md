@@ -74,12 +74,33 @@ combination is honestly spellable.
 - Declarations: `flow garden(mood) { … }`, `fn heal(hp) { … }` —
   keyword + name/params + braced body. No tags, no name-as-attribute
   (the SFC lesson: tags suit anonymous facets; named things deserve
-  declarations). No one-flow-per-file constraint — files hold many
-  declarations (RULED: hard requirement).
+  declarations). **(Amended 2026-07-25, prose sitting 4: a header line
+  may carry trailing `#tag`s — `flow market #act1 { … }` — captured as
+  container-level per-flow *metadata*. Identity is still the
+  declaration's name, never a tag, so the SFC lesson stands;
+  docs/prose-dialect-spec.md §8b.4.)** No one-flow-per-file constraint —
+  files hold many declarations (RULED: hard requirement). **A `#tag`'s own
+  body is scanned as raw text, not reparsed — a content line's trailing
+  tags brace-balance (accepted eats-the-enclosing-closer tradeoff,
+  per-tag not per-line scope), while a declaration header line's own tags
+  instead stop unconditionally at the body opener (`{`/`~`/`>`) before
+  that depth logic ever engages — both spec'd in
+  docs/prose-dialect-spec.md §4.7.**
 - **Stitches are nested `flow`s** — `garden.gate` because addressing
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for
   containers, fn bodies, choice bodies, annotated blocks alike.
+  **(Amended 2026-07-25, prose sitting 4: preset heading-elements
+  in prose-ground declare header-scoped bodies — a scene runs to the
+  next heading or enclosing close; docs/prose-dialect-spec.md §8b.2.)**
+- **Body-dialect selector (RULED 2026-07-23 — see decision-log):**
+  the brace prefix selects the body's dialect. Plain `{ … }` = the
+  per-keyword **default** (`fn` → code, `flow` → prose); **`~{ … }`**
+  = code-ground body (statements directly, no per-line `~` — a
+  code-bodied `flow` is §3's "Compound guard"); **`>{ … }`** =
+  prose-ground body (emits bare text — a prose-bodied `fn`). Sigil
+  mnemonics: `~` = enter code, `>` = emit prose. See §8.2 for the
+  line-granularity escapes that use the same two sigils.
 
 ## 5. Prose-ground structure: the weave, respelled
 
@@ -112,7 +133,14 @@ One brace grammar; the annotation position declares the kind:
 - **Bare `{expr}` = interpolation** — and nothing else, ever.
 - **Words where logic branches**: `{if cond: … else: …}` (inline or
   multiline), `{match x: …}` for switch forms. Conditional choice
-  guards reuse it: `* {if cond} [text]`.
+  guards reuse it: `* {if cond} [text]`. The `as` binding
+  (`{if cond as name: … else: …}`, ruled 2026-07-26, B1b #1475) is a
+  suffix of the `if` head in this position, and the identical suffix on
+  the code-ground `if`/`while` — one construct, both condition
+  positions, no new syntax family. (In a choice guard it parses AND
+  lowers/runs end to end, issue #1508: the binding rides the existing
+  `OptionBind` + thread-fork-snapshot machinery, not a new `.inkb` v6
+  Choice-record field.)
 - **Characters where content alternates**: `{~ }` shuffle, `{& }`
   cycle, `{! }` once, `{| }` stopping-sequence (chars tentative).
 - **`{?` choice point** (§5) — one member of the family.
@@ -126,7 +154,7 @@ One brace grammar; the annotation position declares the kind:
     ink's spelling — the new docs owe this construct a first-class,
     example-led explanation, not a footnote.
 
-## 7. Code-ground (sketch — own sitting pending)
+## 7. Code-ground (RULED 2026-07-23 — the sitting; see decision-log)
 
 **North star: RustScript** (AMENDED 2026-07-19, superseding the
 original "Lua-adjacent feel" — ruled in the lambda sitting: the
@@ -140,22 +168,80 @@ methods/lambdas question per the friction dossier (#901 comment,
 2026-07-18): sugar over free functions, no method system. Field
 access beats UFCS on resolution. Details = sitting 2.
 
-## 8. Open items (the remaining sittings)
+## 8. Status board (sittings held vs. genuinely open)
 
-1. Code dialect details: expression grammar, UFCS resolution rules,
-   stdlib round (heap/tuples/floor-div/char_at/weighted tables), the
-   #827 vec decision (structs+UFCS may suffice — decide with syntax
-   in hand).
-2. Interleaving escapes, full inventory (prose→code beyond
-   interpolation; code→prose emission; grains).
-3. Divert/tunnel/thread spelling in the new surface (`->`, `->->`,
-   `<-` are load-bearing ink idioms — keep? respell?). `await`'s
-   native spelling (currently contextual-keyword in ink dialect).
-4. Alternation annotation chars finalization; `{?` final call.
-5. File extension, naming, migration/coexistence story (ink ↔ native
-   converters?), tooling plan (parser, fmt, LSP, renderer), and the
-   HIR admission contract document.
-6. The chart dialect (#905's season, as this contract's client).
+*Refreshed 2026-07-23. This was a "remaining sittings" list, but most
+items had already been held or implemented and the list drifted stale —
+which is what made it read as open work. Corrected below. **"Ruled" here
+means "first-pass sufficient," not frozen:** the prose-ground/narrative
+surface is expected to get a deliberate **second design pass** once the
+first native implementation pass lands (maintainer's standing
+expectation), so items like the `{?` final spelling and prose-ground
+depth will be revisited then.*
+
+1. **Code dialect** — ✅ largely RULED + implemented: expression
+   grammar, UFCS resolution, statements / blocks-as-values / `until`
+   (code-ground sitting, decision-log 2026-07-23), and the stdlib
+   (collection/string/map/range/rand/record/proj/tower/value ops
+   shipped; #1106 tracks). **Open: the #827 vec decision** (structs +
+   UFCS may suffice — decide with syntax in hand).
+2. **Interleaving escapes** — ✅ RULED 2026-07-23 (decision-log):
+   `~` = enter code, `>` = emit prose, at two granularities —
+   whole-body selectors (`~{ }` / `>{ }` / plain `{ }` = keyword
+   default, §4, implemented #1309) and line escapes ("grains" = these
+   fine-grained lines): `~ stmt` runs code inside a prose body (ink's
+   logic line, kept) — **implemented** (issue #1991: the escape had
+   compiled clean and silently printed as literal prose, dropping the
+   statement, until this landed), extended to a temp declaration
+   (`~ let name = expr`, issue #1972) and, in that same issue's second
+   slice, to a `~{ … }` multi-statement logic block and `~ until cond`
+   (native's sole `await` spelling — `await` itself is retired, see
+   item 3 below) — both **implemented**, sharing the identical
+   `Stmt::LogicBlock`/`Stmt::Await` HIR the whole-body `~{ }` override and
+   the ink-dialect's own `~ { … }`/`~ await` already produce. **Residual,
+   not a design gap**: a `~{ … }` block containing nested `if`/`while`/
+   `for` control flow parses and lowers cleanly but the shared native
+   emitter (`hir::emit_native`, used by `brink-respell`'s ink→native
+   corpus conversion) only spells the leaf statement shapes back out —
+   round-tripping nested control flow needs the full code-ground
+   control-flow printer, a separate, larger lift issue #1972 didn't take
+   on. `> text` emits a prose line inside a code body — **implemented**
+   (issue #1992) at a `flow`/`fn`'s own top-level code-ground body, the
+   same granularity #1991's repro exercised; the escape also *parses* at
+   any nesting depth a code-ground `STMT_BLOCK` statement can appear (a
+   nested `if`/`while`/`for` body, a lambda's braced body), but those
+   still lower loudly (E129) — a deliberately narrower first slice, not a
+   silent gap. **The "bare, unprefixed spelling" question is not a live
+   design question** — it reads that way in #1972's own filing-time body,
+   but this ruling already settled it: the sigil is the *only* mechanism
+   ("`~` = enter code ... at two granularities"), so a sigil-less `n = 1`
+   at prose-body position is, by design, ordinary prose text, not an
+   accidentally-unimplemented statement form; see the 2026-08-01 accuracy
+   ruling (rule 12k precedent) on re-deriving already-ruled questions.
+   Open tail: any prose→code escapes beyond `~`/interpolation, and the
+   interpolation-vs-`{~` overlap.
+3. **Divert / tunnel / thread / await** — ✅ RULED (scattered across
+   rulings): `->` stays divert ("one arrow, one meaning", 2026-07-14);
+   tunnel-return unified under native `return` / `->->` (the
+   `flow main()` entry ruling); `<-` threads **narrowed** to the
+   choice-point splice only (#1895, §11); `await` → the `until`
+   condition-park (code-ground sitting), with suspension inferred
+   (block/effect model).
+4. **Alternation / choice-point spelling** — alternation markers
+   `{~`/`{&`/`{!`/`{|` RULED (#1258/#1261); the `{?` choice-point
+   **concept** is RULED (§5), its **final spelling** stays tentative —
+   a candidate for the narrative second pass.
+5. **Extension / naming / tooling** — ✅ `.brink` extension RULED
+   (decision-log 2026-07-13); editor (NS-T) + book (NS-D) chartered as
+   first-class workstreams. **Deferred, not undesigned:** ink↔native
+   migration / mixed-tree coexistence — its own round.
+6. **The chart dialect (#905)** — genuinely OPEN; its own season, as
+   this contract's client.
+
+**Net genuinely-open native design:** the **#827 vec decision**, the
+**chart dialect (#905)**, and a planned **narrative-surface second pass**
+(`{?` finalization, prose-ground depth, migration/coexistence) after the
+first implementation pass. Everything else above is ruled or shipped.
 
 ## 9. Exhibits
 
@@ -196,6 +282,15 @@ Walked the full remaining concept inventory; every item disposed:
 
 - **Diverts — KEPT verbatim** (`->`, `-> knot(args)`, `-> END`/`-> DONE`,
   divert-targets-as-values). Ink's best syntax; ratified untouched.
+  **But `-> DONE` is no longer *required*** (RULED 2026-07-22): a flow
+  or any braced body that runs out of content **ends implicitly** —
+  lowering to the DONE terminal, no ceremony. `-> END` stays
+  explicit-only (the permanent "story over" act); `-> DONE`/`-> END`
+  remain available but optional. Ink's "ran out of content. Need a
+  `-> DONE`?" error is retired on the native surface — brace-delimited
+  flow *and* choice bodies make body extent explicit, so "runs out ⇒
+  ends" is unambiguous. Value-returning flows are the exception (must
+  return; checker-enforced). See decision-log 2026-07-22.
 - **Tunnel calls — KEPT as `-> place ->`** (RULED after weighing a
   `<->` challenger: in content position the arrows are the prose
   ground's motion vocabulary). **Tunnel return — RESPELLED as
@@ -285,6 +380,23 @@ vocabulary.
   story::market::{barter, haggle};`), with the ceremony owned by
   tooling (auto-import inserts, fmt organizes) — neither the
   writer nor their agent types it by hand.
+- **`pub` is the visibility marker** (issue #1582, RULED
+  2026-08-03): a native `flow`, `fn`, `var`, `const`, `struct`,
+  `extern`, or `flags` declaration opts into cross-module
+  visibility by writing `pub` immediately before its keyword
+  (`pub fn heading(...) { ... }`). Absent `pub`, a declaration
+  stays **Private** — a declared module's already-ratified
+  2026-07-23 default. `pub` is the native spelling of the brink
+  dialect's `#@public` tag directive; it produces the same
+  `VisibilityMark::Public` `effective_visibility` (M-2,
+  `docs/modules-spec.md` §4) already consumes. Grammar ordering
+  (pinned, not separately ruled): a leading `///` doc comment and
+  any `@[…]` annotation lines both sit ABOVE `pub`, in that order
+  — `@[element(…)]` then `pub fn`, mirroring Rust's
+  `#[derive(…)] pub struct`. `import`/`use`/`module` do not take
+  `pub` (no `VisibilityMark` slot); neither do the ink dialect's
+  own `===knot===`/`=stitch=` declarations (a different crate,
+  untouched by this marker).
 - **Saves/wire always record absolute paths** regardless of
   imports (DefinitionId = (module, name) as ruled; the #719
   save-stability landmine stays defused).
@@ -303,3 +415,120 @@ sequences + the `list` reclaim · map surface · iteration protocol
 posture for fallible functions** (now spicier: enums exist,
 `Result` is ledger-gated) · assertion spellings (`@[effects]`,
 holes' release policy).
+
+## 14. Doc comments (B0.6b, RULED 2026-07-20)
+
+§11 ruled trivia to be **KEPT**: `//`, `/* */`, `TODO:`. Doc comments
+carve two spellings back out of that bucket and promote them to
+**first-class by structural attachment** — a CST node the parser
+builds, not a fact HIR re-derives by walking trivia backward from a
+declaration. See `docs/decision-log.md` → "Doc comments ruled
+first-class on the native surface" for the full ruling; this section
+records the surface + attachment model where the spec lives.
+
+**Two spellings, one content model:**
+- **`///` (outer)** — immediately precedes a declaration
+  (`flow`/`fn`/`var`/`const`/`flags`/`struct`/`extern`/`use`/
+  `import`/`module`) and documents *that* declaration. Ink's own
+  spelling, unchanged.
+- **`//!` (inner)** — sits at the very start of a knot/flow/file
+  body and documents the *enclosing* container instead of a
+  following declaration (Rust precedent; ink had no equivalent —
+  ink's weave has no "start of body" position clean enough to own
+  one). Gives a flow/file a header without needing a fake leading
+  declaration to hang `///` off of.
+- **Exactly three slashes** is the outer marker (`///`); a fourth
+  (`////`) falls back to a plain `//` comment (Rust precedent —
+  a separator rule of `////////` banners stays available). `//` and
+  `//!` are otherwise lexed the same way (run to end-of-line).
+
+**Attachment is CST-node, not trivia-walk** — decided once,
+structurally, by the parser (the layer with the most context), not
+re-derived per-consumer:
+- A contiguous run of `///` lines (a blank line, or a plain `//`
+  line, breaks the run — same contiguity rule the old trivia-walk
+  used) immediately preceding a declaration becomes a `DOC_COMMENT`
+  CST node emitted as **the leading child of that declaration's own
+  node** (`FLOW_DECL { DOC_COMMENT, KW_FLOW, IDENT, … }`, not a
+  floating sibling). The AST's `.doc()` accessor reads it directly —
+  no backward token walk, ever, on the native surface.
+- A contiguous run of `//!` lines at the very start of a `flow`/`fn`
+  body (leading blank lines tolerated; real content first
+  disqualifies it) becomes a `DOC_COMMENT` node as the leading child
+  of the enclosing `BLOCK` — `ast::Block::doc()`. Same shape at the
+  very start of a file (`ast::SourceFile::doc()`), CST-only for now:
+  no native HIR type represents whole-file identity yet (§13.2:
+  identity is filesystem-derived, a project-layer fact), so nothing
+  consumes it below the AST today — reserved for the LSP/fmt/
+  source-map consumers this attachment model exists to serve.
+- One `DOC_COMMENT` node shape covers both spellings; a
+  `.is_inner()` accessor tells them apart by which token kind (
+  `DOC_COMMENT_OUTER` vs `DOC_COMMENT_INNER`) its children carry.
+  Neither token is trivia (`SyntaxKind::is_trivia`) — the parser
+  dispatches on them directly, so a formatter or LSP hover walking
+  the tree finds the doc exactly where the grammar says it lives.
+- **Judgment call, flagged for a later ruling, not resolved here**:
+  an *unattached* `///` run — nothing declaration-shaped follows —
+  falls back to sitting bare in the tree with no diagnostic, same
+  posture as ordinary trivia. Whether that should instead earn an
+  `unused_doc_comment`-style warning is open.
+- When both spellings are present on the same container (a leading
+  `///` before `flow`, AND a `//!` at the top of its own body), the
+  outer form wins and the inner form is simply not consulted — they
+  are not merged. Not a hard ruling, a pragmatic default: the outer
+  form is the one visible without opening the container.
+
+**Content model unchanged, and deliberately NOT pushed into the
+grammar** — the `@param name {type}` / `@returns {type}` / `@kind`
+tag vocabulary stays a plain string-parse over the attached node's
+lines (`DocBlock`, `@`-tag handling, E038 malformed / E043
+inapplicable-to-this-declaration-kind), now factored so both
+frontends' attachment steps (native's CST-node read; ink's trivia
+walk) feed the identical parser. Rejected the heavier alternative
+(a real grammar production for `@param`/`@returns`/`@kind`, coupling
+the grammar to the host-manifest tag vocabulary and `TypeRef`) as
+disproportionate to what the tags need to express.
+
+## 15. Story entry: `flow main()` (RULED, 2026-07-21, #1106 G-batch)
+
+**A top-level `flow main()` is a native story's default standalone
+entry point.** No new syntax — the RustScript-idiomatic answer to
+"where does a `.brink` story start", mirroring `fn main()`.
+Mechanically, `lower_native::lower` synthesizes `root_content` as a
+single `Divert` into `main` (the same `Divert`/`Block` HIR ink's
+own root-content-is-the-entry model already uses — see
+`crates/internal/brink-ir/src/hir/lower_native/mod.rs`'s
+`entry_root_content`). A file/project with no top-level `main`
+compiles with an empty `root_content` — not an error, just "no
+standalone entry point"; any other top-level `flow`/`fn` remains a
+**host entry point** only (effects-spec §10 "play from here" —
+engine-driven scene entry by absolute path, unaffected by this
+ruling). A `main` that takes parameters is not matched (a bare
+entry divert can supply none) — it stays an ordinary, host-enterable
+flow.
+
+This resolves the long-flagged native story-entry question (#1106 /
+the G-batch) that the `exhibit-fogg-passage` respell fixture first
+surfaced (PR #1202): a top-level bare `-> flow` entry-divert line is
+now **superseded** by the `main` naming convention, not a parallel
+spelling — the respell corpus (`tests/tier1-brink-respell/`) was
+updated to match (docs/decision-log.md, "B0.10: flow main() native
+story-entry convention").
+
+**Open question surfaced by first light, not yet ruled**: ink grants
+literal ROOT content a free pass to end implicitly (no `-> END`
+needed — running off the end of the story's outermost content is
+`Ended`, not an error) but does **not** grant that same grace to a
+knot/flow's content reached by an ordinary divert (running off the
+end there is ink's own "ran out of content, do you need a '-> DONE'
+or '-> END'?" error). Wrapping former root content in `flow main()`
+per this convention moves it from the first bucket to the second —
+so a `main` that would have relied on ink's root-content grace now
+needs an explicit terminator it didn't need before. Whether `main`
+should inherit root's implicit-end grace (since it now plays root's
+role) or whether native authors are simply expected to always
+terminate `main` explicitly (arguably in keeping with native's more
+explicit posture elsewhere) is not decided by this ruling and needs
+one — see the first-light build report (issue #1106) for the
+concrete fixtures (`const-vars`, `simple-glue`, `basic-tunnel`) this
+affects.

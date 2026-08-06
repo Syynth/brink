@@ -1,0 +1,16 @@
+flow narrate(name, gold, player, x) {
+  <> But surely.
+  You have three gold coins.
+  (start) You arrive at the garden.
+  // just a comment
+  Hello /* aside */ world
+  Roll: {12}
+  Roll: {3.5}
+  Say: {"hi"}
+  Flag: {true}
+  Flag: {false}
+  Hello {name}
+  HP: {player.stats.hp}
+  Sum: {(1 + 2)}
+  Delta: {-x}
+}

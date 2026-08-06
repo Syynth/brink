@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn chapter_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -101,12 +101,11 @@ fn run_ink(ink_src: &str) -> String {
             .continue_single()
             .unwrap_or_else(|e| panic!("chapter example faulted: {e:?}\n--- source ---\n{ink_src}"))
         {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => {
+            Step::Choices(_) => {
                 panic!("chapter example presented choices (must be straight-line):\n{ink_src}");
             }
         }

@@ -26,6 +26,7 @@ pub fn token_type_names() -> &'static [&'static str] {
         "decorator",  // 11 tags (#)
         "label",      // 12 labels, gather names
         "struct",     // 13 STRUCT declarations (TM-4b)
+        "property",   // 14 struct-field segments of a dotted field access
     ]
 }
 
@@ -55,6 +56,7 @@ const TT_PARAMETER: u32 = 10;
 const TT_DECORATOR: u32 = 11;
 const TT_LABEL: u32 = 12;
 const TT_STRUCT: u32 = 13;
+const TT_PROPERTY: u32 = 14;
 
 // ── Modifier bitmasks ──────────────────────────────────────────────
 
@@ -299,25 +301,89 @@ fn classify_ident_by_resolution(
     }
 
     // Try the parent IDENTIFIER node range (resolutions may use the node range)
-    if let Some(parent) = token.parent() {
-        if parent.kind() == SyntaxKind::IDENTIFIER
-            && let Some(&sym_kind) = resolution_index.get(&parent.text_range())
-        {
-            return symbol_kind_to_classification(sym_kind);
-        }
-        // Try the PATH grandparent range too
-        if parent.kind() == SyntaxKind::IDENTIFIER
-            && let Some(grandparent) = parent.parent()
-            && grandparent.kind() == SyntaxKind::PATH
-            && let Some(&sym_kind) = resolution_index.get(&grandparent.text_range())
-        {
-            return symbol_kind_to_classification(sym_kind);
-        }
+    let Some(parent) = token.parent() else {
+        return GENERIC_VARIABLE;
+    };
+    if parent.kind() == SyntaxKind::IDENTIFIER
+        && let Some(&sym_kind) = resolution_index.get(&parent.text_range())
+    {
+        return symbol_kind_to_classification(sym_kind);
     }
 
-    // Fallback: generic variable
+    // Try the enclosing PATH node's range. A dotted reference's resolution is
+    // recorded against the *whole* path (`brink_ir::ResolvedRef::range`'s
+    // load-bearing whole-path contract, pinned by #1561), so this is the only
+    // range a segment of `p.x.y` / `Colors.Red` can be looked up by. The
+    // segment tokens sit directly under `PATH` in some shapes and inside an
+    // `IDENTIFIER` wrapper in others, so both are accepted.
+    let path = if parent.kind() == SyntaxKind::PATH {
+        Some(parent.clone())
+    } else if parent.kind() == SyntaxKind::IDENTIFIER {
+        parent.parent().filter(|gp| gp.kind() == SyntaxKind::PATH)
+    } else {
+        None
+    };
+    if let Some(path) = path
+        && let Some(&sym_kind) = resolution_index.get(&path.text_range())
+    {
+        return classify_path_segment(&path, token, sym_kind);
+    }
+
+    GENERIC_VARIABLE
+}
+
+/// The classification for an identifier no resolution accounts for.
+const GENERIC_VARIABLE: Classification = Classification {
+    token_type: TT_VARIABLE,
+    modifiers: 0,
+};
+
+/// Classify one segment of a dotted `PATH` whose *whole* range carries the
+/// resolution `sym_kind` (issue #1571).
+///
+/// Only ONE segment of such a path actually names the resolved symbol —
+/// handing `sym_kind`'s colour to all of them rendered `p.x.y` as a single
+/// flat `variable` run. Which segment it is depends on the kind, exactly as
+/// it does for `rename`'s range narrowing (`ufcs_hover`'s
+/// `field_access_head_range_at_path` vs `qualified_tail_range_at_path`):
+///
+/// - a **value** (`Variable`/`Constant`/`Param`/`Temp`) is named by the
+///   *head* — `p` in `p.x.y` (`resolve::lookup_variable` step 11) — and the
+///   trailing segments are struct field names, so they get `property`;
+/// - a **stitch**, **list item** or **label** is named by the *tail* —
+///   `market` in `hub.market`, `Red` in `Colors.Red` — and the leading
+///   segments are qualifiers this pass cannot resolve on their own, so they
+///   keep the unresolved-identifier fallback;
+/// - every other kind resolves from a single-segment path, where head and
+///   tail are the same token.
+fn classify_path_segment(
+    path: &SyntaxNode,
+    token: &brink_syntax::SyntaxToken,
+    sym_kind: SymbolKind,
+) -> Classification {
+    let named_by_tail = matches!(
+        sym_kind,
+        SymbolKind::Stitch | SymbolKind::ListItem | SymbolKind::Label
+    );
+    let segments: Vec<TextRange> = path
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::IDENT)
+        .map(|t| t.text_range())
+        .collect();
+    let naming = if named_by_tail {
+        segments.last()
+    } else {
+        segments.first()
+    };
+    if naming == Some(&token.text_range()) {
+        return symbol_kind_to_classification(sym_kind);
+    }
+    if named_by_tail {
+        return GENERIC_VARIABLE;
+    }
     Classification {
-        token_type: TT_VARIABLE,
+        token_type: TT_PROPERTY,
         modifiers: 0,
     }
 }
@@ -363,10 +429,402 @@ fn symbol_kind_to_classification(kind: SymbolKind) -> Classification {
     }
 }
 
+// ── Native (`.brink`) token classification (issue #2280) ───────────
+//
+// `brink_syntax_native::SyntaxKind` is a peer enum with its own discriminant
+// space (NF-1 ruling) — a native file's tokens are never `brink_syntax`
+// values, so they need their own classifier rather than an extra arm on
+// [`classify_token`]. `symbol_kind_to_classification`/`GENERIC_VARIABLE`
+// above are frontend-agnostic (they dispatch on `brink_ir::SymbolKind`, not
+// on either `SyntaxKind`), so both classifiers share them.
+
+/// Node kinds whose parser raw-bumps arbitrary source text into one CST
+/// node, regardless of what the shared lexer tagged each byte as: `TEXT`
+/// (`content::text_run_until`), `CUE_NAME` (`element::cue_name`), `TAG`
+/// (`content::tag`), and `SCENE_TITLE` (`element::scene_title`). A leaf
+/// whose direct parent is one of these is literal prose — a keyword
+/// lexeme, a `-`, or a digit run inside one of them is text, never a
+/// keyword/operator/number (review finding on #2280/#2286: the original
+/// "absorbed into prose" carve-out only checked `TEXT`, missing the three
+/// other raw-bump runs the native grammar introduced).
+fn is_prose_run_container(kind: brink_syntax_native::SyntaxKind) -> bool {
+    use brink_syntax_native::SyntaxKind as NK;
+    matches!(kind, NK::TEXT | NK::CUE_NAME | NK::TAG | NK::SCENE_TITLE)
+}
+
+fn classify_native_token(
+    token: &brink_syntax_native::SyntaxToken,
+    resolution_index: &HashMap<TextRange, SymbolKind>,
+) -> Option<Classification> {
+    use brink_syntax_native::SyntaxKind as NK;
+    let kind = token.kind();
+
+    // A leaf directly under a string-shaped literal — colour the whole
+    // literal uniformly, however the shared lexer tagged this particular
+    // byte. `lexer::lex_string_token` always emits `[`/`]`/`<>` as their own
+    // punctuation kind even in string mode ("so the parser can find
+    // choice-bracket boundaries... regardless of context, mirroring ink"),
+    // so a plain string/attribute value with no such structural meaning
+    // still gets these as literal children — e.g. a regex character class
+    // `[A-Z]` inside a quoted string. Checked before anything else so it
+    // wins over the "tokens we never highlight" skip list below (`[`/`]`
+    // would otherwise vanish instead of reading as string content).
+    // `SPAN_ATTR_VALUE` shares the same STRING_TEXT/STRING_ESCAPE/QUOTE
+    // token shape (deliberately with no INTERPOLATION arm, so this is safe
+    // unconditionally). `STRING_LIT`'s own INTERPOLATION child (`{expr}`)
+    // is a distinct node one level down — its own descendants have a
+    // different immediate parent, so they fall through and classify
+    // normally as an expression, not as string text.
+    if token
+        .parent()
+        .is_some_and(|p| matches!(p.kind(), NK::STRING_LIT | NK::SPAN_ATTR_VALUE))
+    {
+        return Some(Classification {
+            token_type: TT_STRING,
+            modifiers: 0,
+        });
+    }
+
+    // Skip tokens we never highlight (mirrors `classify_token`'s ink list).
+    if matches!(
+        kind,
+        NK::WHITESPACE
+            | NK::NEWLINE
+            | NK::EOF
+            | NK::ERROR_TOKEN
+            | NK::L_PAREN
+            | NK::R_PAREN
+            | NK::L_BRACE
+            | NK::R_BRACE
+            | NK::L_BRACKET
+            | NK::R_BRACKET
+            | NK::COMMA
+            | NK::DOT
+            | NK::COLON
+            | NK::COLON_COLON
+            | NK::SEMICOLON
+            | NK::PIPE
+            | NK::BACKSLASH
+    ) {
+        return None;
+    }
+
+    if matches!(
+        kind,
+        NK::LINE_COMMENT | NK::BLOCK_COMMENT | NK::DOC_COMMENT_OUTER | NK::DOC_COMMENT_INNER
+    ) {
+        return Some(Classification {
+            token_type: TT_COMMENT,
+            modifiers: 0,
+        });
+    }
+
+    if kind.is_keyword() {
+        // Native hard-reserves keywords everywhere at the lexer (Finding #1,
+        // `syntax_kind.rs`'s keyword-section doc) — unlike ink, a prose word
+        // that happens to spell a keyword (`or`, `if`, ...) still lexes as
+        // that keyword token. The *parser* is what decides a run is prose,
+        // folding such tokens into a `TEXT` node exactly as it does the
+        // `@`/`AT` sigil (`SyntaxKind::AT`'s doc) — so the same "absorbed
+        // into TEXT" guard ink's `classify_token` uses for #275 applies here
+        // too, just for a different reason. Extended to every raw-bump run,
+        // not only `TEXT` — `@THE END:`'s `CUE_NAME` lexes `END` as
+        // `KW_END`, and a `#if only` tag lexes `if` as `KW_IF`; both are a
+        // character name / tag text, not a keyword (review finding on
+        // #2280/#2286).
+        if token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
+        {
+            return None;
+        }
+        return Some(Classification {
+            token_type: TT_KEYWORD,
+            modifiers: 0,
+        });
+    }
+
+    if kind == NK::AT {
+        // The bare `@` sigil only means something when it opens a cue
+        // (`SyntaxKind::AT`'s doc: "anywhere else... it folds into plain
+        // TEXT"). A detached `@ 5pm` in prose sits directly under `TEXT`,
+        // same shape as the keyword carve-out above — check the same way.
+        return token
+            .parent()
+            .filter(|p| matches!(p.kind(), NK::CUE | NK::COMPACT_CUE))
+            .map(|_| Classification {
+                token_type: TT_DECORATOR,
+                modifiers: 0,
+            });
+    }
+
+    if kind == NK::IDENT {
+        return classify_native_ident(token, resolution_index);
+    }
+
+    // A `-` or digit run inside a raw-bump prose container is literal text
+    // (`INT. HALL - DAY`'s `-`, `@JEAN-LUC`'s `-`), not an operator or a
+    // number — `classify_native_fixed_kind` below has no parent access at
+    // all, so it cannot tell these apart from a real `-`/numeric-literal
+    // token on its own; check parent-awareness here first (review finding
+    // on #2280/#2286, the same hole as the keyword carve-out above).
+    if matches!(kind, NK::MINUS | NK::INTEGER | NK::FLOAT)
+        && token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
+    {
+        return None;
+    }
+
+    classify_native_fixed_kind(kind)
+}
+
+/// The context-free half of [`classify_native_token`] — every `SyntaxKind`
+/// whose colour never depends on where the token sits in the tree. Split out
+/// only to keep each function under the pedantic line-count lint; there is
+/// no semantic reason these couldn't be one big `match`.
+fn classify_native_fixed_kind(kind: brink_syntax_native::SyntaxKind) -> Option<Classification> {
+    use brink_syntax_native::SyntaxKind as NK;
+
+    if matches!(kind, NK::INTEGER | NK::FLOAT) {
+        return Some(Classification {
+            token_type: TT_NUMBER,
+            modifiers: 0,
+        });
+    }
+
+    if matches!(kind, NK::STRING_TEXT | NK::STRING_ESCAPE | NK::QUOTE) {
+        return Some(Classification {
+            token_type: TT_STRING,
+            modifiers: 0,
+        });
+    }
+
+    if matches!(
+        kind,
+        NK::DIVERT
+            | NK::THREAD
+            | NK::GLUE
+            | NK::TILDE
+            | NK::EQ
+            | NK::EQ_EQ
+            | NK::BANG_EQ
+            | NK::LT
+            | NK::GT
+            | NK::LT_EQ
+            | NK::GT_EQ
+            | NK::PLUS
+            | NK::MINUS
+            | NK::STAR
+            | NK::SLASH
+            | NK::PERCENT
+            | NK::CARET
+            | NK::BANG
+            | NK::QUESTION
+            | NK::AMP
+            | NK::AMP_AMP
+            | NK::PLUS_EQ
+            | NK::MINUS_EQ
+            | NK::STAR_EQ
+            | NK::SLASH_EQ
+            | NK::FAT_ARROW
+    ) {
+        return Some(Classification {
+            token_type: TT_OPERATOR,
+            modifiers: 0,
+        });
+    }
+
+    if kind == NK::HASH || kind == NK::AT_L_BRACKET {
+        return Some(Classification {
+            token_type: TT_DECORATOR,
+            modifiers: 0,
+        });
+    }
+
+    None
+}
+
+fn classify_native_ident(
+    token: &brink_syntax_native::SyntaxToken,
+    resolution_index: &HashMap<TextRange, SymbolKind>,
+) -> Option<Classification> {
+    use brink_syntax_native::SyntaxKind as NK;
+    let parent = token.parent()?;
+
+    match parent.kind() {
+        NK::STRUCT_DECL => Some(Classification {
+            token_type: TT_STRUCT,
+            modifiers: MOD_DECLARATION,
+        }),
+        NK::FLOW_DECL | NK::MODULE_DECL => Some(Classification {
+            token_type: TT_NAMESPACE,
+            modifiers: MOD_DECLARATION,
+        }),
+        // `SCENE_SLUG` shares this arm deliberately: `[slug]` on a scene
+        // heading names the stitch the heading declares (`element::
+        // scene_stitch`'s doc: "a heading declares a stitch"), so it is the
+        // same classification as any other stitch header (review finding on
+        // #2280/#2286). Kept folded in rather than as its own identical arm —
+        // clippy's `match_same_arms` denies the duplicate.
+        NK::FN_DECL | NK::EXTERN_DECL | NK::SCENE_SLUG => Some(Classification {
+            token_type: TT_FUNCTION,
+            modifiers: MOD_DECLARATION,
+        }),
+        NK::PARAM => Some(Classification {
+            token_type: TT_PARAMETER,
+            modifiers: MOD_DECLARATION,
+        }),
+        NK::VAR_DECL | NK::LET_STMT => Some(Classification {
+            token_type: TT_VARIABLE,
+            modifiers: MOD_DECLARATION,
+        }),
+        NK::CONST_DECL => Some(Classification {
+            token_type: TT_VARIABLE,
+            modifiers: MOD_DECLARATION | MOD_READONLY,
+        }),
+        NK::FLAGS_DECL => Some(Classification {
+            token_type: TT_ENUM,
+            modifiers: MOD_DECLARATION,
+        }),
+        NK::FLAGS_MEMBER => Some(Classification {
+            token_type: TT_ENUM_MEMBER,
+            modifiers: MOD_DECLARATION,
+        }),
+        NK::STRUCT_FIELD => Some(Classification {
+            token_type: TT_PROPERTY,
+            modifiers: MOD_DECLARATION,
+        }),
+        // `LABEL`: `(name)` — a choice/gather label. `CUE_NAME`: the name
+        // inside an `@NAME`/`@NAME:` block cue — both are named markers, so
+        // they share `label`.
+        NK::LABEL | NK::CUE_NAME => Some(Classification {
+            token_type: TT_LABEL,
+            modifiers: MOD_DECLARATION,
+        }),
+        // A type reference — the fixed-set built-ins (`int`, `string`, ...)
+        // have no resolvable symbol at all, and a user `struct` name here is
+        // a *use*, not the declaration `STRUCT_DECL` matches above — reuse
+        // `struct`, the legend's closest entry to "type" (issue #2280's
+        // table: "string -> type", and no dedicated `type` token exists).
+        NK::TYPE_NAME | NK::TYPE_GENERIC => Some(Classification {
+            token_type: TT_STRUCT,
+            modifiers: 0,
+        }),
+        // `!name rest…` self-announcing dispatch sigil.
+        NK::DISPATCH_NAME => Some(Classification {
+            token_type: TT_FUNCTION,
+            modifiers: 0,
+        }),
+        // `@[name(...)]` — the annotation's own name.
+        NK::ANNOTATION_LINE => Some(Classification {
+            token_type: TT_DECORATOR,
+            modifiers: 0,
+        }),
+        // `@[...(arg, name = value, ...)]` — one argument's name.
+        NK::ANNOTATION_ARG => Some(Classification {
+            token_type: TT_PARAMETER,
+            modifiers: 0,
+        }),
+        // `INT. TITLE - DAY` — the heading's display name. Narrative text,
+        // not a symbol reference; without this arm every word fell through
+        // to the resolution fallback below and rendered as a plain
+        // `variable` — precisely #2280's own worked example (review finding
+        // on #2280/#2286).
+        NK::SCENE_TITLE => None,
+        // `PATH`/other contexts — try the resolution index.
+        _ => Some(classify_native_ident_by_resolution(token, resolution_index)),
+    }
+}
+
+fn classify_native_ident_by_resolution(
+    token: &brink_syntax_native::SyntaxToken,
+    resolution_index: &HashMap<TextRange, SymbolKind>,
+) -> Classification {
+    use brink_syntax_native::SyntaxKind as NK;
+
+    // Try the token's own range first.
+    if let Some(&sym_kind) = resolution_index.get(&token.text_range()) {
+        return symbol_kind_to_classification(sym_kind);
+    }
+
+    // Try the immediate `PATH_SEGMENT` wrapper's range — native wraps every
+    // path segment (even a single-segment path) in its own `PATH_SEGMENT`
+    // node directly around the `IDENT` (no ink-style extra `IDENTIFIER`
+    // indirection).
+    let Some(parent) = token.parent() else {
+        return GENERIC_VARIABLE;
+    };
+    if parent.kind() == NK::PATH_SEGMENT
+        && let Some(&sym_kind) = resolution_index.get(&parent.text_range())
+    {
+        return symbol_kind_to_classification(sym_kind);
+    }
+
+    // Try the enclosing `PATH` node's range — a dotted reference's
+    // resolution is recorded against the *whole* path
+    // (`brink_ir::ResolvedRef::range`'s frontend-agnostic, load-bearing
+    // whole-path contract, pinned by #1561 for ink and confirmed to hold
+    // identically for native by this issue's own decode probe).
+    let path = if parent.kind() == NK::PATH {
+        Some(parent.clone())
+    } else if parent.kind() == NK::PATH_SEGMENT {
+        parent.parent().filter(|gp| gp.kind() == NK::PATH)
+    } else {
+        None
+    };
+    if let Some(path) = path
+        && let Some(&sym_kind) = resolution_index.get(&path.text_range())
+    {
+        return classify_native_path_segment(&path, token, sym_kind);
+    }
+
+    GENERIC_VARIABLE
+}
+
+/// The native sibling of [`classify_path_segment`] — same "only one segment
+/// actually names the resolved symbol" logic, over native's `PATH`/
+/// `PATH_SEGMENT`/`IDENT` shape instead of ink's `PATH`/`IDENTIFIER`/`IDENT`.
+fn classify_native_path_segment(
+    path: &brink_syntax_native::SyntaxNode,
+    token: &brink_syntax_native::SyntaxToken,
+    sym_kind: SymbolKind,
+) -> Classification {
+    let named_by_tail = matches!(
+        sym_kind,
+        SymbolKind::Stitch | SymbolKind::ListItem | SymbolKind::Label
+    );
+    let segments: Vec<TextRange> = path
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .filter(|t| t.kind() == brink_syntax_native::SyntaxKind::IDENT)
+        .map(|t| t.text_range())
+        .collect();
+    let naming = if named_by_tail {
+        segments.last()
+    } else {
+        segments.first()
+    };
+    if naming == Some(&token.text_range()) {
+        return symbol_kind_to_classification(sym_kind);
+    }
+    if named_by_tail {
+        return GENERIC_VARIABLE;
+    }
+    Classification {
+        token_type: TT_PROPERTY,
+        modifiers: 0,
+    }
+}
+
 // ── Multi-line splitting ───────────────────────────────────────────
 
-fn emit_token(
-    token: &brink_syntax::SyntaxToken,
+/// Generic over the rowan `Language` so both the ink (`brink_syntax`) and
+/// native (`brink_syntax_native`) frontends share one line-splitting
+/// implementation — the two `SyntaxKind` enums differ, but `text()`/
+/// `text_range()` are plain `rowan::SyntaxToken<L>` methods.
+fn emit_token<L: rowan::Language>(
+    token: &rowan::SyntaxToken<L>,
     classification: &Classification,
     idx: &LineIndex,
     out: &mut Vec<RawToken>,
@@ -496,6 +954,54 @@ pub fn semantic_tokens_range(
         .collect()
 }
 
+/// Compute raw (absolute-position) semantic tokens for a native (`.brink`)
+/// file's whole CST (issue #2280) — the native sibling of [`semantic_tokens`].
+/// Callers must feed this the file's *native* parse
+/// (`ProjectDb::parse_native`/`IdeSession::syntax_root_native`), never the
+/// ink one: `ProjectDb::parse`/`IdeSession::syntax_root` always run the ink
+/// frontend regardless of the file's extension (that dispatch happens only
+/// in `lowered_query`), so calling this with an ink-parsed root would just
+/// reproduce the original bug one layer down.
+pub fn semantic_tokens_native(
+    source: &str,
+    root: &brink_syntax_native::SyntaxNode,
+    analysis: &AnalysisResult,
+    file_id: FileId,
+) -> Vec<RawToken> {
+    let resolution_index = build_resolution_index(analysis, file_id);
+    let idx = LineIndex::new(source);
+    let mut raw_tokens = Vec::new();
+
+    for element in root.descendants_with_tokens() {
+        let token = match element {
+            rowan::NodeOrToken::Token(t) => t,
+            rowan::NodeOrToken::Node(_) => continue,
+        };
+
+        if let Some(classification) = classify_native_token(&token, &resolution_index) {
+            emit_token(&token, &classification, &idx, &mut raw_tokens);
+        }
+    }
+
+    raw_tokens
+}
+
+/// Compute native raw semantic tokens filtered to a line range — the native
+/// sibling of [`semantic_tokens_range`].
+pub fn semantic_tokens_range_native(
+    source: &str,
+    root: &brink_syntax_native::SyntaxNode,
+    analysis: &AnalysisResult,
+    file_id: FileId,
+    start_line: u32,
+    end_line: u32,
+) -> Vec<RawToken> {
+    let raw = semantic_tokens_native(source, root, analysis, file_id);
+    raw.into_iter()
+        .filter(|t| t.line >= start_line && t.line <= end_line)
+        .collect()
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -518,6 +1024,99 @@ mod tests {
         let root = parse.syntax();
         let analysis = empty_analysis();
         semantic_tokens(source, &root, &analysis, FileId(0))
+    }
+
+    /// Tokens produced against a *real* analysis (resolutions included),
+    /// rather than [`empty_analysis`]'s resolution-free stand-in — the
+    /// resolution index is what drives dotted-path classification.
+    fn analyzed_tokens(source: &str) -> Vec<RawToken> {
+        let mut session = crate::session::IdeSession::new();
+        let file_id = session.update_and_analyze("t.ink", source.to_string());
+        let root = session.syntax_root(file_id).expect("syntax root");
+        let analysis = session.analysis().expect("analysis");
+        semantic_tokens(source, &root, analysis, file_id)
+    }
+
+    /// The native (`.brink`) sibling of [`analyzed_tokens`] (issue #2280) —
+    /// routed through `syntax_root_native`/`semantic_tokens_native`, the
+    /// same path `brink-web`'s `semantic_tokens_impl` now dispatches to for
+    /// a native file.
+    fn analyzed_native_tokens(source: &str) -> Vec<RawToken> {
+        let mut session = crate::session::IdeSession::new();
+        let file_id = session.update_and_analyze("t.brink", source.to_string());
+        let root = session
+            .syntax_root_native(file_id)
+            .expect("native syntax root");
+        let analysis = session.analysis().expect("analysis");
+        semantic_tokens_native(source, &root, analysis, file_id)
+    }
+
+    /// Decode a token's `(line, start_char, length)` back onto `source`,
+    /// returning the exact substring it covers — issue #2280's mandate is to
+    /// verify by decoding tokens onto source text, never by asserting a
+    /// count or non-emptiness (both would pass against the pre-fix output
+    /// too). Every source these tests use is ASCII, so a UTF-16 column is
+    /// also a byte column.
+    fn token_text<'a>(source: &'a str, tok: &RawToken) -> &'a str {
+        let line_text = source.split('\n').nth(tok.line as usize).unwrap_or("");
+        let start = (tok.start_char as usize).min(line_text.len());
+        let end = (start + tok.length as usize).min(line_text.len());
+        &line_text[start..end]
+    }
+
+    #[test]
+    fn field_access_segments_are_not_coloured_as_the_head_variable() {
+        // Issue #1571: the `ResolvedRef` for `p.x` is recorded against the
+        // *whole* path (a load-bearing contract pinned by #1561), so the
+        // PATH-grandparent fallback used to hand every segment of the path
+        // the head variable's own classification — `p.x` rendered as one
+        // flat `variable` run. Only the head names the variable; the rest
+        // are struct field names.
+        let src = "VAR p = 0\n=== main ===\n~ y = p.x\n-> DONE\n";
+        let tokens = analyzed_tokens(src);
+
+        // Line 2 is `~ y = p.x`: `p` at column 6, `x` at column 8.
+        let at = |line: u32, col: u32| {
+            tokens
+                .iter()
+                .find(|t| t.line == line && t.start_char == col)
+                .expect("a semantic token at the requested line/column")
+        };
+        assert_eq!(
+            at(2, 6).token_type,
+            TT_VARIABLE,
+            "the head segment still names the resolved variable"
+        );
+        assert_eq!(
+            at(2, 8).token_type,
+            TT_PROPERTY,
+            "the trailing field segment must not reuse the head variable's colour"
+        );
+    }
+
+    #[test]
+    fn a_qualified_list_item_reference_colours_its_tail_segment() {
+        // The kind gate's other side: `Colors.Red` resolves to a LIST ITEM,
+        // which the path's *last* segment names — so `Red` gets the
+        // enumMember colour and the `Colors.` qualifier (a symbol this pass
+        // resolves nothing for on its own) keeps the plain fallback, rather
+        // than the whole path being painted one colour.
+        let src = "LIST Colors = Red, Green\n=== main ===\n~ c = Colors.Red\n-> DONE\n";
+        let tokens = analyzed_tokens(src);
+
+        // Line 2 is `~ c = Colors.Red`: `Colors` at column 6, `Red` at 13.
+        let at = |line: u32, col: u32| {
+            tokens
+                .iter()
+                .find(|t| t.line == line && t.start_char == col)
+                .expect("a semantic token at the requested line/column")
+        };
+        assert_eq!(at(2, 13).token_type, TT_ENUM_MEMBER, "`Red` names the item");
+        assert_eq!(
+            at(2, 6).token_type,
+            TT_VARIABLE,
+            "the `Colors` qualifier must not be painted as the item itself"
+        );
     }
 
     #[test]
@@ -735,5 +1334,302 @@ mod tests {
         // Only tokens on line 2
         let all_line2: Vec<_> = all.iter().filter(|t| t.line == 2).collect();
         assert_eq!(range_tokens.len(), all_line2.len());
+    }
+
+    // ── Native (`.brink`) classification (issue #2280) ──────────────
+    //
+    // Every assertion below decodes a token's `(line, start_char, length)`
+    // back onto the source text via `token_text` and checks the resulting
+    // substring, per the issue's mandate — a token-count or
+    // non-emptiness assertion would have passed against the pre-fix
+    // behaviour (every one of these identifiers was already emitted, just
+    // uniformly misclassified as `variable`).
+
+    #[test]
+    fn native_struct_decl_and_field_are_not_variable() {
+        let src = "struct Cue {\n    speaker: string,\n}\n";
+        let tokens = analyzed_native_tokens(src);
+
+        let find = |text: &str| {
+            let found = tokens.iter().find(|t| token_text(src, t) == text);
+            assert!(
+                found.is_some(),
+                "no semantic token decodes to {text:?}: {tokens:?}"
+            );
+            found.expect("checked above")
+        };
+
+        assert_eq!(
+            find("struct").token_type,
+            TT_KEYWORD,
+            "`struct` is a keyword"
+        );
+        assert_eq!(
+            find("Cue").token_type,
+            TT_STRUCT,
+            "the struct's own name must not read as a plain `variable`"
+        );
+        assert_ne!(
+            find("Cue").token_type,
+            TT_VARIABLE,
+            "the pre-fix bug: every native identifier fell back to `variable`"
+        );
+        assert_eq!(
+            find("speaker").token_type,
+            TT_PROPERTY,
+            "a struct field name is a property, not a `variable`"
+        );
+        assert_ne!(find("speaker").token_type, TT_VARIABLE);
+        assert_ne!(
+            find("string").token_type,
+            TT_VARIABLE,
+            "a field's type reference must not read as a plain `variable`"
+        );
+    }
+
+    #[test]
+    fn native_annotation_name_and_arg_name_are_not_variable() {
+        let src = "@[convention(claims = \"x\")]\nflow main() {\n    -> DONE\n}\n";
+        let tokens = analyzed_native_tokens(src);
+
+        let find = |text: &str| {
+            let found = tokens.iter().find(|t| token_text(src, t) == text);
+            assert!(
+                found.is_some(),
+                "no semantic token decodes to {text:?}: {tokens:?}"
+            );
+            found.expect("checked above")
+        };
+
+        assert_eq!(
+            find("convention").token_type,
+            TT_DECORATOR,
+            "the annotation's own name reads as a decorator, not `variable`"
+        );
+        assert_eq!(
+            find("claims").token_type,
+            TT_PARAMETER,
+            "an annotation argument name reads as a parameter, not `variable`"
+        );
+    }
+
+    #[test]
+    fn native_regex_string_literal_is_not_fragmented() {
+        // The issue's own repro: a character class inside a quoted string
+        // (`[A-Z]`) — native's shared lexer emits `[`/`]` as their own
+        // punctuation kind even in string mode (`lexer::lex_string_token`'s
+        // doc), so a naive per-leaf-kind classifier paints the brackets a
+        // different colour than the surrounding string content. Every token
+        // whose range falls inside the quotes must decode as `string`.
+        let src = "@[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\")]\nflow main() {\n    -> DONE\n}\n";
+        let tokens = analyzed_native_tokens(src);
+
+        let quote_start = src.find('"').expect("opening quote");
+        let quote_end = src.rfind('"').expect("closing quote");
+
+        let inside_string: Vec<&RawToken> = tokens
+            .iter()
+            .filter(|t| {
+                // Line 0 only — every token in this fixture's string sits on
+                // the first line, so start_char doubles as a byte offset.
+                t.line == 0
+                    && (t.start_char as usize) > quote_start
+                    && (t.start_char as usize) < quote_end
+            })
+            .collect();
+
+        assert!(
+            inside_string.len() > 1,
+            "expected the string to still decode as multiple leaf tokens \
+             (the lexer's bracket-always-breaks-out behaviour is unchanged \
+             by this fix — only its *colour* is): {inside_string:?}"
+        );
+        for tok in &inside_string {
+            assert_eq!(
+                tok.token_type,
+                TT_STRING,
+                "every fragment inside the string literal must read as `string`, \
+                 got {:?} decoding to {:?}",
+                tok.token_type,
+                token_text(src, tok)
+            );
+        }
+        // Full-coverage check: a classifier that just *skips* the bracket
+        // tokens (rather than recolouring them) would pass the per-token
+        // loop above vacuously — every remaining fragment is still `string`,
+        // there's just a silent gap where the brackets used to be. Assert
+        // the fragments concatenate back to the literal's exact interior
+        // text, so a dropped token is caught too.
+        let mut by_start: Vec<&&RawToken> = inside_string.iter().collect();
+        by_start.sort_by_key(|t| t.start_char);
+        let decoded: String = by_start.iter().map(|t| token_text(src, t)).collect();
+        let expected = &src[quote_start + 1..quote_end];
+        assert_eq!(
+            decoded, expected,
+            "the string's tokens must cover its full interior with no gaps"
+        );
+
+        // And the pre-`{`/post-`}` interpolation guard: a bracket outside
+        // the string must NOT be forced to `string` just because it's a
+        // bracket — sanity check that the fix is scoped to STRING_LIT's
+        // direct children.
+        let flow_kw = tokens
+            .iter()
+            .find(|t| token_text(src, t) == "flow")
+            .expect("flow keyword token");
+        assert_eq!(flow_kw.token_type, TT_KEYWORD);
+    }
+
+    #[test]
+    fn native_dotted_field_access_head_and_property_are_distinguished() {
+        // Mirrors `field_access_segments_are_not_coloured_as_the_head_variable`
+        // (#1571) for native's PATH/PATH_SEGMENT shape (no ink-style
+        // IDENTIFIER wrapper) — confirms the whole-path resolution-range
+        // contract holds identically here.
+        let src = "struct P {\n    x: int,\n}\nvar p: P = P { x: 0 }\nflow main() {\n    ~ let y = p.x\n    -> DONE\n}\n";
+        let tokens = analyzed_native_tokens(src);
+
+        let line = "    ~ let y = p.x";
+        let p_col =
+            u32::try_from(line.find('p').expect("`p` on the assignment line")).expect("fits u32");
+        let x_col =
+            u32::try_from(line.rfind('x').expect("`x` on the assignment line")).expect("fits u32");
+        let line_no = u32::try_from(
+            src.lines()
+                .position(|l| l == line)
+                .expect("the assignment line"),
+        )
+        .expect("fits u32");
+
+        let at = |col: u32| {
+            let found = tokens
+                .iter()
+                .find(|t| t.line == line_no && t.start_char == col);
+            assert!(
+                found.is_some(),
+                "no token at line {line_no} col {col}: {tokens:?}"
+            );
+            found.expect("checked above")
+        };
+
+        assert_eq!(
+            at(p_col).token_type,
+            TT_VARIABLE,
+            "the head segment names the resolved variable"
+        );
+        assert_eq!(
+            at(x_col).token_type,
+            TT_PROPERTY,
+            "the trailing field segment must not reuse the head variable's colour"
+        );
+    }
+
+    #[test]
+    fn native_scene_heading_title_and_slug_are_not_variable() {
+        // #2280's own worked example: `INT. COFFEE SHOP - DAY` had no arm
+        // for `SCENE_TITLE`/`SCENE_SLUG` in `classify_native_ident`'s match,
+        // so every word of the display name (and the slug's stitch name)
+        // fell through to `classify_native_ident_by_resolution` ->
+        // `GENERIC_VARIABLE` — the exact defect the issue names. This is
+        // inside the fence the PR drew: it already covers the sibling
+        // `CUE`/`CUE_NAME`/`COMPACT_CUE` constructs from the same parser
+        // module (`element.rs`).
+        let src = "INT. COFFEE SHOP - DAY [coffee_shop]\nThe morning rush.\n";
+        let tokens = analyzed_native_tokens(src);
+
+        // The title is narrative display text, not a symbol reference — no
+        // token at all should decode to one of its words (the pre-fix bug
+        // *did* emit a token here, just misclassified as `variable`).
+        for word in ["COFFEE", "SHOP", "DAY"] {
+            assert!(
+                tokens.iter().all(|t| token_text(src, t) != word),
+                "scene-title word {word:?} must not get its own semantic token: {tokens:?}"
+            );
+        }
+
+        // The title's `-` is literal text, not an operator.
+        assert!(
+            tokens
+                .iter()
+                .all(|t| !(token_text(src, t) == "-" && t.token_type == TT_OPERATOR)),
+            "the title's `-` must not read as an operator: {tokens:?}"
+        );
+
+        // The slug names the stitch this heading declares.
+        let slug = tokens
+            .iter()
+            .find(|t| token_text(src, t) == "coffee_shop")
+            .expect("a semantic token for the scene slug");
+        assert_eq!(
+            slug.token_type, TT_FUNCTION,
+            "the slug declares a stitch, like any other stitch header"
+        );
+        assert_ne!(
+            slug.modifiers & MOD_DECLARATION,
+            0,
+            "the slug is this stitch's declaration site"
+        );
+    }
+
+    #[test]
+    fn native_cue_name_and_tag_do_not_leak_keyword_or_operator_colours() {
+        // The "absorbed into prose" carve-out (both the keyword guard and
+        // the `-`/digit guard) only checked `NK::TEXT`, but `CUE_NAME`
+        // (`element::cue_name`) and `TAG` (`content::tag`) raw-bump source
+        // text the exact same way, and native hard-reserves keywords
+        // everywhere at the lexer (`lexer/ident.rs`: `"END" => KW_END`) —
+        // so `@THE END:` lexed `END` as `KW_END` with parent `CUE_NAME` and
+        // rendered in keyword colour inside a character name, and `#if
+        // only` did the same for `if` under `TAG`. Same shape as `@JEAN-LUC`
+        // rendering its `-` as an operator.
+        let src = "@THE END: Says who?\n@JEAN-LUC\nHello.\n#if only\n";
+        let tokens = analyzed_native_tokens(src);
+
+        let keyword_texts: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.token_type == TT_KEYWORD)
+            .map(|t| token_text(src, t))
+            .collect();
+        assert!(
+            !keyword_texts.contains(&"END"),
+            "`END` inside a cue name must not read as a keyword: {keyword_texts:?}"
+        );
+        assert!(
+            !keyword_texts.contains(&"if"),
+            "`if` inside a tag must not read as a keyword: {keyword_texts:?}"
+        );
+
+        assert!(
+            tokens
+                .iter()
+                .all(|t| !(token_text(src, t) == "-" && t.token_type == TT_OPERATOR)),
+            "`-` inside a cue name must not read as an operator: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn native_range_filter_works() {
+        // The native sibling of `range_filter_works` — review finding on
+        // #2280/#2286: `semantic_tokens_range_native` had zero callers and
+        // zero tests, unlike its ink sibling (covered by this same test
+        // shape).
+        let source = "flow main() {\n    Hello world\n    -> DONE\n}\n";
+        let mut session = crate::session::IdeSession::new();
+        let file_id = session.update_and_analyze("t.brink", source.to_string());
+        let root = session
+            .syntax_root_native(file_id)
+            .expect("native syntax root");
+        let analysis = session.analysis().expect("analysis");
+
+        let all = semantic_tokens_native(source, &root, analysis, file_id);
+        let range_tokens = semantic_tokens_range_native(source, &root, analysis, file_id, 2, 2);
+
+        // Only tokens on line 2 (`    -> DONE`).
+        let all_line2: Vec<_> = all.iter().filter(|t| t.line == 2).collect();
+        assert_eq!(range_tokens.len(), all_line2.len());
+        assert!(
+            !range_tokens.is_empty(),
+            "line 2 has real tokens to filter to"
+        );
     }
 }

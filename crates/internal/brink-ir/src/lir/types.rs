@@ -1,5 +1,6 @@
 use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
+use crate::lir::lower::CoalesceShape;
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 
 // ─── Program ─────────────────────────────────────────────────────────
@@ -139,6 +140,21 @@ pub enum ConstValue {
     /// Keys are restricted to the ratified scalar domain by construction —
     /// [`ConstMapKey`] has no variant for anything else.
     Map(Vec<(ConstMapKey, ConstValue)>),
+    /// A compile-time-constant record — a `Name#{…}` / `Name { … }`
+    /// construction literal used as a `VAR`/`CONST` declaration default
+    /// (issue #1530). `shape_id` is the dense `ShapeId` the project's
+    /// `ShapeTable` assigned to the named `STRUCT`, and `fields` is in that
+    /// shape's **declaration** order — the same flat, shape-ordered layout
+    /// `Value::Record` and the `RecordNew` opcode use, so no reordering is
+    /// left for codegen to do.
+    ///
+    /// Only ever well-formed: a literal whose shape doesn't resolve, that
+    /// misses a declared field, or that supplies an undeclared one never
+    /// reaches this variant (see `decls::eval_const_struct_literal`).
+    Record {
+        shape_id: u32,
+        fields: Vec<ConstValue>,
+    },
     /// A zero-bound function value baked into a declaration default
     /// (`VAR f = #fn(name)`), T1c — `docs/t1c-spec.md` §2/§6.
     FnRef(DefinitionId),
@@ -360,6 +376,18 @@ pub enum Stmt {
     /// `continue` — jump to the innermost enclosing `LogicWhile`'s condition
     /// re-check.
     LogicContinue,
+
+    /// An `attach = StructName` convention handler's claimed line (issue
+    /// #2108) — see [`crate::hir::Stmt::AttachElement`]'s doc for the full
+    /// rationale. Lowers to `Opcode::AttachElement`: evaluate `expr`, then
+    /// merge its (expected-`Record`) fields into the VM's per-block
+    /// attachment state instead of the output buffer — no line, no event.
+    AttachElement(Expr),
+    /// Closes the run an [`Stmt::AttachElement`] opened — see
+    /// [`crate::hir::Stmt::EndElementRun`]'s doc. Lowers to
+    /// `Opcode::EndElementRun`: clears the VM's accumulated attachment data
+    /// and starts a fresh block.
+    EndElementRun,
 }
 
 /// A `while cond { … }` loop body (T1b).
@@ -632,8 +660,36 @@ pub enum Expr {
 
     // ── Operations ──────────────────────────────────────────────
     Prefix(PrefixOp, Box<Expr>),
+    /// Every `InfixOp` except [`InfixOp::Coalesce`] — that one variant is
+    /// special-cased at lowering time and never reaches this generic form;
+    /// see [`Coalesce`](Self::Coalesce)'s own doc for why.
     Infix(Box<Expr>, InfixOp, Box<Expr>),
     Postfix(Box<Expr>, PostfixOp),
+    /// One step of `x or default` (B1, `docs/stdlib-spec.md` §1.6a, issue
+    /// #1460), short-circuited per issue #1471's ruling —
+    /// `hir::Expr::Infix(_, InfixOp::Coalesce, _)`'s dedicated lowering,
+    /// never folded into the generic [`Infix`](Self::Infix) form the way
+    /// every other `InfixOp` is. Codegens to a real branch
+    /// (`Opcode::CoalesceSome`) rather than a binary opcode, so `rhs` is
+    /// only evaluated when `lhs` turns out to be `none` — a binary opcode
+    /// cannot do that, since both operands would already be on the stack
+    /// before it ran.
+    ///
+    /// `shape` is the collapse-vs-two-Option decision the ruled typing
+    /// makes (`(Option[T],T)->T` vs `(Option[T],Option[T])->Option[U]`).
+    /// It has to be decided *before* the branch runs: the retired binary
+    /// opcode read the answer off `rhs`'s actual runtime value, but
+    /// short-circuiting means `rhs` may never run by the time the join
+    /// point needs to know. So lowering **consumes the analyzer's recorded
+    /// verdict** for the step (`ctx.tables.coalesce`, keyed at the chain root —
+    /// RULED 2026-07-26, `docs/decision-log.md` "Lowering consumes analyzer
+    /// types") rather than sniffing `rhs`'s syntax, which could not see
+    /// through a call's return type or an `Option`-typed local anyway.
+    Coalesce {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        shape: CoalesceShape,
+    },
 
     // ── Calls ───────────────────────────────────────────────────
     /// Call a knot/stitch as a function (ink `== function`).
@@ -750,13 +806,28 @@ pub enum Expr {
         value: Box<Expr>,
     },
     /// `IndexSet`'s sibling for the `remove` stdlib mutator (T1b-3, §5):
-    /// evaluates `base`, `key` and pushes the *updated* container — arrays:
-    /// `Vec::remove(key)` (key is an index, `< len`); maps: remove by key
-    /// (no-op if absent). Never produced by ordinary expression lowering;
-    /// only by the mutator-statement desugaring.
+    /// evaluates `base`, `key` and pushes the *updated* container — remove
+    /// by key, no-op if absent. **Map-only as of issue #1484**: `remove`
+    /// uniformly names identity-based, idempotent-total removal; a
+    /// non-map `base` is a runtime fault (`NotIndexable`). Never produced
+    /// by ordinary expression lowering; only by the mutator-statement
+    /// desugaring. The array-index leg this used to cover is
+    /// [`SeqRemoveAt`](Self::SeqRemoveAt).
     CollectionRemove {
         base: Box<Expr>,
         key: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `remove_at` stdlib mutator (issue
+    /// #1484, joining the `_at` faulting-index family with `CharAt`):
+    /// evaluates `base`, `index` and pushes the *updated* array with the
+    /// element at `index` removed (shifts later elements left,
+    /// `Vec::remove`). Array-only: a non-array `base` is a runtime fault
+    /// (`NotIndexable`). `index` must be `< len` — out-of-range faults
+    /// (`IndexOutOfBounds`). Never produced by ordinary expression
+    /// lowering; only by the mutator-statement desugaring.
+    SeqRemoveAt {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
     /// function (T1b stdlib slice 1 completion, issue #857): `i` indexes
@@ -777,6 +848,25 @@ pub enum Expr {
     OptionNone,
     /// `some(x)` — `Opcode::MakeSome`, total over every value.
     OptionSome(Box<Expr>),
+    /// The `as` binding's condition (B1b, issue #1475) —
+    /// `Opcode::OptionBind(slot)`. Evaluates `value` (an `Option[T]`) and
+    /// yields the **bool** the enclosing `if`/`while`/`{if}` branches on,
+    /// writing the unwrapped payload into temp `slot` on the `some` path
+    /// and leaving the slot untouched on `none`.
+    ///
+    /// The test and the bind are one opcode on purpose: it keeps the
+    /// binding entirely inside condition evaluation, so `while EXPR as n`
+    /// rebinds per iteration for free (the condition is re-evaluated), an
+    /// inline `{if EXPR as n: …}` needs no statement hoisted out of its
+    /// content line, and `value` is evaluated exactly once in every form.
+    /// The only producer is `as`-binding lowering (`lir::lower::blocks`,
+    /// `lir::lower::content`); nothing in the ink/brink dialects can reach
+    /// it.
+    OptionBind {
+        value: Box<Expr>,
+        slot: u16,
+        name: NameId,
+    },
     /// `[s, sub]` → `Option[int]`. The `find(s, sub)` stdlib pure function
     /// (§3, martyr #1 redeemed): USV index of the first occurrence, `none`
     /// when absent.
@@ -849,6 +939,62 @@ pub enum Expr {
     SeqSortedBy {
         seq: Box<Expr>,
         cmp: Box<Expr>,
+    },
+
+    // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) ──
+    /// `Opcode::SeqVerb(Map)`: evaluates an array and a transform function
+    /// value (`fn(T): U`), pushes the array of results in iteration order.
+    /// The callback is pure-required (RULED 2026-07-18) — which is exactly
+    /// what makes "one logical pass, order unobservable" true, so nothing
+    /// downstream may observe how many passes the runtime actually makes.
+    SeqMap {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(Filter)`: evaluates an array and a predicate
+    /// function value (`fn(T): bool`), pushes the retained elements in
+    /// iteration order. Pure-required callback, as [`Expr::SeqMap`].
+    SeqFilter {
+        seq: Box<Expr>,
+        pred: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(Fold)`: evaluates an array, an initial accumulator,
+    /// and a combining function value (`fn(U, T): U`), pushes the final
+    /// accumulator. Left fold in iteration order; pure-required callback.
+    /// Operands are pushed `seq`, `init`, `f` — the runtime pops in
+    /// reverse.
+    SeqFold {
+        seq: Box<Expr>,
+        init: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(FilterMap)`: evaluates an array and an
+    /// `Option`-mapper function value (`fn(T): Option[U]`), pushes the
+    /// unwrapped `some(v)` results in iteration order (drops `none`).
+    /// Pure-required callback, as [`Expr::SeqMap`] — the Option ruling's
+    /// natural companion to `map` (`docs/stdlib-spec.md` §4).
+    SeqFilterMap {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(Each)`: evaluates an array and a callback function
+    /// value (`fn(T)`), runs it once per element in iteration order for its
+    /// side effects, pushes `Null`. The **effectful** spelling (issue #1679
+    /// slice 2, `docs/stdlib-spec.md` §4): unlike the pure quartet above,
+    /// output reaches the transcript and world-writes are legal — never
+    /// E119-gated, never fused.
+    SeqEach {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(MapEach)`: evaluates an array and a transform
+    /// function value (`fn(T): U`), pushes the array of results in
+    /// iteration order. `map`'s **effectful** twin (issue #1679 slice 2):
+    /// the callback may write/emit; sequential, defined element-by-element,
+    /// never fused, never E119-gated.
+    SeqMapEach {
+        seq: Box<Expr>,
+        f: Box<Expr>,
     },
 
     // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
@@ -1008,6 +1154,17 @@ pub enum Expr {
     /// `string(x)` pure conversion intrinsic — display form, identical to
     /// interpolation. Total over every value; never faults.
     ConvertString(Box<Expr>),
+
+    /// The LIR twin of `hir::Expr::Fragment` (`docs/decision-log.md`
+    /// 2026-08-01 "Content-as-value") — internal only, never produced by
+    /// ordinary expression lowering, only by the block-capture machinery
+    /// (`hir::lower_native::element`, issue #1839). Codegens to
+    /// `BeginFragment`, each statement emitted through the normal
+    /// `ContainerEmitter::emit_body` path, `EndFragment` — the identical
+    /// bracket `emit_slot_expr`'s call-composition case already wraps a
+    /// call's side-effect output in, widened to hold an arbitrary captured
+    /// statement run.
+    Fragment(Vec<Stmt>),
 }
 
 impl Expr {

@@ -18,7 +18,7 @@ dangles; charter fix owed.)
    deferred-with-intent.** Design every verb total where honest;
    turn-terminating faults for true domain errors (the E078
    lineage). **RULED 2026-07-18 (supersedes the martyr strategy):
-   `Option[T]` is pulled forward as the third compiler-known
+   `Option<T>` is pulled forward as the third compiler-known
    parameterized builtin (§1.4) — a compiler-owned enum, NO user
    generics unlocked (the `[T]`/`[K: V]` door; evidence + shape on
    #1090). Doctrine: a fault says "your program is wrong"; Option
@@ -40,7 +40,7 @@ dangles; charter fix owed.)
    fields (+defaults). Struct patterns in `let` (match's grammar).
 4. **Intrinsic typing doctrine**: parameterized BUILTINS join the
    static type language — `[T]` arrays, `[K: V]` maps, and
-   `Option[T]` (RULED 2026-07-18) (syntax mirrors literals;
+   `Option<T>` (RULED 2026-07-18) (syntax mirrors literals;
    statically homogeneous; NOT user generics — #1090 candidate
    (b), promoted). Intrinsics carry checker-known polymorphic
    signatures (closed set); UFCS completion reads them. A bare
@@ -59,22 +59,35 @@ dangles; charter fix owed.)
    FINAL value is None renders as nothing — absence renders as
    absence, the honest narrative meaning. Everywhere else (guards,
    arithmetic, bindings, arguments — anywhere in an A*
-   implementation) `Option[T]` ≠ `T`, strict. Cut by POSITION, not
+   implementation) `Option<T>` ≠ `T`, strict. Cut by POSITION, not
    dialect: nested compositions are never forgiven
    (`{mood.first() + 1}` is a type error; only the boundary
    shrugs). Riders: the forgiveness is TRACEABLE (transcript/debug
    records None-renders; an always-None-interpolation lint ⏳);
    choice-text and tag surfaces are named edges (accidental empty
-   choice text vs the deliberate `* []`) ⏳. **F27 RULED
+   choice text vs the deliberate `* []`) ⏳. **SHIPPED 2026-07-25
+   (Track B4, issue #1463)**: `brink-runtime`'s `value_ops::
+   stringify_display` is the boundary — a final `Value::OptionVal(None)`
+   at an interpolation/template-slot position renders `""`; every other
+   value (including `Some(v)`) still delegates to the ordinary
+   `stringify`. The transcript rider is satisfied by construction — the
+   append-only transcript/`Fragment` model never eagerly resolves output
+   parts, so a forgiven `None`-render still shows up as
+   `Value::OptionVal(None)` in `OutputBuffer::transcript()`. The
+   always-None-interpolation lint and the choice-text/tag named-edge
+   question remain open (deferred, not silently dropped — see
+   `docs/stdlib-sequencing.md`'s Wave B4 entry). **F27 RULED
    (2026-07-19): Option has NO truthiness** — a condition-position
-   `Option[T]` is a compile error under strict and a runtime fault
+   `Option<T>` is a compile error under strict and a runtime fault
    under gradual; the author writes `== none`, `== some(x)`, or
-   (post-B1) the `as`-binding. Truthiness is a quiet coercion of
-   exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
+   the `as`-binding (RULED 2026-07-26, SHIPPED on the native
+   surface in B1b, issue #1475). Truthiness is a quiet coercion of
+   exactly the kind `Option<T> ≠ T` exists to ban. (Supersedes
    A1's shipped falsy-none — implementation fix owed.) **F28 RULED
-   (2026-07-19)**: `none`/`some(…)` render totally in display
-   until B4's boundary-forgiveness arrives; `string()`'s ruled
-   totality is preserved.
+   (2026-07-19)**: `none`/`some(…)` render totally via `string()`
+   forever (`value_ops::stringify`, unaffected by B4); the interpolation
+   boundary's `none` render was the interim behavior B4 (above)
+   superseded.
 
 ## 2. Domain 1 — math (RULED)
 
@@ -111,7 +124,7 @@ authored code ever needs them). Casing = locale-independent Unicode
 simple mapping (Turkish-i named as out of scope; locale casing =
 intl pipeline). `char_at`/`slice` OOB fault (one indexing contract
 with arrays — OOB indexing is a bug, not absence). `find` →
-`Option[int]` (martyr #1, redeemed by the 2026-07-18 ruling; the
+`Option<int>` (martyr #1, redeemed by the 2026-07-18 ruling; the
 -1 sentinel dies unshipped). Prelude: `len contains char_at`;
 rest `std::text`.
 
@@ -123,7 +136,9 @@ observation is repr-transparent. Spec'd as a PERFORMANCE CONTRACT
 ("O(1), non-allocating"), regression-guarded via bench-counters
 (arc_clones/cow_copies). The Java-substring leak is named: wire/
 saves always materialize; creation applies a view≪base size
-heuristic (ratio ⏳). Distinct from #829's REF projections (the
+heuristic (ratio RULED 2026-07-26: constants are Distinct from #829's REF projections (the
+  implementation-tunable performance facts pinned by the
+  bench-counters, never semantics; tuned only with evidence).
 mutating write-through cousin, still icebox, reserved wire slot) —
 cross-referenced so views ≠ projections.
 
@@ -146,7 +161,7 @@ cross-referenced so views ≠ projections.
   `a.map(f)` faults iff `f` can, reads what `f` reads. This is
   the established position-demands-row pattern (wake conditions,
   display/compare impls). `filter_map(f)` where
-  `f: fn(T): Option[U]` is the Option-mapper (drops nones) — the
+  `f: fn(T): Option<U>` is the Option-mapper (drops nones) — the
   natural companion under the Option ruling.
 - **Effectful iteration is a different concept and gets different
   spellings**: `each` (do something per element, no result), and
@@ -158,6 +173,33 @@ cross-referenced so views ≠ projections.
   effectful one (`map_each`); the name is the speed bump. The
   trio's rejection error names both exits: "make it pure, or say
   map_each." Further `_each` variants only on evidence.
+  *(As-built 2026-07-28, issue #1679 slice 1: the pure trio
+  `map`/`filter`/`fold` ships — one `SeqVerb` opcode, callbacks
+  evaluated re-entrantly per element with output isolated, purity
+  gated by E119 where the callback's origin is an inline `#fn(target)`.
+  Slice 2, same day: `filter_map` joins the pure side (same seam, an
+  Option unwrap — `SeqVerb` gains a kind byte, not a new opcode) and
+  `each`/`map_each` ship as the effectful pair — the SAME re-entrancy
+  seam with output reaching the transcript instead of being captured,
+  and the dev-mode world-write guard disarmed for their scope
+  (`PureCallbackState.effectful`). Deliberately NOT added to E119's
+  roster — their whole purpose is to be the legal home for the effects
+  the gate rejects. The rejection message now names the effectful exit
+  as real advice, not a pending one. The gate still cannot see through
+  an opaque fn value at all — `Ty::Fn` carries an effect row since
+  #1680 step 3, but the gate is handed no inferred types and
+  effects-spec §6.1c's stratum question is open — so "pure-required"
+  (for the four verbs it still gates) is enforced only at
+  syntactically-visible callback origins today; that gap is unchanged
+  by this slice. *(As-built 2026-08-01, issue #1887, #1862's ruling:
+  E119's "syntactically-visible callback origins" now include the
+  native bare-name spelling — `map(items, double)`, no `#fn` sigil —
+  proven only when the reference resolves to a real function
+  definition, the same two conjuncts `lower_path`'s `MakeFnValue` arm
+  gates lowering on. An inline lambda argument is a separate,
+  explicitly deferred hole — see #1887's scope and #1709/#1727/#1770 — a
+  lambda's `DefinitionId` is minted at HIR time since #1727, but it still
+  has no index symbol for E119's origin-tracing to key against (#1770).)*
 - 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
   (proposed; arose from the §5 array-of-maps case): a ref-binding
   in `for` over arrays, desugaring to index-based access so
@@ -181,22 +223,27 @@ cross-referenced so views ≠ projections.
   (`push(ref inventory, sword)`) — the sugar is earned in method
   position, the spelled form teaches what it means. Safe
   sigil-free because values are COW (no aliasing/escape to warn
-  about) and the mutation lives in the effect row regardless.
+  about — the value-model statement in `docs/runtime-spec.md` §"Value
+  model", detailed in `docs/value-model-spec.md` §3) and the
+  mutation lives in the effect row regardless.
   **Naming (RULED with it)**: imperative = in-place (`sort push
-  insert remove reverse`), past-participle = functional (`sorted
-  reversed`) — the verb carries the mutation signal; the
+  insert remove remove_at reverse`), past-participle = functional
+  (`sorted reversed`) — the verb carries the mutation signal; the
   confusion lattice closes from both sides (`let b = a.sort()` =
   unit type error; `a.sorted().push(x)` = rvalue error).
 - Verbs: `len first last index_of contains slice(view) concat
-  sort sort_by sorted sorted_by reversed min max push pop insert remove
-  each map filter fold filter_map`. **Absence returns (RULED
-  2026-07-18, flipping the earlier empty⇒fault posture — one
-  doctrine, no day-one exceptions)**: `first last min max pop` →
-  `Option` on empty; `index_of` → `Option[int]` (martyr #2,
-  redeemed). OOB *indexing* (`a[i]`, `insert`, remove-by-index)
-  stays a fault — an index you computed wrong is a bug; an empty
-  extremum is absence. Prelude: `len contains push`; rest
-  `std::seq`.
+  sort sort_by sorted sorted_by reversed min max push pop insert
+  remove_at each map filter fold filter_map`. **Absence returns
+  (RULED 2026-07-18, flipping the earlier empty⇒fault posture —
+  one doctrine, no day-one exceptions)**: `first last min max pop`
+  → `Option` on empty; `index_of` → `Option<int>` (martyr #2,
+  redeemed). OOB *indexing* (`a[i]`, `insert`, `remove_at`) stays
+  a fault — an index you computed wrong is a bug; an empty
+  extremum is absence. **`remove` is NOT a seq verb** — the
+  array-index leg RESOLVED 2026-07-26 to `remove_at` (#1484, the
+  `_at` faulting-index family with `char_at`); `remove` names only
+  the map/flags identity-based, idempotent-total posture (§5/§6).
+  Prelude: `len contains push`; rest `std::seq`.
 - **The `list` reclaim dissolves**: type is `[T]`, literal `[…]`,
   vocabulary is "array"; the word "list" RETIRES entirely.
 
@@ -294,7 +341,7 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   better) with the code-dialect sitting's syntax-in-value-position
   decision, where it is exhibit #1 (§10).
 - **The non-faulting read (updated per the 2026-07-18 Option
-  ruling)**: `get(m, k)` → `Option[V]` — martyr #3, redeemed
+  ruling)**: `get(m, k)` → `Option<V>` — martyr #3, redeemed
   before it was ever martyred. `m.get(k) or default` covers the
   with-default idiom, so no `get_or` verb ships (the `or`
   spelling subsumes it — one spelling per concept); `contains_key`
@@ -401,7 +448,7 @@ precedent, oracle byte-identical):
   (`1..=6`, `5..=5`, CONST refs fold) coerces in free — dice
   cost nothing; a statically-empty literal (`0..0`) is a
   **compile error**; computed bounds must arrive through the
-  validator **`(a..b).nonempty()` → `Option[<inhabited range>]`**
+  validator **`(a..b).nonempty()` → `Option<<inhabited range>>`**
   — parse-don't-validate: the Option tax sits once, at the
   boundary where dynamic data enters, then N draws cost nothing
   (amortized; contrast per-draw `pick` coalescing). Plain
@@ -443,7 +490,7 @@ precedent, oracle byte-identical):
 ## 8. Domain 7 — collections+ (RULED 2026-07-18)
 
 - **Weighted tables — the dossier's evidenced structure.** A
-  parameterized builtin `Weighted[T]`; construction reuses the map
+  parameterized builtin `Weighted<T>`; construction reuses the map
   literal shape with weights as keys: `Weighted { 3: sword,
   1: shield }` (grammar `weight: value` as chartered; weights =
   positive ints v1). One draw verb: `rand::roll(w)` → T — lives in
@@ -458,7 +505,9 @@ precedent, oracle byte-identical):
   table-building shows dossier demand, a validating constructor
   verb returning `Option` kills the construction-fault residual
   the way `nonempty()` did for ranges. `len`, iteration, and
-  mutation ⏳ — v1 is construct-and-roll.
+  mutation RULED OUT for v1 (2026-07-26, maintainer: agent
+  invention, low value) — construct-and-roll stands; any further
+  surface is evidence-gated.
 - **Heap/priority queue — the humble form first.** Proposal: verbs
   over arrays, not a new type — `heap_push(ref a, x)`,
   `heap_pop(ref a)` → `Option`, `heap_peek(a)` → `Option` (empty
@@ -470,7 +519,7 @@ precedent, oracle byte-identical):
   doctrine (§4b): `heap_push` NaN-checks at entry (dev fault /
   prod pinned order). If the
   ledger later shows shape-confusion incidents (heap-array indexed
-  as if sorted), a sealed `Heap[T]` builtin is the designed
+  as if sorted), a sealed `Heap<T>` builtin is the designed
   upgrade path — recorded, not built.
 - Anything further (deque, set-as-type) is **evidence-gated** —
   `std::collections` is the landing zone, the dossier is the gate.
@@ -534,7 +583,10 @@ precedent, oracle byte-identical):
    spelling — supersession note there when this lands. Holes'
    release policy — **PARKED past this sitting by the maintainer**
    (2026-07-18); it survives the closers as the one deliberately
-   open authorial-workflow judgment.
+   open authorial-workflow judgment. *(2026-07-26: stays parked,
+   re-homed to the NS-T editor round; lean for when it opens —
+   holes ride the `[lints]` control plane, the same shape as the
+   unmaterialized-slug lint.)*
 3. **Prelude — final list assembled from the per-domain marks:**
    entire math kit incl. trig (§2's generous ruling) · `len
    contains char_at` (text) · `len contains push` (seq) · `len`
@@ -583,7 +635,7 @@ precedent, oracle byte-identical):
      structural always; `compare == 0` need not imply `==`,
      divergence is legal and documented (sort never implies dedup
      semantics); enforceable by construction.
-   - `iterate` — **pull-shaped**: `next(ref Self): Option[T]`,
+   - `iterate` — **pull-shaped**: `next(ref Self): Option<T>`,
      row ⊆ writes-receiver·silent·total, laws attached ("every
      element once; `none` terminal and sticky" — property-harness
      enforced; machine-form impls make them structural). Chosen
@@ -595,13 +647,47 @@ precedent, oracle byte-identical):
      mono-HM, zero generics); user iterables joining
      `map`/`filter`/`fold` stays #1090-gated. `each`/`for_each`
      remain ordinary derived verbs for pure-callback cases.
+   - `construct` — the **4th entry (RULED 2026-07-23, #1103)**:
+     `TypeName { … }` construction is protocol dispatch (the C#
+     `Add`-method lineage), **not** closed compiler grammar over a
+     fixed set — so a future collection (`Heap<T>`, host types)
+     joins the literal grammar with no grammar change, and it's
+     symmetric with `display`/`compare` being protocols rather than
+     the lone grammar exception. The brace *tokens* (element / pair
+     / field forms) stay fixed surface grammar the parser produces;
+     the protocol governs dispatch/meaning only. **This round only
+     std types register**; user-type opt-in rides the deferred impl
+     spelling. Two members: the **total** literal (`Weighted { … }`
+     faults on an invalid table — the 90% value-position case,
+     ships now) and a **validating** variant (`construct → Option`,
+     for data-driven/runtime tables) — the principled home for
+     evidence-by-construction (Weighted's §7 refinement); the
+     validating member is **ratified but its user-facing spelling is
+     deferred** with the impl spelling. Duplicate keys in a map
+     literal (`Map { k:1, k:2 }`) are a **compile error** (new
+     E076-lineage code), consistent with struct dup-field. A spread
+     / from-existing form (`Map { ..other, k:v }`) is **deferred** —
+     no demonstrated demand, extensible later at zero grammar cost.
+     **BUILT (B5, issue #1464)** on the native surface:
+     `brink-syntax-native` produces one node shape
+     (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY` — the element and pair/field
+     forms, with a Rust-style no-construct-literal restriction in
+     `if`/`while`/`for` and `{if …}`/`{match …}` heads, so a head's brace
+     still opens its body); `brink_ir::hir::construct::ConstructTarget`
+     is the registry — a closed enum, the same protocol-fence shape
+     NS-A8 uses — with `Map`/`Flags`/`Weighted` registered and an
+     unregistered name falling through to the declared-struct reading.
+     Duplicate map keys are **E138**; entries in the wrong form for
+     their target are **E139**. The deferred items above (the impl
+     spelling, the validating member's spelling, spread) are
+     deliberately absent, not stubbed.
    Implementation spelling (attribute vs impl-block) ⏳ —
    code-dialect sitting.
 
 ## 10. Remaining docket ⏳
 
 - **RULED 2026-07-18 (in-conversation, this session)**: the
-  Option package — `Option[T]` as builtin #3, the fault=bug /
+  Option package — `Option<T>` as builtin #3, the fault=bug /
   Option=absence doctrine, `or`, display-boundary forgiveness
   (§1.1/§1.4/§1.6) — and the seq/text/map flips (§§3–5). Recorded
   in the decision log.
@@ -633,9 +719,9 @@ precedent, oracle byte-identical):
   (§7 — rng-as-cell, `rand::int` total by type via the inhabited
   range: the first value refinement, closed-refinement doctrine
   recorded; `pick` Option; determinism posture) · collections+
-  (§8 — `Weighted[T]` evidence-by-construction with the
+  (§8 — `Weighted<T>` evidence-by-construction with the
   Option-constructor evolution recorded; humble heap over arrays
-  with the sealed-`Heap[T]` upgrade path; further additions
+  with the sealed-`Heap<T>` upgrade path; further additions
   evidence-gated) · the closers (§9 — anonymous records RETIRED,
   `for k, v in m` replaces `entries`, multi-return = declared
   struct, `@[effects]` final form, prelude final list, display
@@ -643,19 +729,21 @@ precedent, oracle byte-identical):
   as #1103; holes' release policy parked by the maintainer).
 - **§§1–9 are now fully ruled.** The sitting's remaining work is
   Phase C.
-- In-section ⏳s: tower mini-spec (§2b) · view-materialization
-  ratio (§3b) · weighted-table mutation surface (§8) · holes'
-  release policy (§9.2, maintainer-parked) · protocol
-  implementation spelling + compare/equality coherence line
-  (§9.6) ·
-  inhabited-range type/validator spelling (§7, code-dialect
-  sitting) · initializer protocol-vs-grammar (#1103,
-  code-dialect sitting).
-- Maintainer-attention note: `remove` now names three verbs with
-  divergent postures — seq remove-by-index (OOB ⇒ fault, the
-  indexing contract), map remove-by-key (idempotent-total), flags
-  subtract (idempotent-total). Legal under intrinsic overloading;
-  flagged so the divergence is chosen, not accidental.
+- In-section ⏳s (pruned 2026-07-26 — ratio ruled, weighted
+  surface ruled out for v1, holes re-homed to NS-T): tower
+  mini-spec (§2b) · protocol implementation spelling +
+  compare/equality coherence line (§9.6) · inhabited-range
+  type/validator spelling (§7, code-dialect sitting). **Closed
+  since**: initializer protocol-vs-grammar — #1103 RULED
+  2026-07-23 (protocol dispatch; §9.6's `construct` entry),
+  BUILT by #1464.
+- `remove` divergence **RESOLVED 2026-07-26: accidental — made
+  consistent by renaming, not by flattening postures** (#1484):
+  seq remove-by-index → **`remove_at`** (joining the `_at`
+  faulting-index family with `char_at`); **`remove` uniformly
+  names identity-based idempotent-total removal** (map keys,
+  flags values). Each posture was right for its domain; the
+  accident was one name spanning both.
 - **Lambdas RULED early (2026-07-19, airport sitting — the
   code-dialect opening item closed pre-sitting)**: **Rust pipes
   with colon returns** — `|g| g.awake`, `|g: Guest|: bool { … }`,
@@ -679,7 +767,9 @@ precedent, oracle byte-identical):
   as an implementation prerequisite. Pre-registered bet the
   verbs leaned on: **capture is by-value** (COW makes it cheap;
   no ref captures v1, so closures can't smuggle mutable aliases
-  past the auto-ref rules); rows compose through captures per
+  past the auto-ref rules — see the closure-capture bullet of the
+  value-model statement in `docs/runtime-spec.md` §"Value model");
+  rows compose through captures per
   #872. Reopening capture reopens knowingly. (2)
   **Syntax-in-value-position** — one coherent mechanism (operator
   sections vs `(+)`-style operator-values vs named verb twins vs

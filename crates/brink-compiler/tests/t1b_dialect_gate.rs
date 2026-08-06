@@ -194,7 +194,7 @@ fn disable_all_lets_indexing_compile_and_run_correctly_under_strict_ink() {
     );
     let line = story.continue_single().unwrap();
     let text = match line {
-        brink_runtime::Line::Done { text, .. } | brink_runtime::Line::Text { text, .. } => text,
+        brink_runtime::Step::Line(line) => line.text,
         other => panic!("expected text output, got {other:?}"),
     };
     assert!(

@@ -41,6 +41,10 @@ IMPORT quest_3                                      // qualified: -> quest_3.amb
 - **Ambiguity is an error**: if `x` is both an imported module name
   and a visible definition, qualified `x.y` is a compile error —
   fixed with an alias. No silent precedence.
+- **`AS` is additive, not a rename**: `guard_talk AS gt` binds `gt`
+  as a *second* local spelling of `guard_talk` — the source name
+  stays resolvable too. This departs from Rust's `use … as`, which
+  drops the original binding (issue #1590).
 - A bare `a.b` can only mean module-qualified access if `a` was
   imported as a module *in this file* — the reader checks the file
   header, never guesses.
@@ -48,6 +52,39 @@ IMPORT quest_3                                      // qualified: -> quest_3.amb
   name offers a quick-fix inserting the IMPORT; completion offers
   out-of-module names with the import edit attached; rename keeps
   import lines coherent (the INCLUDE-rewrite machinery precedent).
+- **A bare import's trailing segment dual-reads (RULED, issue #1592,
+  2026-07-27; corrected 2026-08-05, issue #2287)**: `IMPORT { barter }
+  FROM story::market` / `use story::market::barter;` checks `barter`
+  against **both** readings independently — an item `story::market`
+  publicly exports, and a declared submodule `story::market::barter`
+  in its own right — and licenses whichever holds. **Both may hold at
+  once, with no precedence between them**: the item is bare-importable
+  under its own name, and (if `barter` is also a declared submodule)
+  that submodule's public exports become **qualified-accessible**
+  (`barter.ambush`/`barter::haggle`, per dialect) — exactly as an
+  explicit qualified import of it would grant, and matching Rust's own
+  `use a::b;` (`b` becomes nameable as `b::item`, never brings `item`
+  into bare scope). **Never bare**: importing the module does not, by
+  itself, bring any of its members' bare names into scope — only a
+  symbol-level or glob import of a specific member does that (§2's
+  "importable set" above). Issue #2287 corrected this bullet and its
+  implementation, which had drifted into granting bare access as well
+  — the exact defect the issue reported (`-> haggle` resolving after
+  only `use story::market::barter;`, with no `barter::` qualifier
+  anywhere in source). The well-formedness check (`E088`) only fires
+  when the trailing segment resolves as **neither**. A parent module
+  importing its own declared child submodule this way (`story::market`
+  writing `use story::market::barter;`) is not a self-import (`E090`)
+  — it is the mandatory spelling the import-required gate demands to
+  reference the child's exports; self-import (`E090`) still fires for
+  the qualified form (`IMPORT story::market;` from within
+  `story::market`) and for the leaf-item form naming the importing
+  file's own module outright (`use story::market::barter;` from inside
+  `story::market::barter` itself). **Aliasing a trailing segment that
+  resolves as a module has no representation** (`AS`/`as` renames one
+  local binding, not a whole export set) and is rejected the same way
+  the single-segment module-alias form is (native's `use a as m;`) —
+  loud, never silently dropped.
 
 **PROPOSED spellings**: `IMPORT`/`FROM`/`AS` as shown (declaration
 position, top of file, after any `#@module`); duplicate import of
@@ -83,6 +120,178 @@ one declaration. Knots take both axes.
 defaults **public** (`#@private` overrides). Declaring a module is
 the single deliberate gesture that opts into encapsulation; casual
 ink stays open.
+
+**This section describes the ink dialect's directive spelling.** The
+native surface (`docs/native-surface-charter.md` §13.2) is always a
+*declared* module (identity is filesystem-derived) and therefore
+always defaults private, with no undeclared-stem-module case; it
+opts a declaration into public with a `pub` keyword rather than an
+`#@public` tag directive (issue #1582, RULED 2026-08-03). Both
+spellings produce the identical `VisibilityMark::Public` this
+section's `effective_visibility` logic consumes.
+
+**Stdlib mount carve-out (issue #2197, per #2080's scope fence):** a
+`std…`-mounted module's items are invisible to bare-name
+resolution regardless of any `pub`/`#@public` marking, until an
+explicit `use std::…` import exists (#1582/#2167, not yet built) —
+this is a resolution-layer gate (`brink-analyzer::resolve::
+lookup_by_name_direct`), not a visibility default, and does not
+change once those marks are added. Issue #2216 unified the
+scope-free UFCS-receiver lookup (`resolve::lookup_unique_by_name`,
+which has no `ImportScope` to classify against) onto the same gate,
+so a std-mounted candidate is invisible there too, including as the
+sole match — for any referrer *outside* the std tree, the two
+lookups can no longer disagree about std visibility. A referrer
+*inside* the std tree is the one remaining asymmetry:
+`lookup_by_name_direct`'s `InScope` tier still resolves a
+std-mounted candidate for a file that is itself part of
+`std…` (so std's own internal references keep working), but
+`lookup_unique_by_name` has no scope to classify `InScope` under and
+excludes that same candidate unconditionally — stricter than
+`lookup_by_name` for exactly that referrer.
+
+**`std` is a peer root of `story`, not a child of it (issue #2245, RULED
+2026-08-04; generalized to a set of reserved roots by issue #2251):**
+`story::*` is the universe of what the project *author* provided; `std::*`
+— and every future mounted library — is a top-level peer of `story`,
+never nested under it. `brink_db::modules::native_module_path` mints
+`std::conventions::screenplay` for the mounted preset, never
+`story::std::conventions::screenplay`; a file's leading root-relative path
+segment decides which root it qualifies under, a structural fact rather
+than a project-config lookup — checked against `brink_ir::RESERVED_ROOTS`,
+not a single hardcoded literal. `is_std_module` followed suit: it used to
+be a `story::std…`-prefix string test duplicated independently in
+`brink-analyzer::resolve` and `brink-ir::lir::lower::decls` (those crates
+cannot share a helper without a dependency cycle in the direction
+`brink-ir` → `brink-analyzer` — but the *reverse* edge already exists,
+since `brink-analyzer` depends on `brink-ir`). It now lives once, in
+`brink-ir::symbols` (the substrate `SymbolIndex`/`ResolutionMap` already
+live in, precisely so `brink-ir::lir` can consume analyzer-shaped data
+without depending on `brink-analyzer`), and both former copies were
+deleted in favor of the shared helper.
+
+Issue #2245's fix (PR #2250) shipped that helper as a single `&str`
+constant (`STD_ROOT`) and a check that answered only "is this the std
+root?" — correct for the one library mounted at the time, but unable to
+answer the ruling's general form ("and every future mounted library")
+without either re-deriving the check by hand at a second call site or
+silently falling through to the `story` branch for an unrecognized root.
+Issue #2251 generalized it: `brink_ir::RESERVED_ROOTS` is now the *set*
+of reserved peer-root names (`&["std"]` today), and `brink_ir::
+is_reserved_root_module` (renamed from `is_std_module`, since none of its
+three call sites — the `Candidacy::Other` exclusion in
+`brink-analyzer::resolve::lookup_by_name_direct` and
+`::lookup_unique_by_name`, and `brink-ir::lir::lower::decls::
+lookup_global`'s unscoped fallback — were ever std-*specific*; each
+excludes "any reserved-root candidate this file doesn't itself belong
+to") checks membership against the whole set. A second mounted library
+becomes a one-line addition to `RESERVED_ROOTS`, not a new branch at any
+consumer. This intentionally stops short of a per-root visibility
+*policy* type: with one root mounted, there is no second data point to
+generalize a differing policy from, so no policy hook was added. That
+does not mean no policy decision was made — generalizing a single
+`std`-specific check into a set-membership test bakes in the decision
+that every future [`RESERVED_ROOTS`] member inherits `std`'s
+bare-name-fallback exclusion identically, with no per-root opt-out. A
+root that needs *different* visibility behavior than `std` still needs
+the policy type this section declines to add.
+
+Issue #2217 (open) — a project's own file legitimately placed at a
+`std/…` path is misclassified as the mounted preset, because the gate is
+purely path-shape-based (leading segment, not embedded-vs-project origin)
+— is **not** resolved by this generalization: the gate is still exactly
+as path-shape-based as before, now against a set of shapes instead of
+one. #2251 did not touch that axis.
+
+**A third participant (issue #2238), narrowed by issue #2246:** LIR
+struct-shape resolution joined the std-invisibility gate so that a
+project's own struct and a mounted std preset's same-named struct can
+coexist without one silently claiming the other's shape id. Issue #2246
+found that **a struct construction literal's shape name is a HIR
+reference the analyzer already resolves** (`resolve::resolve_struct_ref`,
+full `Candidacy`/module-scope semantics, into the same `ResolutionMap`
+every other reference kind uses) — lowering (`expr::lower_struct_literal`,
+`decls::eval_const_struct_literal`) was re-deriving the answer instead of
+consuming it. For a construction literal, then, the coexistence guarantee
+above is now delivered by `brink-analyzer::resolve::lookup_by_name_direct`
+itself, the same lookup the rest of this section describes — **not** by
+`ShapeTable::resolve`/`decls::lookup_global`, which construction literals
+no longer call at all.
+
+**Closed by issue #2249:** the paragraph above used to end here with
+`ShapeTable::resolve` (via `decls::lookup_global`) as the remaining
+resolution path for the cases with no HIR reference to consume — a struct
+field's declared type, and a `VAR`/`CONST`/`temp` TM-2 type annotation
+(`project.rs`'s own doc used to read: "Field `TypeExpr`s never register
+unresolved refs… a nominal-only grammar, resolved later by a different
+mechanism"). Issue #2249 closed that gap the same way #2246 closed the
+construction-literal one: `symbols::project`'s walk now registers a
+`RefKind::Type` reference for a field's/annotation's `Named` leaf, resolved
+by a new `resolve::resolve_type_ref` (identical `lookup_by_name`,
+`ImportScope`-aware machinery — `SymbolKind::Struct` only). Lowering
+(`build_shape_table`'s field loop, `build_struct_shape_data`'s identical
+loop, `structs::record_global_annotation`,
+`context::LowerCtx::record_temp_annotation`) consumes that recorded
+resolution directly; `ShapeTable::resolve` had no production caller left
+and was deleted. The `lookup_global`/`lookup_by_name_direct` asymmetry this
+section describes is therefore now **closed** for this reference kind too
+— a std file referencing a *sibling* std struct in a type annotation, with
+no import, resolves via the `InScope` tier exactly like every other
+reference kind, where it previously could not. `resolve::
+lookup_unique_by_name`'s own analogous asymmetry (issue #2233, a
+`referrer_module` hint) remains the one unreconciled case in this family.
+
+**Not touched by #2249, still a real gap:** `annotations::check`'s `E061`
+"unrecognized type name" diagnostic (`annotations::declared_struct_names`)
+is project-flat with no referrer-scoping or std-exclusion of its own — a
+std-only struct name is "recognized" for `E061`'s purposes regardless of
+whether the referrer imports it, so an unresolvable-but-`E061`-silent
+`~ temp c: Cue` (std-only `Cue`, no import) still raises no diagnostic
+anywhere. Extending `declared_struct_names` to the same referrer-scoped
+vocabulary `resolve_type_ref` now uses is the natural next step, not
+attempted here — see issue #2249's own "compounding diagnostic gap"
+section.
+
+**Two sibling lookups audited and found not to fit the `RefKind` pattern
+(issue #2249):** `lir::lower::decls::collect_externals`'s extern-to-
+fallback-`fn` pairing and `context::LowerCtx::lookup_address_id`'s
+locally-declared-label addressing are both genuine self-declaration
+lookups — the pairing/existence check is inferred by the compiler from two
+declarations' matching names (or a scope-qualified label's own
+declaration), never resolved from a path the *user* wrote at that call
+site the way a divert target, a variable read, or a type annotation is.
+There is no HIR reference to hang a `RefKind` on at either site; both
+remain on `decls::lookup_global`, unchanged.
+
+**Correction to the record:** `docs/decision-log.md`'s 2026-08-04 "peer
+roots" entry lists `ShapeTable::resolve`'s fast path among five sites
+"each independently taught to skip std" — issue #2246 found this false for
+that one site. The fast path (`if ids.len() <= 1 { return ids.first()...
+}`) returned a bucket's sole candidate unconditionally and **never called
+`lookup_global` at all**, so a struct name only a mounted std module
+declared, with no project-side homonym, resolved straight through with no
+import — the fast path had not, in fact, been taught to skip std. #2246
+fixed it to always route through `lookup_global`, whether the bucket holds
+one candidate or many.
+
+**The gate is root identity, not a provenance channel (issue #2217):** the
+std-invisibility gate excludes a candidate whenever its module's root is
+`std` ([`is_std_module`](../crates/internal/brink-ir/src/symbols/roots.rs)),
+identically whether that module is the *embedded* stdlib mount or a
+project's own file that legitimately lives at a `std/…` path —
+`mount_stdlib`'s "project source at the same key wins" carve-out means both
+mint the exact same `std::…` module identity via `native_module_path`, by
+design, so there is no separate "which one is this really" fact to consult.
+Reconsidering `is_std_module` to distinguish the two would undo the "peer
+roots" ruling above, not fix a bug in it. What issue #2217 actually found
+missing was diagnosability: an author who places their own code under
+`std/` (with no intent to override any embedded module) got a bare
+"unresolved name" `E024`/`E025`/`E068` with nothing pointing at the rule
+responsible. `brink-analyzer::resolve::unresolved_diag` now checks whether
+the unresolved name has any declaration at all under the `std::` root
+(`is_std_shadowed_name`) and, if so, appends a hint naming the peer-root
+rule and the `use std::…` path forward — same diagnostic code, no new one
+allocated, resolution behavior unchanged.
 
 **Boundary rules** (keeping the axes from leaking):
 

@@ -6,11 +6,27 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
+# Unpublished until a maintainer does the one-time manual `cargo publish`
+# (Trusted Publishing cannot create a crate — docs/releasing.md). As of the
+# #1234 inversion (and, since #1312, the `brink-source-tree` L0-leaf
+# dependency it gained for SourceTree-based config discovery) this crate's
+# only workspace dependency is itself a dependency-free L0 leaf, so it still
+# packages standalone; flip this off once a maintainer does the publish.
 keywords.workspace = true
 categories.workspace = true
 
+# Unpublished (decision 2026-07-22). This crate blocked ALL crate releases from
+# 2026-07-19: `cargo publish` verifies a crate by building its packaged tarball
+# in isolation, and this one fails that build (E0432/E0609 against
+# `AnalysisOptions` — a path dependency resolving to a published version rather
+# than the workspace one), so `failed to verify package tarball` aborted the
+# whole workspace release. It has also never existed on crates.io, so Trusted
+# Publishing could not create it either (#1232). Nothing outside the workspace
+# consumes it. Publishing it again requires fixing the standalone build first.
+
 [dependencies]
-brink-analyzer.workspace = true
+brink-source-tree.workspace = true
+serde = { workspace = true }
 thiserror.workspace = true
 toml.workspace = true
 

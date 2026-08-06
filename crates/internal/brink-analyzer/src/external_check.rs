@@ -32,7 +32,7 @@ use brink_ir::{
 
 /// Severity policy for manifest-driven external checks. Configurable as a
 /// compiler/IDE flag; defaults to `Error` (a registered manifest is binding).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalCheckSeverity {
     /// Emit manifest-driven diagnostics (default).
     #[default]
@@ -49,7 +49,7 @@ pub enum ExternalCheckSeverity {
 /// fires for any unresolved type even with no manifest registered) — e.g. so a
 /// host can catch typo'd semantic-type tags before wiring up a full manifest
 /// (#532).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SemanticTypeDiagnosticSeverity {
     /// Tolerate unknown semantic types when no manifest is registered —
     /// opaque, no `E040` (default).
@@ -99,8 +99,8 @@ pub struct ValueMeta {
 /// concepts that must not leak into the manifest serialization schema.
 ///
 /// `List` carries the declaring LIST's name (issue #628): a list-literal
-/// initializer's type is nominal (`list<L>`), same as every other list type
-/// in the `Ty` universe (`Ty::List`, TM-2's `list<L>` annotation) — the
+/// initializer's type is nominal (`List<L>`), same as every other list type
+/// in the `Ty` universe (`Ty::List`, TM-2's `List<L>` annotation) — the
 /// scalar/divert variants have no such nominal identity, so they stay bare.
 /// Not `Copy` any more (the `String` payload), unlike before.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +115,7 @@ pub enum InferredType {
 
 impl InferredType {
     /// Display name, as shown in hover (e.g. `health: int`,
-    /// `weather: list<Weathers>`).
+    /// `weather: List<Weathers>`).
     #[must_use]
     pub fn name(&self) -> String {
         match self {
@@ -124,7 +124,7 @@ impl InferredType {
             Self::Bool => "bool".to_string(),
             Self::String => "string".to_string(),
             Self::Divert => "divert".to_string(),
-            Self::List(list) => format!("list<{list}>"),
+            Self::List(list) => format!("List<{list}>"),
         }
     }
 }
@@ -1526,13 +1526,10 @@ mod tests {
                 range: rng(),
             }],
             range: rng(),
+            crosses_module_wall: false,
         };
         HirFile {
-            root_content: Block {
-                label: None,
-                stmts: vec![Stmt::ExprStmt(Expr::Call(path, args))],
-                container_id: None,
-            },
+            root_content: Block::from_stmts(vec![Stmt::ExprStmt(Expr::Call(path, args))]),
             knots: Vec::new(),
             variables: Vec::new(),
             constants: Vec::new(),
@@ -1544,6 +1541,11 @@ mod tests {
             imports: Vec::new(),
             visibility: Vec::new(),
             was_directives: Vec::new(),
+            allow_scopes: Vec::new(),
+            element_matches: Vec::new(),
+            cue_names: Vec::new(),
+            native: false,
+            claim_handlers: Vec::new(),
         }
     }
 
@@ -1633,6 +1635,7 @@ mod tests {
                 range: rng(),
             }],
             range: rng(),
+            crosses_module_wall: false,
         });
         let diags = run_call_check("tint", vec![var], &meta);
         assert!(

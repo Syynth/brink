@@ -1,0 +1,14 @@
+fn sum_and_keys() {
+  let m = Map { "z": 10, "a": 20, "m": 30 };
+  let total = 0;
+  let keys = "";
+  for k, v in m {
+    total = total + v;
+    keys = keys + k;
+  }
+  return keys + ":" + total;
+}
+
+flow main() {
+  Keys and total: {sum_and_keys()} -> END
+}

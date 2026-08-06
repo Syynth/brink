@@ -1,6 +1,6 @@
 # Standard Library
 
-The first stdlib slice ships four pure functions and three mutators, all
+The first stdlib slice ships four pure functions and four mutators, all
 lowercase free functions — no method-call syntax (`a.push(v)` isn't
 supported; it collides with ink's dotted knot/stitch paths).
 
@@ -12,7 +12,8 @@ supported; it collides with ink's dotted knot/stitch paths).
 | `contains(x, v)` | pure | array or map, any `v` → `Bool` | array: element membership; map: key membership |
 | `push(a, v)` | mutator | array, any `v` | appends `v` |
 | `insert(x, k_or_i, v)` | mutator | array or map, key/index, value | array: insert at index (shifts right); map: insert-or-overwrite |
-| `remove(x, k_or_i)` | mutator | array or map, key/index | array: remove at index (shifts left); map: remove key (no-op if absent) |
+| `remove(m, k)` | mutator | map, key | remove key (no-op if absent) |
+| `remove_at(a, i)` | mutator | array, index | remove at index (shifts left); out of bounds faults |
 
 ```ink
 VAR arr = 0
@@ -30,7 +31,8 @@ contains(m, "a") = {contains(m, "a")}, contains(m, "z") = {contains(m, "z")}
 ```
 
 ```text
-len(arr) = 3, len(m) = 2, contains(arr, 20) = true, contains(arr, 99) = false,
+len(arr) = 3, len(m) = 2,
+contains(arr, 20) = true, contains(arr, 99) = false,
 contains(m, "a") = true, contains(m, "z") = false
 ```
 
@@ -57,16 +59,27 @@ Unlike indexed reads, `contains` never faults — it always answers `true` or
   across both container kinds — you don't need to already know a map's key
   domain just to test membership without risking a crash.
 
+  Under `types = strict`, though, when both the map and the needle's
+  out-of-domain type are already statically visible, `contains(m, v)` is
+  flagged at compile time by `E152` (`Warning` severity) — the call is
+  always `false`, and the diagnostic exists to catch what's usually a typo
+  or a stale key type rather than intentional code. `E152` is strict-mode
+  only (it stays silent under `types = gradual`, where the runtime's total
+  `false` above remains the only behavior), and like other warnings it can
+  be re-leveled or suppressed via `[lints]` (e.g. `E152 = "deny"` or
+  `E152 = "allow"`), a `//brink-disable` comment, or (native dialect only)
+  a declaration-scoped `@[allow(E152)]` annotation.
+
 ## Mutators require an lvalue
 
-`push`/`insert`/`remove` mutate their first argument, so that argument has
+`push`/`insert`/`remove`/`remove_at` mutate their first argument, so that argument has
 to be a **place to write the mutated container back into**: a bare variable
 or `temp`, or an (arbitrarily chained) indexed path rooted in one —
 `grid[1]` is a valid mutator target, a bare literal or call result is not.
 Passing anything else is a compile error (`E055`,
 "collection mutator's first argument is not an lvalue"):
 
-```ink
+```ink,error(E055)
 ~ push(#[1, 2, 3], 4)
 // E055: `push` mutates its first argument — bind it to a variable first
 ```
@@ -77,7 +90,7 @@ means "compute the new value and write it back somewhere" — the lvalue rule
 just makes that "somewhere" explicit and mandatory instead of silently
 discarding the result.
 
-Because they mutate, the three mutators lower through the identical
+Because they mutate, the four mutators lower through the identical
 take → `make_mut` → write-back path indexed assignment uses, and a nested
 target works the same way an indexed assignment's chain does:
 
@@ -105,7 +118,7 @@ expression position (`~ x = push(a, v)`) is a compile error, `E056`
 ## Wrong argument count is a compile error
 
 Calling a mutator with the wrong number of arguments — `push(arr)`,
-`insert(m, "k")`, `remove(arr, 0, 1)` — is a targeted, error-severity compile
+`insert(m, "k")`, `remove_at(arr, 0, 1)` — is a targeted, error-severity compile
 error (`E058`, `collection mutator argument count mismatch`) naming the
 expected signature. `push(arr)`'s diagnostic message (as returned by
 `ResolvedDiagnostic` — see [Enabling the Dialect](./enabling.md) for how the
@@ -121,13 +134,13 @@ is only a warning and still compiles — a pure stdlib function
 (`len`/`keys`/`values`/`contains`) called with the wrong arity keeps using
 `E031`, unchanged. Mutators are held to the harder standard because a
 malformed mutator statement has no fallback value to silently produce: a
-`push`/`insert`/`remove` call that doesn't lower to anything is a
+`push`/`insert`/`remove`/`remove_at` call that doesn't lower to anything is a
 read-modify-write that never happened, which is exactly the kind of silent
 data-drop this project treats as a bug rather than a warning.
 
 ## Author-defined functions shadow the builtins
 
-These seven names live in the brink dialect only — a `strict-ink` project
+These eight names live in the brink dialect only — a `strict-ink` project
 never sees them as reserved words, so plain ink content that happens to
 define a knot or function called `len` keeps working unmodified even after
 a project turns the dialect on. If an author defines a function with the
@@ -136,6 +149,8 @@ same name as a stdlib builtin, the author's definition wins, with a warning
 built-ins already use):
 
 ```ink
+VAR arr = 0
+
 ~ {
     arr = #[1, 2, 3]
 }
@@ -143,7 +158,7 @@ built-ins already use):
 len is {len(arr)}.
 -> END
 
-=== function len(x)
+=== function len(x: Array<int>)
 ~ return 999
 ```
 

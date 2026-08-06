@@ -91,6 +91,8 @@ const END_TAG: u8 = 0x65;
 const EVAL_LINE: u8 = 0x66;
 const BEGIN_FRAGMENT: u8 = 0x68;
 const END_FRAGMENT: u8 = 0x69;
+const ATTACH_ELEMENT: u8 = 0x6A;
+const END_ELEMENT_RUN: u8 = 0x6B;
 
 // Choices
 const BEGIN_CHOICE: u8 = 0x72;
@@ -119,6 +121,25 @@ const MAX: u8 = 0x96;
 
 // External fns
 const CALL_EXTERNAL: u8 = 0xA0;
+
+// The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) — the pure
+// quartet `map`/`filter`/`fold`/`filter_map` plus the effectful spellings
+// `each`/`map_each`. ONE discriminant byte with a [`SeqVerbOp`] kind
+// immediate, the `Tower`/`Collect` economy applied a third time, sized for the
+// whole ruled family.
+//
+// **Why 0xA1 rather than the high tail.** The stdlib blocks above walked
+// `0xF7`-`0xFD` down to a single free byte (`0xFF`); `0xCB`/`0xCC` are held
+// for `StoreVarIfNew`/`EqVars`. `0xFF` is deliberately left unclaimed as the
+// escape byte a future extended-opcode prefix would want, so this family takes
+// the first byte of the next contiguous free run instead — `0xA1`-`0xAF`,
+// immediately after `CallExternal`.
+//
+//   0xA1 SeqVerb(kind)  the kind byte selects the verb; see [`SeqVerbOp`] for
+//                       each one's stack shape. Every kind takes its callback
+//                       as a function value (`FnRef`/`Closure`) and evaluates
+//                       it re-entrantly, exactly like `SeqSortedBy`.
+const SEQ_VERB: u8 = 0xA1;
 
 // v4 collection opcodes (`docs/format-v4-rfc.md` §3 "Collections (T1a)") —
 // numeric assignments frozen by the §9 one-bump rule, contiguous and
@@ -399,6 +420,82 @@ const SEQ_SORTED_BY: u8 = 0xF9;
 // discipline.
 const COLLECT: u8 = 0xFA;
 
+// B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, `docs/decision-log.md`
+// "Option[T] ruled" 2026-07-18; issue #1460 — this PR's own reservation,
+// same "assigned here" precedent as the blocks above). Four free bytes
+// remained after NS-A7 (`0xFB`-`0xFD` + `0xFF`); this claims the first.
+// Native-surface-only: the surface spelling reuses the literal `or`
+// keyword, but `InfixOp::Or` (ink's boolean `||`, oracle-frozen) is left
+// untouched — `InfixOp::Coalesce` is a distinct HIR op that native
+// lowering alone produces, so this opcode is unreachable from the
+// oracle-covered brink/ink dialects.
+//
+// **RETIRED (issue #1471): the binary `Coalesce` opcode this byte
+// originally held is gone.** It evaluated both operands unconditionally
+// before combining them — an unruled implementation decision (PR
+// #1469/#1460) the maintainer then ruled must short-circuit instead: `x or
+// expensive()` may only run `expensive()` when `x` is `none`. A binary
+// opcode cannot do that (both operands are already on the stack by the time
+// it runs), so `InfixOp::Coalesce` lowers to a real branch
+// (`lir::Expr::Coalesce`) instead of the generic `Infix` → binary-opcode
+// path every other operator uses. This byte is reused for the branch
+// primitive that replaces it:
+//
+//   0xFB CoalesceSome(rel)  pops `lhs` (must be `OptionVal`); `some(v)`
+//                  pushes the unwrapped `v` and jumps `rel` bytes forward
+//                  (same relative-offset convention as `Jump`/
+//                  `JumpIfFalse`); `none` pushes nothing and falls through
+//                  to the very next instruction, which evaluates `rhs` —
+//                  the short-circuit itself: `rhs`'s bytecode is simply
+//                  never reached when `lhs` is `some`. Codegen emits a
+//                  `MakeSome` at the jump target when — and only when — the
+//                  analyzer recorded `CoalesceShape::PreserveOption` for
+//                  that step, re-wrapping the unwrapped value so both
+//                  branches agree on shape at the join.
+const COALESCE_SOME: u8 = 0xFB;
+
+// B1b the `as` binding (`docs/decision-log.md` 2026-07-26 "The `as`
+// binding: one construct, both condition positions, `{if}` spelling";
+// issue #1475 — this PR's own reservation, same "assigned here" precedent
+// as the blocks above). Three free bytes remained after B1's `COALESCE_SOME`
+// (`0xFC`-`0xFD` + `0xFF`); this claims the first. Native-surface-only:
+// nothing in the ink/brink dialects has an `as` binding to lower.
+//
+//   0xFC OptionBind(slot)  `[opt]` → `[bool]`: `opt` must be an
+//                          `OptionVal`. `some(v)` writes `v` — the
+//                          UNWRAPPED payload, typed `T` — into temp
+//                          `slot` and pushes `true`; `none` leaves the
+//                          slot untouched and pushes `false`. A
+//                          non-`OptionVal` operand is a runtime fault
+//                          (`RuntimeError::AsBindingNotOption`), the
+//                          gradual-mode residual of the strict-mode `E147`
+//                          the checker raises for the same shape.
+//
+// Test-and-bind is deliberately ONE op rather than a dup/compare/unwrap
+// sequence: it keeps the whole binding inside condition evaluation, which
+// is what makes `while EXPR as n { … }` rebind per iteration for free and
+// lets an inline `{if EXPR as n: …}` bind without hoisting a statement out
+// of its content line. The write is a plain frame-local store with no
+// `ref`/pointer write-through (unlike `SetTemp`): an `as` binding always
+// declares a FRESH slot, so it can never alias a `ref` parameter's cell.
+const OPTION_BIND: u8 = 0xFC;
+
+// Seq `remove_at` (issue #1484, decision log "Quick-docket closures"
+// 2026-07-26; `docs/stdlib-spec.md` §4/§10 — this PR's own reservation,
+// same "assigned here" precedent as the blocks above). `OptionBind` claimed
+// the first of the three bytes `Coalesce`'s comment noted free
+// (`0xFC`-`0xFD` + `0xFF` remained after `0xFB`); this claims the next
+// (`0xFD`). `MapRemove` (`0xC5`) is restricted to maps as of this PR — the
+// array-index leg it used to generalize over moves here under its own name,
+// joining the `_at` faulting-index family with `CharAt`.
+//
+//   0xFD SeqRemoveAt  `[a, i]` → updated array with the element at `i`
+//                     removed (shifts later elements left). Turn-terminating
+//                     fault on `i` out of `[0, len)` (`IndexOutOfBounds`,
+//                     matching `IndexGet`/`IndexSet`) or a non-array `a`
+//                     (`NotIndexable`).
+const SEQ_REMOVE_AT: u8 = 0xFD;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -638,6 +735,127 @@ impl CollectOp {
     }
 }
 
+/// The fn-value verb selected by an [`Opcode::SeqVerb`] instruction's kind
+/// byte (`docs/stdlib-spec.md` §4, issue #1679).
+///
+/// The **pure quartet**: `map`, `filter`, `fold`, `filter_map`. Callbacks are
+/// pure·silent by the 2026-07-18 ruling, which is what dissolves the
+/// eager/lazy question — "one logical pass, order unobservable; the
+/// implementation may fuse freely." Every kind evaluates its callback
+/// re-entrantly with output isolated, the `SeqSortedBy` shape; a callback
+/// that yields, presents a choice, calls a host external, or diverges is a
+/// turn-terminating fault.
+///
+/// The ruled **effectful spellings**: `each`, `map_each`. Slice 2 of the
+/// same issue — deliberately the opposite runtime contract: output reaches
+/// the transcript instead of being captured, and the dev-mode world-write
+/// guard is disarmed for their callback (`docs/stdlib-spec.md` §4: "the weird
+/// thing gets the ugly method" — friction lives in the name, not in an
+/// enforcement gate). Sequential in iteration order, never fused. They are
+/// deliberately NOT gated by E119 (`brink_analyzer::comparator_contract`) —
+/// their whole purpose is to be the legal home for the effects the pure
+/// quartet's callbacks may not perform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SeqVerbOp {
+    /// `[a, f]` → `[a']` — the array of `f(x)` for each element, in
+    /// iteration order. `f: fn(T): U`.
+    Map,
+    /// `[a, pred]` → `[a']` — the elements for which `pred(x)` is `true`,
+    /// in iteration order. `pred: fn(T): bool`; a non-bool return is a
+    /// turn-terminating fault.
+    Filter,
+    /// `[a, init, f]` → `[acc]` — left fold: `acc` starts at `init` and
+    /// becomes `f(acc, x)` for each element in iteration order.
+    /// `f: fn(U, T): U`.
+    Fold,
+    /// `[a, f]` → `[a']` — the Option-mapper: `f(x)` for each element, kept
+    /// unwrapped when `some(v)`, dropped when `none`, in iteration order.
+    /// `f: fn(T): Option[U]`; a non-Option return is a turn-terminating
+    /// fault. Still pure·silent-required — the natural companion of `map`
+    /// under the §1.4 Option ruling, not a relaxation.
+    FilterMap,
+    /// `[a, f]` → `[null]` — the effectful "do something per element, no
+    /// result" spelling: `f(x)` runs for each element, in iteration order,
+    /// for its side effects; the return value is discarded. `f: fn(T)`.
+    /// Effectful: writes and emitted output are legal.
+    Each,
+    /// `[a, f]` → `[a']` — the effectful transform: the array of `f(x)` for
+    /// each element, in iteration order, sequential and never fused; `f`
+    /// may write/emit. `f: fn(T): U`. `map`'s ugly, honest twin.
+    MapEach,
+}
+
+impl SeqVerbOp {
+    /// Every fn-value verb, in kind-byte order (tests + tooling).
+    pub const ALL: [SeqVerbOp; 6] = [
+        Self::Map,
+        Self::Filter,
+        Self::Fold,
+        Self::FilterMap,
+        Self::Each,
+        Self::MapEach,
+    ];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::Map => 0,
+            Self::Filter => 1,
+            Self::Fold => 2,
+            Self::FilterMap => 3,
+            Self::Each => 4,
+            Self::MapEach => 5,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::Map),
+            1 => Ok(Self::Filter),
+            2 => Ok(Self::Fold),
+            3 => Ok(Self::FilterMap),
+            4 => Ok(Self::Each),
+            5 => Ok(Self::MapEach),
+            _ => Err(DecodeError::InvalidSeqVerbOp(b)),
+        }
+    }
+
+    /// The source spelling of this verb — also the `.inkt` mnemonic and the
+    /// `program_model` disassembly text, and the verb name runtime faults
+    /// report. Stable, boring, `snake_case`.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Map => "map",
+            Self::Filter => "filter",
+            Self::Fold => "fold",
+            Self::FilterMap => "filter_map",
+            Self::Each => "each",
+            Self::MapEach => "map_each",
+        }
+    }
+
+    /// Whether this verb's callback runs under the pure·silent contract
+    /// (E119-gated, output captured, dev-mode world-write guard armed) or
+    /// the effectful contract (`each`/`map_each`: output reaches the
+    /// transcript, writes are legal). The VM's `seq_map`/`seq_filter`/
+    /// `seq_fold`/`seq_filter_map`/`seq_each`/`seq_map_each` each read this
+    /// directly when entering their callback scope
+    /// (`enter_callback_scope(flow, VERB, op.is_effectful())`), so it
+    /// single-sources the classification `guard_comparator_write`'s posture
+    /// ultimately keys off — there is exactly one place a new `SeqVerbOp`
+    /// variant's pure/effectful contract can be gotten wrong.
+    #[must_use]
+    pub fn is_effectful(self) -> bool {
+        matches!(self, Self::Each | Self::MapEach)
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.mnemonic() == s)
+    }
+}
+
 /// The kind of sequence/shuffle container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SequenceKind {
@@ -735,6 +953,9 @@ pub enum DecodeError {
     InvalidTowerOp(u8),
     /// Invalid collections+ op kind byte (NS-A7 `Collect` opcode immediate).
     InvalidCollectOp(u8),
+    /// Invalid fn-value verb kind byte (`SeqVerb` opcode immediate,
+    /// issue #1679).
+    InvalidSeqVerbOp(u8),
     /// .inkb magic bytes are not `INKB`.
     BadMagic([u8; 4]),
     /// .inkb version is not supported.
@@ -806,6 +1027,14 @@ pub enum DecodeError {
     /// once, so this is rejected rather than silently keeping the last
     /// occurrence (issue #985).
     DuplicateMapKey,
+    /// An unknown discriminant tag in the conventions-projection wire codec
+    /// (issue #2111 finding 2, `crate::conventions`) — a mode byte,
+    /// attach-presence/resolution byte, or `SchemaTypeDef` tag outside the
+    /// known range. One shared variant for all three: each is "an unknown
+    /// byte in this one codec's own tag space", the same causal category, so
+    /// this mirrors `InvalidSectionKind`'s single-variant-per-codec posture
+    /// rather than minting three near-duplicate variants.
+    InvalidConventionsProjectionTag(u8),
 }
 
 impl fmt::Display for DecodeError {
@@ -819,6 +1048,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
             Self::InvalidTowerOp(b) => write!(f, "invalid tower op kind: {b:#04x}"),
             Self::InvalidCollectOp(b) => write!(f, "invalid collections+ op kind: {b:#04x}"),
+            Self::InvalidSeqVerbOp(b) => write!(f, "invalid fn-value verb kind: {b:#04x}"),
             Self::BadMagic(m) => write!(f, "bad magic: {m:02x?}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported .inkb version: {v}"),
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in string field"),
@@ -877,6 +1107,9 @@ impl fmt::Display for DecodeError {
                 )
             }
             Self::DuplicateMapKey => write!(f, "duplicate key in map value"),
+            Self::InvalidConventionsProjectionTag(b) => {
+                write!(f, "invalid conventions-projection wire tag: {b:#04x}")
+            }
         }
     }
 }
@@ -982,6 +1215,17 @@ pub enum Opcode {
     BeginFragment,
     /// End fragment capture — store parts and push `Value::FragmentRef`.
     EndFragment,
+    /// An `attach = StructName` convention handler's claimed line (issue
+    /// #2108) — see `brink_ir::hir::Stmt::AttachElement`'s doc. Pops the
+    /// call's result off the value stack; when it is a `Value::Record`
+    /// matching a known `StructShapes` entry, merges its fields (converted
+    /// via the same `stringify` display path as `string()`/interpolation)
+    /// into the VM's per-block attachment state — no output, no `Step::Line`.
+    AttachElement,
+    /// Closes the run an `AttachElement` opened — see
+    /// `brink_ir::hir::Stmt::EndElementRun`'s doc. Clears the VM's
+    /// accumulated attachment data and starts a fresh block.
+    EndElementRun,
 
     // ── Choices ─────────────────────────────────────────────────────────
     BeginChoice(ChoiceFlags, DefinitionId),
@@ -1050,7 +1294,11 @@ pub enum Opcode {
     /// `IndexSet`, a missing key is not a fault — this is the stdlib
     /// `insert()` mutator's primitive).
     MapInsert,
-    /// `[map, key]` → updated map with `key` removed (no-op if absent).
+    /// `[map, key]` → updated map with `key` removed (no-op if absent — the
+    /// stdlib `remove()` mutator's primitive). Map-only as of issue #1484:
+    /// a non-map container is a turn-terminating fault (`NotIndexable`).
+    /// The array-index leg this op used to generalize over is
+    /// [`SeqRemoveAt`](Self::SeqRemoveAt).
     MapRemove,
     /// `[map, key]` → `Bool`.
     MapContains,
@@ -1230,6 +1478,90 @@ pub enum Opcode {
     /// Fault on a non-map.
     MapClear,
 
+    // ── B1: `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460),
+    // short-circuited per issue #1471's ruling ──────────────────────────
+    /// Pops `lhs` (must be an `OptionVal`). `some(v)` pushes the unwrapped
+    /// `v` and jumps `rel` bytes forward (the same relative-offset
+    /// convention as [`Jump`](Self::Jump)/[`JumpIfFalse`](Self::JumpIfFalse));
+    /// `none` pushes nothing and falls through to the next instruction,
+    /// which evaluates `rhs`. That fall-through *is* the short-circuit:
+    /// `rhs`'s bytecode is only ever reached when `lhs` is `none` — `x or
+    /// expensive()` runs `expensive()` exactly once, and only on `none`
+    /// (RULED, issue #1471, flipping the eager evaluation PR #1469/#1460
+    /// landed and flagged as unruled). Native-surface only: reachable
+    /// exclusively through `InfixOp::Coalesce`, which the native lowering
+    /// path alone produces (`InfixOp::Or`, ink's boolean `||`, is untouched
+    /// and oracle-frozen).
+    ///
+    /// The jump target is where the two branches join: the `some(v)` branch
+    /// has already unwrapped to `v`, and the `none` branch pushed `rhs`
+    /// as-is. Codegen emits a [`MakeSome`](Self::MakeSome) right at that
+    /// target exactly when the step's recorded typing says `rhs` is itself
+    /// `Option[U]` (the two-Option form, `(Option[T],Option[T]) ->
+    /// Option[U]`, preserving optionality for chaining), so both branches
+    /// agree on shape at the join; for the collapse form
+    /// (`(Option[T],T)->T`) no `MakeSome` is emitted and `v` stands
+    /// unwrapped. The retired binary opcode decided that from `rhs`'s
+    /// *runtime* value; short-circuiting rules that out (`rhs` may never
+    /// run by the time the answer is needed), so the decision is made at
+    /// lowering time from the analyzer's recorded types — see below.
+    ///
+    /// ## Where the collapse-vs-preserve answer comes from
+    ///
+    /// RULED (maintainer, 2026-07-26, issue #1492 — `docs/decision-log.md`
+    /// "Lowering consumes analyzer types"): typing verdicts belong to
+    /// `brink-analyzer`, which records each `or` step's operand/result
+    /// types for LIR lowering (`brink_analyzer::coalesce_types`, threaded
+    /// to lowering as `brink_ir::lir::CoalesceLookup`). Lowering *consumes*
+    /// that verdict; it never re-derives it from syntax. Under `types =
+    /// strict` an ill-typed chain never reaches codegen at all — `E066`
+    /// rejects it during analysis — so this op only ever executes a chain
+    /// analysis either accepted or could not statically pin.
+    ///
+    /// ## The runtime check *is* the semantics for an unpinned `lhs`
+    ///
+    /// That second case is the gradual-mode posture, and it is deliberate:
+    /// when the left-hand type is unknown (brink dialect, `types =
+    /// gradual` — the un-overridden native default), **the check this op
+    /// performs is the operator's semantics**, not a fallback for a missing
+    /// one. An `OptionVal` coalesces; a plain value raises the `TypeError`
+    /// fault (`brink_runtime::value_ops::coalesce_unwrap_some`) — the same
+    /// class as every other gradual runtime check. Strict/native never
+    /// reaches this path with an unpinned `lhs`, and the analyzer records
+    /// exactly this case as `CoalesceShape::RuntimeCheck`, on which codegen
+    /// emits no `MakeSome`: with `rhs` possibly never evaluated there is no
+    /// value to read a shape off, so the unwrapped collapse form is the one
+    /// shape that stays sound for the `(Option[T],T)->T` reading the check
+    /// admits.
+    CoalesceSome(i32),
+
+    // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26; issue
+    //    #1475) ──────────────────────────────────────────────────────────
+    /// `[opt]` → `[bool]` — the `as` binding's fused test-and-bind
+    /// (`if EXPR as name { … }`, `while EXPR as name { … }`,
+    /// `{if EXPR as name: … else: …}`). `opt` must be an `OptionVal`:
+    /// `some(v)` stores the **unwrapped** `v` in temp `slot` and pushes
+    /// `true`; `none` leaves `slot` untouched and pushes `false`. A
+    /// non-`OptionVal` operand faults
+    /// ([`RuntimeError::AsBindingNotOption`](crate::opcode) — the
+    /// gradual-mode residual of the checker's `E147`).
+    ///
+    /// The slot is always freshly allocated by the binding itself, so —
+    /// unlike [`SetTemp`](Self::SetTemp) — the write needs no
+    /// pointer/projection write-through: an `as` binding can never land on
+    /// a `ref` parameter's cell. Native-surface only.
+    OptionBind(u16),
+
+    // ── Seq `remove_at` (issue #1484, `docs/stdlib-spec.md` §4/§10) ───────
+    /// `[a, i]` → updated array with the element at `i` removed (shifts
+    /// later elements left) — the stdlib `remove_at()` mutator's primitive,
+    /// the array-index leg [`MapRemove`](Self::MapRemove) generalized over
+    /// before this PR. Array-only: a non-array `a` is a turn-terminating
+    /// fault (`NotIndexable`). `i` must be an `Int` in `[0, len)` — strictly
+    /// less than `len`, matching `IndexGet`/`IndexSet` (there is no element
+    /// to remove at `len`, unlike `MapInsert`'s append-friendly `<=`).
+    SeqRemoveAt,
+
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
     // ruled 2026-07-18; `docs/stdlib-sequencing.md` §2 Wave A6). Every op
     // below draws through the ONE RNG state cell (`rng_seed` +
@@ -1325,6 +1657,14 @@ pub enum Opcode {
     /// writes the RNG cell; `HeapPush` carries the §4b dev/prod NaN
     /// entry-check; everything else is pure over its operands.
     Collect(CollectOp),
+
+    // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) ──
+    /// One opcode, one operation per [`SeqVerbOp`] kind: the pure trio
+    /// `map`/`filter`/`fold`. Every kind pops a callback function value
+    /// (`FnRef`/`Closure`) and evaluates it re-entrantly per element with
+    /// output isolated — the `SeqSortedBy` machinery, one callback contract.
+    /// See the per-kind docs for stack shapes.
+    SeqVerb(SeqVerbOp),
 
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
@@ -1508,6 +1848,8 @@ impl Opcode {
             }
             Self::BeginFragment => write_u8(buf, BEGIN_FRAGMENT),
             Self::EndFragment => write_u8(buf, END_FRAGMENT),
+            Self::AttachElement => write_u8(buf, ATTACH_ELEMENT),
+            Self::EndElementRun => write_u8(buf, END_ELEMENT_RUN),
 
             // Choices
             Self::BeginChoice(flags, target) => {
@@ -1677,6 +2019,17 @@ impl Opcode {
             Self::MapGetOpt => write_u8(buf, MAP_GET_OPT),
             Self::MapContainsValue => write_u8(buf, MAP_CONTAINS_VALUE),
             Self::MapClear => write_u8(buf, MAP_CLEAR),
+
+            // B1 `or`-coalescing, short-circuited (#1471)
+            Self::CoalesceSome(offset) => {
+                write_u8(buf, COALESCE_SOME);
+                write_i32(buf, offset);
+            }
+            Self::OptionBind(slot) => {
+                write_u8(buf, OPTION_BIND);
+                write_u16(buf, slot);
+            }
+            Self::SeqRemoveAt => write_u8(buf, SEQ_REMOVE_AT),
             Self::RandFloat => write_u8(buf, RAND_FLOAT),
             Self::RandChance => write_u8(buf, RAND_CHANCE),
             Self::RandPick => write_u8(buf, RAND_PICK),
@@ -1692,6 +2045,12 @@ impl Opcode {
             // NS-A7 collections+: discriminant + CollectOp kind byte.
             Self::Collect(op) => {
                 write_u8(buf, COLLECT);
+                write_u8(buf, op.to_byte());
+            }
+
+            // The fn-value verbs: discriminant + SeqVerbOp kind byte.
+            Self::SeqVerb(op) => {
+                write_u8(buf, SEQ_VERB);
                 write_u8(buf, op.to_byte());
             }
 
@@ -1817,6 +2176,8 @@ impl Opcode {
             }
             BEGIN_FRAGMENT => Self::BeginFragment,
             END_FRAGMENT => Self::EndFragment,
+            ATTACH_ELEMENT => Self::AttachElement,
+            END_ELEMENT_RUN => Self::EndElementRun,
 
             // Choices
             BEGIN_CHOICE => {
@@ -1936,6 +2297,11 @@ impl Opcode {
             MAP_GET_OPT => Self::MapGetOpt,
             MAP_CONTAINS_VALUE => Self::MapContainsValue,
             MAP_CLEAR => Self::MapClear,
+
+            // B1 `or`-coalescing, short-circuited (#1471)
+            COALESCE_SOME => Self::CoalesceSome(read_i32(buf, offset)?),
+            OPTION_BIND => Self::OptionBind(read_u16(buf, offset)?),
+            SEQ_REMOVE_AT => Self::SeqRemoveAt,
             RAND_FLOAT => Self::RandFloat,
             RAND_CHANCE => Self::RandChance,
             RAND_PICK => Self::RandPick,
@@ -1955,6 +2321,10 @@ impl Opcode {
             // NS-A7 collections+: CollectOp kind byte follows; unknown
             // kinds are a decode error (reserved-tag discipline).
             COLLECT => Self::Collect(CollectOp::from_byte(read_u8(buf, offset)?)?),
+
+            // The fn-value verbs: SeqVerbOp kind byte follows; unknown
+            // kinds are a decode error (reserved-tag discipline).
+            SEQ_VERB => Self::SeqVerb(SeqVerbOp::from_byte(read_u8(buf, offset)?)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -2128,6 +2498,8 @@ mod tests {
         roundtrip(&Opcode::EndTag);
         roundtrip(&Opcode::EvalLine(0, 0));
         roundtrip(&Opcode::EvalLine(42, 2));
+        roundtrip(&Opcode::AttachElement);
+        roundtrip(&Opcode::EndElementRun);
     }
 
     #[test]
@@ -2321,6 +2693,75 @@ mod tests {
         }
     }
 
+    /// B1 `or`-coalescing (issue #1460): one opcode, one byte, no operand.
+    #[test]
+    fn roundtrip_b1_coalesce_some() {
+        roundtrip(&Opcode::CoalesceSome(0));
+        roundtrip(&Opcode::CoalesceSome(-42));
+        roundtrip(&Opcode::CoalesceSome(100));
+    }
+
+    /// `CoalesceSome` claims the first of the four bytes free after NS-A7's
+    /// `Collect` (`0xFA`) — `docs/format-v4-rfc.md` §5 explicitly does NOT
+    /// freeze numeric opcode assignments (only the name/encoding
+    /// *inventory*); the reservation comment above `COALESCE_SOME` is the
+    /// actual (implementation-level) source of truth this test pins. Same
+    /// byte the retired binary `Coalesce` opcode held (#1460) — reused, not
+    /// freed, since #1471 replaced that opcode's job rather than adding a
+    /// new one alongside it.
+    #[test]
+    fn coalesce_some_opcode_byte_is_0xfb() {
+        let mut buf = Vec::new();
+        Opcode::CoalesceSome(0).encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFB,
+            "CoalesceSome encoded to unexpected discriminant"
+        );
+    }
+
+    /// B1b the `as` binding (issue #1475): one opcode with a `u16` slot
+    /// immediate, encoded like `SetTemp`/`GetTemp`.
+    #[test]
+    fn roundtrip_b1b_option_bind() {
+        roundtrip(&Opcode::OptionBind(0));
+        roundtrip(&Opcode::OptionBind(7));
+        roundtrip(&Opcode::OptionBind(u16::MAX));
+    }
+
+    /// `OptionBind` claims the first byte free after B1's `Coalesce`
+    /// (`0xFB`) — same "the reservation comment is the source of truth"
+    /// posture as `coalesce_opcode_byte_is_0xfb` above.
+    #[test]
+    fn option_bind_opcode_byte_is_0xfc() {
+        let mut buf = Vec::new();
+        Opcode::OptionBind(1).encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFC,
+            "OptionBind encoded to unexpected discriminant"
+        );
+    }
+
+    /// Seq `remove_at` (issue #1484): one opcode, one byte, no operand —
+    /// same shape as `Coalesce` above.
+    #[test]
+    fn roundtrip_seq_remove_at() {
+        roundtrip(&Opcode::SeqRemoveAt);
+    }
+
+    /// `SeqRemoveAt` claims the byte free after `OptionBind`
+    /// (`0xFC`-`0xFD` + `0xFF` remained after `0xFB`; `OptionBind` claimed
+    /// `0xFC`) — the reservation comment above `SEQ_REMOVE_AT` is the actual
+    /// (implementation-level) source of truth this test pins.
+    #[test]
+    fn seq_remove_at_opcode_byte_is_0xfd() {
+        let mut buf = Vec::new();
+        Opcode::SeqRemoveAt.encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFD,
+            "SeqRemoveAt encoded to unexpected discriminant"
+        );
+    }
+
     #[test]
     fn roundtrip_ns_a6_rand_verbs() {
         for op in [
@@ -2460,6 +2901,78 @@ mod tests {
         let mut offset = 0;
         let err = Opcode::decode(&buf, &mut offset).unwrap_err();
         assert_eq!(err, DecodeError::InvalidCollectOp(5));
+    }
+
+    #[test]
+    fn roundtrip_seq_verb_ops() {
+        for kind in SeqVerbOp::ALL {
+            roundtrip(&Opcode::SeqVerb(kind));
+        }
+    }
+
+    /// The fn-value verb layout (issue #1679): ONE discriminant byte
+    /// (`0xA1` — the first byte of the `0xA1`-`0xAF` run after
+    /// `CallExternal`, chosen over the high tail's last free byte `0xFF`,
+    /// which stays unclaimed as a future extended-opcode prefix) with the
+    /// `SeqVerbOp` kind as a u8 immediate in kind-byte order 0..=5. See the
+    /// `SEQ_VERB` const's comment.
+    #[test]
+    fn seq_verb_opcode_layout() {
+        for (i, kind) in SeqVerbOp::ALL.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            Opcode::SeqVerb(kind).encode(&mut buf);
+            #[expect(clippy::cast_possible_truncation, reason = "6 kinds")]
+            let expected_kind = i as u8;
+            assert_eq!(buf, [0xA1, expected_kind], "{kind:?} layout drifted");
+        }
+    }
+
+    /// An unknown fn-value verb kind byte is a decode error, not a silent
+    /// skip — same reserved-tag discipline as `TowerOp`/`CollectOp`.
+    #[test]
+    fn decode_unknown_seq_verb_kind_rejected() {
+        let buf = [0xA1, 6];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidSeqVerbOp(6));
+    }
+
+    /// Mnemonics round-trip through the `.inkt` reader's inverse, and are
+    /// exactly the source spellings the verbs ship under.
+    #[test]
+    fn seq_verb_mnemonics_round_trip() {
+        for kind in SeqVerbOp::ALL {
+            assert_eq!(SeqVerbOp::from_mnemonic(kind.mnemonic()), Some(kind));
+        }
+        assert_eq!(SeqVerbOp::Map.mnemonic(), "map");
+        assert_eq!(SeqVerbOp::Filter.mnemonic(), "filter");
+        assert_eq!(SeqVerbOp::Fold.mnemonic(), "fold");
+        assert_eq!(SeqVerbOp::FilterMap.mnemonic(), "filter_map");
+        assert_eq!(SeqVerbOp::Each.mnemonic(), "each");
+        assert_eq!(SeqVerbOp::MapEach.mnemonic(), "map_each");
+        assert_eq!(
+            SeqVerbOp::from_mnemonic("map_each"),
+            Some(SeqVerbOp::MapEach)
+        );
+        assert_eq!(SeqVerbOp::from_mnemonic("not_a_verb"), None);
+    }
+
+    /// [`SeqVerbOp::is_effectful`] is the VM dispatch/`guard_comparator_write`
+    /// posture switch (issue #1679 slice 2): the pure quartet is `false`,
+    /// the effectful pair is `true`.
+    #[test]
+    fn seq_verb_effectful_split() {
+        for kind in [
+            SeqVerbOp::Map,
+            SeqVerbOp::Filter,
+            SeqVerbOp::Fold,
+            SeqVerbOp::FilterMap,
+        ] {
+            assert!(!kind.is_effectful(), "{kind:?} must be pure");
+        }
+        for kind in [SeqVerbOp::Each, SeqVerbOp::MapEach] {
+            assert!(kind.is_effectful(), "{kind:?} must be effectful");
+        }
     }
 
     #[test]

@@ -88,6 +88,27 @@ pub struct SymbolInfo {
     pub visibility: Visibility,
 }
 
+impl SymbolInfo {
+    /// Whether this symbol is a statically-named **function definition** —
+    /// ink's `=== function name ===` / native's `fn name(…)`, the only
+    /// thing a function *value* can be taken of (`docs/t1c-spec.md` §2).
+    ///
+    /// A knot or stitch carrying the manifest's `"function"` sentinel in
+    /// [`detail`](Self::detail). Deliberately *not* an `External`: an
+    /// `EXTERNAL` has no body to address (see `brink-analyzer`'s `E079`,
+    /// which reports exactly that).
+    ///
+    /// Shared by the two creation-site surfaces so they can never drift:
+    /// `brink-analyzer`'s `#fn` creation-site check (`fn_values`) and
+    /// `brink-ir`'s native bare-name fn-value lowering
+    /// (`lir::lower::expr::lower_path`, issue #1862).
+    #[must_use]
+    pub fn is_function_definition(&self) -> bool {
+        matches!(self.kind, SymbolKind::Knot | SymbolKind::Stitch)
+            && self.detail.as_deref() == Some("function")
+    }
+}
+
 /// Parameter metadata for hover/signature help.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamInfo {
@@ -136,11 +157,65 @@ impl SymbolKind {
 // ─── Resolution types ───────────────────────────────────────────────
 
 /// A resolved reference: a use-site that has been matched to a definition.
+///
+/// ## The `range` contract for a call-path reference (issue #1561)
+///
+/// For a call (`brink_ir::hir::Expr::Call(path, _)`), `range` **must equal
+/// `path.range` exactly** — the callee `Path` node's own whole span, from
+/// its first segment through its last. This holds for both an ordinary
+/// single-segment callee (`f()`) and a UFCS-shaped multi-segment one
+/// (`recv.verb(args)`, where the whole-path range still resolves to the
+/// **receiver**, per `brink-analyzer::resolve::resolve_function`'s B3a
+/// branch — never to a receiver-only or method-only sub-segment).
+///
+/// This is produced once, structurally, by
+/// `brink_ir::symbols::project::Projector::walk_expr`'s `Expr::Call` arm
+/// (`path.range` is what it hands to `push_ref`, becoming
+/// `UnresolvedRef::range`), and every push site in
+/// `brink-analyzer::resolve::resolve_function` carries it through
+/// unchanged as `ResolvedRef::range` — see that function's own doc for the
+/// full push-site list.
+///
+/// It is then an **exact lookup key** at least six separate consumers
+/// key their own `(FileId, range)` maps on, independently:
+///
+/// - `brink_ir::lir::lower::expr::lower_call`'s `ctx.resolve_path(path.range)`;
+/// - `brink_ir::lir::lower::expr::ufcs_receiver_path`, which deliberately
+///   keeps `path.range` (not a receiver-only sub-range) on the desugared
+///   receiver sub-path it builds, precisely so the *same* `resolve_path`
+///   lookup above still hits when lowering that receiver as its own
+///   expression;
+/// - `brink_analyzer::strict::check_void_root`'s
+///   `resolution_by_range.get(&range_key(path.range))` (the `E067`
+///   void-assignment check);
+/// - `brink_analyzer::coalesce::classify_coalesce_operand`'s equivalent
+///   `resolution_by_range` lookup on a coalescing operand's call;
+/// - `brink_analyzer::ufcs::value_receiver_def`'s
+///   `resolution_by_range.get(&key)` lookup on the callee path — the mirror
+///   of `resolve::resolve_function`'s own UFCS-shaped fallback, which must
+///   agree with it or a call is diagnosed twice or not at all; and
+/// - `brink_analyzer::infer::body::infer_call`'s `self.resolve(path.range)`
+///   (backed by the same `resolution_by_range` map), whose B3a branch
+///   explicitly handles a multi-segment (dotted UFCS) callee path.
+///
+/// Narrowing this range anywhere upstream — even in service of a real bug
+/// fix elsewhere, e.g. a rename edit that must span only one segment — is a
+/// silent miscompile here: every consumer above misses its lookup and
+/// either falls back to a wrong resolution or refuses the compile with no
+/// clue this field is the cause. That happened once already (#1550/#1554)
+/// and was caught only by review, not by a test — hence this doc and the
+/// cross-layer regression test in
+/// `brink-test-harness/tests/resolved_ref_range_contract.rs`. A narrowing
+/// fix for a *different* consumer (e.g. an IDE rename edit) belongs at that
+/// consumer's own layer, never here — `brink-ide::ufcs_hover`'s
+/// segment-narrowing helpers are the established pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRef {
     /// Which file the reference appears in.
     pub file: FileId,
-    /// Source span of the reference.
+    /// Source span of the reference. For a call-path reference this is
+    /// load-bearing beyond diagnostics — see the contract on this struct's
+    /// own doc (issue #1561).
     pub range: TextRange,
     /// The definition this reference resolves to.
     pub target: DefinitionId,

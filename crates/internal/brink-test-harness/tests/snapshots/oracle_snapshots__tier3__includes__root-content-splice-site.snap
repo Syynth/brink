@@ -1,0 +1,19 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/includes/root-content-splice-site
+oracle: 1, brink: 1, matched: 1
+passing: 0/1
+
+=== episode [] === FAIL
+> "Sub line.\n" [Continue]
+> "Top of main.\n" [Continue]
+> "After the include.\n" [Done]
+outcome: Done
+  step 0: text differs
+    oracle: "Top of main.\n"
+    brink:  "Sub line.\n"
+  step 1: text differs
+    oracle: "Sub line.\n"
+    brink:  "Top of main.\n"

@@ -103,7 +103,7 @@ pub mod dp {
     }
 
     /// Levenshtein edit distance between two token sequences (brink's
-    /// corpus ports operate over `array<string>` of single characters, not
+    /// corpus ports operate over `Array<string>` of single characters, not
     /// a native `string` type with indexing — accepting `&[&str]` here
     /// mirrors that shape exactly rather than assuming Rust `char`s).
     /// Classic bottom-up `O(len(a) * len(b))` table.

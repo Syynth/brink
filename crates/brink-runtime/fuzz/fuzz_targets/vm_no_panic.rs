@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use brink_format::read_inkb;
-use brink_runtime::{Line, Story, link};
+use brink_runtime::{Step, Story, link};
 use libfuzzer_sys::fuzz_target;
 
 /// Bound on story turns driven per fuzz input, independent of the VM's own
@@ -42,16 +42,16 @@ fuzz_target!(|data: &[u8]| {
         };
 
         match lines.last() {
-            Some(Line::Choices { choices, .. }) => {
+            Some(Step::Choices(choices)) => {
                 if choices.is_empty() || story.choose(0).is_err() {
                     break;
                 }
             }
             // `Done` (ink `-> DONE`) ends this turn's output but not the
-            // story — the docs on `Line::Done` say to call
+            // story — the docs on `Step::Done` say to call
             // `continue_maximally` again, so loop around and do that.
-            Some(Line::Done { .. }) => {}
-            // `End` (permanent), `Text` (shouldn't be last per
+            Some(Step::Done) => {}
+            // `End` (permanent), `Line` (shouldn't be last per
             // `is_terminal`), or an empty batch — nothing more to drive.
             _ => break,
         }

@@ -1,0 +1,22 @@
+var hp = 10
+const MAX = 100
+flags Mood = (calm), wary, hostile
+struct Item {
+  name: string,
+  weight: int
+}
+extern log(msg)
+
+use story::npcs::{guard, merchant as trader};
+import story::items
+module inner {
+  var secret = 1
+}
+
+fn heal(hp) >{
+  var x = hp + 1
+}
+
+flow greet(name) {
+  Hello, {name}! <>
+}

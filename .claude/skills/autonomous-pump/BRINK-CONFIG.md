@@ -3,24 +3,42 @@
 Fill pump.js's CONFIG from these when running the pump on this repo.
 
 ## Gates
-- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+  - ⚠ **`cargo nextest run`, not `cargo test`** (measured 2026-07-28, issue #1695): identical results (6590 passed, 0 failed under both) at **35s vs 2m52s**. `cargo test` averaged **~56% CPU** — effectively running the 183 test binaries one at a time — while nextest averaged **~507%**, i.e. the process pool actually working. This is the per-round cost that multiplies across every fix cycle.
+  - **Doctests are deliberately NOT in the per-round gate.** nextest does not run them, and `cargo test --workspace --doc` costs **101s to execute exactly ONE real doctest** (21 others are `ignore`d). That belongs on a pre-merge/CI gate, not on every agent iteration. If you need it: `cargo test --workspace --doc`.
+  - Requires `cargo install cargo-nextest --locked` once (~2m07s). Already installed on the local machine.
 - **TS entries (gate override)**: `wasm-pack build crates/brink-web --target web --out-dir www/pkg && wasm-pack test --node crates/brink-web && pnpm install --frozen-lockfile && pnpm --filter @brink-lang/editor typecheck && pnpm --filter @brink-lang/studio typecheck && pnpm --filter @brink-lang/studio test && pnpm --filter @brink-lang/editor build`
 - **Demo lane (gate override)**: `cd demos/compound && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cd ../.. && cargo check --workspace` — oracle-free, minutes; the workspace check proves the demo stays excluded.
 - ⚠ 2026-07-18: `wasm-pack test --node` joined the TS gate because a real wasm-leg bug (PR #1017) passed both cargo test (native) and vitest (mocked) — the wasm32 target was a local blind spot.
 - CACHE prefix: `export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink` — ⚠ this cache reached 53GiB and caused two ENOSPC incidents (see #533): bound it, sweep it between waves, and have the pre-flight measure it explicitly.
 
 ## House rules (RULES seed — earned, don't drop)
-- Oracle ratchet is sacred on any crates PR: run oracle_snapshots, report CASES/EPISODES verbatim; 5,577 episodes must not move.
+- Oracle ratchet is sacred on any crates PR: run oracle_snapshots, report CASES/EPISODES verbatim; 5,598 episodes must not move.
 - Any PR changing behavior observable through @brink-lang/web needs a @brink-lang/web patch changeset (even crates-only PRs). Changesets name ONLY real public packages; never name external consumer projects.
 - When adding a method to a raw wasm/native session type, add the parallel public wrapper method (incl. cache-invalidation calls) — internal-only levers are dead code for consumers.
 - Run ALL gates as FOREGROUND blocking commands; never park the task waiting on a backgrounded run (four separate agents stalled on this).
 - Never add app.register_type for #[derive(Reflect)] types; never touch .github/workflows/release.yml; VM tests must not hang (keep step limits).
 - Studio work is dropped; issues below ~#300 are presumed stale and need justification.
 - If an issue's own body says needs-design/deferred, DECLINE and report — do not implement architecture unilaterally (the #458 precedent).
+- A ruling lands in a SPEC, not only in docs/decision-log.md. The log is HISTORY (what was decided, when, why); a spec is the CURRENT normative statement. A decision-log PR that amends no spec leaves the ruling invisible to every future reader — that is how five rulings got re-derived from scratch in one week, and how the ledger audit (2026-07-27, 296 rulings) found 29 ORPHANED / 15 CONTRADICTED. Reviewers check for this explicitly; name the spec file+section.
 
 ## Merge trains
 - Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
 - npm "Version Packages" bot PR merges LAST — but do not starve it: if a consumer is waiting on a released fix, merge it immediately (the 0.9.1 lesson). Bot force-pushes don't trigger CI — close/reopen to kick, or admin-merge version-only PRs.
+
+## Recurring build-quality rules (the lessons loop — appended by the Lessons phase)
+
+> **Why this section exists.** Measured over 671 pump agents: **build 44.2% of tokens, review 22.1%, fix 18.3%** — and there were **133 fix agents against 165 reviews, i.e. ~80% of reviewed PRs needed a fix cycle**. Each cycle is a full re-read, re-gate and re-push. The findings that trigger them recur, so every rule here that lands is spend removed from the 18.3%. The Lessons phase appends here automatically; a human still reviews the PR.
+
+- **A regression test must FAIL without the fix.** Revert the production diff and watch it go red before you commit it. A test that passes on both commits proves nothing about the change it claims to guard.
+- **Never state a number, `file:line`, symbol, or PR/issue attribution you did not just read at the ref you are citing.** A PR was rejected for claiming "ratchet verified at commit X = 5577" when that ref read 5607, with every coordinate in its audit wrong. Unverified claims are worse than omissions because the next agent trusts them.
+- **When you add a field or variant to an existing type, grep EVERY consumer** — especially heap-size/size-estimator accumulators and serialization sites. Exhaustive-match guards do NOT catch a consumer that silently ignores a new field.
+- **When you add a guard to one function, check its structurally parallel siblings.** A guard on `rename` but not `prepare_rename`, or on one arm of a matched pair, silently breaks the pair.
+- **Before citing a caller, spec section, or "this is handled downstream" in a doc comment, verify it exists and does that.** Several PRs shipped confidently false claims about their own seams.
+- **Assert the value a CONSUMER actually receives**, not an internal enum an intermediate layer holds. A test asserting the wrong layer passes while the user-visible behavior is broken.
+- **Cross-check sibling unreleased changesets for claims your change invalidates.** Contradictory unreleased release notes are worse than none.
+- **A ruling lands in a SPEC, not only in docs/decision-log.md.** The log is history; a spec is the current normative statement. A ruling that lives only in the log is invisible to everyone reading the specs — that is how five rulings got re-derived from scratch in one week.
+- **Commit AND PUSH before running the long gate.** This rule existed and was violated anyway, costing work three times; the pump deletes worktrees between waves, so an unpushed branch is one prune from gone.
 
 ## RULES additions (waves 4–5 lessons, 2026-07-14)
 - Every call-dispatch path (direct fn-value call, CallValue, divert-target variable call) must independently enforce arity/argc in gradual mode.
@@ -32,6 +50,26 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Don't add defensive branches the caller's guard makes unreachable — dead branches mask real fallthrough.
 
 ## Disk rule (2026-07-14 incident: 68G of invisible variant caches)
+
+### 2026-07-28 incident: disk hit **0 bytes**, wedging the host mid-wave
+
+Six concurrent agents (two opus, all touching analyzer/IR) exhausted **49G in a single wave**. The shell then could not run *at all* — the Bash tool failed writing its own output file — so the session could not even clean up after itself; a human had to run `rm -rf` by hand.
+
+**The leak was structural, not bad luck.** The between-waves reset only ever cleared the SHARED `CARGO_TARGET_DIR`. But when the shared target gets contaminated (a known, recurring failure — see the cross-contamination notes), agents correctly switch to a PRIVATE target dir — and **nothing ever cleans those up**. They accumulate in `/tmp/brink*` and in the session scratchpad, invisible until the disk is gone. Post-incident sweep found **26G inside the session scratchpad alone** (one private target at 15G) plus ~190 abandoned `/tmp/brink-*` review/build dirs going back ~30 waves.
+
+**Between EVERY wave, sweep all three, not just the shared target:**
+```
+rm -rf "$SHARED_TARGET" /tmp/pump-merge-train-brink-*
+for d in /tmp/brink* /tmp/pr* /tmp/rev*; do rm -rf "$d"; done   # stale review/build dirs
+for d in "$SCRATCHPAD"/*/; do rm -rf "$d"; done                  # agent private targets
+git -C <repo> worktree prune
+```
+
+**Before launching, assert headroom and cap concurrency:**
+- Require **≥60G free** before a wave starts; below that, sweep first and re-check rather than launching hopefully.
+- A build-heavy wave (analyzer/IR/runtime) is **≤4 items with at most one opus build**. Six concurrent builds against one shared target is what produced this.
+
+**⚠ Audit before deleting anything with a `.git` in it** (standing rule: never destroy work without a push-state audit). Check whether HEAD is contained in any remote branch — reviewer clones of PR heads look "unpushed" but are merged work, while a genuinely orphaned commit must be pushed to a branch before its directory is removed.
 - Agents must use ONLY the provided shared CARGO_TARGET_DIR or the worktree-local ./target (which dies with the worktree). NEVER mint variant /tmp cache dirs (pump-cargo-target-brink-issueN / -fuzz / -prN / verify-target-*) — they defeat boundary sweeps and accumulated 68G across three waves. If the shared cache misbehaves (stale sibling binaries, phantom errors), `cargo clean -p <crate>` it or fall back to ./target; never a third path.
 - Review agents needing to run code clone into the worktree they were given or /tmp/brink-review-<pr> and DELETE it before returning.
 - Boundary sweep checklist: worktrees (all completed waves) → /tmp/pump-* glob (not exact path) → /tmp/brink-* clones → shared cache if no wave imminent.
@@ -148,3 +186,54 @@ the config above as follows:
   under them (auto-merges land between your commands); branching from a
   stale ref silently resurrects old file states. (Caught in the act while
   writing this section.)
+
+## Keeping the tracker honest (2026-07-29 — six stale-issue incidents in one month)
+
+Six issues in July had tracker state that lied about the code: #1592 and #1667
+were already fully implemented; #1449 was recorded DONE having delivered half;
+#1211 and #1213 presented as open north-star design questions a week after a
+ruling settled both; companion modules got re-derived from scratch against an
+existing ruling. Each one burned a build agent to rediscover.
+
+**Every one was a WRITE-side failure.** The instinct is to add a read-side
+check ("verify the premise before building"), and that check is worth having —
+but it treats the symptom. The tracker is unreliable because we are not writing
+to it, and a read-side check leaves the next reader to pay the same cost again.
+
+- **A `Part of #N` owes a tracked remainder.** House rule 19e correctly stopped
+  agents writing false `Closes`. But an honest `Part of` with nothing tracking
+  the undelivered half reads *identically to "not started"* — that is exactly
+  how #1592, #1679 and #1449 went stale. So: in the same session, either file
+  the follow-up issue or name the existing one that covers the remainder, AND
+  comment on #N stating what is left and what blocks it. Honest partial
+  delivery is fine; **untracked** partial delivery is not.
+- **A PR or ruling that supersedes an issue's premise updates that issue in the
+  same PR.** This is the tracker-facing twin of "a ruling lands in a spec, not
+  only in the decision log." #1211/#1213 had their premise superseded on
+  2026-07-21 by a ruling that updated `block-effect-model.md` §11 — and nothing
+  pointed back at the issues, so the question got re-opened twice.
+- **Verify the merge actually completed.** Auto-merge armed on a PR that later
+  conflicts leaves the work *looking* landed while its issue stays open. #1659
+  and #1666 were both lost this way and surfaced only by an audit. Poll until
+  the PR reports MERGED, or say plainly that it did not.
+- **If you find a premise already false, fix the tracker** — comment naming the
+  delivering PR, and close the issue if nothing remains. Reporting it only to
+  the pump means the next wave rediscovers it.
+
+**These rules are per-agent discipline, and per-agent discipline gets violated.**
+So the structural fix is that **scope reconciliation owns this** — it runs once
+per wave, terminal, with every item's issue/PR/merge state in hand and `gh`
+access already. It was only ever pointed *forward* ("did building reveal work
+the plan didn't capture?"), which is why six write-side failures walked past a
+phase built to catch exactly them. `pump.js`'s reconciliation prompt now has two
+parts: **Part 1 reconciles the record backward and ACTS**, Part 2 is the
+existing forward-looking scope proposal.
+
+The distinction that makes acting safe: **proposing new scope or milestone
+structure is a human call; recording what already happened is bookkeeping.**
+Closing an issue whose PR merged, or commenting the remainder on a `Part of`,
+does not restructure the plan — it stops the plan from lying. Reconciliation
+returns `trackerActions` (what it changed) alongside its proposal.
+
+The read-side premise check stays in the build prompt as a backstop. It is a
+backstop, not the fix.

@@ -1,0 +1,152 @@
+// Lambda lifting (issue #1709) meeting the fn-value verb layer
+// (`docs/stdlib-spec.md` §4, issue #1679): the pure quartet
+// `map`/`filter`/`fold`/`filter_map`, and the effectful pair
+// `each`/`map_each` (slice 2).
+//
+// Before lifting landed, a lambda lowered to HIR and then stopped at the
+// LIR codegen fence (E052), so `#fn(named_function)` was the only fn-value
+// spelling that reached these verbs. This case is the proof that a writer
+// can now hand a **lambda literal** straight to all six.
+//
+// Capture is BY-VALUE always (RULED 2026-07-19): `scaled` reads the
+// enclosing `factor` local, which is snapshotted into the lifted
+// function's closure environment at the point the lambda value is made.
+//
+// `call_through_capture`/`ufcs_through_capture`/`field_through_capture`
+// (issue #1709 review) exercise the three capture shapes the free-name
+// walk used to miss silently — a captured local read as a call *callee*
+// (`inc(inc(y))`), as a UFCS method-call *receiver* (`items.len()`), and
+// through a bare dotted field access (`p.x`). Each used to compile clean
+// and fault at runtime (`UnresolvedDefinition`/`UnresolvedGlobal`/a `Null`
+// type error) because the walk only ever looked at call *arguments* and
+// single-segment paths.
+//
+// `positives`/`each_sums`/`map_each_scaled` (issue #1679 slice 2) are the
+// EFFECT-STORY proof, not an afterthought: `each_sums`'s lambda writes
+// `each_total`, and `map_each_scaled`'s lambda writes `map_each_total` —
+// both would be a compile-time E119 (or a dev-mode `ComparatorWroteState`
+// fault for an opaque callback) inside `map`/`filter`/`fold`/`filter_map`.
+// `each`/`map_each` exist precisely so a lambda CAN do this.
+
+var each_total = 0
+var map_each_total = 0
+
+fn doubled() {
+  let items = [1, 2, 3];
+  return map(items, |x| x * 2);
+}
+
+fn evens() {
+  let items = [1, 2, 3, 4, 5, 6];
+  return filter(items, |x| x % 2 == 0);
+}
+
+fn total() {
+  let items = [1, 2, 3, 4];
+  return fold(items, 0, |acc, x| acc + x);
+}
+
+fn scaled(factor) {
+  let items = [1, 2, 3];
+  return map(items, |x| x * factor);
+}
+
+fn chained() {
+  let items = [1, 2, 3, 4, 5, 6];
+  return fold(map(filter(items, |x| x % 2 == 0), |x| x * 10), 0, |acc, x| acc + x);
+}
+
+fn braced() {
+  let items = [1, 2, 3];
+  return map(items, |x| {
+    let bumped = x + 1;
+    bumped * bumped
+  });
+}
+
+// A captured local read as a call's *callee*, not one of its arguments:
+// `twice`'s body calls `inc`, which `inc` itself lifted from `call_through_
+// capture`'s frame — the free-name walk has to look at `Expr::Call`'s own
+// path, not just its argument list.
+fn call_through_capture() {
+  let inc = |x| x + 1;
+  let twice = |y| inc(inc(y));
+  return twice(1);
+}
+
+// A captured local read as a UFCS method-call *receiver*: `items.len()`
+// lowers to a call whose path head (`items`) is the receiver local, not a
+// static reference — the free-name walk has to see that head even though
+// the call has two segments.
+fn ufcs_through_capture() {
+  let items = [1, 2, 3];
+  let f = |k| items.len() + k;
+  return f(10);
+}
+
+// `filter_map` stays PURE (issue #1679 slice 2): the Option-mapper
+// companion of `map`. The lambda's braced body needs the nested
+// `if`/`return` shape (like `field_through_capture`'s sibling test in
+// `driver.rs`, `compile_path_native_lambda_self_reference_is_e158`) —
+// `return` inside the `if` still leaves the *lambda*, not `positives`.
+fn positives() {
+  let items = [-2, 3, -5, 8, 0];
+  return filter_map(items, |x| {
+    if x > 0 {
+      return some(x);
+    }
+    return none;
+  });
+}
+
+// `each` — the effectful "do something per element, no result" spelling.
+// The lambda writes the enclosing `var each_total`; that write is exactly
+// what `map`/`filter`/`fold`/`filter_map`'s callback may never do.
+fn each_sums() {
+  let items = [1, 2, 3, 4];
+  each(items, |x| {
+    each_total = each_total + x;
+  });
+  return each_total;
+}
+
+// `map_each` — `map`'s effectful twin: produces the transformed array AND
+// lets its lambda write `var map_each_total`.
+fn map_each_scaled() {
+  let items = [1, 2, 3];
+  return map_each(items, |x| {
+    map_each_total = map_each_total + x;
+    x * 10
+  });
+}
+
+struct Point {
+  x: int,
+  y: int
+}
+
+// A captured local read through a bare dotted field access: `p.x` still
+// lowers as one `Expr::Path` with two segments (`hir::Expr::FieldAccess` is
+// only for a non-`Path` base), so the walk's old "exactly one segment"
+// guard dropped this capture entirely.
+fn field_through_capture() {
+  let p = Point { x: 3, y: 4 };
+  let f = |k| p.x + k;
+  return f(1);
+}
+
+flow main() {
+  Doubled: {doubled()}
+  Evens: {evens()}
+  Total: {total()}
+  Scaled: {scaled(5)}
+  Chained: {chained()}
+  Braced: {braced()}
+  CallThroughCapture: {call_through_capture()}
+  UfcsThroughCapture: {ufcs_through_capture()}
+  FieldThroughCapture: {field_through_capture()}
+  Positives: {positives()}
+  EachSums: {each_sums()}
+  MapEachScaled: {map_each_scaled()}
+  MapEachTotal: {map_each_total} -> END
+}

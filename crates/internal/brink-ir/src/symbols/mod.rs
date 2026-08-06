@@ -7,9 +7,13 @@
 
 mod index;
 mod manifest;
+mod project;
+mod roots;
 
 pub use index::{
     ParamInfo, ResolutionMap, ResolvedRef, Scope, SymbolIndex, SymbolInfo, SymbolKind, Visibility,
     VisibilityMark,
 };
 pub use manifest::{DeclaredSymbol, LocalSymbol, RefKind, SymbolManifest, UnresolvedRef};
+pub use project::project_manifest;
+pub use roots::{RESERVED_ROOTS, STD_ROOT, is_reserved_root_module};

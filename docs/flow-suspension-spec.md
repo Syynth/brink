@@ -36,6 +36,22 @@ A parked flow serializes as:
    serialized by the existing encoders,
 4. **wake policy**: await-site id + condition fn token (+ host wake
    source), both name-stable.
+5. **block-run state** (added #2108, 2026-08-05 ruling — "block metadata
+   persists, and `next_block_id` persists with it"): the flow's
+   `next_block_id` counter, plus whatever element-attachment data
+   (`@[convention(..., attach = X)]`, `docs/prose-dialect-spec.md` §7.1)
+   was accumulated on the run open at park time (empty if none was open).
+   A block is not just lines — executable statements can interleave with
+   an attach-scoped run, and `Step::Suspended` is deliberately not a
+   `BlockId` run-terminator, so an `await` can fire mid-run. Without this,
+   resuming would restart block numbering at a fresh `0` and reset the
+   open run's data to empty, silently dropping the attributed
+   speaker/metadata for every line the resumed flow emits until the next
+   real attach — the player-visible loss the ruling refused to ship.
+   Format-only for now, like the rest of this section: `brink_format::
+   SuspendedFlow::next_block_id`/`::pending_element` exist and round-trip
+   (FS-1), but the FS-2/FS-3 spill/restore that would populate a *live*
+   value on park and consume it on resume is unbuilt — see §9.
 
 **No instruction offsets, ever.** Recompile-stability rides
 container/DefinitionId identity — the same contract as saves,
@@ -212,8 +228,8 @@ manual (non-bevy) hosts.
 - **Park-depth cap = 8**; at-cap is a turn-terminating runtime fault
   (parks nest only through tunnel chains; real stories sit at 1–2).
 - **Oracle bar**: FS-3's opcodes are vanilla-unreachable; the ratchet
-  stays byte-identical at 5,577 with no corpus regeneration. That is
-  the acceptance criterion.
+  stays byte-identical at `RATCHET_EPISODE_COUNT` with no corpus
+  regeneration. That is the acceptance criterion.
 
 ### 10.5 Recorded future directions (icebox, not designed)
 
@@ -236,7 +252,8 @@ await sites**: everything after an `await` becomes a synthesized
 **continuation container**; parking = evaluate condition → false →
 spill live locals per the FS-2 frame shape → record
 `FlowFrame { container: <continuation id>, return_stack, frame,
-wake }` → unwind. Resuming = restore the frame into a fresh
+wake, next_block_id, pending_element }` (the last two per §2 point 5,
+#2108) → unwind. Resuming = restore the frame into a fresh
 environment and **enter the continuation container from its top** —
 an ordinary divert, no program-counter archaeology. Continuation
 containers take **stable identities from their await site**

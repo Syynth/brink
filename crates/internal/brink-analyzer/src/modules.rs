@@ -6,8 +6,10 @@
 //! and effective visibility, §4) are both available. Four jobs:
 //!
 //! - **Import well-formedness**: self-import (`E090`), a name brought into
-//!   scope twice (`E089`), and a bare `IMPORT { name } FROM mod` naming a
-//!   definition the (declared) module does not publicly export (`E088`).
+//!   scope twice (`E089`), and a bare `IMPORT { name } FROM mod` whose
+//!   trailing segment names neither an item the (declared) module publicly
+//!   exports nor a declared submodule of it (`E088`, dual-reading — see
+//!   `known_module_names` and issue #1592).
 //! - **Cross-module visibility**: a reference that resolves to a `#@private`
 //!   definition outside the referrer's module is `E087`. Private is
 //!   module-internal; the check keys off *visibility*, so it fires for a
@@ -109,6 +111,41 @@ fn file_modules_and_exports(
     (file_module, declared_exports)
 }
 
+/// Every module *name or name-prefix* this whole-project pass has real
+/// visibility into (issue #1592): every module some file actually declares
+/// itself as (`file_module`'s `Some` values), plus every `::`-joined
+/// ancestor of those names.
+///
+/// The ancestor closure is the fix for the original silent no-op: a
+/// directory that holds a declared submodule but is never itself the
+/// module of any file (`story::market`, a pure container for
+/// `story::market::barter`) never appears in `file_module` — nothing is
+/// literally "module `story::market`" — so without this closure a bare
+/// `use story::market::barter;` naming that container as `import.module`
+/// could never be validated at all (neither confirmed nor refuted), and
+/// `E088` stayed silent forever. `#@module(...)` accepts any non-empty
+/// string, `::`-joined or not (`hir::lower::directive::module_directive_name`
+/// places no structural constraint on it, and this crate's own
+/// `native_use_dual_reading.rs` fixture declares
+/// `#@module(story::market::barter)` from an `.ink` file), so this closure is
+/// not an ink-specific no-op — a `::`-joined `#@module` fixture exercises it
+/// exactly as a native `use` path does. The reason the oracle/tier1 corpus is
+/// unaffected is the one stated in this module's top-level Compat doc: no
+/// `#@module`/`IMPORT`/`use` construct appears anywhere in that corpus at
+/// all, not any structural property of ink module names.
+fn known_module_names(file_module: &BTreeMap<FileId, Option<String>>) -> BTreeSet<String> {
+    let mut known = BTreeSet::new();
+    for module in file_module.values().flatten() {
+        known.insert(module.clone());
+        let mut segments: Vec<&str> = module.split("::").collect();
+        while segments.len() > 1 {
+            segments.pop();
+            known.insert(segments.join("::"));
+        }
+    }
+    known
+}
+
 /// Is the referring file inside the target's module?
 ///
 /// For a **declared** target module, "same declared module name"; for an
@@ -136,12 +173,12 @@ fn referrer_in_target_module(
 /// feeds output ordering, but the deterministic containers keep the pass
 /// order-insensitive by construction.
 type ImportCoverage<'a> = (
-    BTreeMap<FileId, BTreeSet<&'a str>>,
+    BTreeMap<FileId, BTreeSet<String>>,
     BTreeMap<FileId, BTreeSet<(&'a str, &'a str)>>,
 );
 
 fn import_coverage<'a>(files: &'a [(FileId, &'a HirFile)]) -> ImportCoverage<'a> {
-    let mut qualified: BTreeMap<FileId, BTreeSet<&str>> = BTreeMap::new();
+    let mut qualified: BTreeMap<FileId, BTreeSet<String>> = BTreeMap::new();
     let mut bare: BTreeMap<FileId, BTreeSet<(&str, &str)>> = BTreeMap::new();
     for &(file_id, hir) in files {
         // Shared with `ImportScope` (`resolve.rs`) so resolution and this
@@ -162,7 +199,7 @@ fn import_coverage<'a>(files: &'a [(FileId, &'a HirFile)]) -> ImportCoverage<'a>
 /// bare-importing that exact name from it, or by importing the module
 /// qualified (which licenses `module.name` access to any of its exports)?
 fn import_covers(
-    qualified: &BTreeMap<FileId, BTreeSet<&str>>,
+    qualified: &BTreeMap<FileId, BTreeSet<String>>,
     bare: &BTreeMap<FileId, BTreeSet<(&str, &str)>>,
     ref_file: FileId,
     module: &str,
@@ -204,6 +241,37 @@ fn symbol_visible_bare_in_file(
     })
 }
 
+/// Every (file, range) the project's cross-file conventions injection
+/// (issue #2289) rewrote into a call against a handler declared in
+/// *another* file — [`brink_ir::ElementMatch::injected`], keyed by the
+/// exact range `brink_ir::hir::lower_native::element::try_claim` gives the
+/// rewritten `Expr::Call`'s `Path`, which by the `ResolvedRef::range`
+/// contract (issue #1561, `brink_ir::symbols::index::ResolvedRef`'s own
+/// doc) is also the resulting resolved reference's own range — so this map
+/// is an exact-match lookup key for [`check_cross_module_refs`], with no
+/// new identifier needed on either side.
+///
+/// Built from `(u32, u32)` pairs rather than `TextRange` itself:
+/// `text_size::TextRange` derives neither `Ord` nor `PartialOrd`, so it
+/// cannot key a `BTreeSet` directly — the pair is exactly its own
+/// `(start, end)` and just as exact a key.
+fn conventions_injected_call_ranges(
+    files: &[(FileId, &HirFile)],
+) -> BTreeMap<FileId, BTreeSet<(u32, u32)>> {
+    let mut ranges: BTreeMap<FileId, BTreeSet<(u32, u32)>> = BTreeMap::new();
+    for &(file_id, hir) in files {
+        for m in &hir.element_matches {
+            if m.injected {
+                ranges
+                    .entry(file_id)
+                    .or_default()
+                    .insert((m.line.start().into(), m.line.end().into()));
+            }
+        }
+    }
+    ranges
+}
+
 /// Cross-module reference gating (`E087` private / `E025` import-required).
 ///
 /// Every resolved reference whose target lies outside the referrer's module
@@ -212,6 +280,31 @@ fn symbol_visible_bare_in_file(
 /// imported it (bare name from that module, or the module qualified). A
 /// same-module reference, or a public target in the undeclared legacy soup
 /// (`module == None`), is always bare-legal and never flagged (§2/§3).
+///
+/// This walks `resolutions` uniformly — `ResolvedRef` carries no
+/// `RefKind`, only `(file, range, target)`, so every reference kind that
+/// resolves to a non-local target is gated the same way regardless of the
+/// syntax that produced it. Issue #2249's new `RefKind::Type` (a struct
+/// field's or `VAR`/`CONST`/`temp` annotation's `Named` leaf,
+/// `resolve::resolve_type_ref`) is therefore already in scope here — it
+/// resolves to the same `SymbolKind::Struct` target a construction
+/// literal's `RefKind::Struct` reference does (issue #2246, the first
+/// reference kind to reach this gate for a struct target), so a
+/// project-file annotation naming an unimported public struct in another
+/// declared module now raises `E025` here too, and a `#@private` one raises
+/// `E087` — exercised in `type_annotation_reference_to_*` below.
+///
+/// **Issue #2289's exemption**: a reference whose `(file, range)` appears in
+/// [`conventions_injected_call_ranges`] is skipped before the visibility
+/// switch below, regardless of which arm it would otherwise take. Such a
+/// reference is not a user-authored cross-module access at all — it is the
+/// compiler's own rewrite of a matched prose line into a call against the
+/// project's *configured* conventions module, sanctioned by the very
+/// `brink.toml` `[project] conventions` pointer that caused the injection
+/// (docs/decision-log.md 2026-08-05: "it's never file local … that's why
+/// they're conventions and not 'local patterns'"). Requiring `pub` on every
+/// claiming handler plus a `use` in every claiming file would reintroduce
+/// exactly the file-local opt-in that ruling rejects.
 fn check_cross_module_refs(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -220,6 +313,7 @@ fn check_cross_module_refs(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let (qualified_imports, bare_imports) = import_coverage(files);
+    let injected_calls = conventions_injected_call_ranges(files);
 
     for r in resolutions {
         let Some(target) = index.symbols.get(&r.target) else {
@@ -233,6 +327,14 @@ fn check_cross_module_refs(
         // A same-module reference is always bare-legal (§2) — nothing to
         // enforce.
         if referrer_in_target_module(file_module, target, r.file) {
+            continue;
+        }
+        // Issue #2289: a cross-file conventions injection's own rewritten
+        // call is exempt — see this function's own doc.
+        if injected_calls
+            .get(&r.file)
+            .is_some_and(|s| s.contains(&(r.range.start().into(), r.range.end().into())))
+        {
             continue;
         }
         match target.visibility {
@@ -263,8 +365,19 @@ fn check_cross_module_refs(
                     diagnostics.push(Diagnostic {
                         file: r.file,
                         range: r.range,
+                        // Deliberately dialect-blind (issue #1590 companion
+                        // finding): this pass reads only HIR, which never
+                        // carries a native/ink frontend tag ("no dialect tag
+                        // near HIR" — see `brink-db`'s `file_language` doc),
+                        // so the message never spells out a concrete import
+                        // statement — ink's `IMPORT { name } FROM mod` and
+                        // native's `use mod::name;` differ. A consumer that
+                        // *does* know the referring file's dialect
+                        // (`brink-ide::import_fix::import_actions`, via
+                        // `ProjectDb::is_native`) renders the concrete
+                        // quick-fix syntax instead.
                         message: format!(
-                            "unresolved cross-module reference `{name}` — add `IMPORT {{ {name} }} FROM {module}` or `IMPORT {module}` (see modules-spec §2)",
+                            "unresolved cross-module reference `{name}` — import it from `{module}` (see modules-spec §2)",
                             name = target.name,
                             module = tmod,
                         ),
@@ -314,6 +427,7 @@ pub fn check(
     let mut diagnostics = Vec::new();
 
     let (file_module, declared_exports) = file_modules_and_exports(files, index);
+    let known_modules = known_module_names(&file_module);
 
     check_cross_module_refs(files, index, resolutions, &file_module, &mut diagnostics);
     check_qualified_ambiguity(files, index, &file_module, &mut diagnostics);
@@ -328,16 +442,6 @@ pub fn check(
         let mut seen_modules: BTreeSet<String> = BTreeSet::new();
 
         for import in &hir.imports {
-            // Self-import: a module cannot import itself.
-            if own_module.as_deref() == Some(import.module.as_str()) {
-                diagnostics.push(Diagnostic {
-                    file: file_id,
-                    range: import.module_range,
-                    message: format!("{}: `{}`", DiagnosticCode::E090.title(), import.module),
-                    code: DiagnosticCode::E090,
-                });
-            }
-
             if import.bare {
                 for item in &import.items {
                     // Duplicate local name across this file's imports.
@@ -353,13 +457,119 @@ pub fn check(
                             code: DiagnosticCode::E089,
                         });
                     }
-                    // Unresolved import: the module is declared but does not
-                    // publicly export this name. Only checked against
-                    // *declared* modules (an undeclared stem-module's export
-                    // set isn't visible to this pass) to stay sound.
-                    if let Some(exports) = declared_exports.get(&import.module)
-                        && !exports.contains(&item.name)
-                    {
+
+                    // Dual-reading (issue #1592): the trailing segment
+                    // `item.name` may resolve as an item `import.module`
+                    // publicly exports, or as a declared submodule
+                    // `import.module::item.name` in its own right (Rust's
+                    // `use` dual-reads its trailing segment; charter §13.2
+                    // commits to that lineage). Both readings are checked
+                    // independently and BOTH may hold at once — no
+                    // precedence is needed between them (decided +
+                    // documented at `resolve::import_coverage_for_file`,
+                    // which is where the "resolves to a module" reading is
+                    // actually *licensed*). This check only fires when
+                    // NEITHER reading resolves.
+                    let is_item = declared_exports
+                        .get(&import.module)
+                        .is_some_and(|exports| exports.contains(&item.name));
+                    let full_path = format!("{}::{}", import.module, item.name);
+                    let is_module = known_modules.contains(&full_path);
+
+                    // Self-import via the prefix (review finding #1686,
+                    // 2026-07-27): `own_module == import.module` is only a
+                    // genuine self-import when this trailing segment does
+                    // NOT itself resolve as a declared submodule. When it
+                    // does (`is_module`), `import.module` is the
+                    // *importing file's own module* legitimately importing
+                    // one of its own declared **child** submodules
+                    // (`story::market` writing `use story::market::barter;`
+                    // to license qualified access to `barter`'s exports,
+                    // e.g. `barter::haggle` — never bare `haggle`) —
+                    // required by the E025 import-required gate, not a
+                    // self-import. That
+                    // shape gets its own full-path check right below,
+                    // exactly where it belongs; checked per item (not once
+                    // per import) because whether it applies depends on
+                    // this item's own dual-reading verdict.
+                    if !is_module && own_module.as_deref() == Some(import.module.as_str()) {
+                        diagnostics.push(Diagnostic {
+                            file: file_id,
+                            range: import.module_range,
+                            message: format!(
+                                "{}: `{}`",
+                                DiagnosticCode::E090.title(),
+                                import.module
+                            ),
+                            code: DiagnosticCode::E090,
+                        });
+                    }
+
+                    // A trailing segment that resolves as a module names
+                    // that module — from *this* declaration's own module,
+                    // that is a self-import exactly as the qualified form's
+                    // check above, just reached through the item-leaf
+                    // shape (`use story::market::barter;` from inside
+                    // `story::market::barter` itself).
+                    if is_module && own_module.as_deref() == Some(full_path.as_str()) {
+                        diagnostics.push(Diagnostic {
+                            file: file_id,
+                            range: item.range,
+                            message: format!("{}: `{}`", DiagnosticCode::E090.title(), full_path),
+                            code: DiagnosticCode::E090,
+                        });
+                    }
+
+                    // Aliased trailing module segment (review finding #1686,
+                    // 2026-07-27): `use story::market::barter as b;` where
+                    // `barter` resolves as a **module**, not an item, has no
+                    // representation to alias — `ImportItem.alias` renames
+                    // one local binding, but a licensed module contributes
+                    // its whole (unbounded, project-wide-determined) export
+                    // set under their own names; there is no field to carry
+                    // "these exports now come in under `b`" instead. Before
+                    // this check, the alias was silently ignored: the
+                    // submodule's exports remained reachable via qualified
+                    // access under their original name (e.g. `barter::x`,
+                    // never bare) (the phantom `module::item` candidate in
+                    // `resolve::import_coverage_for_file` does not know
+                    // about aliases at all), while `b` bound
+                    // nothing — with no diagnostic anywhere. This is the
+                    // same "no `Import` shape for aliasing a whole module"
+                    // gap `lower_native::import::lower_use_decl` already
+                    // rejects loudly for the single-segment form
+                    // (`use a as m;` → `E129`); reused here because it is
+                    // structurally the same defect, only knowable once
+                    // whole-project module data resolves the dual-reading
+                    // (which is why it can't be caught at lowering time).
+                    if is_module && item.alias.is_some() {
+                        diagnostics.push(Diagnostic {
+                            file: file_id,
+                            range: item.range,
+                            message: format!(
+                                "{}: cannot alias imported module `{}`",
+                                DiagnosticCode::E129.title(),
+                                full_path
+                            ),
+                            code: DiagnosticCode::E129,
+                        });
+                    }
+
+                    // Unresolved import: the trailing segment names neither
+                    // a public export of the *declared* module `import.module`
+                    // nor a declared submodule of it. Only checked when this
+                    // pass has real visibility into `import.module` (via
+                    // `known_modules`, which — unlike the old
+                    // `declared_exports`-only guard — also covers a
+                    // container module with no items of its own, closing
+                    // the original silent no-op). `known_modules` is a
+                    // superset of `declared_exports`'s keys by construction
+                    // (every exporting module is a `file_module` value), so
+                    // this single check subsumes the old guard. An
+                    // undeclared/unknown module's export set genuinely
+                    // isn't visible here, so it stays unchecked rather than
+                    // false-flagged.
+                    if !is_item && !is_module && known_modules.contains(&import.module) {
                         diagnostics.push(Diagnostic {
                             file: file_id,
                             range: item.range,
@@ -374,6 +584,17 @@ pub fn check(
                     }
                 }
             } else {
+                // Self-import: a module cannot import itself (qualified
+                // form — the whole path always names the module, no
+                // trailing-segment dual-reading applies here).
+                if own_module.as_deref() == Some(import.module.as_str()) {
+                    diagnostics.push(Diagnostic {
+                        file: file_id,
+                        range: import.module_range,
+                        message: format!("{}: `{}`", DiagnosticCode::E090.title(), import.module),
+                        code: DiagnosticCode::E090,
+                    });
+                }
                 // Qualified form: a repeated `IMPORT mod` is a duplicate.
                 if !seen_modules.insert(import.module.clone()) {
                     diagnostics.push(Diagnostic {
@@ -394,8 +615,8 @@ pub fn check(
 mod tests {
     use brink_format::{DefinitionId, DefinitionTag};
     use brink_ir::{
-        Block, FileId, HirFile, ModuleDecl, ResolvedRef, Scope, SymbolIndex, SymbolInfo,
-        SymbolKind, Visibility,
+        Block, DiagnosticCode, FileId, HirFile, Import, ImportItem, ModuleDecl, ResolvedRef, Scope,
+        SymbolIndex, SymbolInfo, SymbolKind, Visibility,
     };
     use rowan::{TextRange, TextSize};
 
@@ -406,6 +627,10 @@ mod tests {
     }
 
     fn hir_with_module(name: &str) -> HirFile {
+        hir_with_module_and_imports(name, Vec::new())
+    }
+
+    fn hir_with_module_and_imports(name: &str, imports: Vec<Import>) -> HirFile {
         HirFile {
             root_content: Block::default(),
             knots: Vec::new(),
@@ -420,9 +645,47 @@ mod tests {
                 range: range(0, 1),
                 was: None,
             }),
-            imports: Vec::new(),
+            imports,
             visibility: Vec::new(),
             was_directives: Vec::new(),
+            allow_scopes: Vec::new(),
+            element_matches: Vec::new(),
+            cue_names: Vec::new(),
+            native: false,
+            claim_handlers: Vec::new(),
+        }
+    }
+
+    /// A bare `use module::item;` / `IMPORT { item } FROM module` with no
+    /// alias — the shape `#1592`'s dual-reading applies to.
+    fn bare_import(module: &str, item: &str) -> Import {
+        Import {
+            module: module.to_string(),
+            module_range: range(0, 1),
+            items: vec![ImportItem {
+                name: item.to_string(),
+                alias: None,
+                range: range(1, 1),
+            }],
+            bare: true,
+            range: range(0, 2),
+        }
+    }
+
+    /// The aliased form (`use module::item as alias;` /
+    /// `IMPORT { item AS alias } FROM module`) — the shape the #1686 review
+    /// found silently dropped an alias-of-module diagnostic.
+    fn bare_import_with_alias(module: &str, item: &str, alias: &str) -> Import {
+        Import {
+            module: module.to_string(),
+            module_range: range(0, 1),
+            items: vec![ImportItem {
+                name: item.to_string(),
+                alias: Some(alias.to_string()),
+                range: range(1, 1),
+            }],
+            bare: true,
+            range: range(0, 2),
         }
     }
 
@@ -507,5 +770,588 @@ mod tests {
                 "same-module self-reference must produce no diagnostics, got {diagnostics:?}"
             );
         }
+    }
+
+    /// Issue #1590 companion finding: this pass never sees a native/ink
+    /// frontend tag (HIR is dialect-blind by design — "no dialect tag near
+    /// HIR"), so the `E025` message must not spell out a concrete import
+    /// statement's syntax — ink's `IMPORT { name } FROM mod` reads wrong to a
+    /// native `.brink` author, and there is no signal here to pick the other
+    /// spelling instead. The message stays syntax-free; a consumer that does
+    /// know the referring file's dialect (`brink-ide::import_fix`, via
+    /// `ProjectDb::is_native`) renders the concrete quick-fix text.
+    #[test]
+    fn e025_message_never_hardcodes_a_concrete_import_statement() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module("town");
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let ambush_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            ambush_id,
+            SymbolInfo {
+                visibility: Visibility::Public,
+                ..symbol(ambush_id, SymbolKind::Knot, "ambush", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("ambush".to_string())
+            .or_default()
+            .push(ambush_id);
+
+        // `town` references `quest`'s public `ambush` bare, with no IMPORT/
+        // `use` at all — E025 must fire (this is the same well-established
+        // gate `check_cross_module_refs` exercises elsewhere in this test
+        // module and in `brink-ide`'s `import_fix` tests).
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 6),
+            target: ambush_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        let e025: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E025)
+            .collect();
+        assert_eq!(e025.len(), 1, "expected exactly one E025: {diagnostics:?}");
+        assert!(
+            !e025[0].message.contains("IMPORT"),
+            "E025 message must not hardcode ink's IMPORT syntax: {:?}",
+            e025[0].message
+        );
+    }
+
+    // ── PR #2271 review finding: issue #2249's new `RefKind::Type` ───────
+    // reference resolves to a `SymbolKind::Struct` target exactly like a
+    // construction literal's `RefKind::Struct` does (issue #2246) — and
+    // `check_cross_module_refs` walks `resolutions` by target kind alone
+    // (`ResolvedRef` carries no `RefKind`), so it is already in scope here.
+    // These three model the resolution `resolve::resolve_type_ref` records
+    // for a `VAR`/`CONST`/`temp` annotation or struct field naming a struct
+    // in another declared module — the same hand-built-`SymbolIndex` idiom
+    // `e025_message_never_hardcodes_a_concrete_import_statement` above uses
+    // for a `Knot` target.
+
+    /// An unimported, unqualified reference to a *public* struct in another
+    /// declared module: `E025`, same as any other reference kind.
+    #[test]
+    fn type_annotation_reference_to_unimported_public_struct_in_another_module_is_e025() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module("town");
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let cue_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                visibility: Visibility::Public,
+                ..symbol(cue_id, SymbolKind::Struct, "Cue", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        // `town`'s `~ temp c: Cue` (or a struct field `f: Cue`) resolves to
+        // `quest`'s public `Cue` with no import — this is the shape
+        // `resolve_type_ref` records for the `TYPE_EXPR`/`TYPE_NAME` range.
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 3),
+            target: cue_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E025 && d.file == FileId(1)),
+            "unimported cross-module struct type annotation must raise E025: {diagnostics:?}"
+        );
+    }
+
+    /// The same reference, but `town` has imported `Cue` from `quest`: no
+    /// diagnostic.
+    #[test]
+    fn type_annotation_reference_to_imported_public_struct_in_another_module_is_silent() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module_and_imports("town", vec![bare_import("quest", "Cue")]);
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let cue_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                visibility: Visibility::Public,
+                ..symbol(cue_id, SymbolKind::Struct, "Cue", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 3),
+            target: cue_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        assert!(
+            diagnostics.is_empty(),
+            "an imported cross-module struct type annotation must raise nothing: {diagnostics:?}"
+        );
+    }
+
+    /// A reference to a `#@private` struct in another module: `E087`,
+    /// unconditionally — imports never let a private definition cross a
+    /// module boundary.
+    #[test]
+    fn type_annotation_reference_to_private_struct_in_another_module_is_e087() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module("town");
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let cue_id = DefinitionId::new(DefinitionTag::StructDef, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                visibility: Visibility::Private,
+                ..symbol(cue_id, SymbolKind::Struct, "Cue", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 3),
+            target: cue_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E087 && d.file == FileId(1)),
+            "a private struct referenced cross-module in a type annotation must raise E087: \
+             {diagnostics:?}"
+        );
+    }
+
+    /// Review finding #1686 (E088 guard widening): swapping the old
+    /// `declared_exports.get(&import.module).is_some()` guard for
+    /// `known_modules.contains(&import.module)` (needed so a pure-directory
+    /// prefix like `story::market` is checked at all, dual-reading's whole
+    /// point) is broader than just that pure-directory case — `E088` now
+    /// also fires for a bare import naming an item of a **declared module
+    /// that exports nothing publicly at all** (every top-level symbol
+    /// `#@private`/unmarked-native-default-private), where before this PR
+    /// it was silent (no `declared_exports` entry to check against, exactly
+    /// like the pure-directory case, but for a different underlying
+    /// reason). Pinned here so this widening — real and intentional, since
+    /// `known_modules` is the correct superset for the pure-directory case
+    /// — doesn't silently drift further. `E088`'s own diagnostic title
+    /// ("names a definition the declared module does not export") already
+    /// reads correctly for this case: a private item genuinely is not
+    /// exported, so no wording change is needed alongside the widening.
+    #[test]
+    fn bare_import_from_a_declared_module_with_no_public_exports_is_e088() {
+        let vault = hir_with_module("vault");
+        let main = hir_with_module_and_imports("main", vec![bare_import("vault", "secret")]);
+        let files = [(FileId(0), &vault), (FileId(1), &main)];
+
+        // `vault` declares `secret`, but it's Private — never a
+        // `declared_exports` entry, so `is_item` is false. `secret` also
+        // isn't itself a declared module, so `is_module` is false too.
+        let secret_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            secret_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Private,
+                ..symbol(secret_id, SymbolKind::Knot, "secret", Some("vault"), None)
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e088: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E088)
+            .collect();
+        assert_eq!(
+            e088.len(),
+            1,
+            "a bare import from a declared module that exports nothing publicly must diagnose \
+             E088 (the known_modules-superset widening), even though the named item genuinely \
+             exists (just private): {diagnostics:?}"
+        );
+    }
+
+    // ── Issue #1592: dual-reading `use`/`IMPORT` trailing segments ──────
+
+    /// A `story::market` prefix with **no file of its own** — a pure
+    /// directory holding the declared submodule `story::market::barter` —
+    /// is exactly the original silent no-op's fixture: before #1592,
+    /// `declared_exports.get("story::market")` was `None` (nothing exports
+    /// *from* a module no file ever declares), so the `E088` check could
+    /// never fire either way, whether `barter` was a real submodule or a
+    /// typo. Dual-reading must resolve this trailing segment as the module
+    /// `story::market::barter` and license it — no `E088`.
+    #[test]
+    fn dual_reading_trailing_segment_resolving_to_a_submodule_is_not_e088() {
+        let barter = hir_with_module("story::market::barter");
+        let main = hir_with_module_and_imports(
+            "story::main",
+            vec![bare_import("story::market", "barter")],
+        );
+        let files = [(FileId(0), &barter), (FileId(1), &main)];
+
+        let haggle_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            haggle_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    haggle_id,
+                    SymbolKind::Knot,
+                    "haggle",
+                    Some("story::market::barter"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e088: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E088)
+            .collect();
+        assert!(
+            e088.is_empty(),
+            "a trailing segment naming a real submodule must not be E088: {diagnostics:?}"
+        );
+    }
+
+    /// The mirror of the previous test: the same container-only
+    /// `story::market` prefix, but the trailing segment names neither a
+    /// declared submodule nor an export — this is the case #1592 requires
+    /// to newly diagnose (previously silent for exactly the same structural
+    /// reason: `story::market` had no `declared_exports` entry to check
+    /// against).
+    #[test]
+    fn dual_reading_trailing_segment_resolving_to_neither_is_e088() {
+        let barter = hir_with_module("story::market::barter");
+        let main = hir_with_module_and_imports(
+            "story::main",
+            vec![bare_import("story::market", "nonexistent")],
+        );
+        let files = [(FileId(0), &barter), (FileId(1), &main)];
+
+        let haggle_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            haggle_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    haggle_id,
+                    SymbolKind::Knot,
+                    "haggle",
+                    Some("story::market::barter"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e088: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E088)
+            .collect();
+        assert_eq!(
+            e088.len(),
+            1,
+            "a trailing segment naming neither an export nor a submodule must diagnose (the \
+             retired silent no-op): {diagnostics:?}"
+        );
+    }
+
+    /// Precedence decision (#1592, "decide and document"): when a trailing
+    /// segment resolves as **both** a declared item of the parent module
+    /// *and* a declared submodule in its own right, neither reading is
+    /// suppressed — no `E088` fires, because the check only fires when
+    /// NEITHER reading holds. (The *licensing* half of "both apply" — that
+    /// the submodule is also licensed for qualified access alongside the
+    /// item (never bare) — is proved at the resolution level in
+    /// `native_use_dual_reading.rs`'s
+    /// `use_naming_a_module_does_not_license_bare_access_to_its_exports`,
+    /// which is a whole-project concern this diagnostics-only pass can't
+    /// observe.)
+    #[test]
+    fn dual_reading_both_item_and_submodule_neither_is_suppressed() {
+        let market = hir_with_module("story::market");
+        let barter = hir_with_module("story::market::barter");
+        let main = hir_with_module_and_imports(
+            "story::main",
+            vec![bare_import("story::market", "barter")],
+        );
+        let files = [
+            (FileId(0), &market),
+            (FileId(1), &barter),
+            (FileId(2), &main),
+        ];
+
+        let mut index = SymbolIndex::default();
+        // `story::market` itself declares a public item literally named
+        // `barter` — the "both" collision.
+        let item_id = DefinitionId::new(DefinitionTag::Address, 1);
+        index.symbols.insert(
+            item_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    item_id,
+                    SymbolKind::Knot,
+                    "barter",
+                    Some("story::market"),
+                    None,
+                )
+            },
+        );
+        // `story::market::barter` is also a real, separately declared
+        // submodule.
+        let haggle_id = DefinitionId::new(DefinitionTag::Address, 2);
+        index.symbols.insert(
+            haggle_id,
+            SymbolInfo {
+                file: FileId(1),
+                visibility: Visibility::Public,
+                ..symbol(
+                    haggle_id,
+                    SymbolKind::Knot,
+                    "haggle",
+                    Some("story::market::barter"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e088: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E088)
+            .collect();
+        assert!(
+            e088.is_empty(),
+            "a trailing segment that resolves as both an item and a module must not diagnose: \
+             {diagnostics:?}"
+        );
+    }
+
+    /// The dual-reading module path also feeds self-import (`E090`): a file
+    /// declaring `story::market::barter` that `use`s the leaf-item form of
+    /// its own module (`use story::market::barter;`, parsed as
+    /// `module: "story::market", items: [barter]`) is importing itself
+    /// exactly as if it had written the qualified form directly — the
+    /// pre-#1592 check only compared `own_module` against `import.module`
+    /// (the *prefix*), so this shape was invisible to `E090` even though it
+    /// is the same self-import.
+    #[test]
+    fn dual_reading_self_import_via_leaf_form_is_e090() {
+        let barter = hir_with_module_and_imports(
+            "story::market::barter",
+            vec![bare_import("story::market", "barter")],
+        );
+        let files = [(FileId(0), &barter)];
+
+        let haggle_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            haggle_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    haggle_id,
+                    SymbolKind::Knot,
+                    "haggle",
+                    Some("story::market::barter"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e090: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E090)
+            .collect();
+        assert_eq!(
+            e090.len(),
+            1,
+            "the leaf-item form naming this file's own module must self-import exactly as the \
+             qualified form does: {diagnostics:?}"
+        );
+    }
+
+    /// Review finding #1686 (BLOCKING E090 false positive): a **parent**
+    /// module importing its own declared **child** submodule via the
+    /// leaf-item shape (`use story::market::barter;` written from inside
+    /// `story::market` itself, parsed as `module: "story::market", items:
+    /// [barter]`) must NOT be flagged `E090` — this is exactly the import
+    /// the `E025` import-required gate makes *mandatory* for
+    /// `story::market` to reference `story::market::barter`'s exports via
+    /// qualified access (e.g. `barter::haggle`), not a self-import. The
+    /// pre-fix prefix check
+    /// (`own_module == import.module`) could not distinguish this from a
+    /// genuine self-import because it never consulted the item's own
+    /// dual-reading verdict (`is_module`).
+    #[test]
+    fn parent_module_importing_its_own_declared_submodule_is_not_e090() {
+        let barter = hir_with_module("story::market::barter");
+        let market = hir_with_module_and_imports(
+            "story::market",
+            vec![bare_import("story::market", "barter")],
+        );
+        let files = [(FileId(0), &barter), (FileId(1), &market)];
+
+        let haggle_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            haggle_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    haggle_id,
+                    SymbolKind::Knot,
+                    "haggle",
+                    Some("story::market::barter"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        assert!(
+            diagnostics.is_empty(),
+            "a parent module importing its own declared child submodule must diagnose nothing \
+             (no E090, and the submodule licenses `haggle` so no E088 either): {diagnostics:?}"
+        );
+    }
+
+    /// Review finding #1686 (BLOCKING aliased trailing module segment): a
+    /// trailing segment that both carries a local alias AND resolves as a
+    /// declared **submodule** (`use story::market::barter as b;`) has no
+    /// sound `Import` representation — aliasing an entire module's export
+    /// set, not one name. Before this fix this was silently accepted:
+    /// `story::market::barter`'s exports remained reachable via qualified
+    /// access under their own name (the phantom module candidate ignores
+    /// aliases) while `b` bound nothing, with no diagnostic anywhere.
+    /// Mirrors
+    /// `lower_native::import::lower_use_decl`'s `E129` for the
+    /// single-segment `use a as m;` module-alias shape.
+    #[test]
+    fn aliased_trailing_segment_resolving_to_a_submodule_is_e129() {
+        let barter = hir_with_module("story::market::barter");
+        let main = hir_with_module_and_imports(
+            "story::main",
+            vec![bare_import_with_alias("story::market", "barter", "b")],
+        );
+        let files = [(FileId(0), &barter), (FileId(1), &main)];
+
+        let haggle_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            haggle_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    haggle_id,
+                    SymbolKind::Knot,
+                    "haggle",
+                    Some("story::market::barter"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e129: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E129)
+            .collect();
+        assert_eq!(
+            e129.len(),
+            1,
+            "aliasing a trailing segment that resolves as a module must diagnose E129, not \
+             silently drop the alias: {diagnostics:?}"
+        );
+    }
+
+    /// Ink dialect regression (#1592 "tests in both dialects"): `quest`
+    /// exports something, but never `ambush`, and no file anywhere declares
+    /// a module named `quest::ambush` — so neither dual-reading path
+    /// resolves. This is *not* because ink module names are structurally
+    /// flat (`#@module(...)` accepts any non-empty string, `::`-joined or
+    /// not — see `known_module_names`'s doc, corrected by the #1686 review);
+    /// it is simply that this fixture's corpus never declares that
+    /// submodule. `E088` must keep firing exactly as it did before dual-
+    /// reading landed, for this genuinely-unexported name.
+    #[test]
+    fn unexported_import_still_diagnoses_e088_with_dual_reading_in_place() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module_and_imports("town", vec![bare_import("quest", "ambush")]);
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        // `quest` exports something, but never `ambush`.
+        let other_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            other_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Public,
+                ..symbol(
+                    other_id,
+                    SymbolKind::Knot,
+                    "guard_talk",
+                    Some("quest"),
+                    None,
+                )
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e088: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E088)
+            .collect();
+        assert_eq!(
+            e088.len(),
+            1,
+            "an unexported ink import must still diagnose E088, unaffected by dual-reading: \
+             {diagnostics:?}"
+        );
     }
 }

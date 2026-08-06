@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -48,12 +48,11 @@ fn run_case(dir: &Path) -> String {
     let mut hit_choices = false;
     loop {
         match story.continue_single().expect(&step_msg) {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => {
+            Step::Choices(_) => {
                 hit_choices = true;
                 break;
             }
@@ -136,6 +135,292 @@ fn struct_construct_read_write() {
     assert_case("struct-construct-read-write");
 }
 
+/// Issue #1495: `push`/`insert`/`remove_at` on a struct-field lvalue
+/// (`a.items`, `a: Bag`, `Bag.items: Array<int>`) used to silently misroute
+/// — a bare `ident.ident` chain always parses as one multi-segment
+/// `hir::Expr::Path` (never `hir::Expr::FieldAccess`), and
+/// `try_lower_mutator_stmt`'s bare-variable fast path resolved that whole
+/// path's range to the **root** variable (the TM-4b resolution-fallback
+/// shape), applying the mutator to `a` itself (a `Record`) instead of
+/// `a.items` (the `Array`) — a runtime `NotIndexable("record")` fault,
+/// reproduced against a real compile+run before this fix landed (`brink
+/// play` on this exact fixture printed `cannot index into a record value`
+/// instead of a line at all). This exercises all three mutators the issue
+/// names in one straight-line program: `push(a.items, 3)` (`[1, 2] ->
+/// [1, 2, 3]`), `insert(a.items, 0, 0)` (`-> [0, 1, 2, 3]`), and
+/// `remove_at(a.items, 2)` (`-> [0, 1, 3]`) — proving the fix's routing
+/// (`lower_field_mutator`, shared by every `MutatorKind`) rather than one
+/// verb in isolation. Confirmed to fail with `lower_mutator_call`'s
+/// `path.segments.len() > 1` split reverted (rule 20a): the bare-variable
+/// path is taken again and the case faults at runtime instead of matching
+/// `expected.txt`.
+///
+/// Two more shapes were added on review: `b = a` before any mutation, then
+/// asserting `b.items` is still `[1, 2]` after — the `let y = x` aliasing
+/// guarantee (`struct-copy-isolation`, `rmw-mutator-shared-nested-lvalue`'s
+/// precedent) that motivated the `Value`-layer isolation test this issue
+/// descends from (`nested_array_inside_record_field_is_isolated_after_copy`
+/// in `brink-format::value`); and a `Temp`-rooted case (`~ temp c = Bag#{…}`)
+/// exercising `lower_field_mutator`'s `SymbolKind::Param | Temp` arm, which
+/// the `VAR`-only original left uncovered — that arm is precisely the one
+/// whose historical symptom, before this fix, was a link-time `unresolved
+/// global` fault rather than `NotIndexable("record")` (see
+/// `tests/tier1-brink/algorithms/quadtree/story.ink`'s "actual arena-
+/// mutation friction" finding for that pre-fix repro).
+#[test]
+fn struct_field_mutator_lvalue_targets_the_field_not_the_root() {
+    assert_case("struct-field-mutator-lvalue");
+}
+
+/// Issue #1495 review scope: a **chained** struct-field mutator lvalue
+/// (`push(o.inner.items, v)`, 3+ segments) must not fall into the same
+/// silent-misroute hole the 2-segment case had — `lower_mutator_call`'s new
+/// split treats it exactly like `try_lower_field_assignment`'s own chained
+/// case, raising the same non-suppressible `E074` rather than reaching
+/// codegen at all.
+#[test]
+fn chained_struct_field_mutator_lvalue_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Inner = #{
+    items: Array<int>,
+}
+STRUCT Outer = #{
+    inner: Inner,
+}
+VAR o = 0
+~ {
+    o = Outer#{inner: Inner#{items: #[1, 2]}}
+    push(o.inner.items, 3)
+}
+o is {o.inner.items}.
+-> END
+";
+    let err = compile_brink(source)
+        .expect_err("a chained struct-field mutator lvalue must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+/// Issue #2121 — the "one level down" remainder of #1495/PR #2106: a
+/// **Path-then-Index** mutator lvalue (`push(a.items[0], v)`, `a.items:
+/// Array<Array<int>>`) reaches `lower_lvalue_container_chain` with the index
+/// chain's root still a raw 2-segment `Path` (`a.items`) — a different call
+/// chain than the 2106 fix's own `lower_mutator_call` Path-lvalue split,
+/// which never sees an `Index`-shaped lvalue at all. Before this fix this
+/// compiled clean (no diagnostic — reproduced against a real compile+run,
+/// `brink play` on this exact shape printed `cannot index into a record
+/// value` instead of any diagnostic, the identical NotIndexable("record")
+/// symptom #1495's own repro had) — the write silently misrouted onto the
+/// root `a` (a `Record`) instead of `a.items[0]` (the inner `Array`). Now
+/// raises the same non-suppressible `E074` `lower_mutator_call`'s own
+/// 3+-segment case already raises, rather than reaching codegen. Confirmed
+/// to fail with `reject_field_projection_index_root`'s call site in
+/// `lower_lvalue_container_chain` reverted (rule 20a): the case compiled
+/// clean with zero diagnostics and faulted at runtime instead of hitting
+/// this assertion.
+#[test]
+fn path_then_index_mutator_lvalue_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<Array<int>>,
+}
+VAR a = 0
+~ {
+    a = Bag#{items: #[#[1, 2], #[3, 4]]}
+    push(a.items[0], 99)
+}
+a is {a.items}.
+-> END
+";
+    let err = compile_brink(source)
+        .expect_err("a Path-then-Index struct-field mutator lvalue must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+/// Same shape as
+/// [`path_then_index_mutator_lvalue_is_e074_not_silently_misrouted`], but for
+/// plain indexed assignment (`a.items[0] = v`) rather than a mutator call —
+/// `lower_indexed_assignment` has the identical root-resolution hole (its
+/// own `flatten_index_chain` → `lower_assign_target` call), a *different*
+/// function than the mutator path above, so both need the guard
+/// independently. Before this fix: compiled clean, faulted at runtime with
+/// `NotIndexable("record")` (reproduced against a real compile+run).
+/// Confirmed to fail with `reject_field_projection_index_root`'s call site
+/// in `lower_indexed_assignment` reverted (rule 20a).
+#[test]
+fn path_then_index_plain_assignment_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<int>,
+}
+VAR a = 0
+~ {
+    a = Bag#{items: #[1, 2, 3]}
+    a.items[0] = 99
+}
+a is {a.items}.
+-> END
+";
+    let err = compile_brink(source).expect_err(
+        "a Path-then-Index struct-field assignment target must still be a compile error",
+    );
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+/// Review finding on #2171: `reject_field_projection_index_root` only
+/// matched a `Path` root, so an index chain rooted in a `hir::Expr::FieldAccess`
+/// (`arr[0].items[1] = v` — the #674 grammar one level deeper: the target is
+/// `Index(FieldAccess(Index(arr, 0), items), 1)`) fell through to
+/// `lower_assign_target` and silently misrouted, exactly like the two
+/// `Path`-rooted cases above. Confirmed to fail with the guard's
+/// `hir::Expr::FieldAccess` arm reverted (rule 20a).
+#[test]
+fn field_access_then_index_root_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<int>,
+}
+VAR arr = 0
+~ {
+    arr = #[Bag#{items: #[1, 2]}]
+    arr[0].items[1] = 99
+}
+arr is {arr}.
+-> END
+";
+    let err = compile_brink(source).expect_err(
+        "an index chain rooted in a field-access projection must still be a compile error",
+    );
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+// ── #2174: classic-line (non-block) `~ a[i] = v` silent drop ────────────
+//
+// The three tests above (`path_then_index_mutator_lvalue_...`,
+// `path_then_index_plain_assignment_...`, `field_access_then_index_root_...`)
+// all write their `a.items[0] = 99` line *inside* a `~ { … }` T1b block —
+// the surface #2121/PR #2171 fixed. Discovered during that PR's review: the
+// identical assignment written as a classic (non-block) logic line —
+// `~ a.items[0] = 99`, no enclosing `~ { … }` — never reached
+// `reject_field_projection_index_root`/`lower_indexed_assignment` at all,
+// because the classic-line statement dispatch (`lir/lower/mod.rs`) only
+// tried `try_lower_field_assignment`'s `Path`/`FieldAccess` targets before
+// falling through to `stmts::lower_stmt`, whose `lower_assign_target` only
+// recognizes a bare `Path` — an `Index` target silently vanished with
+// **zero diagnostics**, not even a runtime fault. This is `#2174`.
+
+/// The exact `#2121` repro, but as a classic (non-block) logic line instead
+/// of inside `~ { … }`. Before the fix: compiled with zero diagnostics and
+/// the assignment never happened at all (confirmed to fail — i.e. the
+/// diagnostic was *absent* — with `try_lower_indexed_assignment`'s call site
+/// in `mod.rs`'s statement dispatch reverted, rule 20a).
+#[test]
+fn classic_line_path_then_index_struct_field_is_e074_not_silently_dropped() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<int>,
+}
+VAR a = Bag#{items: #[1, 2, 3]}
+~ a.items[0] = 99
+a is {a.items}.
+-> END
+";
+    let err = compile_brink(source).expect_err(
+        "a classic-line Path-then-Index struct-field assignment target must still be a compile error",
+    );
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+/// The root-cause repro that `#2174`'s investigation actually uncovered: a
+/// classic-line indexed assignment onto a **bare** array variable — no
+/// struct field involved at all — silently dropped the write with zero
+/// diagnostics (confirmed via a real compile+run before writing this test,
+/// rule 12n): the story compiled clean and printed the array's *original*
+/// contents, not the assigned value. This asserts the VALUE at the intended
+/// target after the assignment, not merely that the program built.
+///
+/// Confirmed to fail without the fix (rule 20a): with
+/// `try_lower_indexed_assignment`'s call site in `mod.rs` reverted, this
+/// prints `[1, 2, 3]` (the assignment silently dropped) instead of the
+/// `[99, 2, 3]` asserted here.
+#[test]
+fn classic_line_bare_variable_indexed_assignment_writes_the_value() {
+    let source = "VAR a = #[1, 2, 3]\n~ a[0] = 99\n{a}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let out = run_to_end(&mut story);
+    assert_eq!(out, "[99, 2, 3]\n");
+}
+
+/// Issue #2174 review finding — the second entry point for the same
+/// silent-drop class: `content::lower_inline_block`, not just `mod.rs`'s
+/// top-level classic-line statement dispatch. A multiline conditional
+/// embedded directly in a choice's display text (`choice.start_content`,
+/// `hir::normalize`'s lift pass never walks a `Choice`'s own
+/// `start_content`/`bracket_content`/`inner_content` fields — only
+/// `choice.body` — so this stays an inline `hir::ContentPart::
+/// InlineConditional` reaching `content::lower_inline_block`'s branch
+/// lowering, not `lower_block_with_children`'s top-level dispatch) can
+/// contain a classic indexed-assignment logic line with no text at all
+/// (`- true: ~ a[0] = 99`). Before this fix `lower_inline_block` intercepted
+/// only `hir::Stmt::LogicBlock`, falling through to `stmts::lower_stmt` for
+/// everything else — whose `Assignment` arm only resolves a bare `Path`
+/// target, so the `Index` target silently vanished, zero diagnostics, same
+/// as the `mod.rs` case.
+///
+/// Confirmed to fail without the fix (rule 20a): with the parallel guarded
+/// dispatch in `content::lower_inline_block` reverted, this prints
+/// `[1, 2, 3]` (the assignment silently dropped) instead of the
+/// `[99, 2, 3]` asserted here.
+#[test]
+fn choice_display_text_inline_conditional_indexed_assignment_writes_the_value() {
+    let source =
+        "VAR a = #[1, 2, 3]\n* Pick {2 > 0:\n- true: ~ a[0] = 99\n}\nChosen.\n{a}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("runtime error") {
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => {
+                story.choose(0).expect("choose");
+            }
+            Step::Done => {}
+            Step::End | Step::Suspended => break,
+        }
+    }
+    assert_eq!(out, "Pick\nChosen.\n[99, 2, 3]\n");
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject
@@ -181,7 +466,11 @@ fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
 /// fields in declared order), pinned on both consumers of the one display
 /// path (F1): interpolation and `string()` render identically; nested
 /// structs, structs-in-collections, and Option forms recurse through the
-/// same path (F28's total `none`/`some(…)` render included).
+/// same path. `some(…)` still renders totally at both consumers (F28); a
+/// final `none` at the interpolation boundary now renders as nothing
+/// (`docs/stdlib-spec.md` §1.6b, Track B4) while `string(none)` keeps F28's
+/// total `"none"` render — the fixture's `absent` / `absent via string`
+/// pair proves the two consumers deliberately diverge for `None` only.
 #[test]
 fn struct_display_structural_default_serves_both_display_consumers() {
     assert_case("struct-display-default");
@@ -190,6 +479,20 @@ fn struct_display_structural_default_serves_both_display_consumers() {
 #[test]
 fn struct_through_function_call_marshals_and_stays_a_value_copy() {
     assert_case("struct-through-function-call");
+}
+
+// ── #1476: COW no-aliasing invariant sweep ────────────────────────────────
+//
+// `struct-through-function-call` proves value semantics across a call
+// boundary; this proves it for the plain assignment case (`let y = x`,
+// docs/value-model-spec.md §2/§3) on a `Value::Record` — mutating a field
+// through `a` after `b = a` must never be observable through `b`. Arrays
+// already have this exact shape of regression (`rmw-mutator-shared-nested-
+// lvalue`); structs didn't until this sweep.
+
+#[test]
+fn struct_copy_is_isolated_from_later_field_mutation() {
+    assert_case("struct-copy-isolation");
 }
 
 // ── TM-5 (#621) corpus wing growth: TM-2 inline annotations end-to-end ────
@@ -249,8 +552,8 @@ fn stdlib_insert_array_and_map() {
 }
 
 #[test]
-fn stdlib_remove_array_and_map() {
-    assert_case("stdlib-remove");
+fn stdlib_remove_and_remove_at() {
+    assert_case("stdlib-remove-and-remove-at");
 }
 
 #[test]
@@ -395,7 +698,7 @@ fn every_case_directory_has_a_test() {
         "stdlib-keys-and-values",
         "stdlib-push",
         "stdlib-insert",
-        "stdlib-remove",
+        "stdlib-remove-and-remove-at",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
         "stdlib-char-at",
@@ -415,6 +718,8 @@ fn every_case_directory_has_a_test() {
         "struct-construct-read-write",
         "struct-display-default",
         "struct-through-function-call",
+        "struct-copy-isolation",
+        "struct-field-mutator-lvalue",
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",
@@ -427,6 +732,7 @@ fn every_case_directory_has_a_test() {
         "numeric-tower",
         "sort-verbs",
         "weighted-heap-verbs",
+        "seq-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -550,7 +856,7 @@ fn run_expecting_fault_gradual(source: &str) -> Option<brink_runtime::RuntimeErr
     let mut story = Story::<DotNetRng>::new(program, tables);
     for _ in 0..64 {
         match story.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
+            Ok(Step::Done | Step::End | Step::Suspended) => return None,
             Ok(_) => {}
             Err(e) => return Some(e),
         }
@@ -564,7 +870,7 @@ fn run_to_error_gradual(source: &str) -> brink_runtime::RuntimeError {
     let mut story = Story::<DotNetRng>::new(program, tables);
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
+            Ok(Step::Line(_)) => {}
             Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
             Err(e) => return e,
         }
@@ -612,19 +918,66 @@ fn insert_with_an_rvalue_first_argument_is_a_compile_error() {
     );
 }
 
-// ── #673: struct literal as a VAR/CONST declaration default ─────────────
+// ── #673/#1530: struct literal as a VAR/CONST declaration default ───────
 //
-// `eval_const_expr` has no `ConstValue` representation for a record (that's
-// a format question outside this fix's fence) — a struct construction
-// literal used directly as a declaration default is a real, non-suppressible
-// compile error (E075) through the full `compile_with_options` entry point,
-// never a silently-compiled `Null`.
+// #673 refused every struct construction literal in declaration-default
+// position (E075) because `lir::ConstValue` had no record-carrying variant.
+// #1530 added one: a *well-formed* literal folds into
+// `ConstValue::Record` and compiles, and E075 now covers only the
+// shape-mismatch cases — which stay real, non-suppressible compile errors
+// through the full `compile_with_options` entry point, because a
+// declaration default has no `RecordNew` runtime step left to fault at.
 
 #[test]
-fn struct_literal_declaration_default_is_a_real_compile_error() {
-    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\nHello.\n-> END\n";
+fn struct_literal_declaration_default_compiles_and_bakes_the_record() {
+    // Read straight out of the declaration default — nothing assigns to `p`
+    // first, so a passing read proves the record was baked into
+    // `StoryData`, not merely accepted by the analyzer.
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\n{p.y}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    assert_eq!(run_to_end(&mut story), "2\n");
+}
+
+#[test]
+fn struct_literal_declaration_default_missing_a_field_is_e069_under_strict() {
+    // The Brink dialect's unset-`types` default is strict (NS-A9), so
+    // `brink-analyzer`'s `structs::check` gets there first with the more
+    // precise, field-naming E069 and the compile is blocked before LIR
+    // lowering ever folds the default.
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0}\nHello.\n-> END\n";
     let err = compile_brink(source)
-        .expect_err("struct literal declaration default must be a compile error");
+        .expect_err("a mismatched struct literal default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E069),
+        "expected E069, got {diags:?}"
+    );
+}
+
+#[test]
+fn struct_literal_declaration_default_missing_a_field_is_e075_under_gradual() {
+    // Under `types = gradual` `structs::check` never runs — a mismatched
+    // construction is a *runtime* construction fault there. A declaration
+    // default has no `RecordNew` step left to fault at (the value is baked
+    // into `StoryData`), so #1530's narrowed E075 is the policy-independent
+    // backstop that keeps a half-built record out of the story.
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0}\nHello.\n-> END\n";
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let err = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        gradual_opts(),
+    )
+    .expect_err("a mismatched struct literal default must be a compile error under gradual too");
     let diags = errors_of(&err);
     assert!(
         diags
@@ -810,13 +1163,13 @@ fn var_reference_nested_inside_a_map_value_default_is_a_real_compile_error() {
 }
 
 #[test]
-fn var_reference_nested_inside_a_struct_field_default_is_still_e075() {
-    // A struct construction literal used as a declaration default is
-    // unconditionally E075 regardless of field content (`ConstValue` has no
-    // record variant at all — #673) — a bare `VAR` field reference never
-    // reaches the `E077` arm because the whole literal is already rejected.
-    // Direct fixture proving the "struct field" position #743 names is
-    // covered, not silently folded.
+fn var_reference_nested_inside_a_struct_field_default_is_e077() {
+    // The "struct field" position #743 names. Under #673 this was
+    // unconditionally E075 (the whole literal was rejected before any field
+    // was looked at); since #1530 the literal folds for real, so a bare
+    // `VAR` field reference now reaches the same `E077` arm an array
+    // element or map value in that position does — covered, never silently
+    // folded to `Null`.
     let source = "STRUCT Point = #{\n    x: float,\n}\n\nVAR a = 1.0\nVAR p = Point#{x: a}\nHello.\n-> END\n";
     let err = compile_brink(source)
         .expect_err("a VAR reference nested inside a struct field default must be a compile error");
@@ -824,8 +1177,8 @@ fn var_reference_nested_inside_a_struct_field_default_is_still_e075() {
     assert!(
         diags
             .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E075),
-        "expected E075, got {diags:?}"
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
     );
 }
 
@@ -936,7 +1289,7 @@ fn run_to_error(source: &str) -> brink_runtime::RuntimeError {
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
+            Ok(Step::Line(_)) => {}
             Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
             Err(e) => return e,
         }
@@ -944,8 +1297,8 @@ fn run_to_error(source: &str) -> brink_runtime::RuntimeError {
 }
 
 #[test]
-fn remove_array_index_out_of_bounds_faults() {
-    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 5)\n}\nDone.\n-> END\n";
+fn remove_at_array_index_out_of_bounds_faults() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove_at(arr, 5)\n}\nDone.\n-> END\n";
     let err = run_to_error(source);
     assert!(
         matches!(
@@ -953,6 +1306,29 @@ fn remove_array_index_out_of_bounds_faults() {
             brink_runtime::RuntimeError::IndexOutOfBounds { index: 5, len: 2 }
         ),
         "expected IndexOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn remove_on_an_array_faults() {
+    // Issue #1484: `remove` is map-only now — an array root is
+    // `NotIndexable`, not index-based removal (that's `remove_at`'s job).
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 0)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("array")),
+        "expected NotIndexable(\"array\"), got {err:?}"
+    );
+}
+
+#[test]
+fn remove_at_on_a_map_faults() {
+    // The split's other half: `remove_at` no longer accepts a map.
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    remove_at(m, 0)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("map")),
+        "expected NotIndexable(\"map\"), got {err:?}"
     );
 }
 
@@ -981,8 +1357,8 @@ fn contains_on_a_non_collection_faults() {
 
 // ── #587 breadth pass: every stdlib function x faults (§5, value-model §11c) ─
 //
-// `contains`/`push`/`insert`/`remove` on non-collection/out-of-bounds roots
-// are covered above and in `take_rmw.rs`. This section rounds out `len`,
+// `contains`/`push`/`insert`/`remove`/`remove_at` on non-collection/
+// out-of-bounds roots are covered above and in `take_rmw.rs`. This section rounds out `len`,
 // `keys`, `values` (including the `values(array)` edge, which faults —
 // `collection_values` is Map-only, unlike `collection_keys`'s deliberate
 // array-identity pass-through documented on `collection_ops::collection_keys`).
@@ -1025,12 +1401,11 @@ fn keys_on_an_array_is_identity_pass_through_not_a_fault() {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("no fault expected") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => panic!("unexpected choices"),
+            Step::Choices(_) => panic!("unexpected choices"),
         }
     }
     assert_eq!(out.trim(), "7 8 9");
@@ -1246,12 +1621,12 @@ fn int_of_negative_float_truncates_toward_zero_not_floor() {
             .expect("compile");
     let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
-    match story.continue_single().expect("no fault expected") {
-        Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-            assert_eq!(text.trim(), "-2");
-        }
-        other => panic!("expected terminal line, got {other:?}"),
-    }
+    // Terminals carry no text now (§7) — the content may arrive as its own
+    // `Step::Line` before the bare terminal, rather than fused with it as it
+    // was under the old `Line` API. Drain to the terminal and check the
+    // accumulated text either way.
+    let text = run_to_end(&mut story);
+    assert_eq!(text.trim(), "-2");
 }
 
 #[test]
@@ -1320,12 +1695,11 @@ fn string_of_a_divert_target_never_faults() {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("string() must never fault") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => panic!("unexpected choices"),
+            Step::Choices(_) => panic!("unexpected choices"),
         }
     }
     // Proves the conversion actually ran (not a vacuous pass on zero
@@ -1374,7 +1748,7 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     // resolution status, so an unresolved `push(arr)` call is flagged
     // exactly like `len(arr)` regardless of arity/lvalue-ness (those checks
     // are downstream, brink-dialect-only concerns E055/E058).
-    let strict_ink_call_sites: [(&str, &str); 7] = [
+    let strict_ink_call_sites: [(&str, &str); 8] = [
         ("len", "len(arr)"),
         ("keys", "keys(arr)"),
         ("values", "values(arr)"),
@@ -1382,6 +1756,7 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
         ("push", "push(arr)"),
         ("insert", "insert(arr)"),
         ("remove", "remove(arr)"),
+        ("remove_at", "remove_at(arr)"),
     ];
     for (name, call) in strict_ink_call_sites {
         let source = format!("VAR arr = 0\n~ x = {call}\nDone.\n-> END\n");
@@ -1412,14 +1787,15 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     // Under `Dialect::Brink`, each name resolves and lowers cleanly with a
     // signature-correct call: pure functions as an expression, mutators as
     // an lvalue-first statement (§5).
-    let brink_call_sites: [(&str, &str); 7] = [
+    let brink_call_sites: [(&str, &str); 8] = [
         ("len", "temp x = len(arr)"),
         ("keys", "temp x = keys(arr)"),
         ("values", "temp x = values(m)"),
         ("contains", "temp x = contains(arr, 1)"),
         ("push", "push(arr, 3)"),
         ("insert", "insert(arr, 0, 9)"),
-        ("remove", "remove(arr, 0)"),
+        ("remove", "remove(m, \"a\")"),
+        ("remove_at", "remove_at(arr, 0)"),
     ];
     for (name, stmt) in brink_call_sites {
         let brink_source = format!(
@@ -1624,7 +2000,7 @@ fn run_expecting_fault(source: &str) -> Option<brink_runtime::RuntimeError> {
     let mut story = Story::<DotNetRng>::new(program, tables);
     for _ in 0..64 {
         match story.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
+            Ok(Step::Done | Step::End | Step::Suspended) => return None,
             Ok(_) => {}
             Err(e) => return Some(e),
         }
@@ -1884,20 +2260,14 @@ fn compile_and_link(
     (std::sync::Arc::new(program), tables)
 }
 
-/// Drain a story to its terminal line, concatenating text.
+/// Drain a story to its terminal step, concatenating text. Terminals carry
+/// no text of their own — any trailing content already arrived as its own
+/// preceding `Step::Line`, which is why this doesn't need a separate arm
+/// pushing text for the terminal case.
 fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
-    loop {
-        match story.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. }
-            | Line::End { text, .. }
-            | Line::Choices { text, .. }
-            | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                break;
-            }
-        }
+    while let Step::Line(line) = story.continue_single().expect("runtime error") {
+        out.push_str(&line.text);
     }
     out
 }
@@ -2010,7 +2380,7 @@ Result {r}.
     let mut err = None;
     for _ in 0..8 {
         match s2.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => break,
+            Ok(Step::Done | Step::End | Step::Suspended) => break,
             Ok(_) => {}
             Err(e) => {
                 err = Some(e);
@@ -2150,8 +2520,9 @@ fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
 /// End-to-end reachability for the whole A1 verb set: `find`/`index_of`/
 /// `min`/`max`/`first`/`last`/`pop`/`get`/`contains_value`/`clear`, plus
 /// `some(x)` construction, bare-`none` equality, and Option interpolation
-/// (the strict-era `none`/`some(…)` display form — §1.6 forgiveness is
-/// Track B4, deliberately absent).
+/// — every `none`-valued interpolation slot here renders as nothing, the
+/// §1.6b display-boundary forgiveness (Track B4, issue #1463; superseded
+/// the interim total `none` render this fixture originally pinned).
 #[test]
 fn option_verbs_end_to_end() {
     assert_case("option-verbs");
@@ -2187,11 +2558,24 @@ fn sort_verbs_end_to_end() {
 /// humble heap end to end — construction + F17 multiset equality +
 /// construction-literal display, seeded `roll` goldens (the rand-verbs
 /// oracle-free discipline), and the heap verbs' push/peek/pop/drain over
-/// an ordinary array (§4b doctrine order; empty pops are `none`). Strict
-/// types (the brink-dialect default).
+/// an ordinary array (§4b doctrine order; an empty pop is `none`, which
+/// renders as nothing at the interpolation boundary — §1.6b, Track B4,
+/// issue #1463). Strict types (the brink-dialect default).
 #[test]
 fn weighted_heap_verbs_end_to_end() {
     assert_case("weighted-heap-verbs");
+}
+
+/// The fn-value verb layer's pure trio (`docs/stdlib-spec.md` §4, issue
+/// #1679) end to end in the brink dialect: `map`/`filter`/`fold` over
+/// `#fn(target)` callbacks, chaining (the verbs compose because `map`'s
+/// result is an ordinary array), an element-type change under `map`, the
+/// empty-array cases (`fold` returns `init` untouched — no absence case, so
+/// no `Option`), and a `bind(…)` closure as a callback. Strict types (the
+/// brink-dialect default).
+#[test]
+fn seq_verbs_end_to_end() {
+    assert_case("seq-verbs");
 }
 
 #[test]

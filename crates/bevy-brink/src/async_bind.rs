@@ -43,7 +43,12 @@ use crate::flow::BrinkFlow;
 /// multi-frame work the external represents, and resolve with
 /// [`resolve_brink_external`](BrinkResolveExternalExt::resolve_brink_external):
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy_app::App;
+/// # use bevy_ecs::observer::On;
+/// # use bevy_ecs::system::Commands;
+/// # use bevy_brink::{BrinkExternalAwaited, BrinkResolveExternalExt, Value};
+/// # let mut app = App::new();
 /// app.add_observer(|on: On<BrinkExternalAwaited>, mut commands: Commands| {
 ///     if on.event().name == "pick_target" {
 ///         // … open UI; later, when the player picks target 7:
@@ -279,7 +284,7 @@ mod tests {
             };
             let handler = bindings.handler();
             let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
-            if let Ok(Advance::Line(line)) = flow.step_one(
+            if let Ok(Advance::Step(line)) = flow.step_one(
                 &p.program,
                 &t.tables,
                 &mut view,

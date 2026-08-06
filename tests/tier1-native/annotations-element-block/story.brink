@@ -1,0 +1,20 @@
+@[convention(claims = "^(?<name>[A-Z][A-Z ]*)$", order = 10, block)]
+fn cue(name: string, body: content) >{
+  {name}
+  {body}
+}
+
+@[convention(claims = "^(?<word>[A-Z]+)!$", order = 20)]
+fn shout(word: string) {
+  return "{word}!!!";
+}
+
+flow main() {
+  VENDOR
+  You shouldn't be here.
+  WAIT!
+  Not after dark.
+
+  Just an ordinary line.
+  -> END
+}

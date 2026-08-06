@@ -25,6 +25,23 @@ brink-syntax = { path = "../internal/brink-syntax" }
 brink-format = { path = "../internal/brink-format", features = ["inkt"]  }
 brink-test-harness = { path = "../internal/brink-test-harness" }
 serde_json = { workspace = true }
+# Self dev-dependency (issue #2168): the crate's own `tests/*.rs` integration
+# suite is the largest caller of the `test-util`-gated legacy entry points
+# (`compile`/`compile_path`/`compile_with_options`/`compile_path_with_options`),
+# so it needs the feature activated the same way every other test/bench/
+# example target in the workspace does — via a `dev-dependencies` edge, not
+# `#[cfg(test)]` (which a separate integration-test crate can't see anyway).
+brink-compiler = { path = ".", features = ["test-util"] }
+
+[features]
+# Gates the legacy closure/path-based compile entry points (`compile`,
+# `compile_path`, `compile_with_options`, `compile_path_with_options` — see
+# `src/lib.rs`). `brink_environment::compile(&Environment)` (#1306) is the
+# ruled determinism boundary and the sole production road into compilation;
+# this feature exists so tests/benches/examples that still compile inline
+# ink source without an `Environment` keep working, while the functions
+# stay off the default public surface for any real consumer (issue #2168).
+test-util = []
 
 [lints]
 workspace = true

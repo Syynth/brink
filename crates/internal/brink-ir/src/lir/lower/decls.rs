@@ -1,23 +1,40 @@
 use brink_format::{DefinitionId, DefinitionTag};
 
 use crate::determinism::LookupMap;
-use crate::symbols::{SymbolIndex, SymbolKind};
+use crate::symbols::{SymbolIndex, SymbolKind, is_reserved_root_module};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
-use super::context::{NameTable, ResolutionLookup};
+use super::context::{
+    AnalyzerTables, IdAllocator, NameTable, ResolutionLookup, StructCtx, TempMap,
+};
 use super::expr::const_value_to_map_key;
+use super::lambda;
 use super::lir;
+use super::structs::ShapeTable;
 
 /// Collect global variable/constant definitions from HIR files.
 ///
 /// Evaluates constants first so that variable initializers like `VAR x = c`
 /// can resolve constant references to their values.
+///
+/// `shapes` is the project's already-built [`ShapeTable`] — a struct
+/// construction literal used as a declaration default needs its shape's id
+/// and field order to fold into [`lir::ConstValue::Record`] (issue #1530),
+/// which is why [`super::build_prelude_decls`] builds the shape table
+/// *before* calling this.
+///
+/// `lambda_ctx` bundles the resources needed only when a default is itself
+/// a lambda literal (issue #1774, [`GlobalLambdaCtx`]'s own doc) — kept out
+/// of the always-paid parameter list because the overwhelmingly common case
+/// (no file-scope lambda anywhere) never touches it.
 pub fn collect_globals(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     names: &mut NameTable,
     resolutions: &ResolutionLookup,
+    shapes: &ShapeTable,
     diagnostics: &mut Vec<Diagnostic>,
+    lambda_ctx: &mut GlobalLambdaCtx<'_>,
 ) -> Vec<lir::GlobalDef> {
     // Pass 1: evaluate all constants and build a value lookup (keyed
     // lookup only — `LookupMap`, issue #801's audited alias).
@@ -25,8 +42,16 @@ pub fn collect_globals(
     let mut globals = Vec::new();
 
     for &(file_id, hir_file) in files {
+        // #1504/#1774: qualify this file's lambda-lifted container paths by
+        // the owning file, same qualifier `lower_root_content_chunks` gives
+        // that file's anonymous choice/gather containers — otherwise two
+        // files' `VAR f = |x| x;` at the same source offset would mint the
+        // same `DefinitionId`.
+        lambda_ctx.ids.set_path_prefix(hir::root_content_scope_path(
+            lambda_ctx.file_paths.get(&file_id).map(String::as_str),
+        ));
         for cst in &hir_file.constants {
-            if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
+            if let Some(id) = lookup_global(index, file_id, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
                 // #692: a bare non-constant reference/call as the *whole*
                 // default (not nested inside a collection/struct/fn literal,
@@ -40,14 +65,28 @@ pub fn collect_globals(
                         code: DiagnosticCode::E083,
                     });
                 }
-                let default = eval_const_expr(
-                    &cst.value,
-                    index,
-                    resolutions,
-                    file_id,
-                    &const_values,
-                    diagnostics,
-                );
+                let default = if let hir::Expr::Lambda(l) = &cst.value {
+                    eval_const_lambda(
+                        l,
+                        file_id,
+                        hir_file.native,
+                        index,
+                        resolutions,
+                        names,
+                        lambda_ctx,
+                        diagnostics,
+                    )
+                } else {
+                    let env = ConstEvalEnv {
+                        index,
+                        resolutions,
+                        file: file_id,
+                        const_values: &const_values,
+                        shapes,
+                        native: hir_file.native,
+                    };
+                    eval_const_expr(&cst.value, env, diagnostics)
+                };
                 const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
@@ -62,8 +101,12 @@ pub fn collect_globals(
 
     // Pass 2: evaluate variables (may reference constants).
     for &(file_id, hir_file) in files {
+        // See the matching comment in the constants pass above.
+        lambda_ctx.ids.set_path_prefix(hir::root_content_scope_path(
+            lambda_ctx.file_paths.get(&file_id).map(String::as_str),
+        ));
         for var in &hir_file.variables {
-            if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
+            if let Some(id) = lookup_global(index, file_id, &var.name.text, SymbolKind::Variable) {
                 let name = names.intern(&var.name.text);
                 // #692: same top-level constness check as the CONST pass
                 // above.
@@ -75,14 +118,28 @@ pub fn collect_globals(
                         code: DiagnosticCode::E083,
                     });
                 }
-                let default = eval_const_expr(
-                    &var.value,
-                    index,
-                    resolutions,
-                    file_id,
-                    &const_values,
-                    diagnostics,
-                );
+                let default = if let hir::Expr::Lambda(l) = &var.value {
+                    eval_const_lambda(
+                        l,
+                        file_id,
+                        hir_file.native,
+                        index,
+                        resolutions,
+                        names,
+                        lambda_ctx,
+                        diagnostics,
+                    )
+                } else {
+                    let env = ConstEvalEnv {
+                        index,
+                        resolutions,
+                        file: file_id,
+                        const_values: &const_values,
+                        shapes,
+                        native: hir_file.native,
+                    };
+                    eval_const_expr(&var.value, env, diagnostics)
+                };
                 globals.push(lir::GlobalDef {
                     id,
                     name,
@@ -95,6 +152,157 @@ pub fn collect_globals(
     }
 
     globals
+}
+
+/// Resources [`collect_globals`] needs only for a lambda-literal decl
+/// default (issue #1774) — bundled so the common lambda-free case pays
+/// nothing extra in the parameter list.
+///
+/// RULED 2026-08-01 (`docs/decision-log.md` #1774): a native `var`/`const`
+/// may hold a fn value, including a lambda literal — not just the bare-name
+/// reference #1862 already shipped. The gate that used to block this was
+/// `is_const_foldable_decl_default`'s `Lambda` arm (raising `E083` in
+/// [`collect_globals`] above) — *not* [`is_const_foldable_kind`], which
+/// governs a lambda nested one level inside a collection/struct/`#fn` bound
+/// arg and is deliberately left unchanged by this issue (out of scope: see
+/// the PR description). The 2026-07-23 "flows-as-actors" direction homes a
+/// *capturing* fn value to its creating flow to protect `#@local` privacy —
+/// but that reasoning never reaches file scope, because a file-scope lambda
+/// has no enclosing frame to capture from at all (no knot/stitch params, no
+/// `~ temp` locals) — see [`eval_const_lambda`]'s doc for how that is made
+/// mechanical, not just argued.
+pub struct GlobalLambdaCtx<'a> {
+    /// Shared across every file's decl pass — a lifted function's identity
+    /// is content-derived, so one allocator (re-prefixed per file, same as
+    /// [`super::lower_root_content_chunks`]) is enough for the whole
+    /// project.
+    pub ids: &'a mut IdAllocator,
+    /// Lambda-lifted containers synthesized while folding decl defaults,
+    /// destined to become siblings of the project's knots — the same
+    /// placement [`lambda::lower_lambda`]'s own doc gives every lifted
+    /// function, for the same reason (only ever entered through its own fn
+    /// value).
+    pub lifted: &'a mut Vec<lir::Container>,
+    /// Per-file registered paths, for the `set_path_prefix` qualifier above.
+    pub file_paths: &'a LookupMap<FileId, String>,
+    /// Whole-program struct-shape data — `lower_lambda`'s body lowering
+    /// needs it for the same TM-4c reasons any other body lowering does.
+    pub structs: &'a StructCtx<'a>,
+    /// Analyzer side-tables (UFCS/`or`-coalescing) — the real,
+    /// whole-project verdict tables `brink-db`'s `lir_prelude_decls_query`
+    /// builds from `ufcs_resolution_query`/`coalesce_types_query` (review
+    /// finding on #1774: this used to be an unconditionally-empty pair,
+    /// which risked a decl-default lambda body silently losing a resolved
+    /// UFCS call's *meaning* — see [`super::expr::lower_ufcs_call`]'s doc
+    /// for why that arm is not actually a silent miscompile, just a hard
+    /// `E144` refusal).
+    ///
+    /// The `or`-coalescing half is genuinely complete now: `coalesce::
+    /// resolve` already hand-recurses over `hir.variables`/`hir.constants`
+    /// (issue #1764) specifically because their initializers sit outside
+    /// `visit::visit`'s block-tree walk, so a decl-default lambda's chains
+    /// are recorded in the real table this field now carries.
+    ///
+    /// The UFCS half is **not** yet complete: `ufcs::resolve` walks only
+    /// `visit::visit` (never `visit_with_decl_initializers`), so a method
+    /// call inside a decl-default lambda body is never visited by the UFCS
+    /// pass at all — no verdict is ever recorded for it, real table or not.
+    /// Such a call therefore still safely refuses with `E144` (a hard
+    /// compile error, not a silently wrong program) rather than resolving —
+    /// pinned by `brink-compiler`'s
+    /// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`.
+    /// Teaching `ufcs::resolve` to also walk decl initializers (mirroring
+    /// `coalesce::resolve`'s own precedent) is the follow-up that would
+    /// close this, not a change this field's plumbing can make on its own.
+    pub tables: AnalyzerTables<'a>,
+    /// The root container's `DefinitionId` — see
+    /// [`super::context::root_definition_id`].
+    pub root_id: brink_format::DefinitionId,
+}
+
+/// Fold a file-scope lambda literal used directly as a `VAR`/`CONST`
+/// declaration default (issue #1774) — the lambda half of "a native
+/// `var`/`const` may hold a fn value" ([`GlobalLambdaCtx`]'s doc has the
+/// ruling).
+///
+/// Reuses [`lambda::lower_lambda`] verbatim rather than a parallel
+/// mechanism: a file-scope lambda has no enclosing frame, so this hands it
+/// an **empty** `TempMap`/`visible_temps` — every free name in the body
+/// then misses `ctx.temp_slot`, and `lower_lambda`'s own `captured_locals`
+/// contract is "everything that misses `ctx.temp_slot` is a legitimate
+/// non-local" (a global `VAR`/`CONST` cell or a knot/function name), left
+/// alone rather than captured. That is the 2026-08-01 ruling's safety
+/// argument made mechanical rather than merely argued: the creation-site-
+/// capture rule exists to keep a captured `#@local` cell from leaking
+/// outside its home flow, and that can never be at stake here because
+/// there is no capture *at all* — [`lir::Expr::MakeFnValue`]'s `bound` row
+/// is always empty for a file-scope lambda, by construction of the empty
+/// frame handed to it, not by a special case added here. Pinned by
+/// `decls::tests::file_scope_lambda_cannot_capture_flow_local` — if a
+/// future change ever gives file scope a real temp/param frame, that test
+/// starts failing loudly instead of a capture silently smuggling
+/// `#@local` state out through a fn value.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors GlobalLambdaCtx's own field count; a context struct already absorbed the growth"
+)]
+fn eval_const_lambda(
+    l: &hir::LambdaExpr,
+    file: FileId,
+    native: bool,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    names: &mut NameTable,
+    lambda_ctx: &mut GlobalLambdaCtx<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let empty_temps = TempMap::new();
+    let mut next_block_slot = 0u16;
+    let mut ctx = super::make_ctx(
+        file,
+        native,
+        resolutions,
+        index,
+        &empty_temps,
+        names,
+        lambda_ctx.ids,
+        lambda_ctx.root_id,
+        String::new(),
+        false,
+        &[],
+        lambda_ctx.file_paths,
+        &mut next_block_slot,
+        diagnostics,
+        lambda_ctx.structs,
+        lambda_ctx.tables,
+        lambda_ctx.lifted,
+    );
+    match lambda::lower_lambda(l, &mut ctx) {
+        lir::Expr::MakeFnValue { target, bound } if bound.is_empty() => {
+            lir::ConstValue::FnRef(target)
+        }
+        // Structurally unreachable at file scope today (see this fn's doc:
+        // `temp_slot` can never hit with an empty `TempMap`/`visible_temps`,
+        // so `bound` is always empty) — but "unreachable today" is exactly
+        // the invariant a future change could break silently. Review
+        // finding: falling back to a bare `Null` here would turn that break
+        // into a silently-wrong global default (a captured `#@local`
+        // snapshot that was never computed, quietly discarded) rather than
+        // a refusal — this crate's own "flag silent data drops" rule. Emit
+        // the same `E083` `is_const_foldable_decl_default` would have
+        // raised for this position instead: a future break of the
+        // empty-frame invariant becomes a loud compile refusal, never a
+        // silent one.
+        _ => {
+            diagnostics.push(Diagnostic {
+                file,
+                range: l.ptr.text_range(),
+                message: DiagnosticCode::E083.title().to_string(),
+                code: DiagnosticCode::E083,
+            });
+            lir::ConstValue::Null
+        }
+    }
 }
 
 /// Collect list definitions, items, and corresponding global variables from HIR files.
@@ -119,9 +327,11 @@ pub fn collect_lists(
     let mut items = Vec::new();
     let mut list_globals = Vec::new();
 
-    for &(_file_id, hir_file) in files {
+    for &(file_id, hir_file) in files {
         for list_decl in &hir_file.lists {
-            let Some(list_id) = lookup_global(index, &list_decl.name.text, SymbolKind::List) else {
+            let Some(list_id) =
+                lookup_global(index, file_id, &list_decl.name.text, SymbolKind::List)
+            else {
                 continue;
             };
             let list_name = names.intern(&list_decl.name.text);
@@ -137,7 +347,9 @@ pub fn collect_lists(
                 let qualified = format!("{}.{}", list_decl.name.text, member.name.text);
                 let item_name = names.intern(&qualified);
 
-                if let Some(item_id) = lookup_global(index, &qualified, SymbolKind::ListItem) {
+                if let Some(item_id) =
+                    lookup_global(index, file_id, &qualified, SymbolKind::ListItem)
+                {
                     list_items.push((item_name, ordinal));
                     items.push(lir::ListItemDef {
                         id: item_id,
@@ -191,12 +403,24 @@ pub fn collect_externals(
 ) -> Vec<lir::ExternalDef> {
     let mut externals = Vec::new();
 
-    for &(_file_id, hir_file) in files {
+    for &(file_id, hir_file) in files {
         for ext in &hir_file.externals {
-            if let Some(id) = lookup_global(index, &ext.name.text, SymbolKind::External) {
+            if let Some(id) = lookup_global(index, file_id, &ext.name.text, SymbolKind::External) {
                 let name = names.intern(&ext.name.text);
-                // Look for an ink-defined function with the same name to use as fallback.
-                let fallback = lookup_global(index, &ext.name.text, SymbolKind::Knot);
+                // Look for an ink-defined function with the same name to use
+                // as fallback — preferring one declared in this same file
+                // (issue #2197), but a same-file entry is not the only
+                // legitimate answer: an `extern foo` here and `=== function
+                // foo` in an `INCLUDE`d sibling is a real, supported
+                // cross-file fallback pair. What must never happen is
+                // falling through to a **mounted `std…`** module's
+                // same-named fallback with no import — e.g. the stdlib
+                // mount's own `extern scene_entered` + `fn scene_entered`
+                // pair binding to an unrelated project-declared `extern` of
+                // the same name — which is exactly what `lookup_global`'s
+                // own doc (the std exclusion in its unscoped fallback arm)
+                // now rules out.
+                let fallback = lookup_global(index, file_id, &ext.name.text, SymbolKind::Knot);
                 externals.push(lir::ExternalDef {
                     id,
                     name,
@@ -210,16 +434,133 @@ pub fn collect_externals(
     externals
 }
 
+/// Look up a project-wide global by name, preferring the entry declared in
+/// `file`.
+///
+/// **File-scoped, not project-flat** (issue #2197): a bare `(name, kind)`
+/// can have more than one coexisting candidate once M-2d
+/// (`is_cross_declared_module_collision`) lets same-name definitions in
+/// different *declared* modules coexist in `index.by_name` — which is
+/// exactly what happens once `brink_environment`'s stdlib mount (#2080)
+/// puts, say, a project's own `extern scene_entered` alongside
+/// `std/conventions/screenplay.brink`'s own same-named extern. Almost every
+/// call site here is a **self-declaration** lookup — "what id did the
+/// analyzer already assign to the definition *this file itself* just
+/// declared" — never a cross-file reference (those go through
+/// `resolve.rs`'s `ImportScope`-aware `lookup_by_name` instead), so the
+/// entry declared in `file` is always the right answer whenever one exists.
+///
+/// **Former exception, closed by issue #2249:** `ShapeTable::resolve`'s own
+/// two production callers (a `VAR`/`CONST`/`temp` TM-2 struct annotation)
+/// used to pass a **referrer** file that did not itself declare the
+/// annotated shape — a genuine cross-file reference routed through this
+/// file-scoped fallback rather than `resolve.rs`'s full-`Candidacy`
+/// machinery, because there was no analyzer-recorded resolution to consume
+/// (no HIR reference was walked for a `TypeExpr` annotation at all).
+/// `symbols::project`'s walk now registers one (`RefKind::Type`), so both
+/// callers — `structs::record_global_annotation`,
+/// `context::LowerCtx::record_temp_annotation` — consume the analyzer's own
+/// `resolve::resolve_type_ref` resolution directly and no longer reach this
+/// function at all; a struct field's own nested-type lookup
+/// (`build_shape_table`/`build_struct_shape_data`) made the identical move.
+///
+/// **Two other call sites here were audited against the same "does this
+/// need a `RefKind`?" question and found NOT to fit it (issue #2249):**
+/// `collect_externals`' fallback-fn lookup and `context::LowerCtx::
+/// lookup_address_id` are both genuine **self-declaration** lookups in the
+/// sense the paragraph above already describes — an `extern foo`'s
+/// same-named `fn` fallback and a locally-declared label's own address are
+/// never something the *user* wrote a textual reference to at this exact
+/// call site; the pairing/existence check is inferred by the compiler from
+/// two declarations' matching names (or a scope-qualified label's own
+/// declaration), not resolved from a written path the way a divert target,
+/// a variable read, or a type annotation is. There is no HIR reference to
+/// register a `RefKind` for at either site — inventing a synthetic one with
+/// no real source span would be exactly the "second scoped-resolution
+/// implementation" issue #2249 warns against growing, not a reduction of
+/// one. Both sites already get this function's std-exclusion for free, as
+/// every other caller does; they are a genuinely different shape of gap
+/// than the four `RefKind::Type` sites, not an oversight.
+///
+/// The unscoped fallback (no same-file entry) **excludes any candidate
+/// declared in a mounted `std…` module** (review finding on #2197):
+/// without this exclusion, a file that declares an `extern` with **no
+/// fallback of its own** — a legal, common shape — would silently fall
+/// through to whichever *other* file's same-named `fn` happens to sort
+/// first in `by_name`, including the stdlib mount's own same-named
+/// fallback (e.g. `std/conventions/screenplay.brink`'s `fn scene_entered`
+/// binding to a project's unrelated `extern scene_entered(title, slug)`
+/// with different params). That is exactly the "silently reach into std
+/// with no import" class this issue's bare-name-visibility half closes
+/// everywhere else (`resolve.rs`'s `lookup_by_name_direct`); this lookup is
+/// a different call path into the same index and needed its own carve-out.
+/// A **legitimate** cross-file fallback — `extern foo` in one file and
+/// `=== function foo` in an `INCLUDE`d sibling, neither of them std — is
+/// unaffected: only a `std…`-declared candidate is skipped, so
+/// every pre-#2197 non-std caller keeps its byte-identical unscoped match.
+///
+/// #2251: generalized from the single-root `is_std_module` to
+/// `is_reserved_root_module` — the exclusion was never really std-specific,
+/// it excludes any mounted-library candidate, so it now checks the whole
+/// `RESERVED_ROOTS` set. Behavior is unchanged today (one root mounted).
 pub(super) fn lookup_global(
     index: &SymbolIndex,
+    file: FileId,
     name: &str,
     kind: SymbolKind,
 ) -> Option<DefinitionId> {
     index.by_name.get(name).and_then(|ids| {
         ids.iter()
-            .find(|&&id| index.symbols.get(&id).is_some_and(|info| info.kind == kind))
+            .find(|&&id| {
+                index
+                    .symbols
+                    .get(&id)
+                    .is_some_and(|info| info.kind == kind && info.file == file)
+            })
+            .or_else(|| {
+                ids.iter().find(|&&id| {
+                    index.symbols.get(&id).is_some_and(|info| {
+                        info.kind == kind
+                            && !info.module.as_deref().is_some_and(is_reserved_root_module)
+                    })
+                })
+            })
             .copied()
     })
+}
+
+/// The read-only environment a declaration-default constant fold resolves
+/// against. Bundled rather than threaded positionally: the fold is deeply
+/// recursive (every collection/struct/`#fn` literal arm re-enters
+/// [`eval_const_expr`] once per element), so passing five unchanging lookups
+/// through each of those call sites buried the one thing that varies — the
+/// expression — and cost nothing in clarity. `Copy`, so an arm can hand it
+/// straight down; the diagnostic sink stays a separate `&mut` parameter,
+/// which is the only thing the fold actually writes to.
+#[derive(Clone, Copy)]
+pub struct ConstEvalEnv<'a> {
+    /// Whole-project symbol index — resolves a folded path to its kind.
+    pub index: &'a SymbolIndex,
+    /// Range → `DefinitionId` resolutions for the file being folded.
+    pub resolutions: &'a ResolutionLookup,
+    /// The file the default being folded was declared in.
+    pub file: FileId,
+    /// Already-folded `CONST` values, so `VAR x = SOME_CONST` resolves.
+    /// Populated as [`collect_globals`]' first pass runs.
+    pub const_values: &'a LookupMap<DefinitionId, lir::ConstValue>,
+    /// The project's struct shapes — a construction literal default needs
+    /// its shape's id and declaration field order (issue #1530).
+    pub shapes: &'a ShapeTable,
+    /// Whether the file the default being folded belongs to is the native
+    /// (`.brink`) frontend — [`hir::HirFile::native`]. Mirrors the gate
+    /// `lir::lower::expr::lower_path` applies to a bare function name in
+    /// expression position (issue #1862): a native declaration initializer
+    /// (`var f = double;`) must fold a bare reference to a function
+    /// definition to [`lir::ConstValue::FnRef`], the same value the `#fn`
+    /// literal arm below already produces, not the generic
+    /// [`lir::ConstValue::DivertTarget`] every other symbol kind falls
+    /// through to.
+    pub native: bool,
 }
 
 /// Evaluate a compile-time constant expression.
@@ -229,26 +570,31 @@ pub(super) fn lookup_global(
 )]
 pub fn eval_const_expr(
     expr: &hir::Expr,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        const_values,
+        native,
+        ..
+    } = env;
     match expr {
         hir::Expr::Int(n) => lir::ConstValue::Int(*n),
         hir::Expr::Float(bits) => lir::ConstValue::Float(bits.to_f64() as f32),
         hir::Expr::Bool(b) => lir::ConstValue::Bool(*b),
         hir::Expr::String(s) => eval_const_string(s, file, diagnostics),
         hir::Expr::Prefix(hir::PrefixOp::Negate, inner) => {
-            match eval_const_expr(inner, index, resolutions, file, const_values, diagnostics) {
+            match eval_const_expr(inner, env, diagnostics) {
                 lir::ConstValue::Int(n) => lir::ConstValue::Int(-n),
                 lir::ConstValue::Float(f) => lir::ConstValue::Float(-f),
                 _ => lir::ConstValue::Null,
             }
         }
         hir::Expr::Prefix(hir::PrefixOp::Not, inner) => {
-            match eval_const_expr(inner, index, resolutions, file, const_values, diagnostics) {
+            match eval_const_expr(inner, env, diagnostics) {
                 lir::ConstValue::Bool(b) => lir::ConstValue::Bool(!b),
                 lir::ConstValue::Int(n) => lir::ConstValue::Bool(n == 0),
                 lir::ConstValue::Float(f) => lir::ConstValue::Bool(f == 0.0),
@@ -256,32 +602,13 @@ pub fn eval_const_expr(
                 _ => lir::ConstValue::Null,
             }
         }
-        hir::Expr::Infix(lhs, op, rhs) => {
-            let l = eval_const_expr(lhs, index, resolutions, file, const_values, diagnostics);
-            let r = eval_const_expr(rhs, index, resolutions, file, const_values, diagnostics);
-            eval_const_infix(&l, *op, &r)
+        hir::Expr::Infix(ie) => {
+            let l = eval_const_expr(&ie.lhs, env, diagnostics);
+            let r = eval_const_expr(&ie.rhs, env, diagnostics);
+            eval_const_infix(&l, ie.op, &r)
         }
         hir::Expr::Path(path) => {
-            if let Some(id) = resolutions.resolve(file, path.range) {
-                if let Some(info) = index.symbols.get(&id) {
-                    match info.kind {
-                        SymbolKind::ListItem => lir::ConstValue::List {
-                            items: vec![id],
-                            origins: vec![],
-                        },
-                        SymbolKind::Constant => const_values
-                            .get(&id)
-                            .cloned()
-                            .unwrap_or(lir::ConstValue::Null),
-                        SymbolKind::Variable => lir::ConstValue::Null,
-                        _ => lir::ConstValue::DivertTarget(id),
-                    }
-                } else {
-                    lir::ConstValue::Null
-                }
-            } else {
-                lir::ConstValue::Null
-            }
+            fold_path_ref(path, file, resolutions, index, const_values, native)
         }
         hir::Expr::DivertTarget(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
@@ -324,21 +651,57 @@ pub fn eval_const_expr(
         }
         // #673: `VAR`/`CONST arr = #[…]` — see `eval_const_array_literal`'s
         // doc.
-        hir::Expr::ArrayLiteral(arr) => {
-            eval_const_array_literal(arr, index, resolutions, file, const_values, diagnostics)
-        }
+        hir::Expr::ArrayLiteral(arr) => eval_const_array_literal(arr, env, diagnostics),
         // #673: `VAR`/`CONST m = #{…}` — see `eval_const_map_literal`'s doc.
-        hir::Expr::MapLiteral(map) => {
-            eval_const_map_literal(map, index, resolutions, file, const_values, diagnostics)
-        }
-        // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
-        // doc.
-        hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
+        hir::Expr::MapLiteral(map) => eval_const_map_literal(map, env, diagnostics),
+        // #673/#1530: `VAR`/`CONST p = Name#{…}` — see
+        // `eval_const_struct_literal`'s doc.
+        hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, env, diagnostics),
         // T1c-2: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
-        hir::Expr::FnLiteral(fl) => {
-            eval_const_fn_literal(fl, index, resolutions, file, const_values, diagnostics)
-        }
+        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, env, diagnostics),
         _ => lir::ConstValue::Null,
+    }
+}
+
+/// Fold a bare `Path` reference used as (or nested inside) a declaration
+/// default — [`eval_const_expr`]'s `Path` arm, split out to keep that match
+/// under clippy's line budget.
+///
+/// Native bare-name fn value in declaration-initializer position (RULED
+/// 2026-08-01, `docs/t1c-spec.md` §2a, issue #1862): `var f = double;` must
+/// fold the same way the zero-bound `#fn(double)` literal arm
+/// (`eval_const_fn_literal`) does — mirrors the gate
+/// `lir::lower::expr::lower_path` applies in expression position, so a
+/// native declaration default and a native expression-position reference to
+/// the same function never disagree on what value they produce.
+fn fold_path_ref(
+    path: &hir::Path,
+    file: FileId,
+    resolutions: &ResolutionLookup,
+    index: &SymbolIndex,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    native: bool,
+) -> lir::ConstValue {
+    let Some(id) = resolutions.resolve(file, path.range) else {
+        return lir::ConstValue::Null;
+    };
+    let Some(info) = index.symbols.get(&id) else {
+        return lir::ConstValue::Null;
+    };
+    if native && info.is_function_definition() {
+        return lir::ConstValue::FnRef(id);
+    }
+    match info.kind {
+        SymbolKind::ListItem => lir::ConstValue::List {
+            items: vec![id],
+            origins: vec![],
+        },
+        SymbolKind::Constant => const_values
+            .get(&id)
+            .cloned()
+            .unwrap_or(lir::ConstValue::Null),
+        SymbolKind::Variable => lir::ConstValue::Null,
+        _ => lir::ConstValue::DivertTarget(id),
     }
 }
 
@@ -356,12 +719,15 @@ pub fn eval_const_expr(
 /// [`is_const_foldable_kind`].
 fn eval_const_array_literal(
     arr: &hir::ArrayLiteral,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        ..
+    } = env;
     let mut items = Vec::with_capacity(arr.elements.len());
     for e in &arr.elements {
         if !is_const_foldable_kind(e, index, resolutions, file) {
@@ -372,14 +738,7 @@ fn eval_const_array_literal(
                 code: DiagnosticCode::E077,
             });
         }
-        items.push(eval_const_expr(
-            e,
-            index,
-            resolutions,
-            file,
-            const_values,
-            diagnostics,
-        ));
+        items.push(eval_const_expr(e, env, diagnostics));
     }
     lir::ConstValue::Array(items)
 }
@@ -397,12 +756,15 @@ fn eval_const_array_literal(
 /// `Null`, which is outside the scalar key domain.)
 fn eval_const_map_literal(
     map: &hir::MapLiteral,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        ..
+    } = env;
     let mut entries = Vec::with_capacity(map.entries.len());
     for (k, v) in &map.entries {
         if !is_const_foldable_kind(v, index, resolutions, file) {
@@ -413,8 +775,8 @@ fn eval_const_map_literal(
                 code: DiagnosticCode::E077,
             });
         }
-        let key_val = eval_const_expr(k, index, resolutions, file, const_values, diagnostics);
-        let value = eval_const_expr(v, index, resolutions, file, const_values, diagnostics);
+        let key_val = eval_const_expr(k, env, diagnostics);
+        let value = eval_const_expr(v, env, diagnostics);
         match const_value_to_map_key(key_val) {
             Some(key) => entries.push((key, value)),
             None => {
@@ -430,26 +792,122 @@ fn eval_const_map_literal(
     lir::ConstValue::Map(entries)
 }
 
-/// #673: `ConstValue` has no record-carrying variant (adding one is a format
-/// question outside this fix's fence, per the issue), and unlike
-/// arrays/maps there is no existing codegen path to reuse: a global's
-/// default is baked into `StoryData` at compile time, with no `RecordNew`
-/// runtime construction step for a declaration default to defer to the way
-/// a mid-story `p = Point#{…}` assignment has. A real, non-suppressible
-/// compile error (`E075`) replaces the silent `Null` fallthrough — the
-/// minimum-acceptable fix direction the issue names for exactly this case.
+/// #1530: `VAR`/`CONST p = Name#{…}` (brink dialect) / `Name { … }`
+/// (native) — constant-fold a well-formed construction literal into a real
+/// [`lir::ConstValue::Record`], the same way [`eval_const_array_literal`]
+/// and [`eval_const_map_literal`] already fold their own literals.
+///
+/// #673 left this arm as an unconditional `E075` refusal because
+/// `ConstValue` had no record-carrying variant, which made a **struct-typed
+/// durable global unspellable**: `docs/t1e-spec.md` §2 requires a
+/// projection's root to be a durable cell, so no real source could reach
+/// the T1e projection-receiver path end to end, and `E143`'s own remediation
+/// advice ("bind the receiver to a durable cell") pointed at something the
+/// language could not express. The variant is now the same shape-ordered
+/// flat field vector `Value::Record` and `RecordNew` use, so codegen's
+/// `const_to_value` materializes it with no reordering.
+///
+/// Unlike the expression-position twin ([`super::expr`]'s
+/// `lower_struct_literal`) there is no `RecordNew` runtime construction step
+/// left for a malformed literal to fault at — a declaration default is baked
+/// into `StoryData`. So the two malformed cases stay real compile errors,
+/// exactly the compile-time-equivalent-of-the-runtime-fault posture
+/// [`eval_const_map_literal`]'s `E076` already takes for a bad map key:
+///
+/// - an **unresolved shape name** reports `E073`, the same code the
+///   expression-position path's `reject_unresolved_struct_shape` uses;
+/// - a **missing or undeclared field** reports the (now narrowed) `E075`.
+///   Under `types = strict` `brink-analyzer`'s `structs::check` reports the
+///   more precise `E069`/`E070` for the same literal, but that check is
+///   strict-only by ratified policy, so this is the policy-independent
+///   backstop that keeps a `gradual` project from baking a half-built
+///   record into its story data.
+///
+/// A field *value* whose source expression kind can never constant-fold is
+/// the usual `E077`, identical to an array element or map value one level
+/// in. A duplicate field name is `brink-analyzer`'s policy-independent
+/// `E084`; last-wins placement here matches `lower_struct_literal`'s.
 fn eval_const_struct_literal(
     sl: &hir::StructLiteral,
-    file: FileId,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
-    diagnostics.push(Diagnostic {
+    let ConstEvalEnv {
+        index,
+        resolutions,
         file,
-        range: sl.ptr.text_range(),
-        message: DiagnosticCode::E075.title().to_string(),
-        code: DiagnosticCode::E075,
-    });
-    lir::ConstValue::Null
+        shapes,
+        ..
+    } = env;
+    // Issue #2246: `sl.shape` is a `RefKind::Struct` reference — a VAR/CONST
+    // decl default is walked the same as any other expression
+    // (`symbols::project::project_manifest` walks `v.value`/`c.value`), so
+    // the analyzer already resolved it against `file`'s module scope
+    // (`resolve::resolve_struct_ref`, full `Candidacy`). Consume that
+    // recorded resolution directly rather than re-deriving it through
+    // `ShapeTable::resolve`'s own narrower file-scoped fallback — see
+    // `expr::lower_struct_literal`'s matching doc, the expression-position
+    // twin of this decl-default fold.
+    let shape = resolutions
+        .resolve(file, sl.shape.range)
+        .and_then(|id| shapes.get_by_def(id));
+    let Some(shape) = shape else {
+        diagnostics.push(Diagnostic {
+            file,
+            range: sl.ptr.text_range(),
+            message: DiagnosticCode::E073.title().to_string(),
+            code: DiagnosticCode::E073,
+        });
+        return lir::ConstValue::Null;
+    };
+
+    let mut placed: Vec<Option<lir::ConstValue>> = vec![None; shape.fields.len()];
+    let mut has_extra = false;
+    for (name, value) in &sl.fields {
+        if !is_const_foldable_kind(value, index, resolutions, file) {
+            diagnostics.push(Diagnostic {
+                file,
+                range: sl.ptr.text_range(),
+                message: DiagnosticCode::E077.title().to_string(),
+                code: DiagnosticCode::E077,
+            });
+        }
+        // Every supplied initializer is evaluated, in source order, even one
+        // whose name the shape doesn't declare — a nested literal's own
+        // `E073`/`E076`/`E077` must still be reported rather than skipped
+        // because an unrelated sibling field was misspelled.
+        let folded = eval_const_expr(value, env, diagnostics);
+        match shape.field(&name.text) {
+            Some((offset, _)) => {
+                if let Some(slot) = placed.get_mut(offset as usize) {
+                    *slot = Some(folded);
+                }
+            }
+            None => has_extra = true,
+        }
+    }
+
+    if has_extra || placed.iter().any(Option::is_none) {
+        diagnostics.push(Diagnostic {
+            file,
+            range: sl.ptr.text_range(),
+            message: DiagnosticCode::E075.title().to_string(),
+            code: DiagnosticCode::E075,
+        });
+        return lir::ConstValue::Null;
+    }
+
+    lir::ConstValue::Record {
+        shape_id: shape.id,
+        // The guard above just proved every slot is `Some`; `map_or_else`
+        // rather than `unwrap` anyway (denied in production code), so a
+        // future refactor that weakens that proof degrades to a `Null` field
+        // instead of a panic — the same posture `lower_struct_literal` takes.
+        fields: placed
+            .into_iter()
+            .map(|v| v.unwrap_or(lir::ConstValue::Null))
+            .collect(),
+    }
 }
 
 /// T1c-2: `VAR f = #fn(name, args…)` — bake a function value into the
@@ -463,12 +921,15 @@ fn eval_const_struct_literal(
 /// leaves the analyzer's own diagnostic to stand and folds to `Null`.
 fn eval_const_fn_literal(
     fl: &hir::FnLiteral,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        ..
+    } = env;
     let Some(target_id) = resolutions.resolve(file, fl.target.range) else {
         return lir::ConstValue::Null;
     };
@@ -478,7 +939,7 @@ fn eval_const_fn_literal(
     if fl.args.is_empty() {
         return lir::ConstValue::FnRef(target_id);
     }
-    let mut env = Vec::with_capacity(fl.args.len());
+    let mut bound = Vec::with_capacity(fl.args.len());
     for (i, arg) in fl.args.iter().enumerate() {
         let param = target_info.params.get(i);
         let name = param.map_or_else(String::new, |p| p.name.clone());
@@ -497,7 +958,7 @@ fn eval_const_fn_literal(
             }) else {
                 return lir::ConstValue::Null;
             };
-            env.push(lir::ConstClosureEntry::Ref { name, cell });
+            bound.push(lir::ConstClosureEntry::Ref { name, cell });
         } else {
             // #743: a `val` bound arg is exactly an array-element/map-value
             // position one level inside the `#fn(…)` literal — same E077
@@ -512,13 +973,13 @@ fn eval_const_fn_literal(
                     code: DiagnosticCode::E077,
                 });
             }
-            let value = eval_const_expr(arg, index, resolutions, file, const_values, diagnostics);
-            env.push(lir::ConstClosureEntry::Val { name, value });
+            let value = eval_const_expr(arg, env, diagnostics);
+            bound.push(lir::ConstClosureEntry::Val { name, value });
         }
     }
     lir::ConstValue::Closure {
         target: target_id,
-        env,
+        env: bound,
     }
 }
 
@@ -574,9 +1035,9 @@ fn is_const_foldable_kind(
             Some(info) if info.kind == SymbolKind::Variable
         ),
         hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner, index, resolutions, file),
-        hir::Expr::Infix(lhs, _, rhs) => {
-            is_const_foldable_kind(lhs, index, resolutions, file)
-                && is_const_foldable_kind(rhs, index, resolutions, file)
+        hir::Expr::Infix(ie) => {
+            is_const_foldable_kind(&ie.lhs, index, resolutions, file)
+                && is_const_foldable_kind(&ie.rhs, index, resolutions, file)
         }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
@@ -598,7 +1059,22 @@ fn is_const_foldable_kind(
         // *bounds* referencing CONSTs, not about range-valued CONSTs.
         // Wiring `ConstValue::Range` through the decl-default pipeline is
         // a follow-up if authoring demand appears.
-        | hir::Expr::Range(_) => false,
+        | hir::Expr::Range(_)
+        // Lambdas (issue #1685) never constant-fold *nested one level in* —
+        // a collection/struct-field/`#fn`-bound-`val` element position. This
+        // deliberately stays `false` even though a lambda literal used as
+        // the *whole* top-level default now folds
+        // (`is_const_foldable_decl_default`'s own arm, issue #1774): the
+        // 2026-08-01 ruling that lifted the top-level gate is about "a
+        // native `var`/`const` may hold a fn value", not about a lambda
+        // appearing inside a collection that itself becomes a global's
+        // default (`#[|x| x, 2]`) — genuinely reachable, but out of this
+        // issue's scope; see the #1774 PR description.
+        | hir::Expr::Lambda(_)
+        // Internal-only (issue #1839) — never surface syntax, so it can
+        // never appear as a declaration default in the first place; `false`
+        // for the same reason as every other non-literal shape here.
+        | hir::Expr::Fragment(_) => false,
     }
 }
 
@@ -647,7 +1123,22 @@ fn is_const_foldable_decl_default(
         | hir::Expr::ArrayLiteral(_)
         | hir::Expr::MapLiteral(_)
         | hir::Expr::StructLiteral(_)
-        | hir::Expr::FnLiteral(_) => true,
+        | hir::Expr::FnLiteral(_)
+        // A lambda literal as the *whole* top-level default (`VAR f = |x|
+        // x + 1;`) folds — RULED 2026-08-01, `docs/decision-log.md` #1774:
+        // a native `var`/`const` may hold a fn value, both a bare-name
+        // reference (already legal, #1862) and a lambda literal. This is
+        // the E083 gate the ruling lifts; `collect_globals` special-cases
+        // `Expr::Lambda` before calling `eval_const_expr` (see
+        // `eval_const_lambda`) rather than folding it through the shared
+        // recursive path, since `eval_const_expr` has no Lambda arm of its
+        // own — a lambda nested one level in (a collection element, a
+        // struct field, a `#fn` bound `val` arg) stays ungated by this
+        // arm but still unsupported by `eval_const_expr`, so it still folds
+        // to `Null` behind its own `E077`/`E076` diagnostic
+        // (`is_const_foldable_kind`'s Lambda arm, deliberately unchanged —
+        // out of this issue's scope).
+        | hir::Expr::Lambda(_) => true,
         hir::Expr::Path(path) => !matches!(
             resolutions
                 .resolve(file, path.range)
@@ -657,9 +1148,9 @@ fn is_const_foldable_decl_default(
         hir::Expr::Prefix(_, inner) => {
             is_const_foldable_decl_default(inner, index, resolutions, file)
         }
-        hir::Expr::Infix(lhs, _, rhs) => {
-            is_const_foldable_decl_default(lhs, index, resolutions, file)
-                && is_const_foldable_decl_default(rhs, index, resolutions, file)
+        hir::Expr::Infix(ie) => {
+            is_const_foldable_decl_default(&ie.lhs, index, resolutions, file)
+                && is_const_foldable_decl_default(&ie.rhs, index, resolutions, file)
         }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
@@ -671,7 +1162,10 @@ fn is_const_foldable_decl_default(
         // compile-time value even where legal.
         | hir::Expr::RefArg(_)
         // NS-A5 v1: see `is_const_foldable_kind`'s Range arm.
-        | hir::Expr::Range(_) => false,
+        | hir::Expr::Range(_)
+        // Internal-only (issue #1839): see `is_const_foldable_kind`'s
+        // Fragment arm.
+        | hir::Expr::Fragment(_) => false,
     }
 }
 
@@ -813,5 +1307,144 @@ fn eval_bool_infix(a: bool, op: hir::InfixOp, b: bool) -> lir::ConstValue {
         InfixOp::Eq => ConstValue::Bool(a == b),
         InfixOp::NotEq => ConstValue::Bool(a != b),
         _ => ConstValue::Null,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brink_format::DefinitionTag;
+    use rowan::TextRange;
+
+    use super::*;
+    use crate::symbols::{SymbolInfo, Visibility};
+
+    /// Insert one bare-name `SymbolInfo` into `index`, in `module` (`None`
+    /// for the undeclared/legacy world), owned by `file`.
+    fn insert(
+        index: &mut SymbolIndex,
+        id: DefinitionId,
+        file: FileId,
+        name: &str,
+        kind: SymbolKind,
+        module: Option<&str>,
+    ) {
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind,
+                file,
+                range: TextRange::default(),
+                id,
+                name: name.to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: module.map(str::to_string),
+                visibility: Visibility::Public,
+            },
+        );
+        index.by_name.entry(name.to_string()).or_default().push(id);
+    }
+
+    /// Issue #2197 review finding: a project file declaring `extern foo`
+    /// with **no fallback of its own** must not have `collect_externals`'
+    /// fallback lookup silently fall through to a mounted `std…`
+    /// module's own same-named `fn foo` — the exact "silently reach into
+    /// std with no import" class the bare-name-visibility half of #2197
+    /// closes at the `resolve.rs` layer, reached here through a completely
+    /// different call path (`lookup_global`'s unscoped `.or_else`).
+    #[test]
+    fn extern_only_no_fallback_does_not_bind_a_std_mounts_fn_of_the_same_name() {
+        let mut index = SymbolIndex::default();
+        let project_file = FileId(0);
+        let std_file = FileId(1);
+
+        // The project's own `extern scene_entered(...)` — no fallback fn
+        // anywhere in the project.
+        let project_extern = DefinitionId::new(DefinitionTag::ExternalFn, 1);
+        insert(
+            &mut index,
+            project_extern,
+            project_file,
+            "scene_entered",
+            SymbolKind::External,
+            Some("story::story"),
+        );
+
+        // The stdlib mount declares its OWN extern + fallback pair under
+        // the same bare name, in a `std…` module.
+        let std_extern = DefinitionId::new(DefinitionTag::ExternalFn, 2);
+        insert(
+            &mut index,
+            std_extern,
+            std_file,
+            "scene_entered",
+            SymbolKind::External,
+            Some("std::conventions::screenplay"),
+        );
+        let std_fallback = DefinitionId::new(DefinitionTag::Address, 3);
+        insert(
+            &mut index,
+            std_fallback,
+            std_file,
+            "scene_entered",
+            SymbolKind::Knot,
+            Some("std::conventions::screenplay"),
+        );
+
+        // The project's own extern still resolves (same-file entry exists).
+        assert_eq!(
+            lookup_global(&index, project_file, "scene_entered", SymbolKind::External),
+            Some(project_extern)
+        );
+
+        // But the fallback lookup — no same-file `Knot` named
+        // `scene_entered` exists in the project — must NOT fall through to
+        // the std mount's `fn scene_entered`. It must resolve to nothing.
+        assert_eq!(
+            lookup_global(&index, project_file, "scene_entered", SymbolKind::Knot),
+            None,
+            "an extern with no project-side fallback must not silently bind \
+             a same-named fn from a mounted std:: module"
+        );
+    }
+
+    /// The non-std twin of the test above: a **legitimate** cross-file
+    /// fallback (an `extern` in one file, its `=== function ===` fallback in
+    /// an `INCLUDE`d sibling, neither of them std) must still resolve via
+    /// the unscoped fallback exactly as before #2197 — the std exclusion
+    /// must not overreach into ordinary cross-file cases.
+    #[test]
+    fn extern_only_no_fallback_still_finds_a_non_std_sibling_fallback() {
+        let mut index = SymbolIndex::default();
+        let project_file = FileId(0);
+        let sibling_file = FileId(1);
+
+        let project_extern = DefinitionId::new(DefinitionTag::ExternalFn, 10);
+        insert(
+            &mut index,
+            project_extern,
+            project_file,
+            "narrate",
+            SymbolKind::External,
+            None,
+        );
+        let sibling_fallback = DefinitionId::new(DefinitionTag::Address, 11);
+        insert(
+            &mut index,
+            sibling_fallback,
+            sibling_file,
+            "narrate",
+            SymbolKind::Knot,
+            None,
+        );
+
+        assert_eq!(
+            lookup_global(&index, project_file, "narrate", SymbolKind::Knot),
+            Some(sibling_fallback),
+            "a non-std cross-file fallback pair must still resolve, unchanged \
+             from pre-#2197 behavior"
+        );
     }
 }

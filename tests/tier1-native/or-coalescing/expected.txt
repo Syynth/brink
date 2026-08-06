@@ -1,0 +1,5 @@
+Collapse some: 5
+Collapse none: 99
+Chain: 7
+Short circuit: 1
+Counter after: 0

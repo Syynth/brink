@@ -30,7 +30,7 @@ use brink_runtime::{FlowInstance, FlowLocal, World};
 use crate::asset::{BrinkStory, BrinkStoryAsset, ProgramAsset};
 use crate::capability::{CapabilityManifest, CapabilityRegistry, check_load_capability_gate};
 use crate::flow::BrinkFlow;
-use crate::globals::{BrinkContext, BrinkGlobals, BrinkWorldPolicy};
+use crate::globals::{BrinkContext, BrinkExecMode, BrinkGlobals, BrinkWorldPolicy};
 
 /// Where a freshly-spawned flow should begin executing.
 #[derive(Default, Clone, Debug)]
@@ -50,13 +50,18 @@ pub enum FlowStart {
 /// Spawn it with [`BrinkFlowRequest::builder`] (a `bon`-generated
 /// builder) and let the fulfillment system handle the rest:
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy_asset::AssetServer;
+/// # use bevy_ecs::system::{Commands, Res};
+/// # use bevy_brink::{BrinkFlowRequest, FlowStart};
+/// # fn example(mut commands: Commands, asset_server: Res<AssetServer>) {
 /// commands.spawn(
 ///     BrinkFlowRequest::<()>::builder()
 ///         .story(asset_server.load("dialogue.ink"))
 ///         .start(FlowStart::Address("intro_scene".into()))
 ///         .build(),
 /// );
+/// # }
 /// ```
 ///
 /// The fulfillment system removes this component and inserts
@@ -129,6 +134,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
     capability_registry: Res<CapabilityRegistry<M>>,
     globals: Option<Res<BrinkGlobals<M>>>,
     policy: Res<BrinkWorldPolicy<M>>,
+    exec_mode: Res<BrinkExecMode<M>>,
     current_locale: Option<Res<crate::locale::BrinkCurrentLocale<M>>>,
     locales: Res<Assets<crate::locale::LocaleAsset>>,
     mut line_tables: ResMut<Assets<crate::asset::LineTablesAsset>>,
@@ -190,7 +196,7 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
         }
 
         // Resolve start position.
-        let flow = match &req.start {
+        let mut flow = match &req.start {
             FlowStart::Root => {
                 let (flow, _ctx) = FlowInstance::new_at_root(&program_asset.program);
                 flow
@@ -205,6 +211,11 @@ pub fn fulfill_flow_requests<M: Send + Sync + 'static>(
                 flow
             }
         };
+        // F35 (ruled 2026-07-19): stamp the host-selected (or
+        // profile-defaulted) ExecMode. Core `FlowInstance` starts in `Dev`;
+        // bevy-brink's `BrinkExecMode` default keys off `debug_assertions`
+        // (see `BrinkPlugin::with_exec_mode`).
+        flow.set_exec_mode(exec_mode.mode);
 
         // Resolve the flow's starting locale: base unless a global locale is
         // active and its overlay is loaded (otherwise base now, caught up by
@@ -326,6 +337,78 @@ mod tests {
         assert!(
             world.contains_resource::<BrinkGlobals<()>>(),
             "globals should be inserted on first fulfillment"
+        );
+    }
+
+    /// F35 (ruled 2026-07-19): bevy-brink's `ExecMode` default keys off the
+    /// build profile — `Dev` under `debug_assertions`. `cargo test` is a
+    /// debug build (so `cfg!(debug_assertions)` holds here), so a flow
+    /// spawned with `BrinkPlugin::default()` (no `with_exec_mode`) starts in
+    /// `Dev`. (The core-runtime default is also `Dev`, but for the opposite
+    /// reason — it is profile-independent; this asserts the bevy default
+    /// resolves to `Dev` here regardless.)
+    #[test]
+    #[cfg(debug_assertions)]
+    fn default_exec_mode_is_dev_in_debug_build() {
+        let mut app = make_test_app();
+        assert_eq!(
+            app.world().resource::<BrinkExecMode<()>>().mode,
+            brink_runtime::ExecMode::Dev,
+            "BrinkPlugin default must resolve to Dev under debug_assertions"
+        );
+
+        let (program, tables, ctx) = compile_test_story("=== start ===\nhi\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(entity)
+                .get::<BrinkFlow<()>>()
+                .expect("flow materialized")
+                .inner
+                .exec_mode(),
+            brink_runtime::ExecMode::Dev,
+            "a flow spawned under the default plugin must start in Dev in a debug build"
+        );
+    }
+
+    /// F35: the host override. `with_exec_mode(Prod)` pins every spawned
+    /// flow to `Prod` regardless of build profile.
+    #[test]
+    fn with_exec_mode_override_stamps_spawned_flow() {
+        let mut app = App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_exec_mode(brink_runtime::ExecMode::Prod),
+        );
+        assert_eq!(
+            app.world().resource::<BrinkExecMode<()>>().mode,
+            brink_runtime::ExecMode::Prod,
+            "with_exec_mode(Prod) must install a Prod resource"
+        );
+
+        let (program, tables, ctx) = compile_test_story("=== start ===\nhi\n* [Continue] -> END\n");
+        let story = add_story_assets(&mut app, program, tables, ctx);
+        let entity = app
+            .world_mut()
+            .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+            .id();
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .entity(entity)
+                .get::<BrinkFlow<()>>()
+                .expect("flow materialized")
+                .inner
+                .exec_mode(),
+            brink_runtime::ExecMode::Prod,
+            "with_exec_mode(Prod) must stamp Prod onto the spawned flow"
         );
     }
 
@@ -459,38 +542,88 @@ mod tests {
 
     use crate::globals::flow_context_view;
     use crate::{Advance, BrinkGlobals};
-    use bevy_app::{App, Update};
-    use brink_runtime::{Scope, StoryStatus, WorldPolicy};
+    use bevy_app::App;
+    use bevy_ecs::system::SystemState;
+    use brink_runtime::{Scope, Step, StoryStatus, WorldPolicy};
 
+    /// Per-entity text accumulated across a single `advance_until_terminal`
+    /// drive, via the `BrinkLineDelivered` observer registered by
+    /// [`install_text_accumulator`]. Terminals carry no payload of their
+    /// own (§7 — `docs/prose-dialect-spec.md`) — any trailing content
+    /// already arrived as its own preceding `Step::Line`/`BrinkLineDelivered`
+    /// event, which is why both [`drive_entity`] and
+    /// [`drive_all_active_via_advance_until_terminal`] accumulate across
+    /// every event a drive fires rather than reading the single terminal
+    /// `Advance::Step`'s own (now-empty) text. Relies on
+    /// `SystemState::apply` (or an equivalent `Commands` flush) having run
+    /// before this is read — see both helpers' own use.
     #[derive(bevy_ecs::resource::Resource, Default)]
-    struct Texts(Vec<String>);
+    struct PendingText(std::collections::HashMap<Entity, String>);
+
+    /// Register the `BrinkLineDelivered` observer [`drive_entity`]/
+    /// [`drive_all_active_via_advance_until_terminal`] rely on to recover a
+    /// flow's full drive text. Call once per test `App` (see
+    /// [`app_with_save_policy`]).
+    fn install_text_accumulator(app: &mut App) {
+        app.insert_resource(PendingText::default());
+        app.add_observer(
+            |trigger: bevy_ecs::observer::On<crate::BrinkLineDelivered<()>>,
+             mut pending: ResMut<PendingText>| {
+                let ev = trigger.event();
+                pending.0.entry(ev.entity).or_default().push_str(&ev.text);
+            },
+        );
+    }
+
+    /// System-state shape for [`drive_all_active_via_advance_until_terminal`]:
+    /// every flow's entity/component tuple plus the assets and shared
+    /// globals needed to build a [`flow_context_view`] and drive through
+    /// [`BrinkFlow::advance_until_terminal`]. Mirrors [`FlowQuery`] below
+    /// (the F6.3 helpers' equivalent), one entity earlier in the tuple since
+    /// this helper drives every active flow rather than one named entity.
+    type DriveAllQuery = SystemState<(
+        Query<
+            'static,
+            'static,
+            (
+                Entity,
+                &'static mut BrinkFlow<()>,
+                &'static mut BrinkContext<()>,
+                &'static crate::BrinkProgram<()>,
+                &'static crate::BrinkLocale<()>,
+            ),
+        >,
+        ResMut<'static, BrinkGlobals<()>>,
+        Res<'static, Assets<ProgramAsset>>,
+        Res<'static, Assets<crate::asset::LineTablesAsset>>,
+        Commands<'static, 'static>,
+    )>;
 
     /// Drive every `Active` flow (skips ones already at a terminal status,
-    /// e.g. `Done` from an earlier pass in the same test) to its first
-    /// terminal line, recording the produced text. Shared by the three
-    /// tests below.
-    #[expect(
-        clippy::type_complexity,
-        clippy::needless_pass_by_value,
-        reason = "bevy systems take Res/Query by value and have complex query tuples"
-    )]
-    fn drive_all_active(
-        mut flows: Query<(
-            Entity,
-            &mut BrinkFlow<()>,
-            &mut BrinkContext<()>,
-            &crate::BrinkProgram<()>,
-            &crate::BrinkLocale<()>,
-        )>,
-        globals: Option<ResMut<BrinkGlobals<()>>>,
-        programs: Res<Assets<ProgramAsset>>,
-        tables: Res<Assets<crate::asset::LineTablesAsset>>,
-        mut texts: ResMut<Texts>,
-        mut commands: Commands,
-    ) {
-        let Some(mut globals) = globals else {
-            return; // nothing fulfilled yet this tick
-        };
+    /// e.g. `Done` from an earlier pass in the same test) to its next
+    /// terminal step, returning one accumulated text per flow driven. Shared
+    /// by the F6.2 tests below. Requires [`install_text_accumulator`] to
+    /// have been called on `app` first.
+    ///
+    /// Drives through the production [`BrinkFlow::advance_until_terminal`]
+    /// path (so `emit_drive_outcome` — and the `BrinkLineDelivered` observer
+    /// events it fires — actually gets exercised here; see #2104) rather
+    /// than the raw [`FlowInstance::drive`] this helper used until now.
+    /// `advance_until_terminal` delivers its intermediate content only as
+    /// `Commands`-deferred observer events, which is why this drives via an
+    /// explicit `SystemState`/[`SystemState::apply`] cycle — mirroring the
+    /// F6.3 tests' [`drive_entity`] helper — instead of running as a
+    /// scheduled `Update` system: `apply` flushes the `Commands` (so the
+    /// observer runs and [`PendingText`] is populated) before this function
+    /// reads it back, sidestepping the same-system flush-timing footgun a
+    /// scheduled system would hit rather than working around it by reaching
+    /// for the raw drive op.
+    fn drive_all_active_via_advance_until_terminal(app: &mut App) -> Vec<String> {
+        let mut state: DriveAllQuery = SystemState::new(app.world_mut());
+        let (mut flows, mut globals, programs, tables, mut commands) =
+            state.get_mut(app.world_mut()).expect("system params");
+
+        let mut driven = Vec::new();
         for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
             if flow.inner.status() != StoryStatus::Active {
                 continue;
@@ -499,17 +632,35 @@ mod tests {
                 continue;
             };
             let mut view = flow_context_view(&mut globals, &mut ctx);
-            if let Ok(Advance::Line(line)) = flow.advance_until_terminal(
-                &p.program,
-                &t.tables,
-                &mut view,
-                &brink_runtime::FallbackHandler,
-                entity,
-                &mut commands,
-            ) {
-                texts.0.push(line.text().to_string());
+            let advance = flow
+                .advance_until_terminal(
+                    &p.program,
+                    &t.tables,
+                    &mut view,
+                    &brink_runtime::FallbackHandler,
+                    entity,
+                    &mut commands,
+                )
+                .expect("advance");
+            match advance {
+                Advance::Step(_) => {}
+                // None of the F6.2 tests use externals.
+                Advance::AwaitingQuery => unreachable!("unexpected pending external in F6.2 tests"),
             }
+            driven.push(entity);
         }
+        state.apply(app.world_mut());
+
+        driven
+            .into_iter()
+            .map(|entity| {
+                app.world_mut()
+                    .resource_mut::<PendingText>()
+                    .0
+                    .remove(&entity)
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// (a) Default policy (`WorldPolicy::default()`, installed automatically
@@ -523,8 +674,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(bevy_asset::AssetPlugin::default());
         app.add_plugins(crate::BrinkPlugin::<()>::default());
-        app.insert_resource(Texts::default());
-        app.add_systems(Update, drive_all_active);
+        install_text_accumulator(&mut app);
 
         let (program, tables, ctx) = compile_test_story(
             "VAR counter = 0\n~ counter = counter + 1\nCounter is {counter}.\n-> DONE\n",
@@ -539,9 +689,8 @@ mod tests {
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
         app.update(); // fulfill both
-        app.update(); // drive both to Done in one pass
 
-        let mut texts = app.world().resource::<Texts>().0.clone();
+        let mut texts = drive_all_active_via_advance_until_terminal(&mut app); // drive both to Done in one pass
         texts.sort();
         assert_eq!(
             texts,
@@ -564,8 +713,7 @@ mod tests {
         let mut policy = WorldPolicy::default();
         policy.overrides.insert("start".to_string(), Scope::Local);
         app.add_plugins(crate::BrinkPlugin::<()>::default().with_policy(policy));
-        app.insert_resource(Texts::default());
-        app.add_systems(Update, drive_all_active);
+        install_text_accumulator(&mut app);
 
         // Root diverts straight into `start` — a real `-> start` divert, so
         // entering it goes through the normal goto machinery that bumps
@@ -588,8 +736,8 @@ mod tests {
                 .build(),
         );
         app.update(); // fulfill flow 1
-        app.update(); // drive flow 1 to Done
-        let flow1_text = app.world_mut().resource_mut::<Texts>().0.remove(0);
+        let flow1_text = drive_all_active_via_advance_until_terminal(&mut app) // drive flow 1 to Done
+            .remove(0);
         assert!(
             flow1_text.contains("Hello"),
             "flow 1's first-ever visit to a Local-scoped knot should take \
@@ -607,8 +755,8 @@ mod tests {
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
         app.update(); // fulfill flow 2 (flow 1 no longer matches `Without<BrinkFlow<M>>`)
-        app.update(); // drive flow 2 to Done
-        let flow2_text = app.world_mut().resource_mut::<Texts>().0.remove(0);
+        let flow2_text = drive_all_active_via_advance_until_terminal(&mut app) // drive flow 2 to Done
+            .remove(0);
         assert!(
             flow2_text.contains("Hello"),
             "flow 2's own Local visit count should also start fresh, \
@@ -674,9 +822,8 @@ mod tests {
     // exactly its own private state while the shared VAR converges once.
 
     use crate::globals::{load_flow_state, save_flow_state};
-    use bevy_ecs::system::SystemState;
     use brink_format::Value;
-    use brink_runtime::{ContextAccess, Line};
+    use brink_runtime::ContextAccess;
 
     /// The ink source shared by the F6.3 tests: `mood` (a private counter)
     /// and the `greet` knot's own visit count (read via `READ_COUNT`, so
@@ -730,7 +877,14 @@ mod tests {
     /// it. Panics if the flow parks on a world-access external (none of
     /// these tests use externals) or if any required asset/component is
     /// missing.
-    fn drive_entity(app: &mut App, entity: Entity) -> Line {
+    ///
+    /// Terminals carry no payload of their own (§7) — any trailing content
+    /// already arrived as its own preceding `Step::Line`/`BrinkLineDelivered`
+    /// event, so this accumulates text via the `BrinkLineDelivered` observer
+    /// [`install_text_accumulator`] registers (callers must have called it
+    /// on `app`, e.g. via [`app_with_save_policy`]) rather than reading it
+    /// off the terminal `Advance::Step` alone.
+    fn drive_entity(app: &mut App, entity: Entity) -> (String, Step) {
         let mut state: FlowQuery = SystemState::new(app.world_mut());
         let (mut flows, mut globals, programs, tables, mut commands) =
             state.get_mut(app.world_mut()).expect("system params");
@@ -749,12 +903,19 @@ mod tests {
             )
             .expect("advance");
         state.apply(app.world_mut());
-        match advance {
-            Advance::Line(line) => line,
+        let step = match advance {
+            Advance::Step(step) => step,
             // None of the F6.3 tests use externals, so a pause here can
             // only be a bug in the test setup.
             Advance::AwaitingQuery => unreachable!("unexpected pending external in F6.3 tests"),
-        }
+        };
+        let text = app
+            .world_mut()
+            .resource_mut::<PendingText>()
+            .0
+            .remove(&entity)
+            .unwrap_or_default();
+        (text, step)
     }
 
     /// Pick choice `index` on one entity's flow.
@@ -789,6 +950,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(bevy_asset::AssetPlugin::default());
         app.add_plugins(crate::BrinkPlugin::<()>::default().with_policy(save_test_policy()));
+        install_text_accumulator(&mut app);
         app
     }
 
@@ -816,26 +978,23 @@ mod tests {
         let entity_b = spawn_fulfilled(&mut app1, &story1, FlowStart::Root);
 
         // Flow A: one pass through `greet` (mood=1, greet visits=1).
-        let line_a = drive_entity(&mut app1, entity_a);
+        let (text_a, _) = drive_entity(&mut app1, entity_a);
         assert!(
-            line_a.text().contains("mood=1") && line_a.text().contains("visits=1"),
-            "flow A's first pass; got {:?}",
-            line_a.text()
+            text_a.contains("mood=1") && text_a.contains("visits=1"),
+            "flow A's first pass; got {text_a:?}"
         );
 
         // Flow B: two passes through `greet` (mood=2, greet visits=2).
-        let line_b1 = drive_entity(&mut app1, entity_b);
+        let (text_b1, _) = drive_entity(&mut app1, entity_b);
         assert!(
-            line_b1.text().contains("mood=1") && line_b1.text().contains("visits=1"),
-            "flow B's first pass; got {:?}",
-            line_b1.text()
+            text_b1.contains("mood=1") && text_b1.contains("visits=1"),
+            "flow B's first pass; got {text_b1:?}"
         );
         choose_entity(&mut app1, entity_b, 0); // "Again" -> greet
-        let line_b2 = drive_entity(&mut app1, entity_b);
+        let (text_b2, _) = drive_entity(&mut app1, entity_b);
         assert!(
-            line_b2.text().contains("mood=2") && line_b2.text().contains("visits=2"),
-            "flow B's second pass; got {:?}",
-            line_b2.text()
+            text_b2.contains("mood=2") && text_b2.contains("visits=2"),
+            "flow B's second pass; got {text_b2:?}"
         );
 
         // Capture saves — world once, then each entity — all reading the
@@ -915,19 +1074,17 @@ mod tests {
         // and its sibling comments above — so READ_COUNT still reflects the
         // RESTORED count, not a fresh 0, proving state (not position) is
         // what carries the resume forward).
-        let resumed_a = drive_entity(&mut app2, entity_a2);
+        let (resumed_a_text, _) = drive_entity(&mut app2, entity_a2);
         assert!(
-            resumed_a.text().contains("mood=2") && resumed_a.text().contains("visits=1"),
+            resumed_a_text.contains("mood=2") && resumed_a_text.contains("visits=1"),
             "flow A2 should resume from its own restored state (mood 1->2, \
-             greet visits still 1, unbumped by address-entry); got {:?}",
-            resumed_a.text()
+             greet visits still 1, unbumped by address-entry); got {resumed_a_text:?}",
         );
-        let resumed_b = drive_entity(&mut app2, entity_b2);
+        let (resumed_b_text, _) = drive_entity(&mut app2, entity_b2);
         assert!(
-            resumed_b.text().contains("mood=3") && resumed_b.text().contains("visits=2"),
+            resumed_b_text.contains("mood=3") && resumed_b_text.contains("visits=2"),
             "flow B2 should resume from ITS OWN restored state (mood 2->3, \
-             greet visits still 2) — distinct from flow A2's; got {:?}",
-            resumed_b.text()
+             greet visits still 2) — distinct from flow A2's; got {resumed_b_text:?}",
         );
     }
 

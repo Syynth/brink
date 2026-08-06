@@ -42,6 +42,84 @@ pub struct HostManifest {
     /// tags and manifest entries reference by name.
     #[serde(default)]
     pub types: Vec<SemanticTypeDef>,
+    /// The host's **inline markup vocabulary** (`docs/prose-dialect-spec.md`
+    /// §4.2, issue #1733): the span kinds `<name attr="v">…</name>` may use,
+    /// and the attributes each kind allows.
+    ///
+    /// Host-authored and co-located with [`Self::externals`] by the §3.4
+    /// authorship test — a text-effect plugin can generate its tag
+    /// declarations the same way bindings generate externals. (Element
+    /// conventions are *project*-authored and live elsewhere, in the
+    /// `brink.toml`-referenced conventions module; the two must not be
+    /// conflated.)
+    ///
+    /// **Empty means freeform**, which is the default: markup is freeform by
+    /// default (§4.2's first half, landed in PR #1732) and a manifest is what
+    /// *tightens* it. A project that declares no vocabulary — including one
+    /// that registers a manifest for its externals alone — is never diagnosed
+    /// for a markup tag. See `brink_analyzer::markup_check`.
+    #[serde(default)]
+    pub markup: Vec<ManifestSpanKind>,
+}
+
+/// One declared inline-markup span kind (`docs/prose-dialect-spec.md` §4.2).
+///
+/// A tag name plus the attributes that tag accepts. Attribute *values* are
+/// not modelled — span attributes are static text by construction (see
+/// `SyntaxKind::SPAN_ATTR_VALUE`), so there is nothing to type-check a value
+/// against, and the flat-nominal scope guardrail that governs
+/// [`SemanticTypeDef`] applies here for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestSpanKind {
+    /// The tag name as written in source, e.g. `wave` for `<wave>…</wave>`.
+    pub name: String,
+    /// The attributes this kind accepts, e.g. `[{"name": "amount"}]` for
+    /// `<wave amount="3">`. Empty means the kind takes no attributes.
+    ///
+    /// Issue #1997 widened this from a bare `Vec<String>` (issue #1733's
+    /// original, allow-list-only shape) to [`Vec<ManifestSpanAttr>`] so a
+    /// declared attribute can carry a `required` flag (`E173`) — see that
+    /// type's own doc for the schema-headroom rationale.
+    #[serde(default)]
+    pub attrs: Vec<ManifestSpanAttr>,
+}
+
+/// One attribute a [`ManifestSpanKind`] accepts (`docs/prose-dialect-spec.md`
+/// §4.2, issue #1780 gap 1, ruled by issue #1997).
+///
+/// Widens `ManifestSpanKind.attrs` from a bare `Vec<String>` to a record so
+/// that [`Self::required`] has somewhere to live, *and* so that a future
+/// attribute-value type has somewhere to land later without another schema
+/// break — issue #1780's gap 2. **That second half is schema headroom
+/// only: attribute-value typing is NOT implemented by this type.** Span
+/// attribute values stay static text by construction
+/// (`SyntaxKind::SPAN_ATTR_VALUE`); nothing here parses, resolves, or checks
+/// one against anything. A future PR that wants typed values adds a new
+/// `#[serde(default)]` field here — additive on an already-object-shaped
+/// array element, unlike widening a bare `String` would have been.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestSpanAttr {
+    /// The attribute name, e.g. `"amount"` for `<wave amount="3">`.
+    pub name: String,
+    /// Whether a span of this kind must carry this attribute, checked by
+    /// `brink_analyzer::markup_check` (`E173`). Defaults to `false`
+    /// (optional) when an attribute record omits this key. Note this is
+    /// about the *record* shape, not the pre-#1997 bare-string element
+    /// shape (`"attrs": ["amount"]`) — that older form does not deserialize
+    /// at all and must be migrated to `{ "name": "amount" }`.
+    #[serde(default)]
+    pub required: bool,
+    /// Reserved slot for a future attribute-value type (issue #1780 gap 2).
+    /// **Inert.** Round-tripped through serde like any other field, but no
+    /// pass in this crate reads it, resolves it against
+    /// [`SemanticTypeDef`], or checks an attribute value against it — doing
+    /// so is explicitly out of scope for issue #1997. It exists only so a
+    /// later PR that *does* implement typing needs a new check, not a new
+    /// manifest shape: `TypeRef` is `#[serde(transparent)]`, so this field's
+    /// wire form is already the plain-string shape `ManifestParam::ty` uses
+    /// (e.g. `"ty": "int"`), and switching it on is additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeRef>,
 }
 
 /// A registered external-function signature.
@@ -195,7 +273,7 @@ impl TypeRef {
 /// scalar bases above: a `SemanticTypeDef { base: Handle, .. }` entry doesn't
 /// specialize a primitive (the way `switch_id` specializes `int`) — its
 /// `name` field *is* the declared handle-kind name (e.g. `AudioInstance`),
-/// the nominal vocabulary `handle<K>` type annotations resolve `K` against.
+/// the nominal vocabulary `Handle<K>` type annotations resolve `K` against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseType {
@@ -293,6 +371,7 @@ mod manifest_field_name_tests {
     #[test]
     fn serialized_wire_keys_match_the_shared_field_name_constants() {
         let manifest = HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "has".to_string(),
                 params: vec![],
@@ -365,7 +444,7 @@ mod value_source_tests {
     fn handle_base_json_roundtrip() {
         // The host authors this JSON (e.g. via `setHostManifest`); lock the
         // wire shape for `"base": "handle"` the same way the other base
-        // keywords are locked above — the with-manifest handle<K> path
+        // keywords are locked above — the with-manifest Handle<K> path
         // depends on this JSON -> BaseType::Handle deserialization, not just
         // on constructing BaseType::Handle directly in Rust.
         let def: SemanticTypeDef =
@@ -382,7 +461,7 @@ mod value_source_tests {
 /// (during #911's batch work and again in #921's review, tracked from #897 as
 /// issue #924): the docs' Tier-1 JSON examples and `bevy-brink::capability`'s
 /// doc-header example previously showed `params` as 2-tuples (`["item","string"]`)
-/// or `{"type": "handle<Npc>"}`, but [`ManifestParam`]'s real serde shape is
+/// or `{"type": "Handle<Npc>"}`, but [`ManifestParam`]'s real serde shape is
 /// `{"name": ..., "ty": ...}`. This test parses the doc's actual Tier-1 example
 /// JSON (`docs/host-capability-manifest.md` §"Tier 1") verbatim and round-trips
 /// it through serde, so if a future edit reintroduces the wrong param shape in
@@ -452,6 +531,75 @@ mod doc_example_tests {
         assert_eq!(
             set_move_route.path,
             vec!["Map".to_string(), "Movement".to_string()]
+        );
+    }
+
+    #[test]
+    fn markup_vocabulary_doc_example_roundtrips() {
+        // Verbatim (minus jsonc comments) from the "Markup vocabulary"
+        // section of docs/host-capability-manifest.md — same guard as the
+        // Tier-1 example above: the doc's JSON is the shape hosts copy, so a
+        // drift between it and `ManifestSpanKind`'s serde derive fails here.
+        //
+        // Issue #1997 widened `attrs` from `Vec<String>` to
+        // `Vec<ManifestSpanAttr>`; `sfx`'s `volume` is declared `required`
+        // here to also pin the new flag's wire shape in the same fixture.
+        let json = r#"
+        { "markup": [
+            { "name": "wave", "attrs": [{ "name": "amount" }] },
+            { "name": "b" },
+            { "name": "sfx", "attrs": [{ "name": "name" }, { "name": "volume", "required": true }] }
+        ] }
+        "#;
+
+        let manifest: super::HostManifest = serde_json::from_str(json).expect("parse doc example");
+        assert_eq!(manifest.markup.len(), 3);
+        assert_eq!(manifest.markup[0].name, "wave");
+        assert_eq!(
+            manifest.markup[0].attrs,
+            vec![super::ManifestSpanAttr {
+                name: "amount".to_string(),
+                required: false,
+                ty: None,
+            }]
+        );
+        // Omitted `attrs` defaults to empty — a tag that takes none.
+        assert!(manifest.markup[1].attrs.is_empty());
+        // Omitted `required` defaults to `false` (optional) — `name`'s
+        // requiredness is unaffected by its sibling `volume` declaring one.
+        assert!(!manifest.markup[2].attrs[0].required);
+        assert!(manifest.markup[2].attrs[1].required);
+        // A manifest carrying only `markup` leaves the other sections empty,
+        // which is what makes markup declarable independently of externals.
+        assert!(manifest.externals.is_empty());
+        assert!(manifest.types.is_empty());
+
+        let serialized = serde_json::to_string(&manifest).expect("serialize");
+        let round_tripped: super::HostManifest =
+            serde_json::from_str(&serialized).expect("re-parse serialized manifest");
+        assert_eq!(manifest, round_tripped);
+        assert!(
+            serialized.contains(
+                r#""markup":[{"name":"wave","attrs":[{"name":"amount","required":false}]}"#
+            )
+        );
+    }
+
+    /// Issue #1997 is a **breaking** wire-format change: the pre-#1997 bare
+    /// attribute-name-array form (`"attrs": ["amount"]`) must no longer
+    /// parse. `ManifestSpanAttr` is a plain derived-`Deserialize` struct
+    /// with no untagged/custom impl, so a JSON string element where a
+    /// `{ "name": ... }` record is expected is a hard type error, not a
+    /// silently-defaulted optional field. This guards the migration claim
+    /// made in `docs/host-capability-manifest.md`'s "Markup vocabulary"
+    /// section and in [`ManifestSpanAttr::required`]'s doc comment, both of
+    /// which previously (wrongly) implied this form still parsed.
+    #[test]
+    fn pre_1997_bare_attribute_name_array_is_rejected() {
+        let json = r#"{ "markup": [{ "name": "wave", "attrs": ["amount"] }] }"#;
+        assert!(
+            serde_json::from_str::<super::HostManifest>(json).is_err(),
+            "the pre-#1997 bare attribute-name form is deliberately rejected"
         );
     }
 }

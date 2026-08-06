@@ -80,7 +80,12 @@ function value*. When you dispatch through a `#fn` value — `~ temp x = f()` �
 compiler generally can't see which concrete function `f` holds at that moment,
 so the row becomes **opaque**: the conservative "touches everything" row. That
 is always sound (it can never *under*-report), just coarse. Concrete functions
-called directly stay fully precise; only the indirect hop widens.
+called directly stay fully precise; only the indirect hop widens. A **traced**
+callback is the exception: a `#fn` literal passed straight into a fn-typed
+parameter, or a local whose every write traces back to one, is followed
+through instead — only dispatch through something genuinely untraceable (a
+host callback, a value loaded from the heap, or a param forwarded on into
+another higher-order call) still widens to opaque.
 
 ## Boundaries: what ships in a row
 
@@ -125,6 +130,11 @@ line at the top of a knot or stitch body.
 > it still compiles but warns (`E110`). New code writes the annotation form
 > below; clauses are parenthesized (`reads(gold)`, never `reads: gold`).
 
+> On the native `.brink` surface the same annotation attaches Rust-style — on
+> the line directly *above* the `flow`/`fn` head rather than inside its body.
+> The arguments, the `pure` sugar, and the exceedance-only checking below are
+> identical.
+
 ```ink
 VAR gold = 10
 -> shop
@@ -162,7 +172,7 @@ inferred row is *not covered by* what you declared — the body reads, writes, o
 calls something the assertion didn't list — that's a compile error (`E103`,
 "inferred effects exceed the declared bound"):
 
-```ink,error
+```ink,error(E103)
 VAR gold = 0
 EXTERNAL play_sfx(x)
 -> shop
@@ -189,10 +199,16 @@ exact same output as the same program without it.
 
 Two tools surface inferred rows so you don't have to guess.
 
-**Hover** over a knot or stitch (in the editor, or `brink ide hover NAME -e
-main.ink`) shows its effect row on a stable line — `reads: …; writes: …; calls:
-…`, or `pure`, or `opaque` for a definition that dispatches through a function
-value.
+**Hover** is keyed to a definition, not a call site: hovering a reference
+resolves it to its target and shows that target's effect row on a stable
+line — `reads: …; writes: …; calls: …`, or `pure`. If a definition calls
+through a **fn-typed parameter**, its own row is `opaque` — the conservative
+floor — regardless of what any caller passes in; a hole is only discharged in
+the caller, never in the callee's own row. So if a fn-typed parameter
+receives a traced callback — a `#fn` literal or a local whose every write
+traces back to one — the concrete effects show up folded into the
+**enclosing caller's** row, not at the call site itself. To see them, hover
+the caller knot or stitch's own name.
 
 **`brink ide effects-diff`** compares every row against a baseline — a git
 revision (`--rev HEAD` for working-tree-vs-HEAD) or a second entry file

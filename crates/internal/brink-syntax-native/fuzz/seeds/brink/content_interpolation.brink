@@ -1,0 +1,10 @@
+var x = c
+
+const c = 5
+
+flow main() {
+  Some <>
+  content <>
+  with glue.
+  The value is {x}.
+}

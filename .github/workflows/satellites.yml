@@ -1,0 +1,91 @@
+name: Satellites (locked)
+
+on:
+  workflow_dispatch:
+  # Verify that satellite crates (demos/compound, benchmarks/tools/gen-input,
+  # benchmarks/drivers/brink-loop) have current lockfiles. Each is a separate
+  # [workspace] root with path dependencies into brink crates, so changes to
+  # root Cargo.toml or workspace member deps can stale their Cargo.lock files
+  # (#1890) — the same drift that let PR #1885 merge with stale satellite
+  # lockfiles, breaking the advisory DEMO_GATE and BENCHMARKS_*_GATE
+  # workflows.
+  #
+  # Not in branch protection's required-checks list, so it's advisory: it
+  # goes red on a relevant PR but does not block the merge by itself.
+  # Promoting it (or DEMO_GATE/BENCHMARKS_*_GATE) to an actual required check
+  # is a separate follow-up that needs branch-protection sign-off.
+  #
+  # Path-filtered so it only fires on pushes/PRs that could actually affect
+  # these lockfiles, keeping it off the critical path for every other PR —
+  # same shape as demo.yml (#1077, decision 2026-07-22 / #1237) and
+  # benchmarks.yml (#1405/#1427). The path list is the union of both:
+  # demos/compound plus benchmarks/tools/gen-input and
+  # benchmarks/drivers/brink-loop all resolve against the same root
+  # `Cargo.toml` and `crates/**` closure.
+  pull_request:
+    paths:
+      - 'demos/**'
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/bevy-brink/**'
+      - 'crates/brink-*/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/satellites.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'demos/**'
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/bevy-brink/**'
+      - 'crates/brink-*/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/satellites.yml'
+
+# Least privilege: jobs only read the repo. Grant more per-job if ever needed.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Third-party actions are pinned to full commit SHAs (mutable tags can be
+# repointed at malicious code). The trailing comment tracks the version;
+# Dependabot bumps both together.
+jobs:
+  satellites:
+    name: Satellites (locked)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # demos/compound depends on bevy 0.19 directly, so even `cargo check`
+      # runs wayland-sys/winit/alsa build scripts — the same system libs
+      # demo.yml's DEMO_GATE installs for the same reason.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            demos/compound
+            benchmarks/tools/gen-input
+            benchmarks/drivers/brink-loop
+      # `--locked` is load-bearing on all three: without it a stale lockfile
+      # is silently refreshed by cargo and the job exits 0, which is exactly
+      # the drift this gate exists to catch (#1890).
+      - name: Check (demos/compound, --locked)
+        working-directory: demos/compound
+        run: cargo check --locked
+      - name: Check (benchmarks/tools/gen-input, --locked)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo check --locked
+      - name: Check (benchmarks/drivers/brink-loop, --locked)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo check --locked

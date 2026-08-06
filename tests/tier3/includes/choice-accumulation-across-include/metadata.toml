@@ -1,0 +1,11 @@
+description = "Root-body text after an INCLUDE keeps accumulating into the same turn as an INCLUDEd weave's choice points in C#; brink's ChoiceSet ends the turn at the choice presentation instead (issue #1564, from #1502's scope-discovered comment)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "choice-accumulation-across-include"
+
+[classification]
+tier = 3
+feature = "includes"
+tags = ["includes", "choices", "ordering"]

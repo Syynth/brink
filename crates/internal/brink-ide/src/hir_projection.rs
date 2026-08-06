@@ -15,8 +15,11 @@
 //!
 //! - **Containers:** knot, stitch, choice (full-branch extent), gather
 //!   continuation, and conditional/sequence branches — block-level per-branch,
-//!   inline as one span over the whole `{...}` (inline branch content is
-//!   ptr-less; that granularity is exactly what `line_context` marks per line).
+//!   inline as one span over the whole `{...}` (inline branch content now
+//!   carries a real per-branch `Provenance`, issue #404, but this producer
+//!   still emits one container per construct rather than per branch — that
+//!   coarser granularity is exactly what `line_context` marks per line; see
+//!   `project_content_extras`'s doc for the not-yet-wired per-branch data).
 //! - **`ChoiceLine` vs `ChoiceBody`** (`line_context` `WeaveElement`) is
 //!   **derivable by the consumer**, not split here: a Choice container's first
 //!   line is the choice line, its remaining lines are the body. No producer
@@ -413,7 +416,7 @@ impl ProjectionVisitor<'_> {
     /// A sequence's branch bodies as container spans (block-level or inline).
     fn push_seq_branches(&mut self, seq: &Sequence) {
         for branch in &seq.branches {
-            if let Some(ext) = block_extent(branch) {
+            if let Some(ext) = block_extent(&branch.body) {
                 self.push_container(ext, SpanKind::SequenceBranch, None);
             }
         }
@@ -421,11 +424,16 @@ impl ProjectionVisitor<'_> {
 
     /// Project a content node's inline conditionals/sequences and its tags.
     ///
-    /// Inline `{...}` constructs are single-line and their branch content is
-    /// ptr-less (no per-branch source range), so each is emitted as **one**
-    /// container over the whole construct (`ptr`) rather than per-branch — which
-    /// is exactly the granularity `line_context` marks per line. References
-    /// inside interpolations are covered by `enter_expr` (the walker descends).
+    /// Inline `{...}` constructs are single-line; each is emitted as **one**
+    /// container over the whole construct (`ptr`) rather than per-branch,
+    /// which is exactly the granularity `line_context` marks per line. This
+    /// is no longer forced by a data gap — `CondBranch`/`SequenceBranch::ptr`
+    /// now carries a real per-branch source range even for inline branches
+    /// (issue #404) — it is simply not wired up here; a future per-branch
+    /// inline projection would iterate `cond.branches`/`seq.branches` and
+    /// push one container per `branch.ptr` instead of one for the whole
+    /// construct. References inside interpolations are covered by
+    /// `enter_expr` (the walker descends).
     ///
     /// Construct-extent spans ([`SpanKind::Conditional`]/[`SpanKind::Sequence`])
     /// are emitted only for body content (`ctx == Body`): inline logic in a
@@ -434,31 +442,45 @@ impl ProjectionVisitor<'_> {
     fn project_content_extras(&mut self, content: &Content, ctx: brink_ir::hir::ContentContext) {
         let in_body = ctx == brink_ir::hir::ContentContext::Body;
         for part in &content.parts {
-            match part {
-                ContentPart::InlineConditional(cond) => {
-                    if in_body {
-                        self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
-                    } else {
-                        self.slot_construct_ranges.push(cond.ptr.text_range());
-                    }
-                    self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
-                }
-                ContentPart::InlineSequence(seq) => {
-                    if in_body {
-                        self.push_inline(seq.ptr.text_range(), SpanKind::Sequence);
-                    } else {
-                        self.slot_construct_ranges.push(seq.ptr.text_range());
-                    }
-                    self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
-                }
-                ContentPart::Text(_)
-                | ContentPart::Glue
-                | ContentPart::Spring
-                | ContentPart::Interpolation(_) => {}
-            }
+            self.project_content_part_extras(part, in_body);
         }
         for tag in &content.tags {
             self.push_inline(tag.ptr.text_range(), SpanKind::Tag);
+        }
+    }
+
+    /// One [`ContentPart`], recursing into a [`ContentPart::Span`]'s
+    /// children — a span nesting a conditional/sequence (§4.3's nesting
+    /// doctrine) still needs its container spans projected for the editor,
+    /// the same reasoning `hir::visit::walk_content_part` documents for
+    /// reference-tracking.
+    fn project_content_part_extras(&mut self, part: &ContentPart, in_body: bool) {
+        match part {
+            ContentPart::InlineConditional(cond) => {
+                if in_body {
+                    self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
+                } else {
+                    self.slot_construct_ranges.push(cond.ptr.text_range());
+                }
+                self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
+            }
+            ContentPart::InlineSequence(seq) => {
+                if in_body {
+                    self.push_inline(seq.ptr.text_range(), SpanKind::Sequence);
+                } else {
+                    self.slot_construct_ranges.push(seq.ptr.text_range());
+                }
+                self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
+            }
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.project_content_part_extras(child, in_body);
+                }
+            }
+            ContentPart::Text(_)
+            | ContentPart::Glue
+            | ContentPart::Spring
+            | ContentPart::Interpolation(_) => {}
         }
     }
 }
@@ -747,7 +769,9 @@ fn stmt_extent(stmt: &Stmt) -> Option<TextRange> {
         Stmt::LabeledBlock(b) => block_extent(b),
         Stmt::Conditional(c) => Some(c.ptr.text_range()),
         Stmt::Sequence(s) => Some(s.ptr.text_range()),
-        Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+        // Issue #2108: `AttachElement`/`EndElementRun` carry no
+        // `Provenance`/`ptr` of their own.
+        Stmt::ExprStmt(_) | Stmt::EndOfLine | Stmt::AttachElement(_) | Stmt::EndElementRun => None,
         Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
         Stmt::Await(a) => Some(a.ptr.text_range()),
     }
@@ -862,7 +886,7 @@ LIST Weathers = sunny, (rainy)
 ~ temp bonus: string = \"none\"
 ~ return true
 = aftermath
-~ temp w: list<Weathers> = sunny
+~ temp w: List<Weathers> = sunny
 -> DONE
 ";
         let p = project(src);

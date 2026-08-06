@@ -4,11 +4,12 @@
 //! the oracle's per-`Continue()` granularity.
 
 use brink_format::Value;
-use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
+use brink_runtime::{DotNetRng, Program, Step, Story, WriteObserver};
 
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
 };
+use crate::termination::{classify_done, push_terminal};
 
 /// Configuration for branch exploration.
 pub struct ExploreConfig {
@@ -102,6 +103,21 @@ impl WriteObserver for ExploreRecorder {
 }
 
 /// Maximum `continue_single` calls per episode before aborting.
+///
+/// **Post-#1684 note (#2104):** since the `Step`/`OutputLine` terminal-split,
+/// every turn that ends in a yield with trailing content (any `Done`/
+/// `Choices`/`End` preceded by unflushed text) now costs one extra
+/// `continue_single` call versus the old fused `Line` model — the bare
+/// terminal is its own call (`pending_terminal`, see
+/// `FlowInstance::advance_with_limit`'s doc comment) rather than riding
+/// along on the same call as its trailing text. So the headroom under this
+/// cap shrank by roughly one call per turn, silently, across every episode.
+/// Oracle snapshots prove no case is anywhere near `10_000`, but if a future
+/// change makes exploration noticeably deeper per episode (e.g. a lot more
+/// turns, or much longer turns), this is the first place to look before
+/// raising the limit rather than treating a hit as a hang (never raise a
+/// timeout/limit to paper over an actual infinite loop — see `CLAUDE.md`'s
+/// "VM tests must not hang").
 const STEP_LIMIT: usize = 10_000;
 
 #[expect(clippy::too_many_lines)]
@@ -134,8 +150,8 @@ fn explore_inner(
             return;
         }
 
-        let line = match story.continue_single_observed(&mut recorder) {
-            Ok(line) => line,
+        let step = match story.continue_single_observed(&mut recorder) {
+            Ok(step) => step,
             Err(e) => {
                 episodes.push(Episode {
                     steps,
@@ -149,36 +165,22 @@ fn explore_inner(
 
         let writes = recorder.drain();
 
-        match line {
-            Line::Text { text, tags } => {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Continue,
-                    external_calls: Vec::new(),
+        match step {
+            Step::Line(line) => {
+                steps.push(StepRecord::new(
+                    line.text,
+                    line.tags,
+                    StepOutcome::Continue,
                     writes,
-                });
+                ));
                 // Keep stepping.
             }
 
-            Line::Done { text, tags } => {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Done,
-                    external_calls: Vec::new(),
-                    writes,
-                });
+            Step::Done => {
+                push_terminal(&mut steps, StepOutcome::Done, writes);
                 // Probe for the deferred "ran out of content" error
                 // when the story didn't reach an explicit -> DONE.
-                let outcome = if story.did_safe_exit() {
-                    Outcome::Done
-                } else {
-                    match story.continue_single_observed(&mut recorder) {
-                        Err(e) => Outcome::Error(e.to_string()),
-                        Ok(_) => Outcome::Done,
-                    }
-                };
+                let outcome = classify_done(&mut story, &mut recorder);
                 episodes.push(Episode {
                     steps,
                     outcome,
@@ -188,14 +190,8 @@ fn explore_inner(
                 return;
             }
 
-            Line::End { text, tags } => {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Ended,
-                    external_calls: Vec::new(),
-                    writes,
-                });
+            Step::End => {
+                push_terminal(&mut steps, StepOutcome::Ended, writes);
                 episodes.push(Episode {
                     steps,
                     outcome: Outcome::Ended,
@@ -210,14 +206,8 @@ fn explore_inner(
             // turn boundary; if one ever surfaced here, record it as a
             // completed turn so exploration terminates cleanly rather than
             // silently dropping the step.
-            Line::Suspended { text, tags } => {
-                steps.push(StepRecord {
-                    text,
-                    tags,
-                    outcome: StepOutcome::Done,
-                    external_calls: Vec::new(),
-                    writes,
-                });
+            Step::Suspended => {
+                push_terminal(&mut steps, StepOutcome::Done, writes);
                 episodes.push(Episode {
                     steps,
                     outcome: Outcome::Done,
@@ -227,11 +217,7 @@ fn explore_inner(
                 return;
             }
 
-            Line::Choices {
-                text,
-                tags,
-                choices,
-            } => {
+            Step::Choices(choices) => {
                 let presented: Vec<ChoiceRecord> = choices
                     .iter()
                     .map(|c| ChoiceRecord {
@@ -242,16 +228,14 @@ fn explore_inner(
                     .collect();
 
                 if depth >= config.max_depth || episodes.len() >= config.max_episodes {
-                    steps.push(StepRecord {
-                        text,
-                        tags,
-                        outcome: StepOutcome::Choices {
+                    push_terminal(
+                        &mut steps,
+                        StepOutcome::Choices {
                             presented: presented.clone(),
                             selected: 0,
                         },
-                        external_calls: Vec::new(),
                         writes,
-                    });
+                    );
                     episodes.push(Episode {
                         steps,
                         outcome: Outcome::InputsExhausted {
@@ -270,16 +254,14 @@ fn explore_inner(
                     }
 
                     let mut branch_steps = steps.clone();
-                    branch_steps.push(StepRecord {
-                        text: text.clone(),
-                        tags: tags.clone(),
-                        outcome: StepOutcome::Choices {
+                    push_terminal(
+                        &mut branch_steps,
+                        StepOutcome::Choices {
                             presented: presented.clone(),
                             selected: i,
                         },
-                        external_calls: Vec::new(),
-                        writes: writes.clone(),
-                    });
+                        writes.clone(),
+                    );
 
                     let mut branch_path = choice_path.clone();
                     branch_path.push(i);

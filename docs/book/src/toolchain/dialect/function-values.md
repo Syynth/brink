@@ -3,9 +3,15 @@
 Ink has no lexical free variables — a knot or stitch never closes over
 anything in its surrounding scope — so brink's function values are **partial
 application over named functions**, not closures. The author-facing name is
-deliberate: "function value," never "closure" or "lambda." There are no
-anonymous functions in brink; every function value starts from a
-statically-named `=== function name ===`.
+deliberate: "function value," never "closure" or "lambda." In *this*
+dialect there are no anonymous functions; every function value starts from
+a statically-named `=== function name ===`.
+
+> The native `.brink` surface does spell a lambda (`|x| x * 2`), and it is
+> lifted to exactly the function value described here — a synthesized
+> target plus a bound prefix, with captures taken **by value** at the point
+> the lambda is written. So the model below is the whole model there too;
+> only the spelling differs.
 
 A function value is three things: the target's identity, a prefix of its
 declared parameters bound at creation, and an effect row (reserved for a

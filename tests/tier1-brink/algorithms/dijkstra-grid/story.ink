@@ -29,7 +29,7 @@
 //   authoring it, worth reading back into the spec's own wording. The
 //   same gap shows up one level down, too: `path_to_string`'s `temp p =
 //   xs[i]` needed an explicit `temp p: Point = xs[i]` even with `xs`
-//   itself already annotated `array<Point>` — indexing a known-element-
+//   itself already annotated `Array<Point>` — indexing a known-element-
 //   type array into a local didn't propagate the element type on its
 //   own in this build, so the annotation had to be repeated at the
 //   `temp` binding, not just the parameter.
@@ -67,12 +67,12 @@
 // PRIORITY QUEUE — NO NATIVE HEAP (this is the finding this file exists
 // to produce; see also astar-grid/story.ink, which hits the identical
 // wall):
-// - brink's stdlib has no heap/priority-queue type. The only mutators are
-//   `push`/`insert`/`remove` (`docs/book/.../stdlib.md`), all flat-array
-//   operations. `pq_insert` below is textbook "sorted-insertion array":
-//   linear-scan to find the insertion point, then `insert(pq, idx,
-//   entry)`. That scan is `O(n)`, and popping the minimum is `remove(pq,
-//   0)` — `bfs-grid-path`'s finding about `remove(arr, 0)` being an O(n)
+// - brink's stdlib has no heap/priority-queue type. The only array mutators
+//   are `push`/`insert`/`remove_at` (`docs/book/.../stdlib.md`), all
+//   flat-array operations. `pq_insert` below is textbook "sorted-insertion
+//   array": linear-scan to find the insertion point, then `insert(pq, idx,
+//   entry)`. That scan is `O(n)`, and popping the minimum is `remove_at(pq,
+//   0)` — `bfs-grid-path`'s finding about `remove_at(arr, 0)` being an O(n)
 //   shift applies here too, so a single "pop-min" is `O(n)` from the
 //   removal alone, on top of the `O(n)` insertion scan every relaxation
 //   pays. A binary heap would make both `O(log n)`. For this corpus's
@@ -143,7 +143,7 @@ VAR found = false
 
     while len(pq) > 0 {
         temp top = pq[0]
-        remove(pq, 0)
+        remove_at(pq, 0)
 
         if visited[top.r][top.c] == false {
             visited[top.r][top.c] = true
@@ -201,12 +201,12 @@ Nodes settled: {nodes_visited}.
 // helper under gradual mode (see bfs-grid-path/dfs-grid-path) — strict's
 // "no generics, monomorphic per definition" rule (typed-mode-spec §2)
 // forces this split. See the TYPES POLICY note above.
-=== function make_bool_grid(h: int, w: int, fill: bool): array<array<bool>> ===
+=== function make_bool_grid(h: int, w: int, fill: bool): Array<Array<bool>> ===
 ~ {
-    temp g: array<array<bool>> = #[]
+    temp g: Array<Array<bool>> = #[]
     temp r = 0
     while r < h {
-        temp row: array<bool> = #[]
+        temp row: Array<bool> = #[]
         temp c = 0
         while c < w {
             push(row, fill)
@@ -218,12 +218,12 @@ Nodes settled: {nodes_visited}.
     return g
 }
 
-=== function make_int_grid(h: int, w: int, fill: int): array<array<int>> ===
+=== function make_int_grid(h: int, w: int, fill: int): Array<Array<int>> ===
 ~ {
-    temp g: array<array<int>> = #[]
+    temp g: Array<Array<int>> = #[]
     temp r = 0
     while r < h {
-        temp row: array<int> = #[]
+        temp row: Array<int> = #[]
         temp c = 0
         while c < w {
             push(row, fill)
@@ -235,12 +235,12 @@ Nodes settled: {nodes_visited}.
     return g
 }
 
-=== function make_point_grid(h: int, w: int, fill: Point): array<array<Point>> ===
+=== function make_point_grid(h: int, w: int, fill: Point): Array<Array<Point>> ===
 ~ {
-    temp g: array<array<Point>> = #[]
+    temp g: Array<Array<Point>> = #[]
     temp r = 0
     while r < h {
-        temp row: array<Point> = #[]
+        temp row: Array<Point> = #[]
         temp c = 0
         while c < w {
             push(row, fill)
@@ -254,7 +254,7 @@ Nodes settled: {nodes_visited}.
 
 // Sorted-insertion priority queue push — the finding this file exists
 // to produce; see the header comment above.
-=== function pq_insert(ref pq: array<PQEntry>, entry: PQEntry): int ===
+=== function pq_insert(ref pq: Array<PQEntry>, entry: PQEntry): int ===
 ~ {
     temp idx = 0
     temp searching = true
@@ -273,9 +273,9 @@ Nodes settled: {nodes_visited}.
     return 0
 }
 
-=== function reverse_path(xs: array<Point>): array<Point> ===
+=== function reverse_path(xs: Array<Point>): Array<Point> ===
 ~ {
-    temp out: array<Point> = #[]
+    temp out: Array<Point> = #[]
     temp i = len(xs) - 1
     while i >= 0 {
         push(out, xs[i])
@@ -284,7 +284,7 @@ Nodes settled: {nodes_visited}.
     return out
 }
 
-=== function path_to_string(xs: array<Point>): string ===
+=== function path_to_string(xs: Array<Point>): string ===
 ~ {
     temp out = ""
     temp i = 0

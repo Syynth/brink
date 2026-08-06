@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 /// Helper: compile from an in-memory file system (`HashMap` of path to source).
 fn compile_mem(
@@ -168,6 +168,2202 @@ fn compile_bare_include_reports_e037_not_io_error() {
     );
 }
 
+// ── Native (.brink) discovery (B0.10b, #1288) ───────────────────────
+
+/// A `.brink` entry with no `brink.toml` anywhere above it (the
+/// single-file-project ruling: root = the entry's own directory) compiles
+/// via `compile_path`, proving `prepare_driver`'s native branch dispatches
+/// and its entry-key resolution (`native_source_root` + `relative_key`)
+/// lines up with the key `discover_native` registered the entry under.
+#[test]
+fn compile_path_native_single_file_no_brink_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-single-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("single-file native project should compile");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// A `.brink` entry nested under a subdirectory, still with no `brink.toml`,
+/// so the root is the entry's *own* directory (not an ancestor) — exercises
+/// `native_source_root`'s fallback with a non-trivial (non-".") entry path,
+/// and a sibling file in the same directory that discovery must find
+/// without breaking the entry's own compile.
+#[test]
+fn compile_path_native_multi_file_no_brink_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-multi-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("story")).unwrap();
+    std::fs::write(
+        dir.join("story/main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("story/other.brink"),
+        "flow other() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("story/main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("multi-file native project should compile");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// A lambda in a real `.brink` project, compiled through the production
+/// entry point and **run** (issues #1685 and #1709).
+///
+/// This assertion used to point the other way. Through #1685 a lambda
+/// lowered to HIR and then stopped at a targeted `E052` codegen fence
+/// (`lir::lower::expr::lower_lambda_fence`), because an anonymous body had
+/// no runtime representation; this test pinned that fence green, which is
+/// precisely why nothing signalled that the fn-value verb layer (#1679)
+/// could not actually be handed a lambda. #1709 lifts the lambda into a
+/// synthesized function value, so the fence is gone and the user-visible
+/// fact to pin is the opposite one: the lambda compiles, is *called*, and
+/// its result reaches the transcript.
+#[test]
+fn compile_path_native_lambda_lifts_to_a_callable_function_value() {
+    let output = compile_and_run_native(
+        "lambda-lift",
+        "fn tally(n: int): int {\n  let add = |x| x + 1;\n  return add(n);\n}\n\n\
+         flow main() {\n  Tally: {tally(41)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Tally: 42"),
+        "the lambda must be lifted to a real function value and invoked, got: {output:?}"
+    );
+}
+
+/// The by-value capture half of lambda lifting (RULED 2026-07-19, issue
+/// #1709): a lambda's read of an enclosing local is snapshotted into the
+/// closure environment **at the point the lambda value is made**, so a
+/// later write to that local cannot be seen through the already-created
+/// value. `bump` is created while `step` is `1`, `step` then becomes `100`,
+/// and the call still adds `1`.
+#[test]
+fn compile_path_native_lambda_captures_by_value_at_creation() {
+    let output = compile_and_run_native(
+        "lambda-capture",
+        "fn shifted(): int {\n  let step = 1;\n  let bump = |x| x + step;\n  \
+         step = 100;\n  return bump(5);\n}\n\n\
+         flow main() {\n  Shifted: {shifted()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Shifted: 6"),
+        "a capture is a creation-site snapshot, not a live read, got: {output:?}"
+    );
+}
+
+/// Two lifting edges the tier1-native golden case does not reach (#1709).
+///
+/// `tailless` — a braced body whose block ends in a **statement**: "last
+/// expression is the value" has no last expression, so the value comes from
+/// the explicit `return` inside the block, which (per the 2026-07-19
+/// ruling) leaves the *lambda*, not the enclosing function. Lifting must
+/// therefore not append a synthetic terminal `Return` here; if it returned
+/// from the wrong frame, `tailless` would never reach `f(41)`.
+///
+/// `nested` — **transitive** capture: `inner` reads `outer`, a local of the
+/// frame two levels out. `outer` is not free in `inner`'s own enclosing
+/// frame by accident — it has to be captured by `make` *and* re-captured by
+/// `inner` for the read to resolve, which is exactly what the free-name
+/// walk's nested-lambda arm is for.
+#[test]
+fn compile_path_native_lambda_tailless_body_and_transitive_capture() {
+    let output = compile_and_run_native(
+        "lambda-edges",
+        "fn tailless() {\n  let f = |x| { return x + 1; };\n  return f(41);\n}\n\n\
+         fn nested() {\n  let outer = 10;\n  \
+         let make = |y| { let inner = |z| z + outer; inner(y) };\n  return make(5);\n}\n\n\
+         flow main() {\n  Tailless: {tailless()}\n  Nested: {nested()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Tailless: 42"),
+        "an explicit `return` must leave the lambda, not the enclosing fn, got: {output:?}"
+    );
+    assert!(
+        output.contains("Nested: 15"),
+        "a nested lambda's read of a two-levels-out local must capture transitively, \
+         got: {output:?}"
+    );
+}
+
+/// A lambda handed straight to the pure trio (`docs/stdlib-spec.md` §4,
+/// issue #1679) — the interaction #1709 exists to unblock. `#fn(target)`
+/// over a named function was the only fn-value spelling that reached these
+/// ops before lifting landed.
+#[test]
+fn compile_path_native_lambda_is_a_legal_verb_callback() {
+    let output = compile_and_run_native(
+        "lambda-verb-callback",
+        "fn doubled() {\n  return map([1, 2, 3], |x| x * 2);\n}\n\n\
+         flow main() {\n  Doubled: {doubled()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Doubled: [2, 4, 6]"),
+        "a lambda literal must be a legal `map` callback, got: {output:?}"
+    );
+}
+
+/// A lambda reading its own `let` name — recursion — is a compile-time
+/// refusal (`E158`), not a compile-clean runtime fault (issue #1709
+/// review). `f`'s initializer is scanned for captures *before* `let f = …`
+/// finishes binding `f`, so `f` has no temp slot yet in the enclosing frame
+/// even though the analyzer resolves it as a real local; falling through
+/// would let call lowering target `f`'s own `let`-declaration id as though
+/// it were a callable function — a miscompile that previously only
+/// surfaced as `RuntimeError::UnresolvedDefinition` when `f` called itself.
+#[test]
+fn compile_path_native_lambda_self_reference_is_e158() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-self-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn a() {\n  let f = |x| {\n    if x <= 0 { return 0; }\n    \
+         return f(x - 1) + 1;\n  };\n  return f(3);\n}\n\n\
+         flow main() {\n  Out: {a()} -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err(
+        "a lambda reading its own not-yet-bound `let` name (recursion) must refuse to \
+         compile, not silently target the wrong container and fault at runtime",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E158"),
+        "expected E158 (unliftable lambda capture) among diagnostics, got: {codes:?}"
+    );
+}
+
+// ── File-scope VAR/CONST lambda literal decl defaults (issue #1774) ────
+
+/// A native `var`/`const` may hold a lambda literal as its declaration
+/// default (RULED 2026-08-01, `docs/decision-log.md` #1774) — the E083 gate
+/// this used to hit is lifted, and the lambda is lowered through the same
+/// lambda-lifting machinery (#1709) as a local lambda, just with an empty
+/// enclosing frame (no locals to capture at file scope). Reachability: the
+/// production `compile_path` entry point.
+///
+/// Deliberately asserts *compilation*, not invocation from `flow main()` —
+/// see `compile_path_native_lambda_valued_global_call_site_is_unresolved`
+/// below for why a call site is a separate, pre-existing gap this issue
+/// does not reach.
+#[test]
+fn compile_path_native_const_lambda_literal_decl_default_compiles() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-decl-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "const twice = |x| x * 2\n\nflow main() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("a file-scope const lambda literal must compile (E083 lifted)");
+    let global = output
+        .data
+        .variables
+        .iter()
+        .find(|v| output.data.name_table[v.name.0 as usize] == "twice")
+        .expect("global `twice` must be present in the compiled StoryData");
+    assert!(
+        !global.mutable,
+        "a `const` global stays immutable regardless of its default's kind"
+    );
+    let brink_format::Value::FnRef(target) = global.default_value else {
+        panic!(
+            "a file-scope lambda has no enclosing frame to capture from, so it \
+             must fold to a bare FnRef (no bound environment), got {:?}",
+            global.default_value
+        );
+    };
+    // Review finding on #1774: mirrors the `brink-ir`-level assertion in
+    // `lambda_literal_declaration_default.rs` against the actually-compiled
+    // `StoryData` — `assemble_program`'s `root_children.extend(prelude
+    // .lifted...)` is the one hunk that makes this feature more than a
+    // type-check relaxation, so this walks `output.data.containers` (not
+    // just the global's own `default_value`) to prove the `FnRef` target
+    // resolves to a real, compiled container with `twice`'s one `x` param.
+    let lifted = output
+        .data
+        .containers
+        .iter()
+        .find(|c| c.id == target)
+        .unwrap_or_else(|| {
+            panic!(
+                "no compiled container has id {target:?} — the FnRef target \
+                 does not resolve to a real container in StoryData"
+            )
+        });
+    assert_eq!(
+        lifted.param_count, 1,
+        "expected `twice`'s one `x` param, got param_count {}",
+        lifted.param_count
+    );
+    assert_eq!(
+        lifted.params.len(),
+        1,
+        "expected `twice`'s one `x` ParamMeta entry, got {} entries",
+        lifted.params.len()
+    );
+    assert_eq!(
+        output.data.name_table[lifted.params[0].name.0 as usize], "x",
+        "expected the lifted container's param to be named `x`"
+    );
+}
+
+/// The `var` half of the same ruling.
+#[test]
+fn compile_path_native_var_lambda_literal_decl_default_compiles() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-decl-default-var-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "var addOne = |x| x + 1\n\nflow main() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("a file-scope var lambda literal must compile (E083 lifted)");
+    let global = output
+        .data
+        .variables
+        .iter()
+        .find(|v| output.data.name_table[v.name.0 as usize] == "addOne")
+        .expect("global `addOne` must be present in the compiled StoryData");
+    assert!(global.mutable, "a `var` global stays mutable");
+    assert!(matches!(
+        global.default_value,
+        brink_format::Value::FnRef(_)
+    ));
+}
+
+/// A DISTINCT, PRE-EXISTING gap this issue's own scope does not reach —
+/// filed separately as #2083: calling a fn-valued global `const`/`var`
+/// from *anywhere other than its own declaration* does not resolve through
+/// the production `compile_path` →
+/// `brink-db` incremental pipeline, reporting `E025` ("unresolved variable
+/// reference"). Reproduced with **#1862's already-shipped bare-name fn
+/// reference** — `twice = double` (no lambda involved at all) — to prove
+/// this is not new in this PR: verified to already reproduce on `origin/main`
+/// before this PR's changes, and to NOT reproduce through the simpler
+/// whole-project `brink_analyzer::analyze` + `lower_to_program_with_type_mode`
+/// path `brink-ir`'s own test suite uses (this crate's sibling
+/// `lambda_literal_decl_default_reads_other_globals_without_capturing_them`
+/// compiles the identical shape cleanly through that path). The divergence
+/// points at `brink-db`'s FG-3 incremental `resolve_query`/
+/// `resolutions_index_query` machinery specifically, not at anything this
+/// PR's `decls::collect_globals` lambda path touches. Left failing here
+/// (ignored) as the honest record of the gap rather than silently absent.
+#[test]
+#[ignore = "pre-existing brink-db incremental-resolution gap for ANY fn-valued global call site — not introduced or fixed by #1774, filed separately as #2083"]
+fn compile_path_native_lambda_valued_global_call_site_is_unresolved() {
+    let output = compile_and_run_native(
+        "lambda-decl-default-call-site",
+        "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a fn-valued global from flow main should work once the \
+         separately-filed incremental-resolution gap is fixed, got: {output:?}"
+    );
+}
+
+/// Review finding on #1774: the PR body and the comment posted on issue
+/// #1774 both claimed this test existed (`compile_path_native_const_lambda_
+/// decl_default_self_recursion_works`, "#[ignore]d with a doc explaining the
+/// separate, pre-existing gap they hit") — it did not; only the call-site
+/// test above was ever added. This is that missing test, added rather than
+/// just correcting the claim, since the gap it documents is real and was
+/// already verified by hand: a global `const`-bound lambda referencing its
+/// own name recursively (`fact` calling `fact` inside its own body) does
+/// **not** yet work — `brink-analyzer` reports `E025` ("unresolved variable
+/// reference") at *both* occurrences of the recursive call (the const's own
+/// name, mid-initializer, is not visible to its own body's resolution — a
+/// single-pass ordering nuance). Orthogonal to both this issue's `E083` gate
+/// and #2083's incremental-resolution gap (that one is about calling a
+/// fn-valued global from *outside* its own declaration; this one is about a
+/// fn-valued global calling *itself*, *inside* its own declaration) —
+/// narrower than and adjacent to #2083's territory rather than a clean
+/// independent bug, so not filed separately (see `docs/t1c-spec.md` §2b).
+#[test]
+#[ignore = "pre-existing resolver limitation: a global const-bound lambda cannot reference its own name recursively (E025) — not introduced or fixed by #1774, narrower than and adjacent to #2083, not filed separately"]
+fn compile_path_native_const_lambda_decl_default_self_recursion_works() {
+    let output = compile_and_run_native(
+        "lambda-decl-default-self-recursion",
+        "const fact = |n| {\n  if n <= 1 { return 1; }\n  return n * fact(n - 1);\n}\n\n\
+         flow main() {\n  Result: {fact(5)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 120"),
+        "a global const-bound lambda should be able to call itself \
+         recursively once the resolver limitation is fixed, got: {output:?}"
+    );
+}
+
+/// Review finding on #1764, UPDATED by #1774 (RULED 2026-08-01): a
+/// lambda-valued `VAR`/`CONST` default used to be a hard compile error
+/// (`E083`) independently of #1764's seven analyzer-pass fixes — this test
+/// originally pinned that "the day a lambda default legally folds is the
+/// day this test goes red", predicting exactly the day #1774 landed. It is
+/// updated here rather than left to bit-rot into a false assertion: the
+/// `VAR` now compiles cleanly (E083 lifted), and the inner `E106` warning
+/// (a bad map-literal key inside the lambda's own body) still fires
+/// alongside — proving #1764's per-pass fixes (analyzing a lambda's body
+/// the same way any other body is analyzed) were never dead code, they were
+/// just one layer ahead of a program that could reach them from a decl
+/// default. This is a concrete "yes" to the issue's "does #1764 become
+/// expressible" question, for the map-key-warning pass specifically.
+#[test]
+fn compile_path_native_lambda_valued_var_default_compiles_with_map_keys_warning_alongside() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-var-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "var f = ||: int {\n  let m = Map { 3.5: 1 };\n  0\n}\n\n\
+         flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect(
+        "a lambda-valued VAR default now compiles (E083 lifted, RULED 2026-08-01, issue #1774)",
+    );
+    let codes: Vec<&str> = output.warnings.iter().map(|d| d.code.as_str()).collect();
+    assert!(
+        codes.contains(&"E106"),
+        "expected E106 (bad map key inside the lambda's own body) to still fire \
+         as a warning now that the outer VAR compiles, got: {codes:?}"
+    );
+}
+
+/// Review finding on #1774: `GlobalLambdaCtx`'s `AnalyzerTables` used to be
+/// unconditionally empty regardless of what `brink-db` actually computed —
+/// this test pins the safe, current behavior now that
+/// `lir_prelude_decls_query` threads the real `ufcs_resolution_query`/
+/// `coalesce_types_query` tables through. A method call inside a
+/// decl-default lambda body is still refused with `E144`, not because the
+/// tables are fake, but because `brink_analyzer::ufcs::resolve` walks only
+/// `visit::visit`'s block-tree (never a `VAR`/`CONST` initializer) — see
+/// `decls::GlobalLambdaCtx::tables`'s doc for the follow-up that would close
+/// this gap. The important thing this test guards: refusing with a loud
+/// compile error, never silently lowering to a wrong `lir::Expr::Null`
+/// that then reaches `StoryData`.
+#[test]
+fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-ufcs-lambda-decl-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "struct Guest {\n  name: string\n}\n\n\
+         fn greet(g, loudness) {\n  return loudness;\n}\n\n\
+         const callGreet = |g| g.greet(3)\n\n\
+         flow main() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err(
+        "a method call in a decl-default lambda body must refuse to compile \
+         (the analyzer never visited it), not silently fold to Null",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E144"),
+        "expected E144 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// Compile a native `.brink` entry from disk with `Dialect::Brink` explicitly
+/// requested — mirrors `seq_verbs.rs`'s own `compile_native` helper.
+/// `comparator_contract`'s E119 gate is `dialect == Brink`-only, with no
+/// `is_native` fallback the way `map_keys`'s gate has (`lib.rs`: `if
+/// opts.dialect == Dialect::Brink && needs_effects`), so it must be
+/// requested explicitly even though the source is already native-surface —
+/// the same "brink-dialect analysis over native-surface source" combination
+/// issue #1887 is about.
+fn compile_native_brink_dialect(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-comparator-contract-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// Issue #2085 (the `comparator_contract.rs` half of #1774's
+/// re-verification remainder): `comparator_contract::collect_sites` used to
+/// start only from `root_content` + knot/stitch bodies — the same
+/// unvisited-decl-initializer gap `ufcs.rs` has (see
+/// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144` above),
+/// confirmed live here rather than assumed. `spy` writes the global `seen`,
+/// so a pure-callback quartet call (`map`) naming it as a decl-default
+/// lambda's own callback must still be refused by E119 — not silently
+/// pass because the analyzer never visited the initializer at all.
+///
+/// **Reproduced first (rule 20a):** with `collect_sites`'s two new
+/// `hir.variables`/`hir.constants` loops removed, this compiled clean with
+/// zero warnings/errors — confirmed both via a direct `brink-analyzer`-level
+/// repro before writing the fix, and by reverting the production hunk and
+/// re-running this exact test (red without the fix, green with it).
+#[test]
+fn compile_path_native_comparator_contract_call_in_lambda_decl_default_is_e119() {
+    let source = "var seen = 0\n\n\
+         fn spy(n) {\n  seen = seen + n;\n  return n;\n}\n\n\
+         const doIt = || map([1, 2], spy)\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("lambda-decl-default", source).expect_err(
+        "an impure named callback of a pure-callback verb, called inside a decl-default \
+         lambda's own body, must be refused by E119 — not compile clean because the \
+         analyzer never visited the initializer",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E119"),
+        "expected E119 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// The companion positive twin: a *pure* named callback inside a
+/// decl-default lambda body must still compile clean — the fix must not
+/// over-trigger on every callback reachable from an initializer, only on
+/// ones whose row provably exceeds pure·silent (mirrors
+/// `native_bare_name_pure_callback_passes` in `seq_verbs.rs`, this time
+/// reached from `collect_sites`'s new initializer loops rather than a
+/// flow body).
+#[test]
+fn compile_path_native_comparator_contract_pure_call_in_lambda_decl_default_compiles() {
+    let source = "fn double(n) {\n  return n * 2;\n}\n\n\
+         const doIt = || map([1, 2], double)\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    compile_native_brink_dialect("lambda-decl-default-pure", source).expect(
+        "a pure named callback inside a decl-default lambda body must compile clean \
+         (E119 is exceedance-only, not a blanket refusal of the new initializer reach)",
+    );
+}
+
+/// Issue #1769 (`comparator_contract::collect_sites` never walked file-level
+/// `VAR`/`CONST` initializers at all — independent of lambdas): the SAME
+/// `collect_sites` fix that closes #2085's lambda-body gap closes this one
+/// too, since both are the identical missing walk. A direct (non-lambda)
+/// `sort_by` misuse written straight in a `VAR` initializer must be refused
+/// by E119.
+#[test]
+fn compile_path_native_comparator_contract_call_directly_in_var_initializer_is_e119() {
+    let source = "var seen = 0\n\n\
+         fn spy(x, y) {\n  seen = seen + 1;\n  return x - y;\n}\n\n\
+         var sorted = sort_by([2, 1], spy)\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("var-initializer-direct", source).expect_err(
+        "an impure named comparator called directly in a VAR initializer (no lambda \
+         involved) must be refused by E119 — issue #1769's own gap",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E119"),
+        "expected E119 among diagnostics, got: {codes:?}"
+    );
+}
+
+// ── Issue #2085, item 1: `compile_path`-level coverage for the four
+// passes #1764/#2084 spot-checked as "already hand-recurses over
+// `hir.variables`/`hir.constants`, should already be structurally
+// reachable, but has no dedicated regression test yet" — `contains_domain`,
+// `conversions`, `range_refinement`, `structs` (`map_keys` already has its
+// analog: `compile_path_native_lambda_valued_var_default_compiles_with_
+// map_keys_warning_alongside` above). No production fix accompanies these
+// three (`contains_domain`/`conversions`/`structs`) — they confirm existing
+// behavior, mirroring the map_keys test's own shape.
+
+/// `contains_domain`'s E152 (a float needle against an int-keyed map,
+/// provably always false) fires from inside a decl-default lambda's own
+/// body — its initializer hand-recursion (`for var in &hir.variables` /
+/// `for c in &hir.constants` in `contains_domain::check`) already reaches
+/// `Expr::Lambda`'s body via `check_expr`'s own lambda-descent arm (the
+/// #1764 unit test `an_always_false_contains_in_a_lambda_statement_of_a_
+/// var_initializer_is_e152` proves this at the analyzer layer; this pins
+/// it through the production `compile_path` pipeline instead).
+#[test]
+fn compile_path_native_contains_domain_call_in_lambda_decl_default_is_e152() {
+    let source = "const doIt = || {\n  let hit = contains(Map { 1: \"a\" }, 3.5);\n  0\n}\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let result = compile_native_brink_dialect("contains-domain-lambda-decl-default", source);
+    let out = result.expect(
+        "a decl-default lambda body's contains() misuse compiles clean (E152 is a warning), \
+         with E152 firing alongside it",
+    );
+    let codes: Vec<&str> = out.warnings.iter().map(|d| d.code.as_str()).collect();
+    assert!(
+        codes.contains(&"E152"),
+        "expected E152 among warnings, got: {codes:?}"
+    );
+}
+
+/// `conversions`'s E078 (`int()` rejecting a map argument) fires from
+/// inside a decl-default lambda's own body — mirrors the #1764 unit test
+/// `a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078`,
+/// this time through `compile_path`.
+#[test]
+fn compile_path_native_conversions_call_in_lambda_decl_default_is_e078() {
+    let source = "const doIt = || {\n  let x = int(Map { 1: 2 });\n  0\n}\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("conversions-lambda-decl-default", source).expect_err(
+        "a bad int() conversion inside a decl-default lambda body must be refused by E078",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E078"),
+        "expected E078 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// `structs`'s E071 (a struct-literal field disagreeing with its declared
+/// type) fires from inside a decl-default lambda's own body — `structs::
+/// check`'s own initializer loop (`for var in &hir.variables` / `for c in
+/// &hir.constants`, calling `check_expr` — which, like its five siblings,
+/// already descends `Expr::Lambda`) reaches it structurally; this pins
+/// that reach through `compile_path`.
+#[test]
+fn compile_path_native_structs_literal_in_lambda_decl_default_is_e071() {
+    let source = "struct Point {\n  x: float\n}\n\n\
+         const doIt = || Point { x: \"hi\" }\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("structs-lambda-decl-default", source).expect_err(
+        "a struct literal with a field type mismatch inside a decl-default lambda body \
+         must be refused by E071",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E071"),
+        "expected E071 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// `range_refinement` (NS-A5, E117) is one of #1774's own-documented
+/// "currently-documented-vacuous" checks with respect to a decl-default
+/// LAMBDA specifically — not because its own initializer hand-recursion is
+/// broken, but because of surface disjointness: a range literal (`a..b`)
+/// parses only on the ink/brink dialect surface (`brink-syntax`), and a
+/// lambda literal (`|x| …`) parses only on the native surface
+/// (`brink-syntax-native`, `hir::lower_native`) — confirmed directly: a
+/// bare `int(0..0)` inside a native `.brink` decl-default lambda body fails
+/// to *parse* at all (`E037`/`E129`, not E117), because native has no `..`
+/// range-literal grammar. The two surfaces are mutually exclusive, so no
+/// fixture can ever put a range literal inside a lambda body — this is the
+/// same finding `comparator_contract.rs`'s own module comment records for
+/// `Expr::FnLiteral`/`Expr::Lambda`.
+///
+/// The honest equivalent this test pins instead: `range_refinement`'s own
+/// initializer hand-recursion (`for c in &hir.constants` /
+/// `for var in &hir.variables`, twice over in `range_refinement::check`)
+/// reaches a **plain, non-lambda** top-level `VAR` initializer on the one
+/// surface ranges actually exist on (ink/brink dialect) — through
+/// `compile_path`'s in-memory sibling `compile_with_options`, since
+/// `range_refinement` has no native-surface reach to give `compile_path`
+/// (the on-disk native entry point) anything to exercise here.
+#[test]
+fn compile_ink_brink_range_refinement_direct_var_initializer_is_e117() {
+    // The empty range literal must sit in the `VAR`'s own initializer
+    // expression — `range_refinement::check`'s `visit::visit(hir, &mut v)`
+    // call already walks an ordinary `~ bad = int(0..0)` assignment inside
+    // a flow body (that's the block-tree, not an initializer), so a
+    // fixture that put the call there instead would pass with the
+    // initializer hand-recursion loops deleted, proving nothing about them.
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", "VAR bad = int(0..0)\n-> END\n")]);
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_with_options(
+        "main.ink",
+        |p| {
+            files.get(p).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("not found: {p}"))
+            })
+        },
+        options,
+    );
+    let err = result.expect_err(
+        "a provably-empty range literal in a plain VAR initializer must be refused by E117",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E117"),
+        "expected E117 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
+/// a file that is not valid brink source at all: native discovery must
+/// never walk into `target/` in the first place (issue #1381), so the
+/// unparseable file is never enumerated and never kills an otherwise-valid
+/// compile. Fails on `main` (before the `target/`/`.git/`/`node_modules/`
+/// pruning landed) and passes on this branch.
+#[test]
+fn compile_path_native_ignores_unparseable_file_under_target() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-target-junk-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("target")).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("target/junk.brink"), "{{{ not brink source at all").unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect(
+        "an unparseable .brink file under target/ must not be discovered, so the entry still compiles",
+    );
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// A `.brink` entry under a directory whose ancestor has a `brink.toml`:
+/// the source root walks up to it (not the entry's own directory), and
+/// discovery must still find + read the entry correctly through that root.
+#[test]
+fn compile_path_native_walks_up_to_brink_toml() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-walkup-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("story")).unwrap();
+    std::fs::write(dir.join("brink.toml"), "[project]\ndialect = \"brink\"\n").unwrap();
+    std::fs::write(
+        dir.join("story/main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("story/main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output =
+        result.expect("native project with an ancestor brink.toml should compile via walk-up");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+// ── B0.9 native strict-only enforcement (issue #1342) ────────────────
+//
+// Native is strict-only by design (decision-log 2026-07-19 "Typing posture
+// ruled"): a `.brink` compile with an explicit `types = gradual` knob is a
+// hard error (`E137`), never silently accepted. A bare `.brink` compile
+// with no explicit `types` (the two tests above, `AnalysisOptions::default()`)
+// is unaffected — the gate only fires on an explicit `gradual` choice, see
+// `brink_analyzer::native_strict_only_error`'s doc.
+
+/// `types = gradual` explicitly requested for a native entry is refused
+/// with `E137`, not silently compiled.
+#[test]
+fn compile_path_native_with_explicit_gradual_types_is_e137() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-gradual-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let options = brink_compiler::AnalysisOptions {
+        types: Some(brink_compiler::TypePolicy::Gradual),
+        ..Default::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a gradual-knob .brink compile must be a hard error");
+    assert!(
+        matches!(err, brink_compiler::CompileError::Diagnostics(_)),
+        "expected a Diagnostics(E137) compile error, got: {err}"
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E137"),
+        "expected E137 (native strict-only) among diagnostics, got: {codes:?}"
+    );
+}
+
+/// `types = strict` explicitly requested for a native entry compiles
+/// cleanly — the paired positive case for the gate above.
+///
+/// No `dialect` setting at all (issue #1348): `dialect` is an ink-only axis
+/// (docs/t1b-surface-spec.md §1), orthogonal to native's `Language`
+/// classification, so a native compile must never need one — the ink-only
+/// `E064` config error (`types = strict` + `dialect != brink`) must not fire
+/// against a `.brink` entry even at `dialect`'s `StrictInk` default.
+#[test]
+fn compile_path_native_with_explicit_strict_types_compiles() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-strict-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let options = brink_compiler::AnalysisOptions {
+        types: Some(brink_compiler::TypePolicy::Strict),
+        ..Default::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+
+    // `E064` is a hard error (`DiagnosticCode::severity`) — if the ink-only
+    // dialect gate had fired, this `expect` would panic showing it, exactly
+    // the regression `compile_path_native_with_explicit_gradual_types_is_e137`
+    // above proves the *sibling* `E137` gate the same way.
+    let output = result.expect("types = strict native compile should succeed with no dialect set");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// The T1b dialect gate itself (`dialect_gate::check`, `E051`) must not fire
+/// against native source either (issue #1348) — not just its `E064` config
+/// error. `STRUCT` declarations are ordinary native syntax (native's own
+/// `struct` keyword lowers to the same `HirFile::structs` the gate walks —
+/// `docs/t1b-surface-spec.md` §1 flags a `STRUCT` decl as brink-extension
+/// syntax under ink's `StrictInk` default), so a native file declaring one
+/// must compile cleanly under fully-default `AnalysisOptions` — no `dialect`,
+/// no `types` — exactly the posture a bare `.brink` compile with no
+/// `brink.toml` has today.
+#[test]
+fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e051() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-struct-dialect-gate-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "struct Item {\n  name: string,\n  weight: int\n}\n\nflow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions::default(),
+    );
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result
+        .expect("a native STRUCT declaration must never trip the ink-only dialect gate (E051)");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+// ── B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460),
+// short-circuited per issue #1471's ruling ───────────────────────────
+//
+// Full pipeline: native lexer (`KW_OR`) → native parser (`Prec::Coalesce`)
+// → native HIR lowering (`InfixOp::Coalesce`) → analyzer typing
+// (`infer::ty::coalesce`, recorded per step by `brink_analyzer::
+// coalesce_types` and threaded to lowering by `brink-db`'s
+// `coalesce_types_query`) → LIR (`lir::Expr::Coalesce`, a real branch) →
+// codegen (`Opcode::CoalesceSome`) → runtime VM
+// (`value_ops::coalesce_unwrap_some`) → `Story` output. Compiles and *runs*
+// the program (not just a diagnostics-clean compile) so the opcode is
+// proven reachable end to end, not merely wired at the type level.
+
+/// Compile a native `.brink` entry from disk and run it to completion,
+/// returning the concatenated output text. Mirrors `compile_and_run`
+/// above, but for a native (not `.ink`) entry — `compile_and_run` is
+/// `.ink`-only (`compile_mem` hardcodes the `.ink` extension), so this is
+/// its own small helper rather than a parameterization of that one.
+fn compile_and_run_native(dir_suffix: &str, source: &str) -> String {
+    try_compile_and_run_native(dir_suffix, source)
+        .unwrap_or_else(|err| panic!("fixture must run cleanly, got a runtime fault: {err:?}"))
+}
+
+/// [`compile_and_run_native`] without the "must run cleanly" assumption —
+/// the fixture still has to *compile* cleanly, but a turn-terminating
+/// runtime fault is handed back instead of panicking, so a test can assert
+/// on one (the `CoalesceShape::RuntimeCheck` posture).
+fn try_compile_and_run_native(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<String, brink_runtime::RuntimeError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-b1-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    // B1 coalescing fixture must compile cleanly.
+    let data = result.unwrap().data;
+
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let lines = story.continue_maximally()?;
+    let mut output = String::new();
+    for line in &lines {
+        output.push_str(line.text());
+    }
+    Ok(output)
+}
+
+/// The collapse form (`Option[T] or T -> T`): `some(v)` unwraps to `v`,
+/// `none` falls through to the (already-`T`-typed) fallback unchanged.
+#[test]
+fn native_or_coalescing_collapse_form_unwraps_some_and_falls_back_on_none() {
+    let output = compile_and_run_native(
+        "collapse",
+        "flow main() {\n  Some case: {some(5) or 99}\n  None case: {none or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Some case: 5"),
+        "expected the unwrapped `some(5)`, got: {output:?}"
+    );
+    assert!(
+        output.contains("None case: 99"),
+        "expected the `none` fallback, got: {output:?}"
+    );
+}
+
+/// The two-Option form chained (`a or b or default`): `none or none` keeps
+/// optionality (stays `none`), so the chain falls all the way through to
+/// the final non-Option fallback. A **smoke test only** — review finding on
+/// PR #1469/#1460: coalescing is semantically associative (`unify` is
+/// commutative/associative on agreeing types), so `{none or none or 7}`
+/// prints `7` under *either* grouping — this test cannot detect an
+/// associativity regression (e.g. right-associative parsing) on its own.
+/// `brink-syntax-native`'s own
+/// `parser::tests::expression::prec_coalesce_chain_is_left_associative`
+/// proves left-associativity at the parse-tree level, where a wrong
+/// grouping is actually observable.
+#[test]
+fn native_or_coalescing_chain_falls_through_to_final_fallback() {
+    let output = compile_and_run_native(
+        "chain",
+        "flow main() {\n  Chained: {none or none or 7} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 7"),
+        "expected the chain to fall through both `none`s to the final fallback, got: {output:?}"
+    );
+}
+
+/// Coalescing **short-circuits**: `rhs` is never evaluated when `lhs` is
+/// `some` — RULED, issue #1471, flipping the eager pin PR #1469/#1460
+/// landed and flagged as unruled (see `brink_ir::InfixOp::Coalesce`/
+/// `brink_format::Opcode::CoalesceSome`'s own docs), matching the
+/// short-circuiting `??`/`?:` conventions this operator's precedence
+/// placement was modeled on. `bump()` mutates the global `counter` and is
+/// only ever reached through the coalescing `rhs` — if evaluation were
+/// still eager, `bump()` would run regardless of `lhs` and `counter` would
+/// end up `1`; short-circuiting means a `some(_)` `lhs` skips `bump()`
+/// entirely, so `counter` stays `0`.
+const OR_COALESCING_SHORT_CIRCUIT_SRC: &str = "var counter = 0\n\
+     fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
+     flow main() {\n  Value: {some(5) or bump()}\n  Counter: {counter} -> END\n}\n";
+
+#[test]
+fn native_or_coalescing_short_circuits_rhs_on_some_lhs() {
+    let output = compile_and_run_native("shortcircuit", OR_COALESCING_SHORT_CIRCUIT_SRC);
+    assert!(
+        output.contains("Value: 5"),
+        "the collapse form must still unwrap `some(5)`, got: {output:?}"
+    );
+    assert!(
+        output.contains("Counter: 0"),
+        "expected `bump()` to never run since `lhs` is `some(_)` \
+         (short-circuit), got: {output:?}"
+    );
+}
+
+/// The other half of the short-circuit proof: `rhs` must still run —
+/// exactly once — when `lhs` actually is `none`. Short-circuiting only
+/// means the evaluation is *conditional*, not that `rhs` is permanently
+/// dead code.
+#[test]
+fn native_or_coalescing_still_evaluates_rhs_when_lhs_is_none() {
+    let output = compile_and_run_native(
+        "shortcircuit-none",
+        "var counter = 0\n\
+         fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
+         flow main() {\n  Value: {none or bump()}\n  Counter: {counter} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Value: 99"),
+        "the `none` lhs must fall through to `bump()`'s return value, got: {output:?}"
+    );
+    assert!(
+        output.contains("Counter: 1"),
+        "expected `bump()` to have run exactly once for a `none` lhs, got: {output:?}"
+    );
+}
+
+/// A leading `some(_)` in a coalesce **chain** must still preserve
+/// optionality through the intermediate step so the chain can continue —
+/// short-circuiting changes *when* `rhs` runs, not the collapse-vs-preserve
+/// typing rule (`(Option[T],T)->T` vs `(Option[T],Option[T])->Option[U]`).
+/// `some(5) or none` is the inner step (parses left-associatively): a wrong
+/// collapse decision there would hand the outer step a plain `Int` where it
+/// requires an `Option`, faulting instead of printing `5`.
+#[test]
+fn native_or_coalescing_chain_preserves_optionality_through_intermediate_some() {
+    let output = compile_and_run_native(
+        "chain-preserve",
+        "flow main() {\n  Chained: {some(5) or none or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 5"),
+        "expected the leading `some(5)` to win, unwrapped only at the final \
+         non-Option fallback, got: {output:?}"
+    );
+}
+
+/// The BLOCKING review finding on PR #1479, now a passing test (issue
+/// #1492's ruling, re-driven here): an `Option`-returning **call** as the
+/// intermediate fallback. `maybe()` lowers to `lir::Expr::Call`, whose
+/// `Option`-ness lives in the callee's inferred return type — invisible to
+/// any syntactic shape-sniff at lowering time, which is exactly why the
+/// deleted `rhs_is_option_shaped` heuristic collapsed the inner step and
+/// made the outer `CoalesceSome` fault on a plain `Int`. Lowering now reads
+/// the analyzer's recorded `CoalesceShape::PreserveOption` for that step
+/// instead, so the leading `some(5)` survives to the end.
+///
+/// (`brink-analyzer`'s `coalesce_types.rs` pins the *verdict* for this exact
+/// chain; this pins the program it actually produces.)
+/// Shared with `native_or_coalescing_and_as_binding_strict_findings_match_baseline`
+/// below — a single source of truth so a change here cannot silently drift
+/// out of sync with what the strict sweep actually compiles.
+const OR_COALESCING_CHAIN_WITH_CALL_SRC: &str = "fn maybe() {\n  return none;\n}\n\
+     flow main() {\n  Chained: {some(5) or maybe() or 99} -> END\n}\n";
+
+#[test]
+fn native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some() {
+    let output = compile_and_run_native("chain-call", OR_COALESCING_CHAIN_WITH_CALL_SRC);
+    assert!(
+        output.contains("Chained: 5"),
+        "expected the leading `some(5)` to win through an Option-returning \
+         call fallback, got: {output:?}"
+    );
+}
+
+/// A `VisitCount`/`DivertTarget`/`TURNS_SINCE` reference reachable only
+/// through a coalesce operand must still register on the counting walk
+/// (`lir::lower::collect_counting_refs_expr`) — a BLOCKING silent-data-drop
+/// finding on PR #1479: the new `lir::Expr::Coalesce` variant fell into the
+/// walker's `_ => {}` catch-all, so the referenced container's
+/// `CountingFlags::VISITS` was never set and its visit count read back `0`
+/// instead of the true count. No diagnostic, no fault — just a wrong
+/// number, which is exactly the class of bug this repo's rules call a bug
+/// until proven otherwise.
+#[test]
+fn native_or_coalescing_rhs_visit_count_reference_is_tracked() {
+    let output = compile_and_run_native(
+        "visit-count",
+        "flow main() {\n  -> other\n}\n\
+         flow other() {\n  V: {none or other} -> END\n}\n",
+    );
+    assert!(
+        output.contains("V: 1"),
+        "expected `other`'s visit count to be tracked through the coalesce \
+         operand, got: {output:?}"
+    );
+}
+
+/// The `CoalesceShape::RuntimeCheck` posture, still intact (RULED, issue
+/// #1492, documented on `brink_format::Opcode::CoalesceSome`): with an
+/// unpinned left-hand type — an untyped parameter under the native default
+/// `types = gradual` — the analyzer commits to no shape, and **the runtime
+/// check is the operator's semantics**. A plain (non-`Option`) value
+/// reaching the step is a turn-terminating `TypeError`, not a silent
+/// coalesce and not a compile error.
+/// Shared with `native_or_coalescing_and_as_binding_strict_findings_match_baseline`
+/// below — a single source of truth so a change here cannot silently drift
+/// out of sync with what the strict sweep actually compiles.
+const OR_COALESCING_UNPINNED_LHS_FAULT_SRC: &str = "fn pick(x) {\n  return x or 99;\n}\n\
+     flow main() {\n  Value: {pick(1)} -> END\n}\n";
+
+#[test]
+fn native_or_coalescing_unpinned_lhs_faults_on_a_plain_value() {
+    let err =
+        try_compile_and_run_native("runtime-check-fault", OR_COALESCING_UNPINNED_LHS_FAULT_SRC)
+            .expect_err("a plain `Int` left-hand side must fault at runtime");
+    assert!(
+        matches!(&err, brink_runtime::RuntimeError::TypeError(msg)
+            if msg.contains("or-coalescing requires an Option left-hand side")),
+        "expected the or-coalescing TypeError, got: {err:?}"
+    );
+}
+
+/// The other arm of the same unpinned step, so the test above cannot pass
+/// by the operator being broken outright: an actual `Option` flowing into
+/// an unpinned `lhs` coalesces normally (and still short-circuits — the
+/// runtime check gates the *value*, not the branch).
+#[test]
+fn native_or_coalescing_unpinned_lhs_coalesces_an_option() {
+    let output = compile_and_run_native(
+        "runtime-check-ok",
+        "fn pick(x) {\n  return x or 99;\n}\n\
+         flow main() {\n  Some: {pick(some(5))}\n  None: {pick(none)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Some: 5"),
+        "an unpinned `lhs` holding `some(5)` must unwrap, got: {output:?}"
+    );
+    assert!(
+        output.contains("None: 99"),
+        "an unpinned `lhs` holding `none` must fall through, got: {output:?}"
+    );
+}
+
+/// The same call-shaped fallback un-chained, and falling through: a `none`
+/// `lhs` hands the whole step over to `maybe()`'s own `Option`, which the
+/// trailing plain fallback then collapses.
+///
+/// This is **fall-through-only** coverage, not a verdict pin: the inner
+/// step's `lhs` is the literal `none`, so it always takes the fallback
+/// branch, and codegen only emits `MakeSome` on the *unwrap* (`some(v)`)
+/// branch (`brink_codegen_inkb::expr`'s `Coalesce` arm) — never on
+/// fall-through. That means this fixture prints `Chained: 7` identically
+/// whether the inner step's recorded shape is `PreserveOption` or the
+/// `RuntimeCheck` default, so it does not pin
+/// `brink_ir::lir::CoalesceShape` here. The test above
+/// (`native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some`)
+/// is the one that actually exercises `MakeSome`, because its `lhs` is a
+/// real `some(5)` at runtime and takes the unwrap branch.
+#[test]
+fn native_or_coalescing_falls_through_to_an_option_returning_call() {
+    let output = compile_and_run_native(
+        "call-fallthrough",
+        "fn maybe() {\n  return some(7);\n}\n\
+         flow main() {\n  Chained: {none or maybe() or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 7"),
+        "expected `maybe()`'s `some(7)` to win, unwrapped at the final \
+         non-Option fallback, got: {output:?}"
+    );
+}
+
+// ── B1b the `as` binding (`docs/decision-log.md` 2026-07-26, issue
+//    #1475) ────────────────────────────────────────────────────────────
+//
+// Full pipeline, in both ruled condition positions: native parser
+// (`AS_BINDING`) → native HIR lowering (`IfStmt`/`WhileStmt`/
+// `CondBranch::binding`) → analyzer typing (`Option[T]` → `T`) → LIR
+// (`lir::Expr::OptionBind`) → codegen (`Opcode::OptionBind`) → runtime VM
+// → `Story` output. Each fixture *runs*, so the opcode is proven reachable
+// end to end rather than merely wired at the type level.
+
+/// The statement form: `if EXPR as NAME { … }` binds the unwrapped payload
+/// (not the `Option`) inside the success arm, and the `else` arm is
+/// reached when the condition is `none`.
+#[test]
+fn native_as_binding_statement_form_binds_payload_and_falls_to_else() {
+    let output = compile_and_run_native(
+        "as-if",
+        "fn present() {\n  if some(41) as n {\n    return n + 1;\n  }\n  return 0;\n}\n\
+         fn absent() {\n  if none as n {\n    return n;\n  }\n  return -7;\n}\n\
+         flow main() {\n  Present: {present()}\n  Absent: {absent()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Present: 42"),
+        "expected `n` to be the UNWRAPPED 41 (42 after +1), got: {output:?}"
+    );
+    assert!(
+        output.contains("Absent: -7"),
+        "expected the `none` condition to skip the arm entirely, got: {output:?}"
+    );
+}
+
+/// The `while` form rebinds each iteration (the ruling's explicit rider):
+/// `next_ticket()` yields `some(2)`, `some(1)`, `some(0)`, then `none`, so
+/// a per-iteration rebinding sums to 3 — a first-iteration snapshot would
+/// sum to 6 (2+2+2) and a non-terminating binding would never stop.
+const AS_BINDING_WHILE_REBIND_SRC: &str = "var counter = 3\n\
+     fn next_ticket() {\n\
+     \x20 if counter > 0 {\n\
+     \x20   counter = counter - 1;\n\
+     \x20   return some(counter);\n\
+     \x20 }\n\
+     \x20 return none;\n}\n\
+     fn drain() {\n\
+     \x20 let sum = 0;\n\
+     \x20 while next_ticket() as t {\n\
+     \x20   sum = sum + t;\n\
+     \x20 }\n\
+     \x20 return sum;\n}\n\
+     flow main() {\n  Sum: {drain()} -> END\n}\n";
+
+#[test]
+fn native_as_binding_while_form_rebinds_each_iteration() {
+    let output = compile_and_run_native("as-while", AS_BINDING_WHILE_REBIND_SRC);
+    assert!(
+        output.contains("Sum: 3"),
+        "expected 2+1+0 = 3 from per-iteration rebinding, got: {output:?}"
+    );
+}
+
+/// The template form `{if EXPR as NAME: … else: …}` — the same construct in
+/// brink's other condition position, riding the already-ruled `{if}`
+/// spelling. The bound name is readable from an interpolation inside the
+/// success arm; the `else` arm runs on `none`.
+#[test]
+fn native_as_binding_template_form_binds_inside_the_success_arm() {
+    let output = compile_and_run_native(
+        "as-template",
+        "flow main() {\n\
+         \x20 Leader: {if some(9) as l: number {l} else: nobody}\n\
+         \x20 Empty: {if none as l: number {l} else: nobody} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Leader: number 9"),
+        "expected the template arm to see the unwrapped 9, got: {output:?}"
+    );
+    assert!(
+        output.contains("Empty: nobody"),
+        "expected the `else` arm on `none`, got: {output:?}"
+    );
+}
+
+/// The binding is scoped **strictly to the success arm** — observable by
+/// shadowing: an outer `n` is invisible inside the arm (the binding wins)
+/// and intact after it (the binding is gone). A leaked binding would make
+/// the function return `1`; a binding that never took effect would print
+/// `100` from inside the arm.
+#[test]
+fn native_as_binding_scope_ends_at_the_arm() {
+    let output = compile_and_run_native(
+        "as-scope",
+        "fn probe() {\n\
+         \x20 let n = 100;\n\
+         \x20 let inner = 0;\n\
+         \x20 if some(1) as n {\n\
+         \x20   inner = n;\n\
+         \x20 }\n\
+         \x20 return inner * 1000 + n;\n}\n\
+         flow main() {\n  Probe: {probe()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Probe: 1100"),
+        "expected inner = 1 (the binding) and n = 100 (the outer local, \
+         restored after the arm), got: {output:?}"
+    );
+}
+
+// ── Choice-guard `as` binding (issue #1508, decision log 2026-07-26
+//    "Choice-guard `as` un-deferred") ─────────────────────────────────
+//
+// Full pipeline, riding the *same* `OptionBind` + frame-slot machinery the
+// B1b tests above already prove: native parser (`AS_BINDING` inside
+// `CHOICE_GUARD`) → native HIR lowering (`hir::Choice::binding`) → LIR
+// (`lir::Expr::OptionBind`, scoped across condition *and* the choice's own
+// body — `lir::lower::mod::lower_choice_with_child`) → codegen
+// (`Opcode::OptionBind` inside the guard's condition eval) → runtime VM
+// (the write lands in the same frame `BeginChoice`'s `fork_thread`
+// snapshots into the pending choice) → `Story::choose` restores that
+// frame, so the picked body's `{n}` reads the captured value. No new
+// wire-format field exists or is needed: `OptionBind` and the thread-fork
+// snapshot both predate this feature (issue #1475) and already generalize
+// to a choice guard's binding without modification — verified by tracing
+// `vm.rs::handle_begin_choice`/`fork_thread` and `flow_instance.rs::choose`
+// end to end while implementing this, not assumed.
+
+/// Compile a native `.brink` entry from disk and link it, without
+/// draining any choices — mirrors `try_compile_and_run_native`, but hands
+/// back the linked `(Program, line_tables)` so a test can build a `Story`,
+/// inspect/select choices, mutate globals between presentation and pick,
+/// and — for the snapshot test — reattach a second `Story` to the same
+/// `Arc<Program>` after detaching the first.
+fn compile_native_linked(
+    dir_suffix: &str,
+    source: &str,
+) -> (
+    std::sync::Arc<brink_runtime::Program>,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-choice-as-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    let data = result
+        .unwrap_or_else(|err| panic!("choice-guard `as` fixture must compile cleanly: {err:?}"))
+        .data;
+
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    (std::sync::Arc::new(program), line_tables)
+}
+
+/// [`compile_native_linked`] wrapped straight into a fresh `Story`.
+fn compile_native_to_story(dir_suffix: &str, source: &str) -> Story<DotNetRng> {
+    let (program, line_tables) = compile_native_linked(dir_suffix, source);
+    Story::<DotNetRng>::new(program, line_tables)
+}
+
+const CHOICE_GUARD_AS_SRC: &str = "var stash: Option<int> = none\n\
+     flow main() {\n\
+     \x20 ~ stash = some(41)\n\
+     \x20 {?\n\
+     \x20   * {if stash as n} [pick it] {\n\
+     \x20     You have {n}.\n\
+     \x20     -> DONE\n\
+     \x20   }\n\
+     \x20 }\n}\n";
+
+/// The guard's `as` binding both gates the choice (`stash` is `some`, so
+/// it's presented) and captures `n = 41` **at presentation time** — a
+/// same-name global mutation between the choice appearing and being
+/// picked must not leak into the already-captured value. Regression for
+/// exactly the misread the maintainer caught in the 2026-07-26 "COW
+/// no-aliasing invariant" ruling: reference semantics would show `999`
+/// here, not the captured `41`.
+#[test]
+fn native_choice_guard_as_binds_and_captures_at_presentation() {
+    let mut story = compile_native_to_story("guard-capture", CHOICE_GUARD_AS_SRC);
+    // Host-facing `variable`/`set_variable` refuse an undeclared-module
+    // global by default (M-2b visibility enforcement) — a pre-existing,
+    // unrelated posture this test's mutation step needs to see past, the
+    // same documented dev-tooling escape hatch `visibility.rs`'s own
+    // `dev_override_allows_private_access` test uses. Flagged as scope
+    // overflow (issue comment) rather than fixed here: out of #1508's
+    // fence.
+    story.set_visibility_enforcement(false);
+
+    let lines = story.continue_maximally().expect("continue to the choice");
+    let Some(Step::Choices(choices)) = lines.last() else {
+        panic!("expected the guard-gated choice to be presented, got: {lines:?}");
+    };
+    assert_eq!(choices.len(), 1, "expected exactly one choice: {choices:?}");
+    assert_eq!(choices[0].text, "pick it");
+
+    // Mutate the source *after* presentation, *before* picking — capture-
+    // at-presentation must make this invisible to the picked body.
+    let mutated = story.set_variable(
+        "stash",
+        brink_format::Value::some(brink_format::Value::Int(999)),
+    );
+    assert!(mutated, "`stash` must be a real declared global");
+
+    story.choose(0).expect("choose the only choice");
+    let lines = story.continue_maximally().expect("continue after choosing");
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("You have 41."),
+        "expected the captured (pre-mutation) value 41, got: {output:?}"
+    );
+    assert!(
+        !output.contains("999"),
+        "the post-presentation mutation to 999 must never reach the picked \
+         body — capture-at-presentation, by-value COW: {output:?}"
+    );
+}
+
+/// The captured value survives a `StorySnapshot` round trip (the in-memory
+/// detach/reattach `Story::into_snapshot`/`from_snapshot` uses for locale
+/// hot-swapping) — issue #1508's "save round-trip" requirement. This is an
+/// ordinary `Clone` under the hood (`FlowInstance`/`Flow`/`PendingChoice`/
+/// `Thread` all derive `Clone`, no serde ceremony), the same "just clones"
+/// shape `ClosureValue`'s env row already relies on — proving it here
+/// pins that no extra wire-level plumbing is needed for the captured
+/// value to ride along.
+#[test]
+fn native_choice_guard_as_captured_value_survives_a_story_snapshot_round_trip() {
+    let (program, line_tables) = compile_native_linked("guard-snapshot", CHOICE_GUARD_AS_SRC);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), line_tables);
+
+    let lines = story.continue_maximally().expect("continue to the choice");
+    assert!(
+        matches!(lines.last(), Some(Step::Choices(cs)) if cs.len() == 1),
+        "expected the guard-gated choice to be presented: {lines:?}"
+    );
+
+    // Detach and reattach to the SAME `Arc<Program>` — the snapshot
+    // carries the pending choice (and its captured `n = 41`) across, same
+    // as a locale hot-swap would.
+    let (snapshot, line_tables) = story.into_snapshot();
+    let mut story = Story::<DotNetRng>::from_snapshot(program, snapshot, line_tables);
+
+    story.choose(0).expect("choose the only choice");
+    let lines = story.continue_maximally().expect("continue after choosing");
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("You have 41."),
+        "expected the captured value to survive the snapshot round trip, got: {output:?}"
+    );
+}
+
+/// A `none` guard hides the choice entirely — the fallback (`else`) is
+/// what actually shows, and the bound name is never read (nothing to
+/// unwrap).
+#[test]
+fn native_choice_guard_as_false_condition_hides_the_choice() {
+    let source = "flow main() {\n\
+         \x20 {?\n\
+         \x20   * {if none as n} [pick it] {\n\
+         \x20     You have {n}.\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20   else {\n\
+         \x20     Nothing to grab.\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n";
+    let mut story = compile_native_to_story("guard-false", source);
+    let lines = story
+        .continue_maximally()
+        .expect("continue past the hidden choice");
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("Nothing to grab."),
+        "expected the fallback to run since the guard is `none`, got: {output:?}"
+    );
+    assert!(
+        !output.contains("pick it") && !output.contains("You have"),
+        "the guarded choice must never appear when its condition is `none`, \
+         got: {output:?}"
+    );
+}
+
+/// Review finding (post-#1508 land): `{n}` in the choice's OWN
+/// `start_content` (the text before the `[…]` bracket) must resolve
+/// through the guard's binding, not just `{n}` inside the braced body.
+/// `lower_choice_with_child` used to lower `start_content`/
+/// `bracket_content`/`inner_content` *before* `ctx.push_block_scope()`, so
+/// the block scope only ever covered the condition + braced body — a
+/// `{n}` read here fell through `lower_path`'s `SymbolKind::Temp`
+/// fallback (`GetGlobal(DefaultHasher(name))` for a nonexistent global)
+/// and faulted with `UnresolvedGlobal` on the very first
+/// `continue_maximally()`, before the choice ever presented. Verified to
+/// fail this way with the `push_block_scope` reordering reverted.
+///
+/// This only pins the compile-time resolution the finding's fix
+/// addresses (a real temp slot instead of a phantom global — no fault).
+/// It deliberately does not assert `{n}`'s displayed *value* here:
+/// `brink-codegen-inkb::container::emit_choice`'s pre-existing, choice-
+/// generic bytecode order evaluates a choice's display text *before* its
+/// condition (`// Push order: display first, condition second` — a
+/// choice-guard-unrelated convention this PR's diff never touches), so a
+/// guard's `OptionBind` write hasn't happened yet when this particular
+/// display string is composed. The captured value reaching the picked
+/// body (the feature's actual "capture-at-presentation" contract) is
+/// proven by `native_choice_guard_as_binds_and_captures_at_presentation`
+/// and the inner-content test below, both of which read `{n}` from
+/// contexts that run after the guard condition.
+#[test]
+fn native_choice_guard_as_start_content_reads_the_binding() {
+    let source = "var stash: Option<int> = none\n\
+         flow main() {\n\
+         \x20 ~ stash = some(41)\n\
+         \x20 {?\n\
+         \x20   * {if stash as n} You have {n}. [pick it] {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n";
+    let mut story = compile_native_to_story("guard-start-content", source);
+    story.set_visibility_enforcement(false);
+
+    let lines = story
+        .continue_maximally()
+        .expect("start-content `{n}` read must resolve through the guard binding, not fault");
+    let Some(Step::Choices(choices)) = lines.last() else {
+        panic!("expected the guard-gated choice to be presented, got: {lines:?}");
+    };
+    assert_eq!(choices.len(), 1, "expected exactly one choice: {choices:?}");
+}
+
+/// Same defect, `inner_content` (the text after the `[…]` bracket) instead
+/// of `start_content`. This half of the split composes into the *output*
+/// content emitted after the choice is picked (`ChoiceOutput`), so —
+/// before the fix — presentation succeeded but the fault surfaced on the
+/// *next* `continue_maximally()` call, after picking.
+#[test]
+fn native_choice_guard_as_inner_content_reads_the_binding() {
+    let source = "var stash: Option<int> = none\n\
+         flow main() {\n\
+         \x20 ~ stash = some(41)\n\
+         \x20 {?\n\
+         \x20   * {if stash as n} [pick it] You have {n}. {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n";
+    let mut story = compile_native_to_story("guard-inner-content", source);
+    story.set_visibility_enforcement(false);
+
+    let lines = story.continue_maximally().expect("continue to the choice");
+    assert!(
+        matches!(lines.last(), Some(Step::Choices(cs)) if cs.len() == 1),
+        "expected the guard-gated choice to be presented: {lines:?}"
+    );
+
+    story.choose(0).expect("choose the only choice");
+    let lines = story.continue_maximally().expect(
+        "inner-content `{n}` read must resolve through the guard binding after picking, not fault",
+    );
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("You have 41."),
+        "expected the choice's own inner-content to read the captured binding, got: {output:?}"
+    );
+}
+
+/// Review finding (same root cause as the two above): a *second*, sibling
+/// choice binding the same name as an earlier choice must not trip a
+/// spurious E082 ("block-scoped temp referenced after its block has
+/// closed"). `ctx.block_scoped_temp_names` records a binding's name
+/// permanently the first time it's declared; with the content lowered
+/// before `push_block_scope`, the second choice's own `{n}` read missed
+/// its own (freshly reopened) scope and fell through to the same
+/// `SymbolKind::Temp` fallback, which then misfired E082 — even though
+/// there is no `~ { … }` block anywhere in the source. Fixed by the same
+/// reordering: each choice's `push_block_scope`/binding declare now
+/// happens before that choice's own content is lowered, so its own `{n}`
+/// resolves through its own (current) scope instead of the fallback.
+#[test]
+fn native_choice_guard_as_two_choices_binding_the_same_name_both_compile_clean() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-choice-as-shared-name-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "var stash: Option<int> = none\n\
+         flow main() {\n\
+         \x20 ~ stash = some(41)\n\
+         \x20 {?\n\
+         \x20   * {if stash as n} A [a] {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20   * {if stash as n} B {n} [b] {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    // E082 is `Severity::Error` (not `Warning`), so the pre-fix misfire
+    // surfaces as a hard `CompileError`, not a warning on an `Ok` output —
+    // any error here (E082 or otherwise) means this must-compile-clean
+    // fixture regressed.
+    result.unwrap_or_else(|err| {
+        panic!(
+            "a second choice binding the same guard name must compile clean — \
+             no `~ {{ … }}` block exists in this source, so E082 must never \
+             fire: {err:?}"
+        )
+    });
+}
+
+// ── Native bare-name fn values (issue #1862) ────────────────────────
+//
+// The end-to-end proof that a bare name *is* a fn value lives in the
+// `tests/tier1-native/fn-value-bare-name/` golden case. The three tests
+// below cover the edges that case cannot express: the ink side of the
+// gate, the `ref`-param refusal, and a plain (non-`.brink`) reading of the
+// same shape.
+
+/// The gate's ink half: in **ink** a bare function-knot name in expression
+/// position is still the knot's **visit count**, not a fn value —
+/// `#fn(f)` remains ink's only fn-value spelling. Dropping the
+/// `LowerCtx::native` guard in `lir::lower::expr::lower_path` would turn
+/// this `0` into a function value and print something else entirely.
+#[test]
+fn ink_bare_function_name_is_still_a_visit_count() {
+    let source = "Count: {f}\n\
+                  -> END\n\n\
+                  === function f ===\n\
+                  ~ return 1\n";
+    let output = compile_and_run(source, &[]);
+    assert!(
+        output.contains("Count: 0"),
+        "an ink bare function-knot name must stay a visit count (0, never entered), \
+         got: {output:?}"
+    );
+}
+
+/// A native bare-name reference binds **zero** arguments — the `#fn(f, a)`
+/// binding form has no native spelling — so a target with a `ref`
+/// parameter can never satisfy "all ref params bind at creation" and is
+/// `E080` at the reference site (`fn_values::check_native_bare_refs`).
+/// Before this check existed the reference compiled clean.
+#[test]
+fn native_bare_name_fn_value_with_a_ref_param_is_e080() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-fnvalue-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn heal(ref amount) {\n\
+         \x20 amount = amount + 1;\n}\n\
+         fn used() {\n\
+         \x20 let f = heal;\n\
+         \x20 return 0;\n}\n\
+         flow main() {\n  Used: {used()} -> END\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a ref-param target may not be referenced by bare name");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E080"),
+        "expected E080 at the bare-name reference, got: {codes:?}"
+    );
+}
+
+/// Same obligation, but the bare-name reference sits in **declaration-
+/// initializer** position (`var f = heal`) rather than inside a function
+/// body. `check_native_bare_refs` only walks the block tree
+/// (`hir::visit::visit`), which never descends into a file-level `VAR`/
+/// `CONST` initializer — so before this test's fix, a `ref`-param target
+/// referenced only this way compiled clean with no E080 at all, even
+/// though the reviewer's own doc comment on `check_native_bare_refs`
+/// asserts the obligation as an absolute ("a target with any ref parameter
+/// can never be referenced by bare name").
+#[test]
+fn native_bare_name_fn_value_in_decl_initializer_with_a_ref_param_is_e080() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-fnvalue-decl-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn heal(ref amount) {\n\
+         \x20 amount = amount + 1;\n}\n\
+         var f = heal\n\
+         flow main() {\n  Used: {0} -> END\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a ref-param target may not be referenced by bare name");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E080"),
+        "expected E080 at the decl-initializer bare-name reference, got: {codes:?}"
+    );
+}
+
+/// The same shape without any `ref` parameter compiles and runs — the
+/// guard above must not fire on an ordinary by-value target.
+#[test]
+fn native_bare_name_fn_value_without_ref_params_compiles_and_runs() {
+    let output = compile_and_run_native(
+        "fnvalue-plain",
+        "fn double(x) {\n\
+         \x20 return x * 2;\n}\n\
+         fn apply(g, v) {\n\
+         \x20 return g(v);\n}\n\
+         flow main() {\n  Applied: {apply(double, 21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Applied: 42"),
+        "expected the bare name to reach `apply` as a callable fn value, got: {output:?}"
+    );
+}
+
+// ── Native bare-name fn-value typing (issue #1876) ──────────────────
+//
+// #1862 landed the lowering; the reference still inferred as `Ty::Unknown`,
+// so the type checker could not catch the very typo hazard the 2026-08-01
+// ruling accepted an unsigilled spelling *because* it catches. These two
+// tests are the compile-time halves of that claim — the type now exists
+// (so a real mismatch is a diagnostic) and it is the *right* type (so a
+// legitimate callback is not a false positive). The runtime half stays in
+// the `tests/tier1-native/fn-value-bare-name/` golden case.
+
+/// Compile one `.brink` source under the strict typed posture a real
+/// native project runs in — `dialect = "brink"` in `brink.toml`, whose
+/// `types` default is [`TypePolicy::Strict`] (`resolve_type_policy`) and
+/// which is what makes `strict::check`'s inference-driven codes (`E063`
+/// among them) fire at all.
+fn compile_native_strict(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-1876-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// The typo hazard, caught statically: `total(double)` passes a fn value
+/// where the callee declares `int`. Before #1876 the argument typed
+/// `Unknown`, `DirectCallArgMismatch` skipped it as unresolved, and this
+/// fixture compiled clean — the obligation fell all the way to a runtime
+/// fault, even though the 2026-08-01 ruling accepted the unsigilled
+/// spelling *on the grounds* that the type checker catches this.
+#[test]
+fn native_bare_name_fn_value_passed_where_an_int_is_expected_is_e063() {
+    let err = compile_native_strict(
+        "mismatch",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         flow main() {\n  Bad: {total(double)} -> END\n}\n",
+    )
+    .expect_err("passing a bare-name fn value where an `int` is declared must fail compilation");
+    // Assert the exact code vector, not `contains` — this fixture is
+    // deliberately clean of every other strict diagnostic so E063 alone
+    // must be what fails compilation (matches the precedent in
+    // `tm3_strict_policy.rs`'s `strict_direct_call_arg_mismatch_blocks_
+    // compilation_with_e063`). `contains` alone would also stay green if
+    // the code came from the annotation-vs-inference mismatch path
+    // instead of `strict::check_direct_call_args` — pin the message too,
+    // so a diagnostic-source swap that happens to also be E063 still
+    // fails this test.
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E063],
+        "expected E063 alone, got: {diags:?}"
+    );
+    assert_eq!(
+        diags[0].message,
+        "argument 1 of call to `total` has type `fn(int): int` but its known type expects `int`",
+        "expected the `check_direct_call_args` message shape, got: {:?}",
+        diags[0].message
+    );
+}
+
+/// The other direction — no false positive, under the *same* strict
+/// posture. The same bare name handed to a parameter *declared*
+/// `fn(int): int` is assignable (annotation rows are the unknown top
+/// element and `assignable` is row-insensitive, issue #1680), so the
+/// fixture compiles and runs. A rule that typed the reference as anything
+/// but the target's own signature would break every legitimate callback.
+#[test]
+fn native_bare_name_fn_value_satisfies_a_declared_fn_parameter() {
+    let data = compile_native_strict(
+        "annotated-param",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn apply(g: fn(int): int, v: int): int {\n\
+         \x20 return g(v);\n}\n\
+         flow main() {\n  Applied: {apply(double, 21)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name must satisfy a declared `fn(int): int` parameter: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Step::text)
+        .collect();
+    assert!(
+        output.contains("Applied: 42"),
+        "the fn value must still reach `apply` and be callable there, got: {output:?}"
+    );
+}
+
+// ── Native bare-name fn value in declaration-initializer position
+//    (issue #1895) ────────────────────────────────────────────────────
+//
+// #1876 typed the *expression* position only. Lowering has always minted
+// the fn value at a declaration initializer too
+// (`lir::lower::decls::fold_path_ref` → `ConstValue::FnRef`), and
+// `fn_values::check_native_bare_refs` already walks decl initializers for
+// E080 — so the typing side was the odd one out, leaving the global at
+// `Ty::Unknown` and turning a later call through it into `E065` on
+// perfectly valid code.
+
+/// The false positive itself: a file-level `var f = double` under
+/// `types = strict`, called as `f(3)`. With `signature::declared_fn_type`
+/// blind to the native bare-name spelling, `Sig::value_ty` is `None`, the
+/// global never lands in `collect_globals`, `ty_of_def` answers
+/// `Ty::Unknown`, and `check_value_call` classifies the call as
+/// `UnknownCallee` → E065 on correct code.
+#[test]
+fn native_bare_name_fn_value_decl_initializer_call_is_not_e065() {
+    let data = compile_native_strict(
+        "decl-init-call",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         var f = double\n\
+         flow main() {\n  Doubled: {f(3)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "calling a global initialized to a native bare-name fn value must compile: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Step::text)
+        .collect();
+    assert!(
+        output.contains("Doubled: 6"),
+        "the global must still hold a callable fn value at runtime, got: {output:?}"
+    );
+}
+
+/// The other half of "the type exists": it is the *right* type, so a real
+/// mismatch through the same global is still caught. Typing the
+/// initializer as anything but `double`'s own signature would make this
+/// fixture compile clean again.
+#[test]
+fn native_bare_name_fn_value_decl_initializer_type_is_the_targets_signature() {
+    let err = compile_native_strict(
+        "decl-init-mismatch",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var f = double\n\
+         flow main() {\n  Bad: {total(f)} -> END\n}\n",
+    )
+    .expect_err("passing the fn-valued global where an `int` is declared must fail compilation");
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E063],
+        "expected E063 alone, got: {diags:?}"
+    );
+    assert_eq!(
+        diags[0].message,
+        "argument 1 of call to `total` has type `fn(int): int` but its known type expects `int`",
+        "expected the `check_direct_call_args` message shape, got: {:?}",
+        diags[0].message
+    );
+}
+
+/// A same-named global shadows the function, exactly as it does at
+/// runtime: `lir::lower::decls::fold_path_ref` resolves the initializer
+/// through the real resolution map, which reaches a `const double` before
+/// it reaches `fn double` and folds the constant's value. The typing side
+/// has no resolution map — it is declaration-derived — so it declines
+/// rather than guessing the fn interpretation. Without that decline
+/// `alias` would type `fn(int): int` and this fixture would fail with a
+/// bogus E063 on the `total(alias)` call.
+#[test]
+fn native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value() {
+    let data = compile_native_strict(
+        "decl-init-shadowed",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         const double = 5\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name shadowed by a same-named global is a constant read, not a fn value: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Step::text)
+        .collect();
+    assert!(
+        output.contains("Val: 6"),
+        "the shadowed bare name must fold to the constant's value, got: {output:?}"
+    );
+}
+
+/// The `ListItem` sibling of the test above: a bare name shadowed by a list
+/// item, in the *same* file. `ListItem`s are indexed under their qualified
+/// `List.Item` name (never the bare item name), so the direct
+/// `index.by_name.get(target_name)` lookup in `declared_fn_type`'s shadow
+/// guard can never see them — closing this gap needs the same bare-name
+/// suffix scan `lookup_variable` itself uses (`lookup_list_item_bare`),
+/// consulted ahead of the knot lookup exactly as `lookup_variable`'s own
+/// priority order does. Without it, `alias` was typed `fn(int): int` from
+/// the knot `double` while lowering actually bound it to the list item
+/// `Palette.double` — a same-file disagreement with no cross-module
+/// privacy gate (`E087`) to mask it, unlike the cross-file case
+/// (`native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`
+/// below). Revert the `lookup_list_item_bare` call in
+/// `crates/internal/brink-analyzer/src/signature.rs`'s `declared_fn_type`
+/// and this fails with a bogus `E063` alone (verified per house rule 20a).
+#[test]
+fn native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value() {
+    let data = compile_native_strict(
+        "decl-init-shadowed-by-list-item",
+        "flags Palette = double, other\n\
+         fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name shadowed by a same-named list item is a list-item read, not a fn value: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Step::text)
+        .collect();
+    assert!(
+        output.contains("Val:"),
+        "the shadowed bare name must fold to the list item's value, got: {output:?}"
+    );
+}
+
+/// The ink surface is untouched: `VAR f = double` in `.ink` has never been
+/// a fn value (a bare knot name there is a visit count), so the new arm
+/// must stay off unless the declaring file is native. Kept as a guard on
+/// the `hir.native` conjunct — dropping it would silently give every ink
+/// `VAR` initialized to a function knot's name a `Ty::Fn`.
+///
+/// Must actually be able to fail, so this compiles through
+/// `compile_path_with_options` with `dialect = Brink` + `types = Strict`
+/// (not `compile_and_run`'s bare `compile_mem`, which never turns strict
+/// typing on and so could never observe a false `E063` here — house rule
+/// 20a). `native` gates on which frontend parsed the file
+/// (`crate::driver::prepare_driver` dispatches on the entry's `.brink`
+/// extension), not on the `dialect` policy, so a *typed* function knot
+/// under the T1b brink-extension syntax (`=== function f(x: int): int
+/// ===`) is still parsed by the ink frontend here (`main.ink`) and stays
+/// `native == false`. `g` must therefore stay `Ty::Unknown` and
+/// `total(g)` must compile clean even under strict. With the `native`
+/// conjunct stubbed out this fails with exactly `["E063"]` — `g` would
+/// type as `fn(int): int` and mismatch `total`'s `int` parameter.
+#[test]
+fn ink_var_initialized_to_a_function_name_is_not_typed_as_a_fn_value() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-ink-1895-decl-init-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.ink");
+    std::fs::write(
+        &path,
+        "VAR g = f\n\
+         === function f(x: int): int ===\n\
+         ~ return x\n\n\
+         === function total(n: int): int ===\n\
+         ~ return n + 1\n\n\
+         === main ===\n\
+         ~ total(g)\n\
+         -> DONE\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &path,
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    result.unwrap_or_else(|err| {
+        panic!(
+            "an ink bare function-knot name must stay Unknown and compile \
+             clean under strict typing, got: {:?}",
+            diagnostic_codes(&err)
+        )
+    });
+}
+
+// ── Strict-typing sweep of gradual-only native fixtures (issue #1916)
+//    ───────────────────────────────────────────────────────────────────
+//
+// `native_or_coalescing_*` and `native_as_binding_*` above compile
+// exclusively through `compile_and_run_native`, which uses
+// `brink_compiler::compile_path` — default `AnalysisOptions`
+// (`types = None`, resolving to `Gradual` for `Dialect::StrictInk`). The
+// strict type checker (`strict::check`) never runs on those two families,
+// even though a real `.brink` project with `dialect = "brink"` in its
+// `brink.toml` gets `Strict` by default. The gap does NOT extend to the
+// `native_bare_name_fn_value_*` family immediately above: those tests
+// already compile under `compile_native_strict` (issue #1876), so strict
+// coverage for bare-name fn values already exists.
+//
+// This sweep compiles two fixtures — reusing their exact sources via the
+// `OR_COALESCING_CHAIN_WITH_CALL_SRC` / `OR_COALESCING_UNPINNED_LHS_FAULT_SRC`
+// constants above, so a change to either fixture cannot silently drift out
+// of sync with what this sweep actually compiles — and records the
+// resulting `strict::check` findings as a baseline. Both were chosen
+// because they are empirically confirmed to produce NEW findings rows, not
+// zero-yield duplicates: every fixture tried below that returned no
+// findings, or that duplicates coverage already established elsewhere, was
+// left out, specifically —
+//   * `native_or_coalescing_collapse_form_unwraps_some_and_falls_back_on_none`,
+//     `native_or_coalescing_chain_falls_through_to_final_fallback`, the
+//     short-circuit pair (`native_or_coalescing_short_circuits_rhs_on_some_
+//     lhs` / `..._still_evaluates_rhs_when_lhs_is_none`), and
+//     `native_as_binding_while_form_rebinds_each_iteration` all compile with
+//     ZERO strict findings (confirmed by running each through
+//     `compile_native_strict` and inspecting `CompileOutput::warnings`) —
+//     sweeping them adds no coverage.
+//   * `native_as_binding_statement_form_binds_payload_and_falls_to_else`
+//     and `native_bare_name_fn_value_without_ref_params_compiles_and_runs`
+//     are byte-identical to (respectively a strict superset of)
+//     `tests/tier1-native/as-binding/story.brink` and
+//     `tests/tier1-native/fn-value-bare-name/story.brink`, both already
+//     swept by `tests/driver_native_strict.rs`'s baseline — re-sweeping
+//     them here would add zero net new rows.
+//
+// This is a **partial** sweep (2 of the 22 `native_*` fixtures in this
+// file) — see issue #1916 for the tracked remainder covering the other
+// `native_or_coalescing_*` and `native_as_binding_*` fixtures.
+
+/// Collect strict-pass findings (E063/E065/E066 diagnostics) from a compile
+/// result.
+fn strict_findings(
+    fixture_name: &str,
+    result: Result<brink_compiler::CompileOutput, brink_compiler::CompileError>,
+) -> Vec<(String, String, String)> {
+    let mut findings = Vec::new();
+    let diagnostics = match result {
+        Ok(output) => output.warnings,
+        Err(brink_compiler::CompileError::Diagnostics(ds)) => ds,
+        Err(e) => panic!("{fixture_name}: unexpected compile failure: {e}"),
+    };
+    for d in diagnostics {
+        if matches!(
+            d.code,
+            brink_ir::DiagnosticCode::E063
+                | brink_ir::DiagnosticCode::E065
+                | brink_ir::DiagnosticCode::E066
+        ) {
+            findings.push((
+                fixture_name.to_string(),
+                d.code.as_str().to_string(),
+                d.message,
+            ));
+        }
+    }
+    findings
+}
+
+/// Baseline of strict findings for the two swept fixtures, recorded from an
+/// actual `compile_native_strict` run (not hand-derived).
+///
+/// `or-coalescing-chain-call`: `maybe()`'s return type is unannotated, so it
+/// escapes strict inference as Unknown.
+///
+/// `or-coalescing-unpinned-lhs-fault`: `pick`'s parameter `x` and return
+/// type are both unannotated (`strict::check` reports the return type;
+/// `x`'s own Unknown-ness surfaces indirectly as the argument-type mismatch
+/// on the call site, since the runtime-check posture the analyzer commits
+/// to for an unpinned `lhs` still requires a *known* `Option` argument
+/// under strict `check_direct_call_args`).
+const BASELINE: &[(&str, &str, &str)] = &[
+    (
+        "or-coalescing-chain-call",
+        "E065",
+        "`maybe`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "or-coalescing-unpinned-lhs-fault",
+        "E063",
+        "argument 1 of call to `pick` has type `int` but its known type expects `Option<int>`",
+    ),
+    (
+        "or-coalescing-unpinned-lhs-fault",
+        "E065",
+        "`pick`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+];
+
+/// Gate: the swept driver.rs fixtures' findings under strict typing must
+/// match the recorded baseline.
+#[test]
+fn native_or_coalescing_strict_findings_match_baseline() {
+    let mut actual = Vec::new();
+
+    let result = compile_native_strict("or-coalesce-chain-call", OR_COALESCING_CHAIN_WITH_CALL_SRC);
+    actual.extend(strict_findings("or-coalescing-chain-call", result));
+
+    let result = compile_native_strict(
+        "or-coalesce-unpinned-lhs-fault",
+        OR_COALESCING_UNPINNED_LHS_FAULT_SRC,
+    );
+    actual.extend(strict_findings("or-coalescing-unpinned-lhs-fault", result));
+
+    actual.sort();
+    let expected: Vec<(String, String, String)> = BASELINE
+        .iter()
+        .map(|(f, c, m)| ((*f).to_string(), (*c).to_string(), (*m).to_string()))
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "swept driver.rs native fixtures' strict findings drifted from baseline.\n\
+         Do NOT edit the fixtures to make this pass — triage each finding and either \
+         fix the checker or update BASELINE with a classification and tracking issue."
+    );
+}
+
+/// Guard against the sweep going vacuous if strict options are misconfigured.
+#[test]
+fn the_sweep_actually_runs_under_strict() {
+    let result = compile_native_strict(
+        "guard-check",
+        "fn f(x) { return x; }\nflow main() { -> END }\n",
+    );
+    let findings = strict_findings("guard", result);
+    // At minimum, an unannotated parameter `x` should escape as Unknown
+    // under strict mode. If we get nothing, the strict pass is not running.
+    assert!(
+        !findings.is_empty(),
+        "the strict pass produced no findings at all — it is almost certainly \
+         not running (issue #1916's original bug)"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]
@@ -209,13 +2405,13 @@ fn compile_and_run(source: &str, inputs: &[usize]) -> String {
         let lines = story.continue_maximally().unwrap();
         let last = lines.last().unwrap();
         match last {
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
+            Step::Line(_) | Step::Done | Step::End | Step::Suspended => {
                 for line in &lines {
                     output.push_str(line.text());
                 }
                 break;
             }
-            Line::Choices { choices, .. } => {
+            Step::Choices(choices) => {
                 for line in &lines {
                     output.push_str(line.text());
                 }
@@ -426,7 +2622,7 @@ fn include_content_appears_before_main() {
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
-    let result: String = lines.iter().map(Line::text).collect();
+    let result: String = lines.iter().map(Step::text).collect();
     assert_eq!(
         result, "This is A.\nThis is B.\nThis is main.\n",
         "included file content must appear before main file content"
@@ -1382,14 +3578,14 @@ fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<
         guard += 1;
         assert!(guard < 100, "infinite loop detected");
         let lines = story.continue_maximally().unwrap();
-        let combined_text: String = lines.iter().map(Line::text).collect();
+        let combined_text: String = lines.iter().map(Step::text).collect();
         let last = lines.last().unwrap();
         match last {
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
+            Step::Line(_) | Step::Done | Step::End | Step::Suspended => {
                 steps.push((combined_text, None));
                 break;
             }
-            Line::Choices { choices, .. } => {
+            Step::Choices(choices) => {
                 let count = choices.len();
                 steps.push((combined_text.clone(), Some(count)));
                 let idx = if input_idx < inputs.len() {
@@ -1902,7 +4098,7 @@ fn glue_in_choice_body_runtime_joins_text() {
     // First continue: should get choices
     let line = story.continue_single().unwrap();
     match &line {
-        Line::Choices { choices, .. } => {
+        Step::Choices(choices) => {
             assert_eq!(choices.len(), 2);
             story.choose(0).unwrap(); // pick "Yes"
         }
@@ -1912,11 +4108,8 @@ fn glue_in_choice_body_runtime_joins_text() {
     // Second continue: should get the glued text
     let line = story.continue_single().unwrap();
     let text = match &line {
-        Line::Text { text, .. } => text.clone(),
-        Line::End { text, .. } => text.clone(),
-        Line::Done { text, .. } => text.clone(),
-        Line::Suspended { text, .. } => text.clone(),
-        Line::Choices { .. } => panic!("expected text output, got choices"),
+        Step::Line(line) => line.text.clone(),
+        other => panic!("expected text output, got: {other:?}"),
     };
     eprintln!("got text: {text:?}");
     assert!(
@@ -2105,5 +4298,114 @@ Quiet.
     assert!(
         !visits("plaza"),
         "unmarked, unread knot keeps counting compiled out"
+    );
+}
+
+// ── Native cross-file same-named shadow can never legitimately
+//    compile (issue #1901) ──────────────────────────────────────────────
+//
+// #1901 asked whether `declared_fn_type`'s shadow guard (issue #1895,
+// `crates/internal/brink-analyzer/src/signature.rs`) being an *index-wide*,
+// unscoped check — "does a `Variable`/`Constant`/`ListItem` named `double`
+// exist *anywhere in the project*", not "does one exist in a module this
+// declaration can actually see" — can disagree with
+// `lir::lower::decls::fold_path_ref`'s real, `ImportScope`-aware
+// resolution in a way that is user-visible: an unrelated, non-importing
+// file's same-named global suppressing the typing of a local bare-name fn
+// value that lowering would actually still resolve to the local knot.
+//
+// It cannot, for two independent reasons. First: `lower_native::decl::
+// {lower_var_decl, lower_const_decl, lower_flags_decl}` hard-code
+// `visibility: None` for every native `VAR`/`CONST`/`LIST` — there is no
+// annotation grammar that overrides it (unlike ink's `#@public`/
+// `#@private` tags) — and a native file is unconditionally its own module
+// (`brink_db::modules::native_module_path`, decision-log 2026-07-22:
+// "Native module identity: pure function of the root-relative path;
+// `FileId` never in `DefinitionId`"). So a `VAR`/`CONST`/`LIST` declared
+// in one `.brink` file can *never* be legitimately referenced from
+// another: `modules::check`'s `E087` (private-cross-module) fires
+// unconditionally the moment resolution reaches it — confirmed below,
+// where `unrelated.brink`'s `double` isn't even imported by `main.brink`,
+// yet still poisons the bare-name reference (kind-priority —
+// `Variable`/`Constant`/`ListItem` over `Knot` — is checked project-wide,
+// ahead of module scope) and the whole compile fails on `E087` before
+// `alias`'s type could ever matter.
+//
+// Second, independently of visibility: `resolve::lookup_by_name`'s own
+// `lookup_by_name_direct` fast path (`crates/internal/brink-analyzer/src/
+// resolve.rs:1194`, `if !multiple { return first_match; }`) returns the
+// *sole* candidate of the requested kinds without ever consulting the
+// `ImportScope` — so with `unrelated.brink`'s private `const double`
+// present, a direct call `{double(3)}` still resolves to `main.brink`'s
+// own `fn double` and compiles clean (only the *value* reference
+// `{double}` hits the `Variable`/`Constant`/`ListItem`-over-`Knot`
+// kind-priority ahead of that fast path and errors `E087`). Scoping that
+// fast path for native is a plausible standalone correctness change that
+// would remove this second trigger with no publicity mechanism involved —
+// tracked separately, not attempted here.
+//
+// Every case where the shadow guard's project-wide scan finds a
+// same-named global in a *different* file is exactly the first case
+// above: the compile fails outright, so `Sig::value_ty`'s imprecision
+// (`Unknown` instead of a real resolution) is unobservable — there is no
+// successful `StoryData` for it to be wrong about. Combined with the
+// same-file cases (`native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value`
+// for `Variable`/`Constant` and
+// `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+// for `ListItem`, both above — the latter added after review found the
+// guard's original `ListItem` arm was dead code for a bare-name reference,
+// since list items are indexed under their qualified `List.Item` name and
+// the guard now also runs `lookup_list_item_bare`), this closes #1901's
+// own question empirically: the guard cannot disagree with lowering in
+// any project that compiles.
+//
+// If native `VAR`/`CONST`/`LIST` ever gain a real publicity mechanism, or
+// `lookup_by_name_direct`'s fast path becomes `ImportScope`-aware, this
+// test starts failing (the cross-file reference would newly succeed) —
+// that is the signal to revisit `declared_fn_type` and thread a real
+// resolution map through `signature()`, the fix #1901 itself declined to
+// build pre-emptively.
+#[test]
+fn native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-1901-cross-file-shadow-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("unrelated.brink"),
+        "const double = \"unrelated shadow\"\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    let err = result.expect_err(
+        "an unrelated file's same-named global must never be a legitimate reference target",
+    );
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E087],
+        "expected the cross-module privacy gate alone, got: {diags:?}"
     );
 }

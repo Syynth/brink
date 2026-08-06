@@ -37,7 +37,7 @@ chapter.
 
 > **Current spelling** — examples in this chapter compile in today's brink
 > dialect: collection literals carry the `#[…]`/`#{…}` sigils, type
-> ascriptions spell `array<T>`/`map<K, V>`, mutating verbs are free calls
+> ascriptions spell `Array<T>`/`Map<K, V>`, mutating verbs are free calls
 > (`push(tab, 5)`), and function values are `#fn(name)` references. The
 > ruled native `.brink` spellings — bare `[…]` literals, `Map { k: v }`
 > construction, `[T]`/`[K: V]` type notation, method-position calls with
@@ -144,21 +144,21 @@ refuses. See [Enabling the Dialect](enabling.md).)
 
 Collections are statically homogeneous: one element type per array, one
 key type and one value type per map. In an annotation the spellings are
-`array<T>` and `map<K, V>`; almost everywhere, though, you write nothing
+`Array<T>` and `Map<K, V>`; almost everywhere, though, you write nothing
 and inference reads the literal:
 
-- `#[1, 2, 3]` is an `array<int>`.
-- `#[1, 2.5]` is an `array<float>` — the one implicit numeric promotion
+- `#[1, 2, 3]` is an `Array<int>`.
+- `#[1, 2.5]` is an `Array<float>` — the one implicit numeric promotion
   (`int → float`, see [Values & Types](types.md)) joins elements before
   homogeneity is judged.
-- `#{"Mira": 3}` is a `map<string, int>`.
+- `#{"Mira": 3}` is a `Map<string, int>`.
 
 Elements that *can't* unify make the collection's type `Conflicted`, and
 under strict types (the brink dialect's default) the binding holding it
 fails with `E066` — "`pantry`'s temp `tray` is Conflicted under strict
 types — its uses disagree on its type":
 
-```ink,error
+```ink,error(E066)
 -> pantry
 
 === pantry ===
@@ -168,7 +168,7 @@ types — its uses disagree on its type":
 ```
 
 No annotation fixes a `Conflicted` collection — declaring the tray
-`array<int>` doesn't make `"brandy"` a number. Either the elements agree,
+`Array<int>` doesn't make `"brandy"` a number. Either the elements agree,
 or they were never one collection.
 
 ### The empty-literal rule
@@ -182,7 +182,7 @@ out of evidence and strict mode reports the escape as `E065` —
 "`stock`'s temp `crates` escapes strict inference as Unknown — annotate
 or restructure":
 
-```ink,error
+```ink,error(E065)
 -> stock
 
 === stock ===
@@ -197,7 +197,7 @@ known — use is not ascription. The fix is the one the message names.
 Ascribe the binding, and the literal takes its type from the declaration:
 
 ```ink
-~ temp cellar: array<string> = #[]
+~ temp cellar: Array<string> = #[]
 ~ push(cellar, "amber ale")
 ~ push(cellar, "black cider")
 The cellar ledger holds {len(cellar)} casks: {cellar}.
@@ -301,7 +301,13 @@ that is statically outside the domain (a float, an array, a map) gets a
 compile-time **warning**, `E106` ("map-literal key is outside the
 int/string/bool key domain"); a dynamic key expression that turns out bad
 at runtime is the corresponding turn-terminating construction fault. One
-domain, checked early where visible, enforced at runtime always.
+domain, checked early where visible, enforced at runtime always. The same
+key domain governs `contains(m, needle)`: under `types = strict`, when the
+map and the needle's out-of-domain type are both statically visible,
+`E152` flags the call at compile time — `contains` itself stays total and
+never faults (see [`contains` is total](./stdlib.md#contains-is-total)),
+so `E152` is a warning about a call that's always `false`, not a fault
+report.
 
 Order is worth trusting, because it's guaranteed:
 
@@ -350,12 +356,12 @@ nothing (using one in expression position is `E056`), and a functional
 verb doesn't touch its argument.
 
 **Mutating verbs demand a place, not a value.** The first argument of
-`push`/`insert`/`remove`/`clear`/`sort`/`sort_by` must be an **lvalue** —
+`push`/`insert`/`remove`/`remove_at`/`clear`/`sort`/`sort_by` must be an **lvalue** —
 a variable, temp, or indexed path — because the mutated collection has to
 be written back somewhere. Handing one a temporary is `E055` — "`push`
 mutates its first argument — bind it to a variable first":
 
-```ink,error
+```ink,error(E055)
 ~ push(#["ale"], "cider")
 -> DONE
 ```
@@ -373,10 +379,10 @@ notation (*display notation; `T` is not writable in source*):
 | `contains` | `contains(a: [T], x: T): bool` | element scan (arrays); **key** test on maps |
 | `contains_value` | `contains_value(m: [K: V], v: V): bool` | content-equality scan over values; O(n) and honest about it |
 | `keys` / `values` | `keys(m: [K: V]): [K]` | eager snapshots, insertion order |
-| `index_of` | `index_of(a: [T], x: T): Option[int]` | first match, or `none` |
-| `first` / `last` | `first(a: [T]): Option[T]` | `none` on empty |
-| `min` / `max` | `min(a: [T]): Option[T]` | doctrine order; `none` on empty |
-| `get` | `get(m: [K: V], k: K): Option[V]` | the non-faulting map read |
+| `index_of` | `index_of(a: [T], x: T): Option<int>` | first match, or `none` |
+| `first` / `last` | `first(a: [T]): Option<T>` | `none` on empty |
+| `min` / `max` | `min(a: [T]): Option<T>` | doctrine order; `none` on empty |
+| `get` | `get(m: [K: V], k: K): Option<V>` | the non-faulting map read |
 | `sorted` / `sorted_by` | `sorted(a: [T]): [T]` | functional twins of `sort`/`sort_by` |
 
 And the mutators — statement-only, lvalue-first:
@@ -386,20 +392,32 @@ And the mutators — statement-only, lvalue-first:
 | `push` | `push(a: [T], x: T)` | append |
 | `insert` | `insert(a: [T], i: int, x: T)` | insert at `i`, `0 ≤ i ≤ len` — the one array write allowed to reach the end |
 | `insert` (map) | `insert(m: [K: V], k: K, v: V)` | today's spelling; `m[k] = v` is the ruled one — see below |
-| `remove` | `remove(a: [T], i: int)` | remove at `i`; out of bounds faults |
-| `remove` (map) | `remove(m: [K: V], k: K)` | total — removing an absent key is a no-op |
+| `remove_at` | `remove_at(a: [T], i: int)` | remove at `i`; out of bounds faults |
+| `remove` | `remove(m: [K: V], k: K)` | total — removing an absent key is a no-op |
 | `clear` | `clear(m: [K: V])` | empty in place |
 | `sort` / `sort_by` | `sort(a: [T])` | in-place ordering — next section |
-| `pop` | `pop(a: [T]): Option[T]` | the hybrid: removes *and* returns the last element — the one mutator legal in expression position |
+| `pop` | `pop(a: [T]): Option<T>` | the hybrid: removes *and* returns the last element — the one mutator legal in expression position |
 
 Two postures hiding in that table deserve their doctrine lines:
 
 **A deletion is a wish; an index is a claim.** `remove(m, k)` on an
 absent key is a no-op — you wished the key gone, and gone it is,
-idempotently. `remove(a, i)` out of bounds faults — you claimed an
-element existed at `i`, and it didn't. Same verb name, two honest
-postures, chosen deliberately (the divergence is on the record, not
-accidental).
+idempotently. `remove_at(a, i)` out of bounds faults — you claimed an
+element existed at `i`, and it didn't. Both postures are correct for
+their domain, but they used to share one verb name — `remove` covered
+both, which was an accident, not a decision (issue #1484 caught it:
+nothing about a map-key removal implies an array-index removal, or vice
+versa). The fix is naming, not flattening: `remove_at` joins the `_at`
+faulting-index family with `char_at`, leaving `remove` to mean exactly
+one thing — identity-based, idempotent-total removal (map keys today;
+flags values once flags land). There is no compatibility shim: a
+pre-#1484 `remove(array, i)` call site is `E149` (issue #1532) under
+`types = strict`, the brink dialect's own implicit default, *when the
+receiver's array type is statically known* — provable from its own
+body-local uses (a `temp`/param). A `VAR`-held array has no
+`Array`/`Map` representation in the checker's static typing today, so
+that idiom still faults only at runtime, as `NotIndexable`; under
+`types = gradual`, every case stays a runtime `NotIndexable` fault.
 
 **One spelling per concept, eventually.** Today's dialect ships
 `insert(m, k, v)` as a slice-1 free function, but the ruled native
@@ -417,7 +435,7 @@ the compiler harvests it from the call.
 
 ## When the world doesn't have one
 
-Half the verbs above return `Option[T]`, and the reason is the language's
+Half the verbs above return `Option<T>`, and the reason is the language's
 absence doctrine in one line: **a fault says "your program is wrong";
 `Option` says "the world didn't have one."** An out-of-bounds index is
 the first kind — a bug, surfaced loudly. An empty array's `max`, a search
@@ -425,9 +443,11 @@ that found nothing, a key that was never filed — those are the second
 kind: honest answers to reasonable questions, and they come back as a
 value you can test.
 
-An `Option[T]` is either `some(x)` — the world had one, here it is — or
-`none`. It renders in output exactly as it reads, and you test it with
-explicit equality:
+An `Option<T>` is either `some(x)` — the world had one, here it is — or
+`none`. `some(x)` always renders as `some(x)`; a bare `none` at the
+**final** value of an interpolation renders as nothing at all — absence
+rendering as absence ([Option and Absence](option.md#how-option-prints)
+has the full display rule). You test it with explicit equality:
 
 ```ink
 ~ temp tab = #[4, 7, 2, 5]
@@ -443,19 +463,22 @@ Settled the last entry, {settled} — {len(tab)} remain.
 
 ```text
 Heaviest night on the tab: some(7).
-Edda's room: none. Mira's room: some(3).
+Edda's room: . Mira's room: some(3).
 Settled the last entry, some(5) — 3 remain.
 The seven-coin night is still second in the ledger.
 No Edda on the register tonight.
 ```
 
-Two fences keep the doctrine honest. First, `Option[T]` has **no
+(Edda's room prints nothing, not the word `none` — that's the
+interpolation boundary at work, not a rendering bug.)
+
+Two fences keep the doctrine honest. First, `Option<T>` has **no
 truthiness** — `{first(tab): …}` is not "is there a first element", it is
-a compile error under strict (`E116`: "an `Option[T]` has no truthiness —
+a compile error under strict (`E116`: "an `Option<T>` has no truthiness —
 test `== none` / `== some(x)` explicitly") and a runtime fault under
 gradual:
 
-```ink,error
+```ink,error(E116)
 -> ledger
 
 === ledger ===
@@ -465,12 +488,12 @@ gradual:
 ```
 
 A truthiness test is a quiet coercion of exactly the kind
-`Option[T] ≠ T` exists to ban — it blurs "the world had one" into "the
+`Option<T> ≠ T` exists to ban — it blurs "the world had one" into "the
 value was truthy." Second, a bare `none` carries no element type, so a
 fresh un-annotated `VAR gap = none` is `E107` ("bare `none` needs a type
 from context") — the empty-literal rule again, wearing its Option hat.
 
-`Option[T]` appears in this chapter's signatures and diagnostics but is
+`Option<T>` appears in this chapter's signatures and diagnostics but is
 display notation — you cannot write it in an annotation today. The full
 doctrine — `x or default` coalescing, the display-boundary forgiveness,
 `filter_map` — belongs to the Option chapter of the book's
@@ -545,7 +568,7 @@ comparator `counting` reads tally; writes tally — a comparator must be a
 pure, silent `fn(T, T): int` (stdlib-spec §4b: the order must depend only
 on the two comparands)":
 
-```ink,error
+```ink,error(E119)
 VAR tally = 0
 
 ~ temp order = #[3, 1, 2]
@@ -655,7 +678,7 @@ compile error, and computed bounds pass through the `non_empty(r)`
 validator, which returns `Option` (`E117` is strict mode's enforcement;
 gradual faults at runtime). That story — parse-don't-validate, and every
 draw being an effect — is the Randomness chapter's; iteration in full
-(`for`, and the pure verb trio when it lands) is the Iteration chapter's.
+(`for`, and the fn-value verb family) is the Iteration chapter's.
 
 > **Views — a performance contract, ruled ahead of its verbs.** Slicing
 > verbs (`slice`, `split`, `trim`) haven't landed in the dialect yet, but
@@ -683,9 +706,11 @@ draw being an effect — is the Randomness chapter's; iteration in full
 | `E083` | a declaration default that isn't compile-time constant | both |
 | `E106` | a statically-visible map-literal key outside `int`/`string`/`bool` | both (warning) |
 | `E107` | a bare `none` with no type from context | both |
-| `E116` | an `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
+| `E116` | an `Option<T>` used as a condition — no truthiness | strict (runtime fault under gradual) |
 | `E117` | `int(r)` over a range not proven inhabited | strict (runtime fault under gradual) |
-| `E119` | a `sort_by`/`sorted_by` comparator provably exceeds pure·silent | both |
+| `E119` | a `sort_by`/`sorted_by` comparator — or a `map`/`filter`/`fold` callback — provably exceeds pure·silent | both |
+| `E149` | `remove` on a statically-known array — use `remove_at` | strict (runtime fault under gradual) |
+| `E152` | a statically non-key-domain needle in `contains(m, …)` on a statically-known map | strict (warning; runtime returns `false` under gradual) |
 
 ## Where this is ruled
 
@@ -697,7 +722,7 @@ draw being an effect — is the Randomness chapter's; iteration in full
 - **The Option package and the absence flips** (`find`/`index_of`/
   `get`/`first`/`last`/`min`/`max`/`pop` → `Option`) —
   `docs/stdlib-spec.md` §§1.1/1.4, §§4–5; decision log 2026-07-18
-  ("Option[T] pulled forward"); F27 no-truthiness ruled 2026-07-19.
+  ("Option<T> pulled forward"); F27 no-truthiness ruled 2026-07-19.
 - **Mutation posture and the naming law** (imperative in-place /
   past-participle functional, lvalue receivers) — `docs/stdlib-spec.md`
   §4; decision log 2026-07-18 ("Mutation posture").
@@ -705,6 +730,10 @@ draw being an effect — is the Randomness chapter's; iteration in full
   reserved, remove-total) — `docs/stdlib-spec.md` §5; decision log
   2026-07-18 ("Maps ruled"); order-insensitive equality, decision log
   2026-07-18 ("Map/record equality is insertion-order-insensitive").
+- **The `remove`/`remove_at` split** (seq remove-by-index renamed
+  `remove_at`, `remove` narrowed to identity-based idempotent-total
+  removal) — issue #1484; decision log 2026-07-26 ("Quick-docket
+  closures").
 - **The ordering doctrine and the sort family** (doctrine order, stable
   sort, dev/prod NaN posture, comparator contract) —
   `docs/stdlib-spec.md` §4b; decision log 2026-07-18 ("The ordering

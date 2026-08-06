@@ -187,10 +187,13 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         Value::Projection(p) => format!("ref {}", display_projection_path(p, program)),
         // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): the boring,
         // stable form — `none` / `some(<inner display form>)`, matching the
-        // source-level construction vocabulary. NOTE: the §1.6
-        // display-boundary forgiveness (a final-None interpolation renders
-        // as *nothing*) is Track B4 and deliberately NOT implemented here —
-        // this is the strict-era rendering, total like every other arm.
+        // source-level construction vocabulary. This is the strict, total
+        // rendering used by `string()` and every non-display-boundary
+        // caller (debug formatting, nested Option display, etc.) — never
+        // forgiven. The §1.6b display-boundary forgiveness (a final-None
+        // interpolation renders as *nothing*) is Track B4 and lives in
+        // `stringify_display`, a separate wrapper used only at the
+        // interpolation/template-slot boundary — see its doc comment.
         Value::OptionVal(inner) => match inner {
             None => "none".to_owned(),
             Some(v) => format!("some({})", stringify(v, program)),
@@ -255,6 +258,42 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
             stringify(&Value::Vec4(m.w_axis), program)
         ),
     }
+}
+
+/// Stringify a value at the ink **display boundary**
+/// (`docs/stdlib-spec.md` §1.6b, RULED 2026-07-18, Track B4): the FINAL
+/// value substituted into an interpolation, template slot, or captured
+/// fragment/tag. Delegates to [`stringify`] for everything **except** a
+/// bare `Option[T]` in the `None` state, which renders as *nothing* —
+/// "absence renders as absence," the honest narrative meaning. This
+/// supersedes F28's interim total `none` render (`Some(v)` is unaffected —
+/// still `some(<v>)`, `stringify`'s existing arm).
+///
+/// **Cut by POSITION, not dialect** (§1.6b): nested compositions
+/// (`{mood.first() + 1}`) are never forgiven, because the type checker
+/// already rejects an `Option[T]` used inside further composition
+/// (`Option[T] ≠ T`, strict everywhere but this one boundary — see
+/// `infer/ty.rs`'s `unify`). By the time a value reaches this function it
+/// is always the interpolation's own top-level result — there is no other
+/// way for an `Option` value to survive type-checking into a template slot.
+///
+/// Deliberately **not** used by `string()` (`convert_to_string`, the
+/// `ConvertString` opcode) — F28's ruled totality for that intrinsic is
+/// preserved: `string(none)` still renders `"none"`. Also deliberately not
+/// used by the debug value formatter (`debug.rs`'s `format_value`) — a
+/// developer inspecting story state wants to see `none`, not blank.
+///
+/// **Traceable by construction**: the transcript stores the *raw*
+/// `OutputPart`/`Value`, never eagerly resolved
+/// (`docs/runtime-restructuring-spec.md`'s deferred-resolution model), so a
+/// forgiven `None`-render never loses information — re-reading the
+/// transcript still finds `Value::OptionVal(None)` at that slot, distinct
+/// from a slot that was never populated.
+pub(crate) fn stringify_display(v: &Value, program: &Program) -> String {
+    if matches!(v, Value::OptionVal(None)) {
+        return String::new();
+    }
+    stringify(v, program)
 }
 
 /// Render a projection's `root.field[index]…` path text — no leading `ref `
@@ -681,14 +720,21 @@ pub(crate) fn is_tower(v: &Value) -> bool {
 ///   matching ink's int→float coercion);
 /// - `mat * vec` **transforms** (matching sizes);
 /// - `quat * quat` **composes**; `quat * vec3` **rotates**;
+/// - `mat * mat` **composes** (matching sizes) — F31 partial-b, issue #1145;
+/// - `mat * scalar` **scales** (ints promote, one direction only — see the
+///   arm's own comment) — F31 partial-b, issue #1145;
+/// - `vec / scalar` **scales down** (ints promote, one direction only, IEEE
+///   division so a zero divisor yields `inf`/`nan` lanes rather than a
+///   fault) — F31 partial-b, issue #1145;
 /// - `==`/`!=` on same-kind pairs — componentwise IEEE (T4), delegated to
 ///   `Value`'s `PartialEq`.
 ///
-/// Everything else — ordering ops (T4: the tower is NOT orderable),
-/// division, modulo, logic, cross-kind pairs, tower-vs-scalar equality, and
-/// the un-ruled matrix±matrix / matrix*matrix / matrix-scale forms — is a
-/// turn-terminating `TypeError` fault: the ruled table is the whole
-/// surface; nothing is invented beyond it.
+/// Everything else — ordering ops (T4: the tower is NOT orderable), `vec /
+/// vec`, `mat / *`, `quat * scalar`, modulo, logic, cross-kind pairs,
+/// tower-vs-scalar equality, and the still-un-ruled matrix±matrix form — is a
+/// turn-terminating `TypeError` fault: the ruled table is the whole surface;
+/// nothing is invented beyond it (F31's explicit "every other glam-native
+/// form keeps faulting" clause).
 fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, RuntimeError> {
     use BinaryOp as B;
     // Same-kind structural equality first (componentwise IEEE, T4).
@@ -740,6 +786,14 @@ fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, R
         (B::Multiply, Value::Mat2(m), Value::Vec2(v)) => Ok(Value::Vec2(*m * *v)),
         (B::Multiply, Value::Mat3(m), Value::Vec3(v)) => Ok(Value::Vec3(*m * *v)),
         (B::Multiply, Value::Mat4(m), Value::Vec4(v)) => Ok(Value::Vec4(*m * *v)),
+        // Matrix composition (F31 partial-b, issue #1145): `mat * mat` of
+        // matching size, delegated to glam's own `Mul<Mat*> for Mat*` (which
+        // is composition, not componentwise — matrices don't get the
+        // componentwise `*` vecN/quat have above). Placed before the
+        // catch-all scalar-scale arms below so it isn't shadowed by them.
+        (B::Multiply, Value::Mat2(a), Value::Mat2(b)) => Ok(Value::Mat2(*a * *b)),
+        (B::Multiply, Value::Mat3(a), Value::Mat3(b)) => Ok(Value::Mat3(*a * *b)),
+        (B::Multiply, Value::Mat4(a), Value::Mat4(b)) => Ok(Value::Mat4(*a * *b)),
         // Scalar scale, both orders.
         (B::Multiply, Value::Vec2(a), s) => match scalar(s) {
             Some(f) => Ok(Value::Vec2(*a * f)),
@@ -763,6 +817,46 @@ fn tower_binary_op(op: BinaryOp, left: &Value, right: &Value) -> Result<Value, R
         },
         (B::Multiply, s, Value::Vec4(a)) => match scalar(s) {
             Some(f) => Ok(Value::Vec4(f * *a)),
+            None => fault(),
+        },
+        // Matrix scale (F31 partial-b, issue #1145): `mat * scalar` only —
+        // F31's row is named one direction (unlike the vecN row above, which
+        // the T3 "wholesale" ruling explicitly documents both orders for);
+        // the commuted `scalar * mat` form is left faulting rather than
+        // guessed at, even though glam itself defines it (`Mul<Mat4> for
+        // f32`) — not asked for by the ruling, so not added here. Int
+        // operands promote via the same `scalar` closure used above (ink's
+        // int→float coercion).
+        (B::Multiply, Value::Mat2(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat2(*m * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Mat3(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat3(*m * f)),
+            None => fault(),
+        },
+        (B::Multiply, Value::Mat4(m), s) => match scalar(s) {
+            Some(f) => Ok(Value::Mat4(*m * f)),
+            None => fault(),
+        },
+        // Vector scale-down (F31 partial-b, issue #1145): `vec / scalar`
+        // only — no `scalar / vec` (not asked for; glam itself doesn't treat
+        // that as the same operation shape), no `vec / vec` (stays faulting
+        // per F31's explicit list). IEEE float division, NOT a
+        // `RuntimeError::DivisionByZero` fault: a zero divisor produces
+        // `inf`/`nan` lanes and flows, exactly like the scalar `Divide` arm
+        // in `float_op` above (T4's NaN-totality) — division by the tower's
+        // zero vector/matrix stays unruled and faults via the catch-all.
+        (B::Divide, Value::Vec2(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec2(*a / f)),
+            None => fault(),
+        },
+        (B::Divide, Value::Vec3(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec3(*a / f)),
+            None => fault(),
+        },
+        (B::Divide, Value::Vec4(a), s) => match scalar(s) {
+            Some(f) => Ok(Value::Vec4(*a / f)),
             None => fault(),
         },
         _ => fault(),
@@ -929,6 +1023,48 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
     ListValue {
         items,
         origins: lv.origins.clone(),
+    }
+}
+
+/// `or`-coalescing's branch test (`docs/stdlib-spec.md` §1.6a, issue #1460;
+/// short-circuited per issue #1471's ruling), backing
+/// `Opcode::CoalesceSome`.
+///
+/// `val` — the already-popped `lhs` — must be `Value::OptionVal`. Note this
+/// is a *runtime* check, not a statically-guaranteed invariant: native's
+/// strict-only wiring (B0.10) has not landed
+/// (`brink-analyzer::strict::native_strict_only_error`'s own doc), so a
+/// native compile with an un-overridden default `types` policy runs zero
+/// strict-mode checks — `brink_analyzer::coalesce::check`'s `E066` (review
+/// finding on PR #1469/#1460) only fires when a caller has explicitly set
+/// `types = strict`. A non-Option `lhs` reaching here can therefore be an
+/// un-caught author mistake, not only malformed bytecode; it faults rather
+/// than guessing either way. That fault is the whole of the gradual-mode
+/// posture ruled on issue #1492: with an unpinned left-hand type, **this
+/// check is the operator's semantics** — an Option coalesces, a plain value
+/// faults.
+///
+/// `Ok(Some(v))` (`some(v)`, unwrapped) tells the caller to push `v` and
+/// take the jump — `rhs`'s bytecode is skipped entirely, the short-circuit
+/// itself. `Ok(None)` (`none`) tells the caller to push nothing and fall
+/// through to evaluate `rhs`; this function is never even told what `rhs`
+/// is. Which typing form applies — `(Option[T],T)->T` (collapse, `v` stands
+/// unwrapped) vs `(Option[T],Option[T])->Option[U]` (preserve, re-wrapped by
+/// a `MakeSome` at the join) — is no longer decided here: short-circuiting
+/// means `rhs` may never run by the time a `some(_)` `lhs` needs the answer,
+/// so that decision moved to lowering time, where it is read off the
+/// analyzer's recorded types (`brink_ir::lir::CoalesceShape`) rather than
+/// off any runtime value. See `Opcode::CoalesceSome`'s own doc.
+pub(crate) fn coalesce_unwrap_some(val: Value) -> Result<Option<Value>, RuntimeError> {
+    match val {
+        Value::OptionVal(Some(inner)) => Ok(Some(
+            Arc::try_unwrap(inner).unwrap_or_else(|shared| (*shared).clone()),
+        )),
+        Value::OptionVal(None) => Ok(None),
+        other => Err(RuntimeError::TypeError(format!(
+            "or-coalescing requires an Option left-hand side, got {:?}",
+            other.value_type()
+        ))),
     }
 }
 
@@ -1321,12 +1457,30 @@ mod tests {
 
     #[test]
     fn option_display_forms_are_pinned() {
-        // F28 (ruled 2026-07-19): `none`/`some(…)` render *totally* in
-        // display until B4's boundary forgiveness arrives with the native
-        // surface.
+        // F28 (ruled 2026-07-19): `stringify` itself (the `string()`
+        // intrinsic's path) renders `none`/`some(…)` *totally* — never
+        // forgiven. The §1.6b display-boundary forgiveness lives only in
+        // `stringify_display` (below), a separate wrapper used at the
+        // interpolation/template-slot boundary.
         let program = dummy_program();
         assert_eq!(stringify(&Value::none(), &program), "none");
         assert_eq!(stringify(&Value::some(Value::Int(3)), &program), "some(3)");
+    }
+
+    #[test]
+    fn display_boundary_forgives_a_final_none_but_not_string() {
+        // §1.6b / Track B4: a final-`None` value forgives to nothing at
+        // the display boundary; `Some(v)` and every other value still
+        // delegate to `stringify` unchanged, and `string()`'s totality
+        // (the plain `stringify` path, asserted above) is untouched by
+        // this wrapper's existence.
+        let program = dummy_program();
+        assert_eq!(stringify_display(&Value::none(), &program), "");
+        assert_eq!(
+            stringify_display(&Value::some(Value::Int(3)), &program),
+            "some(3)"
+        );
+        assert_eq!(stringify_display(&Value::Int(42), &program), "42");
     }
 
     #[test]
@@ -1360,6 +1514,40 @@ mod tests {
             is_truthy(&Value::some(Value::Bool(true))),
             Err(RuntimeError::OptionTruthiness)
         );
+    }
+
+    /// B1 `or`-coalescing's branch test (`docs/stdlib-spec.md` §1.6a, issue
+    /// #1460; short-circuited per issue #1471): `some(v)` unwraps to
+    /// `Some(v)`, which tells the VM to push `v` and jump — `rhs` is never
+    /// evaluated. Whether that `v` is then re-wrapped (the two-Option form)
+    /// is codegen's call, from the analyzer's recorded types, not this
+    /// function's.
+    #[test]
+    fn coalesce_unwrap_some_unwraps_some() {
+        assert_eq!(
+            coalesce_unwrap_some(Value::some(Value::Int(1))),
+            Ok(Some(Value::Int(1)))
+        );
+    }
+
+    /// `none` is `Ok(None)`: push nothing, fall through, and let the `rhs`
+    /// bytecode that codegen emitted right after the opcode run. This
+    /// function is never even told what `rhs` is.
+    #[test]
+    fn coalesce_unwrap_some_none_is_a_no_op() {
+        assert_eq!(coalesce_unwrap_some(Value::none()), Ok(None));
+    }
+
+    /// A non-Option left-hand side faults rather than guessing — the same
+    /// "your program is wrong" doctrine as every other malformed-question
+    /// fault in this module, and (issue #1492's ruling) the *whole*
+    /// semantics of the operator when the left-hand type could not be
+    /// statically pinned: `CoalesceShape::RuntimeCheck` leans on exactly
+    /// this check.
+    #[test]
+    fn coalesce_unwrap_some_non_option_lhs_faults() {
+        let err = coalesce_unwrap_some(Value::Int(1)).unwrap_err();
+        assert!(matches!(err, RuntimeError::TypeError(_)), "{err:?}");
     }
 
     #[test]
@@ -2493,7 +2681,7 @@ mod tower_tests {
     use super::*;
     use crate::program::{LinkedContainer, Program};
     use brink_format::{DefinitionId, DefinitionTag};
-    use glam::{Mat2, Mat3, Quat, Vec2, Vec3};
+    use glam::{Mat2, Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
     use std::collections::HashMap;
 
     fn dummy_program() -> Program {
@@ -2538,6 +2726,10 @@ mod tower_tests {
 
     fn v3(x: f32, y: f32, z: f32) -> Value {
         Value::Vec3(Vec3::new(x, y, z))
+    }
+
+    fn v4(x: f32, y: f32, z: f32, w: f32) -> Value {
+        Value::Vec4(Vec4::new(x, y, z, w))
     }
 
     // ── T3: the ruled operator table, semantics per glam ─────────────
@@ -2594,15 +2786,36 @@ mod tower_tests {
     #[test]
     fn unruled_tower_ops_fault_not_coerce() {
         let p = dummy_program();
-        // Cross-size arithmetic, division, ordering, mat*mat: all faults.
+        // Cross-size arithmetic, ordering, and every glam-native form F31
+        // (issue #1145) did NOT rule in still fault — only `mat * mat`,
+        // `mat * scalar` (one direction), and `vec / scalar` (one direction)
+        // became implemented rows; `mat ± mat`, `quat * scalar`, `vec /
+        // vec`, `scalar / vec`, and `scalar * mat` are deliberately still
+        // unruled.
         for (op, l, r) in [
             (BinaryOp::Add, v2(1.0, 2.0), v3(1.0, 2.0, 3.0)),
-            (BinaryOp::Divide, v2(1.0, 2.0), Value::Float(2.0)),
+            (BinaryOp::Divide, v2(1.0, 2.0), v2(1.0, 2.0)),
+            (BinaryOp::Divide, Value::Float(2.0), v2(1.0, 2.0)),
             (BinaryOp::Less, v2(1.0, 2.0), v2(3.0, 4.0)),
             (BinaryOp::Greater, v3(1.0, 2.0, 3.0), v3(1.0, 2.0, 3.0)),
             (
-                BinaryOp::Multiply,
+                BinaryOp::Add,
                 Value::Mat3(Mat3::IDENTITY),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (
+                BinaryOp::Subtract,
+                Value::Mat3(Mat3::IDENTITY),
+                Value::Mat3(Mat3::IDENTITY),
+            ),
+            (
+                BinaryOp::Multiply,
+                Value::Quat(Quat::IDENTITY),
+                Value::Float(2.0),
+            ),
+            (
+                BinaryOp::Multiply,
+                Value::Float(2.0),
                 Value::Mat3(Mat3::IDENTITY),
             ),
             (BinaryOp::Add, v2(1.0, 2.0), Value::Float(1.0)),
@@ -2610,6 +2823,142 @@ mod tower_tests {
             let err = binary_op(op, &l, &r, &p).unwrap_err();
             assert!(matches!(err, RuntimeError::TypeError(_)), "{op:?}: {err:?}");
         }
+    }
+
+    // ── F31 partial-b (issue #1145): the three newly-implemented rows ──
+
+    #[test]
+    fn mat_mat_composes() {
+        let p = dummy_program();
+        let a2 = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(-1.0, 0.0));
+        let b2 = Mat2::from_cols(Vec2::new(2.0, 0.0), Vec2::new(0.0, 2.0));
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(a2), &Value::Mat2(b2), &p).unwrap(),
+            Value::Mat2(a2 * b2)
+        );
+
+        let a3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        let b3 = Mat3::IDENTITY;
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(a3), &Value::Mat3(b3), &p).unwrap(),
+            Value::Mat3(a3 * b3)
+        );
+
+        let a4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        let b4 = Mat4::IDENTITY;
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(a4), &Value::Mat4(b4), &p).unwrap(),
+            Value::Mat4(a4 * b4)
+        );
+    }
+
+    #[test]
+    fn mat_scalar_scales_one_direction_with_int_promotion() {
+        let p = dummy_program();
+        let m = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Float(2.0), &p).unwrap(),
+            Value::Mat2(m * 2.0)
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat2(m), &Value::Int(3), &p).unwrap(),
+            Value::Mat2(m * 3.0)
+        );
+        // `Mul<f32>` is a separate glam impl per matrix type — exercise
+        // Mat3 and Mat4 too, since they share no code path with Mat2's arm.
+        let m3 = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat3(m3), &Value::Float(3.0), &p).unwrap(),
+            Value::Mat3(m3 * 3.0)
+        );
+        let m4 = Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 3.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Multiply, &Value::Mat4(m4), &Value::Int(2), &p).unwrap(),
+            Value::Mat4(m4 * 2.0)
+        );
+        // F31 named only "mat * scalar" — the commuted `scalar * mat` form
+        // (which glam itself defines) is deliberately not added here; still
+        // faults.
+        let err =
+            binary_op(BinaryOp::Multiply, &Value::Float(2.0), &Value::Mat2(m), &p).unwrap_err();
+        assert!(matches!(err, RuntimeError::TypeError(_)));
+    }
+
+    #[test]
+    fn vec_scalar_divides_one_direction_with_int_promotion() {
+        let p = dummy_program();
+        assert_eq!(
+            binary_op(BinaryOp::Divide, &v2(4.0, 8.0), &Value::Float(2.0), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        // int operand promotes like ink's int->float coercion.
+        assert_eq!(
+            binary_op(BinaryOp::Divide, &v2(4.0, 8.0), &Value::Int(2), &p).unwrap(),
+            v2(2.0, 4.0)
+        );
+        assert_eq!(
+            binary_op(
+                BinaryOp::Divide,
+                &v3(4.0, 8.0, 12.0),
+                &Value::Float(4.0),
+                &p
+            )
+            .unwrap(),
+            v3(1.0, 2.0, 3.0)
+        );
+        assert_eq!(
+            binary_op(
+                BinaryOp::Divide,
+                &v4(4.0, 8.0, 12.0, 16.0),
+                &Value::Float(4.0),
+                &p
+            )
+            .unwrap(),
+            v4(1.0, 2.0, 3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn vec_divide_by_zero_is_ieee_not_a_fault() {
+        // T4: division by zero yields inf/nan lanes, exactly like bare float
+        // division (`float_op`'s `Divide` arm) — NOT `RuntimeError::DivisionByZero`.
+        let p = dummy_program();
+        let got = binary_op(BinaryOp::Divide, &v2(1.0, -1.0), &Value::Float(0.0), &p).unwrap();
+        assert!(
+            matches!(
+                &got,
+                Value::Vec2(r)
+                    if r.x.is_infinite() && r.x.is_sign_positive()
+                        && r.y.is_infinite() && r.y.is_sign_negative()
+            ),
+            "{got:?}"
+        );
+        let zero_over_zero =
+            binary_op(BinaryOp::Divide, &v2(0.0, 0.0), &Value::Float(0.0), &p).unwrap();
+        assert!(
+            matches!(&zero_over_zero, Value::Vec2(r) if r.x.is_nan() && r.y.is_nan()),
+            "{zero_over_zero:?}"
+        );
     }
 
     // ── T4: componentwise IEEE equality; NOT orderable ───────────────
@@ -2659,8 +3008,11 @@ mod tower_tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: crate::story::ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
+            next_block_id: 0,
+            pending_terminal: crate::story::PendingTerminal::default(),
         };
         flow.value_stack
             .push(Value::array(vec![v2(1.0, 2.0), v2(3.0, 4.0)]));

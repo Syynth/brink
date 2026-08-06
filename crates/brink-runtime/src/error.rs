@@ -4,6 +4,70 @@ use alloc::string::String;
 
 use brink_format::{DecodeError, DefinitionId};
 
+/// Why execution ran out of content — the call-stack shape C#'s
+/// `Story.Continue()` inspects to pick one of four messages (`Story.cs`,
+/// the `AddError` calls guarding the "ran out of content" branch: it checks
+/// `callStack.CanPop(PushPopType.Tunnel)`, then `.CanPop(PushPopType.Function)`,
+/// then `!callStack.canPop`, with a final backstop for none of the above).
+///
+/// Classified the moment a frame's content is discovered exhausted
+/// (`vm::handle_frame_exhaustion`, the same instant C# reads
+/// `callStack.CanPop`), but only *stashed* on `Flow` — for the *next*
+/// `continue_single` call to raise as the deferred fault (issue #1574 ruled
+/// the deferred timing stays — this only changes which cause is attached,
+/// not *when* the fault fires) — on the paths where this exhaustion is
+/// itself the terminal one (`vm::Stepped::Done`). A frame whose exhaustion
+/// instead resumes execution (a completed thread with a parent to fall back
+/// to, a popped frame with content still below it) never writes its cause:
+/// otherwise a transient exhaustion elsewhere on the same flow (e.g. a
+/// `Story::call_function` boundary evaluating a function that calls a void
+/// helper) would clobber a cause an earlier, still-pending exhaustion had
+/// already recorded, and a later, unrelated `Done` would read it stale. It
+/// has to be classified that early rather than read fresh at fault time:
+/// unlike C#, this runtime's own exhaustion recovery always pops the
+/// exhausted frame (even a Tunnel with nothing pending), so by the time the
+/// deferred fault fires the frame that triggered it is usually long gone
+/// from the call stack.
+///
+/// In practice, only [`Plain`](Self::Plain) is reachable through any story
+/// today: a Tunnel or Function frame's exhaustion classifies correctly at
+/// the instant it happens, but this runtime's frame-popping (unlike C#'s)
+/// keeps unwinding past it instead of stopping there — cascading all the
+/// way to the root frame's own exhaustion, which is the one that actually
+/// produces the terminal `Done` and gets its `Plain` cause stashed, before
+/// the fault ever surfaces. Making the other three arms reachable needs a
+/// separate, deliberate fix to that popping behavior — tracked in #2005.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, thiserror::Error)]
+pub enum RanOutOfContentCause {
+    /// The top call-stack frame is a tunnel (`->t->`) — content ran out
+    /// mid-tunnel with no `->->` to return. Mirrors
+    /// `callStack.CanPop(PushPopType.Tunnel)`.
+    #[error("unexpectedly reached end of content. Do you need a '->->' to return from a tunnel?")]
+    Tunnel,
+    /// The top call-stack frame is a function call — content ran out
+    /// mid-function with no `~ return`. Mirrors
+    /// `callStack.CanPop(PushPopType.Function)`.
+    #[error("unexpectedly reached end of content. Do you need a '~ return'?")]
+    Function,
+    /// The call stack can't pop at all (only the root frame remains) — the
+    /// plain "story fell off the end" case, and the default when nothing
+    /// more specific was ever recorded. Mirrors `!callStack.canPop`.
+    #[default]
+    #[error("ran out of content. Do you need a '-> DONE' or '-> END'?")]
+    Plain,
+    /// The call stack can still pop, but the exhausted frame that produced
+    /// the terminal `Done` is neither a tunnel nor a function — e.g. a
+    /// `Thread` boundary with no parent thread left to fall back to, or a
+    /// `FunctionEvalFromGame` boundary that is itself the last frame
+    /// standing. C#'s backstop for a call-stack shape well-formed compiler
+    /// output should never produce; an *ordinary* `<- thread` completing
+    /// (a `Thread` frame exhausting with a parent thread still waiting)
+    /// never reaches this arm — that path resumes via `ThreadCompleted` and
+    /// records no cause at all.
+    #[error("unexpectedly reached end of content for unknown reason. Please debug compiler!")]
+    Unknown,
+}
+
 /// Errors that can occur during story linking or execution.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum RuntimeError {
@@ -58,8 +122,8 @@ pub enum RuntimeError {
     #[error("flow already exists: {0}")]
     FlowAlreadyExists(String),
 
-    #[error("ran out of content. Do you need a '-> DONE' or '-> END'?")]
-    RanOutOfContent,
+    #[error("{0}")]
+    RanOutOfContent(RanOutOfContentCause),
 
     #[error("step limit exceeded ({0} steps)")]
     StepLimitExceeded(u64),
@@ -356,16 +420,79 @@ pub enum RuntimeError {
         verb: &'static str,
         found: &'static str,
     },
-    /// A `sort_by`/`sorted_by` comparator broke the pure·silent contract in
-    /// a way the VM can observe: it presented a choice, reached
+    /// A fn-value verb (`map`/`filter`/`fold`/`filter_map`/`each`/
+    /// `map_each` — `docs/stdlib-spec.md` §4, issue #1679) was handed a
+    /// callback that is not a function value (`FnRef`/`Closure`). Malformed
+    /// question — turn-terminating, pure or effectful alike. Distinct from
+    /// [`ComparatorNotAFunction`](Self::ComparatorNotAFunction) because each
+    /// verb names its own expected shape.
+    #[error("`{verb}` callback must be a function value {expected}, got {found}")]
+    CallbackNotAFunction {
+        verb: &'static str,
+        /// The callback's declared shape, already back-quoted for the
+        /// message (e.g. `` `fn(T): bool` ``).
+        expected: &'static str,
+        found: &'static str,
+    },
+    /// A fn-value verb's callback returned a value of the wrong shape —
+    /// `filter`, whose predicate must return a bool, and `filter_map`,
+    /// whose Option-mapper must return an `Option`. Coercing truthiness or
+    /// unwrapping a non-Option here would silently change which elements
+    /// survive, so this is turn-terminating.
+    #[error("`{verb}` callback must return {expected}, got {found}")]
+    CallbackReturnType {
+        verb: &'static str,
+        expected: &'static str,
+        found: &'static str,
+    },
+    /// A `sort_by`/`sorted_by` comparator, or a fn-value verb's callback
+    /// (issue #1679, pure quartet and effectful pair alike), broke a
+    /// contract the VM can observe: it presented a choice, reached
     /// `-> DONE`/`-> END`, called an external function, exceeded the
     /// nested-evaluation step budget, or recursed past the nesting depth
-    /// limit. The checker enforces the contract statically where the
-    /// comparator's origin is provable (E119); this is the gradual-mode
-    /// runtime residual.
-    #[error("`{verb}` comparator {what} — comparators must be pure, silent functions")]
+    /// limit. These four are architectural — no handler exists mid-opcode —
+    /// so they fire for `each`/`map_each` exactly as for the pure quartet;
+    /// being effectful widens what a callback may *do*, not what the VM can
+    /// honor mid-op. The checker enforces the pure·silent half of the
+    /// contract statically where the callee's origin is provable (E119,
+    /// pure quartet only); this fault is the gradual-mode runtime residual
+    /// either way. `role` names the shape the *author* wrote —
+    /// `"comparator"` for `sort_by`/`sorted_by`, `"callback"` for every
+    /// fn-value verb (`callback_role`) — so a `map`/`each`/… author is
+    /// never told they wrote a bad comparator.
+    #[error("`{verb}` {role} {what} — {role}s must be pure, silent functions")]
     ComparatorEscaped {
         verb: &'static str,
+        role: &'static str,
+        what: &'static str,
+    },
+    /// DEV mode only (F34, ruled 2026-07-19): a `sort_by`/`sorted_by`
+    /// comparator, or a **pure** fn-value verb's callback
+    /// (`map`/`filter`/`fold`/`filter_map`, issue #1679), performed a
+    /// world-write mid-evaluation — assigned a global (directly, or through
+    /// a `ref`-parameter pointer / path projection) or advanced the RNG
+    /// cell (a draw IS a write: a random comparator/callback is exactly the
+    /// non-determinism the pure·silent contract bans). PROD mode skips the
+    /// check entirely and the write executes — defined and deterministic,
+    /// because the stable merge-sort's comparison sequence is fixed and the
+    /// fn-value verbs walk their array in iteration order (the mode changes
+    /// WHERE execution stops, never WHAT is produced). Visit-count
+    /// increments from the callee's own invocation are NOT world-writes —
+    /// they are the ruled in-story dispatch semantics and stay exempt.
+    /// Reads are not guarded at runtime (E119's static bound owns the read
+    /// posture, where E119 gates at all). `role` is the same author-facing
+    /// noun as [`ComparatorEscaped`](Self::ComparatorEscaped); like it,
+    /// this is the gradual-mode runtime residual of the E119 gate. **Never
+    /// fires for the effectful pair** (`each`/`map_each`, issue #1679 slice
+    /// 2, in either mode): world-writes are exactly what they exist to
+    /// permit — see `vm::guard_comparator_write`.
+    #[error(
+        "`{verb}` {role} {what} — {role}s must be pure, silent functions (dev-mode fault; prod \
+         mode executes the write)"
+    )]
+    ComparatorWroteState {
+        verb: &'static str,
+        role: &'static str,
         what: &'static str,
     },
 
@@ -376,10 +503,27 @@ pub enum RuntimeError {
     /// truthiness — truthiness is a quiet coercion of exactly the kind
     /// `Option[T] ≠ T` exists to ban — so this is the gradual-mode
     /// turn-terminating fault; `types = strict` reports the same condition
-    /// statically (E116). Authors write `== none` / `== some(x)` (or, post-B1,
-    /// the `as`-binding). Supersedes NS-A1's shipped falsy-none behavior.
+    /// statically (E116). Authors write `== none` / `== some(x)`, or the
+    /// `as`-binding (B1b, issue #1475 — see [`Self::AsBindingNotOption`],
+    /// its own fault). Supersedes NS-A1's shipped falsy-none behavior.
     #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
     OptionTruthiness,
+
+    // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26, issue
+    // #1475) ─────────────────────────────────────────────────────────────
+    /// `Opcode::OptionBind` received a non-`Option` operand — `if EXPR as
+    /// name { … }` where `EXPR` does not evaluate to an `Option[T]`. The
+    /// binding's whole job is to unwrap `Option[T]` to `T`, so there is
+    /// nothing to bind. This is the gradual-mode residual of the checker's
+    /// strict-mode `E147` (the same statically/dynamically paired posture
+    /// [`Self::OptionTruthiness`] has with `E116`); on the native surface,
+    /// which is strict-only, `E147` catches every statically classifiable
+    /// case first and this fault is the backstop for the rest.
+    #[error("the `as` binding requires an Option, got {found}")]
+    AsBindingNotOption {
+        /// The offending operand's runtime type name (`vm::value_type_name`).
+        found: &'static str,
+    },
 
     // ── NS-A5: the inhabited-range refinement (`docs/stdlib-spec.md` §7,
     // F8 ruled 2026-07-19) ────────────────────────────────────────────────

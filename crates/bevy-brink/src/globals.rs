@@ -78,22 +78,29 @@
 //! declares is dropped and named in
 //! [`LoadReport::unknown_globals`](brink_runtime::LoadReport::unknown_globals)
 //! so the host can surface it (e.g. after a story patch that renamed or
-//! removed a `VAR`); saved visit/turn counts for scopes the program no
-//! longer has are retained harmlessly rather than reported. See
-//! [`brink_runtime::load_state`]'s docs for the full reconciliation
-//! semantics, including the one behavioral note worth restating here: a
-//! stale saved entry (a global/scope the *current* program lacks) is not
-//! re-emitted by a later save — [`brink_runtime::save_state`] enumerates
-//! the current program's own globals/containers, not whatever the live
-//! context happens to hold — so ghost entries from an old program version
-//! don't round-trip through save after save indefinitely.
+//! removed a `VAR`); saved visit/turn counts for a **named** scope the
+//! program no longer has are retained harmlessly rather than reported. A
+//! saved **anonymous** scope's entry (no author label — a gather, choice
+//! point, or sequence) that no longer resolves is different: it can never
+//! be recovered the way a named miss sometimes can, so it is counted in
+//! [`LoadReport::anonymous_states_dropped`](brink_runtime::LoadReport::anonymous_states_dropped)
+//! instead (issue #1674) — the bounded fallout is a once-only choice
+//! reappearing or a sequence restarting. See [`brink_runtime::load_state`]'s
+//! docs for the full reconciliation semantics, including the one
+//! behavioral note worth restating here: a stale saved entry (a
+//! global/scope the *current* program lacks) is not re-emitted by a later
+//! save — [`brink_runtime::save_state`] enumerates the current program's
+//! own globals/containers, not whatever the live context happens to hold —
+//! so ghost entries from an old program version don't round-trip through
+//! save after save indefinitely.
 
 use std::marker::PhantomData;
 
 use bevy_ecs::component::Component;
 use bevy_ecs::resource::Resource;
 use brink_runtime::{
-    ContextAccess, ContextView, FlowLocal, LoadReport, Program, SaveState, World, WorldPolicy,
+    ContextAccess, ContextView, ExecMode, FlowLocal, LoadReport, Program, SaveState, World,
+    WorldPolicy,
 };
 
 /// The single shared [`World`] for a story identified by marker `M`.
@@ -239,6 +246,47 @@ impl<M: Send + Sync + 'static> BrinkWorldPolicy<M> {
             policy,
             _marker: PhantomData,
         }
+    }
+}
+
+/// The host-selected [`ExecMode`] every flow of marker `M` starts in
+/// (F35, ruled 2026-07-19).
+///
+/// Inserted once by [`BrinkPlugin::build`](crate::BrinkPlugin) and applied
+/// to each [`FlowInstance`](brink_runtime::FlowInstance) at spawn by
+/// `fulfill_flow_requests`. Unlike core `brink-runtime` — whose
+/// [`ExecMode::default`] is always [`Dev`](ExecMode::Dev) — bevy-brink's
+/// default keys off the build profile: `Dev` under `debug_assertions`
+/// (editor / `cargo run`), `Prod` in a release build (`cargo build
+/// --release`), so a shipped game defaults to the keep-moving posture and
+/// an in-editor session to the fault-loud one. A host overrides either way
+/// with [`BrinkPlugin::with_exec_mode`](crate::BrinkPlugin::with_exec_mode).
+#[derive(Resource, Clone, Copy)]
+pub struct BrinkExecMode<M: Send + Sync + 'static = ()> {
+    pub mode: ExecMode,
+    _marker: PhantomData<fn() -> M>,
+}
+
+impl<M: Send + Sync + 'static> BrinkExecMode<M> {
+    #[must_use]
+    pub(crate) fn new(mode: ExecMode) -> Self {
+        Self {
+            mode,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<M: Send + Sync + 'static> Default for BrinkExecMode<M> {
+    /// The profile-keyed default (F35): `Dev` under `debug_assertions`,
+    /// `Prod` otherwise. This is the one place bevy-brink diverges from the
+    /// core runtime's always-`Dev` [`ExecMode::default`].
+    fn default() -> Self {
+        Self::new(if cfg!(debug_assertions) {
+            ExecMode::Dev
+        } else {
+            ExecMode::Prod
+        })
     }
 }
 

@@ -255,11 +255,11 @@ impl Program {
     ///
     /// Public (T1d-3, `docs/t1d-spec.md` §4): a host minting a
     /// [`brink_format::Value::Handle`] from a binding (e.g. `spawn_timer()`
-    /// returning a fresh `handle<Timer>`) needs the compiled program's
+    /// returning a fresh `Handle<Timer>`) needs the compiled program's
     /// `NameId` for the manifest-declared kind name (`"Timer"`) to build the
     /// token — the wire form carries only the interned id, never the string.
     /// `None` means this compile never interned that name (e.g. no
-    /// `handle<Timer>`-typed signature or annotation anywhere in the source
+    /// `Handle<Timer>`-typed signature or annotation anywhere in the source
     /// graph), so no token of that kind can be minted against this program.
     /// Linear scan, same cost class as [`global_index`](Self::global_index).
     #[must_use]
@@ -295,10 +295,14 @@ impl Program {
     /// knot/stitch scope paths only. Use this to spawn flows at named entry
     /// points:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # fn example(program: &brink_runtime::Program) {
+    /// use brink_runtime::FlowInstance;
+    ///
     /// if let Some((idx, _)) = program.find_address("intro_scene") {
     ///     let (flow, ctx) = FlowInstance::new_at(program, idx);
     /// }
+    /// # }
     /// ```
     #[must_use]
     pub fn find_address(&self, path: &str) -> Option<(u32, usize)> {
@@ -442,6 +446,20 @@ impl Program {
     // host-facing variable-introspection set used by `Story::variable`/
     // `set_variable` and consumers like the RMMZ var↔switch mapping. They were
     // previously `testing`-gated; promoted to public per the State View plan.
+
+    /// Resolve a global cell's `DefinitionId` to its slot index — the
+    /// numbering [`ContextAccess::set_global`](crate::ContextAccess) and
+    /// [`Self::global_index`] use.
+    ///
+    /// Public because effect rows (`brink_format::DirectEffects::reads` /
+    /// `writes`) name global cells by `DefinitionId` while the runtime's
+    /// world writes are keyed by slot: a host consuming rows for scheduling
+    /// (bevy-brink's row-directed wake dirtying, issue #1146) needs exactly
+    /// this bridge. `None` for an id this program declares no global for
+    /// (a stale row, a `VAR` removed by a story patch).
+    pub fn global_slot(&self, id: DefinitionId) -> Option<u32> {
+        self.resolve_global(id)
+    }
 
     /// Resolve a global slot index to its variable name.
     pub fn global_name(&self, idx: u32) -> Option<&str> {

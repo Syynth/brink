@@ -99,6 +99,72 @@ fn compile_walks_up_from_entry_to_find_brink_toml() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression for issue #1413: `native_source_root`'s walk-up is purely
+/// *lexical* (`Path::parent`) — for a relative `entry_dir` that bottoms out
+/// at the process's cwd (`""`), with no way to synthesize a `".."` to keep
+/// climbing, unlike an absolute `entry_dir`, whose `Path::parent` chain
+/// walks all the way to the filesystem root for free. So `brink compile
+/// story.ink`, run from a cwd one directory *below* the true project root
+/// (`brink.toml` lives in cwd's *parent*, not in cwd itself), used to miss
+/// the config and mis-root at cwd — the entry failed to compile (two bogus
+/// E051 dialect errors) even though the identical absolute-path entry (or a
+/// bare entry with an extra path component reaching the same directory)
+/// resolved correctly. `.current_dir(&sub)` + a bare relative entry
+/// reproduces that exact scenario end-to-end, mirroring the `brink ide`
+/// regression test #1403/PR #1412 added for the sibling bug.
+#[test]
+fn compile_finds_brink_toml_above_a_bare_relative_entrys_cwd() {
+    let dir = project_dir("compile-config-above-cwd");
+    let sub = dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    write_story(&sub, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&sub)
+        .args(["compile", "story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare relative entry must still discover a brink.toml above the \
+         process's cwd, exactly like the absolute-path form: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Companion for the case issue #1413 names literally: `brink.toml` sitting
+/// *beside* a bare, single-component relative entry, directly in the
+/// process's cwd (not above it). This shape already resolved correctly
+/// before the #1413 fix (the fast relative-walk path finds it on its first
+/// probe), but had no CLI-level `.current_dir()` coverage — every existing
+/// `compile_*` test above passes an absolute entry path, which sidesteps
+/// `native_source_root`'s cwd-relative walk entirely. Pins it explicitly so
+/// a future regression here is caught the same way #1413 itself was.
+#[test]
+fn compile_finds_brink_toml_beside_a_bare_relative_entry_in_cwd() {
+    let dir = project_dir("compile-config-beside-bare-entry");
+    write_story(&dir, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&dir)
+        .args(["compile", "story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare relative entry must discover a brink.toml beside it in cwd: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn compile_explicit_flag_overrides_brink_toml() {
     let dir = project_dir("compile-config-override");
@@ -127,10 +193,249 @@ fn compile_unknown_config_key_is_a_warning_not_a_compile_failure() {
     let story = write_story(&dir, "Hello.\n-> END\n");
     write_config(&dir, "[project]\nfuture_key = \"x\"\n");
 
-    let out = brink().arg("compile").arg(&story).output().unwrap();
+    // `tracing_subscriber::fmt()`'s default `EnvFilter` (no `RUST_LOG` set)
+    // only lets `ERROR` through, so the `tracing::warn!` channel
+    // (`resolve_options` in brink-environment) needs `RUST_LOG=warn`
+    // explicitly to reach stdout — confirmed by direct invocation.
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "an unrecognized brink.toml key must warn, not fail compilation: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // #1384: the `tracing::warn!` channel (`resolve_options`'s
+    // `[{config_key}] {warning}`) must name the file, not just the bare
+    // warning text — the CLI-error and LSP-diagnostic channels already had
+    // end-to-end coverage; this one didn't.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("brink.toml"),
+        "unknown-key warning must name brink.toml, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("future_key"),
+        "unknown-key warning must name the offending key, got stdout: {stdout}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// #1369 (house rule 11): a malformed `brink.toml` must fail `brink compile`
+/// and the error must name `brink.toml`, not just report a bare parse
+/// error — the CLI-visible, black-box proof of `LoadError::Config`'s
+/// `path` field actually reaching the user, not just the in-crate unit
+/// tests around `brink_environment::Project::load` directly.
+#[test]
+fn compile_malformed_brink_toml_names_the_file_in_the_error() {
+    let dir = project_dir("compile-config-malformed");
+    let story = write_story(&dir, "Hello.\n-> END\n");
+    write_config(&dir, "[project]\ndialect = \"sideways\"\n");
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "a malformed brink.toml must fail brink compile"
+    );
+    // `main.rs` reports the error via `tracing::error!`, and
+    // `tracing_subscriber::fmt()`'s default writer is stdout (not stderr) —
+    // confirmed by direct invocation, not assumed.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("brink.toml"),
+        "compile error must name brink.toml, got stdout: {stdout}, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// #1384: malformed TOML *syntax* (as opposed to a recognized key holding an
+/// out-of-range value, the case above) carries a byte span from the `toml`
+/// crate, and `toml::de::Error`'s own `Display` already renders it as
+/// "line X, column Y" plus a caret-annotated snippet, independent of
+/// `ConfigError::Toml`'s `path` field — this test passes unchanged even with
+/// this PR's production diff reverted (both `brink.toml` and `line 2` were
+/// already produced by the pre-existing hand-rolled `"project config error in
+/// {path}: {e}"` wrapper at the CLI's call site). It stays as a regression
+/// guard for that combined end-to-end message, but is not itself proof that
+/// `path`/`span` threading changed anything reachable from here — see the
+/// `brink-project-config` unit tests around `ConfigError::span` for that.
+#[test]
+fn compile_malformed_toml_syntax_names_its_line_in_the_error() {
+    let dir = project_dir("compile-config-malformed-syntax");
+    let story = write_story(&dir, "Hello.\n-> END\n");
+    // Line 2 is the malformed one — line 1 is well-formed.
+    write_config(&dir, "[project]\ndialect = \"brink\" oops\n");
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "malformed TOML syntax must fail brink compile"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("brink.toml"),
+        "compile error must name brink.toml, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("line 2"),
+        "compile error must name the malformed line, got stdout: {stdout}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── brink compile: --deny/--warn/--allow / -D warnings (#1373) ────────
+
+/// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
+/// `Warning` by default. Plain `strict-ink` source, no extension syntax, so
+/// only the lint-override tier can make this fail.
+const E014_FIXTURE: &str = "Hello.\n~\n-> END\n";
+
+#[test]
+fn compile_deny_e014_flag_fails_an_otherwise_clean_compile() {
+    let dir = project_dir("compile-deny-e014");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--deny E014 must make an ordinarily-Warning diagnostic fail the compile"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_short_deny_flag_fails_an_otherwise_clean_compile() {
+    let dir = project_dir("compile-deny-e014-short");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["-D", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "-D E014 must make an ordinarily-Warning diagnostic fail the compile"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_no_lint_flags_e014_stays_a_warning() {
+    let dir = project_dir("compile-no-lint-flags");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        out.status.success(),
+        "with no --deny/-D warnings flag, E014 must stay a Warning: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_deny_warnings_short_flag_fails_an_unconfigured_warning() {
+    let dir = project_dir("compile-deny-warnings-short");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["-D", "warnings"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "-D warnings must promote an unconfigured E014 warning to a compile error"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A CLI `--allow` must beat a conflicting `brink.toml` `[lints] E014 =
+/// "deny"` entry — #1005/#1373's `CLI/API > file > default` precedence.
+#[test]
+fn compile_allow_flag_overrides_a_conflicting_brink_toml_deny() {
+    let dir = project_dir("compile-allow-overrides-toml-deny");
+    let story = write_story(&dir, E014_FIXTURE);
+    write_config(&dir, "[lints]\nE014 = \"deny\"\n");
+
+    // Sanity check: the file alone denies E014 and fails the compile.
+    let baseline = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        !baseline.status.success(),
+        "sanity check: brink.toml's E014 = \"deny\" alone must fail the compile"
+    );
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--allow", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--allow E014 must override brink.toml's conflicting E014 = \"deny\": {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A CLI `--deny` must beat a conflicting `brink.toml` `[lints] E014 =
+/// "allow"` entry, the reverse direction of the above.
+#[test]
+fn compile_deny_flag_overrides_a_conflicting_brink_toml_allow() {
+    let dir = project_dir("compile-deny-overrides-toml-allow");
+    let story = write_story(&dir, E014_FIXTURE);
+    write_config(&dir, "[lints]\nE014 = \"allow\"\n");
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--deny E014 must override brink.toml's conflicting E014 = \"allow\": {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_unrecognized_deny_code_is_a_warning_not_a_compile_failure() {
+    let dir = project_dir("compile-deny-unknown-code");
+    let story = write_story(&dir, "Hello.\n-> END\n");
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--deny", "E9999"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an unrecognized --deny code must warn, not fail compilation: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
@@ -234,6 +539,104 @@ You have {gold} gold.
 -> END
 ";
 
+/// The `compile_walks_up_from_entry_to_find_brink_toml` companion for
+/// `brink ide` (issue #1403): `resolve_analysis_options` now discovers over
+/// the `SourceTree` seam (`brink_project_config::discover_from_entry_in_tree`)
+/// rather than the path-based `load_from_entry` — this proves the walk-up
+/// behavior survived the swap end-to-end, not just in the unit-level
+/// `resolve_analysis_options_source_tree_seam_tests`.
+#[test]
+fn ide_check_walks_up_from_entry_to_find_brink_toml() {
+    let dir = project_dir("ide-config-nested");
+    let nested = dir.join("chapters");
+    fs::create_dir_all(&nested).unwrap();
+    let story = write_story(&nested, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .args(["ide", "check", "-e"])
+        .arg(&story)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "brink.toml one directory above the entry file should still be found by brink ide: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Companion for `compile_finds_brink_toml_above_a_bare_relative_entrys_cwd`,
+/// covering `brink ide check` instead of `brink compile` (issue #1425 named
+/// this specific gap: every existing `ide_check_*` test above either has no
+/// config at all or one sitting beside/at cwd — none with `brink.toml`
+/// *above* cwd and a bare relative entry). `brink ide check` discovers its
+/// config over `resolve_analysis_options`'s `SourceTree` seam
+/// (`brink_project_config::discover_from_entry_in_tree`,
+/// `find_config_in_tree`), a different discovery path than `brink compile`'s
+/// path-based `native_source_root`/`find_config` — so this is not redundant
+/// with the `compile` case even though the fixture shape matches it exactly.
+#[test]
+fn ide_check_finds_brink_toml_above_a_bare_relative_entrys_cwd() {
+    let dir = project_dir("ide-config-above-cwd");
+    let sub = dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    write_story(&sub, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&sub)
+        .args(["ide", "check", "-e", "story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare relative entry must let brink ide discover a brink.toml above the process's \
+         cwd, exactly like brink compile does: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression for a review finding on #1403/PR #1412:
+/// `ide_check_walks_up_from_entry_to_find_brink_toml` above always passes an
+/// *absolute* entry path, which sidesteps `native_source_root`'s walk-up
+/// entirely and left it structurally blind to a real regression — with
+/// `brink.toml` sitting in the process's cwd and a bare cwd-relative
+/// multi-component entry (`chapters/story.ink`, no `./` prefix), discovery
+/// silently missed the config and mis-rooted at `chapters` instead of `dir`,
+/// so the entry failed to compile at all (two bogus E051 dialect errors)
+/// even though the identical absolute-path and `./`-prefixed forms worked.
+/// `.current_dir(&dir)` + a bare relative entry argument reproduces that
+/// exact scenario end-to-end.
+#[test]
+fn ide_check_finds_brink_toml_with_a_bare_relative_multi_component_entry() {
+    let dir = project_dir("ide-config-relative-entry");
+    let nested = dir.join("chapters");
+    fs::create_dir_all(&nested).unwrap();
+    write_story(&nested, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&dir)
+        .args(["ide", "check", "-e", "chapters/story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare cwd-relative multi-component entry must still discover brink.toml \
+         above it, exactly like the absolute-path form: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// Regression for the review finding on `introduced_diagnostics`'s
 /// re-analysis `Driver`: it used to be built with
 /// `AnalysisOptions::default()` (always `strict-ink`) regardless of the
@@ -266,6 +669,41 @@ fn ide_rename_write_succeeds_under_brink_dialect_extension_syntax() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Issue #1672 (docs/modules-spec.md §5, RULED but never implemented until
+/// now): `brink ide rename --write` — the CLI rename surface — stamps
+/// `#@was(old_name)` onto the renamed declaration, exactly like the
+/// LSP/editor paths funneling through the same `brink_ide::rename::rename`
+/// chokepoint. Only reachable under `dialect = brink` (`#@was` is itself a
+/// brink extension), same as `ide_rename_write_succeeds_under_brink_dialect_extension_syntax`
+/// above — this mirrors that test's `brink.toml`-discovery setup and adds
+/// the `#@was` assertion its dialect coverage was missing.
+#[test]
+fn ide_rename_write_stamps_was_under_brink_dialect() {
+    let dir = project_dir("ide-rename-was");
+    let story = write_story(&dir, EXTENSION_RENAME_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .args(["ide", "rename", "gold", "--to", "coins", "--write", "-e"])
+        .arg(&story)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "rename must succeed under dialect = brink: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let src = fs::read_to_string(&story).unwrap();
+    assert!(src.contains("VAR coins"), "declaration renamed: {src}");
+    assert!(
+        src.contains("#@was(gold)\nVAR coins"),
+        "the #@was directive is stamped on the line immediately above the \
+         renamed declaration: {src}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 // `load_git_baseline` (used by `brink ide effects-diff --rev`) has its own
 // regression test as a unit test in `crates/brink-cli/src/ide.rs` — its
 // `AnalysisOptions` divergence from `Project::load` isn't observable through
@@ -274,3 +712,44 @@ fn ide_rename_write_succeeds_under_brink_dialect_extension_syntax() {
 // parses, per `brink-analyzer::dialect_gate`), so a black-box CLI assertion
 // here would pass identically with or without the fix. The unit test
 // compares `analysis_options()` directly instead.
+
+// ── discovery warnings reach the actual consumer (issue #1610) ────────
+
+/// Review finding on #1712: the six `native_source_root_with_warnings` call
+/// sites (and `brink-compiler`'s library-side `prepare_driver`) had no test
+/// covering the thing an author actually sees — every call site could be
+/// reverted to the plain, warning-discarding `native_source_root` with the
+/// whole suite still green, because the only test that existed asserted a
+/// `Vec<ConfigWarning>` at the `brink-driver` boundary, not author-visible
+/// stderr output (rules 11/20a/20e). This drives the real `brink` binary
+/// (`brink compile`, `brink-cli/src/main.rs::compile_entry`) over a fixture
+/// with a `brink.toml` sitting above a `.git` boundary, and asserts the
+/// warning text lands on stderr.
+#[test]
+fn compile_warns_on_stderr_about_a_brink_toml_above_the_git_boundary() {
+    let dir = project_dir("compile-warn-above-git-boundary");
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let proj = dir.join("proj");
+    fs::create_dir_all(proj.join(".git")).unwrap();
+    let story = write_story(&proj, EXTENSION_FIXTURE);
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+
+    // No brink.toml was found *within* the git boundary, so the fixture's
+    // brink-extension syntax is rejected under the default strict-ink
+    // dialect — the same "unchanged behavior" a stepped-over config must
+    // produce.
+    assert!(
+        !out.status.success(),
+        "a brink.toml above the git boundary must not be applied"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("exists above the workspace/git boundary"),
+        "compile must warn on stderr that the stepped-over brink.toml was ignored: {stderr}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}

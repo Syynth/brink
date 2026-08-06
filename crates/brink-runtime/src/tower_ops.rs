@@ -283,6 +283,7 @@ fn wrong_type(verb: &'static str, expected: &'static str, a: &Value, b: &Value) 
 mod tests {
     use super::*;
     use crate::output::OutputBuffer;
+    use crate::story::PendingTerminal;
     use alloc::vec::Vec;
 
     fn test_flow() -> Flow {
@@ -296,8 +297,11 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: crate::story::ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
+            next_block_id: 0,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 

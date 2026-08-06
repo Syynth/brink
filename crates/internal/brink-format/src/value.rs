@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use serde::{Deserialize, Serialize};
@@ -82,11 +83,20 @@ pub enum ValueType {
 
 /// A runtime value in the ink VM.
 ///
-/// Heap-allocating variants (`String`, `List`, `Array`, `Map`) are wrapped in
-/// `Arc` so that cloning a `Value` is always O(1) — a refcount bump, not a
-/// deep copy. This matches C#'s reference-type semantics and makes call-frame
-/// cloning (during `fork_thread`) essentially free. Atomic refcounts are used
-/// so `Value` can flow through Bevy's parallel scheduler.
+/// Heap-allocating variants (`String`, `List`, `Array`, `Map`, `Record`,
+/// `Closure`, `Projection`, `OptionVal`, `Weighted`) are wrapped in `Arc` so
+/// that cloning a `Value` is always O(1) — a refcount bump, not a deep copy —
+/// which makes call-frame cloning (during `fork_thread`) essentially free.
+/// Atomic refcounts are used so `Value` can flow through Bevy's parallel
+/// scheduler.
+///
+/// This `Arc` wrapping is a *performance* mechanism under **value
+/// semantics**, not reference semantics: sharing the underlying allocation
+/// is unobservable (`docs/value-model-spec.md` §3), because every mutating
+/// entry point forks the shared allocation on write (take → `make_mut` →
+/// write-back — see `docs/runtime-spec.md`'s "Value model" section). A
+/// binding that never observed a mutation never sees it, regardless of
+/// whether it shares the `Arc` underneath.
 ///
 /// The `Array`/`Map` collections follow the ratified value model
 /// (`docs/value-model-spec.md` §4/§5): value semantics with copy-on-write
@@ -233,8 +243,11 @@ pub enum Value {
     /// `x == y`; an Option is never equal to a bare `T` (the ruled
     /// `Option[T] ≠ T` strictness holds at the value layer too). Display
     /// (`stringify`/`string(x)`): `none` / `some(<inner>)` — the boring,
-    /// stable form; the §1.6 display-boundary forgiveness is Track B4 and
-    /// deliberately NOT implemented here.
+    /// stable form, total forever (F28). The §1.6b display-boundary
+    /// forgiveness (Track B4) is a `brink-runtime`-only concern layered on
+    /// top at read time (`value_ops::stringify_display`) — deliberately
+    /// not implemented at this value-definition layer, since `string()`
+    /// and every non-display consumer must keep seeing the total form.
     OptionVal(Option<Arc<Value>>),
     /// An integer range value (NS-A5, `docs/stdlib-spec.md` §7 — F7, ruled
     /// 2026-07-19: "ranges are a REAL Value kind"). `start..end` (exclusive)
@@ -635,6 +648,15 @@ impl Value {
     pub fn as_closure(&self) -> Option<&Arc<ClosureValue>> {
         match self {
             Self::Closure(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Borrow the weighted-table payload if this value is a
+    /// [`Weighted`](Self::Weighted).
+    pub fn as_weighted(&self) -> Option<&Arc<WeightedValue>> {
+        match self {
+            Self::Weighted(w) => Some(w),
             _ => None,
         }
     }
@@ -1631,6 +1653,212 @@ mod tests {
     fn make_mut_returns_none_for_non_collection() {
         assert!(Value::Int(1).array_make_mut().is_none());
         assert!(Value::Int(1).map_make_mut().is_none());
+    }
+
+    /// `record_make_mut` gets the same COW proof as `array_make_mut`/
+    /// `map_make_mut` above — issue #1476's audit found this variant was the
+    /// one collection `make_mut` without a dedicated "copies when shared"
+    /// regression, despite sharing the exact take → `make_mut` → write-back
+    /// discipline (the COW discipline documented on [`Value`] —
+    /// `docs/value-model-spec.md` §4/§5).
+    #[test]
+    fn record_make_mut_copies_when_shared() {
+        let shape = ShapeId(0);
+        let original = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let mut copy = original.clone(); // shares the Arc
+        copy.record_make_mut().expect("record")[0] = Value::Int(99);
+        assert_eq!(
+            original.as_record().expect("record").1.as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "mutating the copy must never be observable through the original"
+        );
+        assert_eq!(
+            copy.as_record().expect("record").1.as_slice(),
+            &[Value::Int(99), Value::Int(2)]
+        );
+        // After the fork both are unique again.
+        assert_eq!(
+            Arc::strong_count(original.as_record().expect("record").1),
+            1
+        );
+    }
+
+    /// The classic nested-collection leak site (issue #1476), one layer
+    /// deeper: a `Record` field itself holds an `Array` (two independent
+    /// `Arc`s stacked — the record's field vec, and the array's backing
+    /// vec). `let y = x` then mutating `x`'s field-array in place must never
+    /// surface through `y`, exactly like a bare `Array`-of-`Array`
+    /// (`rmw-mutator-shared-nested-lvalue`, `tests/tier1-brink/`).
+    ///
+    /// The obvious source form — `STRUCT Bag = #{ items: Array<int> }`,
+    /// `push(a.items, 3)` — used to fault instead of reaching this code path:
+    /// `push`/`insert`/`remove`'s bare-lvalue fast path (`try_lower_mutator_stmt`
+    /// in `brink-ir::lir::lower::blocks`) treated *any* `hir::Expr::Path`
+    /// lvalue, including a multi-segment TM-4b dotted field-access path like
+    /// `a.items`, as a single bare-variable target and resolved the whole
+    /// path's range to its root symbol, applying the mutator to `a` itself (a
+    /// `Record`) instead of `a`'s `items` field. That was issue #1495, fixed
+    /// by routing a single-level struct-field mutator lvalue through the new
+    /// `lower_field_mutator` (mirrors `try_lower_field_assignment`'s existing
+    /// `path.segments.len() > 1` split). This `Value`-layer test remains as
+    /// the isolation guarantee's own regression pin; the end-to-end
+    /// aliasing case now lives at
+    /// `tests/tier1-brink/struct-field-mutator-lvalue/story.ink` alongside
+    /// the fix.
+    #[test]
+    fn nested_array_inside_record_field_is_isolated_after_copy() {
+        let shape = ShapeId(0);
+        let inner = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let original = Value::record(shape, vec![Value::String("bag".into()), inner]);
+        let mut copy = original.clone(); // shares both Arcs (record + inner array)
+
+        // Take → make_mut → write-back on the copy's inner array field,
+        // mirroring `collection_ops`'s RMW discipline: pull the field out,
+        // COW-mutate it, write it back into the (already-uniqued) record.
+        let fields = copy.record_make_mut().expect("record");
+        let mut inner_copy = fields[1].clone();
+        inner_copy
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(3));
+        fields[1] = inner_copy;
+
+        let original_inner = original
+            .as_record()
+            .expect("record")
+            .1
+            .get(1)
+            .expect("field 1")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            original_inner.as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "mutating the copy's nested array must never be observable through the original record"
+        );
+        let copy_inner = copy
+            .as_record()
+            .expect("record")
+            .1
+            .get(1)
+            .expect("field 1")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            copy_inner.as_slice(),
+            &[Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+    }
+
+    /// Issue #1476's audit traced `Closure` val-capture (`vm.rs::MakeClosure`),
+    /// `OptionVal(Some(Arc<Value>))`, and `Weighted` and found each correct by
+    /// construction — same Arc-COW mechanics as `Array`/`Map`/`Record`, no
+    /// bespoke mutation path exists for any of them — but flagged that none
+    /// had a dedicated aliasing regression pinning it, the way
+    /// `record_make_mut_copies_when_shared` does for records. These three
+    /// close that gap (folded into #1508 per #1476's review comment); the
+    /// fourth deferred test — the `as`-binding capture itself — still needs
+    /// the `.inkb` v6 Choice captured-environment slot (#1684/#1508) and
+    /// cannot be written yet.
+    ///
+    /// A `val` closure-env entry snapshots the bound value at
+    /// `MakeClosure` time (`ClosureEnvEntry { is_ref: false, .. }`): the
+    /// snapshot is an ordinary `Value` clone, so it shares the source
+    /// array's `Arc` until something mutates one side. Mutating the
+    /// *original* variable after capture must fork via COW, leaving the
+    /// closure's captured snapshot untouched.
+    ///
+    /// This pins the `Value`-layer COW invariant that `MakeClosure`'s
+    /// val-capture relies on; it hand-builds the `ClosureEnvEntry` directly
+    /// and does not itself drive `vm.rs::MakeClosure` (`brink-format` cannot
+    /// reach the VM) — no test here asserts that the opcode handler builds
+    /// `is_ref: false` snapshot entries the way it does at `vm.rs:906-915`.
+    #[test]
+    fn closure_val_capture_is_isolated_from_later_mutation_of_the_source() {
+        let mut original = Value::array(vec![Value::Int(1)]);
+        let entry = ClosureEnvEntry {
+            name: NameId(0),
+            is_ref: false,
+            payload: original.clone(), // val-capture snapshot, shares the Arc
+        };
+        let closure = Value::closure(DefinitionId::new(DefinitionTag::Address, 0), vec![entry]);
+
+        // Mutate the source *after* the closure captured it.
+        original
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(2));
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)]
+        );
+
+        let captured = &closure.as_closure().expect("closure").env[0].payload;
+        assert_eq!(
+            captured.as_array().expect("array").as_slice(),
+            &[Value::Int(1)],
+            "mutating the source after MakeClosure must never be observable through the val-captured snapshot"
+        );
+    }
+
+    /// `OptionVal(Some(Arc<Value>))` (NS-A1) wraps its inner value behind its
+    /// own `Arc`, but the inner `Value` itself may still share a *nested*
+    /// Arc (e.g. an `Array`'s backing `Vec`) with whatever produced it. The
+    /// same COW discipline must hold one layer down: mutating the source
+    /// array after `some(...)` wrapped a clone of it must not leak through.
+    #[test]
+    fn option_some_wrap_is_isolated_from_later_mutation_of_the_source() {
+        let mut original = Value::array(vec![Value::Int(1)]);
+        let wrapped = Value::some(original.clone()); // shares the inner Arc
+
+        original
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(2));
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)]
+        );
+
+        let inner = wrapped
+            .as_option()
+            .expect("option")
+            .expect("some")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            inner.as_slice(),
+            &[Value::Int(1)],
+            "mutating the source after `some(..)` wrapped it must never be observable through the wrapped copy"
+        );
+    }
+
+    /// `Weighted` (NS-A7) entries hold `Value`s in construction order; a
+    /// table built from an `Array` entry shares that array's Arc with its
+    /// source the same way a closure `val` capture or `some(..)` wrap does.
+    /// Mutating the source after the table was built must not leak into the
+    /// entry the table already captured.
+    #[test]
+    fn weighted_entry_capture_is_isolated_from_later_mutation_of_the_source() {
+        let mut original = Value::array(vec![Value::Int(1)]);
+        let table = Value::weighted(vec![(1, original.clone())]);
+
+        original
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(2));
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)]
+        );
+
+        let weighted = table.as_weighted().expect("weighted");
+        let entry = weighted.entries[0].1.as_array().expect("array");
+        assert_eq!(
+            entry.as_slice(),
+            &[Value::Int(1)],
+            "mutating the source after the table captured it must never be observable through the weighted entry"
+        );
     }
 
     // ── Structural equality with the ptr_eq fast path ──────────────────────

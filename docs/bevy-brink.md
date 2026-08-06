@@ -79,18 +79,16 @@ targeting the flow's entity, so consumers can either register a global
 observer via `app.add_observer(...)` or a per-entity observer via
 `world.entity_mut(flow).observe(...)`:
 
-- `BrinkLineDelivered<M>` — a `Line::Text` with text + tags
-- `BrinkChoicesPresented<M>` — choices + leading text
-- `BrinkTurnDone<M>` — `Line::Done` reached, carries any text accumulated
-  this turn
-- `BrinkStoryEnded<M>` — `Line::End` reached, carries any text accumulated
-  this turn
+- `BrinkLineDelivered<M>` — a `Step::Line` with text + tags
+- `BrinkChoicesPresented<M>` — `Step::Choices`; `text`/`tags` always empty
+- `BrinkTurnDone<M>` — `Step::Done` reached; `text`/`tags` always empty
+- `BrinkStoryEnded<M>` — `Step::End` reached; `text`/`tags` always empty
 
-Important: terminal variants (`Done`, `Choices`, `End`) carry their
-own accumulated text — they don't emit a separate preceding
-`BrinkLineDelivered` for that text. UIs that just want "everything that
-happened this turn" should append the terminal event's `text` field too,
-not only the per-line events.
+Important: terminal variants (`Done`, `Choices`, `End`) carry no payload
+of their own (`docs/prose-dialect-spec.md` §7, RULED) — their `text`/`tags`
+fields are always empty. Any trailing content already arrived as its own
+preceding `BrinkLineDelivered` event, so UIs that want "everything that
+happened this turn" only need to accumulate the per-line events.
 
 ### Init pass
 
@@ -147,13 +145,32 @@ transcript untouched, visit counts not bumped):
 
 - `call_ink_function::<M>(&mut World, entity, name, args) -> Result<Value, BrinkCallError>`
   — synchronous, from an exclusive system. Resolves world-access query
-  bindings inline (it has `&mut World`).
+  bindings inline (it has `&mut World`); a `bind_brink_command`-bound
+  external reached this way buffers its trigger like normal playback does,
+  then fires the event against the World once the call completes (#1096) —
+  it does not fall through to the in-story fallback the way an unbound
+  external would.
 - `commands.brink_call::<M>(flow, name, args).observe(|on: On<BrinkCallResolved>| …)`
   — deferred, from a normal (non-exclusive) system. Spawns a per-call
   entity; the plugin's resolver evaluates and fires `BrinkCallResolved` /
   `BrinkCallFailed` **scoped to that entity**, so a result can never be
   mis-correlated with another call. `IntoBrinkArgs` accepts `()`, tuples of
   `Into<Value>`, `Vec<Value>`, or `&[Value]`.
+- `commands.brink_call_batch::<M>(flow, calls).observe(|on: On<BrinkCallBatchResolved>| …)`
+  — deferred **batch** counterpart of `call_ink_functions` (#1076): a
+  normal system queues a whole ordered call list at once. The plugin's
+  `resolve_brink_call_batches` resolves the whole batch through one
+  `call_ink_functions` call, so the front-to-back ordering and per-call
+  isolation `call_ink_functions` guarantees hold for the deferred path
+  too — not just "these calls happen to land in the same frame."
+  (`call_ink_functions` also amortizes one VM-eval setup across the
+  batch, but that's a cost saving, not what pins the ordering.) Delivers
+  one `BrinkCallBatchResolved` (one `Result`
+  per call, in call order, no short-circuit on a failing call) scoped to
+  the batch's call entity. Ordering *across* separate deferred requests
+  targeting the same flow in the same frame (whether `brink_call` or
+  `brink_call_batch`) is **not** pinned — fold everything that needs a
+  guaranteed order into one `brink_call_batch`.
 
 **playback with inline world queries** — for a story line like
 `Enemies near: {enemy_count()}.`:
@@ -199,6 +216,20 @@ an interactive window.
 - ✅ `BrinkPlugin<M>` and `BrinkAssetsPlugin`. `BrinkPlugin<M>` is
   marker-parameterized; `BrinkAssetsPlugin` registers types and is
   auto-added once per app.
+- ✅ **F35 dev/prod `ExecMode` default** (ruled 2026-07-19). Every flow
+  `fulfill_flow_requests` spawns is stamped with a host-selected
+  `ExecMode`. Unlike core `brink-runtime` — whose `ExecMode::default()` is
+  always `Dev` — bevy-brink's default keys off the build profile:
+  `Dev` under `debug_assertions` (editor / `cargo run`), `Prod` in a
+  release build. This makes a shipped game default to the keep-moving
+  posture (F34/NS-A4: no comparator-write faults, NaN placed by the pinned
+  total order) and an in-editor session to the fault-loud one, matching
+  where each nondeterminism-catching fault is useful. Carried by the
+  `BrinkExecMode<M>` resource (mirrors `BrinkWorldPolicy<M>`); a host pins
+  a mode regardless of profile with `BrinkPlugin::with_exec_mode(mode)`,
+  and a per-flow runtime override stays available via
+  `FlowInstance::set_exec_mode`. The mode is never embedded in `.inkb` and
+  never persisted in saves.
 - ✅ Observer events (above) + `BrinkFlow::step_one` and
   `BrinkFlow::advance_until_terminal` that fire them.
 - ✅ Init pass (`run_init_pass` + `InkLoaderSettings`).
@@ -208,9 +239,11 @@ an interactive window.
   window with text + choices, SPACE to advance, digit keys to choose.
 - ✅ **External-function binding facility** (above): `bind_brink_fn` /
   `bind_brink_command` (+ `#[derive(BrinkCommand)]`) / `bind_brink_query`,
-  `call_ink_function`, `commands.brink_call(...).observe(...)`,
-  `advance_flow`, and the non-exclusive `step_one` → `Advance` pause/resume
-  with the `resolve_pending_externals` plugin system.
+  `call_ink_function` (+ its batch counterpart `call_ink_functions`),
+  `commands.brink_call(...).observe(...)` (+ its deferred batch
+  counterpart `commands.brink_call_batch(...)`, #1076), `advance_flow`,
+  and the non-exclusive `step_one` → `Advance` pause/resume with the
+  `resolve_pending_externals` plugin system.
 - ✅ **Async (defer-across-frames) bindings**: `bind_brink_async` (the
   `BrinkExternalAwaited` + `resolve_brink_external` event primitive) and
   `bind_brink_task` (`AsyncComputeTaskPool` task lifecycle via
@@ -296,12 +329,16 @@ poorly with `Trigger<'a>: Default`) was wrong. Diagnosed 2026-04-28:
   `flow.rs`) confirms `commands.trigger` from a system fires observers
   reliably with the generic `BrinkLineDelivered<()>`.
 - The flow tests were failing for two unrelated reasons:
-  1. **Test expectations didn't match the runtime API.** Terminal `Line`
-     variants (`Done`, `Choices`, `End`) carry their accumulated text in
-     their *own* `text` field — they don't emit a separate preceding
-     `Line::Text`. The test that fed the runtime `"goodbye\n-> END\n"`
-     and expected a `BrinkLineDelivered("goodbye")` event was wrong;
-     the runtime delivers it as `BrinkStoryEnded { text: "goodbye\n" }`.
+  1. **Test expectations didn't match the runtime API.** At the time,
+     terminal `Line` variants (`Done`, `Choices`, `End`) carried their
+     accumulated text in their *own* `text` field — they didn't emit a
+     separate preceding `Line::Text`. The test that fed the runtime
+     `"goodbye\n-> END\n"` and expected a `BrinkLineDelivered("goodbye")`
+     event was wrong; the runtime delivered it as
+     `BrinkStoryEnded { text: "goodbye\n" }`. (Superseded: terminals now
+     carry no payload — `docs/prose-dialect-spec.md` §7, RULED — so
+     `"goodbye\n"` today arrives as its own `BrinkLineDelivered` and
+     `BrinkStoryEnded.text` is always empty.)
   2. **`FlowStart::Root` does not auto-enter named knots.** A test that
      placed all content under `=== start ===` and used the default
      `FlowStart::Root` produced an empty `Done` and never reached the

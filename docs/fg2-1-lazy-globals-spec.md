@@ -47,7 +47,7 @@ source:
 | Reference class in body | Where | Source today | Data needed | Per-def query that can already serve it |
 |---|---|---|---|---|
 | **Param / Temp** (this body's own locals) | `ty_of_def` body.rs:126-128; `observe` 150-167 | `self.locals` (in-body) + `index.symbols[def].kind/name` | in-body accumulator; symbol kind+name | none needed — never leaves the body; only reads `index` for kind/name |
-| **VAR / CONST value type** | `ty_of_def` body.rs:129-131 | **`ctx.globals.get(&def)`** ← the villain | that global's declaration-derived `Ty` | **`signature_query(def).value_type`** (FG-1, per-declaring-file, queries.rs:303-319) |
+| **VAR / CONST value type** | `ty_of_def` body.rs:129-131 | **`ctx.globals.get(&def)`** ← the villain | that global's declaration-derived `Ty` | **`signature_query(def).value_ty`** (FG-1, per-declaring-file, queries.rs:303-319; the field was `value_type` until issue #1540 widened it to full `Ty` fidelity) |
 | **LIST decl** | `ty_of_def` body.rs:132 | `Ty::List(index.symbols[def].name)` | symbol name only | none — pure `index` read, no HIR, no globals |
 | **LIST item** | `ty_of_def` body.rs:133-138; `infer_list_literal` 252-263 | `index.symbols[def].name` split on `.` | symbol name only | none — pure `index` read |
 | **Knot / Stitch / External / Label as a *value*** | `ty_of_def` body.rs:139-141 | `Ty::Unknown` (T1c fence) | nothing | none — constant `Unknown` |
@@ -60,7 +60,7 @@ source:
 declaration-derived value types**. LIST/LIST-item come from `index`; callables
 come from `known_sigs`; everything else is `Unknown`. So "reworking
 `BodyCtx.globals` into lazy per-reference lookup" is precisely: **replace the
-eager VAR/CONST map with per-reference `signature_query(var).value_type`**, and
+eager VAR/CONST map with per-reference `signature_query(var).value_ty`**, and
 nothing else in the reference taxonomy is touched.
 
 ---
@@ -97,7 +97,7 @@ SCCs are components of the **call graph over knots/stitches only**
 `inferable`, and are never call-graph nodes. A lazy global lookup therefore
 resolves to `signature_query(var)`, which reads **only the declaring file's
 HIR** (queries.rs:303-319, `signature.rs:82-194` — declaration-derived
-`value_type`, no body analysis). It never calls `solve_scc_query` /
+`value_ty`, no body analysis). It never calls `solve_scc_query` /
 `inferred_signature_query`. So:
 
 - `solve_scc_query(S)` → (lazy) `signature_query(var)` → `lowered_query(file)`.
@@ -127,7 +127,7 @@ B's body from A (infer/mod.rs:1-45 doc; the
 `signature_is_declaration_derived_only` guard test named at mod.rs:14-15).
 
 Lazy globals cannot breach this because **VAR/CONST are not callables**. A
-global's `value_type` comes from its own initializer literal / TM-2 annotation
+global's `value_ty` comes from its own initializer literal / TM-2 annotation
 (`signature.rs:103-120`), never from any use site. `signature_query(var)`
 returns that declaration-derived value unchanged whether read eagerly (today)
 or lazily (proposed) — same bytes, same firewall unit. And because the
@@ -266,7 +266,7 @@ same change that makes the claim.
   #626 → FG-2.1.
 - **#627 (`Ty::Conflicted`, ruled 2026-07-13).** The resolver signature
   `DefinitionId → Ty` is variant-agnostic, so a new absorbing lattice point is
-  transparent to it. A VAR/CONST `value_type` is single-sourced (one
+  transparent to it. A VAR/CONST `value_ty` is single-sourced (one
   initializer/annotation), so a global itself won't be `Conflicted`; and
   `unify` staying monotone (the ruling) means the SCC fixpoint and the
   composed-equals-monolithic gate are unaffected. FG-2.1's cutoff `Eq`

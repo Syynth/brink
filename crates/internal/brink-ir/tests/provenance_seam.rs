@@ -156,43 +156,69 @@ fn body_statement_provenance_round_trips() {
 /// Collect the statement-level provenance a body walk can reach (enough
 /// breadth for the round-trip guarantee; the exhaustive per-field walk
 /// lives in the garbling test below).
+///
+/// Synthetic ptrs (`KindToken::SYNTHETIC_RAW`) are deliberately excluded:
+/// they carry a real range but no frontend claims their raw kind, so they
+/// never resolve by construction (`foreign_synthetic_and_stale_provenance_resolve_to_none`
+/// pins that contract) — e.g. the branchless-body implicit first arm's span
+/// (issue #404), which is the union of the body's non-else children rather
+/// than any single live node.
 fn collect_block(block: &hir::Block, out: &mut Vec<Provenance>) {
+    let push = |out: &mut Vec<Provenance>, p: Provenance| {
+        if p.kind.raw != KindToken::SYNTHETIC_RAW {
+            out.push(p);
+        }
+    };
     for stmt in &block.stmts {
         match stmt {
             hir::Stmt::Content(c) => {
-                out.extend(c.ptr);
+                if let Some(p) = c.ptr {
+                    push(out, p);
+                }
                 for tag in &c.tags {
-                    out.push(tag.ptr);
+                    push(out, tag.ptr);
                 }
             }
-            hir::Stmt::Divert(d) => out.extend(d.ptr),
-            hir::Stmt::TunnelCall(t) => out.push(t.ptr),
-            hir::Stmt::ThreadStart(t) => out.push(t.ptr),
-            hir::Stmt::TempDecl(t) => out.push(t.ptr),
-            hir::Stmt::Assignment(a) => out.push(a.ptr),
-            hir::Stmt::Return(r) => out.extend(r.ptr),
+            hir::Stmt::Divert(d) => {
+                if let Some(p) = d.ptr {
+                    push(out, p);
+                }
+            }
+            hir::Stmt::TunnelCall(t) => push(out, t.ptr),
+            hir::Stmt::ThreadStart(t) => push(out, t.ptr),
+            hir::Stmt::TempDecl(t) => push(out, t.ptr),
+            hir::Stmt::Assignment(a) => push(out, a.ptr),
+            hir::Stmt::Return(r) => {
+                if let Some(p) = r.ptr {
+                    push(out, p);
+                }
+            }
             hir::Stmt::ChoiceSet(cs) => {
                 for choice in &cs.choices {
-                    out.push(choice.ptr);
+                    push(out, choice.ptr);
                     collect_block(&choice.body, out);
                 }
                 collect_block(&cs.continuation, out);
             }
             hir::Stmt::LabeledBlock(b) => collect_block(b, out),
             hir::Stmt::Conditional(c) => {
-                out.push(c.ptr);
+                push(out, c.ptr);
                 for b in &c.branches {
+                    push(out, b.ptr);
                     collect_block(&b.body, out);
                 }
             }
             hir::Stmt::Sequence(s) => {
-                out.push(s.ptr);
+                push(out, s.ptr);
                 for b in &s.branches {
-                    collect_block(b, out);
+                    push(out, b.ptr);
+                    collect_block(&b.body, out);
                 }
             }
-            hir::Stmt::LogicBlock(lb) => out.push(lb.ptr),
+            hir::Stmt::LogicBlock(lb) => push(out, lb.ptr),
             hir::Stmt::ExprStmt(_) | hir::Stmt::EndOfLine | hir::Stmt::Await(_) => {}
+            // Issue #2108: neither carries a `Provenance`/`ptr` of its own.
+            hir::Stmt::AttachElement(_) | hir::Stmt::EndElementRun => {}
         }
     }
 }
@@ -314,6 +340,18 @@ fn garble_file(hir: &mut HirFile) {
         imports: _,
         visibility: _,
         was_directives: _,
+        // Ranges into the file, not provenance — nothing to garble.
+        allow_scopes: _,
+        // Likewise: source ranges and captured text, no `Provenance`.
+        element_matches: _,
+        // Likewise: a harvested name + a source range, no `Provenance`
+        // (issue #2114).
+        cue_names: _,
+        // A frontend-provenance flag, not a source `Provenance`.
+        native: _,
+        // Likewise: a declaration record (name + annotation range), no
+        // `Provenance` (issue #1844).
+        claim_handlers: _,
     } = hir;
     garble_block(root_content);
     for knot in knots {
@@ -435,6 +473,8 @@ fn garble_stmt(stmt: &mut hir::Stmt) {
                 garble_expr(cond);
             }
         }
+        hir::Stmt::AttachElement(e) => garble_expr(e),
+        hir::Stmt::EndElementRun => {}
     }
 }
 
@@ -457,6 +497,14 @@ fn garble_content_part(part: &mut hir::ContentPart) {
         hir::ContentPart::Interpolation(e) => garble_expr(e),
         hir::ContentPart::InlineConditional(c) => garble_conditional(c),
         hir::ContentPart::InlineSequence(s) => garble_sequence(s),
+        // `SpanPart` carries its own `Provenance` (issue #1782) — garble it
+        // like every other required `ptr`, then recurse into its children.
+        hir::ContentPart::Span(span) => {
+            garble(&mut span.ptr);
+            for child in &mut span.children {
+                garble_content_part(child);
+            }
+        }
     }
 }
 
@@ -466,6 +514,7 @@ fn garble_conditional(c: &mut hir::Conditional) {
         garble_expr(e);
     }
     for branch in &mut c.branches {
+        garble(&mut branch.ptr);
         if let Some(cond) = &mut branch.condition {
             garble_expr(cond);
         }
@@ -476,7 +525,8 @@ fn garble_conditional(c: &mut hir::Conditional) {
 fn garble_sequence(s: &mut hir::Sequence) {
     garble(&mut s.ptr);
     for branch in &mut s.branches {
-        garble_block(branch);
+        garble(&mut branch.ptr);
+        garble_block(&mut branch.body);
     }
 }
 
@@ -562,9 +612,10 @@ fn garble_expr(e: &mut hir::Expr) {
             }
         }
         hir::Expr::Prefix(_, inner) => garble_expr(inner),
-        hir::Expr::Infix(lhs, _, rhs) => {
-            garble_expr(lhs);
-            garble_expr(rhs);
+        hir::Expr::Infix(ie) => {
+            garble(&mut ie.ptr);
+            garble_expr(&mut ie.lhs);
+            garble_expr(&mut ie.rhs);
         }
         hir::Expr::Postfix(inner, _) => garble_expr(inner),
         hir::Expr::Call(_, args) => {
@@ -614,6 +665,29 @@ fn garble_expr(e: &mut hir::Expr) {
         hir::Expr::RefArg(ra) => {
             garble(&mut ra.ptr);
             garble_expr(&mut ra.operand);
+        }
+        hir::Expr::Lambda(l) => {
+            garble(&mut l.ptr);
+            match &mut l.body {
+                hir::LambdaBody::Expr(e) => garble_expr(e),
+                hir::LambdaBody::Block { stmts, tail } => {
+                    for bs in stmts {
+                        garble_block_stmt(bs);
+                    }
+                    if let Some(t) = tail {
+                        garble_expr(t);
+                    }
+                }
+            }
+        }
+        // Block capture (issue #1839): the captured run is real body
+        // content, carrying its own provenance-bearing statements —
+        // garble it through the ordinary `garble_stmt`, exactly as it
+        // would be garbled at its original top-level position.
+        hir::Expr::Fragment(stmts) => {
+            for s in stmts {
+                garble_stmt(s);
+            }
         }
     }
 }

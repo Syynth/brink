@@ -21,7 +21,7 @@
 // RNG's determinism is sufficient for reshuffling it. Choosing the
 // simpler tool deliberately, not an oversight, is itself the finding.
 //
-// TYPES POLICY: gradual (default). `array<string>` (the bag/pull-log),
+// TYPES POLICY: gradual (default). `Array<string>` (the bag/pull-log),
 // `int` (bag position); gradual inference resolves everything.
 //
 // ERGONOMICS-FINDINGS:
@@ -47,10 +47,10 @@
 //   lane's file for one loop felt like the wrong shared-utility
 //   boundary (contrast `pcg.ink`, which genuinely earns being a shared
 //   file because THREE files in this same lane need it).
-// - `remove(bag, len(bag) - 1)` (pop-from-the-end) is the cheapest way to
-//   "draw and shrink" a `VAR array` — no dedicated `pop` builtin exists,
+// - `remove_at(bag, len(bag) - 1)` (pop-from-the-end) is the cheapest way
+//   to "draw and shrink" a `VAR array` — no dedicated `pop` builtin exists,
 //   but removing the LAST index specifically avoids the O(n) shift-left
-//   cost `bfs-grid-path`'s `remove(arr, 0)` finding already flagged for
+//   cost `bfs-grid-path`'s `remove_at(arr, 0)` finding already flagged for
 //   front-removal; this file's queue never needs front-removal, so it
 //   sidesteps that cost entirely by drawing from the back instead.
 
@@ -95,6 +95,6 @@ Bag size: {BAG_SIZE}. 15 pulls (refills mid-sequence twice): {pulls}.
 === function draw_from_bag() ===
 ~ {
     temp piece = bag[len(bag) - 1]
-    remove(bag, len(bag) - 1)
+    remove_at(bag, len(bag) - 1)
     return piece
 }

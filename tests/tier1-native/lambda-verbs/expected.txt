@@ -1,0 +1,13 @@
+Doubled: [2, 4, 6]
+Evens: [2, 4, 6]
+Total: 10
+Scaled: [5, 10, 15]
+Chained: 120
+Braced: [4, 9, 16]
+CallThroughCapture: 3
+UfcsThroughCapture: 13
+FieldThroughCapture: 4
+Positives: [3, 8]
+EachSums: 10
+MapEachScaled: [10, 20, 30]
+MapEachTotal: 6

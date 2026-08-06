@@ -60,10 +60,10 @@ everything stays bare — you never qualify a same-module reference.
 
 There are two spellings.
 
-**Bare import** brings specific names into local scope, optionally renaming them
-with `AS`:
+**Bare import** brings specific names into local scope, optionally binding an
+extra local name to it with `AS`:
 
-```ink
+```ink,ignore
 IMPORT { ambush, guard_talk AS gt } FROM quest_3
 
 === square ===
@@ -71,10 +71,14 @@ IMPORT { ambush, guard_talk AS gt } FROM quest_3
 { gt() }
 ```
 
+`AS` is **additive**, not a rename: `guard_talk` stays resolvable under its
+own name alongside the alias `gt` — unlike Rust's `use … as`, which drops the
+original binding.
+
 **Qualified import** brings the module in under its own name; its exports are
 then reached through a dotted path:
 
-```ink
+```ink,ignore
 IMPORT quest_3
 
 === square ===
@@ -110,7 +114,7 @@ definition is public — while making a freshly declared module encapsulated by
 default. Override the default per definition with `#@public` / `#@private`,
 written just under the header:
 
-```ink
+```ink,ignore
 #@module(quest)
 
 === ambush ===
@@ -138,7 +142,7 @@ late-loaded chunk refers to a knot by a name-derived id. Renaming a public name
 would ordinarily break every one of those references. `#@was` is the migration
 door:
 
-```ink
+```ink,ignore
 #@module(quest)
 #@was(quest_three)          // this module used to be `quest_three`
 
@@ -154,10 +158,27 @@ onto `ambush` instead of faulting. `#@was` takes exactly one non-empty
 old-name argument, and it must differ from the definition's *current* name
 (naming yourself migrates nothing — that's a diagnostic).
 
-Today `#@was` is author-written: add it alongside a rename you make by hand when
-the old name may still be referenced by an existing save or a late-loaded chunk.
-Teaching the editor's **Rename** refactor to write it automatically is planned
-follow-up work.
+The editor's **Rename** refactor writes `#@was` for you: renaming a knot,
+stitch, `VAR`, `CONST`, or `LIST` — from the CLI (`brink ide rename`), the LSP
+(F2), or the studio's rename-safe path — stamps `#@was(old_name)` onto the
+declaration automatically, in the same edit set as the rename itself. It only
+fires under `dialect = brink` (`#@was` is itself a brink extension — under
+strict ink it would be rejecting its own migration door), and it never
+overwrites an existing `#@was`, so re-renaming an already-migrated
+declaration keeps its original record rather than losing the chain back to
+the name a save might still carry.
+
+A rename that never goes through that machinery — a hand edit, a `sed`, a
+merge — still needs `#@was` added by hand, same as before. The editor helps
+here too: it diffs each file's declared names against the previous compile,
+and when a name disappears while exactly one same-kind name appears in its
+place, it surfaces a hint — *"`hub` disappeared and `plaza` appeared — did
+you rename it?"* — pointing at the exact `#@was` to add. This is not the
+fuzzy load-time rematching this page's alias table deliberately avoids: it
+never resolves anything on its own, it only asks, at authoring time, while
+you still remember what you meant. A rename that never passes through brink
+tooling at all (so nothing is there to diff) stays undetected — that residual
+gap isn't solved, only narrowed.
 
 ## Editor support
 
@@ -168,6 +189,10 @@ Modules come with IDE guarantees so the boundaries help rather than nag:
   one-click *"Import `name` from `module`"* fix that inserts the `IMPORT` line in
   the right place — below any existing import block, else below the `INCLUDE`
   block, else at the top under the `#@module` header.
+- **Rename writes `#@was`.** See above — every rename surface stamps the
+  migration directive automatically.
+- **Undeclared-rename hint.** See above — a same-kind name that vanishes and
+  reappears prompts a quiet, non-blocking question rather than staying silent.
 - **Folding.** A run of two or more leading `IMPORT` statements folds into a
   single `IMPORT … (N modules)` region, mirroring the `INCLUDE` block fold.
 - **Formatting.** `brink fmt` canonicalizes `IMPORT` spacing —

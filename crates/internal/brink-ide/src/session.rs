@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy, ModuleMap,
     SemanticTypeDiagnosticSeverity, TypePolicy,
 };
 use brink_db::{CompileProduct, ProjectDb};
@@ -20,11 +20,43 @@ use crate::hir_projection::{Projection, project_hir, project_hir_structural};
 /// A snapshot of analysis inputs, cloned out of the db for background analysis.
 pub struct IdeSnapshot {
     inputs: Vec<(FileId, HirFile, SymbolManifest)>,
+    /// The project's resolved modules, cloned out of the db alongside the
+    /// inputs (issue #1526). Module identity is a db-layer fact (it needs
+    /// file *paths*, which analysis inputs don't carry), and it qualifies
+    /// `DefinitionId`s — so without it this snapshot's ids would not match
+    /// the ones the db's per-def queries are keyed by, and every native
+    /// `.brink` symbol would miss.
+    modules: ModuleMap,
+    /// The stem-collision diagnostics (`E085`) the db computed alongside
+    /// `modules` (issue #1553). `analyze_with_modules` is handed the
+    /// finished map, so it cannot re-derive them; without folding them back
+    /// in here a collision a db-driven compile catches never reaches the
+    /// editor.
+    module_diagnostics: Vec<brink_ir::Diagnostic>,
+    /// Whether every *recognized source file* (`.ink` or `.brink`) in this
+    /// snapshot is native (`.brink`) source (issue #1358), read off the db
+    /// in [`IdeSession::snapshot`] via `ProjectDb::is_all_native`. The
+    /// analyzer has no file paths, so this classification has to travel with
+    /// the inputs — without it the editor's off-db analysis runs the *ink*
+    /// arm over native source: the ink-only T1b dialect gate (`E051`) and
+    /// `types = strict` config error (`E064`) fire spuriously, and the B0.9
+    /// strict-only gate (`E137`) never fires at all.
+    ///
+    /// A non-source document sharing this snapshot's inputs — a project's
+    /// own `brink.toml`, loaded into the same session as an ordinary
+    /// document so the Binder can list/edit it — does not disqualify `true`
+    /// (issue #2318): it is neither `.ink` nor `.brink` by extension, so
+    /// `ProjectDb::is_all_native` skips it entirely rather than counting it
+    /// as an ink file. One `brink.toml` alongside an otherwise fully-native
+    /// project set still yields `true` here, correctly.
+    is_native: bool,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
     dialect: Dialect,
     types: Option<TypePolicy>,
+    lints: LintPolicy,
+    conventions: Option<String>,
 }
 
 impl IdeSnapshot {
@@ -42,8 +74,47 @@ impl IdeSnapshot {
             semantic_type_check: self.semantic_type_check,
             dialect: self.dialect,
             types: self.types,
+            // `[lints]`-resolution input (issue #1160/#1366): the policy
+            // `IdeSession::set_lint_policy` resolved (via
+            // `AnalysisOptions::apply_project_config`, from the served
+            // `brink.toml`) and carried into this snapshot by
+            // `IdeSession::snapshot`. Spelled out explicitly (not
+            // `..Default::default()`) so the next `AnalysisOptions` field
+            // added has to be considered here rather than silently
+            // defaulting — exactly the "a mount silently doesn't resolve
+            // this policy" failure mode #1160's scope note flagged.
+            lints: self.lints.clone(),
+            // `brink.toml`'s `[project] conventions` pointer (issue #1844;
+            // renamed from `elements` by #2180), set via
+            // `IdeSession::set_conventions` (issue #1880) and carried into
+            // this snapshot by `IdeSession::snapshot`, mirroring
+            // `dialect`/`types`/`lints` for whole-struct consistency. Note
+            // this is inert on this off-db path: `analyze_with_modules` (the
+            // only thing `IdeSnapshot::analyze` calls) never reads
+            // `opts.conventions` — the confinement gate (`E169`) lives only
+            // in `brink-db`'s `conventions_confinement_diagnostics_query`,
+            // which this analyzer-only snapshot never invokes. Carried here
+            // anyway so the next `AnalysisOptions` field consumer added to
+            // `analyze_with_modules` finds it already wired rather than
+            // silently defaulted. See `conventions` field doc for how the
+            // pointer is actually set.
+            conventions: self.conventions.clone(),
         };
-        brink_analyzer::analyze_with_options(&refs, &opts)
+        // The snapshot's own native classification (issue #1358) — see
+        // `is_native`'s field doc. `brink-lsp`'s `analysis_loop` passes the
+        // same thing per project root; this is the editor's equivalent.
+        let mut result =
+            brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts, self.is_native);
+        // The db-only half of the module map (issue #1553) — see
+        // `module_diagnostics`. Scoped to this snapshot's own files so a
+        // partial snapshot never reports a collision it doesn't contain.
+        result.diagnostics.extend(
+            self.module_diagnostics
+                .iter()
+                .filter(|d| self.inputs.iter().any(|(id, _, _)| *id == d.file))
+                .cloned(),
+        );
+        result
     }
 }
 
@@ -101,6 +172,35 @@ pub struct IdeSession {
     /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection`, same as
     /// `language_dialect`.
     type_policy: Option<TypePolicy>,
+    /// Resolved `[lints]` policy (issue #1160), set via `set_lint_policy`.
+    /// Defaults to `LintPolicy::default()` (a no-op: every diagnostic keeps
+    /// its `DiagnosticCode::severity()` default), matching
+    /// `AnalysisOptions::default()`. Unlike `language_dialect`/`type_policy`
+    /// there is no explicit-vs-file precedence to track here — `[lints]` has
+    /// no CLI-flag/editor-API override source of its own yet (see
+    /// `AnalysisOptions::apply_project_config`'s doc comment), so the file is
+    /// always the source of truth for the *whole table* (issue #1397: a
+    /// fresh `apply_project_config` call replaces the resolved policy
+    /// wholesale, not just the codes it mentions). Feeds
+    /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` exactly
+    /// like `language_dialect`/`type_policy` (#1366: previously hardcoded to
+    /// `LintPolicy::default()` in both `snapshot` and `analysis_options`, so
+    /// a project's `[lints]` never reached the IDE/LSP/web surface).
+    lints: LintPolicy,
+    /// `brink.toml`'s `[project] conventions` pointer (issue #1844; renamed
+    /// from `elements` by #2180), set via `set_conventions`. `None` means
+    /// "no conventions module configured" — the confinement check
+    /// (`E169`) consuming this reads `None` as a real misconfiguration
+    /// since #2289, not "nothing to check", so this field must reflect
+    /// whatever `brink.toml`'s `[project] conventions` key actually says
+    /// rather than a hardcoded default (issue #1880: before this field
+    /// existed, every session read as unconfigured, firing `E169` on every
+    /// claim handler in every native project opened in the editor).
+    /// Authoring-time/tooling input only, mirroring `language_dialect`/
+    /// `type_policy`/`lints` — feeds
+    /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` the
+    /// same way.
+    conventions: Option<String>,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
     /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
@@ -125,6 +225,8 @@ impl IdeSession {
             dialect: None,
             language_dialect: Dialect::default(),
             type_policy: None,
+            lints: LintPolicy::default(),
+            conventions: None,
             projection_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -218,6 +320,55 @@ impl IdeSession {
         brink_analyzer::resolve_type_policy(self.language_dialect, self.type_policy)
     }
 
+    /// Set the resolved `[lints]` policy (issue #1160/#1366), then
+    /// re-analyze. Callers resolve the policy themselves — typically by
+    /// running a parsed `brink.toml`'s `[lints]` table through
+    /// `AnalysisOptions::apply_project_config`, which **replaces** the
+    /// policy wholesale from the file rather than merging onto whatever was
+    /// resolved before (issue #1397), and passing the result's `.lints`
+    /// back here. `brink-web`'s
+    /// `EditorSession::apply_project_config` and the CLI's
+    /// `Project::ide_session()` (`brink-cli/src/ide/project.rs`, issue
+    /// #1393) both call this — the CLI resolves `[lints]` once, via
+    /// `resolve_analysis_options`, into the `Driver`'s `AnalysisOptions` for
+    /// compile/analysis, then `Project::ide_session()` forwards that same
+    /// resolved policy here so a `brink ide` structural-op safety gate
+    /// (`structural_result::gate`) sees it too instead of
+    /// `LintPolicy::default()`.
+    pub fn set_lint_policy(&mut self, lints: LintPolicy) {
+        self.lints = lints;
+        self.reanalyze();
+    }
+
+    /// The current resolved `[lints]` policy (defaults to
+    /// `LintPolicy::default()`, a no-op).
+    #[must_use]
+    pub fn lint_policy(&self) -> &LintPolicy {
+        &self.lints
+    }
+
+    /// Set `brink.toml`'s `[project] conventions` pointer (issue #1880),
+    /// then re-analyze — the diagnostics-facing counterpart of the compiler
+    /// CLI/`brink-db`'s already-working salsa path. Mirrors
+    /// `set_type_policy`/`set_lint_policy` exactly: no explicit-vs-file
+    /// precedence tier exists for this field yet (see
+    /// `AnalysisOptions::apply_project_config`'s doc comment on
+    /// `conventions`), so a caller reloading `brink.toml` always passes the
+    /// freshly-resolved value — `None` when the file no longer sets the
+    /// key, `Some(pointer)` otherwise — and this replaces whatever was
+    /// registered before, the same wholesale-replace posture `[lints]` uses
+    /// for the same reason (issue #1397).
+    pub fn set_conventions(&mut self, conventions: Option<String>) {
+        self.conventions = conventions;
+        self.reanalyze();
+    }
+
+    /// The currently registered `[project] conventions` pointer, if any.
+    #[must_use]
+    pub fn conventions(&self) -> Option<&str> {
+        self.conventions.as_deref()
+    }
+
     /// Set the severity policy for manifest-driven external checks, then
     /// re-analyze.
     pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
@@ -235,9 +386,44 @@ impl IdeSession {
     }
 
     /// Re-run analysis on the current inputs (e.g. after a manifest change).
+    ///
+    /// Pushes the session's options into the db first (see
+    /// [`sync_db_options`](Self::sync_db_options)) — every option setter
+    /// funnels through here, so that one call keeps the db's
+    /// `AnalysisOptions` input in step with the session's own state.
     fn reanalyze(&mut self) {
+        self.sync_db_options();
         let result = self.snapshot().analyze();
         self.apply_analysis(result);
+    }
+
+    /// Write the session's current [`analysis_options`](Self::analysis_options)
+    /// into its own [`ProjectDb`] as a salsa input (issue #1553).
+    ///
+    /// The editor-facing analysis runs *off* the db
+    /// ([`snapshot`](Self::snapshot) → [`IdeSnapshot::analyze`]), but many IDE
+    /// features read db queries directly — `per_file_diagnostics`,
+    /// `symbol_index`, `diagnostics`, `effects`, `infer_body` — and those are
+    /// gated on this input. Before #1553 only [`compile`](Self::compile) ever
+    /// wrote it, so a session that never compiled read every one of those
+    /// queries under `AnalysisOptions::default()`: M-2d cross-module
+    /// duplicate coexistence (`brink`-only in `symbol_index_query`) and the
+    /// B0.9 native strict-only check (`E137`, which needs an explicit
+    /// `types = gradual`) were silently gated off, among others.
+    ///
+    /// Guarded against unchanged values: salsa's `set_analysis_options`
+    /// stamps the current revision unconditionally on every write, so an
+    /// unguarded call would invalidate every direct reader
+    /// (`per_file_diagnostics_query`, `symbol_index_query`, `resolve_query`,
+    /// `lir_query`/`story_data`) even when the value didn't actually change.
+    /// [`compile`](Self::compile) still writes its own (possibly overriding)
+    /// options unconditionally — the next option change re-establishes the
+    /// session's.
+    fn sync_db_options(&mut self) {
+        let options = self.analysis_options();
+        if self.db.analysis_options() != &options {
+            self.db.set_analysis_options(options);
+        }
     }
 
     /// Add or update a source file in the database.
@@ -258,11 +444,16 @@ impl IdeSession {
     pub fn snapshot(&self) -> IdeSnapshot {
         IdeSnapshot {
             inputs: self.db.analysis_inputs(),
+            modules: self.db.module_map().clone(),
+            module_diagnostics: self.db.module_map_diagnostics().to_vec(),
+            is_native: self.db.is_all_native(),
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
             types: self.type_policy,
+            lints: self.lints.clone(),
+            conventions: self.conventions.clone(),
         }
     }
 
@@ -346,13 +537,38 @@ impl IdeSession {
                 .unwrap_or_default();
             db.update_file(path, source);
         }
+        // The gate db's own options input (#1553), so any query a caller
+        // reads back off the returned db is judged under the same policy as
+        // the session's — not `AnalysisOptions::default()`.
+        db.set_analysis_options(self.analysis_options());
         let result = {
             let inputs = db.analysis_inputs();
             let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+            // The throwaway db's own module map (#1526) — the overlay keeps
+            // every file at its current path, but a native file's identity
+            // is path-derived, so analyzing module-blind here would make the
+            // gate's ids disagree with the returned db's.
+            let modules = db.module_map().clone();
+            // The gate db's own native classification (issue #1358): the
+            // overlay keeps every file at its current path, so this matches
+            // the session — but reading it off the gate db keeps the flag
+            // and the file set that it describes from ever disagreeing.
+            let mut result = brink_analyzer::analyze_with_modules(
+                &refs,
+                &modules,
+                &self.analysis_options(),
+                db.is_all_native(),
+            );
+            // The map's db-only diagnostics half (#1553) — the whole point of
+            // the gate is to report the diagnostics an edit *would* introduce,
+            // and a stem collision is one of them.
+            result
+                .diagnostics
+                .extend(db.module_map_diagnostics().iter().cloned());
+            result
         };
         (result, db)
     }
@@ -377,22 +593,48 @@ impl IdeSession {
         for (path, source) in projection {
             db.update_file(path, source.clone());
         }
+        // Same as `analyze_overlay` (#1553): the gate db is judged under the
+        // session's options, not the defaults.
+        db.set_analysis_options(self.analysis_options());
         let result = {
             let inputs = db.analysis_inputs();
             let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+            // The projected db's own module map (#1526). This path *moves*
+            // files to new keys, and a native file's module is its path, so
+            // the map has to come from the projected db — the whole point of
+            // the gate is to model identity after the move.
+            let modules = db.module_map().clone();
+            // The projected db's own native classification (issue #1358).
+            // This path *moves* files to new keys, and `Language` is
+            // extension-derived, so — exactly as for the module map above —
+            // the flag has to come from the projected db to model the file
+            // set after the move.
+            let mut result = brink_analyzer::analyze_with_modules(
+                &refs,
+                &modules,
+                &self.analysis_options(),
+                db.is_all_native(),
+            );
+            // A move is exactly the edit that can *introduce* a stem
+            // collision, so the gate has to see the map's diagnostics half
+            // (#1553).
+            result
+                .diagnostics
+                .extend(db.module_map_diagnostics().iter().cloned());
+            result
         };
         (result, db)
     }
 
     /// The current analysis options (registered host manifest +
     /// external-check / semantic-type-check severities + T1b compiler
-    /// dialect + TM-3 typed-mode policy), for callers that run their own
-    /// analysis/compile pass. `analyze_overlay`/`analyze_projection` use
-    /// this, so the declared dialect and types policy carry through to their
+    /// dialect + TM-3 typed-mode policy + resolved `[lints]` policy), for
+    /// callers that run their own analysis/compile pass.
+    /// `analyze_overlay`/`analyze_projection` use this, so the declared
+    /// dialect and types policy carry through to their
     /// gate-check passes too (#611, #660).
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
@@ -401,6 +643,18 @@ impl IdeSession {
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
             types: self.type_policy,
+            // See the matching note on `IdeSnapshot::analyze` (#1160/#1366):
+            // the policy `set_lint_policy` resolved. Spelled out explicitly,
+            // not `..Default::default()` — see that note for why.
+            lints: self.lints.clone(),
+            // `set_conventions` (issue #1880) — see the matching note on
+            // `IdeSnapshot::analyze` above. This method's result is also
+            // what `sync_db_options` writes into `ProjectDb`, so an
+            // `IdeSession`-mounted project now reaches the `E169`
+            // confinement check identically through both the off-db
+            // snapshot path and the db-direct query surface, matching a
+            // project compiled via `brink compile`/`brink check`.
+            conventions: self.conventions.clone(),
         }
     }
 
@@ -430,6 +684,87 @@ impl IdeSession {
     /// The returned [`CompileProduct`]'s diagnostics are keyed by [`FileId`]
     /// into **this** db, so a caller resolves each to a path/source through the
     /// same session (`file_path`/`source`) — no throwaway-driver id remapping.
+    ///
+    /// ## Ruling: this stays on the imperative `set_file`/`set_entry` path (#1385)
+    ///
+    /// #1361 migrated `brink-web`'s one-shot `compile()`/`compile_fragment()`
+    /// onto the #1306 producer (`brink_environment::Project::load` →
+    /// `brink_environment::compile(&env)`), but deliberately scope-fenced
+    /// `EditorSession::compile_project` — which delegates to this method —
+    /// because it drives a different, incremental, live-editing db shared with
+    /// `brink-lsp`. #1385 is the owner issue for resolving that fence, and the
+    /// deliberate decision is: **do not migrate.** `IdeSession::compile` keeps
+    /// pushing salsa inputs directly onto its own long-lived [`ProjectDb`].
+    ///
+    /// This ruling is scoped to **today's `compile(&Environment)` free
+    /// function** (`crates/internal/brink-environment/src/lib.rs`), not to
+    /// `Environment` as a value type in the abstract — see the last bullet
+    /// below for the alternative that scoping deliberately excludes.
+    /// Reasoning:
+    ///
+    /// - **`compile(&Environment)` is intentionally non-incremental.** Per its
+    ///   own doc, it "seeds a **fresh** salsa `ProjectDb`" from a frozen,
+    ///   point-in-time value on every call — "no ambient reads, no walk-up, no
+    ///   I/O." That is exactly right for a one-shot mount handed a full
+    ///   document snapshot per call (the CLI, `brink-web`'s stateless
+    ///   `compile()`/`compile_fragment()`). It is exactly wrong for
+    ///   `IdeSession`, whose entire reason to exist (see the module doc) is to
+    ///   hold **one** persistent `ProjectDb` across many edits and queries so
+    ///   an unrelated file's parse/HIR/analysis memos survive a single-file
+    ///   keystroke edit. Routing every `compile_project` call through
+    ///   *today's* `Project::load`/`compile(&env)` would re-walk the tree,
+    ///   re-hash every source, and reseed a brand-new `Driver::new()` db on
+    ///   each call (that function's own body does exactly that:
+    ///   `set_analysis_options` + `set_file` per key + `set_entry` onto a
+    ///   fresh driver) — discarding the incremental state this session exists
+    ///   to keep warm, with no compensating benefit.
+    /// - **As it stands, it would resurrect the #1004 divergence class.**
+    ///   #1032 made compile and analysis share this one db specifically so
+    ///   they can never diverge on manifest/dialect/policy/file-state (see
+    ///   this method's opening paragraph). *Today's* `Project::load` +
+    ///   `compile(&env)` builds an `Environment` from a fresh `SourceTree`
+    ///   walk and compiles it on its own freshly-minted `ProjectDb` (via
+    ///   `Driver::new()`). Wiring `compile_project` through that entry point
+    ///   unmodified would put a *second* db back in the picture alongside
+    ///   `IdeSession`'s own. This is a property of `compile`'s current body
+    ///   (it always mints a throwaway driver), not an inherent property of
+    ///   the `Environment` value type — see below.
+    /// - **The live alternative, named and deferred, not dismissed.** A
+    ///   `compile_into(&mut Driver, &Environment)` variant — same
+    ///   `set_analysis_options`/`set_file`/`set_entry` push, applied to the
+    ///   *session's own* `ProjectDb` instead of a fresh one — would preserve
+    ///   incrementality outright (salsa's `set_file` is a no-op for unchanged
+    ///   content, so unrelated files' memos survive) while keeping exactly
+    ///   one db, sidestepping the #1004 divergence concern above by
+    ///   construction. That is a real, live alternative, not a hypothetical
+    ///   future-salsa escape hatch — it is deliberately **out of scope for
+    ///   this ruling** because it requires designing and landing a new
+    ///   `brink-environment` entry point, which #1385 did not ask this PR to
+    ///   do. It is the natural next step if/when `IdeSession` is revisited to
+    ///   compile against `Environment`-shaped input; bring it back as its own
+    ///   proposal rather than treating this doc comment as having settled it.
+    /// - **The adjacent design question is still genuinely open.** #1347
+    ///   (`needs-design`, unresolved) asks whether `IdeSession`'s live-typing
+    ///   diagnostics should route through `ProjectDb`'s own salsa-level
+    ///   `analysis_query`/`per_file_diagnostics_query` surface at all. Forcing
+    ///   `compile_project` onto a *different* producer now would prejudge that
+    ///   still-open call rather than wait for it. Still unresolved, but now
+    ///   measured: `docs/live-typing-diagnostics-divergence.md` inventories
+    ///   what the two surfaces actually disagree on (native files only, in
+    ///   both directions), pinned by `tests/live_typing_db_divergence.rs`.
+    ///
+    /// **Relationship to the #1306 decision-log entry**
+    /// (`docs/decision-log.md`, "Compilation environment as a deterministic,
+    /// serializable input" — "producer vs. pure input"): that entry names
+    /// `set_file`/`set_entry`/`set_analysis_options` as exactly the imperative
+    /// push `Environment`/`compile(&env)` exists to reify, and folds "the LSP
+    /// mount (#1131)" into the producer's scope — i.e. it anticipated
+    /// `IdeSession`-shaped mounts eventually feeding `Environment` too. This
+    /// ruling is a **narrower, present-tense carve-out**: it does not
+    /// contradict #1306's long-run direction, it says today's
+    /// `compile(&Environment)` shape (one throwaway db per call) is not yet
+    /// the right fit for `IdeSession`'s incremental db, pending the
+    /// `compile_into`-style seam above.
     ///
     /// # Errors
     /// Returns [`CompileEntryError::EntryNotFound`] if `entry` is not a file
@@ -474,8 +809,40 @@ impl IdeSession {
     }
 
     /// Get the parse tree root for a file.
+    ///
+    /// This always runs the **ink** frontend, regardless of the file's
+    /// extension (`ProjectDb::parse`'s doc comment: `parse()` "stays
+    /// ink-typed and untouched for the LSP/IDE ink path"). A native
+    /// (`.brink`) file's *real* CST — the one its own HIR/resolutions were
+    /// built from — is [`syntax_root_native`](Self::syntax_root_native); a
+    /// caller presenting syntax to a user (semantic tokens, folding, ...)
+    /// must check [`is_native`](Self::is_native) and use that instead, or it
+    /// ends up classifying the ink-parsed garbage tree ink's grammar
+    /// produces from native source text (issue #2280).
     pub fn syntax_root(&self, id: FileId) -> Option<brink_syntax::SyntaxNode> {
         self.db.parse(id).map(brink_syntax::Parse::syntax)
+    }
+
+    /// Get the native (`.brink`) parse tree root for a file (issue #2280) —
+    /// the native sibling of [`syntax_root`](Self::syntax_root), backed by
+    /// `ProjectDb::parse_native` (the same native CST `lowered_query` builds
+    /// this file's HIR/resolutions from, so ranges from this root line up
+    /// with [`crate::semantic_tokens`]'s resolution index). `None` for a
+    /// file this session hasn't loaded, same as `syntax_root`.
+    pub fn syntax_root_native(&self, id: FileId) -> Option<brink_syntax_native::SyntaxNode> {
+        self.db
+            .parse_native(id)
+            .map(brink_syntax_native::Parse::syntax)
+    }
+
+    /// Whether `id` is a native (`.brink`) module rather than an ink file
+    /// (issue #2280) — a thin pass-through to `ProjectDb::is_native`, so a
+    /// query-layer caller (`brink-web`'s `semantic_tokens_impl`, ...) can
+    /// pick [`syntax_root`](Self::syntax_root) vs
+    /// [`syntax_root_native`](Self::syntax_root_native) without reaching
+    /// past this session into the db directly.
+    pub fn is_native(&self, id: FileId) -> bool {
+        self.db.is_native(id)
     }
 }
 
@@ -495,11 +862,13 @@ mod tests {
     };
 
     use super::{
-        Dialect, ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity, TypePolicy,
+        AnalysisOptions, Dialect, ExternalCheckSeverity, IdeSession,
+        SemanticTypeDiagnosticSeverity, TypePolicy,
     };
 
     fn color_manifest() -> HostManifest {
         HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "tint".into(),
                 params: vec![ManifestParam {
@@ -570,6 +939,152 @@ mod tests {
         );
         // ...but enrichment is still built.
         assert!(!analysis.symbol_meta.is_empty(), "meta built even when Off");
+    }
+
+    // ── Markup vocabulary (#1733, docs/prose-dialect-spec.md §4.2) ──────
+    //
+    // End-to-end through the surface a host actually drives: register a
+    // manifest on a live session (the same call `@brink-lang/web`'s
+    // `EditorHandle::set_host_manifest` makes) and read the diagnostics the
+    // editor renders. Nothing below reaches into the analyzer pass directly.
+
+    /// Native prose with one declared tag and one undeclared one.
+    const MARKUP_SRC: &str =
+        "flow a() {\n  <wave amount=\"3\">shimmer</wave> <glitch>zap</glitch>\n}\n";
+
+    fn markup_manifest() -> HostManifest {
+        HostManifest {
+            markup: vec![brink_ir::ManifestSpanKind {
+                name: "wave".into(),
+                attrs: vec![brink_ir::ManifestSpanAttr {
+                    name: "amount".into(),
+                    required: false,
+                    ty: None,
+                }],
+            }],
+            ..HostManifest::default()
+        }
+    }
+
+    #[test]
+    fn markup_is_freeform_with_no_manifest_registered() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165)),
+            "freeform-by-default: undeclared markup must not be diagnosed: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn markup_is_still_freeform_under_an_externals_only_manifest() {
+        // A host that registers a manifest for its *externals* has not opted
+        // into markup checking — `markup` is the only key that tightens.
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        session.set_host_manifest(color_manifest());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165)),
+            "an externals-only manifest must not enable markup checking: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_declared_markup_vocabulary_diagnoses_the_undeclared_tag_only() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        session.set_host_manifest(markup_manifest());
+        let analysis = session.analysis().expect("analysis");
+
+        let markup: Vec<_> = analysis
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165))
+            .collect();
+        assert_eq!(
+            markup.len(),
+            1,
+            "exactly the undeclared `<glitch>` should be flagged: {:?}",
+            analysis.diagnostics
+        );
+        assert_eq!(markup[0].code, DiagnosticCode::E164);
+        assert!(
+            markup[0].message.contains("<glitch>"),
+            "message must name the tag: {}",
+            markup[0].message
+        );
+    }
+
+    #[test]
+    fn clearing_the_manifest_returns_markup_to_freeform() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        session.set_host_manifest(markup_manifest());
+        session.clear_host_manifest();
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165)),
+            "clearing the manifest must restore the freeform default: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn the_salsa_compile_path_also_reports_markup_diagnostics_as_warnings() {
+        // The three tests above read the off-db background analysis (what the
+        // editor squiggles). This one drives `compile`, the *other* consumer
+        // — `brink-web`'s `EditorSession::compile` returns `product.warnings`
+        // to JS as its `warnings` array — so the db's
+        // `per_file_diagnostics_query` reaches the check too, and a project
+        // compiling with a declared vocabulary really does see it.
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "main.brink",
+            "flow main() {\n  <glitch>zap</glitch>\n  -> END\n}\n".to_string(),
+        );
+        let options = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            host_manifest: Some(markup_manifest()),
+            ..Default::default()
+        };
+        let product = session
+            .compile("main.brink", &options)
+            .expect("entry file is loaded");
+
+        assert!(
+            product
+                .warnings
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E164),
+            "expected E164 in compile warnings: errors={:?} warnings={:?}",
+            product.errors,
+            product.warnings
+        );
+        // A `Warning` never blocks the artifact — freeform-by-default's
+        // sibling guarantee: tightening the vocabulary reports, it does not
+        // stop a project from compiling until `[lints]` says so.
+        assert!(
+            product.story.is_some(),
+            "a markup warning must not block the story: {:?}",
+            product.errors
+        );
     }
 
     /// #532: ink with a host semantic type param and no registered manifest.
@@ -764,6 +1279,71 @@ EXTERNAL add_state(who)
             "types=strict + dialect=brink: expected E065 on unused param `x`: {:?}",
             analysis.diagnostics
         );
+    }
+
+    /// B0.9 native strict-only enforcement (issue #1342): the IDE/editor
+    /// surface (`brink-web`'s `EditorSession::compile_project`, which calls
+    /// `IdeSession::compile` exactly as here — see that method's doc)
+    /// reaches `E137` the same way `brink_compiler::compile_path_with_options`
+    /// does — proving the salsa `story_data()` compile path (not just the
+    /// pure `analyze_with_options` diagnostics path `set_type_policy`'s
+    /// sibling tests above exercise) also hits the gate.
+    #[test]
+    fn compile_native_file_with_explicit_gradual_types_reports_e137() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "main.brink",
+            "flow main() {\n  Hello. -> END\n}\n".to_string(),
+        );
+        let options = AnalysisOptions {
+            types: Some(TypePolicy::Gradual),
+            ..Default::default()
+        };
+        let product = session
+            .compile("main.brink", &options)
+            .expect("entry file is loaded");
+
+        assert!(
+            product
+                .errors
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "types=gradual native compile: expected E137: {:?}",
+            product.errors
+        );
+        assert!(
+            product.story.is_none(),
+            "a hard error must not emit a story"
+        );
+    }
+
+    /// The paired positive case: `types = strict` on the same native entry
+    /// compiles cleanly (no `E137`).
+    #[test]
+    fn compile_native_file_with_explicit_strict_types_has_no_e137() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "main.brink",
+            "flow main() {\n  Hello. -> END\n}\n".to_string(),
+        );
+        let options = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..Default::default()
+        };
+        let product = session
+            .compile("main.brink", &options)
+            .expect("entry file is loaded");
+
+        assert!(
+            !product
+                .errors
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "types=strict native compile: expected no E137: {:?}",
+            product.errors
+        );
+        assert!(product.story.is_some(), "expected a compiled story");
     }
 
     /// #1127 (default flip): under `dialect = brink` with NO explicit

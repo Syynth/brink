@@ -1,0 +1,15 @@
+// Tag/cue-name raw-text-scan escape and brace-depth shapes (issue #1883) -
+// docs/prose-dialect-spec.md 4.6/4.7. Backfills corpus coverage for two
+// shapes that, before this fixture, were exercised only by in-crate unit
+// tests (`a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace`,
+// `a_balanced_brace_in_a_cue_name_does_not_swallow_the_enclosing_blocks_own_closer`):
+// `\\{` (an escaped backslash, producing a literal `\`, followed by a
+// real, depth-counted brace) inside a trailing tag, and a cue name whose
+// own `{...}` balances internally instead of swallowing the enclosing
+// flow's closer early.
+
+flow tavern() {
+  @VENDOR {gold} coins, kid.
+
+  Take it or leave it #warning \\{gold} coins, final offer.
+}

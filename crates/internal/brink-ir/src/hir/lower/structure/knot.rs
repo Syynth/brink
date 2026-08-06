@@ -4,8 +4,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::NodeClass;
 use crate::{
-    Block, DiagnosticCode, Divert, DivertPath, DivertTarget, Knot, Name, Param, ParamInfo, Path,
-    Stitch, Stmt, SymbolKind,
+    Block, DiagnosticCode, Divert, DivertPath, DivertTarget, Knot, Name, Param, Path, Stitch, Stmt,
 };
 
 use super::super::block::LowerBlock;
@@ -18,8 +17,6 @@ use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::{make_name, name_from_ident};
 use super::super::types::lower_type_annotation;
 use super::stitch::lower_stitch;
-
-use crate::symbols::LocalSymbol;
 
 pub(super) fn lower_knot(
     scope: &mut LowerScope,
@@ -40,44 +37,10 @@ pub(super) fn lower_knot(
 
     let is_function = header.is_function();
     let params = lower_knot_params(header.params(), sink);
-    let param_infos: Vec<ParamInfo> = params
-        .iter()
-        .map(|p| ParamInfo {
-            name: p.name.text.clone(),
-            is_ref: p.is_ref,
-            is_divert: p.is_divert,
-        })
-        .collect();
-    let detail = if is_function {
-        Some("function".to_owned())
-    } else {
-        None
-    };
     let (doc, issues) = parse_doc_comment(knot.syntax(), DocPolicy::CALLABLE);
     issues.diagnose(sink);
-    sink.declare_full(
-        SymbolKind::Knot,
-        &name_text,
-        ident.syntax().text_range(),
-        param_infos,
-        detail,
-        doc,
-    );
 
     scope.current_knot = Some(name_text.clone());
-    for p in &params {
-        sink.add_local(LocalSymbol {
-            name: p.name.text.clone(),
-            range: p.name.range,
-            scope: scope.to_scope(),
-            kind: crate::SymbolKind::Param,
-            param_detail: Some(ParamInfo {
-                name: p.name.text.clone(),
-                is_ref: p.is_ref,
-                is_divert: p.is_divert,
-            }),
-        });
-    }
     let (body, stitches) = knot.body().map_or_else(
         || (Block::default(), Vec::new()),
         |b| lower_knot_body(scope, sink, &b, &name_text),
@@ -89,12 +52,14 @@ pub(super) fn lower_knot(
     // line(s) in the leading tag-line run of the body.
     let mut is_local = false;
     let mut effects_assertion = None;
+    let mut visibility = None;
+    let mut was = None;
     if let Some(b) = knot.body() {
         let dirs = leading_body_directives(b.syntax());
         is_local = apply_scope_directives(&dirs, DirectiveTarget::Knot, sink);
         effects_assertion = effects_assertion_from_directives(&dirs, sink);
         if let Some(vis) = super::super::directive::visibility_from_directives(&dirs, sink) {
-            sink.set_visibility(crate::SymbolKind::Knot, &name_text, vis);
+            visibility = Some(vis);
         }
         if let Some((old_name, was_range)) =
             super::super::directive::was_from_directives(&dirs, sink)
@@ -102,7 +67,7 @@ pub(super) fn lower_knot(
             if old_name == name_text {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
-                sink.set_was(crate::SymbolKind::Knot, &name_text, old_name, was_range);
+                was = Some((old_name, was_range));
             }
         }
     }
@@ -120,7 +85,15 @@ pub(super) fn lower_knot(
         stitches,
         is_local,
         effects_assertion,
+        // Native-only annotations (issue #1719) — ink has no `@[element]`/
+        // `@[style]` equivalent tag.
+        element_annotation: None,
+        convention_annotation: None,
+        style_annotation: None,
         return_type,
+        doc,
+        visibility,
+        was,
     })
 }
 
@@ -136,18 +109,13 @@ pub(super) fn lower_knot_body(
         .collect();
     let mut block = body.lower_block(scope, sink).unwrap_or_default();
 
-    // First-stitch auto-enter
+    // First-stitch auto-enter — the synthesized `Divert` below is itself
+    // the reference `project_manifest` picks up (its `DivertTarget.path`
+    // walk), so there is no separate ref to register here.
     if block.stmts.is_empty()
         && let Some(first) = stitches.first()
         && first.params.is_empty()
     {
-        sink.add_unresolved(
-            &first.name.text,
-            first.name.range,
-            crate::symbols::RefKind::Divert,
-            &scope.to_scope(),
-            None,
-        );
         block.stmts.push(Stmt::Divert(Divert {
             ptr: None,
             target: DivertTarget {
@@ -157,10 +125,14 @@ pub(super) fn lower_knot_body(
                         range: first.name.range,
                     }],
                     range: first.name.range,
+                    crosses_module_wall: false,
                 }),
                 args: Vec::new(),
             },
         }));
+        // The synthesized divert is now the block's final statement
+        // (docs/block-effect-model.md §10 row j) — re-derive `tail`.
+        block.recompute_tail();
     }
 
     (block, stitches)

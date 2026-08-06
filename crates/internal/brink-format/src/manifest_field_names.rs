@@ -27,11 +27,12 @@
 //! types and asserts they agree.
 //!
 //! Every other key (`effects`/`reads`/`writes`/`detect` on the capability
-//! side; `params`/`returns`/`kind`/`doc`/`widgets`/`path` on the tooling
-//! side) is owned by exactly one consumer — serde's default "unknown fields
-//! are ignored" behavior is what lets the same file carry both without
-//! either type needing to know about the other's keys, so those names carry
-//! no shared-drift risk and aren't duplicated here.
+//! side; `params`/`returns`/`kind`/`doc`/`widgets`/`path` and the top-level
+//! `types`/`markup` sections on the tooling side) is owned by exactly one
+//! consumer — serde's default "unknown fields are ignored" behavior is what
+//! lets the same file carry both without either type needing to know about
+//! the other's keys, so those names carry no shared-drift risk and aren't
+//! duplicated here.
 
 /// The top-level manifest wrapper key: `{"externals": [...]}`.
 pub const EXTERNALS: &str = "externals";

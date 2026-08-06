@@ -10,12 +10,22 @@ publish = false
 [dependencies]
 brink-runtime = { workspace = true, features = ["testing"] }
 brink-format = { workspace = true, features = ["inkt"] }
-brink-compiler = { workspace = true }
+# `test-util` (issue #2168): this crate IS test/bench tooling — `corpus.rs`
+# and the `compile_bench`/`inkb_hashes` bins compile fixture ink source
+# straight off disk via the legacy closure/path entry points, bypassing
+# `brink_environment::compile(&Environment)` (#1306, the production road)
+# on purpose. A normal (non-dev) dependency since those bins need it
+# unconditionally, not just under a test target.
+brink-compiler = { workspace = true, features = ["test-util"] }
 # For the compile_bench bin (#498): stage-level timing through the production
 # driver's own seams (discover / analyze / diagnostics / LIR / codegen).
 brink-driver = { workspace = true }
 brink-ir = { workspace = true }
 brink-codegen-inkb = { workspace = true }
+# For `corpus::explore_from_brink_native` (first-light, #1106): the native
+# `.brink` frontend, composed by hand (no `brink-db`/salsa, no INCLUDE
+# graph) — see that function's doc for why this is the honest minimal path.
+brink-syntax-native = { workspace = true }
 # For the editor_session_bench bin (#529): drives ProjectDb directly and
 # reads its salsa memo-table snapshot. `memory-introspection` is brink-db's
 # explicit opt-in to salsa's `salsa_unstable` introspection surface (see that
@@ -25,6 +35,26 @@ brink-db = { workspace = true, features = ["memory-introspection"] }
 # FG-3): `AnalysisOptions`/`Dialect`/`TypePolicy` to configure `types =
 # strict` on the persistent db before the edit loop.
 brink-analyzer = { workspace = true }
+# For corpus/bench case discovery: the shared pruned directory walk (issue
+# #1433) every recursive traversal in the workspace routes through, instead
+# of each one hand-rolling a `read_dir` recursion.
+brink-source-tree = { workspace = true }
+# `corpus::compile_via_environment` (issue #2223's parallel gate): the real
+# production compile entry point (`brink_environment::compile(&Environment)`,
+# #1306) alongside this crate's existing `compile_path`-based helpers, which
+# all bypass `Environment` (and its stdlib mount, #2080) entirely. A normal
+# (non-dev) dependency because `src/corpus.rs` calls it unconditionally, not
+# just from a test target — the same reasoning as `brink-compiler` above.
+brink-environment = { workspace = true }
+# `corpus::run_native_transcript` (issue #2289): discovers a co-located
+# `brink.toml` (if any) the same way `brink_environment::Project::load`
+# already does, so a `.brink` fixture that needs `[project] conventions`
+# configured (e.g. a conventions module claiming its own file's prose) gets
+# the SAME options on both this crate's `compile_path`-based road and the
+# `Environment`-based one `environment_parallel_gate.rs` compares it
+# against — without this, the two roads would diverge on any fixture that
+# added a `brink.toml` only the `Environment` road would ever read.
+brink-project-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
@@ -44,7 +74,9 @@ regex = { workspace = true }
 # `brink-runtime`'s bench/test-only `effect-trace` recorder. Not part of
 # `default` — `cargo test --workspace` never builds
 # `tests/t2_ground_truth_effects.rs` (see that file's `required-features`);
-# CI runs it as its own job with `--features effect-trace`.
+# CI exercises it via the `Test (all features)` job's
+# `cargo test --workspace --all-features --exclude bevy-brink`, not a
+# dedicated job.
 effect-trace = ["brink-runtime/effect-trace"]
 
 [[test]]

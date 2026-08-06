@@ -49,7 +49,7 @@ fn arb_select_key() -> impl Strategy<Value = SelectKey> {
     ]
 }
 
-fn arb_line_part() -> impl Strategy<Value = LinePart> {
+fn arb_line_part_leaf() -> impl Strategy<Value = LinePart> {
     prop_oneof![
         "[^\"\\\\\x00]*".prop_map(LinePart::Literal),
         any::<u8>().prop_map(LinePart::Slot),
@@ -64,6 +64,29 @@ fn arb_line_part() -> impl Strategy<Value = LinePart> {
                 default,
             }),
     ]
+}
+
+/// `LinePart::Span` (#1716, `docs/prose-dialect-spec.md` §4.4) — nested,
+/// like `proptest_inkb.rs`'s mirror of this same strategy. Bounded via
+/// `prop_recursive` (depth 3, up to 16 total nodes, width 3 per span) so
+/// generated cases stay small and shrinkable. Names/attr values are drawn
+/// from the same `[^\"\\\\\x00]*` domain the other `.inkt` string leaves use
+/// — this exercises `escape_string`/`unescape_string` over span names and
+/// attr values through `inkt`'s reader/writer (`inkt/read/lines.rs`'s
+/// `parse_span_part`), which was previously untested by this fuzzer.
+fn arb_line_part() -> impl Strategy<Value = LinePart> {
+    arb_line_part_leaf().prop_recursive(3, 16, 3, |inner| {
+        (
+            "[^\"\\\\\x00]*",
+            prop::collection::vec(("[^\"\\\\\x00]*", "[^\"\\\\\x00]*"), 0..3),
+            prop::collection::vec(inner, 0..3),
+        )
+            .prop_map(|(name, attrs, children)| LinePart::Span {
+                name,
+                attrs,
+                children,
+            })
+    })
 }
 
 fn arb_line_content() -> impl Strategy<Value = LineContent> {
@@ -354,6 +377,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::EmitValue),
         Just(Opcode::EmitNewline),
         Just(Opcode::Glue),
+        Just(Opcode::AttachElement),
+        Just(Opcode::EndElementRun),
         Just(Opcode::Done),
         Just(Opcode::End),
         Just(Opcode::Nop),
@@ -397,6 +422,12 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::MapGetOpt),
         Just(Opcode::MapContainsValue),
         Just(Opcode::MapClear),
+        // B1 `or`-coalescing, short-circuited (issue #1471).
+        any::<i32>().prop_map(Opcode::CoalesceSome),
+        // B1b the `as` binding (issue #1475).
+        any::<u16>().prop_map(Opcode::OptionBind),
+        // Seq `remove_at` (issue #1484).
+        Just(Opcode::SeqRemoveAt),
         // NS-A6 rand verbs (#1112).
         Just(Opcode::RandFloat),
         Just(Opcode::RandChance),
@@ -412,6 +443,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::SeqSortedBy),
         // NS-A8 numeric tower (#1114): one opcode, thirteen kinds.
         prop::sample::select(brink_format::TowerOp::ALL.as_slice()).prop_map(Opcode::Tower),
+        // The fn-value verbs (#1679): one opcode, one kind per verb.
+        prop::sample::select(brink_format::SeqVerbOp::ALL.as_slice()).prop_map(Opcode::SeqVerb),
     ]
 }
 
@@ -562,6 +595,9 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::MapGetOpt
         | Opcode::MapContainsValue
         | Opcode::MapClear
+        | Opcode::CoalesceSome(_)
+        | Opcode::OptionBind(_)
+        | Opcode::SeqRemoveAt
         | Opcode::RandFloat
         | Opcode::RandChance
         | Opcode::RandPick
@@ -573,13 +609,16 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::SeqSortedBy
         | Opcode::Tower(_)
         | Opcode::Collect(_)
+        | Opcode::SeqVerb(_)
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End
         | Opcode::Nop
         | Opcode::BeginStringEval
         | Opcode::EndStringEval
-        | Opcode::SourceLocation(_, _) => {}
+        | Opcode::SourceLocation(_, _)
+        | Opcode::AttachElement
+        | Opcode::EndElementRun => {}
     }
 }
 

@@ -1,0 +1,7 @@
+before
+Hi
+middle
+Hi
+after 2.
+Hi
+tail

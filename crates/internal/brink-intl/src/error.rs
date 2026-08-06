@@ -9,6 +9,14 @@ pub enum IntlError {
     InvalidScopeId(String),
     #[error("scope not found in base: {0}")]
     ScopeNotInBase(String),
+    #[error(
+        "scopes [{scope_ids}] all bind to base scope {base_scope_id} after `#@was` rebinding; \
+         resolve the duplicate before compiling this locale"
+    )]
+    AmbiguousScopeRebind {
+        scope_ids: String,
+        base_scope_id: String,
+    },
     #[error("line count mismatch for scope {scope_id}: expected {expected}, got {actual}")]
     LineCountMismatch {
         scope_id: String,
@@ -33,4 +41,27 @@ pub enum IntlError {
     MissingSelectData(String),
     #[error("invalid select JSON in originalData: {0}")]
     InvalidSelectJson(String),
+    #[error("span metadata not found for dataRef `{0}`")]
+    MissingSpanData(String),
+    #[error("invalid span JSON in originalData: {0}")]
+    InvalidSpanJson(String),
+    #[error("invalid XLIFF `<cp hex=\"{0}\"/>`: `{0}` is not a hexadecimal Unicode scalar value")]
+    InvalidCodePoint(String),
+    #[error(
+        "inline code `{0}` looks like a brink span (`<pc>`) that a translation tool \
+         re-expressed as `<sc>`/`<ec>`/`<mrk>`, likely by splitting it across a segment \
+         boundary; brink does not support reconstructing a span from that shape \
+         (see docs/prose-dialect-spec.md §4.4)"
+    )]
+    UnsupportedSpanSplit(String),
+    #[error(
+        "slot index {slot} out of range for scope {scope_id} line {line_index}: \
+         base line has {slot_count} slot(s) (valid indices: 0..{slot_count})"
+    )]
+    SlotIndexOutOfRange {
+        scope_id: String,
+        line_index: u16,
+        slot: u8,
+        slot_count: usize,
+    },
 }

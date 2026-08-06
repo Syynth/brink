@@ -39,6 +39,20 @@ const hoisted = vi.hoisted(() => {
       calls.push({ method: "apply_project_config", args: [toml] });
       return "[\"unknown key `project.future_key` in brink.toml (ignored)\"]";
     }
+    discover_project_config(entry: unknown): string {
+      calls.push({ method: "discover_project_config", args: [entry] });
+      return "[]";
+    }
+    set_lint_overrides(json: unknown): string {
+      calls.push({ method: "set_lint_overrides", args: [json] });
+      return "[]";
+    }
+    set_deny_warnings_override(deny: unknown): void {
+      calls.push({ method: "set_deny_warnings_override", args: [deny] });
+    }
+    clear_deny_warnings_override(): void {
+      calls.push({ method: "clear_deny_warnings_override", args: [] });
+    }
   }
   return { calls, EditorSessionStub };
 });
@@ -145,6 +159,96 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
     ]);
     expect(warnings).toEqual([
       "unknown key `project.future_key` in brink.toml (ignored)",
+    ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes discoverProjectConfig (#1414: SourceTree-seam brink.toml discovery for the virtual web mount)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.discoverProjectConfig).toBe("function");
+  });
+
+  it("forwards discoverProjectConfig to discover_project_config, parses the warning JSON, and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const warnings = handle.discoverProjectConfig("main.ink");
+
+    expect(hoisted.calls).toEqual([
+      { method: "discover_project_config", args: ["main.ink"] },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  // Issue #1417: extends the CLI/API `[lints]`/`deny-warnings` override
+  // tier (`brink compile`'s `--deny`/`--warn`/`--allow`/`-D warnings`,
+  // #1373) to the wasm editor session. Same passthrough shape as every
+  // other lever above: method exists on `EditorSessionHandle`, forwards
+  // its argument(s) to the raw wasm binding, bumps `generation`.
+
+  it("exposes setLintOverrides (#1417: the lever was unreachable without it)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.setLintOverrides).toBe("function");
+  });
+
+  it("forwards setLintOverrides to set_lint_overrides as JSON, parses the warning JSON, and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const warnings = handle.setLintOverrides({ E014: "deny" });
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_lint_overrides", args: ['{"E014":"deny"}'] },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("forwards setLintOverrides with an info/hint level (#1162: the advisory tier below Warning)", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const warnings = handle.setLintOverrides({ E014: "hint" });
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_lint_overrides", args: ['{"E014":"hint"}'] },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes setDenyWarningsOverride/clearDenyWarningsOverride (#1417: the levers were unreachable without them)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.setDenyWarningsOverride).toBe("function");
+    expect(typeof handle.clearDenyWarningsOverride).toBe("function");
+  });
+
+  it("forwards setDenyWarningsOverride to set_deny_warnings_override and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    handle.setDenyWarningsOverride(true);
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_deny_warnings_override", args: [true] },
+    ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("forwards clearDenyWarningsOverride to clear_deny_warnings_override and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    handle.clearDenyWarningsOverride();
+
+    expect(hoisted.calls).toEqual([
+      { method: "clear_deny_warnings_override", args: [] },
     ]);
     expect(handle.generation).toBe(before + 1);
   });

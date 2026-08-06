@@ -10,6 +10,7 @@ mod stitch;
 
 use brink_syntax::ast::{self, AstNode};
 
+use crate::symbols::project_manifest;
 use crate::{Block, DiagnosticCode, FileId, HirFile, Import, IncludeSite, Knot, SymbolManifest};
 
 use super::block::lower_weave_body;
@@ -25,7 +26,10 @@ use stitch::lower_top_level_stitch;
 
 /// Lower a complete source file to HIR.
 ///
-/// Produces an `(HirFile, SymbolManifest, Vec<Diagnostic>)` tuple.
+/// Produces an `(HirFile, SymbolManifest, Vec<Diagnostic>)` tuple — the
+/// manifest is [`project_manifest`]'s pure projection of the just-built
+/// `HirFile` (B0.4, docs/hir-admission-contract.md Q3(b)), not a
+/// hand-accumulated side effect of lowering.
 pub fn lower(
     file_id: FileId,
     file: &ast::SourceFile,
@@ -34,36 +38,41 @@ pub fn lower(
     let mut sink = EffectSink::new(file_id);
 
     let hir = lower_source_file(&mut scope, &mut sink, file);
-    let (manifest, diagnostics) = sink.finish();
+    let manifest = project_manifest(&hir);
+    let diagnostics = sink.finish();
     (hir, manifest, diagnostics)
 }
 
 /// Lower a single knot definition in isolation.
 ///
-/// Returns `None` for the knot if the AST node is malformed (e.g. missing header).
+/// Returns `None` for the knot if the AST node is malformed (e.g. missing
+/// header). No manifest — a per-knot manifest fragment has no `HirFile` to
+/// project from; callers that need one (`brink-db`'s `lower_file`) project
+/// it once from the fully assembled `HirFile` instead.
 pub fn lower_single_knot(
     file_id: FileId,
     knot: &ast::KnotDef,
-) -> (Option<Knot>, SymbolManifest, Vec<crate::Diagnostic>) {
+) -> (Option<Knot>, Vec<crate::Diagnostic>) {
     let mut scope = LowerScope::new(file_id);
     let mut sink = EffectSink::new(file_id);
 
     let result = lower_knot(&mut scope, &mut sink, knot).ok();
-    let (manifest, diagnostics) = sink.finish();
-    (result, manifest, diagnostics)
+    let diagnostics = sink.finish();
+    (result, diagnostics)
 }
 
-/// Lower only the top-level content and declarations of a file, skipping knots.
+/// Lower only the top-level content and declarations of a file, skipping
+/// knots. No manifest — see [`lower_single_knot`]'s doc.
 ///
 /// Useful for incremental analysis where knots are lowered separately.
 pub fn lower_top_level(
     file_id: FileId,
     file: &ast::SourceFile,
-) -> (Block, Vec<Knot>, SymbolManifest, Vec<crate::Diagnostic>) {
+) -> (Block, Vec<Knot>, Vec<crate::Diagnostic>) {
     let mut scope = LowerScope::new(file_id);
     let mut sink = EffectSink::new(file_id);
 
-    // Lower declarations (registers symbols in manifest).
+    // Lower declarations.
     // Walk descendants — VAR/CONST/LIST are global regardless of nesting.
     let _variables: Vec<_> = file
         .syntax()
@@ -101,8 +110,8 @@ pub fn lower_top_level(
         .collect();
 
     let root_content = lower_weave_body(file.syntax(), &scope, &mut sink);
-    let (manifest, diagnostics) = sink.finish();
-    (root_content, top_level_knots, manifest, diagnostics)
+    let diagnostics = sink.finish();
+    (root_content, top_level_knots, diagnostics)
 }
 
 // ─── Source file ────────────────────────────────────────────────────
@@ -211,5 +220,22 @@ fn lower_source_file(
         imports,
         visibility,
         was_directives,
+        // The `@[allow(…)]` suppression channel (issue #1161) is native-only
+        // — ink's `@[…]` placement is the top of a knot/stitch *body*, which
+        // has no ruled `allow` tenant. Ink authors keep the line-scoped
+        // `//brink-disable` comment channel and the project `[lints]` table.
+        allow_scopes: Vec::new(),
+        // Natural-notation element dispatch (issue #1838) is native-only for
+        // the same reason: ink's grammar has no `@[element(claims = "…")]`
+        // channel to claim a line with.
+        element_matches: Vec::new(),
+        // Same reason, extended to the harvest obligation (issue #2114):
+        // ink's grammar has no `@NAME` cue channel to harvest.
+        cue_names: Vec::new(),
+        // This module *is* the ink frontend — see `HirFile::native`.
+        native: false,
+        // Same reason, extended to the declaration record (issue #1844):
+        // ink has no claiming handlers to declare.
+        claim_handlers: Vec::new(),
     }
 }

@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use bevy_app::App;
+use bevy_ecs::change_detection::DetectChangesMut as _;
 use bevy_ecs::entity::{Entity, EntityMapper};
 use bevy_ecs::event::EntityEvent;
 use bevy_ecs::observer::On;
@@ -64,7 +65,7 @@ use bevy_asset::Assets;
 /// meaningless across sessions"). Ephemerality is an implementor choice,
 /// never a category the spec assigns.
 pub trait HandleKind: Send + Sync + 'static {
-    /// The manifest-declared kind name (`handle<KIND>` in ink source).
+    /// The manifest-declared kind name (`Handle<KIND>` in ink source).
     const KIND: &'static str;
     /// The live host resource this kind's tokens dereference to.
     type Resource: Send + Sync + 'static;
@@ -120,7 +121,7 @@ impl<K: HandleKind> HandleRegistry<K> {
     /// Mint a token and build the ink-facing [`Value::Handle`] for it,
     /// resolving this kind's name id against `program`'s name table.
     /// `None` if this compile never interned [`HandleKind::KIND`] (no
-    /// `handle<K>`-typed signature/annotation anywhere in the source graph
+    /// `Handle<K>`-typed signature/annotation anywhere in the source graph
     /// — see [`Program::name_id`](brink_runtime::Program::name_id)).
     pub fn mint_value(&mut self, program: &Program, resource: K::Resource) -> Option<Value> {
         let kind = program.name_id(K::KIND)?;
@@ -796,9 +797,21 @@ pub fn gc_on_turn_done<M: Send + Sync + 'static>(
         return;
     }
 
-    let Some(globals) = globals.as_deref_mut() else {
+    let Some(globals) = globals.as_mut() else {
         return;
     };
+    // Read-only in effect (issue #1632): the sweep below only *reads*
+    // through the context view `save_flow_state` builds — it takes `&mut`
+    // for the same reason `call_ink_function` does, not because it writes a
+    // global cell. Since this observer fires on every turn-completing frame
+    // once any kind is registered, letting that `&mut` move the resource's
+    // change tick would put a change *outside* the changed-cell ledger every
+    // turn: `BrinkWorldDelta::drain` sees a tick past the one the driver's
+    // own Apply recorded, reports `None`, and the wake pass falls back to
+    // the coarse "anything may have changed" bit — resurrecting #1101's
+    // spurious re-wake for every handle-using host, the half of the root
+    // cause #1146 fixed in `run_flow_sleep` and left standing here.
+    let globals = globals.bypass_change_detection();
 
     let mut reachable: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
     // Every flow's own program contributes its globals-view + local state —
@@ -1507,7 +1520,17 @@ mod tests {
 
         {
             let world = app.world_mut();
-            let _ = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+            // Terminals carry no payload of their own (§7) — the trailing
+            // "Hi.\n" content arrives as its own `Step::Line` before the
+            // bare `Step::Done`, so this drives until the actual turn-done
+            // event (which the GC sweep is wired to) instead of assuming
+            // one call reaches it.
+            loop {
+                let step = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+                if step.is_terminal() {
+                    break;
+                }
+            }
             world.flush();
         }
         app.update();
@@ -1565,7 +1588,17 @@ mod tests {
 
         {
             let world = app.world_mut();
-            let _ = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+            // Terminals carry no payload of their own (§7) — the trailing
+            // "Hi.\n" content arrives as its own `Step::Line` before the
+            // bare `Step::Done`, so this drives until the actual turn-done
+            // event (which the GC sweep is wired to) instead of assuming
+            // one call reaches it.
+            loop {
+                let step = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+                if step.is_terminal() {
+                    break;
+                }
+            }
             world.flush();
         }
         app.update(); // fires BrinkTurnDone → gc_on_turn_done early-returns

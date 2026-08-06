@@ -270,9 +270,10 @@ impl StoryRunner {
     }
 
     /// Reconcile a JSON save (from [`save`](Self::save)) into the running
-    /// story. Returns a `LoadReport` JSON (`{ unknown_globals: [...] }`) of
-    /// saved globals the current story no longer has — empty means a clean
-    /// load. Tolerant of story patches.
+    /// story. Returns a `LoadReport` JSON (`{ unknown_globals: [...],
+    /// unresolved_renames: [...], anonymous_states_dropped: N }`) of what
+    /// the load couldn't apply — all empty/zero means a clean load.
+    /// Tolerant of story patches.
     pub fn load(&self, json: &str) -> Result<String, JsError> {
         let state: brink_runtime::SaveState =
             serde_json::from_str(json).map_err(|e| JsError::new(&format!("load error: {e}")))?;
@@ -410,11 +411,13 @@ impl StoryRunner {
             .advance_with(&handler)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?
         {
-            brink_runtime::StepOutcome::Line(line) => line_to_js(line),
+            brink_runtime::StepOutcome::Step(step) => line_to_js(step),
             brink_runtime::StepOutcome::AwaitingExternal => LineJs {
                 r#type: "awaiting_external",
                 text: String::new(),
                 tags: Vec::new(),
+                block_id: None,
+                element: None,
                 choices: None,
                 name: story.pending_external_name().map(str::to_owned),
             },
@@ -608,6 +611,25 @@ impl StoryRunner {
         !self.recorder.borrow().is_empty()
     }
 
+    /// Whether the last execution cycle of the **default** flow ended with
+    /// a safe exit (an explicit `-> DONE`), as opposed to the flow running
+    /// out of content. Both deliver a `done`-type `Line`; read this right
+    /// after one to tell them apart — `false` means the next
+    /// `continueStory`/`continueSingle`/`advanceOne` call will error
+    /// instead of returning more text. `false` if no story is loaded.
+    ///
+    /// This reflects only the default flow — it does **not** track flows
+    /// spawned/continued via `spawnFlow`/`continueFlow`/
+    /// `continueFlowMaximally`. See
+    /// [`brink_runtime::Story::did_safe_exit`] (issue #1573).
+    #[must_use]
+    pub fn did_safe_exit(&self) -> bool {
+        self.story
+            .borrow()
+            .as_ref()
+            .is_some_and(brink_runtime::Story::did_safe_exit)
+    }
+
     /// Structured, name-resolved snapshot of the runtime's current state for
     /// the studio State View — status, current location, globals, call stack,
     /// visit counts, pending choices, and rng. Returns JSON (`DebugState`).
@@ -779,7 +801,7 @@ impl StoryRunner {
     ///
     /// ```json
     /// {
-    ///   "steps": 100000,        // VM step budget for one `advance` call
+    ///   "steps": 100000,        // VM step budget for one `advance`/`evalFunction`/`resumeFunctionEval` call
     ///   "lines": 1000,          // total visible-line budget for this speculation
     ///   "context": "watch",     // "watch" | "eval" — gates Effect-kind externals
     ///   "liveEffects": false,   // arm Effect externals (only takes effect under "eval")

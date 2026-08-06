@@ -12,7 +12,7 @@ use bevy_ecs::event::Event;
 use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{ResMut, RunSystemOnce as _};
-use brink_runtime::Line;
+use brink_runtime::Step;
 
 use super::parallel::advance_batch_parallel;
 use crate::test_support::{add_story_assets, compile_test_story};
@@ -65,7 +65,7 @@ fn run_batch_permuted(
             &FallbackHandler,
             &mut bufs[i],
         );
-        rendered[i] = lines.iter().map(Line::text).collect();
+        rendered[i] = lines.iter().map(Step::text).collect();
     }
 
     // Apply — always in flow-id order.
@@ -93,7 +93,7 @@ fn reads_pin_to_frame_start_not_a_peers_buffered_write() {
         &FallbackHandler,
         &mut buf_a,
     );
-    let text_a: String = lines_a.iter().map(Line::text).collect();
+    let text_a: String = lines_a.iter().map(Step::text).collect();
     assert!(
         text_a.contains("Val 0."),
         "A reads frame-start g=0: {text_a:?}"
@@ -118,7 +118,7 @@ fn reads_pin_to_frame_start_not_a_peers_buffered_write() {
         &FallbackHandler,
         &mut buf_b,
     );
-    let text_b: String = lines_b.iter().map(Line::text).collect();
+    let text_b: String = lines_b.iter().map(Step::text).collect();
     assert!(
         text_b.contains("Val 0."),
         "B must read frame-start g=0, not A's write: {text_b:?}"
@@ -478,10 +478,11 @@ fn command_triggers_flush_in_flow_id_order() {
 /// ```
 ///
 /// Measures the cost of one batch turn (frame-start snapshot + serial Step
-/// with the per-flow snapshot clone + flow-id-ordered Apply) for a story that
-/// writes one global and ends. The per-flow clone is BH-2's known serial cost
-/// (§12.2's "borrow, don't copy" is the BH-3 optimization) — these numbers
-/// exist to bound it, not to be a throughput target.
+/// with a `FrameStartView` borrow-and-overlay over the shared frame-start
+/// world + flow-id-ordered Apply) for a story that writes one global and
+/// ends. §12.2's "borrow, don't copy" (#937) is the mechanism this bounds —
+/// these numbers exist to bound the borrow + per-flow overlay cost, not to
+/// be a throughput target.
 #[test]
 #[ignore = "scenario harness: wall-clock timing, run explicitly with --ignored --nocapture"]
 fn batch_serial_scenario_numbers() {

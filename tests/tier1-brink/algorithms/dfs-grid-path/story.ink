@@ -29,9 +29,9 @@
 //   reason.
 // - The stack side of this port has NONE of bfs-grid-path's queue-removal
 //   pain: `push`/pop-by-popping-the-back is `push(stack, v)` +
-//   `temp top = stack[len(stack) - 1]` + `remove(stack, len(stack) - 1)`,
+//   `temp top = stack[len(stack) - 1]` + `remove_at(stack, len(stack) - 1)`,
 //   and removing the LAST element is O(1) (no shift), unlike removing
-//   index 0. Same stdlib (`push`/`remove`), opposite cost — worth stating
+//   index 0. Same stdlib (`push`/`remove_at`), opposite cost — worth stating
 //   plainly since v1's "data-structure gymnastics" finding already noted
 //   stack-over-arrays is cheap; this is the direct side-by-side proof
 //   that queue-over-arrays (bfs-grid-path) is the one that actually
@@ -82,7 +82,7 @@ VAR found = false
     while len(stack) > 0 {
         temp top_index = len(stack) - 1
         temp cur = stack[top_index]
-        remove(stack, top_index)
+        remove_at(stack, top_index)
         nodes_visited = nodes_visited + 1
 
         if cur.r == goal.r and cur.c == goal.c {

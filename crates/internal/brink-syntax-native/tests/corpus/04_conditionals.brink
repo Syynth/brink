@@ -1,0 +1,12 @@
+flow garden(hp, a, b) {
+  {if hp > 0 { You live. } else { You die. }}
+  {if hp > 0: You live. else: You die.}
+  {if a { A } else if b { B } else { C }}
+  {if a:
+  A
+  else if b:
+  B
+  else:
+  C
+  }
+}

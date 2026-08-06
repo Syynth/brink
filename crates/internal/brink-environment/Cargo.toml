@@ -1,0 +1,33 @@
+[package]
+name = "brink-environment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "The reified, content-addressed compilation Environment value plus the effectful Project/SourceTree producer (#1306)"
+
+# L3 producer (decision-log 2026-07-23, #1323/#1312/#1306): composes the
+# source-tree seam + project config + resolved deps + entry into the
+# serializable `Environment` input value, and runs the pure `compile` over it.
+# Depends downward on the driver (discovery + salsa db) and the compiler (its
+# `CompileOutput`/`CompileError` result types are reused, not duplicated); it
+# is never depended upon by either of those, so the graph stays acyclic.
+[dependencies]
+brink-driver = { workspace = true }
+brink-compiler = { workspace = true }
+brink-project-config = { workspace = true }
+brink-source-tree = { workspace = true }
+brink-ir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+brink-format = { workspace = true, features = ["inkt-write"] }
+
+[lints]
+workspace = true

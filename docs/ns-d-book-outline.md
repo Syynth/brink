@@ -173,10 +173,14 @@ sidebar). Teaches: stdlib-spec §§4–5, 3b. *(Current spelling:
 The doctrine chapter: **a fault says "your program is wrong";
 Option says "the world didn't have one."** `some`/`none`,
 `x or default`, no truthiness (F27 — explicit `== none` /
-`== some(x)`), `find`/`get`/`min`/`max` returning Option,
-`filter_map`. The display-boundary forgiveness taught as *coming
-with the native surface* (F28: total render until B4). Teaches:
-stdlib-spec §1.1/§1.4/§1.6, F27/F28 rulings.
+`== some(x)` / the `as` binding, B1b #1475),
+`find`/`get`/`min`/`max` returning Option,
+`filter_map`. The display-boundary forgiveness (B4, SHIPPED —
+issue #1463, `docs/stdlib-spec.md` §1.6b) is written up in
+`option.md`'s "How Option prints" section, not as a `Planned`
+callout — it shipped ahead of the native surface, against this
+outline's original ordering assumption. Teaches: stdlib-spec
+§1.1/§1.4/§1.6, F27/F28 rulings.
 
 **15. Iteration** — *class A*
 `for` over the closed iterable set; `for k, v in m` (snapshot

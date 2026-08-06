@@ -63,7 +63,7 @@ pub type ModuleMap = BTreeMap<FileId, ResolvedModule>;
 /// behavior. Use [`merge_manifests_with_modules`] to qualify identity by
 /// declared module.
 pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec<Diagnostic>) {
-    merge_manifests_with_modules(files, &ModuleMap::new(), crate::Dialect::default())
+    merge_manifests_with_modules(files, &ModuleMap::new(), crate::Dialect::default(), false)
 }
 
 /// Merge per-file symbol manifests, qualifying `DefinitionId`s by each
@@ -85,10 +85,18 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
 /// undeclared/legacy file, still warns (`E022`/`E023`/`E026`) and drops the
 /// later definition. `merge_manifests`'s empty `ModuleMap` can never produce
 /// a declared-module pair, so its `Dialect::default()` is inert.
+///
+/// `is_native` (issue #1562 review finding) is the same widening
+/// [`is_cross_declared_module_collision`]'s own doc describes: `true` lets
+/// M-2d coexistence apply regardless of `dialect`, for callers with a real
+/// `Language` classification of the project (`brink-db`'s `symbol_index_query`,
+/// via `project_is_native`). `merge_manifests`'s `false` is byte-identical to
+/// before this parameter existed.
 pub fn merge_manifests_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
     dialect: crate::Dialect,
+    is_native: bool,
 ) -> (SymbolIndex, Vec<Diagnostic>) {
     let mut index = SymbolIndex::default();
     let mut diagnostics = Vec::new();
@@ -114,6 +122,7 @@ pub fn merge_manifests_with_modules(
             module,
             manifest,
             dialect,
+            is_native,
         );
     }
 
@@ -143,6 +152,7 @@ fn insert_file_symbols(
     module: ModuleCtx<'_>,
     manifest: &SymbolManifest,
     dialect: crate::Dialect,
+    is_native: bool,
 ) {
     use DiagnosticCode::{E022, E023, E026};
     use SymbolKind::{Constant, External, Knot, Label, List, ListItem, Stitch, Struct, Variable};
@@ -169,11 +179,108 @@ fn insert_file_symbols(
                 kind,
                 dup_code,
                 dialect,
+                is_native,
             );
         }
     }
     for local in &manifest.locals {
         insert_local(index, file_id, local);
+    }
+
+    push_transitive_aliases(index, module, manifest);
+}
+
+/// M-3 transitive alias entries (issue #1671, docs/modules-spec.md §5): a
+/// `#@was` on a knot or stitch re-keys **every** stitch/label beneath it,
+/// because their qualified names embed the container's name — but
+/// [`insert_symbol`] mints only the container's *own* alias entry, so a
+/// declared rename still lost every descendant's durable state. The loader
+/// cannot recover this at load time (a `DefinitionId` is a hash; no path can
+/// be derived from one), so it must be materialized here, where the
+/// compiler still knows every descendant's qualified path.
+///
+/// Mirrors [`insert_symbol`]'s own-alias construction, additive and
+/// independent per level — a knot renamed *simultaneously* with one of its
+/// own stitches produces one edge per level (`old_knot.new_stitch...` and
+/// `new_knot.old_stitch...`), not the doubly-old `old_knot.old_stitch...`
+/// form, the same documented limitation [`insert_symbol`]'s module+name
+/// case already carries. Table growth is bounded by the renamed container's
+/// subtree size (docs/format-spec.md's alias-table section).
+fn push_transitive_aliases(
+    index: &mut SymbolIndex,
+    module: ModuleCtx<'_>,
+    manifest: &SymbolManifest,
+) {
+    // A knot rename re-keys every stitch and label qualified under its
+    // (bare) name.
+    for knot in &manifest.knots {
+        let Some((old_name, _range)) = &knot.was else {
+            continue;
+        };
+        if old_name == &knot.name {
+            continue; // already diagnosed E095 at lowering; no bridge to mint
+        }
+        let new_prefix = format!("{}.", knot.name);
+        let old_prefix = format!("{old_name}.");
+        for (descendants, kind) in [
+            (&manifest.stitches, SymbolKind::Stitch),
+            (&manifest.labels, SymbolKind::Label),
+        ] {
+            push_prefix_bridged_aliases(index, module, descendants, kind, &new_prefix, &old_prefix);
+        }
+    }
+
+    // A stitch rename re-keys every label qualified under it. `stitch.was`
+    // is already fully qualified as `{knot}.{old_stitch}` (`lower_stitch`
+    // qualifies it with the *current* knot name before storing — see
+    // `Stitch::was`'s doc), matching `stitch.name`'s `{knot}.{new_stitch}`
+    // shape, so only labels (never stitches — stitches don't nest) need a
+    // bridge here.
+    for stitch in &manifest.stitches {
+        let Some((old_qualified, _range)) = &stitch.was else {
+            continue;
+        };
+        if old_qualified == &stitch.name {
+            continue;
+        }
+        let new_prefix = format!("{}.", stitch.name);
+        let old_prefix = format!("{old_qualified}.");
+        push_prefix_bridged_aliases(
+            index,
+            module,
+            &manifest.labels,
+            SymbolKind::Label,
+            &new_prefix,
+            &old_prefix,
+        );
+    }
+}
+
+/// For every `descendant` whose qualified name starts with `new_prefix`,
+/// mint an [`brink_format::AliasEntry`] bridging its pre-rename identity
+/// (`old_prefix` substituted for `new_prefix`) to its real, already-current
+/// id. Shared by both [`push_transitive_aliases`] levels (knot→{stitch,
+/// label}, stitch→label) — same substitution, different prefix pair.
+fn push_prefix_bridged_aliases(
+    index: &mut SymbolIndex,
+    module: ModuleCtx<'_>,
+    descendants: &[brink_ir::DeclaredSymbol],
+    kind: SymbolKind,
+    new_prefix: &str,
+    old_prefix: &str,
+) {
+    let tag = kind.definition_tag();
+    for sym in descendants {
+        let Some(rest) = sym.name.strip_prefix(new_prefix) else {
+            continue;
+        };
+        let old_qualified = format!("{old_prefix}{rest}");
+        let old_hash = hash_qualified_name(module.name, &old_qualified, tag);
+        let new_hash = hash_qualified_name(module.name, &sym.name, tag);
+        index.aliases.push(brink_format::AliasEntry {
+            old: DefinitionId::new(tag, old_hash),
+            new: DefinitionId::new(tag, new_hash),
+        });
     }
 }
 
@@ -195,12 +302,24 @@ fn insert_file_symbols(
 /// `strict-ink` byte-for-byte: `#@module` is brink-only syntax, so a
 /// strict-ink story never has a declared module, and this always returns
 /// `false` there — the whole compat corpus keeps its existing behavior.
+///
+/// `is_native` (issue #1562 review finding) widens the gate exactly as
+/// [`crate::strict_diagnostics`]'s own `is_native` widens `E064`'s dialect
+/// check: `dialect` is an ink-only axis — a native `.brink` project has no
+/// dialect to be wrong about (every `.brink` module is always *declared*,
+/// see `brink_db::modules::native_module_path`), so M-2d coexistence must
+/// not depend on a client having declared `dialect: "brink"` in
+/// `initializationOptions`. `true` lets cross-declared-module homonyms
+/// coexist regardless of `dialect`'s value; `false` (every pure-API caller
+/// with no `Language` classification of its own) is byte-identical to
+/// before this parameter existed.
 fn is_cross_declared_module_collision(
     dialect: crate::Dialect,
+    is_native: bool,
     existing_module: Option<&str>,
     new_module: Option<&str>,
 ) -> bool {
-    if dialect != crate::Dialect::Brink {
+    if dialect != crate::Dialect::Brink && !is_native {
         return false;
     }
     matches!(
@@ -222,6 +341,7 @@ fn insert_symbol(
     kind: SymbolKind,
     dup_code: DiagnosticCode,
     dialect: crate::Dialect,
+    is_native: bool,
 ) {
     // Duplicate handling. A same-name/same-kind definition already in the
     // index is normally an inklecate-compat redefinition: we warn and drop
@@ -239,6 +359,7 @@ fn insert_symbol(
             .find(|existing| {
                 !is_cross_declared_module_collision(
                     dialect,
+                    is_native,
                     existing.module.as_deref(),
                     module.name,
                 )
@@ -428,10 +549,14 @@ pub(crate) fn local_definition_id(scope: &Scope, name: &str, kind: SymbolKind) -
 #[cfg(test)]
 #[expect(clippy::cast_possible_truncation, reason = "test helper ranges")]
 mod tests {
+    use brink_format::{DefinitionId, DefinitionTag};
     use brink_ir::{DeclaredSymbol, DiagnosticCode, FileId, SymbolManifest};
     use rowan::{TextRange, TextSize};
 
-    use super::{ModuleMap, ResolvedModule, merge_manifests, merge_manifests_with_modules};
+    use super::{
+        ModuleMap, ResolvedModule, hash_qualified_name, merge_manifests,
+        merge_manifests_with_modules,
+    };
 
     fn range(offset: u32, len: u32) -> TextRange {
         TextRange::new(TextSize::new(offset), TextSize::new(offset + len))
@@ -446,6 +571,24 @@ mod tests {
             visibility: None,
             was: None,
         }
+    }
+
+    /// A declared symbol carrying a `#@was(old_name)` record — `old_name` is
+    /// exactly what `DeclaredSymbol::was` stores (bare for a knot, already
+    /// knot-qualified for a stitch — see `Stitch::was`'s doc).
+    fn sym_with_was(name: &str, offset: u32, old_name: &str) -> DeclaredSymbol {
+        DeclaredSymbol {
+            was: Some((old_name.to_string(), range(offset, old_name.len() as u32))),
+            ..sym(name, offset)
+        }
+    }
+
+    fn bridge(old_name: &str, new_name: &str) -> (DefinitionId, DefinitionId) {
+        let tag = DefinitionTag::Address;
+        (
+            DefinitionId::new(tag, hash_qualified_name(None, old_name, tag)),
+            DefinitionId::new(tag, hash_qualified_name(None, new_name, tag)),
+        )
     }
 
     #[test]
@@ -550,7 +693,8 @@ mod tests {
             },
         );
 
-        let (index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+        let (index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink, false);
 
         assert!(
             diags.is_empty(),
@@ -601,7 +745,8 @@ mod tests {
             );
         }
 
-        let (_index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+        let (_index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink, false);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
@@ -629,15 +774,19 @@ mod tests {
         );
         // FileId(1) absent from `modules` -> undeclared, hashes bare.
 
-        let (_index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+        let (_index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink, false);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
     }
 
-    /// Under `Dialect::StrictInk` (the default), a cross-declared-module
-    /// duplicate never escalates — `merge_manifests`'s inert default keeps
-    /// the compat corpus untouched.
+    /// Under `Dialect::StrictInk` (the default) with `is_native = false`, a
+    /// cross-declared-module duplicate never escalates — `merge_manifests`'s
+    /// inert default keeps the compat corpus untouched. See
+    /// `cross_declared_module_duplicate_coexists_under_strict_ink_when_native`
+    /// below for the native counterpart (issue #1562 review finding), where
+    /// the same dialect instead coexists.
     #[test]
     fn cross_declared_module_duplicate_stays_e022_under_strict_ink() {
         let mut m1 = SymbolManifest::default();
@@ -665,10 +814,53 @@ mod tests {
         );
 
         let (_index, diags) =
-            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk);
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk, false);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
+    /// Native counterpart of `cross_declared_module_duplicate_stays_e022_under_strict_ink`
+    /// above (issue #1562 review finding): under the exact same
+    /// `Dialect::StrictInk` (the default a client that never declares
+    /// `initializationOptions.dialect` gets), `is_native = true` still lets
+    /// the two declared-module `start`s coexist — a native `.brink` project
+    /// has no dialect to be wrong about, so M-2d coexistence must not depend
+    /// on a client having declared `dialect: "brink"`.
+    #[test]
+    fn cross_declared_module_duplicate_coexists_under_strict_ink_when_native() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "quest".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        modules.insert(
+            FileId(1),
+            ResolvedModule {
+                name: "town".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+
+        let (index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk, true);
+
+        assert!(
+            diags.is_empty(),
+            "native cross-declared-module homonyms coexist regardless of dialect, got {diags:?}"
+        );
+        assert_eq!(index.by_name.get("start").map(Vec::len), Some(2));
     }
 
     // ── M-1 identity gate (docs/modules-spec.md §5) ──────────────────
@@ -707,11 +899,15 @@ mod tests {
             },
         );
         let (with_undeclared, _) =
-            merge_manifests_with_modules(&files, &modules, crate::Dialect::default());
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::default(), false);
 
         // (3) A file absent from the map must also stay bare.
-        let (with_empty, _) =
-            merge_manifests_with_modules(&files, &ModuleMap::new(), crate::Dialect::default());
+        let (with_empty, _) = merge_manifests_with_modules(
+            &files,
+            &ModuleMap::new(),
+            crate::Dialect::default(),
+            false,
+        );
 
         let mut base_ids: Vec<_> = baseline.symbols.keys().map(|id| id.to_raw()).collect();
         base_ids.sort_unstable();
@@ -771,7 +967,7 @@ mod tests {
             },
         );
         let (qualified, _) =
-            merge_manifests_with_modules(&files, &modules, crate::Dialect::default());
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::default(), false);
 
         let bare_start = bare.by_name.get("start").and_then(|v| v.first()).copied();
         let q_start = qualified
@@ -790,5 +986,88 @@ mod tests {
             q_start.unwrap().tag(),
             "qualification changes the hash, not the tag"
         );
+    }
+
+    // ── M-3 transitive aliases (issue #1671, docs/modules-spec.md §5)
+    // ─────────────────────────────────────────────────────────────────
+
+    /// `#@was` on a knot mints the knot's own alias entry *and* one per
+    /// descendant re-keyed only because the knot's name changed — a stitch
+    /// and a label nested directly under the knot, in this case.
+    #[test]
+    fn knot_rename_transitively_aliases_stitch_and_label() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym_with_was("plaza", 0, "hub"));
+        manifest.stitches.push(sym("plaza.market", 10));
+        manifest.labels.push(sym("plaza.done", 30));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _diags) = merge_manifests(&files);
+
+        let expected = [
+            bridge("hub", "plaza"),
+            bridge("hub.market", "plaza.market"),
+            bridge("hub.done", "plaza.done"),
+        ];
+        for (old, new) in expected {
+            assert!(
+                index.aliases.iter().any(|a| a.old == old && a.new == new),
+                "missing bridge {old:?} -> {new:?}; aliases={:?}",
+                index.aliases
+            );
+        }
+        assert_eq!(
+            index.aliases.len(),
+            3,
+            "one entry for the knot plus one per descendant; aliases={:?}",
+            index.aliases
+        );
+    }
+
+    /// `#@was` on a stitch (unrelated to any knot rename) mints the stitch's
+    /// own entry plus one for a label nested under it — `Stitch::was` is
+    /// already qualified with the enclosing (current) knot name, so the
+    /// bridge lands on `{knot}.{old_stitch}.{label}` ->
+    /// `{knot}.{new_stitch}.{label}`.
+    #[test]
+    fn stitch_rename_transitively_aliases_its_label() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("hub", 0));
+        manifest
+            .stitches
+            .push(sym_with_was("hub.bazaar", 10, "hub.market"));
+        manifest.labels.push(sym("hub.bazaar.done", 30));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _diags) = merge_manifests(&files);
+
+        let expected = [
+            bridge("hub.market", "hub.bazaar"),
+            bridge("hub.market.done", "hub.bazaar.done"),
+        ];
+        for (old, new) in expected {
+            assert!(
+                index.aliases.iter().any(|a| a.old == old && a.new == new),
+                "missing bridge {old:?} -> {new:?}; aliases={:?}",
+                index.aliases
+            );
+        }
+        assert_eq!(index.aliases.len(), 2, "aliases={:?}", index.aliases);
+    }
+
+    /// No `#@was` anywhere — no aliases minted at all, transitive or
+    /// otherwise. (Guards against `push_transitive_aliases` firing on an
+    /// empty-prefix false positive.)
+    #[test]
+    fn no_rename_no_aliases() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("hub", 0));
+        manifest.stitches.push(sym("hub.market", 10));
+        manifest.labels.push(sym("hub.market.done", 30));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _diags) = merge_manifests(&files);
+
+        assert!(index.aliases.is_empty(), "aliases={:?}", index.aliases);
     }
 }

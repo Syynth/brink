@@ -4,11 +4,36 @@ use std::collections::HashMap;
 
 use xliff2::{
     Content, DataEntry, Document, ExtensionAttribute, Extensions, File, InlineElement,
-    OriginalData, Ph, Segment, State, SubUnit, Unit,
+    OriginalData, Pc, Ph, Segment, State, SubUnit, Unit,
 };
 
 use crate::error::IntlError;
-use crate::json_model::{ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson};
+use crate::json_model::{
+    AttrJson, ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SpanJson,
+};
+
+/// `subType` marking a childless [`PartJson::Span`] (the point-marker shape,
+/// §8b.11 — `<pause/>`, `<sfx name="bell"/>`) mapped to a standalone `<ph>`
+/// inline code. XLIFF 2.0 core has no literal `<x/>` element — that's an
+/// XLIFF 1.2-ism; `<ph>` is the 2.0 standalone-code element, the same one
+/// [`PartJson::Slot`] already maps to. The `subType` token is what lets
+/// decode tell a span-marker `<ph>` apart from a slot/select `<ph>`.
+const SPAN_MARKER_SUBTYPE: &str = "brink:x";
+
+/// `subType` marking a non-empty [`PartJson::Span`] mapped to a paired
+/// `<pc>` inline code.
+const SPAN_PAIRED_SUBTYPE: &str = "brink:pc";
+
+/// Wire-only companion to [`SpanJson`] carried in XLIFF `originalData`:
+/// `name`/`attrs` only. `children` is never part of this payload — for a
+/// paired `<pc>` the children live structurally as the `<pc>`'s own
+/// `content`; for a childless point-marker `<ph>` there are none.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SpanMetaJson {
+    name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attrs: Vec<AttrJson>,
+}
 
 /// Brink XLIFF extension namespace URI.
 pub const BRINK_NS: &str = "urn:brink:xliff:extensions:1.0";
@@ -33,7 +58,7 @@ pub fn lines_json_to_xliff(
             let units: Vec<Unit> = scope
                 .lines
                 .iter()
-                .map(|line| line_to_unit(display_name, line))
+                .map(|line| line_to_unit(&scope.id, scope.name.as_deref(), line))
                 .collect();
             File {
                 id: display_name.to_string(),
@@ -118,6 +143,44 @@ pub fn xliff_to_lines_json(doc: &Document) -> Result<LinesJson, IntlError> {
     })
 }
 
+/// Migrate an XLIFF document's unit ids from the legacy display-name-based
+/// scheme (`{scope_name}:{line_index}`) to the stable scope-id-based scheme
+/// (`{scope_id}:{line_index}`) introduced by #1442.
+///
+/// This is a pure `id`-attribute rewrite: `<source>`/`<target>` content,
+/// segment `state`, and every `brink:*` extension attribute (`hash`,
+/// `audio`, `scope-id`) are left untouched, so existing translations bind to
+/// the migrated units exactly as they did before. Units already on the new
+/// scheme are left as-is, so this is idempotent and safe to run
+/// unconditionally on any `.xlf` file — including ones exported by a version
+/// of brink that never had the bug.
+///
+/// Returns the number of unit ids that were actually rewritten.
+///
+/// # Errors
+///
+/// Returns [`IntlError::InvalidUnitId`] if a unit id cannot be parsed for
+/// its trailing line index (see [`parse_unit_index`]).
+pub fn migrate_unit_ids(doc: &mut Document) -> Result<usize, IntlError> {
+    let mut changed = 0;
+    for file in &mut doc.files {
+        // Same fallback as `xliff_to_lines_json`: prefer the durable
+        // `brink:scope-id` extension, fall back to `file.id` for documents
+        // that predate even that.
+        let scope_id = ext_attr_value(&file.extensions, "scope-id")
+            .map_or_else(|| file.id.clone(), str::to_string);
+        for unit in &mut file.units {
+            let index = parse_unit_index(&unit.id)?;
+            let new_id = format!("{scope_id}:{index}");
+            if unit.id != new_id {
+                unit.id = new_id;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
 // ── LinesJson → XLIFF helpers ──────────────────────────────────────────
 
 fn is_whitespace_only(line: &LineJson) -> bool {
@@ -128,8 +191,29 @@ fn is_whitespace_only(line: &LineJson) -> bool {
     }
 }
 
-fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
-    let unit_id = format!("{scope_name}:{}", line.index);
+fn line_to_unit(scope_id: &str, scope_name: Option<&str>, line: &LineJson) -> Unit {
+    // The unit id is keyed on the scope's `DefinitionId` (`scope_id`, e.g.
+    // "0x0100000000000001"), never on its display name. This does NOT make
+    // unit ids rename-stable: a `DefinitionId` is itself a hash of the
+    // scope's (qualified) name/path (see `manifest.rs::hash_name`,
+    // `hir/stamp.rs::alloc_address`), so renaming a knot or stitch still
+    // produces a new `DefinitionId` and every unit id beneath it changes.
+    // Name-derived identity is the ruled model (R1, 2026-07-27,
+    // `docs/modules-spec.md` §5), so that churn is by design. What #1442
+    // fixed is the *consequence*: `compile_locale` and `regenerate_lines`
+    // now follow the compiled `#@was` alias table (`crate::scope_alias`), so
+    // a declared rename rebinds its translations instead of orphaning them.
+    //
+    // What this DOES fix relative to the display-name scheme it replaces:
+    // the id is now a canonical, NMTOKEN-safe hex string (display names can
+    // contain characters that aren't valid in an XML `id`), it matches the
+    // format `brink:scope-id` and `IntlError::InvalidUnitId` already
+    // documented (`scope_id:line_index`), and it's decoupled from
+    // `scope.name`, a mutable, non-unique-across-scopes display field —
+    // collisions between two same-named scopes are no longer possible. The
+    // human-readable name, when present, rides the `name` attribute instead,
+    // for translator context.
+    let unit_id = format!("{scope_id}:{}", line.index);
     let translate = if is_whitespace_only(line) {
         Some(false)
     } else {
@@ -165,9 +249,16 @@ fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
         target: None,
     };
 
+    // `name` carries the legacy readable id verbatim (`{scope_name}:{index}`,
+    // what `id` used to be pre-#1442), not the bare scope name — a bare name
+    // is identical across every unit in a file and adds nothing over the
+    // containing `<file id>`. This is what genuinely preserves the
+    // 2026-03-14 decision's readability rationale.
+    let name = scope_name.map(|n| format!("{n}:{}", line.index));
+
     Unit {
         id: unit_id,
-        name: None,
+        name,
         translate,
         notes: Vec::new(),
         sub_units: vec![SubUnit::Segment(segment)],
@@ -189,50 +280,17 @@ pub(crate) fn content_to_inline(
             let mut elements = Vec::new();
             let mut data_entries = Vec::new();
             let mut select_counter: usize = 0;
+            let mut span_counter: usize = 0;
 
             for part in template {
-                match part {
-                    PartJson::Literal(s) => {
-                        elements.push(InlineElement::Text(s.clone()));
-                    }
-                    PartJson::Slot { slot } => {
-                        let disp = slots
-                            .iter()
-                            .find(|s| s.index == *slot)
-                            .map(|s| s.name.clone());
-                        elements.push(InlineElement::Ph(Ph {
-                            id: format!("s{slot}"),
-                            data_ref: None,
-                            equiv: Some(format!("{{slot {slot}}}")),
-                            disp,
-                            sub_type: None,
-                            extensions: Extensions::default(),
-                        }));
-                    }
-                    PartJson::Select { select } => {
-                        let data_id = format!("dsel{select_counter}");
-                        let ph_id = format!("sel{select_counter}");
-                        select_counter += 1;
-
-                        // Serialize the SelectJson to JSON for originalData.
-                        // This is safe — SelectJson is always serializable.
-                        let json = serde_json::to_string(select).unwrap_or_default();
-
-                        data_entries.push(DataEntry {
-                            id: data_id.clone(),
-                            content: json,
-                        });
-
-                        elements.push(InlineElement::Ph(Ph {
-                            id: ph_id,
-                            data_ref: Some(data_id),
-                            equiv: None,
-                            disp: None,
-                            sub_type: None,
-                            extensions: Extensions::default(),
-                        }));
-                    }
-                }
+                push_part_inline(
+                    part,
+                    slots,
+                    &mut elements,
+                    &mut data_entries,
+                    &mut select_counter,
+                    &mut span_counter,
+                );
             }
 
             let original_data = if data_entries.is_empty() {
@@ -244,6 +302,171 @@ pub(crate) fn content_to_inline(
             };
 
             (elements, original_data)
+        }
+    }
+}
+
+/// One [`PartJson`] → zero-or-more [`InlineElement`]s, appended to
+/// `elements`.
+///
+/// [`PartJson::Span`] (#1716, real inline-code mapping #1734) maps to a
+/// genuine XLIFF inline code, keyed on whether it has children:
+///
+/// - Non-empty `children` (the ordinary paired shape, e.g. `<b>bold</b>`)
+///   → a paired `<pc>` inline code, recursively containing the mapped
+///   children.
+/// - Empty `children` (the point-marker shape, §8b.11 — `<pause/>`,
+///   `<sfx name="bell"/>`) → a standalone `<ph>` inline code (XLIFF 2.0
+///   core has no literal `<x/>`; `<ph>` is its standalone-code element).
+///
+/// Either way `name`/`attrs` ride along in `originalData` (mirroring how
+/// [`PartJson::Select`] already stashes its structured payload there),
+/// referenced by `dataRefStart`/`dataRef` — so a translated XLIFF file
+/// round-trips the exact span structure back, not just its flattened text.
+///
+/// This does **not** touch `line.hash` — the wire-level "span
+/// hash-transparency" ruling (`docs/prose-dialect-spec.md` §4.4) that keeps
+/// `Hello <wave>world</wave>` keyed identically to `Hello world` is
+/// computed upstream, at compile time, before `LineJson.hash` ever reaches
+/// this module; this function only ever reads `hash` as an opaque
+/// passthrough field on [`LineJson`], never derives from span content.
+/// Append a [`PartJson::Literal`] string as inline elements, escaping any
+/// scalar value XML 1.0 text cannot carry as a `<cp hex="…"/>` code point.
+///
+/// This is [`decode_cp`]'s export inverse. Without it, a literal recovered
+/// *from* a `<cp>` on import (or any other literal that happens to contain
+/// one of these scalars, e.g. a translator-authored C0 control character)
+/// would round-trip back out through `InlineElement::Text` — and
+/// `quick_xml`'s text escaper only escapes `< > & ' "`, so a character like
+/// U+0001 would be written as a raw byte, producing a `<target>` that is
+/// not well-formed XML 1.0 even though `quick_xml`'s own non-validating
+/// reader will parse it back (#1811 follow-up).
+///
+/// XML 1.0's `Char` production forbids C0 controls other than tab/LF/CR
+/// (`< '\u{20}'`, excluding `\t`/`\n`/`\r`) and the two noncharacters
+/// U+FFFE/U+FFFF; every other scalar `char` can reach here because
+/// `PartJson::Literal` is a `String`, which is already valid UTF-8 and
+/// cannot hold an unpaired surrogate.
+fn push_literal_inline(s: &str, elements: &mut Vec<InlineElement>) {
+    let mut run = String::new();
+    for c in s.chars() {
+        if is_xml_illegal_char(c) {
+            if !run.is_empty() {
+                elements.push(InlineElement::Text(std::mem::take(&mut run)));
+            }
+            elements.push(InlineElement::Cp(format!("{:04X}", c as u32)));
+        } else {
+            run.push(c);
+        }
+    }
+    if !run.is_empty() {
+        elements.push(InlineElement::Text(run));
+    }
+}
+
+/// True for a Unicode scalar value XML 1.0 text content cannot carry
+/// literally — see [`push_literal_inline`].
+fn is_xml_illegal_char(c: char) -> bool {
+    (c < '\u{20}' && !matches!(c, '\t' | '\n' | '\r')) || matches!(c, '\u{FFFE}' | '\u{FFFF}')
+}
+
+fn push_part_inline(
+    part: &PartJson,
+    slots: &[crate::json_model::SlotJson],
+    elements: &mut Vec<InlineElement>,
+    data_entries: &mut Vec<DataEntry>,
+    select_counter: &mut usize,
+    span_counter: &mut usize,
+) {
+    match part {
+        PartJson::Literal(s) => {
+            push_literal_inline(s, elements);
+        }
+        PartJson::Slot { slot } => {
+            let disp = slots
+                .iter()
+                .find(|s| s.index == *slot)
+                .map(|s| s.name.clone());
+            elements.push(InlineElement::Ph(Ph {
+                id: format!("s{slot}"),
+                data_ref: None,
+                equiv: Some(format!("{{slot {slot}}}")),
+                disp,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }));
+        }
+        PartJson::Select { select } => {
+            let data_id = format!("dsel{select_counter}");
+            let ph_id = format!("sel{select_counter}");
+            *select_counter += 1;
+
+            // Serialize the SelectJson to JSON for originalData.
+            // This is safe — SelectJson is always serializable.
+            let json = serde_json::to_string(select).unwrap_or_default();
+
+            data_entries.push(DataEntry {
+                id: data_id.clone(),
+                content: json,
+            });
+
+            elements.push(InlineElement::Ph(Ph {
+                id: ph_id,
+                data_ref: Some(data_id),
+                equiv: None,
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }));
+        }
+        PartJson::Span { span } => {
+            let n = *span_counter;
+            *span_counter += 1;
+
+            let meta = SpanMetaJson {
+                name: span.name.clone(),
+                attrs: span.attrs.clone(),
+            };
+            // Safe — `SpanMetaJson` is always serializable.
+            let json = serde_json::to_string(&meta).unwrap_or_default();
+            let data_id = format!("dspan{n}");
+            data_entries.push(DataEntry {
+                id: data_id.clone(),
+                content: json,
+            });
+
+            if span.children.is_empty() {
+                // Point marker (§8b.11): no text to carry, so a standalone
+                // code — mapped to `<ph>` (see this function's doc comment).
+                elements.push(InlineElement::Ph(Ph {
+                    id: format!("x{n}"),
+                    data_ref: Some(data_id),
+                    equiv: None,
+                    disp: None,
+                    sub_type: Some(SPAN_MARKER_SUBTYPE.to_string()),
+                    extensions: Extensions::default(),
+                }));
+            } else {
+                let mut content = Vec::new();
+                for child in &span.children {
+                    push_part_inline(
+                        child,
+                        slots,
+                        &mut content,
+                        data_entries,
+                        select_counter,
+                        span_counter,
+                    );
+                }
+                elements.push(InlineElement::Pc(Pc {
+                    id: format!("pc{n}"),
+                    data_ref_start: Some(data_id),
+                    data_ref_end: None,
+                    sub_type: Some(SPAN_PAIRED_SUBTYPE.to_string()),
+                    content,
+                    extensions: Extensions::default(),
+                }));
+            }
         }
     }
 }
@@ -328,22 +551,78 @@ fn inline_to_content(
     elements: &[InlineElement],
     data_map: &HashMap<&str, &str>,
 ) -> Result<ContentJson, IntlError> {
-    // Check if this is a simple plain text (single Text element).
+    // Check if this is a simple plain text (single Text or CData element).
     if elements.len() == 1
-        && let InlineElement::Text(s) = &elements[0]
+        && let InlineElement::Text(s) | InlineElement::CData(s) = &elements[0]
     {
         return Ok(ContentJson::Plain(s.clone()));
     }
 
-    // Template reconstruction.
+    let parts = elements_to_parts(elements, data_map)?;
+    Ok(ContentJson::Template { template: parts })
+}
+
+/// True if a `subType` or `dataRef` attribute looks like it originated from
+/// a brink [`PartJson::Span`] export (`SPAN_MARKER_SUBTYPE`/
+/// `SPAN_PAIRED_SUBTYPE`, or a `dspan{n}` `originalData` id). Shared by the
+/// `<sc>`/`<ec>`/`<mrk>` decode guards below.
+fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> bool {
+    sub_type.is_some_and(|s| s.starts_with("brink:"))
+        || data_ref.is_some_and(|r| r.starts_with("dspan"))
+}
+
+/// [`inline_to_content`]'s per-element reconstruction, factored out so it
+/// can recurse into the child content of a `<pc>` (a paired span) or a
+/// foreign `<mrk>` (a TMS annotation) — those children are themselves
+/// [`InlineElement`]s that need the exact same handling as the top-level
+/// stream.
+///
+/// # Disposition of every [`InlineElement`] variant
+///
+/// Translator work that reaches this function and is not decoded is
+/// *unrecoverable* — there is no second copy of a TMS-returned target — so
+/// the match below is **exhaustive on purpose**: there is no `_` catch-all,
+/// and a new variant in the `xliff2` model is a compile error here rather
+/// than another silent drop. Every arm is one of three dispositions:
+///
+/// | element | disposition | rationale |
+/// |---|---|---|
+/// | `Text`, `CData` | **decoded** as [`PartJson::Literal`] | CDATA is plain character data spelled with a different XML quoting mechanism — no structural ambiguity, nothing to lose (#1799, and #765 on the sibling `xliff2` metadata path) |
+/// | `Cp` | **decoded** as [`PartJson::Literal`] | `<cp hex="…"/>` is XLIFF's escape hatch for a character its producer could not or would not write literally; decoding the code point restores exactly the character the translator meant, with no structure to reconstruct (#1811) |
+/// | `Ph` | **decoded** as a span point marker when `subType` is the brink marker; **decoded** (or explicitly errors) as [`PartJson::Select`] when it carries *any* `dataRef` — a non-brink `dataRef` is not ignored, it fails as [`IntlError::MissingSelectData`]/[`IntlError::InvalidSelectJson`]; **decoded** as [`PartJson::Slot`] when its `id` starts with `s`; **ignored** only otherwise — a bare `<ph>` with no `dataRef` and a non-slot `id` | that bare shape is the only one that is a genuinely empty standalone-code placeholder for the *host* format's native code with no character content; every `dataRef`-bearing `<ph>` is read as brink `originalData`, so a foreign `dataRef` (a real XLIFF 2.0 shape: a native code plus its `<data>` payload) is not silently dropped, it is a loud decode failure |
+/// | `Pc` | **decoded** as [`PartJson::Span`], recursing into its children | brink's own paired-span shape |
+/// | `Sc`, `Ec`, `Mrk` *with* a brink marker | **explicit [`IntlError::UnsupportedSpanSplit`]** | a brink `<pc>` that a tool re-expressed as a split pair or a wrapping mark: the structure cannot be reconstructed, so failing loudly beats decoding a span that quietly lost its content — the same failure class fixed on export by #1734 |
+/// | `Mrk` *without* a brink marker | **decoded** by splicing its children in place | a TMS `<mrk>` (terminology, comment, QA flag) wraps a *span of translated text*; the annotation's own `id`/`type`/`ref`/`value` are not brink content and are dropped, but the text it marks is translator work and must survive (#1812) |
+/// | `Sc`, `Ec` *without* a brink marker, `Sm`, `Em` | **ignored** | these are empty elements carrying attributes only — they never hold character data. The text a foreign `<sc>`/`<ec>` or `<sm>`/`<em>` pair *spans* is not nested inside them; the reader emits it as sibling `Text` elements that the `Text`/`CData` arm already recovers (proved by `foreign_sm_em_spanned_text_survives_export_import_roundtrip`) |
+///
+/// `<sc>`/`<ec>`/`<mrk>` reconstruction of a brink span remains a known
+/// limitation (`docs/prose-dialect-spec.md` §4.4).
+fn elements_to_parts(
+    elements: &[InlineElement],
+    data_map: &HashMap<&str, &str>,
+) -> Result<Vec<PartJson>, IntlError> {
     let mut parts = Vec::new();
     for elem in elements {
         match elem {
-            InlineElement::Text(s) => {
+            InlineElement::Text(s) | InlineElement::CData(s) => {
                 parts.push(PartJson::Literal(s.clone()));
             }
+            InlineElement::Cp(hex) => {
+                parts.push(PartJson::Literal(decode_cp(hex)?.to_string()));
+            }
             InlineElement::Ph(ph) => {
-                if let Some(ref data_ref) = ph.data_ref {
+                if ph.sub_type.as_deref() == Some(SPAN_MARKER_SUBTYPE) {
+                    // Point-marker span (§8b.11): reconstruct name/attrs
+                    // from originalData, no children.
+                    let meta = decode_span_meta(ph.data_ref.as_deref(), data_map)?;
+                    parts.push(PartJson::Span {
+                        span: SpanJson {
+                            name: meta.name,
+                            attrs: meta.attrs,
+                            children: Vec::new(),
+                        },
+                    });
+                } else if let Some(ref data_ref) = ph.data_ref {
                     // Select: look up in originalData.
                     let json_str = data_map
                         .get(data_ref.as_str())
@@ -359,13 +638,109 @@ fn inline_to_content(
                     })?;
                     parts.push(PartJson::Slot { slot });
                 }
+                // No trailing `else`: a `<ph>` that is neither a span point
+                // marker nor a select nor a slot is a foreign standalone
+                // code placeholder. `<ph>` is an empty element — it holds
+                // attributes only, never character data — so ignoring it
+                // cannot lose translator work.
             }
-            // Other inline elements are not produced by brink, ignore.
-            _ => {}
+            InlineElement::Pc(pc) => {
+                // Paired span: reconstruct name/attrs from originalData,
+                // children by recursing into the `<pc>`'s own content.
+                let meta = decode_span_meta(pc.data_ref_start.as_deref(), data_map)?;
+                let children = elements_to_parts(&pc.content, data_map)?;
+                parts.push(PartJson::Span {
+                    span: SpanJson {
+                        name: meta.name,
+                        attrs: meta.attrs,
+                        children,
+                    },
+                });
+            }
+            InlineElement::Sc(sc)
+                if looks_like_span_marker(sc.sub_type.as_deref(), sc.data_ref.as_deref()) =>
+            {
+                return Err(IntlError::UnsupportedSpanSplit(sc.id.clone()));
+            }
+            InlineElement::Ec(ec)
+                if looks_like_span_marker(ec.sub_type.as_deref(), ec.data_ref.as_deref()) =>
+            {
+                let id = ec
+                    .id
+                    .clone()
+                    .or_else(|| ec.start_ref.clone())
+                    .unwrap_or_default();
+                return Err(IntlError::UnsupportedSpanSplit(id));
+            }
+            InlineElement::Mrk(mrk) if looks_like_span_marker(mrk.mrk_type.as_deref(), None) => {
+                return Err(IntlError::UnsupportedSpanSplit(mrk.id.clone()));
+            }
+            InlineElement::Mrk(mrk) => {
+                // Foreign `<mrk>` (#1812): a TMS annotation — terminology,
+                // a reviewer comment, a QA flag — wrapping a span of
+                // *translated text*. The annotation itself is not brink
+                // content and is discarded, but the text it marks is
+                // translator work: splice the children in place so the
+                // marked substring survives instead of vanishing with the
+                // mark. Recursing (rather than pulling out `Text` nodes)
+                // keeps any brink inline codes inside the mark working.
+                parts.extend(elements_to_parts(&mrk.content, data_map)?);
+            }
+            // Foreign `<sc>`/`<ec>` and every `<sm>`/`<em>`: empty elements
+            // that carry attributes only and never hold character data.
+            // The text such a pair *spans* is a sibling of the marker, not
+            // a child of it, so it is already recovered by the
+            // `Text`/`CData` arm above — ignoring the markers themselves
+            // drops annotation metadata, never translator work.
+            InlineElement::Sc(_)
+            | InlineElement::Ec(_)
+            | InlineElement::Sm(_)
+            | InlineElement::Em(_) => {}
         }
     }
 
-    Ok(ContentJson::Template { template: parts })
+    Ok(parts)
+}
+
+/// Decode an XLIFF `<cp hex="…"/>` element's `hex` attribute into the
+/// character it stands for.
+///
+/// `<cp>` is XLIFF 2.0's representation of a character by its Unicode code
+/// point, used when a producer cannot (or will not) write the character
+/// literally — typically C0 control characters, which are illegal in XML
+/// text, but also anything a tool's encoding could not carry. Decoding
+/// yields exactly the character the translator meant, so the caller treats
+/// the result as ordinary literal text (#1811).
+///
+/// A `hex` that is not a valid Unicode scalar value (unparseable, out of
+/// range, or a surrogate) is malformed XLIFF: it is reported as
+/// [`IntlError::InvalidCodePoint`] rather than skipped, because silently
+/// dropping it is the very failure this arm exists to prevent.
+///
+/// [`push_literal_inline`] is this function's export inverse — a decoded
+/// literal that is re-serialized (e.g. by `regenerate-xliff`) writes the
+/// same illegal scalar back out as `<cp>` rather than as raw text, so the
+/// round trip stays well-formed XML 1.0.
+fn decode_cp(hex: &str) -> Result<char, IntlError> {
+    u32::from_str_radix(hex, 16)
+        .ok()
+        .and_then(char::from_u32)
+        .ok_or_else(|| IntlError::InvalidCodePoint(hex.to_owned()))
+}
+
+/// Look up and deserialize a [`SpanMetaJson`] from `originalData` by
+/// `dataRef`/`dataRefStart`. Shared by the point-marker `<ph>` and paired
+/// `<pc>` decode paths.
+fn decode_span_meta(
+    data_ref: Option<&str>,
+    data_map: &HashMap<&str, &str>,
+) -> Result<SpanMetaJson, IntlError> {
+    let data_ref =
+        data_ref.ok_or_else(|| IntlError::MissingSpanData("<no dataRef>".to_string()))?;
+    let json_str = data_map
+        .get(data_ref)
+        .ok_or_else(|| IntlError::MissingSpanData(data_ref.to_string()))?;
+    serde_json::from_str(json_str).map_err(|e| IntlError::InvalidSpanJson(e.to_string()))
 }
 
 fn ext_attr_value<'a>(ext: &'a Extensions, local_name: &str) -> Option<&'a str> {
@@ -591,5 +966,166 @@ mod tests {
             unreachable!()
         };
         assert!(seg.source.elements.is_empty());
+    }
+
+    // ── #1442: unit ids are keyed on scope-id, not display name ─────────
+    //
+    // NOTE: this does not make unit ids rename-stable — a `DefinitionId` is
+    // itself a hash of the scope's (qualified) name/path, so renaming a
+    // knot/stitch still produces a new `DefinitionId` and still orphans its
+    // translations (`docs/intl-spec.md:415`). Real rename stability needs a
+    // `DefinitionId`-level change, out of scope for this PR (see #1442).
+
+    #[test]
+    fn unit_id_is_scope_id_based_not_display_name() {
+        let lines = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("intro"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+        let doc = lines_json_to_xliff(&lines, "en", None);
+        assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
+        // The legacy readable id (`{scope_name}:{index}`) still rides along
+        // as the `name` attribute, not as part of `id`, so translators
+        // still get readable labels in tooling that shows `name`.
+        assert_eq!(doc.files[0].units[0].name, Some("intro:0".to_string()));
+    }
+
+    #[test]
+    fn unit_id_ignores_scope_display_name() {
+        // Same `scope.id`, different `scope.name`. This is NOT a rename
+        // simulation — a real rename changes `scope.id` too, since the id
+        // is a hash of the scope's name/path (see the module note above).
+        // This only proves `line_to_unit` keys `id` off `scope_id`, not off
+        // `scope.name`.
+        let a = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("intro"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+        let b = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("prologue"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+
+        let doc_a = lines_json_to_xliff(&a, "en", None);
+        let doc_b = lines_json_to_xliff(&b, "en", None);
+
+        assert_eq!(doc_a.files[0].units[0].id, doc_b.files[0].units[0].id);
+        // The display name (carried on `File.id` and `Unit.name`) did
+        // change, proving this isn't a no-op.
+        assert_ne!(doc_a.files[0].id, doc_b.files[0].id);
+    }
+
+    #[test]
+    fn migrate_unit_ids_rewrites_legacy_ids_preserving_translations() {
+        // Build a document the way pre-#1442 brink would have: unit id
+        // built from the display name.
+        let mut doc = Document {
+            version: "2.0".to_string(),
+            src_lang: "en".to_string(),
+            trg_lang: Some("es".to_string()),
+            files: vec![File {
+                id: "intro".to_string(),
+                original: None,
+                notes: Vec::new(),
+                skeleton: None,
+                groups: Vec::new(),
+                units: vec![Unit {
+                    id: "intro:0".to_string(),
+                    name: None,
+                    translate: None,
+                    notes: Vec::new(),
+                    sub_units: vec![SubUnit::Segment(Segment {
+                        id: None,
+                        state: Some(State::Translated),
+                        sub_state: None,
+                        source: Content {
+                            lang: None,
+                            elements: vec![InlineElement::Text("Hello".to_string())],
+                        },
+                        target: Some(Content {
+                            lang: None,
+                            elements: vec![InlineElement::Text("Hola".to_string())],
+                        }),
+                    })],
+                    original_data: None,
+                    extensions: Extensions {
+                        elements: Vec::new(),
+                        attributes: vec![ExtensionAttribute {
+                            namespace: BRINK_PREFIX.to_string(),
+                            local_name: "hash".to_string(),
+                            value: "aaa".to_string(),
+                        }],
+                    },
+                }],
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: BRINK_PREFIX.to_string(),
+                        local_name: "scope-id".to_string(),
+                        value: "0x0100000000000001".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions::default(),
+        };
+
+        let changed = migrate_unit_ids(&mut doc).unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
+
+        // Translation content, state, and hash extension are untouched.
+        let SubUnit::Segment(seg) = &doc.files[0].units[0].sub_units[0] else {
+            unreachable!()
+        };
+        assert_eq!(seg.state, Some(State::Translated));
+        assert_eq!(
+            seg.target.as_ref().unwrap().elements,
+            vec![InlineElement::Text("Hola".to_string())]
+        );
+        assert_eq!(
+            ext_attr_value(&doc.files[0].units[0].extensions, "hash"),
+            Some("aaa")
+        );
+    }
+
+    #[test]
+    fn migrate_unit_ids_is_idempotent() {
+        let lines = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("intro"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+        let mut doc = lines_json_to_xliff(&lines, "en", None);
+
+        // Already on the new scheme — migrating should be a no-op.
+        let first_pass = migrate_unit_ids(&mut doc).unwrap();
+        assert_eq!(first_pass, 0);
+        assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
+
+        let second_pass = migrate_unit_ids(&mut doc).unwrap();
+        assert_eq!(second_pass, 0);
     }
 }

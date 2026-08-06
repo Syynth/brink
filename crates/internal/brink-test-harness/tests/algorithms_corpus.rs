@@ -23,7 +23,7 @@
 use std::path::{Path, PathBuf};
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -63,12 +63,11 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     let mut hit_choices = false;
     loop {
         match story.continue_single().expect(&step_msg) {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => {
+            Step::Choices(_) => {
                 hit_choices = true;
                 break;
             }

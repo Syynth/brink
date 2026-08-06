@@ -16,7 +16,7 @@ use brink_ir::{FileId, HostManifest, ParamInfo, SymbolIndex, SymbolKind};
 use crate::annotations::resolve as resolve_annotation;
 use crate::external_check::{InferredType, infer_literal_type};
 use crate::infer::Ty;
-use crate::resolve::lookup_by_name;
+use crate::resolve::{BareItemResult, lookup_by_name, lookup_list_item_bare};
 
 /// Per-declaration signature summary (phase-0 stub).
 ///
@@ -38,25 +38,55 @@ pub struct Sig {
     /// firewall rule) — so every existing consumer of `value_type`
     /// (notably `infer::collect_globals`) picks up the annotated type
     /// automatically, with no seam change.
+    ///
+    /// [`local_signature`]'s `Param`/`Temp` locals populate this field too
+    /// (issue #530) — there it is never initializer-inferred (a local has
+    /// no initializer-literal path here), only the downcast of the local's
+    /// own TM-2 `: type` annotation, `None` when unannotated or unresolved.
     pub value_type: Option<InferredType>,
-    /// A VAR/CONST's declaration-derived function-value type, `fn(T…): R`
-    /// (T1c follow-up, issue #712, docs/t1c-spec.md §4) — `None` for every
-    /// other symbol kind and for a VAR/CONST that isn't fn-typed. Kept
-    /// separate from `value_type` rather than widening it: `InferredType`
-    /// has no `Fn` form (by design — it predates T1c and stays the narrow,
-    /// wire-adjacent domain `infer_value_meta`/hover share), so a `Ty::Fn`
-    /// would otherwise be silently dropped exactly like the `Array`/`Map`/
-    /// `Struct` gap `ty_to_inferred_type` already documents. Populated two
-    /// ways, annotation winning per the TM-2 firewall (same rule as
-    /// `value_type`'s override):
-    /// - an explicit `: fn(T…): R` annotation on the VAR/CONST itself, or
-    /// - a bare `#fn(target, args…)` initializer, in which case the type is
-    ///   the bound prefix consumed from `target`'s *own* declaration-derived
-    ///   signature (`param_annotations`/`return_annotation` — a second,
-    ///   single-level `signature()` call, never the target's body). An
-    ///   unannotated target param/return reads as `Ty::Unknown` in the row,
-    ///   same conservative fallback declaration-derived typing always uses.
-    pub fn_type: Option<Ty>,
+    /// A VAR/CONST's declaration-derived type at **full [`Ty`] fidelity**
+    /// (issue #1540) — `None` for every other `signature`-produced symbol
+    /// kind, and for a VAR/CONST whose declaration determines no type at
+    /// all. [`local_signature`] (issue #530) is the one other producer that
+    /// populates this field: for a `Param`/`Temp`, it is the local's own
+    /// TM-2 `: type` annotation resolved the same way, `None` when the
+    /// local is unannotated — this is precisely the field
+    /// `brink-ide::hover::inferred_local_type_str` reads via
+    /// `db.local_signature`.
+    ///
+    /// This is the field every *typed* consumer reads (`collect_globals` in
+    /// both this crate and `brink-db`'s narrowed mirror); `value_type` above
+    /// stays exactly as narrow as it was, because it is the wire-adjacent
+    /// domain `infer_value_meta`/hover share and widening it would leak
+    /// `Array`/`Map`/`Struct`/`Fn`/`Option`/`Range` into that schema.
+    ///
+    /// Populated in TM-2 firewall order — annotation first, then the
+    /// initializer:
+    /// - an explicit `: type` annotation on the VAR/CONST, resolved by
+    ///   [`crate::annotations::resolve`] with **no downcast** (so
+    ///   `Array<int>`, `Map<string, int>`, a declared `STRUCT` name,
+    ///   `fn(T…): R`, `Handle<K>` and (since issue #1552) `Option<T>`/
+    ///   `Weighted<T>` all survive — this is the `ty_to_inferred_type` gap
+    ///   issue #1540 closes. `range` still has **no annotation grammar at
+    ///   all** ([`crate::annotations::resolve`] has no arm for it — deferred
+    ///   pending demonstrated demand, `docs/decision-log.md` 2026-07-27), so
+    ///   a `Ty::Range` value can never actually reach this field yet;
+    /// - else the initializer literal, at the same fidelity
+    ///   ([`literal_ty`]): `#[…]` → `Ty::Array`, `#{…}` → `Ty::Map`,
+    ///   `Name#{…}` → `Ty::Struct`, plus every scalar/`List<L>` form
+    ///   `infer_literal_type` already covered;
+    /// - else a fn-value initializer ([`declared_fn_type`]) — a bare
+    ///   `#fn(target, args…)` literal (T1c follow-up, issue #712,
+    ///   docs/t1c-spec.md §4), or, on the **native** surface only, a bare
+    ///   name resolving to a function definition (docs/t1c-spec.md §2a,
+    ///   issue #1895; zero bound args, since the binding form has no native
+    ///   spelling). Either way the type is the bound prefix consumed from
+    ///   `target`'s *own* declaration-derived signature
+    ///   (`param_annotations`/`return_annotation` — a second, single-level
+    ///   `signature()` call, never the target's body). An unannotated target
+    ///   param/return reads as `Ty::Unknown` in the row, the same
+    ///   conservative fallback declaration-derived typing always uses.
+    pub value_ty: Option<Ty>,
     /// Marked flow-private via a `#@local` directive (knots, stitches, VARs).
     pub is_local: bool,
     /// TM-2 (docs/typed-mode-spec.md §3): declared param type annotations,
@@ -66,21 +96,27 @@ pub struct Sig {
     /// reports those separately). Knots/stitches only; empty for other
     /// symbol kinds.
     pub param_annotations: Vec<Option<Ty>>,
-    /// TM-2: the function-header return type annotation (`): type ===`),
-    /// resolved. `None` when absent, `void`, or unresolved. Knots only —
-    /// `= stitch` headers have no return-type grammar position.
+    /// TM-2: the function-header/stitch-header return type annotation
+    /// (`): type ===` on a knot, `: type` on a stitch — #1509 widened the
+    /// grammar to stitches), resolved. `None` when absent, `void`, or
+    /// unresolved. Knots and stitches only.
     pub return_annotation: Option<Ty>,
 }
 
 /// Downcast a resolved [`Ty`] to [`InferredType`] where the two universes
-/// overlap (`Ty`'s scalar leaves plus nominal `list<L>`) — the annotation-
+/// overlap (`Ty`'s scalar leaves plus nominal `List<L>`) — the annotation-
 /// wins substitution for `Sig::value_type`, which predates TM-2 and only
-/// has room for `InferredType`'s narrower domain. `array<T>`/`map<K, V>`
-/// annotations have no `InferredType` representation; those `VAR`s keep
-/// their literal-inferred `value_type` (a strict-mode gap TM-3 owns, not a
-/// silent drop — the full `Ty` is still available via `param_annotations`/
-/// `return_annotation` for knots/stitches, and `crate::resolve_annotation`
-/// directly for any `TypeExpr`).
+/// has room for `InferredType`'s narrower domain (hover + the `@brink-lang/web`
+/// program model read it; widening it would change that schema).
+///
+/// Every `Ty` outside that overlap — `Array<T>`, `Map<K, V>`, a nominal
+/// `STRUCT`, `fn(T…): R`, `Handle<K>`, `Option<T>`, `range`, `Weighted<T>`,
+/// a tower kind — is **not** dropped: since issue #1540 it is carried at
+/// full fidelity on [`Sig::value_ty`], which is what `infer::collect_globals`
+/// (and `brink-db`'s narrowed mirror of it) reads to give a global its static
+/// type. `param_annotations`/`return_annotation`/`crate::resolve_annotation`
+/// remain the equivalent full-fidelity surfaces for knots/stitches and for
+/// any bare `TypeExpr`.
 fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
     match ty {
         Ty::Int => Some(InferredType::Int),
@@ -92,26 +128,14 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // `Conflicted` (#627): a genuine type conflict has no representable
         // `InferredType` any more than `Unknown` does — this stub is a
         // gradual/advisory consumer, so it reads both the same way.
-        // `Struct` (TM-4b): no `InferredType` representation exists for a
-        // nominal struct shape either — same gap as `Array`/`Map`, not a
-        // silent drop (the full `Ty::Struct` is still available via
-        // `param_annotations`/`return_annotation`/`resolve_annotation`).
-        // `Fn` (T1c): a function-value type has no `InferredType`
-        // representation either — same gap as `Array`/`Map`/`Struct`, not a
-        // silent drop.
-        // `Handle` (T1d-2): same gap again — no `InferredType` variant
-        // represents a nominal handle kind; the full `Ty::Handle` is still
-        // available via `param_annotations`/`return_annotation`/
-        // `resolve_annotation`, not silently dropped.
-        // `Option` (NS-A1): same gap as `Array`/`Map` — no `InferredType`
-        // variant represents a parameterized builtin; not a silent drop.
-        // `Range` (NS-A5): same gap — no `InferredType` variant; not a
-        // silent drop.
-        // `Tower` (NS-A8): same gap again — no `InferredType` variant
-        // represents a tower kind; the full `Ty::Tower` stays available
-        // via the annotation surfaces, not silently dropped.
-        // `Weighted` (NS-A7): same gap again — no `InferredType` variant
-        // represents a parameterized builtin; not a silent drop.
+        // Everything below has no `InferredType` variant to downcast to —
+        // `Array`/`Map` (T1b), `Struct` (TM-4b), `Fn` (T1c), `Handle`
+        // (T1d-2), `Option` (NS-A1), `Range` (NS-A5), `Weighted` (NS-A7),
+        // `Tower` (NS-A8), `Content` (issue #1846). None of them is a silent
+        // drop: since issue #1540 each is carried whole on `Sig::value_ty`
+        // (see this function's doc), which is the field every typed
+        // consumer reads. Only the narrow, wire-adjacent `Sig::value_type`
+        // stops here.
         Ty::Weighted(_)
         | Ty::Tower(_)
         | Ty::Array(_)
@@ -121,6 +145,7 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         | Ty::Handle(_)
         | Ty::Option(_)
         | Ty::Range { .. }
+        | Ty::Content
         | Ty::Unknown
         | Ty::Conflicted => None,
     }
@@ -140,32 +165,131 @@ fn value_type_with_annotation_override(
         .or(literal_type)
 }
 
-/// A VAR/CONST's declaration-derived `fn(T…): R` type ([`Sig::fn_type`],
-/// T1c follow-up, issue #712) — `None` when neither an `fn(...)`
-/// annotation nor a `#fn(...)` initializer applies.
-fn declared_fn_type(
+/// A VAR/CONST initializer literal's type at full [`Ty`] fidelity (issue
+/// #1540) — the collection-aware sibling of
+/// [`infer_literal_type`](crate::external_check::infer_literal_type), which
+/// stops at [`InferredType`]'s scalar/`List<L>` domain.
+///
+/// Policy parity with `infer::body`'s own per-body literal arms is
+/// deliberate and load-bearing: this declaration-derived stub and the real
+/// HM inference must never disagree about what `#[1, 2, 3]` is, or a
+/// global and a `temp` holding the same literal would type differently.
+/// So the element/key/value joins go through the same
+/// [`unify_all`](crate::infer::unify_all) the body arms use (an empty or
+/// mixed literal lands on `Ty::Unknown`/`Ty::Conflicted` identically), and
+/// a construction literal's type is its written shape name, exactly as
+/// `Expr::StructLiteral`'s arm has it — construction *validity* is
+/// `crate::structs`' job, not this function's.
+///
+/// Nested elements recurse through this same function rather than through
+/// body inference: a declaration default is constant-folded, so the only
+/// element forms that can carry a type here are literals (a call/index/
+/// field access in that position is already `E077`).
+///
+/// Deliberately **not** handled: `Expr::Range`. A range literal never
+/// constant-folds into a declaration default at all (`brink-ir`'s
+/// `lir::lower::decls::is_const_foldable_decl_default` returns `false` for
+/// it), so typing one here would mint `NonEmptyRange` evidence — or its
+/// absence — for a declaration that cannot compile. Moot in practice: a
+/// `range` *annotation* has no grammar either
+/// ([`crate::annotations::resolve`] has no `"range"` arm), so
+/// `declared_value_ty`'s annotation branch can't produce `Ty::Range` any
+/// more than this literal branch can.
+///
+/// `pub(crate)` (issue #1877) so `strict::check_one_global_initializer` can
+/// independently type a VAR/CONST initializer literal and compare it
+/// against the declaration's own explicit annotation — the exact TM-2
+/// firewall comparison `declared_value_ty` below never makes, since there
+/// the annotation *replaces* this value outright rather than being checked
+/// against it.
+pub(crate) fn literal_ty(expr: &Expr, index: &SymbolIndex) -> Option<Ty> {
+    match expr {
+        Expr::ArrayLiteral(a) => Some(Ty::Array(Box::new(crate::infer::unify_all(
+            a.elements
+                .iter()
+                .map(|e| literal_ty(e, index).unwrap_or(Ty::Unknown)),
+        )))),
+        Expr::MapLiteral(m) => {
+            let keys = m
+                .entries
+                .iter()
+                .map(|(k, _)| literal_ty(k, index).unwrap_or(Ty::Unknown));
+            let vals: Vec<Ty> = m
+                .entries
+                .iter()
+                .map(|(_, v)| literal_ty(v, index).unwrap_or(Ty::Unknown))
+                .collect();
+            Some(Ty::Map(
+                Box::new(crate::infer::unify_all(keys)),
+                Box::new(crate::infer::unify_all(vals)),
+            ))
+        }
+        Expr::StructLiteral(sl) => Some(Ty::Struct(sl.shape.text.clone())),
+        _ => infer_literal_type(expr, index).map(Ty::from),
+    }
+}
+
+/// A VAR/CONST's declaration-derived type at full [`Ty`] fidelity — the
+/// value behind [`Sig::value_ty`] (issue #1540). Resolution order is the
+/// TM-2 firewall's: an explicit annotation wins outright, then the
+/// initializer literal, then a fn-value initializer.
+///
+/// `native` is the declaring file's frontend flag ([`HirFile::native`]) —
+/// the one gate the native bare-name spelling needs (issue #1895); see
+/// [`declared_fn_type`].
+fn declared_value_ty(
     value: &Expr,
     annotation: Option<&brink_ir::TypeExpr>,
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
     names: &crate::annotations::TypeNames,
     manifest: Option<&HostManifest>,
+    native: bool,
 ) -> Option<Ty> {
-    // Annotation wins over inference (TM-2 firewall) — same rule as
-    // `value_type_with_annotation_override`, but reading the full `Ty`
-    // straight from `resolve_annotation` instead of downcasting through
-    // `InferredType` (which has no `Fn` form — see `Sig::fn_type`'s doc).
-    if let Some(ann) = annotation
-        && let Some(ty @ Ty::Fn(..)) = resolve_annotation(ann, names)
-    {
+    if let Some(ty) = annotation.and_then(|ann| resolve_annotation(ann, names)) {
         return Some(ty);
     }
+    literal_ty(value, index).or_else(|| declared_fn_type(value, index, files, manifest, native))
+}
 
-    let Expr::FnLiteral(fl) = value else {
-        return None;
-    };
-    // `#fn` targets are always a single, statically-named function knot —
-    // never a stitch (T1c-1's own note: "every stitch target rejects until
+/// A VAR/CONST's declaration-derived fn-value initializer type (T1c
+/// follow-up, issue #712) — `None` when the initializer is neither an ink
+/// `#fn(target, args…)` literal nor, on the native surface, a bare name
+/// resolving to a function definition. Feeds [`Sig::value_ty`]'s last
+/// fallback, after the annotation and the initializer-literal branches in
+/// [`declared_value_ty`] have both already come up empty — an `fn(...)`
+/// *annotation* is resolved and returned there directly (that call site's
+/// own `if let Some(ty) = annotation.and_then(...)` is strictly earlier in
+/// the firewall order and already covers it), so this function only ever
+/// needs to look at the initializer.
+///
+/// **Two spellings, one type** (`docs/t1c-spec.md` §2a). Issue #1895 closed
+/// the declaration-initializer half of the native bare-name rule: lowering
+/// has always minted the fn value here (`lir::lower::decls::fold_path_ref`
+/// → `ConstValue::FnRef`, gated on `native && is_function_definition`) and
+/// `fn_values::check_native_bare_refs` has always walked decl initializers
+/// for `E080`, but typing had no native arm at all — so `Sig::value_ty`
+/// stayed `None`, the global never reached `infer::collect_globals`,
+/// `ty_of_def` answered `Ty::Unknown`, and a later `f(3)` misfired `E065`
+/// on correct code. The bare-name arm below is gated on the *same* two
+/// conjuncts lowering uses, so the two can never disagree about which
+/// initializers are fn values *when the target resolves to an actual
+/// knot* — the lookup below is restricted to `&[SymbolKind::Knot]`,
+/// narrower than lowering's `is_function_definition` (`Knot | Stitch`),
+/// so a top-level stitch promoted to knot status is a known, still-open
+/// one-sided gap (`docs/t1c-spec.md` §2a). A bare name always binds
+/// **zero** arguments — the binding form `#fn(f, a)` has no native
+/// spelling (§2a) — so the value's parameter row is the target's whole
+/// signature.
+fn declared_fn_type(
+    value: &Expr,
+    index: &SymbolIndex,
+    files: &[(FileId, &HirFile)],
+    manifest: Option<&HostManifest>,
+    native: bool,
+) -> Option<Ty> {
+    // Targets are always a single, statically-named function knot — never
+    // a stitch (T1c-1's own note: "every stitch target rejects until
     // stitch-functions exist"), never a local (a global initializer has no
     // enclosing body to scope a temp/param against). This is exactly
     // `resolve::resolve_function`'s own first-tried bucket for a bare
@@ -173,13 +297,85 @@ fn declared_fn_type(
     // isn't already an E079 error; an E079 target (wrong kind, or no
     // "function" detail) falls through to `None` — the pre-existing
     // Unknown-escape fallback, not a new failure mode.
-    let target_name = fl
-        .target
+    let (target_path, bound_args) = match value {
+        Expr::FnLiteral(fl) => (&fl.target, fl.args.len()),
+        // Issue #1895: the sigil-free native spelling. Zero bound args,
+        // and only on the native surface — in ink the same bare name is a
+        // knot's visit count, never a fn value (§2a, "Ink is unchanged").
+        Expr::Path(path) if native => (path, 0),
+        _ => return None,
+    };
+    let target_name = target_path
         .segments
         .iter()
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
         .join(".");
+    // A bare `Path` initializer is the one form whose *own* resolution is
+    // not decided here: `lower_path`/`fold_path_ref` consult the real
+    // resolution map, which reaches a same-named VAR/CONST/list item
+    // before it reaches a function knot. `signature()` has no resolution
+    // map (declaration-derived only), so rather than guess the wrong
+    // interpretation for a shadowed name, decline — `None` is the honest
+    // "can't determine" and leaves the pre-existing `Ty::Unknown`
+    // behaviour exactly as it was. The `#fn` literal form is unaffected:
+    // its target grammar admits nothing but a function name.
+    //
+    // This check is **project index-wide**, not scoped to what this
+    // declaration can actually see — issue #1901 asked whether that could
+    // disagree with `fold_path_ref`'s real, `ImportScope`-aware
+    // resolution in a way that is user-visible: a same-named global in an
+    // unrelated, non-importing file suppressing this typing even though
+    // lowering would still resolve the bare name to the local knot. For
+    // the cross-file case it cannot: `lower_native::decl::{lower_var_decl,
+    // lower_const_decl, lower_flags_decl}` hard-code `visibility: None`
+    // for every native `VAR`/`CONST`/`LIST` (no annotation grammar
+    // overrides it, unlike ink's `#@public`/`#@private` tags), and a
+    // native file is unconditionally its own module
+    // (`brink_db::modules::native_module_path`), so a same-named
+    // `VAR`/`CONST`/`ListItem` declared in a *different* `.brink` file can
+    // never be legitimately referenced at all — `modules::check`'s `E087`
+    // fires unconditionally the moment resolution reaches it (confirmed
+    // by `native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`,
+    // `crates/brink-compiler/tests/driver.rs`), failing the whole compile
+    // before this decision could ever matter.
+    //
+    // The **same-file** case is different, and matters: `ListItem`s are
+    // indexed under their *qualified* name (`List.Item`, `manifest.rs`'s
+    // `index.by_name.entry(sym.name.clone())`), never their bare item
+    // name, so a direct `index.by_name.get(target_name)` lookup can never
+    // find a bare-name list item — the `SymbolKind::ListItem` arm below
+    // only ever fires when `target_name` is already the qualified
+    // `List.Item` spelling. A bare reference to a list item's own name
+    // (`flags Palette = double, other` then `var alias = double`) needs
+    // the same suffix scan `lookup_variable` itself uses
+    // (`lookup_list_item_bare`, priority 3, strictly ahead of the knot
+    // lookup at priority 6) — without it this guard silently disagreed
+    // with `fold_path_ref` in exactly the same file, no cross-module
+    // privacy gate to save it: `alias` typed `Ty::Fn` from the knot
+    // `double` while lowering bound it to the list item, producing a
+    // bogus `E063` the moment a caller's declared parameter type didn't
+    // happen to admit `fn`. `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+    // (`crates/brink-compiler/tests/driver.rs`) is the regression test;
+    // reverting the `lookup_list_item_bare` call below reproduces the
+    // bogus `E063` it guards against.
+    if matches!(value, Expr::Path(_))
+        && (index.by_name.get(target_name.as_str()).is_some_and(|ids| {
+            ids.iter().any(|id| {
+                index.symbols.get(id).is_some_and(|i| {
+                    matches!(
+                        i.kind,
+                        SymbolKind::Variable | SymbolKind::Constant | SymbolKind::ListItem
+                    )
+                })
+            })
+        }) || !matches!(
+            lookup_list_item_bare(index, target_name.as_str()),
+            BareItemResult::NotFound
+        ))
+    {
+        return None;
+    }
     // Signature typing of a global `#fn` initializer has no per-file import
     // context (no enclosing body), so it looks the target up flatly (M-2d
     // import scoping — issue #790 — is inert here: a single-candidate knot
@@ -216,11 +412,27 @@ fn declared_fn_type(
     let remaining: Vec<Ty> = target_sig
         .param_annotations
         .iter()
-        .skip(fl.args.len())
+        .skip(bound_args)
         .map(|a| a.clone().unwrap_or(Ty::Unknown))
         .collect();
     let ret = target_sig.return_annotation.clone().unwrap_or(Ty::Unknown);
-    Some(Ty::Fn(remaining, Box::new(ret)))
+    // The declaration-derived effect row (issue #1680,
+    // `docs/effects-spec.md` §5): this cell's initializer *is* a `#fn`
+    // creation site, and `target_def` is the target it names — syntactic
+    // evidence, resolved above by name lookup, never an inferred row
+    // (§6.1a). This is the row `collect_globals` inserts once and
+    // `BodyCtx::globals` only ever reads (`infer/mod.rs`'s
+    // `collect_globals`, `infer/body.rs`'s `ty_of_def`) — a later
+    // `~ cell = #fn(other)` write is folded into the effect walk's write
+    // set, never back into this cell's type, so the row stays fixed at
+    // this declaration's target and under-approximates any cell reassigned
+    // to a different fn value (`docs/effects-spec.md` §6.1c, filed against
+    // #1753).
+    Some(Ty::Fn(
+        remaining,
+        Box::new(ret),
+        crate::infer::FnRow::of_target(target_def),
+    ))
 }
 
 /// Compute the signature stub for one definition.
@@ -249,21 +461,21 @@ pub fn signature(
         .map(|&(_, hir)| hir);
 
     let mut value_type = None;
-    let mut fn_type = None;
+    let mut value_ty = None;
     let mut is_local = false;
     let mut param_annotations = Vec::new();
     let mut return_annotation = None;
     if let Some(hir) = hir {
-        // `list<L>`/declared-struct annotations resolve nominally against
+        // `List<L>`/declared-struct annotations resolve nominally against
         // every declared `LIST`/`STRUCT` in the project (spec §2/§3, TM-4b
         // §6) — computed lazily, only when this def actually has a
         // knot/stitch/var to annotate below. T1d-2b (issue #774): the
         // registered `HostManifest` now reaches `signature()` too (threaded
         // by `brink-db`'s per-def `signature_query`, the same coarse
         // project-wide dependency shape `per_file_diagnostics_query` already
-        // reads `host_manifest` at), so `handle<K>` annotations resolve
+        // reads `host_manifest` at), so `Handle<K>` annotations resolve
         // against the manifest's declared kind vocabulary here exactly like
-        // `list<L>`/`STRUCT` resolve against the project's declared names —
+        // `List<L>`/`STRUCT` resolve against the project's declared names —
         // `None` (no manifest registered) still degrades to an empty
         // handle-kind set, same "unresolved -> silent" contract every other
         // unrecognized name already gets.
@@ -278,16 +490,18 @@ pub fn signature(
                         v.annotation.as_ref(),
                         &names(),
                     );
-                    // T1c follow-up (issue #712): `Ty::Fn` has no
-                    // `InferredType` home, so it's carried on its own field
-                    // — see `Sig::fn_type`.
-                    fn_type = declared_fn_type(
+                    // Issue #1540: the full-fidelity type every typed
+                    // consumer reads — `Ty::Array`/`Map`/`Struct`/`Fn`/
+                    // `Option`/`Range` have no `InferredType` home, so they
+                    // ride here. See `Sig::value_ty`.
+                    value_ty = declared_value_ty(
                         &v.value,
                         v.annotation.as_ref(),
                         index,
                         files,
                         &names(),
                         manifest,
+                        hir.native,
                     );
                 }
             }
@@ -300,14 +514,15 @@ pub fn signature(
                         c.annotation.as_ref(),
                         &names(),
                     );
-                    // T1c follow-up (issue #712) — see the `Variable` arm.
-                    fn_type = declared_fn_type(
+                    // Issue #1540 — see the `Variable` arm.
+                    value_ty = declared_value_ty(
                         &c.value,
                         c.annotation.as_ref(),
                         index,
                         files,
                         &names(),
                         manifest,
+                        hir.native,
                     );
                 }
             }
@@ -352,6 +567,10 @@ pub fn signature(
                                     .and_then(|a| resolve_annotation(a, &names))
                             })
                             .collect();
+                        return_annotation = s
+                            .return_type
+                            .as_ref()
+                            .and_then(|rt| resolve_annotation(rt, &names));
                     }
                 } else if let Some(k) = hir.knots.iter().find(|k| k.name.text == info.name) {
                     is_local = k.is_local;
@@ -380,9 +599,68 @@ pub fn signature(
         kind: info.kind,
         params: info.params.clone(),
         value_type,
-        fn_type,
+        value_ty,
         is_local,
         param_annotations,
         return_annotation,
+    }))
+}
+
+/// The per-file locals path [`signature`] itself cannot take (issue #530).
+///
+/// A local (`Param`/`Temp`) `DefinitionId` is a content hash of
+/// `(scope, name, kind)` alone (`manifest::local_definition_id`) — it has
+/// no file component, unlike a declaration's id (recoverable from the
+/// project-wide index's `SymbolInfo.file`). So `signature`'s own
+/// `index.symbols.get(&def)` lookup can never find one once the caller
+/// passes the decls-only [`resolution_index_query`](../../brink_db)
+/// projection ([`resolution_index_query`]'s own doc: locals are dropped
+/// entirely, issue #517) — and widening that lookup to the full,
+/// range-carrying index would reintroduce exactly the whole-project
+/// invalidation #517's cutoff exists to kill. A local's body lives in
+/// exactly one file (the same fact [`crate::resolve::lookup_local_in_scope`]
+/// already leans on), so a caller that already knows which file declares
+/// the local — hover, go-to-def, resolved from a reference inside that
+/// same file — can hand this function that file's own `manifest` directly,
+/// keeping the lookup a narrow per-file scan instead of a project-wide one.
+///
+/// Declaration-derived only, matching [`signature`]'s own contract: a
+/// `Param`'s or `~ temp`'s TM-2 (docs/typed-mode-spec.md §3) `: type`
+/// annotation, if any — no body inference (that's `infer_body`'s job, read
+/// separately by a caller that wants an inferred fallback). `is_local` is
+/// always `false` — the `#@local` flow-private directive only exists on
+/// knot/stitch/VAR declarations, never on a param or temp. `params` and
+/// `param_annotations` stay empty and `return_annotation` stays `None` —
+/// a local isn't callable, so those `Sig` fields (knot/stitch-only) don't
+/// apply. Returns `None` when `def` doesn't match any local declared in
+/// `manifest`.
+#[must_use]
+pub fn local_signature(
+    def: DefinitionId,
+    manifest: &brink_ir::SymbolManifest,
+    index: &SymbolIndex,
+    host: Option<&HostManifest>,
+) -> Option<Arc<Sig>> {
+    let local = manifest
+        .locals
+        .iter()
+        .find(|l| crate::manifest::local_definition_id(&l.scope, &l.name, l.kind) == def)?;
+
+    let names = crate::annotations::TypeNames::new(index, host);
+    let value_ty = local
+        .annotation
+        .as_ref()
+        .and_then(|a| resolve_annotation(a, &names));
+    let value_type = value_ty.as_ref().and_then(ty_to_inferred_type);
+
+    Some(Arc::new(Sig {
+        name: local.name.clone(),
+        kind: local.kind,
+        params: Vec::new(),
+        value_type,
+        value_ty,
+        is_local: false,
+        param_annotations: Vec::new(),
+        return_annotation: None,
     }))
 }

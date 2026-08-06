@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc aa44f0605daef9688ad3a85a0df944b7d4a9462568fe413cb69b45b243ea376d # shrinks to input = "#//"
+cc f23ef5eeaeecfc231ebdc492ee8f523d03726072dfd0a5db3567b0a475061031 # shrinks to input = "flow a_a_() {\n@[a0a__(a0, a_, aaa_a)]\n{~ aa.aAAA???? a00a.,Aa|a0|aAaA.00a0?A}\n}\n", cut = 15

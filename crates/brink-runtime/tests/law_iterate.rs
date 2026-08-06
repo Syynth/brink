@@ -51,6 +51,24 @@ fn arb_map_key() -> impl Strategy<Value = MapKey> {
     ]
 }
 
+/// Structural exhaustiveness guard (issue #1542, extending the same
+/// exhaustiveness-guard pattern — #667/#883, most recently extended by
+/// #1521 in `brink-runtime`'s `law_transcript_roundtrip.rs`): a match over
+/// every current [`MapKey`] variant with no wildcard arm, so this fails to
+/// compile the moment a new variant is added to the enum. Never called —
+/// the forcing function is the compile error itself, at edit time rather
+/// than at some later PR's `cargo build`. `arb_map_key` above already
+/// covers all three current variants; this pins that "all three" against a
+/// future `MapKey` addition (`docs/format-v4-rfc.md`'s Tier-1 value surface
+/// work is the likeliest source of one) silently keeping this map-key law
+/// green while generating zero coverage for the new key kind.
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_map_key_variants_exhaustive(key: &MapKey) {
+    match key {
+        MapKey::Int(_) | MapKey::Str(_) | MapKey::Bool(_) => {}
+    }
+}
+
 fn arb_map() -> impl Strategy<Value = OrderedMap> {
     proptest::collection::vec((arb_map_key(), arb_element()), 0..12).prop_map(|entries| {
         let mut m = OrderedMap::new();
@@ -165,14 +183,13 @@ fn run_for_loop(collection_literal: &str) -> Vec<String> {
     let mut text = String::new();
     loop {
         match story.continue_single().expect("run") {
-            brink_runtime::Line::Text { text: t, .. } => text.push_str(&t),
-            brink_runtime::Line::Done { text: t, .. }
-            | brink_runtime::Line::End { text: t, .. }
-            | brink_runtime::Line::Suspended { text: t, .. } => {
-                text.push_str(&t);
+            brink_runtime::Step::Line(line) => text.push_str(&line.text),
+            brink_runtime::Step::Done
+            | brink_runtime::Step::End
+            | brink_runtime::Step::Suspended => {
                 break;
             }
-            brink_runtime::Line::Choices { .. } => panic!("unexpected choices"),
+            brink_runtime::Step::Choices(_) => panic!("unexpected choices"),
         }
     }
     // Output shape: "START\n[a, b, c]\n" — parse the bracketed array back

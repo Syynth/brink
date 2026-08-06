@@ -24,6 +24,7 @@ brink is organized as a Cargo workspace with strict dependency rules. The centra
 | `brink-codegen-inkb` | `crates/internal/brink-codegen-inkb/` | Bytecode codegen: LIR to `StoryData` |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-db` | `crates/internal/brink-db/` | Incremental project database, file discovery |
+| `brink-source-tree` | `crates/internal/brink-source-tree/` | `SourceTree` trait: host-agnostic seam for enumerating/reading `.brink` source files |
 | `brink-fmt` | `crates/internal/brink-fmt/` | `.ink` source formatter (powers `brink fmt`) |
 | `brink-intl` | `crates/internal/brink-intl/` | Internationalization tooling: line export, XLIFF round-trip, `.inkl` compile, ICU plurals |
 | `xliff2` | `crates/internal/xliff2/` | General-purpose XLIFF 2.0 read/write library |
@@ -37,11 +38,14 @@ Internal crates have `publish = false` and are not published to crates.io.
 crates.io and ships no code. There is no facade re-exporting the compiler and
 runtime; depend on `brink-compiler` and `brink-runtime` directly.
 
-## Editor plugins
+## Editor support
 
-| Crate | Path | Purpose |
-|-------|------|---------|
-| `zed-brink` | `crates/zed-brink/` | Zed editor extension |
+Editor integration ships as the `brink-lsp` server (above), not as
+per-editor plugin crates. A Zed extension crate lived at `crates/zed-brink/`
+until 2026-08-01; it was ink-only, unpublished, and its tree-sitter grammar
+pointed at an absolute local path that never existed in the repo, so it could
+not be built. It was removed rather than carried. A future editor plugin
+should target the native (`.brink`) surface — see the NS-T track.
 
 ## Key dependency rules
 

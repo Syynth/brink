@@ -67,6 +67,199 @@ VAR player_hp = 10
 sigil rule — `#` opens a tag in prose position). Diagnostics for the
 bullets above allocate from **E079** upward (next free after E078).
 
+## 2a. Creation on the native surface: the bare name — RULED 2026-08-01
+
+`#fn` is the **ink/brink-dialect** spelling and it is not retired. On the
+**native** (`.brink`) surface, creation has no sigil at all: a
+statically-named function in expression position **is** a fn value.
+
+```brink
+fn scene(x) {
+  return x + 1;
+}
+
+fn used() {
+  return map([1, 2, 3], scene);   // a reference — the fn value itself
+}
+
+fn called() {
+  return scene(1);                // a call — parentheses make it one
+}
+```
+
+Reference-vs-call is unambiguous because a call keeps its parentheses —
+Rust's function-item model. This is why `#fn` is the *wrong* spelling
+here rather than merely a redundant one: `#` is already the tag sigil in
+native content position (`brink-syntax-native`'s `parser/block.rs`), so
+`#fn` would collide with the one meaning `#` has on this surface. The
+ruling is a grammar fact, not a taste preference.
+
+Consequences that follow from "bare name, no sigil":
+
+- A **local of the same name wins.** Name resolution reaches a `let`
+  binding or parameter before it ever reaches the function definition,
+  so `let double = 5; double` is the `int` 5.
+- The reference binds **zero** arguments, always. The binding
+  (partial-application) form `#fn(f, a)` deliberately has **no** native
+  spelling: for a *value* parameter it is now redundant with lambdas
+  (`|x| f(a, x)`, since lambda lifting landed), and for a **`ref`**
+  parameter it is not redundant but is also not safely respellable —
+  lambda capture is by-value always, while `#fn(heal, player_hp)` binds
+  a `ref` param to a durable *cell*. Giving that a native spelling needs
+  its own ruling and is not blocked by anything today.
+- Therefore §2's `ref` obligation survives as an absolute: a target with
+  any `ref` parameter can never be referenced by bare name (E080 at the
+  reference site). §2's other two creation-site diagnostics do not
+  apply — there are no bound args to over-bind (E081), and a bare name
+  that resolves to something other than a function definition is simply
+  not a fn value at all (E079), it stays a variable read or a knot's
+  visit count.
+- **Ink is unchanged.** The same bare name in ink is still a knot's
+  visit count; only `#fn(f)` creates a fn value there.
+- **One spelling per surface, one type, in every position** (issues
+  #1876, #1895). A bare-name reference types exactly as the zero-bound
+  `#fn` literal does: `§4`'s `fn(T…): R` built from the target's
+  signature, carrying the target's own effect row (`FnRow::of_target`,
+  effects-spec §5/§6.1a) — it *is* a creation site, so it is harvested
+  as one (a call-graph edge plus the Fork A creation atom). That is
+  what makes §4's static checking apply to it: passing `f` where an
+  `int` is declared is an ordinary `E063`, not an opaque `Unknown`
+  deferred to the runtime. Both typing paths key off the same per-file
+  frontend flag lowering gates on, so typing and lowering cannot
+  disagree about which references are fn values **when the target is
+  an actual knot**. The two gates are not otherwise identical: lowering's
+  `SymbolInfo::is_function_definition` accepts `SymbolKind::Knot |
+  SymbolKind::Stitch` carrying the `"function"` detail, but
+  `declared_fn_type`'s `lookup_by_name` restricts the bucket to
+  `&[SymbolKind::Knot]` alone — so a top-level stitch promoted to knot
+  status (`Knot::symbol_kind`) that carries the same `"function"`
+  detail mints a `FnRef` in lowering yet declines to `Ty::Unknown` in
+  typing, a genuine one-sided disagreement reachable from a native
+  declaration initializer naming that stitch and not yet closed:
+  - **Body/expression position** — an argument, an operand, a call
+    target — through `HirFile::native` → `Def::native` →
+    `BodyCtx::native` (`infer::body`'s `native_fn_value_target`,
+    mirroring `lir::lower::expr::lower_path`'s `MakeFnValue` gate).
+  - **Declaration-initializer position** (`var f = double;`) through
+    `HirFile::native` → `signature::declared_fn_type` (issue #1895),
+    mirroring `lir::lower::decls::fold_path_ref`'s `ConstValue::FnRef`
+    gate. This makes `Sig::value_ty` a real `Ty::Fn`, so the global
+    lands in `infer::collect_globals` and a later `f(3)` type-checks
+    instead of misfiring `E065` as an unknown-callee value call.
+    Declaration-derived typing has no resolution map, so a bare name
+    shadowed by a same-named `VAR`/`CONST`/list item declines to
+    `Unknown` rather than guessing the fn interpretation — lowering
+    resolves that name to the shadowing global. That guard is a
+    project-wide scan (not scoped to what the declaration can actually
+    see); issue #1901 asked whether the two could disagree in a
+    user-visible way through an unrelated file's same-named global.
+    **Review found they did**, for the `ListItem` case specifically: list
+    items are indexed under their *qualified* `List.Item` name
+    (`manifest.rs`), never the bare item name, so the guard's original
+    direct `index.by_name.get(bare_name)` lookup could never see a
+    bare-name list item — that arm was dead code for the exact form it
+    claimed to guard, and a same-file `flags Palette = double, other` /
+    `fn double(...)` / `var alias = double` reference typed `alias` as
+    `fn(int): int` regardless, misfiring `E063` against a caller that
+    declared an `int` parameter. Fixed by having the guard also run the
+    same bare-name suffix scan `lookup_variable` itself uses
+    (`resolve::lookup_list_item_bare`), ahead of the knot lookup — see
+    `declared_fn_type`'s own doc for the fix and
+    `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+    (`crates/brink-compiler/tests/driver.rs`) for the regression test.
+    With that fixed, the *cross-file* half of #1901's question still
+    closes empirically, for two independent reasons: native
+    `VAR`/`CONST`/`LIST` have no publicity mechanism at all
+    (`lower_native::decl` hard-codes `visibility: None`), so a same-named
+    global in a *different* file can never be legitimately referenced —
+    the cross-module privacy gate (`E087`) fails the whole compile before
+    the guard's decision could matter; and, independently,
+    `resolve::lookup_by_name`'s `lookup_by_name_direct` fast path
+    (`resolve.rs:1194`, `if !multiple { return first_match; }`) returns
+    the sole candidate of the requested kinds without consulting the
+    `ImportScope` at all, so a direct call to the local knot resolves
+    correctly regardless of an unrelated file's same-named global (only
+    the bare *value* reference hits the kind-priority ahead of that fast
+    path and triggers `E087`). See `declared_fn_type`'s own doc and the
+    `native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`
+    regression test for the full argument.
+
+Respelling ink into native (`brink-respell`) follows the same split: a
+zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses
+loudly rather than emitting a lambda with different semantics.
+
+## 2b. A lambda literal decl default — RULED 2026-08-01 (issue #1774)
+
+A native `var`/`const` may also hold a **lambda literal** as its whole
+declaration default (`const twice = |x| x * 2`), not just the bare-name
+reference §2a ruled. `decls::is_const_foldable_decl_default`'s `Lambda`
+arm — which raised `E083` here since #1685 first landed lambdas — is
+lifted for exactly this position: `decls::collect_globals`'s
+`eval_const_lambda` folds the literal through the same lambda-lifting
+machinery (#1709, `lir::lower::lambda::lower_lambda`) every other lambda
+uses, just handed an **empty** enclosing frame (no knot/stitch params, no
+`~ temp` locals — file scope has none). The synthesized function is a
+sibling of the project's knots, addressed via
+`lir::ConstValue::FnRef`/`Closure` exactly like a bound `#fn(...)`
+literal.
+
+This does **not** relax §1's "no anonymous lambdas in Tier-1" — that
+ruling is about the T1c *partial-application* creation form
+(`#fn(name, args…)`) never admitting an anonymous body; a lambda literal
+is `#1685`'s separate surface, and this section is only about *where*
+that already-legal literal is allowed to sit, not a new creation form.
+
+Nested one level in — a lambda literal as a collection element, a
+struct field, or a `#fn` bound `val` arg — is **not** covered by this
+ruling and stays behind its own `E077`/`E076` diagnostic
+(`decls::is_const_foldable_kind`'s `Lambda` arm, deliberately unchanged).
+
+**Why this is safe**, pinning the reasoning rather than leaving it
+implicit: the creation-site-capture rule that gates a lambda everywhere
+else exists to keep a captured `#@local` cell from leaking outside its
+creating flow (the 2026-07-23 "flows-as-actors" direction). A file-scope
+lambda has no enclosing frame to capture *from* in the first place, so
+that invariant is never at stake — a fact made mechanical, not just
+argued, by handing `lower_lambda` an empty `TempMap`/`visible_temps`:
+every free name in the body then misses `ctx.temp_slot`, and
+`captured_locals`'s own contract treats a miss as "a legitimate
+non-local" (a global cell or a knot/function name), never a capture.
+Pinned by `brink-ir`'s
+`lambda_literal_decl_default_reads_other_globals_without_capturing_them`
+(`tests/lir_lowering/lambda_literal_declaration_default.rs`).
+
+**Known follow-ups, not fixed by this ruling:**
+
+- `signature::declared_fn_type` (the typing-side mirror of
+  `decls::fold_path_ref`/`eval_const_lambda`, §2a's own note) has no
+  `Expr::Lambda` arm — a lambda-valued global types as `Ty::Unknown`
+  rather than a real `fn(T…): R`, the same honest "can't determine"
+  fallback a shadowed bare-name reference already gets. Not a soundness
+  gap (gradual typing's fallback is sound by construction), just less
+  precise than the bare-name case.
+- A **separate, pre-existing** gap (not introduced or fixed here):
+  calling a fn-valued global — bare-name (#1862) or lambda (#1774) —
+  from anywhere other than its own declaration does not resolve through
+  the production `compile_path` → `brink-db` incremental pipeline
+  (`E025`, "unresolved variable reference"), even though the identical
+  shape resolves cleanly through the simpler whole-project
+  `brink_analyzer::analyze` path `brink-ir`'s own tests use. See the
+  #1774 → #2083 (filed separately).
+- A narrower, **separate, pre-existing** gap, checked directly against
+  this issue's own "does #1764/self-recursion become expressible" ask
+  and found still no: a global `const`-bound lambda cannot call *itself*
+  recursively by name from inside its own body (`const fact = |n| … n *
+  fact(n - 1) …`) — `brink-analyzer` reports `E025` at both occurrences
+  of the recursive call. The const's own name, mid-initializer, is not
+  yet visible to its own body's resolution (a single-pass ordering
+  nuance in the resolver, not the `E083`/capture story this ruling is
+  about). Narrower than and adjacent to #2083's territory (that gap is
+  about calling a fn-valued global from *outside* its declaration; this
+  one is about calling it from *inside* its own declaration) rather than
+  a clean independent bug, so not filed separately — pinned by
+  `brink-compiler`'s `#[ignore]`d
+  `compile_path_native_const_lambda_decl_default_self_recursion_works`.
+
 ## 3. Invocation and `bind` — RULED (typing rule details in §4)
 
 Both call forms ship:
@@ -191,8 +384,8 @@ implementation review):
 
 Per the T1b divergence discipline:
 
-- **Oracle gate**: ratchet 5,577 byte-identical on every slice;
-  strict-ink corpus never sees `#fn`.
+- **Oracle gate**: ratchet `RATCHET_EPISODE_COUNT` byte-identical on
+  every slice; strict-ink corpus never sees `#fn`.
 - **Tier-1 corpus wing**: `tests/tier1-brink/` grows function-value
   cases with hand-written expected transcripts — creation, both call
   forms, `bind` chains, ref-cell mutation through a stored value,

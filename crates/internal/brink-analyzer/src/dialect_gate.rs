@@ -43,15 +43,12 @@ use brink_ir::{
 
 use crate::determinism::LookupSet;
 
-/// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
-/// divergence from the oracle-anchored ink subset is a visible, one-time,
-/// per-project choice (docs/t1b-surface-spec.md §1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Dialect {
-    #[default]
-    StrictInk,
-    Brink,
-}
+// `Dialect` is defined in `brink-project-config` — it is a project-policy
+// type, more primitive than the analyzer that consumes it, and keeping it
+// there is what lets that crate publish without depending on this one
+// (#1234). Re-exported here so every existing `brink_analyzer::Dialect` /
+// `dialect_gate::Dialect` path keeps working unchanged.
+pub use brink_project_config::Dialect;
 
 /// Walk every file's HIR and emit a dialect-gate diagnostic for each brink
 /// extension construct found: a `~ { … }` block, a `#[…]`/`#{…}` sigil
@@ -248,6 +245,9 @@ impl HirVisitor for GateVisitor<'_> {
 
     fn enter_stitch(&mut self, stitch: &Stitch) {
         self.flag_params(&stitch.params);
+        if let Some(ret) = &stitch.return_type {
+            self.flag(ret.range(), "type annotation");
+        }
         if let Some(assertion) = &stitch.effects_assertion {
             self.flag(assertion.range, "`@[effects(…)]` assertion");
         }
@@ -612,6 +612,16 @@ mod tests {
     #[test]
     fn strict_ink_flags_return_type_annotation() {
         let hir = lower_src("=== function heal(hp): int ===\n~ return hp\n");
+        let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E051);
+    }
+
+    #[test]
+    fn strict_ink_flags_stitch_return_type_annotation() {
+        // #1509: a *nested* stitch's `: type` return clause is brink-only
+        // exactly like a knot's — must be flagged under strict-ink too.
+        let hir = lower_src("=== camp ===\n= fire(logs): int\n~ return logs\n");
         let diags = check(&[(FileId(0), &hir)], &no_resolutions(), Dialect::StrictInk);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E051);

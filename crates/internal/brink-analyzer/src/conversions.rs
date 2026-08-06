@@ -76,7 +76,7 @@ pub fn check(
     resolutions: &ResolutionMap,
 ) -> Vec<Diagnostic> {
     // No manifest access at this call site, mirroring `structs::check`'s own
-    // note — a global's `handle<K>` annotation resolving isn't in this
+    // note — a global's `Handle<K>` annotation resolving isn't in this
     // check's scope any more than a struct field's is.
     let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
@@ -94,27 +94,13 @@ pub fn check(
             stitch_locals: None,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // File-level declaration initializers aren't part of `visit::visit`'s
-        // block-tree walk (see its module doc) — same pattern
-        // `structs::check`/`dialect_gate`/`annotations` use for VAR/CONST. No
-        // enclosing def here, so `locals` is `None` — only a reference to a
-        // global VAR/CONST is classifiable at file scope, matching
-        // `infer::body`'s own firewall (a body never sees another def's
-        // locals either).
-        let ctx = MistypeCtx {
-            index,
-            globals: &globals,
-            signatures: &inference.signatures,
-            resolution_by_range: &resolution_by_range,
-            locals: None,
-        };
-        for var in &hir.variables {
-            check_expr(&var.value, file, &ctx, &mut out);
-        }
-        for c in &hir.constants {
-            check_expr(&c.value, file, &ctx, &mut out);
-        }
+        // Issue #2098: `ConversionVisitor::enter_expr` has no state that
+        // needs resetting between the block tree and a file-level
+        // declaration's own initializer (`locals` is already `None` at this
+        // scope) — so the shared entry point covers both in one drive, and
+        // the hand-rolled `check_expr`/`expr_children` mirror of
+        // `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }
@@ -204,55 +190,6 @@ impl HirVisitor for ConversionVisitor<'_> {
     fn enter_expr(&mut self, expr: &Expr) {
         let ctx = self.ctx();
         check_call(expr, self.file, &ctx, self.diagnostics);
-    }
-}
-
-/// Recurse into `expr` looking for `int`/`float` calls — used only for the
-/// file-level VAR/CONST initializers `visit::visit` doesn't cover; every
-/// other position is already reached through the `HirVisitor` walk above.
-/// Mirrors `structs::check_expr`'s own shape (a small hand recursion, not
-/// worth sharing across the two modules for one call site each).
-fn check_expr(expr: &Expr, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
-    check_call(expr, file, ctx, out);
-    for child in expr_children(expr) {
-        check_expr(child, file, ctx, out);
-    }
-}
-
-/// Direct child expressions of `expr` — mirrors `structs::expr_children`
-/// (same rationale: needed only because `check_expr` runs outside the
-/// `HirVisitor` walk).
-fn expr_children(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
-        Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(lhs, _, rhs) => vec![lhs, rhs],
-        Expr::Call(_, args) => args.iter().collect(),
-        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
-        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-        Expr::Index(idx) => vec![&idx.base, &idx.index],
-        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
-        // T1c `#fn(target, args…)`: only the bound arguments are child
-        // expressions — the target is a static `Path` field, same as `Call`.
-        Expr::FnLiteral(fl) => fl.args.iter().collect(),
-        // T1e `ref lvalue-path`: only the operand is a child expression.
-        Expr::RefArg(ra) => vec![&ra.operand],
-        Expr::Range(r) => vec![&r.start, &r.end],
-        Expr::String(s) => s
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
-                brink_ir::StringPart::Literal(_) => None,
-            })
-            .collect(),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => Vec::new(),
     }
 }
 
@@ -403,6 +340,47 @@ mod tests {
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
     }
 
+    /// [`check_all`]'s native-surface twin — lambdas exist only on the
+    /// native surface, so the #1764 fixtures below need `lower_native`.
+    fn check_all_native(src: &str) -> Vec<Diagnostic> {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098).
+    #[test]
+    fn a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078() {
+        let diags = check_all_native("var f = ||: int {\n  let x = int(Map { 1: 2 });\n  0\n};\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+        assert!(diags[0].message.contains("map"), "{:?}", diags[0].message);
+    }
+
+    /// The tail position was already covered — pinned so a later refactor
+    /// can't trade one half of the body for the other.
+    #[test]
+    fn a_bad_conversion_in_a_lambda_tail_of_a_var_initializer_is_still_e078() {
+        let diags = check_all_native("var f = ||: int {\n  let a = 1;\n  int(Map { 1: 2 })\n};\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+    }
+
     #[test]
     fn int_of_a_divert_target_literal_is_e078() {
         let diags =
@@ -499,13 +477,12 @@ mod tests {
         // `v`'s declaration-derived type is a concrete `divert` (its own
         // divert-target initializer) — out of `int`/`float`'s permitted
         // domain, so this now fires exactly like a literal `-> knot`
-        // argument would. (A global's `array`/`map`/`struct`-literal
-        // initializer can't drive this same test: `collect_globals`'s
-        // `InferredType` projection has no representation for those shapes —
-        // a pre-existing, documented gap in `signature::ty_to_inferred_type`,
-        // not something this issue's scope touches. `divert` and `list` are
-        // the two non-scalar shapes `InferredType` *does* carry, so those are
-        // what exercise the global-scope dispatch path here.)
+        // argument would. (Issue #1540 widened `collect_globals` to full
+        // `Ty` fidelity, so a global's `array`/`map`/`struct`-literal
+        // initializer now drives this same dispatch too — see
+        // `global_array_valued_argument_fires_since_the_value_ty_widening`
+        // just below. `divert` stays the fixture here because it is the
+        // shape this issue's own scope introduced.)
         let diags = check_all(
             "=== knot ===\nHello.\n-> DONE\nVAR v = -> knot\n=== main ===\n~ x = int(v)\n-> DONE\n",
         );
@@ -516,6 +493,20 @@ mod tests {
             "{:?}",
             diags[0].message
         );
+    }
+
+    /// Issue #1540: the collection shapes that used to be dropped on the
+    /// way into `collect_globals` now reach this dispatch. Before the
+    /// `Sig::value_ty` widening this compiled clean — a latent miss, not a
+    /// design choice — while the `temp` twin
+    /// (`temp_variable_valued_argument_fires_when_provably_mistyped`)
+    /// reported for the identical value.
+    #[test]
+    fn global_array_valued_argument_fires_since_the_value_ty_widening() {
+        let diags = check_all("VAR xs = #[1, 2]\n=== main ===\n~ x = int(xs)\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+        assert!(diags[0].message.contains("array"), "{:?}", diags[0].message);
     }
 
     #[test]
@@ -535,7 +526,7 @@ mod tests {
 
     #[test]
     fn temp_variable_valued_argument_fires_when_provably_mistyped() {
-        // `xs`'s finalized `BodyTypes::locals` type is `map<string, int>`
+        // `xs`'s finalized `BodyTypes::locals` type is `Map<string, int>`
         // (its own literal initializer) — out of domain.
         let diags = check_all("=== main ===\n~ temp xs = #{\"a\": 1}\n~ x = int(xs)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
@@ -575,7 +566,7 @@ mod tests {
     fn index_valued_argument_fires_when_provably_mistyped() {
         // `xs` is a local `~ temp` bound to a `#[#[..], #[..]]`
         // array-of-arrays literal, so its finalized locals type is
-        // `array<array<int>>` — indexing it yields `array<int>`, out of
+        // `Array<Array<int>>` — indexing it yields `Array<int>`, out of
         // domain.
         let diags = check_all(
             "=== main ===\n\
@@ -610,7 +601,7 @@ mod tests {
         // body. This drives the `enter_stitch`/`stitch_locals` dispatch
         // path specifically (the exact gap PR #975's own review caught for
         // `structs::check`): `t`'s finalized `BodyTypes::locals` type is a
-        // concrete `array<int>` — out of domain.
+        // concrete `Array<int>` — out of domain.
         let diags =
             check_all("=== room ===\n= inside\n~ temp t = #[1, 2]\n~ x = int(t)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
@@ -623,7 +614,7 @@ mod tests {
         // A call in a file-level VAR/CONST initializer has no enclosing
         // knot/stitch body — only a reference to *another* global is
         // classifiable there (mirrors `structs::check`'s identical file-scope
-        // note). `other`'s declared type (`list<Colors>`, one of the two
+        // note). `other`'s declared type (`List<Colors>`, one of the two
         // non-scalar shapes `InferredType` represents — see the previous
         // test's comment) is out of domain.
         let diags = check_all("LIST Colors = red, blue\nVAR other = (red)\nVAR x = int(other)\n");

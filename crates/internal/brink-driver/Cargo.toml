@@ -13,8 +13,15 @@ description = "Pipeline orchestration for the brink ink compiler"
 brink-db = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
+brink-project-config = { workspace = true }
+brink-source-tree = { workspace = true }
 tracing.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Only the tests name `DefinitionId` directly (the editor-vs-compile identity
+# parity test in `discover_native`); production code here never does.
+brink-format = { workspace = true }
 
 [lints]
 workspace = true

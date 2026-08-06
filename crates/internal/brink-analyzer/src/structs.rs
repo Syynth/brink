@@ -43,21 +43,31 @@
 //! independent* check: a construction literal supplying the same field
 //! name more than once is flagged under both `types = gradual` and
 //! `types = strict` — it doesn't need the shape to resolve, so it's wired
-//! into `per_file_diagnostics` unconditionally (dialect = brink only)
-//! rather than behind `strict::config_error` the way [`check`] is.
+//! into `per_file_diagnostics` unconditionally within a file (no
+//! `TypePolicy` gate) rather than behind `strict::config_error` the way
+//! [`check`] is. Its `dialect`/`is_native` gating is wider than `check`'s
+//! own brink-only block, though: B5 (issue #1464, #1103 cascade ruling
+//! (A)) made `TypeName { … }` construction reach `StructLiteral` from the
+//! native surface (`Point { x: 1 }`) as well as the brink dialect's own
+//! `#{…}` spelling, so the caller runs this under `dialect = Brink ||
+//! is_native` — same reasoning `map_keys::check_duplicate_keys`'s own doc
+//! gives for `E138`.
 
 use std::collections::BTreeMap;
 
 use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
-    Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch, StructLiteral,
-    SymbolIndex, SymbolKind,
+    AssignOp, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch,
+    StructLiteral, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{InferenceResult, InferredSig, Ty};
+use crate::infer::{
+    FieldAssignMismatch, InferenceResult, InferredSig, Ty, is_string_numeric_concat,
+};
+use crate::resolve::ImportScope;
 
 /// One declared struct shape: fields in declaration order, name -> declared
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
@@ -91,7 +101,29 @@ impl ShapeInfo {
     }
 }
 
-/// Every declared `STRUCT` shape in the project, by name.
+/// Every declared `STRUCT` shape in the project — a referrer-scoped lookup
+/// table (issue #2241).
+///
+/// A bare struct name is **not** a unique key: the stdlib mount (#2080) lets
+/// a project's own `struct Cue { … }` coexist with a same-named
+/// `struct Cue { … }` a mounted std preset declares (M-2d module
+/// coexistence, `manifest::is_cross_declared_module_collision`) — both are
+/// genuinely distinct `Struct` symbols with distinct `DefinitionId`s, the
+/// same shape `brink_ir::lir::lower::structs::ShapeTable` already handles one
+/// layer down (issue #2238). This table used to be a flat
+/// `BTreeMap<String, ShapeInfo>` populated by plain last-`insert`-wins —
+/// whichever file's declaration was iterated last silently overwrote every
+/// earlier same-named one, with no per-caller scope to break the tie.
+/// [`ShapeTable::resolve`] is the fix: every caller with an [`ImportScope`]
+/// in hand resolves the *right* candidate through the same
+/// `Candidacy`-based module scoping [`crate::resolve::lookup_by_name`]
+/// already applies to every other symbol kind — instead of a global winner
+/// or a second, diverging std-exclusion policy (2026-08-04 peer-root
+/// ruling, `docs/decision-log.md`). [`ShapeTable::get_by_def`] is for
+/// callers that already hold an exact `DefinitionId` (e.g. a construction
+/// literal's shape name, resolved with full module-scope `Candidacy` by
+/// `resolve::resolve_struct_ref` and recorded in the project's
+/// `ResolutionMap` — see [`check`]).
 ///
 /// Public (issue #858) so tooling outside `brink-analyzer` can resolve a
 /// `STRUCT`'s declared fields — e.g. offering field-name completions after
@@ -99,19 +131,37 @@ impl ShapeInfo {
 /// crate already builds for its own construction-literal checks
 /// ([`check`]) and `ref`-projection path-segment validation.
 #[must_use]
-pub fn declared_shapes(
-    files: &[(FileId, &HirFile)],
-    index: &SymbolIndex,
-) -> BTreeMap<String, ShapeInfo> {
+pub fn declared_shapes(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> ShapeTable {
     // No manifest access at this call site (`structs::check` isn't
     // threaded a `HostManifest` — struct field types aren't in T1d-2's
-    // scope), so `handle<K>` field types resolve `None` here, same as any
+    // scope), so `Handle<K>` field types resolve `None` here, same as any
     // other name `TypeNames` doesn't recognize — consistent with
     // `annotations::resolve`'s documented "unresolved -> silent" contract.
     let names = annotations::TypeNames::new(index, None);
-    let mut out = BTreeMap::new();
-    for &(_file, hir) in files {
+    let mut by_def = BTreeMap::new();
+    for &(file, hir) in files {
         for s in &hir.structs {
+            // NOT actually an invariant (review finding on #2240/#2258):
+            // `annotations::def_id_for` is exact-file-only, with no
+            // fallback arm at all — unlike `lir::lower::structs`'
+            // `decls::lookup_global`, which at least rescues a surviving
+            // non-std sibling before giving up. So this lookup misses on
+            // *every* true intra-module duplicate this file's own
+            // declaration lost to (`E023` dropped its symbol-index entry),
+            // not only the narrower std-declared-survivor case `E181`
+            // reports one layer down. When it misses, this decl silently
+            // contributes nothing to `by_def` — a fourth, still-undiagnosed
+            // silent-drop site of the exact class `E181` exists to make
+            // loud (see that code's own doc and `build_shape_table`'s),
+            // just with no diagnostic sink wired here yet.
+            let Some(def_id) =
+                annotations::def_id_for(index, file, SymbolKind::Struct, &s.name.text)
+            else {
+                continue;
+            };
+            if by_def.contains_key(&def_id) {
+                continue;
+            }
             let fields = s
                 .fields
                 .iter()
@@ -120,10 +170,69 @@ pub fn declared_shapes(
                     (f.name.text.clone(), ty)
                 })
                 .collect();
-            out.insert(s.name.text.clone(), ShapeInfo { fields });
+            by_def.insert(def_id, ShapeInfo { fields });
         }
     }
-    out
+    ShapeTable { by_def }
+}
+
+/// [`declared_shapes`]' referrer-scoped lookup table — see that function's
+/// doc for the coexistence story this exists to resolve correctly.
+#[derive(Default)]
+pub struct ShapeTable {
+    /// Every shape by its own symbol-index identity — the canonical store,
+    /// unambiguous by construction.
+    by_def: BTreeMap<DefinitionId, ShapeInfo>,
+}
+
+impl ShapeTable {
+    /// Number of declared shapes in the project — referrer-free, since a
+    /// count needs no disambiguation.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_def.len()
+    }
+
+    /// Whether the project declares no `STRUCT` shapes at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_def.is_empty()
+    }
+
+    /// Resolve a shape already pinned to an exact `DefinitionId` — no
+    /// referrer ambiguity possible, since the identity was already resolved
+    /// once, correctly, by whatever recorded it (e.g. a construction
+    /// literal's `RefKind::Struct` resolution, `resolve::resolve_struct_ref`).
+    #[must_use]
+    pub fn get_by_def(&self, id: DefinitionId) -> Option<&ShapeInfo> {
+        self.by_def.get(&id)
+    }
+
+    /// Scope-aware lookup (issue #2241, corrected per #2245/#2246's
+    /// peer-root ruling — `docs/decision-log.md`, 2026-08-04): when more
+    /// than one declared `STRUCT` shares `name`, resolve through the same
+    /// `Candidacy`-based module scoping every other symbol kind uses —
+    /// [`crate::resolve::lookup_by_name`], the exact function
+    /// `resolve::resolve_struct_ref` already calls for `SymbolKind::Struct`.
+    /// This used to hand-roll its own `find(info.file == referrer)
+    /// .or_else(find(!is_reserved_root_module))` fallback — a bolt-on std
+    /// gate the ruling calls out by name as one of the five symptom gates
+    /// to unwind, not a second, diverging implementation of the same
+    /// policy. Returns
+    /// `None` when `name` names no declared `STRUCT` at all, or
+    /// [`crate::resolve::lookup_by_name`] itself resolves to none (e.g.
+    /// every candidate sharing the name is std-declared and out of
+    /// `scope`).
+    #[must_use]
+    pub fn resolve(
+        &self,
+        name: &str,
+        scope: &ImportScope,
+        index: &SymbolIndex,
+    ) -> Option<&ShapeInfo> {
+        let def_id = crate::resolve::lookup_by_name(index, scope, name, &[SymbolKind::Struct])?;
+        self.by_def.get(&def_id)
+    }
 }
 
 /// Strict-mode construction checks over every struct literal in the
@@ -145,7 +254,7 @@ pub fn check(
 ) -> Vec<Diagnostic> {
     let shapes = declared_shapes(files, index);
     // No manifest access at this call site, same as `declared_shapes` above
-    // — a global's own annotation resolving against `handle<K>` isn't in
+    // — a global's own annotation resolving against `Handle<K>` isn't in
     // this check's scope any more than a struct field's is.
     let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
@@ -164,28 +273,149 @@ pub fn check(
             stitch_locals: None,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // File-level declaration initializers aren't part of `visit::visit`'s
-        // block-tree walk (see its module doc) — same pattern
-        // `dialect_gate`/`annotations` use for VAR/CONST. No enclosing def
-        // here, so `locals` is `None` — only a reference to a global
-        // VAR/CONST is classifiable at file scope, matching `infer::body`'s
-        // own firewall (a body never sees another def's locals either).
-        let ctx = MistypeCtx {
-            index,
-            globals: &globals,
-            signatures: &inference.signatures,
-            resolution_by_range: &resolution_by_range,
-            locals: None,
+        // Issue #2098: `ConstructionVisitor::enter_expr` has no state that
+        // needs resetting between the block tree and a file-level
+        // declaration's own initializer (`locals` is already `None` at this
+        // scope) — so the shared entry point covers both in one drive, and
+        // the hand-rolled `check_expr`/`expr_children` mirror of
+        // `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
+    }
+    out
+}
+
+// ─── Issue #1900: plain struct-field assignment target checking ──────
+
+/// Strict-mode-only: every [`crate::infer::FieldAssignMismatch`] fact body
+/// inference recorded (`~ p.x = expr`, a dotted assignment target — see that
+/// type's own doc for why the field chain is left unresolved until now),
+/// walked against [`declared_shapes`]/[`ShapeInfo`] to resolve the specific
+/// field's declared type and reported as `E063` — the same code
+/// `strict::check_typed_assign_mismatches` reports for a *bare* assignment
+/// target (issue #1877); this is that check's dotted sibling, split into
+/// its own issue (#1900) because the root's declared type is not the
+/// field's, so the bare-name comparison doesn't apply as-is. Callers only
+/// reach this once `strict::config_error` has confirmed `types = strict` +
+/// `dialect = brink` (mirrors [`check`]'s own entry condition).
+///
+/// Walks `inference.bodies` directly (keyed by `DefinitionId`, itself
+/// `Ord`) rather than re-deriving a per-file `def_ids` list the way
+/// `strict::check_typed_assign_mismatches` does — every fact already
+/// carries its own diagnostic range, so grouping by file first buys nothing
+/// extra here. Correction (issue #1900 review finding): the caller
+/// (`strict::check`) does *not* sort this aggregate — `strict::check` and
+/// `strict_diagnostics` only concatenate each check's output in a fixed
+/// call order, with no sort in either. The only downstream ordering is
+/// `brink_db::queries::mod::partition_diagnostics` grouping by `FileId` for
+/// the salsa query path; the pure `analyze_with_options` path has no
+/// ordering step at all. Iterating `inference.bodies` (`Ord`-keyed by
+/// `DefinitionId`) still makes this function's own output deterministic —
+/// just not because anything downstream re-sorts it.
+#[must_use]
+pub fn check_assignments(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<Diagnostic> {
+    let shapes = declared_shapes(files, index);
+    // Per-file scope, keyed the same way `resolve::resolve` and `ufcs::resolve`
+    // build one per file — `check_field_assign_mismatch` doesn't loop `files`
+    // itself (it's driven by `inference.bodies`, keyed by `DefinitionId`), so
+    // the scope for the fact's own declaring file is looked up here instead.
+    let scopes: BTreeMap<FileId, ImportScope> = files
+        .iter()
+        .map(|&(file, hir)| {
+            let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+            (file, scope)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (def, body) in &inference.bodies {
+        let Some(info) = index.symbols.get(def) else {
+            continue;
         };
-        for var in &hir.variables {
-            check_expr(&var.value, file, &shapes, &ctx, &mut out);
-        }
-        for c in &hir.constants {
-            check_expr(&c.value, file, &shapes, &ctx, &mut out);
+        let Some(scope) = scopes.get(&info.file) else {
+            continue;
+        };
+        for fact in &body.field_assign_mismatches {
+            check_field_assign_mismatch(fact, info.file, scope, index, &shapes, &mut out);
         }
     }
     out
+}
+
+/// Walk one [`FieldAssignMismatch`]'s field chain from its already-resolved
+/// root type down to the specific field being assigned, comparing the
+/// result against the RHS's own type. Silently unclassifiable (no
+/// diagnostic) whenever the walk hits a non-`Struct` type, an unresolved
+/// shape name (`E068` already covers that separately), or a field name the
+/// shape doesn't declare (not this check's job — "Unknown never disagrees",
+/// the same posture every other shape-agreement check in this module and
+/// `ref_projection`'s E098 take) — matching [`check_literal`]'s own
+/// "unresolved -> silent" contract for the same reasons.
+///
+/// BLOCKING review finding (issue #1900): the `+=` string-numeric
+/// display-concat carve-out (issue #1911, `body::is_string_numeric_concat`)
+/// applies to a dotted target exactly like it applies to a bare one — `~
+/// v.s += 5` on a `string`-declared field desugars to the identical runtime
+/// `String`/`Int`|`Float` `Add` arm as `~ v.s = v.s + 5` — but body
+/// inference can't decide that carve-out itself: it only ever resolves the
+/// *root's* type (`Ty::Struct("S")`, never `string`) when it records the
+/// fact, well before the field's own declared type is known. So the
+/// carve-out has to be re-applied here, once `current` has been walked all
+/// the way down to the field's actual declared type.
+fn check_field_assign_mismatch(
+    fact: &FieldAssignMismatch,
+    file: FileId,
+    scope: &ImportScope,
+    index: &SymbolIndex,
+    shapes: &ShapeTable,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut current = fact.root_ty.clone();
+    for segment in &fact.path {
+        let Ty::Struct(shape_name) = &current else {
+            return;
+        };
+        let Some(shape) = shapes.resolve(shape_name, scope, index) else {
+            return;
+        };
+        let Some(field_ty) = shape.field_ty(&segment.text) else {
+            return;
+        };
+        current = field_ty.clone();
+    }
+    if current.is_unresolved() || crate::infer::assignable(&current, &fact.found) {
+        return;
+    }
+    // Issue #1911's carve-out, re-applied here (BLOCKING review finding,
+    // issue #1900) now that `current` is the field's own resolved declared
+    // type, not the root's — see this function's own doc.
+    if fact.op == AssignOp::Add && is_string_numeric_concat(&current, &fact.found) {
+        return;
+    }
+    // `path` is never empty by construction (the recording site only ever
+    // records a fact for a multi-segment target — `segments[1..]` is
+    // therefore non-empty), but a defensive `None` here (rather than
+    // `expect`, denied in production code) just silently skips the
+    // diagnostic instead of panicking if that invariant ever changes.
+    let Some(last) = fact.path.last() else {
+        return;
+    };
+    let dotted: Vec<&str> = std::iter::once(fact.root.as_str())
+        .chain(fact.path.iter().map(|n| n.text.as_str()))
+        .collect();
+    out.push(Diagnostic {
+        file,
+        range: last.range,
+        message: format!(
+            "`{}` has type `{}` but its declared type is `{}`",
+            dotted.join("."),
+            fact.found.display(),
+            current.display()
+        ),
+        code: DiagnosticCode::E063,
+    });
 }
 
 /// `TextRange` has no `Ord` impl, so a `Path`/`Call` reference's range keys
@@ -234,7 +464,7 @@ pub(crate) struct MistypeCtx<'a> {
 
 struct ConstructionVisitor<'a> {
     file: FileId,
-    shapes: &'a BTreeMap<String, ShapeInfo>,
+    shapes: &'a ShapeTable,
     index: &'a SymbolIndex,
     globals: &'a BTreeMap<DefinitionId, Ty>,
     signatures: &'a BTreeMap<DefinitionId, InferredSig>,
@@ -330,9 +560,10 @@ impl HirVisitor for ConstructionVisitor<'_> {
 /// resolve (a repeated field name is detectable from the literal's own
 /// field list alone) and runs under *both* `types` policies: a duplicate
 /// field is a structural authoring mistake, not a type-checking concern.
-/// Callers wire this in unconditionally (dialect = brink only, matching
-/// every other TM-4c construction-literal check) rather than gating it
-/// behind `strict::config_error` the way [`check`] is.
+/// Callers wire this in under `dialect = Brink || is_native` (wider than
+/// every other TM-4c construction-literal check, matching `E138`'s own
+/// wiring — see the module doc) rather than gating it behind
+/// `strict::config_error` the way [`check`] is.
 #[must_use]
 pub fn check_duplicates(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
@@ -341,15 +572,12 @@ pub fn check_duplicates(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
             file,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // Same file-level VAR/CONST-initializer gap `check`'s own doc
-        // explains — `visit::visit`'s block-tree walk doesn't cover them.
-        for var in &hir.variables {
-            check_duplicates_expr(&var.value, file, &mut out);
-        }
-        for c in &hir.constants {
-            check_duplicates_expr(&c.value, file, &mut out);
-        }
+        // Issue #2098: `DuplicateFieldVisitor::enter_expr` carries no
+        // per-position state at all, so the shared entry point covers the
+        // block tree and every file-level declaration's own initializer in
+        // one drive — the hand-rolled `check_duplicates_expr`/`expr_children`
+        // mirror of `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }
@@ -368,17 +596,6 @@ impl HirVisitor for DuplicateFieldVisitor<'_> {
         if let Expr::StructLiteral(sl) = expr {
             check_literal_duplicates(sl, self.file, self.diagnostics);
         }
-    }
-}
-
-/// [`check_expr`]'s twin for the duplicate-field pass — same file-level
-/// VAR/CONST-initializer recursion, independent of the shape table.
-fn check_duplicates_expr(expr: &Expr, file: FileId, out: &mut Vec<Diagnostic>) {
-    if let Expr::StructLiteral(sl) = expr {
-        check_literal_duplicates(sl, file, out);
-    }
-    for child in expr_children(expr) {
-        check_duplicates_expr(child, file, out);
     }
 }
 
@@ -404,72 +621,34 @@ fn check_literal_duplicates(sl: &StructLiteral, file: FileId, out: &mut Vec<Diag
     }
 }
 
-/// Recurse into `expr` looking for struct literals — used only for the
-/// file-level VAR/CONST initializers `visit::visit` doesn't cover; every
-/// other position is already reached through the `HirVisitor` walk above.
-fn check_expr(
-    expr: &Expr,
-    file: FileId,
-    shapes: &BTreeMap<String, ShapeInfo>,
-    ctx: &MistypeCtx<'_>,
-    out: &mut Vec<Diagnostic>,
-) {
-    if let Expr::StructLiteral(sl) = expr {
-        check_literal(sl, file, shapes, ctx, out);
-    }
-    for child in expr_children(expr) {
-        check_expr(child, file, shapes, ctx, out);
-    }
-}
-
-/// Direct child expressions of `expr` — a small mirror of
-/// `hir::visit::walk_expr`'s recursion shape, needed only because
-/// `check_expr` runs outside that walker (see its own doc).
-fn expr_children(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
-        Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(lhs, _, rhs) => vec![lhs, rhs],
-        Expr::Call(_, args) => args.iter().collect(),
-        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
-        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-        Expr::Index(idx) => vec![&idx.base, &idx.index],
-        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
-        // T1c `#fn(target, args…)`: only the bound arguments are child
-        // expressions — the target is a static `Path` field, same as `Call`.
-        Expr::FnLiteral(fl) => fl.args.iter().collect(),
-        // T1e `ref lvalue-path`: only the operand is a child expression.
-        Expr::RefArg(ra) => vec![&ra.operand],
-        Expr::Range(r) => vec![&r.start, &r.end],
-        Expr::String(s) => s
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
-                brink_ir::StringPart::Literal(_) => None,
-            })
-            .collect(),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => Vec::new(),
-    }
-}
-
 /// Check one struct literal against its declared shape (if resolvable — an
 /// unresolved shape name has nothing to check against, and is already
 /// diagnosed separately by `resolve::resolve_struct_ref`'s `E068`).
+///
+/// Issue #2241: `sl.shape`'s own name is a `RefKind::Struct` reference the
+/// analyzer already resolved with full module-scope `Candidacy`
+/// (`resolve::resolve_struct_ref`, walked into the `ResolutionMap` every
+/// construction literal's shape name gets — `symbols::project`'s `walk_expr`
+/// registers one for every `Expr::StructLiteral`, unconditionally). Consuming
+/// that recorded resolution by range (`ctx.resolution_by_range`) rather than
+/// re-deriving the shape from `sl.shape.text` by bare name is exactly the
+/// "lowering consumes analyzer types" fix PR #2248 already applied on the LIR
+/// side for this same reference kind — this is its analyzer-side twin. A
+/// missing entry here means `resolve_struct_ref` itself couldn't resolve the
+/// name (already reported as `E068`), so there is nothing to check against,
+/// same as before.
 fn check_literal(
     sl: &StructLiteral,
     file: FileId,
-    shapes: &BTreeMap<String, ShapeInfo>,
+    shapes: &ShapeTable,
     ctx: &MistypeCtx<'_>,
     out: &mut Vec<Diagnostic>,
 ) {
-    let Some(shape) = shapes.get(&sl.shape.text) else {
+    let Some(shape) = ctx
+        .resolution_by_range
+        .get(&range_key(sl.shape.range))
+        .and_then(|def_id| shapes.get_by_def(*def_id))
+    else {
         return;
     };
 
@@ -522,8 +701,11 @@ fn check_literal(
         let Some(actual_ty) = classify_expr_ty(value, ctx) else {
             continue; // not classifiable — see module doc
         };
-        if &actual_ty != declared_ty && crate::infer::unify(declared_ty, &actual_ty) != *declared_ty
-        {
+        // Row-insensitive (issue #1680): a `fn`-typed field's declared type
+        // carries the top effect row and the initializer's carries its real
+        // creation target, so rows must not decide this comparison — see
+        // `infer::assignable`.
+        if !crate::infer::assignable(declared_ty, &actual_ty) {
             out.push(Diagnostic {
                 file,
                 range: name.range,
@@ -619,7 +801,7 @@ pub(crate) fn classify_expr_ty(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> 
 /// param/temp reads the enclosing def's finalized `BodyTypes::locals`
 /// (`ctx.locals`, `None` at file scope — see [`MistypeCtx`]'s doc); a
 /// global `VAR`/`CONST` reads `infer::collect_globals`'s declaration-derived
-/// type; a `LIST`/list-item name is nominally `list<L>`. Mirrors
+/// type; a `LIST`/list-item name is nominally `List<L>`. Mirrors
 /// `infer::body::InferPass::ty_of_def`'s own dispatch exactly (the same
 /// firewall a body's own inference already enforces), just read post hoc
 /// from the finalized results instead of live during a body solve.
@@ -681,6 +863,32 @@ mod tests {
     /// every non-literal-classification test below shares.
     fn check_all(src: &str) -> Vec<Diagnostic> {
         let (hir, index, resolutions, inference) = build_with_inference(src);
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    /// [`build_with_inference`]'s native-surface twin. Lambdas exist only on
+    /// the native surface, so the #1764 fixtures below must go through
+    /// `lower_native` (the same reason `coalesce`'s `build_native` exists).
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap, InferenceResult) {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        (hir, (*index).clone(), (*resolutions).clone(), inference)
+    }
+
+    /// [`check`] over native source — [`check_all`]'s native twin.
+    fn check_all_native(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, resolutions, inference) = build_native(src);
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
     }
 
@@ -812,7 +1020,7 @@ mod tests {
     #[test]
     fn index_valued_initializer_fires_when_provably_mistyped() {
         // `xs` is a local `~ temp` bound to a `#[...]` array-of-strings
-        // literal, so its finalized locals type is `array<string>` — indexing
+        // literal, so its finalized locals type is `Array<string>` — indexing
         // it yields `string`, disagreeing with `Point.x`'s declared `float`.
         let diags = check_all(
             "STRUCT Point = #{x: float}\n\
@@ -934,6 +1142,96 @@ mod tests {
         assert!(diags_r[0].message.contains('x'), "{:?}", diags_r[0].message);
     }
 
+    // ─── check_assignments (E063, issue #1900) ─────────────────────────
+
+    /// [`check_assignments`] driven by [`build_with_inference`]'s output —
+    /// mirrors [`check_all`] for the plain-assignment sibling check.
+    fn check_assignments_all(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, _resolutions, inference) = build_with_inference(src);
+        check_assignments(&[(FileId(0), &hir)], &index, &inference)
+    }
+
+    #[test]
+    fn field_assignment_mismatch_on_var_is_e063_naming_the_dotted_target() {
+        // The issue's own repro: `p.x`'s declared `float` disagrees with the
+        // RHS `string`.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float, y: float}\n\
+             VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+             === main ===\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+        assert!(diags[0].message.contains("p.x"), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn field_assignment_of_the_declared_type_is_clean() {
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float, y: float}\n\
+             VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+             === main ===\n~ p.x = 1.0\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_int_initializer_for_a_float_field_is_the_legal_coercion() {
+        // §4's directional int -> float coercion applies here too, same as
+        // `int_initializer_for_a_float_field_is_the_legal_coercion` above.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\nVAR p: Point = Point#{x: 0.0}\n\
+             === main ===\n~ p.x = 1\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_mismatch_on_annotated_temp_is_e063() {
+        // The second of the issue's two named root sources: an annotated `~
+        // temp`'s own ascription, not a global.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ temp p: Point = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+    }
+
+    #[test]
+    fn field_assignment_on_unannotated_temp_stays_silent_when_unknown() {
+        // An unannotated `~ temp` has no declared shape to check against —
+        // "Unknown never disagrees", same posture every other shape-
+        // agreement check in this module takes.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_stays_silent() {
+        // A field name the shape doesn't declare isn't this check's job —
+        // an unresolvable classification, "Unknown never disagrees".
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             VAR p: Point = Point#{x: 0.0}\n\
+             === main ===\n~ p.bogus = \"wrong\"\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn bare_var_assignment_is_not_double_reported_by_check_assignments() {
+        // A single-segment target is `check_declared_assign_target`'s job
+        // (issue #1877 / E063 via `strict::check_typed_assign_mismatches`),
+        // never this dotted-target check's — `check_assignments` must stay
+        // silent for it (no double-report across the two checks).
+        let diags = check_assignments_all("VAR v: int = 5\n=== main ===\n~ v = \"hi\"\n-> DONE\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     // ─── check_duplicates (E084, issue #675) ──────────────────────────
 
     #[test]
@@ -989,6 +1287,49 @@ mod tests {
         assert_eq!(diags[0].code, DiagnosticCode::E084);
     }
 
+    // ─── issue #1764: a lambda's statements in a VAR/CONST initializer ──
+
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098). A
+    /// block-bodied lambda's `let` is a statement, not the body's value
+    /// expression.
+    #[test]
+    fn a_duplicate_field_in_a_lambda_statement_of_a_var_initializer_is_reported() {
+        let (hir, _index, _res, _inf) = build_native(
+            "struct Point { x: float }\nvar f = ||: int {\n  let p = Point { x: 1.0, x: 2.0 };\n  0\n};\n",
+        );
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
+    }
+
+    /// The shape-agreement trio reaches the same position — a literal-valued
+    /// initializer classifies without any locals, so `MistypeCtx::locals =
+    /// None` is no obstacle here.
+    #[test]
+    fn a_mistyped_field_in_a_lambda_statement_of_a_var_initializer_is_reported() {
+        let diags = check_all_native(
+            "struct Point { x: float }\nvar f = ||: int {\n  let p = Point { x: \"hi\" };\n  0\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    /// The tail position was already covered — pinned so a later refactor
+    /// can't trade one half of the body for the other.
+    #[test]
+    fn a_mistyped_field_in_a_lambda_tail_of_a_var_initializer_is_still_reported() {
+        let diags = check_all_native(
+            "struct Point { x: float }\nvar f = ||: Point {\n  let a = 1;\n  Point { x: \"hi\" }\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
     #[test]
     fn three_way_duplicate_flags_every_repeat_after_the_first() {
         let (hir, _index) = build(
@@ -998,5 +1339,187 @@ mod tests {
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E084));
+    }
+
+    // ─── issue #2241: declared_shapes is referrer-scoped, not last-wins ──
+
+    /// Build a project file coexisting with a "std"-shaped file (M-2d
+    /// cross-declared-module coexistence, mirroring the real stdlib mount
+    /// #2080) — each declares its own `STRUCT Cue`, with the project's own
+    /// carrying MORE fields than the coexisting file's same-named one.
+    /// Returns everything [`check`] needs to validate the project's own
+    /// construction literal.
+    ///
+    /// No `#@module` directive in either source: the module tag a real
+    /// compile derives from `#@module`/the native path is supplied directly
+    /// here via `ModuleMap`, exactly as `manifest::tests`'s own
+    /// `cross_declared_module_duplicate_coexists_under_brink` does — this
+    /// test only needs the tag on the index, not the parsed source's own
+    /// (irrelevant) `HirFile::module`.
+    fn build_project_with_std_homonym(
+        project_src: &str,
+        std_src: &str,
+    ) -> (
+        FileId,
+        HirFile,
+        FileId,
+        HirFile,
+        SymbolIndex,
+        ResolutionMap,
+        InferenceResult,
+    ) {
+        let project_file = FileId(0);
+        let std_file = FileId(1);
+
+        let project_parsed = brink_syntax::parse(project_src);
+        let (project_hir, project_manifest, _diag) = lower(project_file, &project_parsed.tree());
+        let std_parsed = brink_syntax::parse(std_src);
+        let (std_hir, std_manifest, _diag) = lower(std_file, &std_parsed.tree());
+
+        let mut modules = crate::ModuleMap::new();
+        modules.insert(
+            project_file,
+            crate::ResolvedModule {
+                name: "story::main".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        modules.insert(
+            std_file,
+            crate::ResolvedModule {
+                name: "std::conventions::screenplay".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+
+        let (index, diag) = crate::symbol_index_with_modules(
+            &[(project_file, &project_manifest), (std_file, &std_manifest)],
+            &modules,
+            crate::Dialect::Brink,
+            false,
+        );
+        assert!(
+            diag.is_empty(),
+            "cross-declared-module `Cue`s must coexist with no diagnostic: {diag:?}"
+        );
+
+        let project_scope =
+            crate::ImportScope::new(Some("story::main".to_string()), &project_hir.imports);
+        let (project_resolutions, _diag) =
+            crate::resolve(project_file, &project_manifest, &index, &project_scope);
+        let std_scope = crate::ImportScope::new(
+            Some("std::conventions::screenplay".to_string()),
+            &std_hir.imports,
+        );
+        let (std_resolutions, _diag) = crate::resolve(std_file, &std_manifest, &index, &std_scope);
+
+        let mut resolutions: ResolutionMap = (*project_resolutions).clone();
+        resolutions.extend((*std_resolutions).iter().cloned());
+
+        let files = [(project_file, &project_hir), (std_file, &std_hir)];
+        let inference = crate::infer_project(&files, &index, &resolutions, None, &BTreeMap::new());
+
+        (
+            project_file,
+            project_hir,
+            std_file,
+            std_hir,
+            (*index).clone(),
+            resolutions,
+            inference,
+        )
+    }
+
+    /// The wave's own headline scenario: a project's own `STRUCT Cue`
+    /// coexists with a same-named `STRUCT Cue` from a distinct declared
+    /// module (mirrors `std/conventions/screenplay.brink`'s real one-field
+    /// `Cue`). Before this fix, `declared_shapes` built a flat
+    /// `BTreeMap<String, ShapeInfo>` via plain last-`insert`-wins — with
+    /// `files` ordered `[project, std]` below, std's `ShapeInfo` is inserted
+    /// LAST and silently overwrites the project's own in the table, even
+    /// though the construction literal itself lives in the project file and
+    /// `resolve::resolve_struct_ref` already resolves it to the PROJECT's own
+    /// `Cue` (never std's — the referrer's own module wins that tie-break).
+    /// The missing-field check would then validate against std's one-field
+    /// shape, which the literal's sole `speaker` initializer already
+    /// satisfies — a silent E069 false negative: "accepted when it should
+    /// error" (issue #2241's own words).
+    ///
+    /// Rule 20a: verified this test FAILS on the pre-fix code (reverting
+    /// `declared_shapes` to the flat bare-name `BTreeMap::insert` and
+    /// `check_literal` to `shapes.get(&sl.shape.text)`) — the assertion
+    /// below (`diags.len() == 1`, `E069` naming `voiceover`) fails with
+    /// `diags` empty instead, because std's one-field shape (which won the
+    /// last-insert race with `files = [project, std]`) sees the literal's
+    /// sole `speaker` field as complete.
+    #[test]
+    fn construction_check_resolves_the_referrers_own_shape_when_std_and_project_share_a_name() {
+        let project_src = "STRUCT Cue = #{speaker: string, voiceover: string}\n\
+             === main ===\n~ p = Cue#{speaker: \"A\"}\n-> DONE\n";
+        let std_src = "STRUCT Cue = #{speaker: string}\nHello.\n";
+
+        let (project_file, project_hir, std_file, std_hir, index, resolutions, inference) =
+            build_project_with_std_homonym(project_src, std_src);
+
+        // Deliberately `[project, std]` — std's shape is inserted LAST into
+        // the pre-fix flat table, exposing the last-wins bug.
+        let files = [(project_file, &project_hir), (std_file, &std_hir)];
+        let diags = check(&files, &index, &inference, &resolutions);
+
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E069);
+        assert!(
+            diags[0].message.contains("voiceover"),
+            "the missing-field diagnostic must name the PROJECT's own missing field \
+             (`voiceover`), proving the check validated the literal against the project's own \
+             2-field `Cue` shape rather than the coexisting file's 1-field one: {diags:?}"
+        );
+    }
+
+    /// F2 review finding (#2253): [`ShapeTable::resolve`] is the path
+    /// [`check_assignments`]/[`check_field_assign_mismatch`] (E063) uses —
+    /// unlike [`check`]/[`check_literal`] above, which never calls
+    /// `resolve` at all (it goes through [`ShapeTable::get_by_def`] with an
+    /// identity already resolved by `resolve::resolve_struct_ref`). This
+    /// exercises the multi-candidate branch `resolve` exists to handle,
+    /// through its own dedicated consumer rather than a proxy.
+    ///
+    /// Project and std each declare their own `STRUCT Cue`, deliberately
+    /// with *different* declared types for the same field name (`x: float`
+    /// vs `x: string`) so a wrong resolution doesn't just report the wrong
+    /// message — it silently reports NOTHING: assigning the string
+    /// `"wrong"` to `p.x` disagrees with the project's own `float`, but
+    /// would agree with std's `string`. If `resolve` ever picked std's
+    /// `Cue` for a reference inside the project file, this regresses to an
+    /// empty `diags` exactly like the pre-fix last-insert-wins bug did for
+    /// E069 above.
+    ///
+    /// Rule 20a: verified this test FAILS (empty `diags` instead of one
+    /// `E063`) against `ShapeTable::resolve` reverted to always return the
+    /// std candidate (i.e. simulating a resolution that ignores the
+    /// referrer's own module) — restored before committing.
+    #[test]
+    fn check_assignments_resolves_the_referrers_own_shape_when_std_and_project_share_a_name() {
+        let project_src = "STRUCT Cue = #{x: float}\n\
+             VAR p: Cue = Cue#{x: 0.0}\n\
+             === main ===\n~ p.x = \"wrong\"\n-> DONE\n";
+        let std_src = "STRUCT Cue = #{x: string}\nHello.\n";
+
+        let (project_file, project_hir, std_file, std_hir, index, _resolutions, inference) =
+            build_project_with_std_homonym(project_src, std_src);
+
+        let files = [(project_file, &project_hir), (std_file, &std_hir)];
+        let diags = check_assignments(&files, &index, &inference);
+
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+        assert!(
+            diags[0].message.contains("float"),
+            "the mismatch must be reported against the PROJECT's own `float`-declared `x`, not \
+             std's `string`-declared one — which would silently accept the identically-typed \
+             \"wrong\" RHS and produce zero diagnostics: {diags:?}"
+        );
     }
 }

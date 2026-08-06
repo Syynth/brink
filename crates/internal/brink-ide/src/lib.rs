@@ -3,6 +3,7 @@ pub mod auto_import;
 pub mod code_actions;
 pub mod color;
 mod completion;
+pub mod creation_site_fix;
 pub mod dir_rename;
 pub mod document;
 pub mod effects;
@@ -23,6 +24,7 @@ pub mod line_convert;
 mod line_index;
 pub mod navigation;
 pub mod rename;
+pub mod rename_detection;
 pub mod semantic_tokens;
 pub mod session;
 pub mod signature;
@@ -31,8 +33,11 @@ pub mod story_graph;
 pub mod structural_delete;
 pub mod structural_move;
 pub mod structural_result;
+pub mod style_hover;
 mod text;
 pub mod trivia;
+pub mod ufcs_hover;
+pub mod value_call_fix;
 
 pub use completion::{
     CompletionContext, CursorScope, cursor_scope, detect_completion_context, is_visible_in_context,

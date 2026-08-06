@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/brink-*", "crates/brink", "crates/bevy-brink", "crates/internal/*"]
-exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-format/fuzz", "crates/brink-runtime/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "crates/zed-brink", "demos/*"]
+exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-syntax-native/fuzz", "crates/internal/brink-format/fuzz", "crates/brink-runtime/fuzz", "benchmarks/tools/gen-input", "benchmarks/drivers/brink-loop", "demos/*"]
 resolver = "2"
 
 [workspace.package]
@@ -82,6 +82,7 @@ bon = "3"
 # `regex` crate has no lookaround/backreferences, which is exactly the JS
 # RegExp ∩ Rust `regex` subset the dialect schema requires.
 regex = "1"
+regex-syntax = "0.8"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
@@ -102,6 +103,7 @@ brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0
 brink-compiler = { path = "crates/brink-compiler", version = "0.0.11" }
 brink-db = { path = "crates/internal/brink-db", version = "0.0.11" }
 brink-driver = { path = "crates/internal/brink-driver", version = "0.0.11" }
+brink-environment = { path = "crates/internal/brink-environment", version = "0.0.11" }
 brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.11" }
 brink-format = { path = "crates/internal/brink-format", version = "0.0.11" }
 brink-ide = { path = "crates/internal/brink-ide", version = "0.0.11" }
@@ -109,7 +111,9 @@ brink-intl = { path = "crates/internal/brink-intl", version = "0.0.11" }
 brink-ir = { path = "crates/internal/brink-ir", version = "0.0.11" }
 brink-project-config = { path = "crates/internal/brink-project-config", version = "0.0.11" }
 brink-runtime = { path = "crates/brink-runtime", version = "0.0.11" }
+brink-source-tree = { path = "crates/internal/brink-source-tree", version = "0.0.11" }
 brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.11" }
+brink-syntax-native = { path = "crates/internal/brink-syntax-native", version = "0.0.11" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.
 brink-test-harness = { path = "crates/internal/brink-test-harness" }
 xliff2 = { path = "crates/internal/xliff2", version = "0.0.11" }
@@ -134,6 +138,28 @@ dispatch-releases = true
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
+
+# Dev/test builds carry NO debuginfo by default (measured 2026-07-28, issue #1695).
+#
+# Why: debuginfo is ~40% of the target dir here (15G -> 9.0G on a full
+# `--workspace --tests` build) and costs NOTHING in compile time (3m47s vs
+# 3m33s — flat). That is both disk headroom and SSD write-wear on every
+# rebuild, across every pump agent, on every wave. A 0-byte-free incident on
+# 2026-07-28 wedged the host badly enough that the shell could not clean up
+# after itself.
+#
+# Why it is cheap here specifically: `unwrap`/`expect`/`panic` are DENIED by
+# lint in production code and the house rule is thiserror everywhere, so
+# failures surface as returned error values, not panics with backtraces. The
+# thing debuginfo buys (a line number in a backtrace) is largely irrelevant to
+# how this codebase actually fails.
+#
+# Escape hatch, when you genuinely want line numbers for one command:
+#     CARGO_PROFILE_DEV_DEBUG=1 cargo test -p <crate> …
+# Middle ground if backtraces get annoying: `debug = "line-tables-only"` keeps
+# line numbers at close to this size (unmeasured here).
+[profile.dev]
+debug = 0
 
 # The profile that 'dist' will build with
 [profile.dist]

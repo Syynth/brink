@@ -460,14 +460,19 @@ dependencies = [
  "bevy_tasks",
  "bon",
  "brink-compiler",
+ "brink-environment",
  "brink-format",
  "brink-intl",
  "brink-ir",
+ "brink-project-config",
  "brink-runtime",
+ "brink-source-tree",
  "brink-syntax",
+ "divan",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -2070,9 +2075,12 @@ version = "0.0.11"
 dependencies = [
  "brink-format",
  "brink-ir",
+ "brink-project-config",
  "brink-syntax",
+ "brink-syntax-native",
  "proptest",
  "rowan",
+ "serde",
 ]
 
 [[package]]
@@ -2083,6 +2091,7 @@ dependencies = [
  "brink-compiler",
  "brink-db",
  "brink-driver",
+ "brink-environment",
  "brink-fmt",
  "brink-format",
  "brink-ide",
@@ -2114,6 +2123,7 @@ version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
+ "brink-compiler",
  "brink-driver",
  "brink-format",
  "brink-ir",
@@ -2134,7 +2144,9 @@ dependencies = [
  "brink-codegen-inkb",
  "brink-format",
  "brink-ir",
+ "brink-source-tree",
  "brink-syntax",
+ "brink-syntax-native",
  "rowan",
  "salsa",
  "thiserror 2.0.18",
@@ -2147,7 +2159,26 @@ version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-db",
+ "brink-format",
  "brink-ir",
+ "brink-project-config",
+ "brink-source-tree",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "brink-environment"
+version = "0.0.11"
+dependencies = [
+ "brink-compiler",
+ "brink-driver",
+ "brink-format",
+ "brink-ir",
+ "brink-project-config",
+ "brink-source-tree",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2184,11 +2215,13 @@ dependencies = [
  "brink-analyzer",
  "brink-compiler",
  "brink-db",
+ "brink-environment",
  "brink-fmt",
  "brink-format",
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "rowan",
  "serde",
@@ -2221,8 +2254,10 @@ dependencies = [
  "brink-codegen-inkb",
  "brink-format",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "regex",
+ "regex-syntax",
  "rowan",
  "serde",
  "serde_json",
@@ -2237,10 +2272,12 @@ dependencies = [
  "brink-analyzer",
  "brink-db",
  "brink-driver",
+ "brink-environment",
  "brink-fmt",
  "brink-ide",
  "brink-ir",
  "brink-project-config",
+ "brink-source-tree",
  "brink-syntax",
  "rowan",
  "serde",
@@ -2255,15 +2292,28 @@ dependencies = [
 name = "brink-project-config"
 version = "0.0.11"
 dependencies = [
- "brink-analyzer",
+ "brink-source-tree",
+ "serde",
  "thiserror 2.0.18",
  "toml",
+]
+
+[[package]]
+name = "brink-respell"
+version = "0.0.11"
+dependencies = [
+ "brink-ir",
+ "brink-syntax",
+ "brink-syntax-native",
+ "brink-test-harness",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "brink-runtime"
 version = "0.0.11"
 dependencies = [
+ "brink-analyzer",
  "brink-compiler",
  "brink-format",
  "divan",
@@ -2275,7 +2325,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-source-tree"
+version = "0.0.11"
+
+[[package]]
 name = "brink-syntax"
+version = "0.0.11"
+dependencies = [
+ "insta",
+ "proptest",
+ "rowan",
+]
+
+[[package]]
+name = "brink-syntax-native"
 version = "0.0.11"
 dependencies = [
  "insta",
@@ -2292,10 +2355,14 @@ dependencies = [
  "brink-compiler",
  "brink-db",
  "brink-driver",
+ "brink-environment",
  "brink-format",
  "brink-ir",
+ "brink-project-config",
  "brink-runtime",
+ "brink-source-tree",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "proptest",
  "regex",
@@ -2310,18 +2377,21 @@ dependencies = [
  "brink-analyzer",
  "brink-compiler",
  "brink-db",
+ "brink-environment",
  "brink-format",
  "brink-ide",
  "brink-intl",
  "brink-ir",
  "brink-project-config",
  "brink-runtime",
+ "brink-source-tree",
  "brink-syntax",
  "js-sys",
  "rmp-serde",
  "rowan",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

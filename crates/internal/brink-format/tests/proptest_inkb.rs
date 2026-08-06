@@ -48,7 +48,7 @@ fn arb_select_key() -> impl Strategy<Value = SelectKey> {
     ]
 }
 
-fn arb_line_part() -> impl Strategy<Value = LinePart> {
+fn arb_line_part_leaf() -> impl Strategy<Value = LinePart> {
     prop_oneof![
         ".*".prop_map(LinePart::Literal),
         any::<u8>().prop_map(LinePart::Slot),
@@ -63,6 +63,28 @@ fn arb_line_part() -> impl Strategy<Value = LinePart> {
                 default,
             }),
     ]
+}
+
+/// `LinePart::Span` (#1716, `docs/prose-dialect-spec.md` §4.4) — nested,
+/// like `arb_value`'s collection variants above. Bounded via `prop_recursive`
+/// (depth 3, up to 16 total nodes, width 3 per span) so generated cases stay
+/// small and shrinkable, and so it exercises `escape_string`/`unescape_string`
+/// over span names and attr values through the same `".*"` domain the other
+/// leaves already use (arbitrary Unicode, including the escape set's own
+/// `\< \{ \# \\` characters).
+fn arb_line_part() -> impl Strategy<Value = LinePart> {
+    arb_line_part_leaf().prop_recursive(3, 16, 3, |inner| {
+        (
+            ".*",
+            prop::collection::vec((".*", ".*"), 0..3),
+            prop::collection::vec(inner, 0..3),
+        )
+            .prop_map(|(name, attrs, children)| LinePart::Span {
+                name,
+                attrs,
+                children,
+            })
+    })
 }
 
 fn arb_line_content() -> impl Strategy<Value = LineContent> {
@@ -476,7 +498,7 @@ proptest! {
         prop_assert_eq!(index.file_size as usize, buf.len());
 
         // Correct version.
-        prop_assert_eq!(index.version, 5);
+        prop_assert_eq!(index.version, 6);
 
         // Exactly 14 sections in canonical order.
         prop_assert_eq!(index.sections.len(), 14);

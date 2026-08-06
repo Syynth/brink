@@ -1,0 +1,146 @@
+name: Benchmarks (gen-input, brink-loop)
+
+on:
+  schedule:
+    # Weekly schedule: Monday at 12:00 UTC (offset from demo.yml's 00:00
+    # and benchmarks-inkjs.yml's 18:00 runs so the workspace-excluded
+    # gates don't contend for the same runner window). The 06:00 slot was
+    # zed-brink.yml's until that crate was removed (2026-08-01).
+    # Every step below passes `--locked`, so the committed Cargo.lock in
+    # each crate pins the resolved dependency set — a dependency release
+    # cannot silently affect this build, only an explicit `cargo update`
+    # committed to the crate can. The cron instead exists to catch drift
+    # the path filters below can't see: a new stable Rust/clippy release,
+    # or a change to an upstream brink-* crate that isn't in the path list
+    # (#1405, following the #1396 workspace-excluded-dir audit that found
+    # gen-input and brink-loop bit-rotted silently for exactly this
+    # reason).
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+  # benchmarks/tools/gen-input and benchmarks/drivers/brink-loop are
+  # workspace-excluded (see their Cargo.toml files) and get zero signal
+  # from the main `ci.yml` gate — the exact silent-rot exposure #1396 found
+  # (#1405). Path-filtered so it only fires on pushes/PRs that could
+  # actually affect these crates, keeping it off the critical path for
+  # every other PR. Not in branch protection's required-checks list, so
+  # it's advisory: it goes red on a relevant PR but does not block the
+  # merge by itself.
+  #
+  # Rust paths only — the inkjs driver (benchmarks/drivers/inkjs) is a Node
+  # project with no Cargo.lock and no dependency on these crates, so it has
+  # its own workflow (benchmarks-inkjs.yml) with its own path filter. A
+  # single shared filter here used to run inkjs-gate on every Rust-only
+  # change (and, conversely, gen-input-gate/brink-loop-gate on every
+  # inkjs-only change) for no reason (#1427).
+  #
+  # `crates/internal/**` (not just `crates/internal/brink-format/**`) is
+  # required: both crates' Cargo.lock pins the full transitive closure
+  # (brink-analyzer, brink-db, brink-driver, brink-ir, brink-syntax, ... —
+  # not only brink-format), so any of those going stale is the same
+  # #1402-shaped gap gen-input/brink-loop were already exposed to via
+  # brink-runtime/brink-compiler. Root `Cargo.toml` is included for the same
+  # reason as demo.yml: it holds `[workspace.package] version` and
+  # `[workspace.dependencies]`, which every excluded lockfile resolves from.
+  pull_request:
+    paths:
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/brink-runtime/**'
+      - 'crates/brink-compiler/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/benchmarks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/brink-runtime/**'
+      - 'crates/brink-compiler/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/benchmarks.yml'
+
+# Least privilege: jobs only read the repo. Grant more per-job if ever needed.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Third-party actions are pinned to full commit SHAs (mutable tags can be
+# repointed at malicious code). The trailing comment tracks the version;
+# Dependabot bumps both together.
+jobs:
+  gen-input-gate:
+    name: BENCHMARKS_GEN_INPUT_GATE
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Format check inside benchmarks/tools/gen-input
+      - name: Format check (gen-input)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo fmt --all -- --check
+      # Clippy inside benchmarks/tools/gen-input. `--locked` is
+      # load-bearing: without it a stale Cargo.lock (e.g. after
+      # brink-runtime's API changes) is silently refreshed by cargo and the
+      # job exits 0, which is exactly the kind of drift this gate exists to
+      # catch (#1405).
+      - name: Clippy (gen-input)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # Build inside benchmarks/tools/gen-input (no tests exist today; kept
+      # for parity with the demo.yml satellite pattern and to catch a
+      # stale lockfile the same way if tests are ever added).
+      - name: Build (gen-input)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo build --locked
+      # Verify the tool stays excluded from the workspace. NOT
+      # `cargo check --workspace` (house rule 19p): that command exits 0
+      # identically whether gen-input is excluded or a member, so it
+      # asserts nothing here. Assert the actual package list instead.
+      - name: Verify workspace exclusion (gen-input)
+        run: |
+          cargo metadata --format-version 1 --no-deps |
+            jq -e '[.packages[].name] | index("gen-input") | not'
+
+  brink-loop-gate:
+    name: BENCHMARKS_BRINK_LOOP_GATE
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Format check inside benchmarks/drivers/brink-loop
+      - name: Format check (brink-loop)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo fmt --all -- --check
+      # Clippy inside benchmarks/drivers/brink-loop. `--locked` is
+      # load-bearing: without it a stale Cargo.lock (e.g. after
+      # brink-runtime's API changes) is silently refreshed by cargo and the
+      # job exits 0, which is exactly the kind of drift this gate exists to
+      # catch (#1405).
+      - name: Clippy (brink-loop)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # Build inside benchmarks/drivers/brink-loop (no tests exist today;
+      # kept for parity with the demo.yml satellite pattern and to
+      # catch a stale lockfile the same way if tests are ever added).
+      - name: Build (brink-loop)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo build --locked
+      # Verify the driver stays excluded from the workspace. NOT
+      # `cargo check --workspace` (house rule 19p): that command exits 0
+      # identically whether brink-loop is excluded or a member, so it
+      # asserts nothing here. Assert the actual package list instead.
+      - name: Verify workspace exclusion (brink-loop)
+        run: |
+          cargo metadata --format-version 1 --no-deps |
+            jq -e '[.packages[].name] | index("brink-loop") | not'

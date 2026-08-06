@@ -2,7 +2,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::hir::types::{AwaitStmt, LogicBlock};
 use crate::provenance::NodeClass;
-use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, Stmt, TempDecl};
+use crate::{AssignOp, Assignment, DiagnosticCode, Expr, Return, ReturnKind, Stmt, TempDecl};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::expr::LowerExpr;
@@ -71,6 +71,7 @@ impl LowerBody for ast::LogicLine {
             return Ok(LogicLineOutput::Block(LogicBlock {
                 ptr: scope.prov(NodeClass::LogicBlock, block.syntax()),
                 stmts,
+                scope: crate::LogicBlockScope::Standalone,
             }));
         }
 
@@ -86,6 +87,7 @@ impl LowerBody for ast::LogicLine {
             let value = ret.value().and_then(|e| e.lower_expr(scope, sink).ok());
             return Ok(LogicLineOutput::Return(Return {
                 ptr: Some(scope.prov(NodeClass::Return, ret.syntax())),
+                kind: ReturnKind::Explicit,
                 value,
                 onwards_args: Vec::new(),
             }));
@@ -101,13 +103,6 @@ impl LowerBody for ast::LogicLine {
             let annotation = temp
                 .type_annotation()
                 .and_then(|ta| lower_type_annotation(&ta));
-            sink.add_local(crate::symbols::LocalSymbol {
-                name: name.text.clone(),
-                range: name.range,
-                scope: scope.to_scope(),
-                kind: crate::SymbolKind::Temp,
-                param_detail: None,
-            });
             return Ok(LogicLineOutput::TempDecl(TempDecl {
                 ptr: scope.prov(NodeClass::TempDecl, temp.syntax()),
                 name,

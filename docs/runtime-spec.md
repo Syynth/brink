@@ -70,6 +70,21 @@ Context is the natural serialization boundary — saving a story means serializi
 
 The `Program` is a `(Arc<LinkedBinary>, Arc<LinkedLocale>)` pair. The binary half (containers, bytecode, globals, lists, externals, labels, name table) is linked once and `Arc`-shared across all story instances and locale variants. The locale half (per-scope line tables with content and audio refs) is `Arc`-shared across all instances using the same locale. `LinkedLocale` stores line tables keyed by scope `DefinitionId` (knot/stitch), not by container. `LinkedBinary` has no line tables — it is purely structural. The `Program` is never mutated after construction. Switching locales constructs a new `Program` with a different locale half — the binary half is reused. `Program` construction is cheap (two `Arc` clones); building the halves is the expensive step.
 
+## Value model (the core invariant)
+
+`Program`'s Arc-sharing above is one instance of a load-bearing pattern that runs through every piece of runtime state: **`Value` is immutable, copy-on-write, and never aliased across two live bindings.** This is not a runtime implementation detail — it's the property the type/effect system, save/replay, and the bevy-brink host boundary are all designed against. The full model, its rationale, and its rulings live in [`docs/value-model-spec.md`](value-model-spec.md) (§2/§3 in particular); this section states the runtime-facing summary and points at where each piece is enforced.
+
+- **Data is values, identity is names** (value-model-spec §2). `let y = x` — a plain assignment, a function argument, a temp/global write, a closure `val` capture, a save/load round-trip — always yields an independent value. Two bindings can share the same heap allocation underneath (an `Arc` refcount bump), but **sharing is unobservable** (value-model-spec §3): no program or host can ever detect it through pointer identity, copy timing, or refcounts. Mutable identity exists only through *names* — global/temp cells and the `ref` mechanism — never through the values themselves.
+- **Representation.** Heap-allocating `Value` variants (`String`, `List`, `Array`, `Map`, `Record`, `Closure`, `Projection`, `OptionVal`, `Weighted`) wrap their payload in `Arc<T>` (`brink-format`'s `Value` enum). Cloning a `Value` is always O(1) — a refcount bump, never a deep copy.
+- **Mutation is take → `make_mut` → write-back**, never an in-place write through a shared handle. Every mutating entry point in the VM and stdlib — `SetGlobal`/`SetTemp` write-through for `ref` parameters, T1e path-projection writes (`ProjWrite`, `proj_ops::write`), the stdlib mutating verbs (`push`/`insert`/`remove`/`sort_by`/…, `collection_ops.rs`/`record_ops.rs`), and compound assignment — follows the same discipline: take the current value out of its cell, call `Value::array_make_mut`/`map_make_mut`/`record_make_mut` (which forks via `Arc::make_mut` only if the `Arc` is shared, otherwise mutates in place), then store the result back. A binding that never observed the mutation never sees it, by construction — not by convention enforced at each call site.
+- **`ref` is cell-level, never a value-level pointer.** A `ref` parameter is a `VariablePointer`/`TempPointer`/`Projection` value that names a *cell* (a global slot, a temp slot, or a symbolic path against a root cell) — it is resolved at read/write time, never an interior pointer into a collection's backing storage. This is what keeps `ref` compatible with COW: writing through a `ref` still goes through the same take → `make_mut` → write-back RMW on the named cell.
+- **Equality and hashing are never pointer-based.** `Value`'s `PartialEq` is structural throughout, with an `Arc::ptr_eq` fast path on the collection/closure/projection/option/weighted variants — a same-snapshot comparison short-circuits to `true`, but a shared-then-diverged pair still falls through to full structural comparison. The fast path is a performance optimization licensed by §3 ("sharing is unobservable"); it can never be the *only* reason two values compare equal or unequal.
+- **Closures capture by value** (value-model-spec §11): a `val` bound-arg entry snapshots the argument at closure-creation time — an `Arc` bump, sharing the current allocation. Because mutation always forks on write, a later mutation of the original binding cannot retroactively change what the closure captured; the closure and the mutated original diverge into independent allocations at that point, never before. A `ref` bound-arg entry captures a durable cell name (never a temp), so the closure re-reads the *current* value of that cell on each call — deliberate aliasing through a name, not through the value.
+- **The host boundary is snapshot-only** (value-model-spec §8). `bevy-brink` externals and world-query bindings exchange [`ExternalValue`](#externalvalue) and `Handle` tokens, not raw `Value` collections with live pointers — a host can retain a snapshot indefinitely without coordinating with the running script, and the script's own mutations never retroactively change what the host already holds.
+- **Serialization preserves isolation.** Transcript and save round-trips (`transcript.rs`, `save.rs`) deserialize through `Value`'s derived `serde` implementation — each `Arc` payload is a fresh allocation on read, never re-interned or shared with a live in-memory value. A save loaded twice produces two independent value graphs.
+
+This is why the effect system (value-model-spec §11b) can reason about a definition's cell reads/writes and external calls as a closed, syntactic set: without aliasing, "writes `x`" can only ever mean "writes the cell named `x`," never "writes some value another binding might also see." The same guarantee is why speculative execution (`Context::clone` for "what if the player picks choice 2?") is sound — a cloned `Context` is a fully independent value graph the moment `clone` returns, and diverging writes on either side never cross.
+
 ## Execution model
 
 The execution model is layered: a dumb per-instruction VM at the bottom, with progressively higher-level APIs built on top. Each layer adds intelligence; lower layers know nothing about the layers above.
@@ -146,6 +161,57 @@ The `Story` manages one or more flows and their contexts, providing the convenie
 - **Global variable access**: `get_global(name) -> ExternalValue`, `set_global(name, ExternalValue)`. Uses `ExternalValue` at the boundary.
 - **Pending external query**: `has_pending_external() -> bool` — distinguishes "blocked on async external" from "actual error" when `continue_maximally()` returns `Err(UnresolvedExternalCall)`.
 - **External resolution**: `resolve_external(value: ExternalValue)` — provides the result for a pending external call. The next `continue_maximally()` or `continue_line()` call continues from where it froze.
+
+### Pending-terminal invalidation invariant
+
+> This section uses current (post-#1684) terminology — `Step`/`OutputLine`,
+> per CLAUDE.md's "Runtime public API" — rather than the `continue_line`/
+> `Line` API the rest of this "Execution model" section still describes.
+> Reconciling the whole section to the current API is tracked separately
+> (see the scope note filed against #2104); this note only covers the one
+> invariant it was asked to document.
+
+Terminal `Step`s (`Done`/`Choices`/`End`) carry no text of their own
+(`docs/prose-dialect-spec.md` §7). When a yield point is reached with
+unflushed trailing content, that content goes out first as its own
+`Step::Line`, and the bare terminal is stashed on the flow
+(`FlowInstance`'s internal `pending_terminal`) to be handed back, with no
+further VM stepping, on the very next `advance`/`continue_single` call.
+
+**The invariant:** `pending_terminal` may be `Some` only from the moment a
+yield computes it until the very next call that reads it back — and it must
+never be delivered if a host-directed operation moved execution to a
+different run in between. Concretely: `choose` (choice selection) and
+`choose_path_string`/`choose_path_string_with_args` (host-directed jump)
+each force-complete the current run and begin a fresh one; if either happens
+between the stash and its delivery, the stash must be discarded rather than
+replayed — otherwise the host gets back a `Done`/`Choices`/`End` left over
+from before the jump/choice instead of the new run's actual next step.
+
+**How it's enforced:** rather than relying on every such call site to
+remember an explicit clear (the shape of the original bug, found in #1684's
+own review — `choose_path_string_with_args` and `choose`/`select_choice`
+both initially forgot it), the stash is stamped with the flow's
+`next_block_id` — the same counter, already bumped by exactly these events,
+that numbers `Step::Line`'s `block_id` (`docs/prose-dialect-spec.md`
+§3.7/§8d.2). Reading the stash back compares its stamp against the
+*current* `next_block_id` and silently discards a stale one instead of
+returning it. This makes the invariant hold **by construction**: any future
+host-directed operation that begins a new run only has to keep bumping
+`next_block_id` for its own (unrelated, already-required) reason — block-id
+correctness for `Step::Line` — and pending-terminal invalidation comes along
+for free, with no clear-site of its own to forget. See `PendingTerminal`'s
+doc comment in `brink-runtime/src/story/call_stack.rs` for the
+implementation.
+
+**Out of scope for this invariant:** `Story::load_state`/the free
+`load_state` function (`brink-runtime/src/save.rs`) reconcile only *game
+state* (globals, visit/turn counts) into a `ContextAccess` — they never
+touch a `Flow` (or its `next_block_id`/`pending_terminal`) at all, so they
+cannot leave a stale stash behind and need no clear of their own.
+`begin_function_eval`/`resume_function_eval` similarly never move the main
+flow's execution position (the evaluation runs isolated, output hidden,
+transcript untouched), so they don't interact with this invariant either.
 
 ### Flows and instancing
 

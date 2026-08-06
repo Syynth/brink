@@ -1,0 +1,11 @@
+var hp: int = 10
+
+flow main() {
+  You have {hp} health.
+  -> spend(hp)
+}
+
+flow spend(amount: int) {
+  You spend what you can.
+  -> DONE
+}

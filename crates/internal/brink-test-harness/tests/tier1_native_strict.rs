@@ -1,0 +1,717 @@
+//! Strict typed-mode (`types = strict`) sweep of the tier-1 **native**
+//! golden corpus — the coverage hole issue #1882 was filed to close.
+//!
+//! # Why this file exists
+//!
+//! `tier1_native.rs` compiles every `tests/tier1-native/<case>/story.brink`
+//! through `brink_compiler::compile_path`, which uses
+//! `AnalysisOptions::default()` — `dialect = StrictInk`, `types = None`,
+//! so `AnalysisOptions::type_policy()` resolves to `TypePolicy::Gradual`
+//! (issue #1127's dialect-keyed default). `brink_analyzer::
+//! strict_diagnostics` returns immediately under `Gradual`, so **no part of
+//! the TM-3 strict pass — `strict::check`'s `E063`/`E065`/`E066` family —
+//! has ever been evaluated against the native corpus**, even though a real
+//! `.brink` project that sets `dialect = brink` in its `brink.toml` gets
+//! `Strict` by default.
+//!
+//! That hole is what let a run of native strict-typing bugs surface one at
+//! a time instead of as a batch (#1849, #1864, #1877, #1881, #1895, #1900,
+//! #1902 — every one of them a question the strict checker would have been
+//! asked had it run over this corpus). This file asks all of those
+//! questions at once, on every commit.
+//!
+//! # Why a recorded baseline rather than "must be clean"
+//!
+//! Turning strict on over the corpus for the first time produces findings —
+//! that is the point, not a setback. Per CLAUDE.md, a check that trips on
+//! real corpus code means the **check** is wrong (or reality differs from
+//! the contract), so the corpus is *not* edited to make this green and the
+//! diagnostics are *not* silenced. Instead this test pins the exact set of
+//! strict findings the corpus currently produces, so that:
+//!
+//! - a **new** strict finding (a regression, or a newly-written fixture
+//!   that trips the checker) fails this test and gets triaged;
+//! - a **fixed** finding also fails this test, forcing the baseline to
+//!   shrink deliberately rather than rotting.
+//!
+//! Every baseline row is classified below as a **true positive** (the
+//! diagnostic is right and the fixture/compiler genuinely has the problem)
+//! or a **checker gap** (the diagnostic is wrong and the analyzer needs
+//! fixing), each with the issue tracking it. Nothing here is "accepted";
+//! the baseline is a worklist with a test attached.
+//!
+//! The baseline keys on `(case, code, message)` and deliberately drops the
+//! diagnostic's byte range — a range shifts whenever a fixture gains a
+//! line, which would make this test fail for reasons that have nothing to
+//! do with typing. The message already names the offending symbol, which is
+//! the part a triager needs.
+//!
+//! # Relationship to the oracle
+//!
+//! None. This corpus is self-referential and has no C# counterpart (see
+//! `tier1_native.rs`'s own module doc); `RATCHET_EPISODE_COUNT` in
+//! `oracle_snapshots.rs` is a separate number and must never be conflated
+//! with the counts here.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::PathBuf;
+
+use brink_compiler::{AnalysisOptions, CompileError, DiagnosticCode, Dialect, TypePolicy};
+
+fn corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("tier1-native")
+}
+
+/// The strict findings `tests/tier1-native/` currently produces, as
+/// `(case, code, message)` — sorted, exactly as [`strict_findings`] returns
+/// them. Grouped by root cause, each group carrying its classification and —
+/// where the classification is "defect" rather than "expected" — the issue
+/// that tracks it (#1909, #1910, #1912, all filed from #1882's first
+/// sweep; #1911 is FIXED — see Group D — and no `BASELINE` row references
+/// it any more).
+///
+/// **Group A — `content`-typed parameters (`annotations-element`), tracked
+/// by issue #1912.** This is the fixture issue #1864 named when it filed the
+/// flattening problem, and the shape #1882 predicted would fire the moment
+/// strict ran here.
+///
+/// - The two `interior` rows are a **true positive against the compiler**:
+///   `hir::lower_native::element::try_claim` binds a claimed heading's
+///   captured run as a plain `Expr::String` regardless of the receiving
+///   parameter's declared type (`tier1_native.rs`'s `annotations_element`
+///   doc says so in as many words), so the compiler synthesizes a call
+///   whose argument type contradicts the handler signature it is calling.
+///   Closing it is issue #1839's captured-run-to-`FragmentRef` scope.
+/// - The two `radio` rows are the same mismatch, from two different call
+///   sites: one written by hand (`radio(call_sign, "come in")`), one
+///   synthesized by `!name` sigil dispatch (issue #2004,
+///   `hir::lower_native::element::try_dispatch`, added when the fixture
+///   grew a `!radio TAC-2: …` line) — `try_dispatch` binds every capture
+///   as a plain `Expr::String` too, the exact same posture `try_claim`
+///   already has, so it is the identical root cause, not a new one.
+///   Whether `string` should widen to `content` at all is the open half
+///   of that question.
+/// - `radio`'s **return type** escaping as `Unknown` was a **checker gap**,
+///   and is **FIXED** — its row is gone. `radio`'s body is `return text;`
+///   where `text: content`, so the return type is exactly the annotated
+///   parameter type, yet handing a parameter straight back out yielded
+///   `Unknown` (reduced: `fn passthru(t: content) { return t; }` reported
+///   the same, while `fn passthru(t: content): content { return t; }` was
+///   clean). Fixed in `infer::body::InferPass::infer_return`, which now
+///   runs the returned value through `or_own_annotation` — #1168's
+///   read-site annotation fallback, whose whole contract is "safe at read
+///   sites that don't themselves produce counter-evidence", and a `return`
+///   value is joined into `return_ty` without ever being `observe`d back.
+///   The gap was never `content`-specific: `int`, `bool` and every other
+///   resolvable annotation lost the same way (`strict::tests::
+///   native_returning_an_annotated_param_is_not_content_specific`).
+///
+///   Note what did **not** move: the three `E063` rows above are unchanged.
+///   Fixing the return-type read could in principle have made the
+///   synthesized-argument half fire *more* (a now-correctly-typed slot
+///   visibly rejecting a synthesized `string`); it did not, because those
+///   rows were already firing off `interior`/`radio`'s own *parameter*
+///   annotations, which the T1c signature overlay already resolved.
+///
+/// **Group B — UFCS method-call results (`ufcs`, and `lambda-verbs`'s
+/// `ufcs_through_capture`), tracked by issue #1909.**
+/// A **checker gap**: the desugared method-call spelling loses its result
+/// type where the direct spelling keeps it. Reduced to a single file,
+/// `fn f() { let n = 21; return double(n); }` is clean while
+/// `fn f() { let n = 21; return n.double(); }` reports `E065` — identical
+/// bodies, only the call spelling differs. `describe_double`
+/// (`FreeFnDesugar`) and `tally` (`m.len()`, `PreludeDesugar`) were the two
+/// forms of it here; `ufcs_through_capture`'s lambda-bound `f` (`items.len() + k`)
+/// is a third — issue #1910 fixed a lambda-bound local to take its own
+/// body-derived `Ty::Fn` type (see Group C below), but `items.len()`'s own
+/// result still types `Unknown` regardless (this group's own gap), so `f`'s
+/// inferred return stays `Unknown` too and both of its rows are unmoved by
+/// issue #1910. Distinct from issue #1483, which is the receiver-type-unknown
+/// direction; here the receiver's type is known and resolution succeeds.
+///
+/// **`describe_double`'s row is gone** — the free-function half landed
+/// (`infer::body::InferPass::infer_ufcs_free_fn_result`), so a UFCS call
+/// desugaring to a free function now carries that function's own return
+/// type. `tally`'s row stays: `m.len()` is a `PreludeDesugar`, whose result
+/// type would have to come from `infer::body`'s `infer_intrinsic`, and that
+/// function's arms `observe` operands and record `array_remove_calls` —
+/// running it on a desugared UFCS argument list would double-report `E149`
+/// against `ufcs::strict_verdict_diagnostics`' own copy. That is issue
+/// #1540's second symptom and is tracked separately (see #1909's own
+/// scope comment); it is deliberately not folded in here.
+///
+/// `bump`/`heal`'s parameters are a different, **expected** row: their
+/// bodies genuinely place no constraint on the parameters (`n = n +
+/// amount`), and §2 of `docs/typed-mode-spec.md` forbids call-site-driven
+/// inference, so `Unknown` is the specified outcome — the fixture is
+/// written in gradual style and would need annotations to be strict-clean.
+///
+/// Issue #1770 (this file's own per-lambda escape-check frame) adds a
+/// third row here, for the identical reason: `ufcs_through_capture`'s own
+/// lambda parameter `k` (`|k| items.len() + k`) now also escapes as
+/// `Unknown` — `items.len()`'s result types `Unknown` (this group's own
+/// gap), so `k` is never pinned either. Not a new defect, the same one
+/// reaching a slot #1910 could not previously make visible (a lambda had
+/// no strict-checked frame of its own to escape from).
+///
+/// **Group C — pure verb-layer results and lambda-bound locals
+/// (`lambda-verbs`, `fn-value-bare-name`), issue #1910 — FIXED.**
+/// `InferPass::infer_lambda` used to rebuild a lambda's own `Ty::Fn(params,
+/// ret, _)` from *written* annotations alone once its body walk finished,
+/// discarding everything the walk itself had learned (mono-HM narrowing:
+/// `observe`-driven param types, `return_ty`-driven return types) — the same
+/// overlay `infer_def_body` already runs for a top-level def's own
+/// params/return, just never wired up for a lambda's. That made
+/// `map`/`filter`/`fold`/`filter_map`/`map_each` results escape as `Unknown`
+/// whenever no surrounding annotation ascribed them, even where the element
+/// type was unambiguous from the callback's own body (`x * 2`, `fold`'s
+/// `acc + x` falling back to the seed's own type when the callback places no
+/// constraint on it), and made a lambda literal bound straight to a local
+/// (`let f = |x| x + 1;`) escape as `Unknown` instead of taking its own
+/// `fn(T…): R` type (`docs/typed-mode-spec.md` §3). Fixed by reading the
+/// walk's own `self.locals`/`self.return_ty` back (shadowed by param name
+/// for the walk's duration, the same hazard `lambda_param_names` already
+/// guards elsewhere) instead of discarding them, plus a matching `fold`
+/// fallback (prefer the seed's type over a callback whose own return is
+/// merely `Unknown` — never over one that is `Conflicted`, which is real
+/// information).
+///
+/// Two rows in `lambda-verbs` are **not** fixed by #1910 and stay recorded,
+/// each for its own reason:
+///
+/// - `scaled`'s parameter `factor` and return type remain `Unknown`: the
+///   callback `|x| x * factor` captures `factor`, itself `scaled`'s own
+///   unannotated parameter, which no use anywhere in `scaled`'s body ever
+///   constrains. This is the *other* half of `infer_lambda`'s own long-
+///   standing doc ("mono-HM narrowing of a lambda's own params from its
+///   concrete call sites is not modeled in this slice") applied one level
+///   up — §2 forbids call-site-driven inference, so `Unknown` is the
+///   specified outcome here, the same as `bump`/`heal`'s params in Group B.
+/// - `field_through_capture`'s rows are back to two ordinary `E065` Unknown-
+///   escapes, exactly the pre-#1910 shape: see Group G below (issue #1924,
+///   discovered while implementing #1910).
+///
+/// Issue #1770 (this file's own per-lambda escape-check frame) adds four
+/// more rows here, all the identical §2 call-site-driven-inference-is-
+/// forbidden shape as `scaled`'s own `factor` above and `bump`/`heal`'s in
+/// Group B: `total` and `chained`'s outer `fold` callback
+/// (`|acc, x| acc + x`) never pins either param from its own body, so
+/// `total`/`chained`'s lambda parameters `acc` and `x` both escape as
+/// `Unknown`; `scaled`'s own callback (`|x| x * factor`, `factor` itself
+/// already unconstrained) is the identical shape one param over, so
+/// `scaled`'s own lambda parameter `x` escapes too. None of the four is a
+/// new defect — a lambda simply had no strict-checked frame of its own to
+/// escape from before this issue.
+///
+/// **Group D — string concatenation (`for-k-v`), issue #1911, FIXED.**
+/// `keys + ":" + total` used to mark the `int` local `total` as
+/// `Conflicted` (`E066`), because `+` was unified as a same-type operator
+/// with no exception for display concatenation. `"t:" + total` on a plain
+/// `int` reproduced it with no map or loop involved. This was legal,
+/// running ink — the fixture's golden transcript proves it — and the
+/// runtime's own `Add` arms (`value_ops::binary_op`) already stringify a
+/// `string`/`int`-or-`float` pair unconditionally. `docs/typed-mode-spec.md`
+/// §4 now rules `string + int`/`string + float` (either operand order) as
+/// display-concat, typing to `string`; `infer_infix`
+/// (`brink-analyzer/src/infer/body.rs`) carries the rule. `for-k-v` no
+/// longer produces any strict finding — it is no longer in `BASELINE`.
+///
+/// **Group E — genuinely unconstrained bindings (`array-literal`,
+/// `as-binding`).** **Expected**, and specified: §5's empty-literal rule
+/// says an unconstrained `[]` is an `Unknown` escape that the writer
+/// annotates, which is exactly `empty_count`'s `let items = [];` (and `x`,
+/// its loop binding). `absent`'s `if none as n` binds the payload of a
+/// literal `none`, which has no payload type to bind. Both are fixtures
+/// written in gradual style, not compiler defects.
+///
+/// **Group F — unannotated fn-value plumbing (`fn-value-bare-name`).**
+/// **Expected**, same reason as `bump`/`heal`: `add(acc, x)` and
+/// `apply(g, v)` are unannotated helpers whose bodies do not constrain
+/// their parameters, and call-site inference is forbidden by §2. `mixed`'s
+/// return type (`fold(map([1, 2, 3], double), 0, |acc, x| acc + x)`) used to
+/// be recorded here too — #1910's `fold` seed-fallback fix resolved it (the
+/// callback's own `acc + x` places no constraint on either param, so the
+/// accumulator now falls back to the seed `0`'s `int` instead of the
+/// callback's own `Unknown` return).
+///
+/// Issue #1770 (this file's own per-lambda escape-check frame) adds two
+/// rows here: `mixed`'s own `|acc, x| acc + x` callback now gets its own
+/// strict-checked frame, surfacing `mixed`'s lambda parameters `acc` and
+/// `x` as `Unknown` escapes — the identical §2 shape as `add`/`apply`'s
+/// own parameters just above (and `bump`/`heal`'s in Group B): the
+/// callback's own body never pins either param, so `Unknown` is the
+/// specified outcome, not a new defect.
+///
+/// **Group G — a captured struct field read inside a lambda types as the
+/// struct, not the field (`lambda-verbs`' `field_through_capture`), tracked
+/// by issue #1924.** A **checker gap**, discovered while implementing
+/// #1910: `InferPass::infer_path` resolves a dotted `Expr::Path` (`p.x`) to
+/// its *head* variable's own type (`Ty::Struct("Point")`), not the field's
+/// (`Ty::Int`) — a long-standing, documented limitation ("no static
+/// field-type table exists yet", the read-side twin of issue #994's write-
+/// side fix, `strict.rs`'s `temp_headed_dotted_field_read_does_not_
+/// corrupt_the_temp_s_own_type`). Before #1910 this was unobservable: a
+/// lambda's signature was always rebuilt from written annotations only, so
+/// a mistyped field read inside a lambda body never reached its own
+/// `Ty::Fn`.
+///
+/// #1910 first made a lambda take its own body-derived signature
+/// unconditionally, so `field_through_capture`'s `let f = |k| p.x + k;`
+/// inferred `f: fn(Point): Point` (the field read's wrong type dominates the
+/// `unify(Struct(Point), Unknown)` join, `Unknown` being the identity, and
+/// `k` got `observe`d against that same wrong type) — clean of `E065` (the
+/// type is no longer `Unknown`!) but wrong, and the call site `f(1)`
+/// reported a misleading `E063` blaming the literal `1` rather than the
+/// actual bug, `p.x`'s own mistyped read. Worse, that same corruption
+/// wasn't confined to `field_through_capture`'s own return position — a
+/// dotted field read *anywhere* in a lambda body could poison a completely
+/// unrelated param or return through an ordinary `unify`/`observe` (e.g.
+/// `fold(items, 0, |a, b| p.x + a + b)`, where `p.x`'s mistyped `Struct`
+/// joins with `a`, corrupting the fold accumulator's own type and
+/// regressing previously-clean strict code with no source-level
+/// workaround — a second review finding on #1910).
+///
+/// Fixed (still within #1910's own PR, as a follow-up review fix, pending
+/// #1924's real field-type table): `InferPass::infer_path` now flags a
+/// multi-segment path that resolves to a *value*-kind symbol (the "field
+/// access spelled as a path" shape) via `dotted_field_read_tainted`, and
+/// `infer_lambda`'s `body_ty`/`narrowed_params` overlay refuses to trust
+/// anything derived from a walk that hit it — falling back to the
+/// pre-#1910, annotation-only posture instead. `field_through_capture`'s
+/// `f` is back to two ordinary `E065` Unknown-escapes (its return type and
+/// its temp `f`), the same shape it had before #1910 ever read a lambda's
+/// own body back — an honest gap again, not a wrong type. `p.x` itself
+/// still (incorrectly) types as `Ty::Struct("Point")` at the `infer_path`
+/// level; only the lambda-signature overlay refuses to trust it. #1924
+/// remains open for the real fix (a static field-type table).
+///
+/// Issue #1770 (this file's own per-lambda escape-check frame) gives that
+/// same lambda its own strict-checked frame for its *parameter* too,
+/// surfacing a third row against the identical root cause:
+/// `field_through_capture`'s own lambda parameter `k` (`|k| p.x + k`) is
+/// forced to `Unknown` by the same `dotted_field_read_tainted` guard —
+/// `BASELINE` already records two other rows against this exact def for
+/// the identical gap; this is a third slot it now reaches, not a new
+/// defect. #1924 remains open for the real fix.
+const BASELINE: &[(&str, &str, &str)] = &[
+    // Group A
+    (
+        "annotations-element",
+        "E063",
+        "argument 1 of call to `interior` has type `string` but its known type expects `content`",
+    ),
+    (
+        "annotations-element",
+        "E063",
+        "argument 1 of call to `interior` has type `string` but its known type expects `content`",
+    ),
+    (
+        "annotations-element",
+        "E063",
+        "argument 2 of call to `radio` has type `string` but its known type expects `content`",
+    ),
+    // The `!radio` dispatch call site (issue #2004) — same message as the
+    // hand-written call above, same root cause (see the module doc's
+    // Group A).
+    (
+        "annotations-element",
+        "E063",
+        "argument 2 of call to `radio` has type `string` but its known type expects `content`",
+    ),
+    // `radio`'s **return type** row is GONE — issue #1912's checker-gap
+    // half, FIXED: `infer::body::InferPass::infer_return` now runs the
+    // returned value through `or_own_annotation`, so `return text` with
+    // `text: content` exports `content` instead of `Unknown`. The three
+    // `E063` rows above are the *other* half of #1912 and are untouched by
+    // it — see the module doc's Group A.
+    // Group E (array-literal)
+    (
+        "array-literal",
+        "E065",
+        "`empty_count`'s temp `items` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "array-literal",
+        "E065",
+        "`empty_count`'s temp `x` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    // Group E (as-binding)
+    (
+        "as-binding",
+        "E065",
+        "`absent`'s temp `n` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    // `divert-target-args` (issue #2136) has no rows here: `scale`/`combine`'s
+    // params are annotated (`x: int`, `factor: int`, `a: int`, `b: int`),
+    // so no parameter escapes strict inference as `Unknown` — see the module
+    // doc's discussion of this fixture for the annotate-vs-relabel tradeoff.
+    // Group F (fn-value-bare-name)
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`add`'s parameter `acc` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`add`'s parameter `x` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`add`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`apply`'s parameter `g` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`apply`'s parameter `v` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`apply`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`g` is called as a function value but its type escapes strict inference as Unknown \
+         — annotate (`fn(T…): R`) or restructure",
+    ),
+    // Issue #1770 — `mixed`'s own `|acc, x| acc + x` callback now gets its
+    // own strict-checked frame (see the module doc's Group F addendum).
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`mixed`'s lambda parameter `acc` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`mixed`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    // Group D (for-k-v) — issue #1911, FIXED: string+int/string+float
+    // display-concat no longer marks `total` Conflicted, so `for-k-v`
+    // produces no strict findings at all and has no rows here.
+    // Issue #1770 — `chained`'s outer `fold` callback (`|acc, x| acc + x`)
+    // now gets its own strict-checked frame, the same §2 shape as `total`'s
+    // below and `scaled`'s `factor` further down (see the module doc's
+    // Group C addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`chained`'s lambda parameter `acc` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`chained`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    // Group G (lambda-verbs) — `field_through_capture`: the #1924 dotted-
+    // field-read gap, back to its pre-#1910 shape (two honest E065 Unknown
+    // escapes) now that `infer_lambda`'s overlay refuses to trust a walk
+    // that hit the mistyped read, rather than the misleading single E063
+    // this PR's first commit produced (see the module doc's Group G). Issue
+    // #1770 adds a third slot against the identical root cause: the
+    // lambda's own parameter `k` now also escapes (see the module doc's
+    // Group G addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`field_through_capture`'s lambda parameter `k` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`field_through_capture`'s return type escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`field_through_capture`'s temp `f` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    // Group C residual (lambda-verbs) — `scaled`: call-site-driven inference
+    // is forbidden by §2, so `factor` (and so the return) stays Unknown; not
+    // fixed by #1910, same reasoning as Group B's `bump`/`heal`. Issue
+    // #1770 adds `scaled`'s own lambda parameter `x` (`|x| x * factor`) for
+    // the identical reason (see the module doc's Group C addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`scaled`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`scaled`'s parameter `factor` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`scaled`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+    // Issue #1770 — `total`'s outer `fold` callback (`|acc, x| acc + x`)
+    // now gets its own strict-checked frame, the same §2 shape as
+    // `chained`'s above (see the module doc's Group C addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`total`'s lambda parameter `acc` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`total`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    // Group B residual (lambda-verbs) — `ufcs_through_capture`: blocked on
+    // #1909 (the UFCS-desugar result-type gap), not #1910. Issue #1770 adds
+    // the lambda's own parameter `k` for the identical reason (see the
+    // module doc's Group B addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`ufcs_through_capture`'s lambda parameter `k` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`ufcs_through_capture`'s return type escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`ufcs_through_capture`'s temp `f` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    // Group B
+    (
+        "ufcs",
+        "E065",
+        "`bump`'s parameter `amount` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "ufcs",
+        "E065",
+        "`bump`'s parameter `n` escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "ufcs",
+        "E065",
+        "`heal`'s parameter `amount` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "ufcs",
+        "E065",
+        "`tally`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+];
+
+/// The analysis posture a real `.brink` project with `dialect = "brink"` in
+/// its `brink.toml` gets.
+///
+/// `Dialect::Brink` alone already resolves to `TypePolicy::Strict` through
+/// issue #1127's dialect-keyed default (verified: dropping the `types` line
+/// here leaves all three tests passing). `types` is set explicitly anyway so
+/// this sweep pins its own posture rather than inheriting whatever that
+/// default becomes later — if the dialect-keyed default ever moves, this
+/// file keeps sweeping under strict and
+/// [`the_sweep_actually_runs_under_strict`] keeps proving it, instead of
+/// quietly going vacuous.
+///
+/// `dialect` is set alongside it because `types = strict` requires
+/// `Dialect::Brink` for `.ink` sources; native compiles skip that `E064`
+/// config check entirely (issue #1348), so for this corpus the field is
+/// inert beyond supplying the default above.
+fn strict_options() -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        types: Some(TypePolicy::Strict),
+        ..AnalysisOptions::default()
+    }
+}
+
+/// Every case directory under `tests/tier1-native/`, sorted. Walked rather
+/// than listed, so a newly-added corpus case is strict-swept the moment it
+/// lands — the `known`-list drift `tier1_native.rs`'s
+/// `every_case_directory_has_a_test` guards against cannot happen here.
+///
+/// Delegates to [`brink_test_harness::corpus::native_case_names`], the one
+/// definition also used by the #2223 parallel gate
+/// (`environment_parallel_gate.rs`), so the two sweeps cannot drift apart.
+fn case_names() -> Vec<String> {
+    brink_test_harness::corpus::native_case_names(&corpus_dir())
+}
+
+/// Compile every corpus case under [`strict_options`] and return the
+/// findings as sorted `(case, code, message)` triples.
+///
+/// Both compile outcomes contribute: a case that fails to compile reports
+/// through `CompileError::Diagnostics`, and a case that compiles reports any
+/// down-leveled strict diagnostics through `CompileOutput::warnings`. Only
+/// the strict-pass codes are collected — a parse or lowering diagnostic
+/// unrelated to typing is `tier1_native.rs`'s business, not this file's, and
+/// including it here would make this test fail for reasons it cannot triage.
+fn strict_findings() -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    for name in case_names() {
+        let path = corpus_dir().join(&name).join("story.brink");
+        let diagnostics = match brink_compiler::compile_path_with_options(&path, strict_options()) {
+            Ok(output) => output.warnings,
+            Err(CompileError::Diagnostics(ds)) => ds,
+            Err(e) => panic!("case {name}: unexpected compile failure: {e}"),
+        };
+        for d in diagnostics {
+            if is_strict_code(d.code) {
+                found.push((name.clone(), d.code.as_str().to_string(), d.message));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The TM-3 strict pass's own diagnostic codes (`brink_analyzer::strict`):
+/// `E063` annotation-vs-inference mismatch, `E065` `Unknown` escape, `E066`
+/// `Conflicted` escape — plus `E064` (the `types = strict` requires
+/// `dialect = brink` config error). Issue #1348 skips `E064` for native
+/// sources, so it is a no-op here today, but it stays in this set so that if
+/// it ever *did* fire, `BASELINE` would catch it as a new, unrecognized
+/// finding rather than this function silently filtering it away — which is
+/// what the previous stringly `"E063" | "E065" | "E066"` match actually did.
+fn is_strict_code(code: DiagnosticCode) -> bool {
+    matches!(
+        code,
+        DiagnosticCode::E063 | DiagnosticCode::E064 | DiagnosticCode::E065 | DiagnosticCode::E066
+    )
+}
+
+/// Render findings as a copy-pasteable list, so a triager reading a failure
+/// can see the whole delta without re-running anything.
+fn render(findings: &[(String, String, String)]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (case, code, message) in findings {
+        let _ = writeln!(out, "  {case} {code} {message}");
+    }
+    out
+}
+
+/// The gate: the corpus's strict findings must match [`BASELINE`] exactly.
+///
+/// A failure in either direction is a real signal and neither direction may
+/// be resolved by editing the corpus to suit the checker (CLAUDE.md):
+///
+/// - **new finding** — either a fixture regressed, or a newly-added fixture
+///   trips a checker gap. Triage which, then either fix the checker or add
+///   the row to `BASELINE` with its classification and tracking issue.
+/// - **missing finding** — a checker gap got fixed (celebrate, then delete
+///   the row) or a diagnostic silently stopped firing (a regression in the
+///   strict pass itself, which is exactly what this direction exists to
+///   catch).
+#[test]
+fn strict_findings_match_recorded_baseline() {
+    let actual = strict_findings();
+    let expected: Vec<(String, String, String)> = BASELINE
+        .iter()
+        .map(|(c, k, m)| ((*c).to_string(), (*k).to_string(), (*m).to_string()))
+        .collect();
+    assert!(
+        expected.windows(2).all(|w| w[0] <= w[1]),
+        "BASELINE must stay sorted so a diff against `strict_findings` is readable"
+    );
+
+    // `new`/`gone` are set-difference only (via `Vec::contains`), so they
+    // exist purely to render a readable delta in the failure message below —
+    // a finding whose count shifts (e.g. 2 -> 1) while another's shifts the
+    // other way (1 -> 2) would leave both `new` and `gone` empty even though
+    // the corpus changed. `actual` and `expected` are both sorted, so the
+    // `assert_eq!` below is the authoritative, multiset-exact check.
+    let new: Vec<_> = actual
+        .iter()
+        .filter(|f| !expected.contains(f))
+        .cloned()
+        .collect();
+    let gone: Vec<_> = expected
+        .iter()
+        .filter(|f| !actual.contains(f))
+        .cloned()
+        .collect();
+    assert_eq!(
+        actual,
+        expected,
+        "tier1-native's strict findings drifted from the recorded baseline.\n\
+         Do NOT edit the corpus to make this pass — triage each row and either \
+         fix the checker or update BASELINE with a classification.\n\
+         --- new findings ---\n{}--- findings that stopped firing ---\n{}",
+        render(&new),
+        render(&gone)
+    );
+}
+
+/// Guard against the whole file going vacuous. If `strict_options` ever
+/// stopped resolving to `TypePolicy::Strict` — a changed dialect-keyed
+/// default, a reworked `AnalysisOptions` — `strict::check` would silently
+/// stop running and `strict_findings` would return an empty list that
+/// matched an emptied baseline without anyone noticing. Both halves are
+/// asserted: the policy itself, and that the sweep genuinely observes the
+/// strict pass firing.
+#[test]
+fn the_sweep_actually_runs_under_strict() {
+    assert_eq!(
+        strict_options().type_policy(),
+        TypePolicy::Strict,
+        "this file's whole premise is that the corpus is compiled under strict types"
+    );
+    assert!(
+        !BASELINE.is_empty(),
+        "an empty baseline means either every gap is fixed (delete this assert and \
+         flip the test to `must be clean`) or the sweep stopped observing strict"
+    );
+    assert!(
+        !strict_findings().is_empty(),
+        "the strict pass produced nothing at all over the native corpus — it is \
+         almost certainly not running (issue #1882's original bug), not that the \
+         corpus became clean"
+    );
+}
+
+/// The premise this file was filed on (issue #1882): the corpus's *default*
+/// compile — the one `tier1_native.rs` performs — does not run the strict
+/// pass at all. Pinned so that if the native default ever flips to strict,
+/// this test fails and whoever flipped it discovers that `tier1_native.rs`'s
+/// goldens are now strict-gated too.
+#[test]
+fn the_default_native_posture_is_still_gradual() {
+    assert_eq!(
+        AnalysisOptions::default().type_policy(),
+        TypePolicy::Gradual,
+        "tier1_native.rs compiles via `compile_path` (default options); if that \
+         posture is now strict, its goldens run the strict pass and this file's \
+         separate sweep needs revisiting"
+    );
+}

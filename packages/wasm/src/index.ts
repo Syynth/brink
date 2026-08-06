@@ -28,6 +28,7 @@ import type {
   CompletionItem,
   HoverInfo,
   Location,
+  ExplainMatch,
   InlayHint,
   ColorHint,
   CallWidgetSite,
@@ -80,6 +81,9 @@ import {
   parseEvaluateSource,
   fragmentContentHash,
   cacheFragmentInto,
+  isNativeEntry,
+  expressionWrapSource,
+  contentWrapSource,
   FRAGMENT_CACHE_LIMIT,
 } from "./evaluate-dispatch";
 import type { FragmentCompileEntry, ExternalValue } from "./evaluate-dispatch";
@@ -311,27 +315,130 @@ export class EditorSessionHandle {
   /**
    * Parse a `brink.toml` project settings file (#1005 — dialect + type
    * policy, one config every compiler mount reads) and apply its
-   * `[project] dialect`/`types` to this session. The wasm sandbox has no
-   * filesystem of its own: read `brink.toml`'s text with whatever host API
-   * your embedder has (Node `fs`, the File System Access API, a bundler
-   * import, …) and pass it here — this method does the discovery-free
-   * parsing + application, mirroring what `brink compile`/`brink ide` do
-   * with real filesystem discovery.
+   * `[project] dialect`/`types` *and* `[lints]`/`deny-warnings` (#1366) to
+   * this session. Prefer {@link discoverProjectConfig} (#1414) when
+   * `brink.toml` is (or can be) loaded into this session as an ordinary
+   * document via {@link updateFile} — it resolves the file automatically
+   * through the same discovery mechanism `brink compile`/`brink ide`/
+   * `bevy-brink` use, so your embedder needs no host-specific directory-walk
+   * code of its own. This method stays for embedders that read
+   * `brink.toml`'s text with their own host API (Node `fs`, the File System
+   * Access API, a bundler import, …) without ever loading it into the
+   * session, and just want that text applied.
    *
    * Call this once, right after construction, before any explicit
    * {@link setLanguageDialect}/{@link setTypePolicy} call — an explicit
-   * call always overrides the file for that field (matches the CLI's
-   * `--dialect`/`--types` flag precedence: the file is the default, code
-   * wins). Re-analyzes immediately for whichever field the file sets.
+   * call always overrides the file for `dialect`/`types` (matches the
+   * CLI's `--dialect`/`--types` flag precedence: the file is the default,
+   * code wins). `[lints]`/`deny-warnings` has its own explicit-API
+   * override tier too (#1417): {@link setLintOverrides}/
+   * {@link setDenyWarningsOverride} always win over whatever this call
+   * resolves from the file, in either call order. Re-analyzes immediately
+   * for whichever field the file sets — including `[lints]`, which can
+   * change diagnostic severity: a `[lints] E014 = "deny"` or
+   * `deny-warnings = true` entry can promote a diagnostic that previously
+   * rendered as `"Warning"` to `"Error"` in subsequent `compileProject`
+   * results.
    *
-   * Returns the list of warning strings for unrecognized keys — never an
-   * error (forward compat). Throws only on malformed TOML or a recognized
-   * key with an invalid value.
+   * Returns the list of warning strings for unrecognized `[project]` keys
+   * *and* unrecognized/non-overridable `[lints]` codes — never an error
+   * (forward compat). Throws only on malformed TOML or a recognized key
+   * with an invalid value.
    */
   applyProjectConfig(toml: string): string[] {
     this.bump();
     const json = this.session.apply_project_config(toml);
     return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Discover and apply this session's `brink.toml`, if one exists among the
+   * currently loaded documents (#1414) — the web-mount counterpart of
+   * `brink compile`/`brink ide`'s filesystem-walk discovery, resolved
+   * instead by walking this session's own in-memory document tree (the
+   * `SourceTree`/producer seam every other mount already uses). Serve
+   * `brink.toml` as an ordinary document — `updateFile("brink.toml", text)`,
+   * at `entry`'s directory or any ancestor of it — and call this once (e.g.
+   * right after loading the project's files) in place of
+   * {@link applyProjectConfig}: no host-specific directory-walk code (Node
+   * `fs`, the File System Access API, …) required.
+   *
+   * `entry` is a session document path (whatever was passed to
+   * {@link updateFile}), not a filesystem path — and it must share the same
+   * root-relative spelling (no leading `/`) as every document path in this
+   * session, since the ancestor walk-up matches keys by exact string
+   * equality. Mixing a `/`-prefixed `entry` or document path with
+   * unprefixed ones is a silent no-op: discovery finds nothing and this
+   * returns `[]` exactly as if no `brink.toml` existed, with no warning.
+   *
+   * Returns `[]` when no `brink.toml` is found anywhere from `entry`'s
+   * directory up to the tree root — missing config is unchanged behavior,
+   * never a thrown error. Otherwise applies and re-analyzes exactly like
+   * {@link applyProjectConfig}: an explicit {@link setLanguageDialect}/
+   * {@link setTypePolicy} call still wins over the file, `[lints]` still
+   * always merges, and the returned array carries the same
+   * unrecognized-key/lint-code warning strings. The `[lints]`/`deny-warnings`
+   * override tier too (#1417): {@link setLintOverrides}/
+   * {@link setDenyWarningsOverride} still win over whatever this call
+   * resolves from the file. Throws only on malformed TOML or a recognized
+   * key with an invalid value.
+   */
+  discoverProjectConfig(entry: string): string[] {
+    this.bump();
+    const json = this.session.discover_project_config(entry);
+    return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
+   * wasm/editor counterpart of `brink compile`'s repeatable
+   * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
+   * `initializationOptions.lints`. `overrides` maps a diagnostic code to
+   * `"deny" | "warn" | "allow" | "info" | "hint"`. Wholesale **replaces** this session's
+   * explicit override map (mirrors {@link applyProjectConfig}'s own
+   * `[lints]`-replace-not-merge semantics) — pass `{}` to clear every
+   * override.
+   *
+   * Always wins over the same code in an applied `brink.toml`'s `[lints]`
+   * table, in either call order: this reapplies on top of whatever
+   * {@link applyProjectConfig}/{@link discoverProjectConfig} last
+   * resolved from the file, and a later file re-apply reapplies these
+   * overrides on top of itself — so a `brink.toml` reload can never
+   * silently drop a previously-set explicit override.
+   *
+   * Throws only on malformed JSON. An unrecognized per-code level string
+   * and an unrecognized/non-overridable diagnostic code are never thrown
+   * — both are reported as warning strings in the returned array, the
+   * same channel {@link applyProjectConfig} uses. Re-analyzes
+   * immediately.
+   */
+  setLintOverrides(overrides: Record<string, "deny" | "warn" | "allow" | "info" | "hint">): string[] {
+    this.bump();
+    const json = this.session.set_lint_overrides(JSON.stringify(overrides));
+    return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Set an explicit `deny-warnings` override (#1417), parallel to
+   * {@link setLintOverrides} — the wasm/editor counterpart of
+   * `brink compile`'s `-D warnings` and `brink-lsp`'s
+   * `initializationOptions.denyWarnings`. Always wins over an applied
+   * `brink.toml`'s `deny-warnings` key. Re-analyzes immediately.
+   */
+  setDenyWarningsOverride(deny: boolean): void {
+    this.bump();
+    this.session.set_deny_warnings_override(deny);
+  }
+
+  /**
+   * Clear the explicit `deny-warnings` override set by
+   * {@link setDenyWarningsOverride} — reverts to the applied
+   * `brink.toml`'s `deny-warnings` value (or `false`, absent a file).
+   * Re-analyzes immediately.
+   */
+  clearDenyWarningsOverride(): void {
+    this.bump();
+    this.session.clear_deny_warnings_override();
   }
 
   setActiveFile(path: string): boolean {
@@ -466,6 +573,16 @@ export class EditorSessionHandle {
     return result ?? null;
   }
 
+  /**
+   * Document-handle variant of {@link explainMatch}. Same raw-byte,
+   * file-absolute range caveat applies — see that method's own docstring.
+   */
+  explainMatchDoc(doc: DocumentId, offset: number): ExplainMatch | null {
+    const json = this.session.explain_match_doc(doc, offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
   gotoDefinitionDoc(doc: DocumentId, offset: number): Location | null {
     const json = this.session.goto_definition_doc(doc, offset);
     const result = JSON.parse(json);
@@ -596,6 +713,41 @@ export class EditorSessionHandle {
 
   getHover(offset: number): HoverInfo | null {
     const json = this.session.hover(offset);
+    const result = JSON.parse(json);
+    return result ?? null;
+  }
+
+  /**
+   * Explain what would match the line containing `offset` in the active
+   * file (issue #2113): is it matched, by what handler, what did it bind,
+   * and — on a miss — what patterns were attempted, or — on a hit — what
+   * else matched but was shadowed.
+   *
+   * Every range on the returned {@link ExplainMatch} (handler declaration
+   * ranges, capture ranges) is a **raw byte offset**, not UTF-16 — unlike
+   * every other DTO this class returns — and is **file-absolute**, not
+   * relative to a fragment view set by {@link setViewContext}/
+   * {@link openFragment}. A caller under a fragment view cannot map these
+   * ranges back into its own document as-is; see
+   * `crates/brink-web/src/editor/explain_match.rs`'s own module doc for why.
+   *
+   * `winner.kind` (issue #2310) is the claimed line's compile-time
+   * structural shape, read live off this file's compiled `HirFile` (a
+   * salsa query recomputed off the current revision on every edit — not a
+   * snapshot that can go stale). It can still be absent (`undefined`) on a
+   * hit: `path` is an ink-dialect file (which never populates a compiled
+   * element record at all), nothing has compiled this file yet, or the
+   * live match above claimed a line the compiler declined to record its
+   * own claim for (a heading carrying a `[slug]`/tags, or a line folded
+   * into a block handler's captured run). It is never a guess.
+   *
+   * Only `"content_line"` and `"scene_heading"` are reachable today —
+   * `"cue"`, `"parenthetical"`, and `"bang_dispatch"` are declared in the
+   * type for completeness but cannot yet surface here; see
+   * `crates/brink-web/src/editor/explain_match.rs`'s own module doc.
+   */
+  explainMatch(offset: number): ExplainMatch | null {
+    const json = this.session.explain_match(offset);
     const result = JSON.parse(json);
     return result ?? null;
   }
@@ -958,7 +1110,8 @@ export class StoryRunnerHandle {
   }
 
   /** Reconcile a saved state into the running story; returns what couldn't be
-   * applied (empty `unknown_globals` = clean). Tolerant of story patches. */
+   * applied (empty `unknown_globals`/`unresolved_renames` and zero
+   * `anonymous_states_dropped` = clean). Tolerant of story patches. */
   load(state: SaveState): LoadReport {
     return JSON.parse(this.runner.load(JSON.stringify(state))) as LoadReport;
   }
@@ -1127,6 +1280,18 @@ export class StoryRunnerHandle {
    * or run live (a fresh load has nothing recorded yet). */
   hasRecording(): boolean {
     return this.runner.has_recording();
+  }
+
+  /** Whether the last execution cycle of the default flow ended with a safe
+   * exit (an explicit `-> DONE`), as opposed to running out of content.
+   * Both deliver a `done`-type line; read this right after one to tell
+   * them apart — `false` means the next `continueStory`/`continueSingle`/
+   * `advanceOne` call will throw instead of returning more text. `false`
+   * if no story is loaded. Reflects only the default flow, not flows
+   * spawned/continued via `spawnFlow`/`continueFlow`/
+   * `continueFlowMaximally` (issue #1573). */
+  didSafeExit(): boolean {
+    return this.runner.did_safe_exit();
   }
 
   /** Structured, name-resolved snapshot of the runtime's current state. */
@@ -1429,10 +1594,15 @@ export class StoryRunnerHandle {
    * `(this program's checksum, fragmentSource)` — a fragment compiles once
    * per program version; every re-eval (e.g. a watch panel re-running on
    * every step) is a cache hit. Robust classification: try the fragment as
-   * an expression (`=== function NAME() === \n ~ return (FRAG)`); if that
-   * fails to compile, fall back to content (`=== NAME === \n FRAG`); if
-   * neither compiles, the content attempt's diagnostics are returned (the
-   * more permissive grammar, so its failure is the more informative one).
+   * an expression (native `fn NAME() { return (FRAG); }`, ink
+   * `=== function NAME() === \n ~ return (FRAG)`); if that fails to compile,
+   * fall back to content (native `flow NAME() { FRAG }`, ink
+   * `=== NAME === \n FRAG`); if neither compiles, the content attempt's
+   * diagnostics are returned (the more permissive grammar, so its failure is
+   * the more informative one). Which spelling is tried is decided once from
+   * `project.entry`'s extension ({@link isNativeEntry}, #1598) — `.brink`
+   * gets native wrap syntax, everything else gets ink's, so a synthetic
+   * symbol never lands as a parse error in the entry's own dialect.
    */
   private compileFragment(
     fragmentSource: string,
@@ -1446,8 +1616,9 @@ export class StoryRunnerHandle {
 
     const symbolName = `__eval_${fragmentContentHash(fragmentSource)}`;
     const sourcesJson = JSON.stringify(project.files);
+    const native = isNativeEntry(project.entry);
 
-    const exprSynthetic = `=== function ${symbolName}() ===\n~ return (${fragmentSource})\n`;
+    const exprSynthetic = expressionWrapSource(symbolName, fragmentSource, native);
     const exprResult = JSON.parse(
       wasmCompileFragment(project.entry, sourcesJson, exprSynthetic),
     ) as CompileResult;
@@ -1460,7 +1631,7 @@ export class StoryRunnerHandle {
       });
     }
 
-    const contentSynthetic = `=== ${symbolName} ===\n${fragmentSource}\n`;
+    const contentSynthetic = contentWrapSource(symbolName, fragmentSource, native);
     const contentResult = JSON.parse(
       wasmCompileFragment(project.entry, sourcesJson, contentSynthetic),
     ) as CompileResult;
@@ -1929,6 +2100,18 @@ export class StorySessionHandle {
   /** Whether the session is parked on a deferred external. */
   hasPendingExternal(): boolean {
     return this.session.has_pending_external();
+  }
+
+  /** Whether the last execution cycle of the default flow ended with a safe
+   * exit (an explicit `-> DONE`), as opposed to running out of content.
+   * Both deliver a `done`-type line; read this right after one to tell
+   * them apart — `false` means the next `continueSingle`/`advance` call
+   * will throw instead of returning more text. `false` if no session is
+   * initialized. Reflects only the default flow, not flows
+   * spawned/continued via `spawnFlow`/`continueFlow`/
+   * `continueFlowMaximally` (issue #1573). */
+  didSafeExit(): boolean {
+    return this.session.did_safe_exit();
   }
 
   /** Set a global variable. Turn-boundary only: throws mid-turn (drain the

@@ -1,10 +1,18 @@
-//! T1c creation-site checks for `#fn(name, args…)` function-value literals
-//! (docs/t1c-spec.md §2/§8, issue #699).
+//! Creation-site checks for function-value references — the ink/brink
+//! `#fn(name, args…)` literal (docs/t1c-spec.md §2/§8, issue #699) **and**
+//! the native bare-name spelling (`docs/t1c-spec.md` §2a, issue #1862).
+//! Two entry points, one shared obligation set:
+//!
+//! - [`check`] — the `#fn(name, args…)` literal, available on both surfaces
+//!   under `dialect = brink`.
+//! - [`check_native_bare_refs`] — the native-only bare-name spelling
+//!   (`handler(scene)`, no sigil), unconditional for every native file
+//!   regardless of `dialect`; see that function's own doc for why.
 //!
 //! "Every static obligation lands at this one marked site" — the creation
 //! site is where the target name becomes a value, where `ref` params bind,
 //! and (T2) where the effect row freezes. Three diagnostics enforce the
-//! ruled discipline:
+//! ruled discipline for [`check`]'s `#fn(…)` literal:
 //!
 //! - **E079** — the target must resolve to a statically-named *function
 //!   definition* (`=== function name ===`). A variable, list, external,
@@ -25,12 +33,19 @@
 //! - **E081** — the bound args are a *prefix* of the declared param row;
 //!   binding more than the target declares is a compile error.
 //!
-//! Runs only under `dialect = brink` (`per_file_diagnostics` gates the
-//! call): under `strict-ink` the whole literal is already rejected as
+//! [`check`] runs only under `dialect = brink` (`per_file_diagnostics` gates
+//! the call): under `strict-ink` the whole literal is already rejected as
 //! extension syntax (E051), and content diagnostics on rejected syntax are
 //! noise (the TM-2 annotation-content precedent, ruling 2026-07-13).
 //! Dialect-level, not type-policy-level: these obligations hold under
 //! `types = gradual` too.
+//!
+//! [`check_native_bare_refs`] is gated differently — on `hir.native`, not
+//! `dialect` — because the bare-name spelling is a property of the *surface*
+//! (native vs. ink), not a dialect extension: a `.brink` file compiled under
+//! the default `strict-ink` dialect still needs this check. Of the three
+//! obligations above, only E080 survives the bare-name translation (see
+//! that function's own doc for why E079/E081 are unreachable there).
 
 use std::collections::BTreeMap;
 
@@ -75,6 +90,114 @@ pub fn check(
         visit::visit(hir, &mut v);
     }
     out
+}
+
+/// The **native** half of the same creation-site discipline (RULED
+/// 2026-08-01, `docs/t1c-spec.md` §2a, issue #1862): on the `.brink`
+/// surface a statically-named function in expression position *is* a fn
+/// value, spelled as the bare name (`handler(scene)`) with no sigil.
+///
+/// That spelling can bind **no** arguments — the `#fn(f, a)` partial-
+/// application form deliberately has no native spelling — so exactly one of
+/// [`check`]'s three obligations survives the translation, and it survives
+/// as an absolute: a target with any `ref` parameter can never be
+/// referenced this way, because "all ref params bind in the creation-site
+/// prefix" (E080) and the prefix here is always empty. E081 (over-binding)
+/// and E079 (target is not a function) are both unreachable — there are no
+/// bound args to over-bind, and a bare name that resolves to something
+/// other than a function is simply not a fn value at all (it stays a
+/// variable read / visit count, `lir::lower::expr::lower_path`).
+///
+/// Runs for every native file regardless of the (ink-only) `dialect` axis
+/// — the same wiring rule the construction-literal checks use, and for the
+/// same reason: a `.brink` file compiled under the default `strict-ink`
+/// dialect must still get these errors.
+#[must_use]
+pub fn check_native_bare_refs(
+    files: &[(FileId, &HirFile)],
+    file_resolutions: &ResolutionMap,
+    index: &SymbolIndex,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        if !hir.native {
+            continue;
+        }
+        let by_range: BTreeMap<(u32, u32), DefinitionId> = file_resolutions
+            .iter()
+            .filter(|r| r.file == file)
+            .map(|r| (range_key(r.range), r.target))
+            .collect();
+        let mut v = NativeFnRefVisitor {
+            file,
+            by_range: &by_range,
+            index,
+            diagnostics: &mut out,
+        };
+        // `visit::visit` alone only walks the block tree — it never
+        // descends into a file-level `VAR`/`CONST` initializer expression
+        // (issue #1571's own doc on `visit_with_decl_initializers`). A
+        // native declaration-initializer position (`var f = heal;`) is
+        // exactly as much a bare-name fn-value creation site as an
+        // expression inside a knot body, so this walk must use the
+        // initializer-inclusive entry point or an unbound `ref` param on a
+        // decl-initializer target silently gets no E080.
+        visit::visit_with_decl_initializers(hir, &mut v);
+    }
+    out
+}
+
+struct NativeFnRefVisitor<'a> {
+    file: FileId,
+    by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
+    index: &'a SymbolIndex,
+    diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+impl HirVisitor for NativeFnRefVisitor<'_> {
+    fn visit_exprs(&self) -> bool {
+        true
+    }
+
+    fn enter_expr(&mut self, expr: &Expr) {
+        // Only a *bare* path is a candidate: a call's callee path is not
+        // walked as an `Expr::Path` at all (`hir::visit::walk_expr`'s
+        // `Expr::Call` arm descends into the arguments only), so
+        // `scene()` never reaches here — which is exactly what makes
+        // reference-vs-call unambiguous on this surface.
+        let Expr::Path(path) = expr else { return };
+        let Some(&def) = self.by_range.get(&range_key(path.range)) else {
+            return;
+        };
+        let Some(info) = self.index.symbols.get(&def) else {
+            return;
+        };
+        if !info.is_function_definition() {
+            return;
+        }
+        let target_name = path
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        for param in &info.params {
+            if !param.is_ref {
+                continue;
+            }
+            self.diagnostics.push(Diagnostic {
+                file: self.file,
+                range: path.range,
+                message: format!(
+                    "ref parameter `{}` of `{target_name}` must be bound at creation, but a \
+                     bare-name fn value binds no arguments — the binding form has no native \
+                     spelling (docs/t1c-spec.md §2a)",
+                    param.name,
+                ),
+                code: DiagnosticCode::E080,
+            });
+        }
+    }
 }
 
 struct FnValueVisitor<'a> {
@@ -162,9 +285,7 @@ impl FnValueVisitor<'_> {
             return;
         };
 
-        let is_function_def = matches!(info.kind, SymbolKind::Knot | SymbolKind::Stitch)
-            && info.detail.as_deref() == Some("function");
-        if !is_function_def {
+        if !info.is_function_definition() {
             self.push(
                 fl.target.range,
                 format!(

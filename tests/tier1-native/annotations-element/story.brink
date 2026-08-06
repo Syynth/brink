@@ -1,0 +1,25 @@
+var call_sign = "HQ"
+
+@[element(args = "^(?<chan>[A-Z0-9-]+): (?<text>.+)$")]
+fn radio(chan: string, text: content) {
+  return text;
+}
+
+@[convention(claims = "^INT\\. (?<place>.+)$", order = 10)]
+fn interior(place: content) {
+  return "-- inside {place} --";
+}
+
+@[element(args = "^ready$")]
+flow main() {
+  Feed: {radio(call_sign, "come in")}.
+  !radio TAC-2: All units report in.
+  @[element(args = "^ready$", name = "walkie")]
+  flow tally() {
+    Channel ready -> END
+  }
+  INT. MARKET SQUARE
+  The stalls are shuttered.
+  INT. OLD MILL
+  -> tally
+}

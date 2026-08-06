@@ -116,7 +116,7 @@ checking.
 cannot be papered over).
 **Entry.** Batch-4 ruling stamped (done, #1134).
 **Exit (tests).** Workspace green; **oracle byte-identical**
-(`CASES 350/14/390`, `EPISODES 5577/1027/0`); IDE + fmt suites green; a
+(`CASES 350/14/390`, `EPISODES` at `RATCHET_EPISODE_COUNT`); IDE + fmt suites green; a
 resolver round-trip test (ink node → `Provenance` → live node) and a
 non-resolving-provenance test (headless compile never resolves ptrs —
 contract §4.3, precisely why native codegen can ship before native IDE
@@ -212,7 +212,7 @@ inside points; `::`/`.` separator stratification + the casing partition
 `@[…]` annotations with the **paren-clause grammar** (`reads(gold, hp)` —
 the ruled form, not the drifted colon form: the D9 lesson, recognizers
 don't define the contract); `//` `/* */` trivia; lambda pipes `|x|`
-tokenized (lowering deferred, §3). The **body-dialect seam** is a parser
+tokenized (lowering landed later, in #1685 — see §3). The **body-dialect seam** is a parser
 dispatch point (prose vs code ground per container; chart #905 plugs in
 here later — Q5(a)). Whitespace never load-bearing; every structural mark
 renderer-elidable (charter §2).
@@ -243,8 +243,10 @@ keyword syntax (F-E's clean-channel bet cashed: `is_local`,
 `ModuleDecl`/`Imports` (naming only — the tree is the compilation
 universe); **flat hoisted global vecs produced by the native route** (D6:
 the contract says "flat and hoisted", not "walk descendants");
-`root_content = Block::default()` and `includes` empty always (ink-only
-baggage, enforced by B0.9). Names stamped in the exact qualification
+`root_content = Block::default()` and `includes` empty, except the single
+synthesized `flow main()` entry divert (2026-07-21 ruling); `includes`
+stays empty always (ink-only baggage, enforced by B0.9). Names stamped in
+the exact qualification
 conventions B0.3 checks. Manifest via B0.4's projection — the native
 frontend emits **HIR only**, the payoff of Q3(b).
 **Discharges.** First real second-client exercise of Q1(b)+Q3(b); the
@@ -400,11 +402,26 @@ path.
   reshape them (#1106): `or`/`as` (B1), **`for k, v`** (B2 — the one
   additive HIR field `val_name` lands with B2, not B0), UFCS **auto-ref
   resolution** (B3 — B0.8 parses the call shape only), display-boundary
-  None-render (B4), `TypeName { … }` construction grammar (B5, #1103).
-- **Lambdas** — ruled (Rust pipes) but `FnLiteral` is partial application,
-  not an anonymous body; a new HIR node is semantics-adjacent work owed to
-  the code-dialect sitting's implementation round. B0.5 tokenizes pipes;
-  B0.8 does not lower them (B0.9 rejects loudly).
+  None-render (B4). **B5 is no longer unfiled**: `TypeName { … }`
+  construction was ruled by #1103 (2026-07-23) and built by #1464 — the
+  native grammar (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`) plus the
+  `construct` protocol registry (`brink_ir::hir::construct`), std-only.
+- **Lambdas** — ~~ruled but unlowered~~ **LOWERED** (issue #1685). The
+  anonymous-body node this entry was waiting on exists: `hir::Expr::Lambda`
+  / `LambdaBody`, lowered by `hir::lower_native::lambda` per the 2026-07-19
+  ruling (pipes, colon returns, optional param annotations, expression or
+  braced-block bodies with the tail as the value, by-value capture with
+  `E156` for a write to a captured binding). `FnLiteral` remains what it
+  always was — partial application over a *named* target — and is a
+  different shape, not a substitute. The runtime representation — the
+  follow-up slice this entry left open — **LANDED** (issue #1709):
+  `lir::lower::lambda` lifts the body into a synthesized top-level function
+  and creates an ordinary T1c fn value over it (`PushFnRef` with no
+  captures, `MakeClosure` with them), retiring the `E052` fence. Still
+  open: the lifted function's **effect row** — `Ty::Fn` carries one since
+  #1680 step 3, but it names creation targets by `DefinitionId`, and while
+  a lambda now has one, minted at HIR time (#1727), it still has no index
+  symbol for the SCC solve to key a row against (#1770).
 - **Enums** — ruled (§13.1) but no HIR node exists; the contract reserves
   the `HirFile.enums` channel; the node + exhaustive `match` land with the
   enum feature, not B0.
@@ -463,8 +480,8 @@ The principle: **the contract-cleanup spine touches the ink frontend's own
 plumbing and is guarded by the oracle; the parser slices are
 vanilla-unreachable and are guarded by the admission machinery the spine
 built.** The full gate on every slice: `CASES 350/14/390`,
-`EPISODES 5577/1027/0`, byte-identical; ratchet untouched
-(`RATCHET_EPISODE_COUNT = 5577`); wasm-observable changes carry a
+`EPISODES` at `RATCHET_EPISODE_COUNT`, byte-identical; ratchet untouched
+(`RATCHET_EPISODE_COUNT`); wasm-observable changes carry a
 `@brink-lang/web` changeset; branch pushed after every commit (the #1137
 lesson).
 

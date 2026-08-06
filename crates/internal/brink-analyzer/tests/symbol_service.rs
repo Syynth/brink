@@ -285,15 +285,27 @@ fn signature_unannotated_param_is_none_in_param_annotations() {
 }
 
 #[test]
-fn signature_stitch_carries_param_annotations_but_never_a_return_annotation() {
-    // `= stitch` headers have no return-type grammar position (TM-2 §3
-    // scopes `): type ===` to `== knot ==` headers only).
+fn signature_stitch_carries_param_annotations_and_no_return_annotation_when_unannotated() {
     let src = "=== camp ===\nText.\n= fire\n~ temp x: string = who\n-> DONE\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Stitch, "camp.fire");
     let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert!(sig.param_annotations.is_empty(), "fire has no params");
-    assert_eq!(sig.return_annotation, None);
+    assert_eq!(sig.return_annotation, None, "no return annotation declared");
+}
+
+#[test]
+fn signature_stitch_carries_a_declared_return_annotation() {
+    // #1509: a *nested* stitch's `: type` return clause widens NG-C's
+    // `Knot`-only grammar — `signature()`'s `Sig::return_annotation` (the
+    // same field `brink-ide::hover` reads for both knots and stitches)
+    // must pick it up.
+    let src = "=== camp ===\nText.\n= fire(logs: int): bool\n~ return true\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Stitch, "camp.fire");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(sig.param_annotations, vec![Some(brink_analyzer::Ty::Int)]);
+    assert_eq!(sig.return_annotation, Some(brink_analyzer::Ty::Bool));
 }
 
 #[test]
@@ -340,7 +352,7 @@ fn signature_unannotated_const_keeps_the_literal_inferred_type() {
 
 #[test]
 fn signature_list_generic_annotation_resolves_against_declared_list_names() {
-    let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: list<Weathers>): void ===\n~ return\n";
+    let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: List<Weathers>): void ===\n~ return\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Knot, "pick");
     let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
@@ -351,6 +363,152 @@ fn signature_list_generic_annotation_resolves_against_declared_list_names() {
     // `void` has no `Ty` representation in this slice (return-position-only
     // sentinel) — `resolve_annotation` correctly reports it as unresolved.
     assert_eq!(sig.return_annotation, None);
+}
+
+// ─── Sig::value_ty — the full-fidelity global type (issue #1540) ─────
+//
+// `Sig::value_type` is the narrow, wire-adjacent `InferredType` domain
+// (hover + `@brink-lang/web`'s program model). `Sig::value_ty` is the one
+// every *typed* consumer reads — `infer::collect_globals` and `brink-db`'s
+// narrowed mirror of it — so a collection/struct/fn-typed global has to
+// survive here or it is invisible to every diagnostic keyed on the globals
+// map. Each fixture below asserts BOTH fields: `value_type` proves the
+// wire domain is unchanged, `value_ty` proves the type actually landed.
+
+/// The `ty_to_inferred_type` gap itself: an `Array<T>` annotation has no
+/// `InferredType` representation, so before #1540 this global's static type
+/// was whatever the (irrelevant) initializer literal said.
+#[test]
+fn signature_var_array_annotation_survives_on_value_ty() {
+    let src = "VAR arr: Array<int> = 0\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "arr");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Array(Box::new(brink_analyzer::Ty::Int)))
+    );
+    // The narrow field still downcasts to the literal — unchanged.
+    assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
+}
+
+/// `Map<K, V>` — the second half of the same annotation gap.
+#[test]
+fn signature_var_map_annotation_survives_on_value_ty() {
+    let src = "VAR m: Map<string, int> = 0\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "m");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Map(
+            Box::new(brink_analyzer::Ty::String),
+            Box::new(brink_analyzer::Ty::Int)
+        ))
+    );
+}
+
+/// The dominant authoring idiom the issue names: no annotation at all, just
+/// an array-literal default. Before #1540 the initializer's *shape* was
+/// dropped and the global typed as nothing.
+#[test]
+fn signature_var_array_literal_default_types_as_an_array() {
+    let src = "VAR arr = #[1, 2, 3]\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "arr");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Array(Box::new(brink_analyzer::Ty::Int)))
+    );
+    assert_eq!(sig.value_type, None, "no `InferredType` form exists");
+}
+
+/// A map-literal default, and — the policy-parity point — the element join
+/// is `unify_all`'s, exactly as `infer::body`'s own `Expr::MapLiteral` arm
+/// does it, so a global and a `temp` holding this literal type identically.
+#[test]
+fn signature_var_map_literal_default_types_as_a_map() {
+    let src = "VAR m = #{\"a\": 1, \"b\": 2}\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "m");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Map(
+            Box::new(brink_analyzer::Ty::String),
+            Box::new(brink_analyzer::Ty::Int)
+        ))
+    );
+}
+
+/// A nested array-of-arrays default recurses through the same function —
+/// element inference is not a one-level special case.
+#[test]
+fn signature_var_nested_array_literal_default_recurses() {
+    let src = "VAR grid = #[#[1], #[2]]\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Variable, "grid");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Array(Box::new(
+            brink_analyzer::Ty::Array(Box::new(brink_analyzer::Ty::Int))
+        )))
+    );
+}
+
+/// #1530's first half — "give `InferredType` a struct form (or route
+/// struct-annotated globals through the declared type)". Both spellings
+/// (annotation and construction literal) now reach `Ty::Struct`, which is
+/// what `E142`'s unknown-receiver check reads. #1530's *second* half —
+/// admitting a construction literal as a `VAR` default at all — landed
+/// separately in `brink-ir`'s `eval_const_struct_literal`, which now folds a
+/// well-formed literal into `lir::ConstValue::Record`; `E075` was narrowed
+/// to the shape-mismatch cases.
+#[test]
+fn signature_var_struct_annotation_and_literal_both_reach_ty_struct() {
+    let annotated = "STRUCT Point = #{x: float}\nVAR p: Point = 0\n";
+    let (hir, _manifest, result) = analyzed(annotated);
+    let def = def_id(&result, SymbolKind::Variable, "p");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Struct("Point".to_string()))
+    );
+
+    let constructed = "STRUCT Point = #{x: float}\nVAR p = Point#{x: 1.0}\n";
+    let (hir, _manifest, result) = analyzed(constructed);
+    let def = def_id(&result, SymbolKind::Variable, "p");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(
+        sig.value_ty,
+        Some(brink_analyzer::Ty::Struct("Point".to_string()))
+    );
+}
+
+/// The scalar/`List<L>` domain is unchanged: `value_ty` agrees with what
+/// `value_type` already said, so no existing consumer sees a different
+/// answer for a global that already had one.
+#[test]
+fn signature_value_ty_agrees_with_value_type_on_the_scalar_domain() {
+    let src =
+        "LIST Weathers = sunny, (rainy)\nVAR gold = 100\nVAR ratio: float = 1\nVAR w = (sunny)\n";
+    let (hir, _manifest, result) = analyzed(src);
+    for (name, expected) in [
+        ("gold", brink_analyzer::Ty::Int),
+        ("ratio", brink_analyzer::Ty::Float),
+        ("w", brink_analyzer::Ty::List("Weathers".to_string())),
+    ] {
+        let def = def_id(&result, SymbolKind::Variable, name);
+        let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+        assert_eq!(sig.value_ty, Some(expected.clone()), "value_ty of {name}");
+        assert_eq!(
+            sig.value_type.clone().map(brink_analyzer::Ty::from),
+            Some(expected),
+            "value_type of {name}"
+        );
+    }
 }
 
 #[test]

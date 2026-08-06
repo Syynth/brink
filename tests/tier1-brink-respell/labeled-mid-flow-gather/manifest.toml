@@ -1,0 +1,35 @@
+# Native-only fixture — see notes. Not a 1:1 respelling of a single ink
+# oracle case (see ../README.md's status conventions for the other cases).
+ink_source = "tests/tier1/choices/once-only-choices-can-link-back-to-self/story.ink"
+oracle_case = "n/a (native-only; see notes)"
+family = "labeled gather (G-1)"
+status = "hand-written native, episode-identity proven (round_trip.rs only)"
+notes = """
+Issue #1335 (B0.8b construct-coverage gaps): exercises the two named
+emitter refusals — a labeled dissolved-gather continuation (`(loop_back)`
+right after a closed `{?}` block, in `passages`) and a genuinely mid-flow
+labeled content line used as a backward-loop divert target (`(look_around)`,
+in `main`) — both of which `tests/tier1-brink-respell/README.md`'s G-1
+finding originally flagged as having no ruled native spelling. G-1 was
+ruled 2026-07-20 ("label any content line"; see
+`crates/internal/brink-syntax-native/src/parser/content.rs`'s
+`at_content_label`/`label`), giving both shapes the same `(name)`
+content-line-label spelling `emit_native.rs`'s `emit_labeled_stmt_stream`
+now respells.
+
+Not written as a mechanical respelling of `ink_source` above — that ink
+file's own idiom (`once-only-choices-can-link-back-to-self`) is the
+closest real-corpus analog (a labeled top-level gather used as a choice's
+divert target after a `{?}`-equivalent choice block) and is cited here
+for provenance, but this fixture is hand-written directly in `.brink` to
+exercise both G-1 shapes cleanly and deterministically (bounded episode
+count) rather than reproducing that file's exact choice-label/condition
+shape (`(firstOpt)`/`{firstOpt}`), which exercises a different,
+already-supported construct (choice-line labels, not content-line
+labels). Verified only by `crates/internal/brink-respell/tests/round_trip.rs`
+(native lower -> emit -> reparse -> relower -> episode-identical against
+itself) — unlike this directory's other cases, it is **not** wired into
+`ink_corpus_convert.rs`'s fixed 9-case mechanical-respell list (that list
+targets the original NF-5 seed only; extending it is a separate,
+larger-scoped follow-up, not part of this issue).
+"""

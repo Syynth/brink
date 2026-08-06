@@ -1,6 +1,6 @@
 //! Issue #805 (PR #794 / issue #786 lineage, docs/t1d-spec.md §3): extends
 //! `EXTERNAL` call-site checking to (1) scalar semantic types from the
-//! manifest vocabulary (not just `handle<K>` kinds), (2) inline-doc-only
+//! manifest vocabulary (not just `Handle<K>` kinds), (2) inline-doc-only
 //! externals (no matching `ManifestExternal` entry), and (3) return-position
 //! kind checking. Exercised through the *production* `db.diagnostics(file)`
 //! seam (`diagnostics_query` -> `analysis_query` -> `whole_project_diagnostics_query`,
@@ -34,6 +34,7 @@ fn strict_opts(manifest: HostManifest) -> AnalysisOptions {
 
 fn manifest_with_scalar_type_and_toggle() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![SemanticTypeDef {
             name: "switch_id".to_string(),
             base: BaseType::Int,
@@ -57,7 +58,7 @@ fn manifest_with_scalar_type_and_toggle() -> HostManifest {
 }
 
 /// `toggle` declares `id: switch_id` (a scalar semantic type, `base: int`,
-/// not a `handle<K>` kind). A string-literal-derived local passed as the
+/// not a `Handle<K>` kind). A string-literal-derived local passed as the
 /// argument is a genuine `int` vs `string` conflict, reachable only once
 /// the binding's declared *scalar* type is seeded into `known_sigs`.
 #[test]
@@ -100,12 +101,14 @@ fn external_call_scalar_semantic_type_match_reaches_no_diagnostics_under_strict(
 
 // ─── (2) Inline-doc-only externals ──────────────────────────────────────
 
-/// The registered manifest declares only the handle-kind *vocabulary*
-/// (`types`) — no `ManifestExternal` entry for `play_sound` at all.
-/// `play_sound`'s only declared signature source is its own inline `///
-/// @param` doc comment.
+/// The registered manifest declares the handle-kind *vocabulary* (`types`)
+/// plus the genuinely-registered `spawn_audio`/`spawn_timer` handle
+/// producers (issue #1942) — but there is still no `ManifestExternal` entry
+/// for `play_sound` itself. `play_sound`'s only declared signature source
+/// remains its own inline `/// @param` doc comment.
 fn manifest_with_only_handle_vocabulary() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![
             SemanticTypeDef {
                 name: "AudioInstance".to_string(),
@@ -122,17 +125,52 @@ fn manifest_with_only_handle_vocabulary() -> HostManifest {
                 widget: None,
             },
         ],
-        externals: Vec::new(),
+        externals: vec![
+            ManifestExternal {
+                name: "spawn_audio".to_string(),
+                params: Vec::new(),
+                returns: TypeRef("AudioInstance".to_string()),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+            ManifestExternal {
+                name: "spawn_timer".to_string(),
+                params: Vec::new(),
+                returns: TypeRef("Timer".to_string()),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+        ],
     }
 }
 
+/// `spawn_timer`/`spawn_audio` are genuinely-registered `EXTERNAL`
+/// producers (issue #1942's Scope section proposes "a natively-registered
+/// producer" as one construction path): each declares a fixed `returns`
+/// naming its own `Handle`-based `SemanticTypeDef`, so the leaf's
+/// body-derived return resolves directly to the concrete `Ty::Handle(K)` —
+/// the annotation only confirms it. `play_sound` stays inline-doc-only
+/// (absent from this manifest's `externals`), which is the property this
+/// fixture actually tests. This replaces a plain `~ return id` (issue
+/// #1912): a handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §1),
+/// not an `int`, so
+/// handing an `int`-annotated param back out of a `Handle<K>`-returning
+/// function was a real type error that only passed while reading an
+/// annotated param as a value typed `Unknown`. It also replaces the earlier
+/// *unregistered* `opaque_handle` workaround (PR #1938), scaffolding issue
+/// #1942 asked not to let calcify.
 const INLINE_ONLY_CROSS_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
-=== function get_timer(id: int): handle<Timer> ===
-~ return id
+EXTERNAL spawn_timer()
+=== function get_timer(): Handle<Timer> ===
+~ return spawn_timer()
 === main ===
-~ temp t = get_timer(1)
+~ temp t = get_timer()
 ~ play_sound(t)
 -> DONE
 ";
@@ -161,10 +199,11 @@ fn inline_only_external_cross_kind_argument_reaches_production_diagnostics_under
 const INLINE_ONLY_SAME_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
-=== function get_audio(id: int): handle<AudioInstance> ===
-~ return id
+EXTERNAL spawn_audio()
+=== function get_audio(): Handle<AudioInstance> ===
+~ return spawn_audio()
 === main ===
-~ temp a = get_audio(1)
+~ temp a = get_audio()
 ~ play_sound(a)
 -> DONE
 ";
@@ -191,6 +230,7 @@ fn inline_only_external_same_kind_argument_reaches_no_diagnostics_under_strict()
 
 fn manifest_with_play_sound_and_spawn_timer() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![
             SemanticTypeDef {
                 name: "AudioInstance".to_string(),
@@ -234,9 +274,9 @@ fn manifest_with_play_sound_and_spawn_timer() -> HostManifest {
 }
 
 /// `spawn_timer` is a manifest-registered `EXTERNAL` with no params and a
-/// *declared return type* of `handle<Timer>`. Its return value, assigned
+/// *declared return type* of `Handle<Timer>`. Its return value, assigned
 /// straight into a temp then passed to `play_sound` (declared
-/// `handle<AudioInstance>`), is a cross-kind mismatch detectable only once
+/// `Handle<AudioInstance>`), is a cross-kind mismatch detectable only once
 /// an `EXTERNAL`'s own declared *return* kind — not just its params — is
 /// seeded into `known_sigs`.
 const RETURN_POSITION_CROSS_KIND_SRC: &str = "\

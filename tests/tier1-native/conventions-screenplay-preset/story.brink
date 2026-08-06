@@ -1,0 +1,117 @@
+// The built-in screenplay preset (issue #1720, `std/conventions/screenplay.brink`)
+// exercised end to end. Cross-file `use std::conventions::screenplay` is not
+// yet a real import (no std-module resolution exists in the compiler; the
+// `fn conventions()` registration/comptime mechanism this used to depend on
+// was DISSOLVED by the 2026-08-03 ruling, `docs/decision-log.md`, in favor of
+// `order`-based precedence, so this is now purely a missing-import gap, not
+// a comptime one) — so this fixture inlines the SAME four handler
+// declarations the shipped preset ships, proving the preset's own bodies
+// dispatch correctly via the mechanism that IS landed today: single-file
+// `@[convention(claims = …, order = N)]` dispatch (issues #1838/#2164), plain
+// `heading`/`transition`, and `cue`/`parenthetical` migrated to ATTACH MODE
+// by issue #2166 (`attach = StructName`, issue #2178) — they claim and
+// consume only their own line, declaring a `Cue`/`Parenthetical` struct
+// rather than `block`-capturing the dialogue that follows. Also inlines the
+// `scene_entered` host extern + no-op fallback (issue #2092) `heading` now
+// calls — this fixture is driven with the default `FallbackHandler`
+// (`brink_test_harness::corpus::run_native_transcript`, no host bound), so
+// the no-op fallback is what actually runs here; the extern firing with the
+// right args against a REAL bound handler is proven separately in
+// `crates/internal/brink-test-harness/tests/issue_2092_scene_entered_
+// extern.rs`.
+//
+// ⚠ UPDATED (issue #2108): `expected.txt` used to print `cue`/
+// `parenthetical`'s `Cue { speaker: VENDOR }`/`Parenthetical { delivery:
+// hushed }` as the claimed line's OWN visible text — a stand-in for real
+// attachment while none existed (#2178's landed mechanism was schema
+// validation only). That stand-in directly contradicted the ruled model's
+// own item 6 ("AN EVENT EXISTS IFF A LINE EXISTS" — an attach convention
+// emits no line). This PR builds the real mechanism, so `expected.txt` no
+// longer shows those two lines at all; the dialogue that follows now
+// carries their data as `Element.data` instead (asserted in
+// `crates/brink-runtime/tests/element.rs`, not this text-only transcript).
+//
+// ⚠ UPDATED (issue #2079, RULED 2026-08-06 "Compact cue desugars to cue +
+// content line"): `@KID: I have {count} coins.` proves the compact form
+// (`@NAME: dialogue`) reaches `cue` too, not just the block form (`@KID`
+// on its own line, above). `count` is a `var` specifically so the fused
+// dialogue's interpolation has something real to read — the ruling's own
+// rejected alternative (matching a flattened name+dialogue run) would have
+// declined this exact line, since a two-capture pattern over one run
+// requires the WHOLE run to be literal, and `{count}` is not. `cue`'s
+// pattern (`^(?<name>[A-Z][A-Z '-]*)$`) only ever sees `KID` — the name
+// segment — so it claims and attaches `speaker: KID` exactly as it does
+// for the block form; the dialogue keeps full interpolation rights and
+// renders as "I have 3 coins." (asserted in `crates/brink-runtime/tests/
+// element.rs`'s `compact_cue_fused_dialogue_attaches_and_keeps_
+// interpolation`, which also pins the attach data — invisible to this
+// text-only transcript, same as `VENDOR`/`KID`'s block-form turns above).
+
+var count = 3
+
+extern scene_entered(title, slug)
+
+fn scene_entered(title: string, slug: string) {
+}
+
+@[convention(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$", order = 10)]
+fn heading(kind: string, title: string) {
+  scene_entered(title, "");
+  return "-- {kind}. {title} --";
+}
+
+@[convention(claims = "^(?<text>[A-Z][A-Z '-]*:)$", order = 20)]
+fn transition(text: string) {
+  return text;
+}
+
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 30)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+struct Parenthetical {
+  delivery: string,
+}
+
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", attach = Parenthetical, order = 40)]
+fn parenthetical(delivery: string): Parenthetical {
+  return Parenthetical { delivery: delivery };
+}
+
+flow main() {
+  // Issue #2077 (`docs/decision-log.md` 2026-08-06, "Slug-bearing headings:
+  // strip structure, then match"): every worked-page heading in
+  // `docs/prose-dialect-spec.md` carries an explicit `[slug]`, which used
+  // to decline outright here. Spelling one on this fixture's own heading
+  // proves the preset's `heading` handler claims it end to end — the
+  // rendered line below is UNCHANGED (the pattern only ever saw the title
+  // text; the slug was never part of it), which is the regression this
+  // pins: a slug present or absent must not move what gets printed. The
+  // trailing `#act1` exercises the same PR's other half — a tag-bearing
+  // heading also claims (previously an outright decline too) — through
+  // this fixture's full compiler pipeline; `expected.txt` stays UNCHANGED
+  // here too, since `drive_native_transcript` only ever appends line text,
+  // never `OutputLine.tags` (the tag's actual delivery is pinned at the
+  // runtime-output level by `crates/brink-runtime/tests/element.rs`'s
+  // `a_claimed_headings_own_tags_reach_the_output_line`, not this
+  // text-only transcript).
+  INT. MARKET SQUARE - NIGHT [market] #act1
+  The square is empty.
+
+  @VENDOR
+  (hushed)
+  You shouldn't be here after dark.
+
+  @KID
+  Says who?
+
+  @KID: I have {count} coins.
+
+  CUT TO:
+  -> END
+}

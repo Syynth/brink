@@ -74,10 +74,25 @@ impl ScopeChunk {
 
     /// A knot chunk: the lowered knot container (stitches + inline children
     /// nested) plus the names collected while lowering the whole subtree.
-    pub fn knot(container: lir::Container, local_names: Vec<String>) -> Self {
+    ///
+    /// `lifted` carries the lambda-lifted function containers synthesized
+    /// while lowering that subtree (issue #1709). They are *siblings* of the
+    /// knot, not children of it — a lifted function is entered only through
+    /// its own fn value, so it belongs at top level next to the project's
+    /// function knots (see `lower::lambda`'s module doc). Appending them
+    /// after the knot leaves the assembled root-children order for every
+    /// lambda-free project byte-identical.
+    pub fn knot(
+        container: lir::Container,
+        lifted: Vec<lir::Container>,
+        local_names: Vec<String>,
+    ) -> Self {
+        let mut children = Vec::with_capacity(1 + lifted.len());
+        children.push(container);
+        children.extend(lifted);
         Self {
             body: Vec::new(),
-            children: vec![container],
+            children,
             local_names,
         }
     }
@@ -203,14 +218,18 @@ fn remap_stmt(stmt: &mut lir::Stmt, map: &[NameId]) {
         }
         Stmt::Conditional(cond) => remap_conditional(cond, map),
         Stmt::Sequence(seq) => remap_sequence(seq, map),
-        Stmt::ExprStmt(e) => remap_expr(e, map),
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => remap_expr(e, map),
         Stmt::LogicWhile(w) => {
             remap_expr(&mut w.condition, map);
             remap_stmts(&mut w.body, map);
             remap_stmts(&mut w.post, map);
         }
         // No name references.
-        Stmt::EnterContainer(_) | Stmt::EndOfLine | Stmt::LogicBreak | Stmt::LogicContinue => {}
+        Stmt::EnterContainer(_)
+        | Stmt::EndOfLine
+        | Stmt::LogicBreak
+        | Stmt::LogicContinue
+        | Stmt::EndElementRun => {}
     }
 }
 
@@ -360,15 +379,37 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::RandRoll(e)
         | Expr::HeapPeek(e) => remap_expr(e, map),
 
-        Expr::SeqSortedBy { seq, cmp: second } | Expr::HeapPush { seq, value: second } => {
+        // Two-subexpression seq walks: the NS-A4 comparator verb, NS-A7's
+        // heap entry, and the fn-value verbs' `(array, callback)` pair
+        // (#1679, both the pure quartet and the effectful pair).
+        Expr::SeqSortedBy { seq, cmp: second }
+        | Expr::HeapPush { seq, value: second }
+        | Expr::SeqMap { seq, f: second }
+        | Expr::SeqFilter { seq, pred: second }
+        | Expr::SeqFilterMap { seq, f: second }
+        | Expr::SeqEach { seq, f: second }
+        | Expr::SeqMapEach { seq, f: second } => {
             remap_expr(seq, map);
             remap_expr(second, map);
+        }
+        Expr::SeqFold { seq, init, f } => {
+            remap_expr(seq, map);
+            remap_expr(init, map);
+            remap_expr(f, map);
         }
         Expr::RangeMake { start, end, .. } => {
             remap_expr(start, map);
             remap_expr(end, map);
         }
-        Expr::Infix(l, _, r) => {
+        // B1 `or`-coalescing (#1471) is a dedicated variant, not generic
+        // `Infix` — same two-subexpression walk; `shape` carries no
+        // `NameId` to remap.
+        Expr::Infix(l, _, r)
+        | Expr::Coalesce {
+            lhs: l,
+            rhs: r,
+            shape: _,
+        } => {
             remap_expr(l, map);
             remap_expr(r, map);
         }
@@ -411,9 +452,15 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
                 remap_expr(v, map);
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index } | Expr::SeqRemoveAt { base, index } => {
             remap_expr(base, map);
             remap_expr(index, map);
+        }
+        // B1b (issue #1475): the `as` binding's own name is a temp name
+        // like any other `GetTemp`/`TakeTemp` name and relocates with them.
+        Expr::OptionBind { value, name, .. } => {
+            remap_expr(value, map);
+            relocate(name, map);
         }
         Expr::IndexSet { base, index, value } => {
             remap_expr(base, map);
@@ -498,6 +545,11 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             relocate(field, map);
             remap_expr(value, map);
         }
+        // Block capture (issue #1839): the captured statements are lowered
+        // within this same chunk, so any `GetTemp`/`TakeTemp` they
+        // reference needs the identical relocation everything else in the
+        // chunk gets.
+        Expr::Fragment(stmts) => remap_stmts(stmts, map),
         // No name references.
         Expr::Int(_)
         | Expr::Float(_)

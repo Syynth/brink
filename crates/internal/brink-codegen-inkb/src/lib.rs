@@ -49,6 +49,32 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+/// Apply [`collapse_whitespace`] to a template part's literal text, recursing
+/// into `Span { children }` so nested literals get the same treatment as
+/// top-level ones (`<b>a  b</b>` must collapse the same as `a  b`).
+/// `Slot`/`Select` carry no literal text of their own and pass through
+/// unchanged.
+fn collapse_whitespace_in_part(part: brink_format::LinePart) -> brink_format::LinePart {
+    match part {
+        brink_format::LinePart::Literal(s) => {
+            brink_format::LinePart::Literal(collapse_whitespace(&s))
+        }
+        brink_format::LinePart::Span {
+            name,
+            attrs,
+            children,
+        } => brink_format::LinePart::Span {
+            name,
+            attrs,
+            children: children
+                .into_iter()
+                .map(collapse_whitespace_in_part)
+                .collect(),
+        },
+        other @ (brink_format::LinePart::Slot(_) | brink_format::LinePart::Select { .. }) => other,
+    }
+}
+
 /// Collapse runs of consecutive spaces/tabs within `s` to a single space.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -76,6 +102,7 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
     let mut state = EmitState {
         chunks: Vec::new(),
         addresses: Vec::new(),
+        definition_id_first_seen: HashMap::new(),
         address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
         list_literals: Vec::new(),
@@ -182,6 +209,15 @@ struct EmitState {
     /// phase in [`emit`] resolves. Pushed in container-walk order.
     chunks: Vec<ContainerChunk>,
     addresses: Vec<AddressDef>,
+    /// #1673 codegen-boundary uniqueness guard: every emitted container's
+    /// `DefinitionId` mapped to the (inklecate-style) path it was first
+    /// seen at. A well-formed `Program` assigns every container a distinct
+    /// id; nothing upstream of codegen independently re-verified that
+    /// before this guard existed, and the #1504 collision reached the
+    /// runtime silently — the linker's address map is last-write-wins, so
+    /// a duplicate id made a player-picked choice run the *other*
+    /// container's body. See [`walk_container`]'s check against this map.
+    definition_id_first_seen: HashMap<DefinitionId, String>,
     /// Qualified-path → target table (scope containers + author labels).
     address_paths: Vec<AddressPath>,
     /// Scope-shared line tables: `scope_id` → accumulated line entries.
@@ -335,15 +371,7 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
-        let parts = parts
-            .into_iter()
-            .map(|part| match part {
-                brink_format::LinePart::Literal(s) => {
-                    brink_format::LinePart::Literal(collapse_whitespace(&s))
-                }
-                other => other,
-            })
-            .collect();
+        let parts = parts.into_iter().map(collapse_whitespace_in_part).collect();
         let content = LineContent::Template(parts);
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
@@ -412,6 +440,27 @@ fn walk_container(
     scope_id: DefinitionId,
     state: &mut EmitState,
 ) {
+    // #1673 codegen-boundary uniqueness guard: two containers must never
+    // share a `DefinitionId`. This should be structurally impossible — every
+    // id is a content-pure hash minted once per container during LIR
+    // lowering — but the #1504 collision proved it *can* happen (unqualified
+    // anonymous scope paths across files) and, when it does, the failure is
+    // silent all the way to the player: the linker's address map (and this
+    // walk's own `state.chunks`/`state.addresses`) is last-write-wins, so
+    // the second container to reach this point quietly overwrites the
+    // first's entry instead of erroring. Checked once per container walked,
+    // O(1) amortized against the `HashMap` insert every other per-container
+    // table here already pays — cheap by design (see #1673).
+    if let Some(prior_path) = state
+        .definition_id_first_seen
+        .insert(container.id, path.to_string())
+    {
+        state.errors.push(CodegenError::new(format!(
+            "duplicate DefinitionId {} assigned to two different containers, at paths {prior_path:?} and {path:?} — every container must have a unique DefinitionId (#1673); this collision would otherwise reach the runtime silently and produce wrong player-visible output, as it did in #1504",
+            container.id
+        )));
+    }
+
     // The author-facing path of the nearest enclosing scope. For a scope
     // container this is its own `path` (scope paths never get inklecate's
     // implicit `0.` stitch prefix); non-scope containers inherit it. Used to
@@ -644,6 +693,7 @@ fn const_value_type(v: &lir::ConstValue) -> brink_format::ValueType {
         lir::ConstValue::Null => brink_format::ValueType::Null,
         lir::ConstValue::Array(_) => brink_format::ValueType::Array,
         lir::ConstValue::Map(_) => brink_format::ValueType::Map,
+        lir::ConstValue::Record { .. } => brink_format::ValueType::Record,
         lir::ConstValue::FnRef(_) => brink_format::ValueType::FnRef,
         lir::ConstValue::Closure { .. } => brink_format::ValueType::Closure,
     }
@@ -682,6 +732,17 @@ fn const_to_value(
             }
             Value::map(map)
         }
+        // A record baked into a declaration default (#1530). `fields` is
+        // already in the shape's declaration order — the same order
+        // `RecordNew` pushes and `Value::Record` stores — so there is
+        // nothing left to reorder here.
+        lir::ConstValue::Record { shape_id, fields } => Value::record(
+            brink_format::ShapeId(*shape_id),
+            fields
+                .iter()
+                .map(|f| const_to_value(f, name_table, name_index))
+                .collect(),
+        ),
         // Function values baked into a declaration default (T1c, #700). The
         // param name is interned (deduped) into the story name table so it
         // resolves to the same string the target container's `params` table

@@ -26,8 +26,8 @@
 // book text.
 //
 // 1. THE HEADLINE ANSWER: NEITHER. Actions are represented as pure DATA —
-//    `STRUCT Action = #{name, cost, precond: map<string,bool>, effect:
-//    map<string,bool>}` — with ZERO `#fn` fields anywhere in this file.
+//    `STRUCT Action = #{name, cost, precond: Map<string,bool>, effect:
+//    Map<string,bool>}` — with ZERO `#fn` fields anywhere in this file.
 //    This is a third, previously-unseen outcome for this corpus's running
 //    "closures vs composition" investigation:
 //    - behavior-tree found partial application WORKS for parameterizing
@@ -66,12 +66,12 @@
 //      it is not evidence that GOAP-in-general never needs function
 //      values, only that this classic STRIPS formulation doesn't.
 //
-// 2. NO NATIVE SET TYPE — `map<string, bool>` STANDS IN, MOSTLY. The
+// 2. NO NATIVE SET TYPE — `Map<string, bool>` STANDS IN, MOSTLY. The
 //    catalog predicted the friction would be "designing action as data
 //    ... without a real hash-set type." That prediction landed exactly:
 //    there is no `Set<Fact>`, so a precondition/effect/state is a
-//    `map<string, bool>` used as a set of (fact, required-or-new-value)
-//    pairs, exactly like npc-fsm's `map<string, fn(...)>` and
+//    `Map<string, bool>` used as a set of (fact, required-or-new-value)
+//    pairs, exactly like npc-fsm's `Map<string, fn(...)>` and
 //    weighted-loot-table's numeric maps use `map` as the corpus's
 //    general-purpose "small keyed collection" answer. `contains(m, k)` and
 //    `keys(m)` (stdlib.md) are sufficient for every read this file needs
@@ -82,7 +82,7 @@
 // 3. THE SHARP ONE: MAP EQUALITY IS INSERTION-ORDER-SENSITIVE, WITH NO
 //    DIAGNOSTIC WHEN IT BITES. GOAP's open/closed-list bookkeeping needs
 //    to ask "have I already reached this exact world state by some other
-//    path?" — the natural check is comparing two `map<string,bool>`
+//    path?" — the natural check is comparing two `Map<string,bool>`
 //    states for equality. Two things about this, confirmed by direct
 //    repro (`brink compile --dialect brink` + `brink play` on each):
 //    - `state_a == state_b` on two `map`s (or two `struct`s) is not
@@ -179,12 +179,12 @@
 STRUCT Action = #{
     name: string,
     cost: int,
-    precond: map<string, bool>,
-    effect: map<string, bool>,
+    precond: Map<string, bool>,
+    effect: Map<string, bool>,
 }
 
 STRUCT PlanNode = #{
-    state: map<string, bool>,
+    state: Map<string, bool>,
     g: int,
     parent: int,
     action_index: int,
@@ -196,7 +196,7 @@ STRUCT PQEntry = #{
 }
 
 // The one canonical fact ordering every state in this file is built from —
-// see finding #3: this is what keeps every `map<string,bool>` state's
+// see finding #3: this is what keeps every `Map<string,bool>` state's
 // entries in the same order regardless of which action path produced it.
 VAR fact_names = #["has_weapon", "weapon_loaded", "at_enemy", "enemy_dead", "weapon_sharp"]
 
@@ -226,7 +226,7 @@ VAR exec_lines = #[]
 
     while len(pq) > 0 {
         temp top = pq[0]
-        remove(pq, 0)
+        remove_at(pq, 0)
         temp node = nodes[top.node_index]
 
         if contains(closed, node.state) == false {

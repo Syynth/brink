@@ -292,6 +292,7 @@ mod tests {
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "set_tint".into(),
                 params: vec![ManifestParam {
@@ -349,6 +350,7 @@ EXTERNAL set_switch(id, on)
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         // set_switch(id: switch_id, on: bool); switch_id maps "5" -> "HarborGate".
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "set_switch".into(),
                 params: vec![
@@ -419,6 +421,7 @@ EXTERNAL set_switch(id, on)
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "give_item".into(),
                 params: vec![ManifestParam {
@@ -501,6 +504,7 @@ EXTERNAL set_switch(id, on)
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![],
             types: vec![SemanticTypeDef {
                 name: "actor_id".to_string(),
@@ -554,6 +558,7 @@ EXTERNAL set_switch(id, on)
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![],
             types: vec![SemanticTypeDef {
                 name: "actor_id".to_string(),

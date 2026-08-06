@@ -1,0 +1,19 @@
+flow main() {
+  How shall we travel?
+  {?
+    * [In first class] -> in_first_class
+    * [I'll go cheap] -> main.in_third_class
+  }
+
+  flow in_first_class() {
+    I settled my master.
+    {?
+      * [Move to third class] -> in_third_class
+    }
+  }
+
+  flow in_third_class() {
+    I put myself in third.
+    -> END
+  }
+}

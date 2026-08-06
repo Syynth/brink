@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 brink-compiler = { workspace = true }
+brink-environment = { workspace = true }
 brink-driver = { workspace = true }
 brink-db = { workspace = true }
 brink-ide = { workspace = true }

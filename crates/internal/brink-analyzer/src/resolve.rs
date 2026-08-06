@@ -1,9 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, Import, LocalSymbol, RefKind, ResolutionMap, ResolvedRef,
     Scope, SymbolIndex, SymbolInfo, SymbolKind, SymbolManifest, Visibility,
+    is_reserved_root_module,
 };
 
 use crate::manifest::local_definition_id;
@@ -19,19 +20,97 @@ use crate::manifest::local_definition_id;
 /// `ImportScope` collapsed every import to just its module name, so a bare
 /// `IMPORT { other } FROM mod` was (wrongly) treated as importing *all* of
 /// `mod`, silently disagreeing with `import_covers`'s name-precise gate.
+///
+/// # Dual-reading a bare item's trailing segment (issue #1592)
+///
+/// `use story::market::barter;` lowers to a bare import whose sole item is
+/// `barter` "from" module `story::market` (`lower_native::import`'s
+/// item-is-the-leaf reading) — but Rust's `use`, which charter §13.2
+/// commits to lifting verbatim, dual-reads that trailing segment: `barter`
+/// may be an *item* `story::market` exports, or it may itself name the
+/// **module** `story::market::barter` (a real submodule, licensing
+/// **module-qualified** access to its own public exports — "a trailing
+/// segment that resolves to a module licenses that module, exactly as
+/// Rust's `use` does", per the #1592 ruling, `docs/decision-log.md`
+/// 2026-07-27). Same shape for every entry in a nested list (`use a::{b,
+/// c};` dual-reads `b` and `c` independently, exactly as `use a::b;`
+/// dual-reads `b`).
+///
+/// This is a **per-file** query (`resolve(FileId)`'s incremental contract:
+/// "reads only the symbol index and this file's own manifest — never
+/// another file's content") and has no way to know here whether
+/// `module::name` is a real declared module elsewhere in the project — that
+/// whole-project view exists only in `modules::check`. So both readings are
+/// licensed **unconditionally**: the item pairing is inserted into `bare`
+/// exactly as before, and `module::name` is *also* inserted into
+/// `qualified` as a phantom qualified-module candidate. This is a pure
+/// no-op unless some file's symbol genuinely carries that exact module
+/// name — `classify` only ever matches a *candidate's own* `info.module`
+/// against this set, so an unreal phantom module simply never matches
+/// anything. **Precedence decision (issue #1592, "decide and document"):
+/// both readings apply — there is no exclusion.** They populate disjoint,
+/// non-conflicting sets (`bare` is name-precise; `qualified` is
+/// module-wide), so a name that resolves as *both* an item of `module` and
+/// a module in its own right gets both: the item is bare-importable under
+/// its own name (via `bare`), and the submodule's public exports become
+/// reachable **qualified** — `barter::haggle`, never bare `haggle` (via
+/// `qualified`). This mirrors Rust's own per-namespace `use` semantics
+/// (a module and a value can share a name without conflict) without this
+/// codebase needing to model namespaces explicitly. `modules::check`'s
+/// `E088` is the check that validates *this* file's readings against real
+/// project-wide module/export data and diagnoses when a trailing segment
+/// resolves to **neither**.
+///
+/// ⚠ **Corrected 2026-08-05 (issue #2287).** This doc previously claimed
+/// the submodule reading makes its exports "bare-visible" / "referenceable
+/// by bare name" — that was an over-read of the 2026-07-27 ruling and was
+/// itself the reported bug: a `qualified` entry alone must never license a
+/// *bare* reference (`resolve_divert::lookup_knot_bare`'s
+/// `is_qualified_import_only` exclusion is what now enforces this for
+/// diverts specifically — the only reference kind this issue's repro
+/// covers). `qualified_modules.contains(module)` still legitimately grants
+/// non-divert reference kinds `Candidacy::Imported` for their own
+/// qualified-syntax forms; nothing about that changed.
 #[must_use]
 pub(crate) fn import_coverage_for_file(
     imports: &[Import],
-) -> (BTreeSet<&str>, BTreeSet<(&str, &str)>) {
+) -> (BTreeSet<String>, BTreeSet<(&str, &str)>) {
     let mut qualified = BTreeSet::new();
     let mut bare = BTreeSet::new();
     for import in imports {
         if import.bare {
             for item in &import.items {
                 bare.insert((import.module.as_str(), item.name.as_str()));
+                // Dual-reading (issue #1592, doc above): `item.name` might
+                // itself name a submodule of `import.module` rather than an
+                // item of it. `::`-joining is native's real module-path
+                // separator (`brink_db::modules::native_module_path`), but
+                // `#@module(...)` places no structural constraint on an ink
+                // module's own name either (it accepts any non-empty
+                // string, `::`-joined or not — see
+                // `modules::known_module_names`'s doc, corrected by the
+                // #1686 review), so this is *not* a structural ink no-op.
+                // It is a no-op only for the corpus this compiler actually
+                // has to stay byte-identical for — no `#@module`/`IMPORT`/
+                // `use` construct appears anywhere in the oracle/tier1
+                // corpus at all (`modules`'s own Compat doc).
+                //
+                // Unconditional on `item.alias`, deliberately: this phantom
+                // candidate is inserted whether or not the item was
+                // aliased, so an aliased trailing segment that resolves to
+                // a module (`use a::b as c;` where `b` is a submodule)
+                // still licenses qualified access to `b`'s exports under
+                // `b`'s *own* name (`b::item`, issue #2287), even though
+                // `c` binds nothing useful. That shape
+                // has no sound alias representation at all (aliasing a
+                // whole module's export set, not one name) and is
+                // diagnosed loudly at the whole-project level instead —
+                // `modules::check`'s `E129` fires when this pass's
+                // `is_module` reading and `item.alias.is_some()` coincide.
+                qualified.insert(format!("{}::{}", import.module, item.name));
             }
         } else {
-            qualified.insert(import.module.as_str());
+            qualified.insert(import.module.clone());
         }
     }
     (qualified, bare)
@@ -63,8 +142,24 @@ pub struct ImportScope {
     /// (`IMPORT { name } FROM mod`) — name-precise, matching
     /// `modules::import_covers` exactly so resolution and the E025
     /// import-required diagnostic can never diverge. `BTreeSet` for
-    /// determinism.
+    /// determinism. Keyed by the imported item's own (source-module) name
+    /// regardless of any local alias — an aliased import still *covers* its
+    /// source name for cross-module licensing purposes (§2: the file did
+    /// import it), it just isn't the name resolution binds bare (see
+    /// `aliases`).
     pub bare_imports: BTreeSet<(String, String)>,
+    /// Local alias → `(module, source_name)` for every bare import item that
+    /// named one (`IMPORT { name AS alias } FROM mod` / `use mod::name as
+    /// alias;`, issue #1590). `index.by_name` is keyed by definitions' own
+    /// spellings only, so a plain [`lookup_by_name`] lookup can never find an
+    /// alias — this table is the indirection [`lookup_by_name`] falls back to
+    /// once the direct-name lookup comes up empty. Additive, not
+    /// shadowing: aliasing doesn't revoke the source name's own bare
+    /// visibility (still governed by `bare_imports`/`classify` exactly as
+    /// before) — it only adds a second local spelling for the same import.
+    /// See the doc comment on [`lookup_by_name`] for the alias-vs-original
+    /// licensing ruling. `BTreeMap` for determinism.
+    pub aliases: BTreeMap<String, (String, String)>,
 }
 
 impl ImportScope {
@@ -73,13 +168,25 @@ impl ImportScope {
     #[must_use]
     pub fn new(file_module: Option<String>, imports: &[Import]) -> Self {
         let (qualified, bare) = import_coverage_for_file(imports);
+        let mut aliases = BTreeMap::new();
+        for import in imports {
+            if !import.bare {
+                continue;
+            }
+            for item in &import.items {
+                if let Some(alias) = &item.alias {
+                    aliases.insert(alias.clone(), (import.module.clone(), item.name.clone()));
+                }
+            }
+        }
         Self {
             file_module,
-            qualified_modules: qualified.into_iter().map(str::to_string).collect(),
+            qualified_modules: qualified,
             bare_imports: bare
                 .into_iter()
                 .map(|(module, name)| (module.to_string(), name.to_string()))
                 .collect(),
+            aliases,
         }
     }
 }
@@ -209,6 +316,9 @@ pub fn resolve_file(
             RefKind::Struct => {
                 resolve_struct_ref(index, scope, file_id, uref, &mut map, &mut diagnostics);
             }
+            RefKind::Type => {
+                resolve_type_ref(index, scope, file_id, uref, &mut map);
+            }
         }
     }
 
@@ -230,13 +340,72 @@ fn resolve_divert(
             range: uref.range,
             target: id,
         });
+        check_divert_arity(index, file_id, uref, id, diagnostics);
     } else {
         diagnostics.push(unresolved_diag(
+            index,
             file_id,
             uref.range,
             &uref.path,
             DiagnosticCode::E024,
         ));
+    }
+}
+
+/// Check a divert-with-args site's argument count against its resolved
+/// target's declared parameter count (`E176`, issue #2156) — `E031`'s
+/// sibling for the divert call shape (`-> knot(args)`, a tunnel call, or a
+/// thread-start), extended to a construct `check_arity` never covered:
+/// `RefKind::Divert` refs always carried `arg_count: None` until this issue
+/// (`brink_ir::symbols::project::Projector::walk_divert_target`), so
+/// `check_arity` — gated on `arg_count.is_some()` — could never fire for a
+/// divert on either dialect regardless of how many arguments were given.
+///
+/// Scoped to a resolution naming a `Knot`/`Stitch`/`Label` — the only
+/// symbol kinds with their own declared parameter row — mirroring
+/// `resolve_function`'s own `check_arity` call sites, which likewise check
+/// only `External`/`Knot` resolutions and skip `Variable`/local ones. A
+/// divert resolving to a `Variable` (`-> x` where `x` holds a stored divert
+/// target, e.g. `docs/…/WritingWithInk.md`'s "Advanced: sending divert
+/// targets as parameters") or to a divert-typed local `Param` (`-> return_to`
+/// inside `=== knot(-> return_to) ===`) is an indirection whose real
+/// target's arity is not known statically at this site — `index.symbols`
+/// has no declared parameter row for either kind, so checking against it
+/// would misfire on legitimate code instead of silently doing nothing
+/// useful.
+fn check_divert_arity(
+    index: &SymbolIndex,
+    file_id: FileId,
+    uref: &brink_ir::UnresolvedRef,
+    target: DefinitionId,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(call_arg_count) = uref.arg_count else {
+        return;
+    };
+    let Some(info) = index.symbols.get(&target) else {
+        return;
+    };
+    if !matches!(
+        info.kind,
+        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+    ) {
+        return;
+    }
+    let expected = info.params.len();
+    if call_arg_count != expected {
+        diagnostics.push(Diagnostic {
+            file: file_id,
+            range: uref.range,
+            message: format!(
+                "{}: `{}` expects {} argument(s), got {}",
+                DiagnosticCode::E176.title(),
+                uref.path,
+                expected,
+                call_arg_count,
+            ),
+            code: DiagnosticCode::E176,
+        });
     }
 }
 
@@ -247,6 +416,18 @@ fn lookup_divert(
     uref: &brink_ir::UnresolvedRef,
 ) -> Option<DefinitionId> {
     let path = &uref.path;
+
+    // Module-qualified (`-> barter::haggle`, issue #2287): resolved
+    // entirely separately from ink's own dotted `knot.stitch` addressing
+    // below — a module qualifier licenses reaching a top-level flow through
+    // an imported *module*, never a stitch/label path, and a miss here must
+    // not fall through to the single-segment resolution below (that
+    // fallback treating the *whole* qualified path as an opaque bare name
+    // is exactly how issue #2287's bug (b) let `-> haggle` slip through
+    // after the qualified form failed).
+    if uref.module_qualified {
+        return lookup_qualified_divert(index, scope, path);
+    }
 
     // Dotted path — try exact qualified lookup, then qualify with current knot
     if path.contains('.') {
@@ -295,8 +476,17 @@ fn lookup_divert(
         }
     }
 
-    // 2. Knot at top level
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Knot]) {
+    // 2. Knot at top level — a *bare* divert name (no qualifier segment at
+    // all in source) must resolve only to a same-module candidate or one a
+    // symbol-level/glob `use` actually named (issue #2287): unlike the flat
+    // `lookup_by_name`/`classify` most other reference kinds use (which
+    // also treats a **qualified**-module import as licensing bare access,
+    // since e.g. a function-call callee may itself be spelled either way),
+    // a bare divert has no qualifier to license through — a candidate
+    // reachable only via a qualified-module import must stay unresolved
+    // here, or `-> haggle` would silently accept exactly the over-permissive
+    // reading #2287 reported as bug (b).
+    if let Some(id) = lookup_knot_bare(index, scope, path) {
         return Some(id);
     }
 
@@ -324,6 +514,157 @@ fn lookup_divert(
 
     // 7. Divert parameter in scope (`=== knot(-> x) ===` then `-> x`)
     lookup_local_in_scope(locals, path, &uref.scope)
+}
+
+/// Is `info` reachable *only* through a **qualified-module** import
+/// (`use ...::mod;` / `import mod;`, `scope.qualified_modules`) with no
+/// corresponding bare (symbol-level/glob) import of this exact name (issue
+/// #2287)? A qualified-module import licenses `module::name`/`module.name`
+/// access to any public export — [`classify`]'s `Candidacy::Imported`
+/// correctly grants that for reference kinds whose own syntax can carry a
+/// qualifier — but it must never *also* license the bare `name` spelling,
+/// which only a symbol-level or glob import brings into scope. `false` for
+/// a candidate with no module at all (the legacy/undeclared-module world,
+/// always bare-visible) and for one already bare-imported (both readings
+/// can hold at once per #1592's dual-reading ruling; the bare one still
+/// wins).
+fn is_qualified_import_only(scope: &ImportScope, info: &SymbolInfo) -> bool {
+    let Some(module) = &info.module else {
+        return false;
+    };
+    info.visibility == Visibility::Public
+        && scope.qualified_modules.contains(module)
+        && !scope
+            .bare_imports
+            .contains(&(module.clone(), info.name.clone()))
+}
+
+/// Bare (single-segment, no qualifier at all in source) top-level-`Knot`
+/// divert lookup (issue #2287). Deliberately duplicates
+/// [`lookup_by_name_direct`]'s own fast-path/tie-break structure — same
+/// std-reserved-root skip, same "`!multiple` sole match wins regardless of
+/// candidacy" byte-identity guarantee that lets a totally *unimported*
+/// cross-module `Knot` still resolve here exactly as before (its specific
+/// diagnostic — `E087` private-cross-module or `E025` import-required — is
+/// `modules::check`'s separate, more precise gate to raise on the
+/// resulting `ResolvedRef`, not this function's job to pre-empt) — with
+/// exactly one new exclusion, structurally parallel to the std skip: a
+/// candidate reachable *only* via a qualified-module import
+/// ([`is_qualified_import_only`]) is skipped before it can ever win, since
+/// a module import must never license the bare spelling (bug (b)). Not a
+/// thin wrapper over `lookup_by_name`/`classify` because that fast path
+/// applies its own exclusion **before** counting a candidate into
+/// `first_match`/`multiple`, exactly where this one must too — bolting the
+/// exclusion on afterward would still let a qualified-only candidate win
+/// as the "sole" match.
+fn lookup_knot_bare(index: &SymbolIndex, scope: &ImportScope, name: &str) -> Option<DefinitionId> {
+    if let Some(id) = lookup_knot_bare_direct(index, scope, name) {
+        return Some(id);
+    }
+    // Alias fallback (issue #1590), mirroring `lookup_by_name`'s own: an
+    // aliased bare-import item (`use ...::haggle as h;`) is never in
+    // `index.by_name` under its local alias, so the direct lookup above
+    // can never find it — `scope.aliases` is the indirection. The alias
+    // entry's mere presence already proves this file bare-imported that
+    // exact `(module, source_name)` pair (`ImportScope::new` only ever
+    // populates it from a bare import item that named an alias), so no
+    // further candidacy check is needed here, exactly as `lookup_by_name`
+    // performs none either.
+    let (module, source_name) = scope.aliases.get(name)?;
+    let ids = index.by_name.get(source_name.as_str())?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        (info.kind == SymbolKind::Knot && info.module.as_deref() == Some(module.as_str()))
+            .then_some(*id)
+    })
+}
+
+/// The direct (non-alias) half of [`lookup_knot_bare`] — see that
+/// function's own doc for why this duplicates
+/// [`lookup_by_name_direct`]'s structure rather than reusing it.
+fn lookup_knot_bare_direct(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    name: &str,
+) -> Option<DefinitionId> {
+    let ids = index.by_name.get(name)?;
+    let mut first_match = None;
+    let mut first_in_scope = None;
+    let mut first_imported = None;
+    let mut multiple = false;
+    for id in ids {
+        let Some(info) = index.symbols.get(id) else {
+            continue;
+        };
+        if info.kind != SymbolKind::Knot {
+            continue;
+        }
+        let candidacy = classify(scope, info);
+        if candidacy == Candidacy::Other
+            && info.module.as_deref().is_some_and(is_reserved_root_module)
+        {
+            continue;
+        }
+        if is_qualified_import_only(scope, info) {
+            continue;
+        }
+        if first_match.is_none() {
+            first_match = Some(*id);
+        } else {
+            multiple = true;
+        }
+        match candidacy {
+            Candidacy::InScope if first_in_scope.is_none() => first_in_scope = Some(*id),
+            Candidacy::Imported if first_imported.is_none() => first_imported = Some(*id),
+            _ => {}
+        }
+    }
+    if !multiple {
+        return first_match;
+    }
+    first_in_scope.or(first_imported).or(first_match)
+}
+
+/// Does `module` (a candidate's real, fully `::`-joined declared module
+/// name) match a divert's own written qualifier segment(s) — the prefix of
+/// `-> qualifier::name` before the final `::`? Exact match covers the
+/// common single-level case (`barter` naming module `story::market::barter`
+/// end-to-end would require `qualifier == module`); the suffix form covers
+/// a qualifier that only spells the module's own trailing component(s),
+/// the shape `use story::market::barter;`'s dual-reading licenses (issue
+/// #1592) and issue #2287's own repro exercises.
+fn module_matches_qualifier(module: &str, qualifier: &str) -> bool {
+    module == qualifier || module.ends_with(&format!("::{qualifier}"))
+}
+
+/// Module-qualified divert lookup (`-> barter::haggle`, issue #2287):
+/// `path` is `uref.path` when `uref.module_qualified` is set —
+/// `::`-joined, never `.`-joined, so it splits cleanly into the qualifier
+/// prefix and the bare target name. Resolves only against a top-level
+/// `Knot` (the sole symbol kind a native `flow` divert target names) whose
+/// real declared module matches the qualifier
+/// ([`module_matches_qualifier`]) and which this file imported *qualified*
+/// (`scope.qualified_modules` — a symbol-level/glob import does not carry
+/// this licensing power for the qualified spelling, mirroring
+/// [`classify`]'s own module-qualified-import reading).
+fn lookup_qualified_divert(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    path: &str,
+) -> Option<DefinitionId> {
+    let (qualifier, name) = path.rsplit_once("::")?;
+    let ids = index.by_name.get(name)?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        if info.kind != SymbolKind::Knot || info.visibility != Visibility::Public {
+            return None;
+        }
+        let module = info.module.as_deref()?;
+        if !module_matches_qualifier(module, qualifier) {
+            return None;
+        }
+        scope.qualified_modules.contains(module).then_some(*id)
+    })
 }
 
 fn resolve_variable(
@@ -366,6 +707,7 @@ fn resolve_variable(
                 return;
             }
             diagnostics.push(unresolved_diag(
+                index,
                 file_id,
                 uref.range,
                 path,
@@ -502,6 +844,24 @@ fn lookup_variable(
     VarResult::NotFound
 }
 
+/// Resolve a call-path reference (`RefKind::Function`).
+///
+/// **Range contract (issue #1561):** every `ResolvedRef` pushed below
+/// carries `range: uref.range` unchanged — never narrowed to a sub-segment
+/// (receiver-only, method-only). By construction (`brink_ir::symbols::
+/// project::Projector::walk_expr`'s `Expr::Call` arm) `uref.range` is
+/// already the callee `Path`'s own whole span, so this function's only
+/// obligation is to *not disturb it*. That whole-path range is the exact
+/// `(FileId, TextRange)` lookup key `lir::lower::expr::lower_call` and
+/// `ufcs_receiver_path`, `strict::check_void_root`, `coalesce`'s
+/// operand classifier, `ufcs::value_receiver_def`, and
+/// `infer::body::infer_call` all independently key on — see
+/// [`brink_ir::ResolvedRef::range`]'s doc for the full consumer list and
+/// the cross-layer regression test. A narrower range here (e.g. to support
+/// a rename edit) is a silent miscompile for all four; narrowing for a
+/// rename belongs at `brink-ide`'s own consumption layer instead
+/// (`ufcs_hover`'s segment-narrowing helpers are the established pattern —
+/// see #1550/#1554).
 fn resolve_function(
     index: &SymbolIndex,
     scope: &ImportScope,
@@ -571,8 +931,9 @@ fn resolve_function(
     }
 
     // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
-    // `values`/`contains`/`push`/`insert`/`remove` with no matching user
-    // symbol are the brink-dialect builtins, handled at LIR lowering —
+    // `values`/`contains`/`push`/`insert`/`remove`/`remove_at` with no
+    // matching user symbol are the brink-dialect builtins, handled at LIR
+    // lowering —
     // same "skip resolution, no diagnostic here" treatment as
     // `is_builtin_function` above. Dialect-agnostic at this layer (an
     // author-defined symbol of the same name always wins regardless of
@@ -584,7 +945,56 @@ fn resolve_function(
         return;
     }
 
+    // B3a UFCS-shaped callee (issue #1482, D1–D5 RULED 2026-07-26): every
+    // static dotted-path interpretation above has failed, but the path's
+    // *head* segment alone names a value in scope — this is method-call
+    // syntax on that value (`g.greet(3)`), not an unresolved static path.
+    // Exactly the TM-4b fallback `lookup_variable`'s step 11 already applies
+    // to a dotted *value* reference (`p.x.y`), applied to the callee
+    // position: the resolved target is the head value itself, and the
+    // trailing segment is carried structurally by the HIR `Path`.
+    //
+    // Which of the two meanings that trailing segment has (a callable field
+    // of the receiver's type, or a free function to desugar onto) is a
+    // *type-directed* question this resolution pass cannot answer — so it
+    // resolves the receiver and stays silent, and `brink-analyzer::ufcs`
+    // owns the verdict and every diagnostic for the site (`E140`–`E143`).
+    // Suppressing `E025` here is what keeps a legal method call
+    // diagnostic-free and an illegal one from being reported twice.
+    //
+    // Inert for the ink corpus by construction: ink's own `FunctionCall`
+    // lowering always builds a single-segment callee path, so no ink source
+    // can reach this branch (see `ufcs`' module doc).
+    //
+    // `arg_count.is_some()` narrows this to a real **call site**. A
+    // `RefKind::Function` reference is also recorded for a `#fn(target)`
+    // literal's target, and that one always carries `arg_count: None`
+    // (`project_manifest`'s own documented distinction — `#fn` binds a
+    // *prefix* of the param row, so it has no call arity). A dotted `#fn`
+    // target is not method-call syntax and has no UFCS verdict; it must
+    // keep failing as an unresolved reference here rather than silently
+    // resolving to its head value.
+    if uref.arg_count.is_some()
+        && let Some((head, _rest)) = path.split_once('.')
+        && let Some(id) = lookup_local_in_scope(locals, head, &uref.scope).or_else(|| {
+            lookup_by_name(
+                index,
+                scope,
+                head,
+                &[SymbolKind::Variable, SymbolKind::Constant],
+            )
+        })
+    {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
     diagnostics.push(unresolved_diag(
+        index,
         file_id,
         uref.range,
         path,
@@ -673,6 +1083,7 @@ fn resolve_list_ref(
     }
 
     diagnostics.push(unresolved_diag(
+        index,
         file_id,
         uref.range,
         path,
@@ -704,11 +1115,58 @@ fn resolve_struct_ref(
         return;
     }
     diagnostics.push(unresolved_diag(
+        index,
         file_id,
         uref.range,
         path,
         DiagnosticCode::E068,
     ));
+}
+
+/// Resolve a TM-2 type annotation's bare nominal leaf name (issue #2249) —
+/// a struct field's declared type, or a `VAR`/`CONST`/`temp` annotation —
+/// against declared `SymbolKind::Struct` symbols, exactly like
+/// [`resolve_struct_ref`]'s lookup.
+///
+/// **Deliberately no diagnostic on a miss**, unlike `resolve_struct_ref`'s
+/// `E068`: a `RefKind::Type` reference's `path` is not guaranteed to name a
+/// struct at all — `int`, `float`, `List`, … are equally legal `Named`
+/// leaves (`brink_ir::TypeExpr::Named`'s own doc), so "no declared struct
+/// named this" is the overwhelmingly common, entirely legal case, not an
+/// error. `annotations::check` (`E061`) is the dedicated "is this a
+/// recognized type at all" diagnostic, run separately over the same HIR —
+/// this function only ever *feeds* lowering's struct-shape chase
+/// (`lir::lower::structs::record_global_annotation`,
+/// `lir::lower::context::record_temp_annotation`) a resolved identity when
+/// one exists, mirroring those two callers' own prior silent-`None`
+/// posture (`ShapeTable::resolve` before this issue).
+///
+/// This *is* still narrower than `E061`'s own vocabulary check
+/// (`annotations::declared_struct_names`): that lookup is project-flat,
+/// with no referrer-scoping or std-exclusion at all, so a std-only struct
+/// name is "recognized" for `E061`'s purposes regardless of importer —
+/// unlike this function's `lookup_by_name`, which *does* exclude an
+/// unimported std candidate. A `~ temp c: Cue` naming only a mounted std
+/// module's `Cue`, with no project-side homonym or import, therefore still
+/// raises no diagnostic anywhere today: `E061` accepts it (the name is
+/// declared *somewhere*), and this resolution silently misses (by design,
+/// per the paragraph above) rather than raising a new one. Issue #2249
+/// leaves that specific compounding gap unruled — `annotations::TypeNames`
+/// becoming referrer-scoped would be the natural fix, tracked there.
+fn resolve_type_ref(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    file_id: FileId,
+    uref: &brink_ir::UnresolvedRef,
+    map: &mut ResolutionMap,
+) {
+    if let Some(id) = lookup_by_name(index, scope, &uref.path, &[SymbolKind::Struct]) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+    }
 }
 
 // ─── Lookup helpers ─────────────────────────────────────────────────
@@ -788,9 +1246,9 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
 /// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
 /// the TM-3-completion pure conversion intrinsics `int`/`float`/`string`
 /// (`docs/typed-mode-spec.md` §4, maintainer ruling 2026-07-13, issue #659,
-/// "per the stdlib slice-1 pattern"): lowercase free functions,
-/// brink-dialect-gated. Kept in sync by hand with `brink_ir`'s
-/// LIR-lowering copy of this same list (`lir::lower::expr::
+/// "per the stdlib slice-1 pattern"). Lowercase free functions,
+/// brink-dialect-gated. Kept in sync by hand with
+/// `brink_ir`'s LIR-lowering copy of this same list (`lir::lower::expr::
 /// is_t1b_stdlib_name`) — the crates don't share a dependency edge for this
 /// purpose in the analysis → codegen direction, mirroring the existing
 /// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
@@ -813,6 +1271,11 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "push"
             | "insert"
             | "remove"
+            // `remove_at(a, i)` (issue #1484, `docs/stdlib-spec.md` §4/§10):
+            // faulting array-index removal, split off `remove` (now
+            // map-only — identity-based, idempotent-total, matching flags
+            // `remove`) so one name no longer spans two removal postures.
+            | "remove_at"
             | "int"
             | "float"
             | "string"
@@ -917,6 +1380,21 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "cross"
             | "clamp"
             | "lerp"
+            // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
+            // §4): the pure quartet `map`/`filter`/`fold`/`filter_map` —
+            // callbacks are pure·silent-required (RULED 2026-07-18),
+            // enforced where provable by `crate::comparator_contract`'s
+            // E119. Plus the ruled effectful spellings `each`/`map_each`
+            // (slice 2), deliberately NOT E119-gated — their whole purpose
+            // is to be the legal home for the effects the gate rejects.
+            // Same slice-1 machinery for all six: shadowable with E035,
+            // `strict-ink` rejection via the dialect gate.
+            | "map"
+            | "filter"
+            | "fold"
+            | "filter_map"
+            | "each"
+            | "map_each"
     )
 }
 
@@ -926,7 +1404,62 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
 /// by bare name" lookup [`resolve_function`] itself does first, without
 /// needing this pass's locals/scope machinery (a `#fn` target at global-
 /// initializer position has no enclosing body to scope against).
+///
+/// Alias ruling (issue #1590): `use mod::name as alias;` / `IMPORT { name AS
+/// alias } FROM mod` binds `alias` to `name`'s target *in addition to* `name`
+/// itself — not instead of it. The alias never shadows or revokes the source
+/// spelling's own bare visibility (still decided by [`classify`] against
+/// `scope.bare_imports`, unchanged by this fallback). This is a deliberate
+/// departure from Rust's `use … as` (which drops the original binding):
+/// [`lookup_by_name`]'s "byte-identity guarantee" fast path already returns
+/// a **globally unique** name unconditionally, ignoring `ImportScope`
+/// entirely — so a strict revoke-on-alias rule would only ever bite in the
+/// rarer ambiguous-candidate case, silently keeping the source name resolvable
+/// everywhere else. Rather than ship a rule that only sometimes holds, `AS`
+/// stays purely additive: predictable in every case, in both dialects.
+///
+/// **Precedence when an alias collides with an in-scope direct name**:
+/// [`lookup_by_name_direct`] always runs first, and this function only
+/// consults `scope.aliases` when that direct lookup comes up empty. So if
+/// `IMPORT { haggle AS start } FROM quest` is written in a file that also
+/// defines a knot named `start`, every bare reference to `start` resolves to
+/// the *local* `start` knot — the direct match wins silently, and the alias
+/// is unreachable under that name. Nothing currently diagnoses this
+/// collision (`E089` only dedupes among import items; it never checks
+/// against file-local definitions); a shadowing diagnostic is tracked as a
+/// follow-up rather than blocking this fix.
 pub(crate) fn lookup_by_name(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    name: &str,
+    kinds: &[SymbolKind],
+) -> Option<DefinitionId> {
+    if let Some(id) = lookup_by_name_direct(index, scope, name, kinds) {
+        return Some(id);
+    }
+
+    // Alias fallback: `index.by_name` is keyed by definitions' own spellings
+    // only, so a bare import's local alias — bound nowhere else — is never
+    // found by the direct lookup above. Resolve it explicitly against the
+    // specific `(module, source_name)` the import named; `kinds` and the
+    // module still gate the match so an alias can never reach into the wrong
+    // module or the wrong symbol kind.
+    let (module, source_name) = scope.aliases.get(name)?;
+    let ids = index.by_name.get(source_name.as_str())?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        (kinds.contains(&info.kind) && info.module.as_deref() == Some(module.as_str()))
+            .then_some(*id)
+    })
+}
+
+/// The direct (non-alias) name lookup — everything [`lookup_by_name`] did
+/// before issue #1590's alias fallback, plus the 2026-08-03 SUBTRACTION
+/// RULING's std-invisibility gate (issue #2197, doc below) — no longer
+/// byte-identical to that description, but byte-identical for every corpus
+/// that never coexists with a `std::…` candidate (the whole
+/// pre-stdlib-mount world).
+fn lookup_by_name_direct(
     index: &SymbolIndex,
     scope: &ImportScope,
     name: &str,
@@ -946,22 +1479,72 @@ pub(crate) fn lookup_by_name(
         if !kinds.contains(&info.kind) {
             continue;
         }
+        let candidacy = classify(scope, info);
+        // Issue #2197, per #2080's SCOPE FENCE (`docs/decision-log.md`,
+        // "Stdlib mounts into `Environment`'s manifest at the producer, as
+        // plain source"): the mount puts std source into every project's
+        // manifest, but "nothing in it is marked `pub` and no confinement
+        // rule scopes what a project's own `use` may reach into it" — a
+        // real `use std::…` still needs #1582's `pub` marker and #2167's
+        // confinement, neither built yet. Until then, stdlib symbols are
+        // reachable only via that not-yet-existing explicit import — there
+        // is no implicit inclusion, so `classify` can never answer
+        // `Imported` for a std candidate today (nothing under `std`
+        // can be marked public yet) — every std candidate this file does
+        // not itself
+        // belong to (i.e. not `InScope`, which still covers a std file
+        // referencing its own std-declared siblings) is `Other`. Skip it
+        // entirely here, *before* it is counted into `first_match`/
+        // `multiple` below: an `Other`-classified std candidate must never
+        // win the flat-fallback tie-break a few lines down, which would
+        // otherwise let a project silently resolve into the mounted
+        // preset with no import at all — including when it is the *sole*
+        // match, where the `!multiple` fast path below would otherwise
+        // return it unconditionally. This interacts with M-2d's own
+        // coexistence machinery (`is_cross_declared_module_collision`,
+        // which is what lets a std candidate coexist in `by_name` in the
+        // first place) by narrowing exactly one of its three resolution
+        // tiers — `Other` — for the std case only; `InScope` and
+        // `Imported` are untouched, so a std file's own internal
+        // references, and a future real `use std::…` import once #1582/
+        // #2167 ship, keep resolving normally.
+        //
+        // #2251: this exclusion is not actually std-specific — it applies
+        // to "any reserved-root candidate this file does not itself
+        // belong to", so it now checks `is_reserved_root_module` against
+        // the whole `RESERVED_ROOTS` set rather than the single `std`
+        // literal `is_std_module` used to compare against. Behavior is
+        // unchanged today (the set has exactly one member), and a future
+        // second mounted library gets this same exclusion for free.
+        if candidacy == Candidacy::Other
+            && info.module.as_deref().is_some_and(is_reserved_root_module)
+        {
+            continue;
+        }
         if first_match.is_none() {
             first_match = Some(*id);
         } else {
             multiple = true;
         }
-        match classify(scope, info) {
+        match candidacy {
             Candidacy::InScope if first_in_scope.is_none() => first_in_scope = Some(*id),
             Candidacy::Imported if first_imported.is_none() => first_imported = Some(*id),
             _ => {}
         }
     }
 
-    // Fast path (byte-identity guarantee): with zero or one candidate of the
-    // requested kind — the entire strict-ink and single-module world — the
-    // sole match is returned exactly as the pre-M-2d flat lookup did, so the
-    // import scope never changes an existing corpus's resolution.
+    // Fast path (byte-identity guarantee): with zero or one *non-std*
+    // candidate of the requested kind — the entire strict-ink and
+    // single-module world — the sole match is returned exactly as the
+    // pre-M-2d flat lookup did, so the import scope never changes an
+    // existing corpus's resolution. This is no longer quite "zero or one
+    // candidate of the requested kind" (2026-08-03, issue #2197): a std
+    // candidate that classifies `Other` is skipped above *before* it ever
+    // reaches `first_match`/`multiple`, so a name with exactly one ordinary
+    // candidate plus any number of coexisting std ones still takes this
+    // fast path — and a name with std candidates *only* returns `None`
+    // here, not the std candidate, unlike the byte-identical pre-#2197
+    // description this comment used to give.
     if !multiple {
         return first_match;
     }
@@ -973,6 +1556,93 @@ pub(crate) fn lookup_by_name(
     // E025 import-required diagnostic (keyed off the resolved target) firing
     // for a genuinely un-imported cross-module reference, exactly as before.
     first_in_scope.or(first_imported).or(first_match)
+}
+
+/// The **scope-free** subset of [`lookup_by_name`]: the sole definition of
+/// `name` whose kind is in `kinds`, or `None` when there is no such
+/// definition **or more than one**.
+///
+/// This exists for callers that have no full [`ImportScope`] to hand — issue
+/// #1909's UFCS-result typing runs inside `infer::body`, whose [`BodyCtx`]
+/// (`brink-db`'s narrowed per-def HIR projection never holds a whole
+/// `HirFile`) carries no file imports at all. `referrer_module` is the one
+/// piece of that missing scope this function *can* still be handed — the
+/// referring def's own declared module (issue #2233; `BodyCtx::
+/// referrer_module`), the same value `ImportScope::file_module` would carry.
+///
+/// **It is a strict subset of what [`lookup_by_name`] answers, never a
+/// second resolution rule** (issue #2216, unifying it with the
+/// std-invisibility gate [`lookup_by_name_direct`] added for the scoped path
+/// — 2026-08-03, issue #2197). This function still has no full
+/// [`ImportScope`] to consult, so it cannot classify a candidate `Imported`
+/// vs cross-module `Other` the way [`classify`] does — a candidate declared
+/// in a mounted `std…` module is excluded here exactly as [`lookup_by_name`]
+/// excludes it under the default (no-import) scope, **unless** it is
+/// declared in the referrer's own module (`referrer_module`), which
+/// reproduces exactly the one tier this function *can* fully classify
+/// without an `ImportScope`: [`Candidacy::InScope`]'s "referrer and
+/// candidate share a declared module" rule (issue #2233 — the fix for the
+/// disagreement this doc used to call out; see below). This holds even when
+/// the std candidate is the function's *sole* match: it is filtered out
+/// before it can ever become `sole` whenever `referrer_module` doesn't match
+/// it, so the name resolves as though that candidate did not exist, rather
+/// than being returned.
+///
+/// For every other case, [`lookup_by_name_direct`]'s own "byte-identity
+/// guarantee" fast path returns the sole non-std (or referrer-module-owned
+/// std) candidate of the requested kinds *unconditionally, ignoring the rest
+/// of the import scope*; the scope is consulted only once `multiple` is set.
+/// So whenever this function returns `Some(id)`, [`lookup_by_name`] returns
+/// the same `id` for any scope whose `file_module` equals this
+/// `referrer_module` — pinned by `unique_lookup_agrees_with_scoped_lookup`
+/// and, for the std case specifically, by
+/// `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`. When
+/// it returns `None` on an ambiguous name, the caller must fall back to
+/// whatever it did before rather than guess.
+///
+/// [`BodyCtx`]: crate::infer
+pub(crate) fn lookup_unique_by_name(
+    index: &SymbolIndex,
+    name: &str,
+    kinds: &[SymbolKind],
+    referrer_module: Option<&str>,
+) -> Option<DefinitionId> {
+    let ids = index.by_name.get(name)?;
+    let mut sole = None;
+    for id in ids {
+        let Some(info) = index.symbols.get(id) else {
+            continue;
+        };
+        if !kinds.contains(&info.kind) {
+            continue;
+        }
+        // Issue #2216, narrowed by #2233: this function has no full
+        // `ImportScope`, so — mirroring `lookup_by_name_direct`'s
+        // std-invisibility gate for the case where a candidate can never
+        // classify `Imported` here — a std-mounted candidate must never win
+        // the sole-match count, even alone, UNLESS it is declared in the
+        // referrer's own module: that is exactly `Candidacy::InScope`'s
+        // "referrer and candidate share a declared module" rule, the one
+        // tier this function can reproduce without a full scope. A std
+        // candidate in a *different* std module than the referrer's still
+        // falls through to `Other` and is excluded, matching
+        // `lookup_by_name`'s behavior for a referrer that has not imported
+        // that sibling module.
+        //
+        // #2251: generalized from the single-root `is_std_module` to
+        // `is_reserved_root_module` — same reasoning as
+        // `lookup_by_name_direct`'s exclusion above.
+        if info.module.as_deref().is_some_and(is_reserved_root_module)
+            && info.module.as_deref() != referrer_module
+        {
+            continue;
+        }
+        if sole.is_some() {
+            return None;
+        }
+        sole = Some(*id);
+    }
+    sole
 }
 
 /// Result of a bare list item lookup.
@@ -1066,16 +1736,57 @@ fn ambiguous_diag(file: FileId, range: rowan::TextRange, path: &str) -> Diagnost
     }
 }
 
+/// True when `index` holds at least one declared symbol named `path`
+/// whose module is a reserved peer root ([`is_reserved_root_module`]) — regardless
+/// of `SymbolKind`, since the point here is not "which lookup would have
+/// matched" but "does bare-name resolution's std-invisibility gate
+/// (`lookup_by_name`, `lookup_unique_by_name`) explain why this path came
+/// back empty".
+///
+/// Issue #2217: the gate that excludes std candidates from bare-name
+/// resolution (`lookup_by_name`'s `Candidacy::Other` skip,
+/// `lookup_unique_by_name`'s unconditional skip) applies identically to
+/// the *embedded* stdlib mount and to a project's own file that legitimately
+/// lives at a `std/…` path (`brink_environment::mount_stdlib`'s "project
+/// source at the same key wins" carve-out — both mint the identical
+/// `std::…` module identity via `native_module_path`, by design; see
+/// `docs/modules-spec.md` §4 "peer roots"). Reconsidering `is_std_module`
+/// to distinguish the two would undo that ruling, so this does not attempt
+/// it — it only turns the resulting unexplained E024/E025/E068 into a
+/// diagnosable one, without inventing a new diagnostic code.
+fn is_std_shadowed_name(index: &SymbolIndex, path: &str) -> bool {
+    index.by_name.get(path).is_some_and(|ids| {
+        ids.iter().any(|id| {
+            index
+                .symbols
+                .get(id)
+                .is_some_and(|info| info.module.as_deref().is_some_and(is_reserved_root_module))
+        })
+    })
+}
+
 fn unresolved_diag(
+    index: &SymbolIndex,
     file: FileId,
     range: rowan::TextRange,
     path: &str,
     code: DiagnosticCode,
 ) -> Diagnostic {
+    let message = if is_std_shadowed_name(index, path) {
+        format!(
+            "{}: `{path}` — a declaration of this name exists under the `std::` peer root \
+             (either the mounted stdlib, or your own project file at a `std/…` path); bare \
+             names under `std::` are invisible outside it by rule, not by mistake — reference \
+             it with `use std::…` (docs/modules-spec.md §4)",
+            code.title(),
+        )
+    } else {
+        format!("{}: `{path}`", code.title())
+    };
     Diagnostic {
         file,
         range,
-        message: format!("{}: `{path}`", code.title()),
+        message,
         code,
     }
 }
@@ -1215,6 +1926,7 @@ mod tests {
                 stitch: stitch.map(String::from),
             },
             arg_count,
+            module_qualified: false,
         }
     }
 
@@ -1345,6 +2057,7 @@ mod tests {
             },
             kind: SymbolKind::Temp,
             param_detail: None,
+            annotation: None,
         });
 
         let mut b = SymbolManifest::default();
@@ -1601,7 +2314,13 @@ mod tests {
 
     #[test]
     fn arity_check_no_arg_count_no_warning() {
-        // Non-function ref (arg_count=None) should never trigger arity check.
+        // A ref with `arg_count: None` (not a call site at all) should
+        // never trigger arity checking, regardless of kind. This uses
+        // `uref`'s hardcoded `None` directly rather than a real divert
+        // pipeline — since issue #2156 a *real* `RefKind::Divert` ref
+        // always carries `Some(target.args.len())`
+        // (`brink_ir::symbols::project`'s `walk_divert_target`); see
+        // `divert_arity_mismatch_emits_e176` below for that path.
         let manifest =
             make_manifest_with_params("greet", 1, vec![uref("greet", RefKind::Divert, None, None)]);
         let files = vec![(FileId(0), &manifest)];
@@ -1610,7 +2329,120 @@ mod tests {
 
         assert!(
             diags.is_empty(),
-            "divert should not trigger arity check: {diags:?}"
+            "a ref with no arg_count should not trigger arity check: {diags:?}"
+        );
+    }
+
+    /// Make a manifest with a top-level knot that has a specific number of
+    /// params, alongside a top-level `Variable` — for the divert-arity
+    /// (`E176`, issue #2156) test family below.
+    fn make_manifest_with_knot_and_variable(
+        knot_name: &str,
+        param_count: usize,
+        variable_name: &str,
+        unresolved: Vec<UnresolvedRef>,
+    ) -> SymbolManifest {
+        let mut manifest = make_manifest_with_params(knot_name, param_count, Vec::new());
+        let r = range(9000, variable_name.len() as u32);
+        manifest.variables.push(DeclaredSymbol {
+            name: variable_name.to_string(),
+            range: r,
+            params: Vec::new(),
+            detail: None,
+            visibility: None,
+            was: None,
+        });
+        manifest.unresolved = unresolved;
+        manifest
+    }
+
+    #[test]
+    fn divert_arity_match_emits_no_e176() {
+        // `-> greet(x)` where `greet` takes 1 param — no warning.
+        let manifest = make_manifest_with_params(
+            "greet",
+            1,
+            vec![uref_with_args(
+                "greet",
+                RefKind::Divert,
+                None,
+                None,
+                Some(1),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(resolutions.len(), 1);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for matching divert arity, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn divert_arity_mismatch_emits_e176() {
+        // `-> greet(x, y)` where `greet` takes 1 param — E176 warning, not
+        // E031 (that code stays scoped to ordinary calls; this is its
+        // sibling for the divert shape).
+        let manifest = make_manifest_with_params(
+            "greet",
+            1,
+            vec![uref_with_args(
+                "greet",
+                RefKind::Divert,
+                None,
+                None,
+                Some(2),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(
+            resolutions.len(),
+            1,
+            "should still resolve despite arity mismatch"
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E176);
+        assert!(diags[0].message.contains("expects 1"));
+        assert!(diags[0].message.contains("got 2"));
+    }
+
+    #[test]
+    fn divert_through_variable_is_not_arity_checked() {
+        // `-> holder` where `holder` is a `Variable` (holding a stored
+        // divert-target value, e.g. ink's "Advanced: sending divert
+        // targets as parameters") must never be arity-checked: a
+        // `Variable` symbol carries no declared parameter row of its own,
+        // so checking `arg_count` against it would misfire on legitimate
+        // code. `lookup_divert`'s case 6 (bare-name fallback to a
+        // `Variable`) is exactly the resolution this exercises — the knot
+        // `greet` (1 param) is a decoy that must NOT be what `holder`
+        // resolves to.
+        let manifest = make_manifest_with_knot_and_variable(
+            "greet",
+            1,
+            "holder",
+            vec![uref_with_args(
+                "holder",
+                RefKind::Divert,
+                None,
+                None,
+                Some(3),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(resolutions.len(), 1, "the Variable must still resolve");
+        assert!(
+            diags.is_empty(),
+            "a divert through a Variable resolution must never be arity-checked: {diags:?}"
         );
     }
 
@@ -1842,6 +2674,7 @@ mod tests {
             file_module: None,
             qualified_modules: ["quest_a".to_string()].into_iter().collect(),
             bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope_a, "ambush", &[SymbolKind::Knot]),
@@ -1853,11 +2686,83 @@ mod tests {
             file_module: None,
             qualified_modules: ["quest_b".to_string()].into_iter().collect(),
             bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope_b, "ambush", &[SymbolKind::Knot]),
             Some(b),
             "a file importing quest_b binds quest_b's ambush — not the flat first-winner"
+        );
+    }
+
+    /// Issue #1909's fence: [`lookup_unique_by_name`] must only ever answer
+    /// where [`lookup_by_name`] would answer identically **for every scope
+    /// whose `file_module` equals the `referrer_module` hint this function
+    /// was handed** (issue #2233 narrowed the guarantee from "every scope
+    /// unconditionally" to this — a std-mounted candidate's visibility now
+    /// depends on that hint agreeing with the scope's own `file_module`; see
+    /// `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`
+    /// below for the case that distinguishes them). Both halves are
+    /// asserted — the sole-candidate name agrees with two deliberately
+    /// opposed scopes, and the ambiguous name declines.
+    ///
+    /// This fixture has no std-mounted candidate; the std-mounted case
+    /// (issue #2216, the #2197 follow-up this doc used to flag as an
+    /// un-pinned gap) is covered separately by
+    /// `unique_lookup_excludes_std_mounted_sole_candidate`,
+    /// `unique_lookup_skips_std_candidate_and_returns_the_ordinary_one`, and
+    /// `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`
+    /// below, now that [`lookup_unique_by_name`] applies the same
+    /// std-invisibility gate as [`lookup_by_name_direct`], narrowed by a
+    /// `referrer_module` hint (issue #2233).
+    #[test]
+    fn unique_lookup_agrees_with_scoped_lookup() {
+        let (index, a, b) = two_module_ambush_index();
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], None),
+            None,
+            "two same-named candidates: only the scoped lookup can decide, so decline"
+        );
+        assert_ne!(a, b, "the fixture must really hold two distinct candidates");
+
+        // The same index, filtered to a kind exactly one candidate has:
+        // now `lookup_by_name`'s own byte-identity fast path returns it
+        // regardless of scope, so the scope-free answer must match both.
+        let mut single = SymbolIndex::default();
+        let (&only_id, only_info) = index
+            .symbols
+            .iter()
+            .find(|(id, _)| **id == a)
+            .expect("fixture id present");
+        single.symbols.insert(only_id, only_info.clone());
+        single.by_name.insert("ambush".to_string(), vec![only_id]);
+        let scope_a = ImportScope {
+            file_module: None,
+            qualified_modules: ["quest_a".to_string()].into_iter().collect(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let scope_none = ImportScope {
+            file_module: None,
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let unique = lookup_unique_by_name(&single, "ambush", &[SymbolKind::Knot], None);
+        assert_eq!(unique, Some(a));
+        assert_eq!(
+            unique,
+            lookup_by_name(&single, &scope_a, "ambush", &[SymbolKind::Knot])
+        );
+        assert_eq!(
+            unique,
+            lookup_by_name(&single, &scope_none, "ambush", &[SymbolKind::Knot]),
+            "the sole-candidate answer must not depend on the scope at all"
+        );
+        assert_eq!(
+            lookup_unique_by_name(&single, "ambush", &[SymbolKind::External], None),
+            None,
+            "the kind filter still gates the match"
         );
     }
 
@@ -1870,6 +2775,7 @@ mod tests {
             file_module: Some("quest_b".to_string()),
             qualified_modules: ["quest_a".to_string()].into_iter().collect(),
             bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
@@ -1877,6 +2783,688 @@ mod tests {
             "own-module definition beats an imported homonym"
         );
         let _ = a;
+    }
+
+    /// Build a `SymbolIndex` with one `Knot` named `ambush` per module in
+    /// `modules`, all `Public` — the shape [`two_module_ambush_index`] hands
+    /// M-2d, generalized so a std-shaped module string can sit alongside an
+    /// ordinary one.
+    fn ambush_index_with_modules(modules: &[&str]) -> (SymbolIndex, Vec<DefinitionId>) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let mut ids = Vec::new();
+        for (i, module) in modules.iter().enumerate() {
+            let id = DefinitionId::new(DefinitionTag::Address, 0xA + i as u64);
+            index.symbols.insert(
+                id,
+                SymbolInfo {
+                    kind: SymbolKind::Knot,
+                    file: FileId(0),
+                    range: TextRange::default(),
+                    id,
+                    name: "ambush".to_string(),
+                    params: Vec::new(),
+                    detail: None,
+                    scope: None,
+                    param_detail: None,
+                    module: Some((*module).to_string()),
+                    visibility: Visibility::Public,
+                },
+            );
+            index
+                .by_name
+                .entry("ambush".to_string())
+                .or_default()
+                .push(id);
+            ids.push(id);
+        }
+        (index, ids)
+    }
+
+    /// Issue #2197, per #2080's SCOPE FENCE (`docs/decision-log.md`,
+    /// "Stdlib mounts into `Environment`'s manifest at the producer, as
+    /// plain source"): a std-mounted candidate must be invisible to
+    /// bare-name resolution — not merely deprioritized — even when it is
+    /// the *sole* candidate. Before this fix, `lookup_by_name_direct`'s
+    /// `!multiple` fast path returned any sole candidate unconditionally
+    /// regardless of scope, which would have let a project silently reach
+    /// into `std::…` with zero imports.
+    #[test]
+    fn std_mounted_sole_candidate_is_invisible_with_no_import() {
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        assert_eq!(
+            lookup_by_name(
+                &index,
+                &ImportScope::default(),
+                "ambush",
+                &[SymbolKind::Knot]
+            ),
+            None,
+            "a std-mounted definition must not resolve by bare name with no `use std::…` \
+             import — reaching it requires an explicit import, which does not exist yet \
+             (#1582/#2167), so today it must resolve to nothing rather than silently reach std"
+        );
+    }
+
+    /// The E060 collision shape, at the resolution layer rather than the
+    /// LIR-lowering self-identity layer `stdlib_mount_no_longer_collides_
+    /// with_a_projects_own_scene_entered` (brink-test-harness) proves
+    /// end to end: a project's own declared module and the std mount both
+    /// declare `ambush`. A file *inside* the project's own module resolves
+    /// its own `ambush` via the pre-existing `Candidacy::InScope` tier,
+    /// which already wins the tie-break with or without this issue's std
+    /// gate — `project_referencing_a_third_module_still_skips_a_coexisting_
+    /// std_candidate` below is the case that actually distinguishes pre-fix
+    /// from post-fix behavior for the `Other`/`Other` shape this gate
+    /// targets. Kept as its own test because the `InScope` tier is a real,
+    /// separate guarantee worth pinning on its own.
+    #[test]
+    fn project_own_module_wins_over_a_coexisting_std_mount_candidate() {
+        let (index, ids) =
+            ambush_index_with_modules(&["story::story", "std::conventions::screenplay"]);
+        let project_id = ids[0];
+        let scope = ImportScope {
+            file_module: Some("story::story".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(project_id),
+            "a file inside `story::story` must resolve its OWN `ambush`, never the coexisting \
+             std mount's same-named one"
+        );
+    }
+
+    /// Review finding on #2197: the test above does **not** actually
+    /// exercise the std-`Other` exclusion — with `file_module ==
+    /// "story::story"`, the project candidate classifies `Candidacy::
+    /// InScope` and wins via `first_in_scope` regardless of whether the std
+    /// gate exists at all (reverting it changes nothing about that test's
+    /// outcome). This test instead puts the referring file in a **third**
+    /// declared module, so *neither* candidate is `InScope`: the project's
+    /// `ambush` classifies `Other` (a real cross-module reference this file
+    /// has no import for) and the std mount's `ambush` also classifies
+    /// `Other`. Without the gate, the flat fallback picks whichever `Other`
+    /// candidate was inserted first in `by_name` — here, the std one,
+    /// listed first — so this test fails with the gate removed and passes
+    /// only because the std candidate is skipped before it can ever become
+    /// `first_match`.
+    #[test]
+    fn project_referencing_a_third_module_still_skips_a_coexisting_std_candidate() {
+        let (index, ids) =
+            ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
+        let project_id = ids[1];
+        let scope = ImportScope {
+            file_module: Some("story::another_module".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(project_id),
+            "with neither candidate `InScope`, the std `Other` candidate must still be \
+             skipped rather than winning the flat first-inserted tie-break"
+        );
+    }
+
+    /// Issue #2216 (the #2197 follow-up this doc's own "known gap" pointed
+    /// at), narrowed by #2233: with no `referrer_module` hint at all (`None`
+    /// — the shape every pre-#2233 caller effectively had), a std-mounted
+    /// candidate must still be unconditionally invisible here, exactly as it
+    /// is to [`lookup_by_name`] with the default (no-import) scope, even
+    /// when it is the function's *sole* candidate — the case the old
+    /// `!multiple` style fast path would otherwise return unconditionally.
+    #[test]
+    fn unique_lookup_excludes_std_mounted_sole_candidate() {
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], None),
+            None,
+            "a std-mounted sole candidate must not resolve through the scope-free path when \
+             the caller has no referrer-module hint — lookup_by_name returns None for it under \
+             the default scope, so lookup_unique_by_name must agree rather than silently \
+             reaching into std with no import"
+        );
+    }
+
+    /// The unification half of #2216: with a std-mounted candidate
+    /// coexisting alongside one ordinary candidate, [`lookup_unique_by_name`]
+    /// must still resolve the ordinary one (not decline as ambiguous, and
+    /// not pick the std one) — agreeing with [`lookup_by_name`] for a scope
+    /// where neither candidate is `InScope` (asserted below with
+    /// `file_module = "story::another_module"`, passed through as
+    /// `referrer_module`). That is not the *only* scope where the two
+    /// agree — a scope with `file_module = "story::story"` (the ordinary
+    /// candidate's own module) also agrees, since the ordinary candidate
+    /// then classifies `InScope` and wins [`lookup_by_name`]'s own
+    /// tie-break. The std-referrer case — once the one deliberate
+    /// disagreement this doc used to call out — is now covered separately
+    /// by `unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module`
+    /// below, now that issue #2233 threads a `referrer_module` hint through.
+    #[test]
+    fn unique_lookup_skips_std_candidate_and_returns_the_ordinary_one() {
+        let (index, ids) =
+            ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
+        let project_id = ids[1];
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], None),
+            Some(project_id),
+            "the std candidate must be excluded from the sole-match count entirely, leaving \
+             the one ordinary candidate as the unique match"
+        );
+        let other_scope = ImportScope {
+            file_module: Some("story::another_module".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("story::another_module")
+            ),
+            lookup_by_name(&index, &other_scope, "ambush", &[SymbolKind::Knot]),
+            "the scope-free answer must agree with the scoped one for a scope where neither \
+             candidate is InScope"
+        );
+        let project_scope = ImportScope {
+            file_module: Some("story::story".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot], Some("story::story")),
+            lookup_by_name(&index, &project_scope, "ambush", &[SymbolKind::Knot]),
+            "the scope-free answer must also agree with the scoped one for a scope where the \
+             ordinary candidate (not the std one) is InScope"
+        );
+    }
+
+    /// Issue #2233: the fix for the one deliberate disagreement
+    /// `unique_lookup_excludes_std_mounted_sole_candidate`'s old sibling doc
+    /// used to describe (the pre-fix version of this file documented it on
+    /// `unique_lookup_skips_std_candidate_and_returns_the_ordinary_one`). A
+    /// referrer whose own `file_module` IS the std module keeps resolving
+    /// the std candidate via [`lookup_by_name_direct`]'s `InScope` tier
+    /// (std's own internal references are untouched by the #2197/#2216
+    /// gates) — and now that `lookup_unique_by_name` is handed that same
+    /// module string as `referrer_module`, it reproduces the identical
+    /// answer instead of excluding the std candidate unconditionally, for
+    /// the case that matters: the std candidate is the *sole* match once
+    /// visible (no coexisting ordinary candidate of the same name — see
+    /// `unique_lookup_still_declines_when_a_visible_std_sibling_is_ambiguous`
+    /// for what happens when one does coexist).
+    #[test]
+    fn unique_lookup_reproduces_in_scope_std_sibling_with_referrer_module() {
+        let (index, ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        let std_id = ids[0];
+        let std_scope = ImportScope {
+            file_module: Some("std::conventions::screenplay".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &std_scope, "ambush", &[SymbolKind::Knot]),
+            Some(std_id),
+            "a referrer whose own file_module IS the std module keeps resolving the std \
+             candidate via lookup_by_name_direct's InScope tier — std's own internal \
+             references are untouched by the #2197/#2216 gates"
+        );
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("std::conventions::screenplay")
+            ),
+            lookup_by_name(&index, &std_scope, "ambush", &[SymbolKind::Knot]),
+            "with the referrer's own module threaded through, lookup_unique_by_name now agrees \
+             with lookup_by_name for a referrer inside the std tree looking up a std sibling — \
+             the #2233 fix"
+        );
+    }
+
+    /// Issue #2249: `resolve_type_ref` (the new `RefKind::Type` arm) routes
+    /// a TM-2 annotation through this file's own `lookup_by_name` — full
+    /// `ImportScope`/`Candidacy` semantics — rather than
+    /// `lir::lower::decls::lookup_global`'s narrower fallback, which
+    /// `ShapeTable::resolve` used before this issue (deleted; see
+    /// `brink-ir::lir::lower::structs`'s module doc). The two primitives
+    /// disagree on exactly this shape: a referrer *inside* a std module
+    /// referencing a **sibling** struct in the *same* std module, declared
+    /// in a different file, with no explicit import — `lookup_global`
+    /// excludes every std-declared candidate unconditionally in its
+    /// fallback arm (no referrer-is-std carve-out, `decls.rs`'s own doc),
+    /// so this would have resolved to `None` under the old
+    /// `ShapeTable::resolve`; `lookup_by_name_direct`'s `InScope` tier
+    /// (std's own internal references are untouched by the #2197/#2216
+    /// gates, same as the `Knot` case `unique_lookup_reproduces_in_scope_
+    /// std_sibling_with_referrer_module` above proves) resolves it. This is
+    /// the one behavioral delta issue #2249's PR body must call out: a
+    /// std convention file's own `~ temp c: Cue`-shaped annotation
+    /// referencing a *sibling* std file's struct now gets the static-offset
+    /// chase (`known_shape`) it silently lost before.
+    #[test]
+    fn resolve_type_ref_reproduces_in_scope_std_sibling_with_referrer_module() {
+        let mut index = SymbolIndex::default();
+        let cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC0E);
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        let std_scope = ImportScope {
+            file_module: Some("std::conventions::screenplay".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let referrer_file = FileId(1); // a *different* std file, same module
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+            module_qualified: false,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &std_scope, referrer_file, &uref, &mut map);
+
+        assert_eq!(
+            map,
+            vec![ResolvedRef {
+                file: referrer_file,
+                range: uref.range,
+                target: cue_id,
+            }],
+            "a referrer inside std referencing a sibling std file's struct with no import \
+             resolves via lookup_by_name_direct's InScope tier — the exact case \
+             ShapeTable::resolve's old lookup_global-based fallback could never reach \
+             (it excluded every std-declared candidate unconditionally, referrer or not)"
+        );
+    }
+
+    /// Issue #2249: the flip side of the test above — a scalar/tower/
+    /// generic-head keyword (never a declared struct) must resolve to
+    /// nothing and raise no diagnostic, because `resolve_type_ref`'s own
+    /// doc is explicit that "no declared struct named this" is the
+    /// legal, common case for a `RefKind::Type` reference, not an error.
+    #[test]
+    fn resolve_type_ref_silently_misses_a_scalar_keyword_name() {
+        let index = SymbolIndex::default();
+        let uref = UnresolvedRef {
+            path: "int".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+            module_qualified: false,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
+        assert!(
+            map.is_empty(),
+            "`int` never names a declared STRUCT — this must not resolve, and (unlike \
+             RefKind::Struct's E068) resolve_type_ref never diagnoses a miss either, since a \
+             miss here is not necessarily wrong"
+        );
+    }
+
+    /// PR #2271 review finding: `lir::lower::structs`'s own tests
+    /// (`lookup_global_excludes_a_sole_std_declared_struct_with_no_project_
+    /// homonym`, `lookup_global_picks_the_referrers_own_shape_when_names_
+    /// collide`) were retargeted at `decls::lookup_global` after issue
+    /// #2249 deleted `ShapeTable::resolve` — but annotations no longer call
+    /// `lookup_global` at all; they go through this file's own
+    /// `resolve_type_ref`/`lookup_by_name`/`ImportScope` machinery (this
+    /// module's own doc on `resolve_type_ref`). Neither retargeted test, nor
+    /// `resolve_type_ref_silently_misses_a_scalar_keyword_name` above (an
+    /// empty index, no std/project homonym in play at all), exercises the
+    /// std-exclusion property through the real annotation path. This test
+    /// closes that gap's negative half: a struct only a mounted std module
+    /// declares, referenced from an ordinary (non-std, non-importing) project
+    /// file, must not resolve — mirroring
+    /// `std_mounted_sole_candidate_is_invisible_with_no_import` above, but
+    /// through `resolve_type_ref` (the real TM-2 annotation path) instead of
+    /// `lookup_by_name` directly.
+    #[test]
+    fn resolve_type_ref_excludes_a_std_only_struct_with_no_project_homonym_or_import() {
+        let mut index = SymbolIndex::default();
+        let cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC0F);
+        index.symbols.insert(
+            cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("Cue".to_string())
+            .or_default()
+            .push(cue_id);
+
+        // An ordinary project file, no `#@module`/`use` in play at all —
+        // the default scope every non-modules file carries.
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+            module_qualified: false,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &ImportScope::default(), FileId(0), &uref, &mut map);
+        assert!(
+            map.is_empty(),
+            "a struct only a mounted std module declares must not resolve for a `~ temp c: Cue`- \
+             shaped annotation with no project-side homonym and no import — the sole-candidate \
+             std-exclusion property `resolve_type_ref`'s own doc claims, unproven by any test \
+             through this path before: {map:?}"
+        );
+    }
+
+    /// PR #2271 review finding, positive half: a project's own struct and a
+    /// coexisting mounted std struct sharing a bare name (M-2d, issue
+    /// #2238) — a referrer *inside* the project's own declared module must
+    /// resolve its own struct through `resolve_type_ref`, never the std
+    /// mount's same-named one. Mirrors `project_own_module_wins_over_a_
+    /// coexisting_std_mount_candidate` above, but through the real
+    /// annotation path.
+    #[test]
+    fn resolve_type_ref_picks_the_referrers_own_project_struct_over_a_coexisting_std_homonym() {
+        let mut index = SymbolIndex::default();
+        let std_cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC10);
+        index.symbols.insert(
+            std_cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: TextRange::default(),
+                id: std_cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        let project_cue_id = DefinitionId::new(brink_format::DefinitionTag::StructDef, 0xC11);
+        index.symbols.insert(
+            project_cue_id,
+            SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(1),
+                range: TextRange::default(),
+                id: project_cue_id,
+                name: "Cue".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("story::market".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        for id in [std_cue_id, project_cue_id] {
+            index.by_name.entry("Cue".to_string()).or_default().push(id);
+        }
+
+        let scope = ImportScope {
+            file_module: Some("story::market".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let uref = UnresolvedRef {
+            path: "Cue".to_string(),
+            range: range(0, 3),
+            kind: RefKind::Type,
+            scope: Scope::default(),
+            arg_count: None,
+            module_qualified: false,
+        };
+        let mut map: ResolutionMap = Vec::new();
+        resolve_type_ref(&index, &scope, FileId(1), &uref, &mut map);
+        assert_eq!(
+            map,
+            vec![ResolvedRef {
+                file: FileId(1),
+                range: uref.range,
+                target: project_cue_id,
+            }],
+            "a `story::market` file's own `~ temp c: Cue` must resolve to `story::market`'s own \
+             Cue, never the coexisting std mount's same-named one: {map:?}"
+        );
+    }
+
+    /// Issue #2233: threading `referrer_module` through fixes the *sole
+    /// candidate* disagreement above, but does not (and cannot, without
+    /// replicating `lookup_by_name_direct`'s full `InScope`-beats-`Other`
+    /// tie-break, a strictly larger change than a referrer hint) make
+    /// `lookup_unique_by_name` reproduce [`lookup_by_name`]'s tie-break when
+    /// an ordinary same-name candidate coexists with the now-visible std
+    /// sibling. There, un-excluding the std candidate makes it a *second*
+    /// candidate rather than the resolved one, so this function declines
+    /// (`None`) exactly per its own documented contract ("when it returns
+    /// `None` on an ambiguous name, the caller must fall back... rather than
+    /// guess") — a safe decline, not the silently-wrong `Some(project_id)`
+    /// answer this exact fixture produced before #2233 (the referrer-module
+    /// hint being `None` in every pre-#2233 call site is what caused that:
+    /// the std candidate was excluded unconditionally, leaving the ordinary
+    /// one as a false "sole" match).
+    #[test]
+    fn unique_lookup_still_declines_when_a_visible_std_sibling_is_ambiguous() {
+        let (index, _ids) =
+            ambush_index_with_modules(&["std::conventions::screenplay", "story::story"]);
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("std::conventions::screenplay")
+            ),
+            None,
+            "with the std candidate now visible (referrer inside its own module) alongside a \
+             coexisting ordinary candidate, the name is genuinely ambiguous to this scope-free \
+             function — it must decline rather than silently pick either one"
+        );
+    }
+
+    /// Issue #2233: a referrer *inside* std but in a *different* std module
+    /// than the candidate must not gain visibility either — only an exact
+    /// module match reproduces `InScope`; a cross-std-submodule reference is
+    /// `Other` under `classify` (no import machinery to promote it to
+    /// `Imported` here), so it stays excluded exactly like any other
+    /// cross-module std reference.
+    #[test]
+    fn unique_lookup_still_excludes_a_different_std_sibling_module() {
+        let (index, ids) =
+            ambush_index_with_modules(&["std::conventions::screenplay", "std::conventions::other"]);
+        let other_id = ids[1];
+        assert_eq!(
+            lookup_unique_by_name(
+                &index,
+                "ambush",
+                &[SymbolKind::Knot],
+                Some("std::conventions::other")
+            ),
+            Some(other_id),
+            "the referrer's own std module's candidate still resolves (InScope, exact match)"
+        );
+        let screenplay_scope = ImportScope {
+            file_module: Some("std::conventions::other".to_string()),
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        assert_eq!(
+            lookup_by_name(&index, &screenplay_scope, "ambush", &[SymbolKind::Knot]),
+            Some(other_id),
+            "sanity: lookup_by_name agrees — the referrer's own module wins, not the sibling"
+        );
+    }
+
+    /// Issue #2217: `is_std_module`/the std-invisibility gate excludes a
+    /// name from bare-name resolution identically whether the candidate is
+    /// the *embedded* stdlib mount or a project's own file that legitimately
+    /// lives at a `std/…` path (`mount_stdlib`'s "project source at the same
+    /// key wins" carve-out — both mint the same `std::…` module identity,
+    /// by design, per #2245's "peer roots" ruling). Before this fix, the
+    /// resulting diagnostic was a bare "unresolved name" with nothing
+    /// distinguishing "no such symbol anywhere" from "this symbol exists,
+    /// but only under `std::`, invisible by rule" — an author who names
+    /// their own directory `std/` had no way to learn that from the
+    /// diagnostic alone.
+    #[test]
+    fn is_std_shadowed_name_true_when_only_a_std_candidate_exists() {
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        assert!(
+            is_std_shadowed_name(&index, "ambush"),
+            "a name whose sole declaration lives under the std peer root must be reported as \
+             std-shadowed"
+        );
+    }
+
+    #[test]
+    fn is_std_shadowed_name_false_for_an_ordinary_project_name() {
+        let (index, _ids) = ambush_index_with_modules(&["story::story"]);
+        assert!(
+            !is_std_shadowed_name(&index, "ambush"),
+            "a name declared only in an ordinary project module must not be reported as \
+             std-shadowed"
+        );
+        assert!(
+            !is_std_shadowed_name(&index, "no_such_name"),
+            "a name with no declaration at all must not be reported as std-shadowed either"
+        );
+    }
+
+    #[test]
+    fn unresolved_diag_hints_at_std_shadowing_when_a_std_candidate_exists() {
+        let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
+        let diag = unresolved_diag(
+            &index,
+            FileId(0),
+            range(0, 6),
+            "ambush",
+            DiagnosticCode::E025,
+        );
+        assert_eq!(diag.code, DiagnosticCode::E025);
+        assert!(
+            diag.message.contains("std::") && diag.message.contains("peer root"),
+            "the diagnostic for a name that IS declared, but only under std, must say so \
+             rather than reading as an ordinary unresolved-name error: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn unresolved_diag_stays_plain_when_no_std_candidate_exists() {
+        let index = SymbolIndex::default();
+        let diag = unresolved_diag(&index, FileId(0), range(0, 6), "nope", DiagnosticCode::E025);
+        assert_eq!(
+            diag.message,
+            format!("{}: `nope`", DiagnosticCode::E025.title()),
+            "a genuinely unresolved name (no std candidate anywhere) must keep the plain \
+             message — the hint must not fire spuriously"
+        );
+    }
+
+    /// End-to-end through the real resolution entry point, not just the
+    /// diagnostic-formatting helper directly: a project file that places its
+    /// own `Variable` declaration under a `std/…` path (the exact landmine
+    /// #2217 describes — nothing marks this as the embedded stdlib) is
+    /// invisible to a bare reference from the rest of the project, and the
+    /// `E025` this produces must carry the std-shadowing hint.
+    #[test]
+    fn resolve_variable_hints_std_shadowing_for_a_projects_own_std_path_file() {
+        let mut index = SymbolIndex::default();
+        let id = DefinitionId::new(brink_format::DefinitionTag::Address, 0xF00D);
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind: SymbolKind::Variable,
+                file: FileId(0),
+                range: TextRange::default(),
+                id,
+                name: "screenplay_intro".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("std::conventions::screenplay".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("screenplay_intro".to_string())
+            .or_default()
+            .push(id);
+
+        let scope = ImportScope::default();
+        let locals: Vec<LocalSymbol> = Vec::new();
+        let mut map: ResolutionMap = Vec::new();
+        let mut diagnostics = Vec::new();
+        let uref = uref("screenplay_intro", RefKind::Variable, None, None);
+
+        resolve_variable(
+            &index,
+            &scope,
+            &locals,
+            FileId(1),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+
+        assert!(map.is_empty(), "a std-shadowed candidate must not resolve");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E025);
+        assert!(
+            diagnostics[0].message.contains("std::"),
+            "the real resolution path's E025 must carry the std-shadowing hint too, not just \
+             the diagnostic-formatting helper in isolation: {}",
+            diagnostics[0].message
+        );
     }
 
     #[test]
@@ -1961,6 +3549,401 @@ mod tests {
             lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
             Some(a),
             "a qualified `IMPORT quest_a` still licenses quest_a's `ambush`"
+        );
+    }
+
+    // ── Import aliasing (issue #1590) ───────────────────────────────
+
+    /// The headline bug: `IMPORT { ambush AS b } FROM quest_a` must make `b`
+    /// resolve — before the fix, `ImportItem.alias` was read only by the
+    /// E089 duplicate check, so a reference to the alias found nothing in
+    /// `index.by_name` (keyed by definitions' own spellings only) and
+    /// resolution silently failed.
+    #[test]
+    fn aliased_bare_import_resolves_via_its_local_alias() {
+        let (index, a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("b".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "b", &[SymbolKind::Knot]),
+            Some(a),
+            "`ambush AS b` must make `b` resolve to quest_a's `ambush`"
+        );
+    }
+
+    /// Additive ruling (issue #1590 — "is the original name still
+    /// licensed?"): brink's alias is additive, not Rust's shadow-and-revoke.
+    /// The source spelling stays resolvable through the very same import —
+    /// see the doc comment on [`lookup_by_name`] for the full justification
+    /// (the fast path's byte-identity guarantee already ignores `ImportScope`
+    /// for a globally-unique name, so a strict revoke would only sometimes
+    /// hold).
+    #[test]
+    fn aliased_bare_import_also_still_resolves_via_its_original_name() {
+        let (index, a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("b".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(a),
+            "the source name `ambush` must still resolve alongside its alias `b`"
+        );
+    }
+
+    /// Negative case: an alias is scoped to the exact `(module, kind)` its
+    /// import named — it must never resolve against a same-named symbol of a
+    /// different kind, nor leak into a file that never declared it.
+    #[test]
+    fn alias_does_not_resolve_the_wrong_kind() {
+        let (index, _a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("b".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "b", &[SymbolKind::Variable]),
+            None,
+            "`b` aliases a Knot; it must not resolve when a Variable is requested"
+        );
+    }
+
+    /// Negative case: a name that is neither imported nor aliased in this
+    /// file's scope must not resolve just because *some* file's `ImportScope`
+    /// carries an alias for it — `lookup_by_name` is per-file.
+    #[test]
+    fn unrelated_scope_has_no_alias_and_does_not_resolve() {
+        let (index, _a, _b) = two_module_ambush_index();
+        assert_eq!(
+            lookup_by_name(&index, &ImportScope::default(), "b", &[SymbolKind::Knot]),
+            None,
+            "a file with no import scope must never resolve an alias it never declared"
+        );
+    }
+
+    /// Precedence when an alias collides with an in-scope direct name (see
+    /// the doc comment on [`lookup_by_name`]): `lookup_by_name_direct` always
+    /// runs first, so a local knot named `start` wins over an alias `start`
+    /// that a bare import bound to a *different* knot — the alias fallback
+    /// only ever fires once the direct lookup comes up empty. `IMPORT {
+    /// haggle AS start } FROM quest_a` in a file that also defines `start`
+    /// silently loses the alias to the local definition.
+    #[test]
+    fn alias_colliding_with_an_in_scope_direct_name_resolves_to_the_direct_name() {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let local_start = DefinitionId::new(DefinitionTag::Address, 0x51A47);
+        index.symbols.insert(
+            local_start,
+            SymbolInfo {
+                kind: SymbolKind::Knot,
+                file: FileId(0),
+                range: TextRange::default(),
+                id: local_start,
+                name: "start".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: None,
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("start".to_string())
+            .or_default()
+            .push(local_start);
+
+        let (ambush_index, aliased_target, _b) = two_module_ambush_index();
+        for (name, ids) in ambush_index.by_name {
+            index.by_name.entry(name).or_default().extend(ids);
+        }
+        for (id, info) in ambush_index.symbols {
+            index.symbols.insert(id, info);
+        }
+
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("start".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+
+        assert_eq!(
+            lookup_by_name(&index, &scope, "start", &[SymbolKind::Knot]),
+            Some(local_start),
+            "a direct in-scope `start` must win over the colliding alias — \
+             `ambush AS start` never reaches quest_a's ambush ({aliased_target:?}) \
+             under that name"
+        );
+    }
+
+    // ── Issue #2287: module-qualified divert resolution ──────────────
+    //
+    // `market/barter.brink` declaring `pub flow haggle()` (module
+    // `story::market::barter`), referenced from `story.brink`. Four rows,
+    // the maintainer's corrected model (issue #2287's comment):
+    //
+    //   | import                             | `-> barter::haggle` | `-> haggle` |
+    //   |-------------------------------------|----------------------|-------------|
+    //   | *(none)*                            | rejected             | rejected    |
+    //   | `use story::market::barter;`        | accepted             | rejected    |
+    //   | `use story::market::barter::haggle;`| —                    | accepted    |
+    //
+    // The fourth row (`use story::market::barter::*;`, a glob import) is
+    // not exercised here — the native grammar has no glob-`use` production
+    // at all (`brink_syntax_native::parser::decl::use_tree` accepts only an
+    // `IDENT` segment, a `{ … }` group, or a trailing `as` alias; no `*`
+    // arm), so that import spelling cannot be constructed as HIR in the
+    // first place. See this PR's body for the full finding.
+
+    fn haggle_index(module: &str) -> (SymbolIndex, DefinitionId) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let id = DefinitionId::new(DefinitionTag::Address, 0x748);
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind: SymbolKind::Knot,
+                file: FileId(1),
+                range: TextRange::default(),
+                id,
+                name: "haggle".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some(module.to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("haggle".to_string())
+            .or_default()
+            .push(id);
+        (index, id)
+    }
+
+    fn divert_uref(path: &str, module_qualified: bool) -> UnresolvedRef {
+        UnresolvedRef {
+            path: path.to_string(),
+            range: range(0, path.len() as u32),
+            kind: RefKind::Divert,
+            scope: Scope::default(),
+            arg_count: None,
+            module_qualified,
+        }
+    }
+
+    /// Bug (a): `use story::market::barter;` (a module-qualified import —
+    /// lowered as a bare import of item `barter` from `story::market`, whose
+    /// #1592 dual-reading also licenses `story::market::barter` as a
+    /// qualified module candidate) must accept `-> barter::haggle`.
+    ///
+    /// Reverting `lookup_divert`'s `uref.module_qualified` branch makes this
+    /// fail: the old code only ever tried `path.contains('.')`, and a
+    /// `::`-joined path with no dot at all falls through every branch to
+    /// `None` — reproducing the exact reported defect (`unresolved divert
+    /// target: barter.haggle`, before this fix normalized `::` to `.` and
+    /// lost the distinction entirely).
+    #[test]
+    fn qualified_divert_resolves_via_module_qualified_import() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "barter".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        let uref = divert_uref("barter::haggle", true);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            Some(haggle_id),
+            "`use story::market::barter;` must license the module-qualified \
+             `-> barter::haggle` divert"
+        );
+    }
+
+    /// The other half of bug (a): with no import at all, `-> barter::haggle`
+    /// must stay rejected — and the diagnostic must spell the qualifier with
+    /// `::`, not the confusing `.` the pre-fix path-joining produced.
+    #[test]
+    fn qualified_divert_rejected_with_no_import_and_message_uses_double_colon() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::default();
+        let uref = divert_uref("barter::haggle", true);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            None,
+            "no import at all must not license the qualified divert"
+        );
+
+        let mut diagnostics = Vec::new();
+        let mut map = ResolutionMap::new();
+        resolve_divert(
+            &index,
+            &scope,
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert!(map.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E024);
+        assert!(
+            diagnostics[0].message.contains("barter::haggle"),
+            "the E024 message must spell the qualified path with `::` (the \
+             native separator actually written), not `.`: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Bug (b), the dangerous half: `use story::market::barter;` licenses
+    /// the module-qualified spelling (test above) but must NOT also license
+    /// the bare `-> haggle` — that was the over-permissive defect issue
+    /// #2287 reported as its more dangerous half. Reverting
+    /// `lookup_divert`'s step 2 back to `lookup_by_name` makes this fail:
+    /// the dual-reading phantom `story::market::barter` entry in
+    /// `qualified_modules` would classify `haggle` `Candidacy::Imported`,
+    /// and being the sole candidate, the old fast path returned it
+    /// unconditionally.
+    #[test]
+    fn bare_divert_rejected_after_qualified_module_import_only() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "barter".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        let uref = divert_uref("haggle", false);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            None,
+            "a qualified-module-only import must not license the bare \
+             `-> haggle` spelling"
+        );
+    }
+
+    /// Row 3 of the corrected table: `use story::market::barter::haggle;`
+    /// (a genuine symbol-level bare import — no dual-reading ambiguity,
+    /// since the whole prefix `story::market::barter` is unambiguously the
+    /// module and `haggle` is unambiguously the item) must license the bare
+    /// `-> haggle` spelling.
+    #[test]
+    fn bare_divert_resolves_via_symbol_level_import() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market::barter".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "haggle".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        let uref = divert_uref("haggle", false);
+        assert_eq!(
+            lookup_divert(&index, &scope, &[], &uref),
+            Some(haggle_id),
+            "`use story::market::barter::haggle;` must license the bare \
+             `-> haggle` divert"
+        );
+    }
+
+    /// With no import at all, `lookup_divert` must still resolve the bare
+    /// `-> haggle` — end-to-end it is correctly rejected (issue #2287
+    /// confirms this row already worked), but that rejection is
+    /// `modules::check`'s separate whole-project `E025`/`E087` gate's job,
+    /// which only fires on a *resolved* reference (`ResolutionMap` walk,
+    /// `check_cross_module_refs`'s own doc). This is the pre-existing,
+    /// deliberate byte-identity guarantee `lookup_by_name_direct`'s own doc
+    /// describes (`!multiple` sole match wins regardless of candidacy) —
+    /// `lookup_knot_bare` must reproduce it exactly, not just for bug (b)'s
+    /// qualified-import-only case. `crates/internal/brink-db/src/db.rs`'s
+    /// `private_cross_module_reference_is_e087_through_db` and
+    /// `public_cross_module_reference_without_import_is_e025` are the real
+    /// end-to-end regression pins for this — this unit test is the
+    /// resolve-layer half, added after those two briefly regressed to
+    /// `E024` during this fix's own development (an over-broad first draft
+    /// of `lookup_knot_bare` rejected *any* non-`InScope`/non-bare-imported
+    /// candidate, not only a qualified-import-only one).
+    #[test]
+    fn bare_divert_still_resolves_with_no_import_deferring_to_the_e025_e087_gate() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let uref = divert_uref("haggle", false);
+        assert_eq!(
+            lookup_divert(&index, &ImportScope::default(), &[], &uref),
+            Some(haggle_id),
+            "a totally unimported cross-module Knot must still resolve here — \
+             `modules::check`'s E025/E087 gate is what rejects it, with a far \
+             more precise diagnostic than a bare E024 would give"
         );
     }
 }

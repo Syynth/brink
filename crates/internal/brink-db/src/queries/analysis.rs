@@ -29,9 +29,11 @@
 //   diagnostics-laden bundle.
 // - [`analysis_diagnostics_query`] — the DIAGNOSTICS half: every diagnostic
 //   source merged, in the same order `finish_analysis` produces them, so
-//   `db.analysis()` stays output-identical to the monolithic
-//   `brink_analyzer::analyze_with_options` path (pinned by
-//   `query_equivalence.rs`).
+//   `db.analysis()` stays output-identical to the monolithic, module-aware
+//   `brink_analyzer::analyze_with_modules` path (pinned by
+//   `query_equivalence.rs`) — only equal to the module-*blind*
+//   `analyze_with_options` for ink projects without a declared `#@module`,
+//   see `ProjectDb::module_map`'s doc (issue #1526).
 // - [`analysis_query`] — kept as a thin assembler over the above three for
 //   `db.analysis()`'s existing LSP/IDE/CLI-facing `AnalysisResult` shape.
 //   [`diagnostics_query`] and [`lir_query`] read
@@ -52,7 +54,7 @@ use crate::determinism::LookupSet;
 
 use super::{
     DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, lowered_query,
-    module_map_query, resolution_index_query, resolve_query, symbol_index_query,
+    module_map_query, raw_lowered_query, resolution_index_query, resolve_query, symbol_index_query,
     type_inference_query,
 };
 
@@ -95,7 +97,7 @@ pub(crate) fn resolutions_index_query(
 /// the narrow, cutoff-friendly [`resolution_index_query`] projection (for
 /// annotation content checks' declared-`LIST`-name lookup — range-free, so
 /// it doesn't reintroduce whole-project churn) and the registered host
-/// manifest (T1d-2, docs/t1d-spec.md §3 — `handle<K>` annotation content
+/// manifest (T1d-2, docs/t1d-spec.md §3 — `Handle<K>` annotation content
 /// checks' declared-handle-kind lookup). The manifest is project-wide,
 /// host-set config, not derived from any file's edits — reading it here is
 /// the same coarse, range-free dependency shape as `dialect`, already read
@@ -103,6 +105,22 @@ pub(crate) fn resolutions_index_query(
 /// eliminated. Never another file's HIR: a body edit in file Y leaves file
 /// X's memo fully validated (same `Arc`/pointer), not re-executed.
 /// `Arc`-wrapped for the same pointer-identity reason as [`ResolvedProject`].
+///
+/// Also the B0.9 native strict-only enforcement point
+/// ([`brink_analyzer::native_strict_only_error`], issue #1342): this is the
+/// narrowest seam that has both a file's own [`super::Language`]
+/// classification (`super::file_language`) and `AnalysisOptions` access —
+/// `super::lower_native_file` has neither (issue #1179's finding), so the
+/// check cannot live there. Reading `opts.types` here doesn't widen this
+/// query's dependency edge: `opts` (the whole `AnalysisOptions`) is already
+/// read for `dialect`/`host_manifest` above.
+///
+/// Same seam decouples the T1b dialect gate from native files (issue #1348):
+/// `dialect` is an ink-only axis (docs/t1b-surface-spec.md §1), orthogonal to
+/// this file's [`super::Language`] classification, so
+/// `brink_analyzer::per_file_diagnostics`'s `is_native` flag — computed here,
+/// once, and reused for both calls below — skips the gate for a native file
+/// exactly the way `native_strict_only_error` above is native-conditional.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 4096)]
@@ -112,18 +130,26 @@ pub(crate) fn per_file_diagnostics_query(
     file: SourceFile,
 ) -> Arc<Vec<Diagnostic>> {
     let file_id = file.file_id(db);
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
     let opts = project.analysis_options(db);
-    Arc::new(brink_analyzer::per_file_diagnostics(
+    let is_native = super::file_language(file.path(db)) == super::Language::Native;
+    let mut diagnostics = brink_analyzer::per_file_diagnostics(
         file_id,
         hir,
         file_resolutions,
         index,
         opts.dialect,
+        is_native,
         opts.host_manifest.as_ref(),
-    ))
+    );
+    if is_native {
+        diagnostics.extend(brink_analyzer::native_strict_only_error(
+            file_id, opts.types,
+        ));
+    }
+    Arc::new(diagnostics)
 }
 
 /// Aggregated per-file diagnostic contributors across the whole project
@@ -163,7 +189,7 @@ pub(crate) fn inline_docs_query(
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = project
         .files(db)
         .iter()
-        .map(|f| (f.file_id(db), &lowered_query(db, *f).manifest))
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).manifest))
         .collect();
     Arc::new(brink_analyzer::project_inline_docs(&manifest_inputs))
 }
@@ -233,7 +259,7 @@ pub(crate) fn value_meta_query(
     project: ProjectInput,
     file: SourceFile,
 ) -> Arc<BTreeMap<DefinitionId, SymbolMeta>> {
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     let index = inference_index_query(db, project);
     let inline_docs = inline_docs_query(db, project);
     Arc::new(brink_analyzer::file_value_meta(
@@ -264,7 +290,7 @@ pub(crate) fn call_site_diagnostics_query(
         return Arc::new(Vec::new());
     }
     let metas = call_site_metas_query(db, project);
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     Arc::new(brink_analyzer::file_call_site_diagnostics(
         file.file_id(db),
         hir,
@@ -303,7 +329,7 @@ pub(crate) fn effects_assertion_diagnostics_query(
         return Arc::new(Vec::new());
     }
     let file_id = file.file_id(db);
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     let index = resolution_index_query(db, project);
     let def_ids = brink_analyzer::effects_assertion_defs(hir, index, file_id);
     if def_ids.is_empty() {
@@ -349,7 +375,7 @@ pub(crate) fn await_purity_diagnostics_query(
         return Arc::new(Vec::new());
     }
     let file_id = file.file_id(db);
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     if !brink_analyzer::hir_has_await(hir) {
         return Arc::new(Vec::new());
     }
@@ -371,12 +397,471 @@ pub(crate) fn await_purity_diagnostics_query(
     ))
 }
 
+/// The module name the project's `[project] conventions` pointer names, or
+/// `None` when there is nothing to resolve.
+///
+/// The ONE place the `conventions` pointer is turned into a module name, so
+/// the two consumers that need it — [`conventions_confinement_diagnostics_query`]
+/// (which asks "is *this* file that module?") and
+/// [`conventions_projection_query`] (which asks "*which* file is that
+/// module?") — cannot drift apart on the answer. Both must agree exactly:
+/// a projection built from a file that confinement does not consider the
+/// conventions module would report handlers the compiler is simultaneously
+/// diagnosing as misplaced.
+///
+/// `None` covers the two cases both consumers treat identically and
+/// silently (see `brink_analyzer::conventions_module_diagnostics`'s own
+/// module doc): an unset `conventions` key, and a **bare preset name**
+/// (`conventions = "screenplay"`), which names a `std::conventions::*` module
+/// rather than a project file — `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s
+/// own doc records that nothing resolves a preset name to its mounted
+/// source yet (it needs #1582's pub marker and #2167's closure-scoped
+/// confinement, neither built). `Some` does NOT mean a file with that
+/// module name exists; each caller checks that against
+/// [`module_map_query`] itself, because they warn differently about it.
+fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) -> Option<String> {
+    let opts = project.analysis_options(db);
+    let pointer = opts.conventions.as_deref()?;
+    if !brink_analyzer::is_path_shaped_conventions_pointer(pointer) {
+        return None;
+    }
+    Some(crate::modules::native_module_path(
+        &crate::modules::root_relative_key(project.native_root(db).as_deref(), pointer),
+    ))
+}
+
+/// One file's conventions-module confinement diagnostics (`E169`, issue
+/// #1844 — the MODULE half of the 2026-07-31 §9.1 ruling's item (4); #1838/
+/// #1847 cover the *placement* half, `E112`). A pattern-claiming
+/// `@[convention(claims = "…", order = N)]` handler is legal only in the project's
+/// configured conventions module (`brink.toml`'s `[project] conventions`,
+/// renamed from `elements` by issue #2180); this is the one seam that has
+/// both a file's real module identity
+/// ([`module_map_query`]'s native branch, `crate::modules::
+/// native_module_path`) and the resolved `AnalysisOptions` the pointer
+/// travels on — `brink_analyzer::analyze_with_modules` is not it, since
+/// `brink-db` never calls that path (issue #1863's own finding).
+///
+/// Lazy in the same shape as [`await_purity_diagnostics_query`]/
+/// [`comparator_contract_diagnostics_query`]: a file with no declared claim
+/// handler never even reads [`module_map_query`]. Two more cases stay
+/// intentionally silent (not merely lazy) — see `brink_analyzer::
+/// conventions_module_diagnostics`'s own module doc for why: a bare preset
+/// name (`conventions = "screenplay"`, which names a `std::conventions::*`
+/// module rather than a project file — no path in the tree to compare
+/// against without a preset registry this slice doesn't build), and a
+/// path-shaped pointer that resolves to no file that actually exists in
+/// `project.files(db)` (a typo, a moved/deleted target, an `.ink`-suffixed
+/// path) — that last case is checked HERE, against [`module_map_query`]'s
+/// real module set, before any file is compared against it; otherwise
+/// every claiming handler in the project would be flagged for not living
+/// in a file that was never there to begin with. Reported via
+/// `tracing::warn!` (the same "warn, never silently drop" channel
+/// `resolve_options` uses for `ConfigWarning`s) rather than silently
+/// dropped.
+///
+/// An **entirely unset `conventions` key is NO LONGER one of those silent
+/// cases** (issue #2289, part 2 of the 2026-08-05 ruling): a declared claim
+/// handler names no module to belong to, which is a misconfiguration, not
+/// an opt-out — see [`brink_analyzer::conventions_unconfigured_diagnostics`]'s
+/// own doc.
+///
+/// **A file mounted under a reserved peer root is exempt entirely**
+/// (`std::…`, `brink_ir::symbols::is_reserved_root_module`, issue #2251) —
+/// found while implementing the unset-key case above: `brink-environment`
+/// unconditionally mounts `std::conventions::screenplay` into every
+/// compiled project's file set (issue #2080) regardless of whether that
+/// project's own `brink.toml` ever names it, so with no exemption every
+/// project with *no* `conventions` key configured would suddenly fail to
+/// compile at all — the mounted preset's own `heading`/`transition`/`cue`/
+/// `parenthetical` handlers would all misfire the new unconfigured-`E169`
+/// above (verified against a real `brink compile` run on a bare
+/// `[project]` toml before this exemption was added). The SAME exemption
+/// also fixes a latent, pre-#2289 instance of this bug: a project that
+/// *did* configure `conventions` to one of its own files already flagged
+/// the mounted preset's handlers as "outside the configured module",
+/// which was never reachable before because the unset-key short-circuit
+/// silently protected the far more common no-`conventions`-at-all case
+/// from ever exercising this code path at all.
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647), matching
+/// every other per-file diagnostic query in this module.
+#[salsa::tracked(lru = 4096)]
+pub(crate) fn conventions_confinement_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    let hir = &lowered_query(db, project, file).hir;
+    if hir.claim_handlers.is_empty() {
+        return Arc::new(Vec::new());
+    }
+    let file_id = file.file_id(db);
+    let (module_map, _module_diags) = module_map_query(db, project);
+    if module_map
+        .get(&file_id)
+        .is_some_and(|m| brink_ir::symbols::is_reserved_root_module(&m.name))
+    {
+        return Arc::new(Vec::new());
+    }
+    let opts = project.analysis_options(db);
+    let Some(pointer) = opts.conventions.as_deref() else {
+        // Issue #2289 part 2: no module configured at all is now an error,
+        // not a silent pass — see this query's own doc.
+        return Arc::new(brink_analyzer::conventions_unconfigured_diagnostics(
+            file_id, hir,
+        ));
+    };
+    // Shared with `conventions_projection_query` so the two cannot disagree
+    // about which module the pointer names — see the helper's own doc. The
+    // path-shape check `origin/main` renamed (`is_path_shaped_elements_pointer`
+    // -> `is_path_shaped_conventions_pointer`, #2180) lives inside that helper
+    // now, so this call site subsumes it rather than duplicating it.
+    let Some(expected_module) = expected_conventions_module(db, project) else {
+        return Arc::new(Vec::new());
+    };
+    let Some(this_module) = module_map.get(&file_id).map(|m| m.name.as_str()) else {
+        return Arc::new(Vec::new());
+    };
+    // The pointer must resolve against a REAL file in the project before it
+    // can confine anything. A typo'd `conventions` value, a moved/deleted
+    // target, or an `.ink`-suffixed path all produce an `expected_module`
+    // no file actually has — without this check, every claiming handler in
+    // the project (including the one in the real intended conventions
+    // module) would be flagged at `E169`, telling the author to move it
+    // into a file that does not exist, with no signal that the config
+    // itself is at fault. `module_map`'s iteration order can't affect this
+    // check: `any` only asks whether *some* file matches, never which one.
+    if !module_map.values().any(|m| m.name == expected_module) {
+        // Same "warn, never silently drop" channel `resolve_options` uses
+        // for `ConfigWarning`s (house rule) — the pointer problem is
+        // surfaced, just not as an `E169` storm against files that were
+        // never the ones at fault.
+        tracing::warn!(
+            "[project] conventions = \"{pointer}\" does not match any file in the project \
+             (expected module `{expected_module}`) — conventions-module confinement (E169) \
+             is skipped until this is fixed"
+        );
+        return Arc::new(Vec::new());
+    }
+    let is_conventions_module = this_module == expected_module;
+    Arc::new(brink_analyzer::conventions_module_diagnostics(
+        file_id,
+        hir,
+        is_conventions_module,
+        pointer,
+    ))
+}
+
+/// The project's cross-file claiming injection seam (issue #2289,
+/// correcting the file-local claiming defect the 2026-08-05 ruling names:
+/// *"it's never file local. you configure conventions for a project,
+/// that's why they're conventions and not 'local patterns'."*): the
+/// configured conventions module's OWN declared `@[convention]` handlers,
+/// plus which file that module is, so [`super::lowered_query`] knows both
+/// what to inject into every other file and which file to skip (itself).
+///
+/// `None` in every case [`conventions_projection_query`] already treats as
+/// "nothing to inject" — no `conventions` key, a bare preset pointer, or a
+/// path-shaped pointer that resolves to no real project file (the same
+/// "warn, never silently drop" channel that query and
+/// [`conventions_confinement_diagnostics_query`] both use). This query
+/// deliberately re-derives its own small "which file is the expected
+/// module" resolution rather than sharing either sibling's — see
+/// [`expected_conventions_module`]'s own doc for why the pointer-to-name
+/// step itself IS shared, and this module's existing precedent of each
+/// consumer owning its own file-lookup walk (`conventions_confinement_
+/// diagnostics_query`'s `any`, `conventions_projection_query`'s
+/// `min_by_key`) — this query's own `min_by_key` matches the latter's
+/// deterministic tie-break.
+///
+/// Reads [`raw_lowered_query`] for the conventions module's own file, never
+/// the project-aware [`lowered_query`]: `HirFile::claim_handlers` is always
+/// the file's own LOCAL declarations regardless of what (if anything) that
+/// file itself was lowered with injected (`Elements::handler_decls` in
+/// `brink-ir` never reads an injected handler — see that method's own
+/// doc), so the two queries agree here by construction. Reading the
+/// project-aware query instead would close a cycle: `lowered_query` calls
+/// this query to decide what to inject, so this query calling back into
+/// `lowered_query` for the very file it is about to hand off would recurse
+/// on itself the moment that file needed lowering.
+///
+/// `Arc`-wrapped: every native file in the project reads this once per
+/// project revision ([`super::lowered_query`]'s dependency), and `Option<
+/// (FileId, Vec<ClaimHandlerDecl>)>`'s derived `PartialEq` backdates it
+/// across an edit that leaves the conventions module's declared handler
+/// set unchanged (e.g. a body-only edit inside one of its handlers) — the
+/// same early-cutoff shape [`import_closure_query`]/[`conventions_projection_query`]
+/// already rely on.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn external_claim_handlers_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<Option<(FileId, Vec<brink_ir::ClaimHandlerDecl>)>> {
+    let opts = project.analysis_options(db);
+    let Some(pointer) = opts.conventions.as_deref() else {
+        return Arc::new(None);
+    };
+    let Some(expected_module) = expected_conventions_module(db, project) else {
+        return Arc::new(None);
+    };
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let Some(conventions_file) = project
+        .files(db)
+        .iter()
+        .filter(|f| {
+            module_map
+                .get(&f.file_id(db))
+                .is_some_and(|m| m.name == expected_module)
+        })
+        .min_by_key(|f| f.path(db).clone())
+        .copied()
+    else {
+        // Same "warn, never silently drop" channel this query's siblings use
+        // for the identical unresolvable-pointer case.
+        tracing::warn!(
+            "[project] conventions = \"{pointer}\" does not match any file in the project \
+             (expected module `{expected_module}`) — cross-file claiming is skipped until \
+             this is fixed"
+        );
+        return Arc::new(None);
+    };
+    let hir = &raw_lowered_query(db, conventions_file).hir;
+    Arc::new(Some((
+        conventions_file.file_id(db),
+        hir.claim_handlers.clone(),
+    )))
+}
+
+/// The transitive `IMPORT` closure of `entry`: `entry` itself plus every
+/// module reachable by following native `IMPORT` statements outward,
+/// breadth over the module-name → file reverse index [`module_map_query`]
+/// already builds. Issue #2111 finding 3: built in a **reusable** shape,
+/// generic over any entry file rather than conventions-specific, so #2167's
+/// `E169` confinement relaxation (legalizing a claim handler that delegates
+/// to an imported preset) can call this exact query instead of re-deriving
+/// its own closure walk.
+///
+/// Ink files have no `IMPORT` (only `INCLUDE`, which
+/// [`super::compilation_closure_files`]/`IncludeGraph` already cover) — an
+/// ink `entry` simply has no imports to walk and the closure is `[entry]`.
+///
+/// Sorted ascending by path (not discovery/traversal order) before
+/// returning: two callers that both need "first file wins on a name
+/// collision" (this module's own [`conventions_projection_query`], and any
+/// future #2167 use) get the same deterministic tie-break without each
+/// having to re-sort, and the order can never depend on `project.files`'
+/// incoming order or on which import statement happened to be visited
+/// first.
+///
+/// The same path-sorted, first-wins rule governs name resolution *while
+/// walking imports*, too: when two files in the project declare the same
+/// module name, the import-target lookup resolves to the lowest-path file,
+/// deterministically — never whichever one `project.files` happened to
+/// iterate over last. Both the closure's final **order** and its
+/// **membership** (which file a duplicate name resolves to) are therefore
+/// independent of `project.files`' incoming order.
+///
+/// A named-but-unresolvable import (a typo, a module that doesn't exist)
+/// is simply not followed — this query only ever widens by real, resolved
+/// files, never by a dangling name a diagnostic elsewhere already reports.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn import_closure_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    entry: SourceFile,
+) -> Arc<Vec<SourceFile>> {
+    let (module_map, _module_diags) = module_map_query(db, project);
+    // First-wins on a duplicate module name, over a path-sorted iteration —
+    // not the `.collect()`-into-map last-write-wins this replaced. A plain
+    // `.collect()` made a duplicate name's WINNER (not just its resolution
+    // order) depend on `project.files`' incoming order, contradicting this
+    // query's own "the order can never depend on `project.files`' incoming
+    // order" doc and the `min_by_key` determinism this same file applies
+    // ~30 lines below for the conventions file itself.
+    let mut files_by_path: Vec<SourceFile> = project.files(db).clone();
+    files_by_path.sort_by_key(|f| f.path(db).clone());
+    let mut by_name: BTreeMap<&str, SourceFile> = BTreeMap::new();
+    for f in &files_by_path {
+        if let Some(m) = module_map.get(&f.file_id(db)) {
+            by_name.entry(m.name.as_str()).or_insert(*f);
+        }
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(entry.file_id(db));
+    let mut stack = vec![entry];
+    let mut closure = Vec::new();
+    while let Some(file) = stack.pop() {
+        closure.push(file);
+        let hir = &lowered_query(db, project, file).hir;
+        for import in &hir.imports {
+            if let Some(target) = by_name.get(import.module.as_str()).copied()
+                && seen.insert(target.file_id(db))
+            {
+                stack.push(target);
+            }
+        }
+    }
+    closure.sort_by_key(|f| f.path(db).clone());
+    Arc::new(closure)
+}
+
+/// The project's conventions projection (issue #2111, NS-T seam 1/6):
+/// every `@[convention]` handler declared in the project's one configured
+/// conventions module, ascending by `order` — the editor-facing artifact
+/// the design-backport comment on #2111 (`docs/decision-log.md`
+/// 2026-08-03) calls "THE SOLE EDITOR INTERCHANGE": claims pattern, order,
+/// mode (attach/wrap), resulting disposition, and the `attach = StructName`
+/// schema, now RESOLVED to its fields and their types (issue #2111
+/// continuation, finding 1). Schema, never values — see
+/// [`ConventionsProjection`]'s own doc for that boundary, for why no
+/// comptime-fault/last-good case exists here (the mechanism that would have
+/// needed one, `fn conventions()` registration, is dissolved), and for the
+/// one part of #2111 this query still does not deliver (wire emission into
+/// `.inkb`/`StoryData` — see that type's doc).
+///
+/// # Resolution (shared with [`conventions_confinement_diagnostics_query`])
+///
+/// Both queries route the `[project] conventions` pointer through the same
+/// [`expected_conventions_module`] helper, so "which module is the
+/// conventions module" has exactly one answer:
+///
+/// - No `conventions` configured at all → empty projection. There is no
+///   conventions module to project.
+/// - A **bare preset name** (`conventions = "screenplay"`, not path-shaped) →
+///   ALSO empty, for now. `brink_analyzer::BUILTIN_ELEMENT_PRESETS`'s own
+///   doc states plainly that nothing resolves a preset name to its mounted
+///   source yet: "`std::conventions::screenplay` has no real
+///   `use`-importable module path… that needs #1582's pub marker and
+///   #2167's closure-scoped confinement, neither built yet." Minting a
+///   bespoke resolution here (bypassing that stated dependency) would be
+///   exactly the kind of undetermined-default invention the parent ruling's
+///   own "do not invent it" caution warns against — the issue's own
+///   "pre-frozen preset" note describes a *destination*, not something
+///   this slice can honestly claim to deliver ahead of #1582/#2167.
+/// - A path-shaped pointer that resolves to a real project file → that
+///   file's own [`ClaimHandlerDecl`]s, projected, with each `attach` name
+///   resolved against every struct visible from that file's [`import_closure_query`]
+///   (finding 3).
+/// - A path-shaped pointer that resolves to no real file → empty, with the
+///   same `tracing::warn!` this query's confinement sibling emits (never a
+///   silent drop).
+///
+/// # Invalidation
+///
+/// Reads: `project.analysis_options(db)` (for the `conventions` pointer and
+/// the native root), [`module_map_query`] (to find which file carries the
+/// expected module name, and to resolve `IMPORT` targets), the resolved
+/// conventions module's own [`import_closure_query`] (finding 3 — widened
+/// from the pre-continuation "conventions module alone" footprint), and
+/// every file in that closure's own [`lowered_query`] output (for their
+/// `structs`, to resolve `attach` names). `module_map_query` and
+/// `import_closure_query` are whole-project-shaped, so an edit elsewhere
+/// can *reach* this query — but only through a changed module map or a
+/// changed closure, both of which salsa backdates when their value is
+/// unchanged, so an ordinary edit to a file **outside** the closure never
+/// re-executes this query's closure (proven by
+/// `tests/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` cases,
+/// including the new one for an edit to an *imported* struct file). See
+/// [`ConventionsProjection`]'s own doc for why this is now the ruled "the
+/// conventions module and its import closure" invalidation contract exactly,
+/// not the narrower "conventions module alone" reading the pre-continuation
+/// slice used (load-bearing on the un-resolved-schema shape that slice
+/// carried, and no longer true now that `attach` is resolved).
+#[salsa::tracked(returns(ref))]
+pub(crate) fn conventions_projection_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<brink_ir::ConventionsProjection> {
+    let opts = project.analysis_options(db);
+    let Some(pointer) = opts.conventions.as_deref() else {
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+    // `None` here = a bare preset name — see the helper's own doc for why
+    // that does not resolve to a projectable file yet.
+    let Some(expected_module) = expected_conventions_module(db, project) else {
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+    let (module_map, _module_diags) = module_map_query(db, project);
+    // `min_by_key` on the path, not `find`: unlike the confinement
+    // sibling's `any` (which only asks *whether* some file matches), this
+    // query has to pick *which* one, and a pick that depended on
+    // `project.files`' incoming order would be exactly the nondeterminism
+    // the house rule forbids. A collision should be impossible — a native
+    // file's module name is a pure function of its path — but "impossible"
+    // is not a reason to leave the tie-break to iteration order.
+    let Some(conventions_file) = project
+        .files(db)
+        .iter()
+        .filter(|f| {
+            module_map
+                .get(&f.file_id(db))
+                .is_some_and(|m| m.name == expected_module)
+        })
+        .min_by_key(|f| f.path(db).clone())
+    else {
+        // Same "warn, never silently drop" channel
+        // `conventions_confinement_diagnostics_query` uses for the
+        // identical unresolvable-pointer case.
+        tracing::warn!(
+            "[project] conventions = \"{pointer}\" does not match any file in the project \
+             (expected module `{expected_module}`) — the conventions projection is empty \
+             until this is fixed"
+        );
+        return Arc::new(brink_ir::ConventionsProjection::default());
+    };
+
+    // Issue #2111 finding 3: every struct visible from the conventions
+    // module's own file plus its transitive `IMPORT` closure, keyed by bare
+    // name. `import_closure_query` already returns files sorted ascending
+    // by path, and `entry(...).or_insert_with` is first-write-wins, so a
+    // name collision across two imported files resolves to the
+    // lexicographically-first path deterministically — the same tie-break
+    // posture `min_by_key` above uses for the conventions file itself.
+    let closure = import_closure_query(db, project, *conventions_file);
+    let mut structs: BTreeMap<String, Vec<brink_ir::ConventionAttachField>> = BTreeMap::new();
+    for file in closure.iter() {
+        let hir = &lowered_query(db, project, *file).hir;
+        for s in &hir.structs {
+            structs.entry(s.name.text.clone()).or_insert_with(|| {
+                s.fields
+                    .iter()
+                    .map(|f| brink_ir::ConventionAttachField {
+                        name: f.name.text.clone(),
+                        ty: brink_ir::SchemaTypeShape::from(&f.ty),
+                    })
+                    .collect()
+            });
+        }
+    }
+
+    let hir = &lowered_query(db, project, *conventions_file).hir;
+    let projection = brink_ir::ConventionsProjection::from_decls(&hir.claim_handlers, &structs);
+    for entry in &projection.entries {
+        if let Some(brink_ir::ConventionAttachSchema::Unresolved(name)) = &entry.attach {
+            tracing::warn!(
+                "`@[convention(…, attach = {name})]` on `{}` does not resolve to any struct \
+                 declared in the conventions module `{expected_module}` or its import closure \
+                 — the projection carries this attach clause as `Unresolved` rather than \
+                 dropping it",
+                entry.name.text
+            );
+        }
+    }
+    Arc::new(projection)
+}
+
 /// One file's NS-A4 comparator-contract diagnostics (E119,
-/// docs/stdlib-spec.md §4b, issue #1110): `sort_by`/`sorted_by` calls whose
-/// inline `#fn(target)` comparator's row provably exceeds pure·silent.
-/// Brink-only + lazy, the exact [`await_purity_diagnostics_query`] shape: a
-/// file with no such site never fetches a single per-def effect row, so a
-/// comparator-free project stays effect-inference-free.
+/// docs/stdlib-spec.md §4b, issue #1110 — extended to the fn-value verb
+/// trio `map`/`filter`/`fold` by issue #1679, §4): `sort_by`/`sorted_by`/
+/// `map`/`filter`/`fold` calls whose callback's row — named either by an
+/// inline `#fn(target)` literal (ink/brink) or, since issue #1887, a
+/// native bare-name reference — provably exceeds pure·silent. Brink-only
+/// + lazy, the exact
+/// [`await_purity_diagnostics_query`] shape: a file with no such site never
+/// fetches a single per-def effect row, so a callback-free project stays
+/// effect-inference-free.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 4096)]
@@ -389,13 +874,13 @@ pub(crate) fn comparator_contract_diagnostics_query(
         return Arc::new(Vec::new());
     }
     let file_id = file.file_id(db);
-    let hir = &lowered_query(db, file).hir;
+    let hir = &lowered_query(db, project, file).hir;
     if !brink_analyzer::hir_has_comparator_site(hir) {
         return Arc::new(Vec::new());
     }
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
-    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, file_resolutions);
+    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, index, file_resolutions);
     let mut rows = BTreeMap::new();
     for id in callee_defs {
         if let Some(row) = effects_query(db, project, DefKey::new(db, id)) {
@@ -444,7 +929,7 @@ pub(crate) fn whole_project_diagnostics_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
-        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
     // M-2 module import + visibility checks (docs/modules-spec.md
@@ -470,11 +955,17 @@ pub(crate) fn whole_project_diagnostics_query(
         // `type_inference_query` -> `solve_scc_query` already reads the
         // same memo for the actual `EXTERNAL`-signature seeding.
         let inline_docs = inline_docs_query(db, project);
+        // `is_native` (issue #1348): `dialect` is an ink-only axis — a
+        // native project has no dialect to be wrong about, so the ink-only
+        // `E064` config error must never fire for one. Same
+        // `super::project_is_native` seam `compilation_closure_files` itself
+        // uses to decide the frontend for the whole compilation unit.
         diagnostics.extend(brink_analyzer::strict_diagnostics(
             &hir_refs,
             &resolved.index,
             &resolved.resolutions,
             opts,
+            super::project_is_native(db, project),
             strict_inference,
             inline_docs,
         ));
@@ -525,9 +1016,11 @@ pub(crate) fn whole_project_diagnostics_query(
         );
     }
     // NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b, issue
-    // #1110) — per-file, lazy (see `comparator_contract_diagnostics_query`'s
-    // doc): a project with no inline-`#fn` comparator site never triggers
-    // effect inference here.
+    // #1110 — extended to the fn-value verb trio `map`/`filter`/`fold` by
+    // issue #1679, §4) — per-file, lazy (see
+    // `comparator_contract_diagnostics_query`'s doc): a project with no
+    // inline-`#fn` comparator/callback site never triggers effect
+    // inference here.
     for file in project.files(db) {
         diagnostics.extend(
             comparator_contract_diagnostics_query(db, project, *file)
@@ -535,11 +1028,161 @@ pub(crate) fn whole_project_diagnostics_query(
                 .cloned(),
         );
     }
+    // Conventions-module confinement gate (E169, issue #1844) — per-file,
+    // lazy (see `conventions_confinement_diagnostics_query`'s doc): a file
+    // with no declared claim handler never even reads `module_map_query`.
+    for file in project.files(db) {
+        diagnostics.extend(
+            conventions_confinement_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+    // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26) — last,
+    // matching `brink_analyzer::whole_project_diagnostics`' own composition
+    // order. The verdict table itself (issue #1506) is [`ufcs_resolution_
+    // query`]'s own memo, shared with LIR lowering — this just takes the
+    // diagnostics half.
+    diagnostics.extend(
+        ufcs_resolution_query(db, project)
+            .diagnostics
+            .iter()
+            .cloned(),
+    );
 
     WholeProjectDiagnostics {
         diagnostics,
         symbol_meta,
     }
+}
+
+/// B3a UFCS resolution (issue #1482/#1506): the project's verdict table,
+/// translated to `brink-ir`'s own lowering-facing mirror type
+/// (`brink_ir::lir::UfcsLookup`), plus the diagnostics the analyzer's `ufcs`
+/// pass produced alongside it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UfcsResolution {
+    pub table: brink_ir::lir::UfcsLookup,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Compute [`UfcsResolution`], translating the analyzer's verdict table to
+/// `brink-ir`'s own lowering-facing mirror type at this one seam — see that
+/// type's doc for why `brink-ir` can't name `brink_analyzer::UfcsVerdict`
+/// directly (it sits below `brink-analyzer` in the crate graph).
+///
+/// Memoized once per project and read by four call sites —
+/// [`whole_project_diagnostics_query`] (the diagnostics half), (issue #1506)
+/// `lir_knot_chunk_query`'s per-knot LIR lowering plus `lir_lowering_query`'s
+/// own root-content step, and (issue #1507) `ProjectDb::ufcs_verdict`, which
+/// `brink-ide`'s hover/go-to-def wiring reads through — so all four see the
+/// same table rather than each re-running whole-project inference.
+///
+/// Lazy on the same argument [`whole_project_diagnostics_query`]'s old
+/// inline check used: a project with no dotted-callee call anywhere never
+/// triggers inference here (every ink project is in that set by
+/// construction — ink's own lowering cannot produce a multi-segment callee
+/// path; see `brink-analyzer`'s `ufcs` module doc), and builds (and stays
+/// pointer-stable at) the empty table.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn ufcs_resolution_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> UfcsResolution {
+    let resolved = resolutions_index_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
+        .collect();
+
+    if !hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_ufcs_call(hir))
+    {
+        return UfcsResolution {
+            table: brink_ir::lir::UfcsLookup::new(),
+            diagnostics: Vec::new(),
+        };
+    }
+
+    // Reuses the FG-narrowed, per-SCC-memoized `type_inference_query`
+    // rather than letting the analyzer recompute inference from scratch —
+    // the same seam `whole_project_diagnostics_query`'s strict block above
+    // reuses.
+    let inference = type_inference_query(db, project);
+    let (table, diagnostics) = brink_analyzer::ufcs_resolution(
+        &hir_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        inference.as_ref(),
+    );
+
+    UfcsResolution {
+        // The one shared translation point (issue #1506) — see
+        // `brink_analyzer::ufcs_lir_lookup`'s own doc.
+        table: brink_analyzer::ufcs_lir_lookup(&table),
+        diagnostics,
+    }
+}
+
+/// B1 `or`-coalescing typing (issue #1492/#1471): the project's recorded
+/// per-step chain shapes, translated to `brink-ir`'s own lowering-facing
+/// mirror type (`brink_ir::lir::CoalesceLookup`).
+///
+/// Only the **table** half of `brink_analyzer::coalesce_types` is kept: its
+/// `E066` diagnostics are strict-mode-only and already reach
+/// [`whole_project_diagnostics_query`] through `strict::check`'s own wiring
+/// (see `brink_analyzer::coalesce_types`' doc — surfacing them from here
+/// too would emit strict-only diagnostics under `types = gradual`, and
+/// duplicate them under strict).
+///
+/// Deliberately **not** gated on the `types` policy: the recorded shapes are
+/// a typing *record*, not a strict-mode check. Native's un-overridden
+/// default is gradual (`brink-analyzer::strict::native_strict_only_error`'s
+/// own doc), and a gradual chain whose operands *are* statically pinned
+/// still deserves the right code shape; only genuinely unpinned steps come
+/// back as `CoalesceShape::RuntimeCheck`.
+///
+/// Memoized once per project and read by the two LIR-lowering call sites
+/// (`lir_knot_chunk_query`, `lir_lowering_query`'s root-content step), so
+/// both see the same table. Lazy the same way [`ufcs_resolution_query`] is:
+/// a project with no `or`-coalescing anywhere (every ink-dialect project,
+/// by construction — `InfixOp::Coalesce` is native-lowering-only) never
+/// triggers whole-project inference here and stays pointer-stable at the
+/// empty table.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn coalesce_types_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_ir::lir::CoalesceLookup {
+    let resolved = resolutions_index_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
+        .collect();
+
+    if !hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_coalesce(hir))
+    {
+        return brink_ir::lir::CoalesceLookup::new();
+    }
+
+    // Reuses the FG-narrowed, per-SCC-memoized `type_inference_query`
+    // rather than letting the analyzer recompute inference from scratch —
+    // the same seam `ufcs_resolution_query` above reuses.
+    let inference = type_inference_query(db, project);
+    let (table, _strict_only_diagnostics) = brink_analyzer::coalesce_types(
+        &hir_refs,
+        &resolved.index,
+        inference.as_ref(),
+        &resolved.resolutions,
+    );
+    // The one shared translation point (issue #1471) — see
+    // `brink_analyzer::coalesce_lir_lookup`'s own doc.
+    brink_analyzer::coalesce_lir_lookup(&table)
 }
 
 /// All analysis diagnostics, assembled in the exact order
@@ -575,9 +1218,12 @@ pub(crate) fn analysis_diagnostics_query(
 /// [`whole_project_diagnostics_query`] rather than calling
 /// [`brink_analyzer::finish_analysis`] directly) — `db.analysis()`'s public
 /// shape, kept for LSP/IDE/CLI consumers that want the whole bundled
-/// result. Output-identical to the pre-FG-3 query and to the monolithic
-/// `analyze_with_options` path (pinned by `query_equivalence.rs`); the
-/// decomposition changes *dependency edges*, not values. Narrower consumers
+/// result. Output-identical to the pre-FG-3 query and to the monolithic,
+/// module-aware `analyze_with_modules` path (pinned by
+/// `query_equivalence.rs`) — only equal to the module-*blind*
+/// `analyze_with_options` for ink projects without a declared `#@module`,
+/// see `ProjectDb::module_map`'s doc (issue #1526); the decomposition
+/// changes *dependency edges*, not values. Narrower consumers
 /// ([`diagnostics_query`], [`lir_query`]) read the three sub-queries
 /// directly instead of through this bundle.
 #[salsa::tracked(returns(ref))]
@@ -609,7 +1255,7 @@ pub(crate) fn diagnostics_query(
     file: SourceFile,
 ) -> Vec<Diagnostic> {
     let file_id = file.file_id(db);
-    let mut out = lowered_query(db, file).diagnostics.clone();
+    let mut out = lowered_query(db, project, file).diagnostics.clone();
     out.extend(
         analysis_diagnostics_query(db, project)
             .iter()
@@ -655,23 +1301,28 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
             file: f.file_id(db),
             source: f.text(db),
             suppressions: super::suppressions_query(db, *f),
-            lowering: &lowered_query(db, *f).diagnostics,
+            lowering: &lowered_query(db, project, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).type_policy();
+    let opts = project.analysis_options(db);
+    let types = opts.type_policy();
     let diagnostics = analysis_diagnostics_query(db, project);
     let (errors, _warnings) =
-        super::partition_diagnostics(&inputs, diagnostics, disable_all, types);
+        super::partition_diagnostics(&inputs, diagnostics, disable_all, types, &opts.lints);
     !errors.is_empty()
 }
 
 /// The same [`partition_diagnostics`] "does at least one Error-severity
-/// diagnostic exist" verdict as [`has_errors_query`], but scoped to
-/// `project.entry(db)`'s transitive `INCLUDE` closure ([`include_graph_query`]'s
-/// `topological_order`, issue #815's established narrowing — the same
-/// reachability machinery `struct_shape_data_query`/`lir_prelude_decls_query`/
-/// `lir_lowering_query` in `queries/mod.rs` already use) instead of every file
-/// loaded into the project db.
+/// diagnostic exist" verdict as [`has_errors_query`], but scoped to the
+/// project's **codegen closure** ([`super::compilation_closure_files`]) rather
+/// than every file loaded into the project db — the same reachability
+/// machinery `struct_shape_data_query`/`lir_prelude_decls_query`/
+/// `lir_lowering_query` in `queries/mod.rs` already use. For an ink project
+/// that closure is `entry`'s transitive `INCLUDE` closure (issue #815's
+/// established narrowing); for a **native** project it is every discovered
+/// `.brink` module (issue #1296), so a broken **unreferenced** sibling module
+/// still fails this gate — the whole native module tree is the compilation
+/// unit (Rust parity).
 ///
 /// [`has_errors_query`] itself is untouched and stays whole-project: it feeds
 /// `db.has_errors()`/`db.lir_product()`, IDE-surface reads FG-4a's
@@ -688,16 +1339,15 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
 /// closes that gap: an unrelated file's error still surfaces through
 /// `diagnostics_query`/`db.diagnostics(file)` (both still whole-project,
 /// unchanged), it just no longer blocks a different entry's build.
-///
-/// [`include_graph_query`]: super::include_graph_query
 #[salsa::tracked]
 pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
     let Some(entry) = project.entry(db) else {
         return false;
     };
     let files = project.files(db);
-    let graph = super::include_graph_query(db, project);
-    let closure: LookupSet<FileId> = graph.topological_order(entry).into_iter().collect();
+    let closure: LookupSet<FileId> = super::compilation_closure_files(db, project)
+        .into_iter()
+        .collect();
     let disable_all = files
         .iter()
         .find(|f| f.file_id(db) == entry)
@@ -709,16 +1359,17 @@ pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: Pro
             file: f.file_id(db),
             source: f.text(db),
             suppressions: super::suppressions_query(db, *f),
-            lowering: &lowered_query(db, *f).diagnostics,
+            lowering: &lowered_query(db, project, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).type_policy();
+    let opts = project.analysis_options(db);
+    let types = opts.type_policy();
     let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
         .iter()
         .filter(|d| closure.contains(&d.file))
         .cloned()
         .collect();
     let (errors, _warnings) =
-        super::partition_diagnostics(&inputs, &diagnostics, disable_all, types);
+        super::partition_diagnostics(&inputs, &diagnostics, disable_all, types, &opts.lints);
     !errors.is_empty()
 }

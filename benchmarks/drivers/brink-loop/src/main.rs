@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn run_once(
     program: std::sync::Arc<brink_runtime::Program>,
@@ -25,15 +25,20 @@ fn run_once(
         };
         let last = lines.last();
         match last {
-            Some(Line::Text { .. } | Line::Done { .. } | Line::End { .. }) | None => break,
-            Some(Line::Choices { choices, .. }) => {
+            // `Suspended` is runtime-unreachable today (FS-3r not yet
+            // landed, see brink_runtime::Step docs) but is matched here so
+            // this tool keeps compiling once it becomes reachable.
+            Some(Step::Line(_) | Step::Done | Step::End | Step::Suspended) | None => break,
+            Some(Step::Choices(choices)) => {
                 if input_idx >= inputs.len() {
                     break;
                 }
                 let idx = inputs[input_idx];
                 input_idx += 1;
                 assert!(idx < choices.len());
-                story.choose(idx).unwrap_or_else(|e| panic!("choose failed: {e}"));
+                story
+                    .choose(idx)
+                    .unwrap_or_else(|e| panic!("choose failed: {e}"));
             }
         }
     }
@@ -61,21 +66,24 @@ fn main() {
     let inputs: Vec<usize> = input_str
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.trim().parse().unwrap_or_else(|e| panic!("bad input line {l:?}: {e}")))
+        .map(|l| {
+            l.trim()
+                .parse()
+                .unwrap_or_else(|e| panic!("bad input line {l:?}: {e}"))
+        })
         .collect();
 
     let data = if story_path.ends_with(".inkb") {
         let bytes = std::fs::read(story_path)
             .unwrap_or_else(|e| panic!("failed to read {story_path}: {e}"));
-        brink_format::read_inkb(&bytes)
-            .unwrap_or_else(|e| panic!("failed to read inkb: {e}"))
+        brink_format::read_inkb(&bytes).unwrap_or_else(|e| panic!("failed to read inkb: {e}"))
     } else {
         brink_compiler::compile_path(std::path::Path::new(story_path))
             .unwrap_or_else(|e| panic!("failed to compile {story_path}: {e}"))
             .data
     };
-    let (program, line_tables) = brink_runtime::link(&data)
-        .unwrap_or_else(|e| panic!("failed to link: {e}"));
+    let (program, line_tables) =
+        brink_runtime::link(&data).unwrap_or_else(|e| panic!("failed to link: {e}"));
     let program = std::sync::Arc::new(program);
 
     let start = Instant::now();

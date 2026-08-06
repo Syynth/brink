@@ -3,25 +3,28 @@
 //! The runtime takes a [`StoryData`](brink_format::StoryData) from the compiler,
 //! links it into an immutable [`Program`], and executes it via [`Story`].
 //!
-//! ```ignore
+//! ```no_run
+//! # fn example(story_data: &brink_format::StoryData) -> Result<(), brink_runtime::RuntimeError> {
 //! use std::sync::Arc;
+//! use brink_runtime::Step;
 //!
-//! let (program, line_tables) = brink_runtime::link(&story_data)?;
-//! let mut story = brink_runtime::Story::new(Arc::new(program), line_tables);
+//! let (program, line_tables) = brink_runtime::link(story_data)?;
+//! let mut story: brink_runtime::Story = brink_runtime::Story::new(Arc::new(program), line_tables);
 //! loop {
 //!     match story.continue_single()? {
-//!         Line::Text { text, .. } => print!("{text}"),
-//!         Line::Choices { text, choices, .. } => {
-//!             print!("{text}");
+//!         Step::Line(line) => print!("{}", line.text),
+//!         Step::Done => {}
+//!         Step::Choices(choices) => {
+//!             let _ = choices;
 //!             // pick a choice...
 //!             story.choose(0)?;
 //!         }
-//!         Line::End { text, .. } => {
-//!             print!("{text}");
-//!             break;
-//!         }
+//!         Step::End => break,
+//!         Step::Suspended => break,
 //!     }
 //! }
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! `no_std` + `alloc`: this crate builds without the standard library when
@@ -66,7 +69,7 @@ mod world;
 
 pub use brink_format::{LoadReport, SAVE_FORMAT_VERSION, SaveState, VisitEntry};
 pub use debug::{DebugChoice, DebugFrame, DebugGlobal, DebugRng, DebugSnapshot, DebugVisit};
-pub use error::RuntimeError;
+pub use error::{RanOutOfContentCause, RuntimeError};
 pub use external_policy::{EvalContext, ExternalsReport, KindTieredHandler, PolicyKind};
 pub use iter::ValueIter;
 pub use linker::link;
@@ -87,10 +90,11 @@ pub use session::{
 pub use speculation::{Budget, Speculation, SpeculationStep};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
-    Choice, DriveOutcome, ExecMode, ExternalFnHandler, ExternalResult, FallbackHandler,
-    FlowInstance, FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
+    BlockId, Choice, DriveOutcome, Element, ExecMode, ExternalFnHandler, ExternalResult,
+    FallbackHandler, FlowInstance, FunctionEval, OutputLine, Stats, Step, StepOutcome, Story,
+    StorySnapshot, StoryStatus,
 };
 pub use world::{
-    CommitError, ContextView, FlowLocal, Mode, PolicyError, ResolvedPolicy, Scope, World,
-    WorldPolicy, commit,
+    CommitError, ContextView, FlowLocal, FrameStartView, Mode, PolicyError, ResolvedPolicy, Scope,
+    World, WorldPolicy, commit,
 };

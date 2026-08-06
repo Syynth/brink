@@ -125,8 +125,8 @@ places on a frontend. **RULED** = load-bearing today (a consumer depends on it);
   EndOfLine, LogicBlock, Await`. RULED classification invariants (F-I):
   - `Divert`/`Return` are terminal; `TunnelCall`/`ThreadStart` are not (drives
     `E033`, F-I#7).
-  - `Return.ptr = None` ⟺ tunnel return; `Some` ⟺ explicit `return` (F-I#6). UGLY
-    — a semantic bit smuggled through pointer presence (Q7).
+  - `Return.kind: ReturnKind { Explicit, TunnelRedirect }` — the explicit
+    semantic bit (B0.2). `ptr` presence carries no meaning (F-I#6 retired).
   - A divert must be *last* in an inline conditional/sequence branch (F-I#7).
 - `LogicBlock`/`BlockStmt` — the `~ { … }` closed statement set (no weave node by
   construction). `Await` at statement position only (F-H).
@@ -175,7 +175,16 @@ anchors (F-I#1, F-J).
 - **Names / paths.** `Name.text` and `Path.segments` must be well-formed and
   stamped in the exact qualification convention the index is queried against:
   stitches `knot.stitch`, labels `knot[.stitch].label`, list items `List.item`
-  (F-I#3). Malformed → silent non-resolution.
+  (F-I#3). Malformed → silent non-resolution. **Carve-out (B0.3, issue
+  #1188):** this is the shape for a *nested* stitch/label. Two real,
+  corpus-legitimate shapes are bare (0 dots) instead — a promoted top-level
+  stitch (`= stitch` with no enclosing `==knot==`,
+  `hir::lower::structure::stitch::lower_top_level_stitch`) and a label
+  declared before the first knot (`hir.root_content`,
+  `brink_ir::symbols::project::qualify_label` with no enclosing knot). `E126`
+  (`brink_analyzer::admission::conforms_to_convention`) accepts both the
+  nested and the bare shape for stitches/labels; this is not a bug, and a
+  frontend must be prepared to see either.
 - **Dialect tags.** There is **no dialect tag on any HIR node** (F-B, F-I#10).
   Dialect and type-policy arrive as `AnalysisOptions`. A frontend must not try to
   embed them. (§4 proposes the native frontend declares its dialect to the
@@ -203,9 +212,9 @@ anchors (F-I#1, F-J).
 - **Must not embed dialect/type-policy in the tree** (F-I#10).
 - **Must not pre-resolve builtins** (`len`, `none`, `LIST_MIN`, …) — leave them
   as unresolved refs (F-I#9).
-- **Must not smuggle semantics through pointer presence** — but the *existing*
-  `Return.ptr` coupling does exactly this (F-I#6); until Q7 lands, a frontend
-  must replicate the `ptr==None`-means-tunnel-return convention.
+- **Must not smuggle semantics through pointer presence** — discharged for
+  `Return` by B0.2: a frontend stamps `ReturnKind` explicitly and may attach
+  (or omit) provenance freely on either kind (F-I#6 retired).
 
 ### 1.5 What the PIPELINE owns downstream (not the frontend)
 
@@ -240,7 +249,7 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
 | `{if}`/`{match}` | `Conditional{IfElse/Switch}` | reuse |
 | alternation `{~}{&}{!}{|}` | `Sequence` (bitmask) | reuse |
 | diverts / tunnels `-> x ->` | `Divert` / `TunnelCall` | reuse |
-| `return` / `return -> x` | `Return` | reuse (but see Q7) |
+| `return` / `return -> x` | `Return` | reuse (`ReturnKind` explicit, B0.2) |
 | `var`/`const`/`flags`/`extern` | `VarDecl`/`ConstDecl`/`ListDecl`/`ExternalDecl` | reuse |
 | `struct` | `StructDecl` | reuse |
 | UFCS `x.foo(y)` | `FieldAccess`/`Call` (analyzer disambiguates) | reuse |
@@ -250,7 +259,8 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
 **Native features with no clean ink equivalent — the additions inventory:**
 
 1. **`for k, v` iteration** (ruled 2026-07-18). `ForStmt.var_name` is single
-   (F-K). **Additive field** `val_name: Option<Name>`. *Lean.*
+   (F-K). **Additive field** `val_name: Option<Name>`. *Lean.* **Landed**
+   (#1461, Track B2).
 2. **`enum` declarations + exhaustive `match`** (§13.1, ruled 2026-07-19).
    No HIR node (F-K). New `EnumDecl { name, variants: [{name, fields}] }`; `match`
    can extend `CondKind::Switch` with variant patterns or gain a `CondKind::Match`.
@@ -263,8 +273,18 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
    (a lowering rule, not a node).*
 4. **Anonymous lambdas.** `FnLiteral` is partial application over a *named*
    target, not an anonymous body (F-K). Charter §7 leans UFCS-over-lambdas
-   ("no method system"). *Defer — do not add an anonymous-fn-body node until the
-   code sitting rules one is wanted.*
+   ("no method system"). **Landed** (#1685): `hir::Expr::Lambda`/`LambdaBody`
+   per the 2026-07-19 ruling (Rust pipes, colon returns, by-value capture,
+   `E156` for a write to a captured binding). `FnLiteral` remains what it
+   always was — partial application over a *named* target — a different
+   shape, not a substitute. **Lambda lifting landed** (#1709): LIR lowering
+   synthesizes a top-level function from the lambda body and creates an
+   ordinary fn value over it (`lir::lower::lambda`), so the targeted `E052`
+   codegen fence that stood here is retired. Still unrepresentable: the
+   lifted function's **effect row**: `Ty::Fn` carries one since #1680 step
+   3, but that row names creation targets by `DefinitionId`, and while a
+   lambda now has one, minted at HIR time (#1727), it still has no index
+   symbol for the SCC solve to key a row against (#1770).
 5. **blocks-as-values** (watch list). No HIR support; `Stmt`/`Expr` are separated
    (F-K). *Defer to a semantics round (parking-lot); it is not same-semantics.*
 6. **Deep container nesting >2** (watch list). No HIR support; the model,
@@ -273,8 +293,8 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
    contract's addressing model should stop asserting exactly-2 (Q4).*
 
 **Verdict:** the native parser needs **one lean additive field** (`for k,v`) for
-v1, plus a **reserved channel** for enums, plus lowering *rules* (companions,
-UFCS) that add no nodes. The rest is reuse. The friction is not missing nodes —
+v1 — **landed** (#1461, Track B2) — plus a **reserved channel** for enums,
+plus lowering *rules* (companions, UFCS) that add no nodes. The rest is reuse. The friction is not missing nodes —
 it is the **ugly nodes it must fabricate** (weave `depth`/`context`, the
 `Return.ptr` convention, the `AstPtr` provenance) and the **silent couplings**
 (§3). The contract's real work is cleaning those, not growing the inventory.
@@ -385,6 +405,17 @@ should be optional/removed, not faked.
 
 ### D5. `Return.ptr` presence is a load-bearing semantic bit
 
+> **Status: DISCHARGED by B0.2 (branch `auto/b0-return-kind`).** `hir::Return`
+> now carries an explicit `kind: ReturnKind { Explicit, TunnelRedirect }`;
+> `E032` and LIR `is_tunnel` key off `kind`, never `ptr` presence. `Return.ptr`
+> is uniform carrying-or-not `Option<Provenance>` with no semantic load — a
+> provenance-carrying tunnel return is legal, admission-clean, and still
+> classifies as a tunnel (tested both directions: `brink-analyzer`
+> `validate.rs` unit fixtures + the `brink-ir` `lir_lowering.rs`
+> `provenance_carrying_tunnel_return_still_lowers_as_tunnel` pipeline test).
+> The B0.1 presence-semantics shim is retired. A native `return -> x` lowering
+> stamps `TunnelRedirect` explicitly.
+
 Whether a `Return` is an explicit `~ return` or a tunnel return is encoded *purely
 in whether a syntax pointer was attached* (`ptr.is_some()`, F-I#6). A frontend
 that attaches provenance uniformly (the natural thing to do) emits spurious
@@ -462,11 +493,16 @@ today silent (§3):
    `is_function` is indexed with the function sentinel.
 2. **Range well-formedness** (kills the D2 class at admission): every node range is
    non-empty and within file bounds; no two distinct references share a range
-   (the join key must be unique).
+   (the join key must be unique). **Ruling (B0.3, issue #1188):** unlike check
+   1, `Param`/`Temp` local name ranges ARE in scope here — a `Param.name.range`
+   becomes `LocalSymbol.range` (`symbols::project_manifest`), a load-bearing
+   §1.3 shadowing-order join key, so `Knot`/`Stitch` params are walked for
+   well-formedness even though locals are out of scope for check 1 (which is
+   scoped to `DeclaredSymbol`, not `LocalSymbol`).
 3. **Name-convention conformance** (kills F-I#3 silent failures): stitch/label/
    list-item names match the required qualification shape (`.matches('.').count()`
    expectations made explicit and checked).
-4. **Control-flow classification** (kills D5/F-I#7): `Return.kind` (once Q7 lands)
+4. **Control-flow classification** (kills D5/F-I#7): `Return.kind` (landed, B0.2)
    is explicit; diverts are last in inline branches; terminal-stmt rules hold.
 5. **`ContainerPtr` ⇄ `SymbolKind`** consistency (kills the #626 trap, F-I#5).
 
@@ -489,7 +525,7 @@ never-reuse-codes rule (`hir/types.rs` DiagnosticCode doc).
 ### 4.4 Versioning / extension posture for the contract itself
 
 - **The node set is additive-open, closed to silent extension.** New nodes (enums,
-  `for k,v`, a future lambda) land as new variants/fields + their admission checks
+  `for k,v`, lambdas (landed, #1685)) land as new variants/fields + their admission checks
   + their downstream handling, exactly as the directive channel's reserved
   namespace makes new directives non-breaking (F-E). A frontend emitting a node
   the running compiler doesn't know is a **loud admission error**, never a silent
@@ -500,8 +536,9 @@ never-reuse-codes rule (`hir/types.rs` DiagnosticCode doc).
   native surface is strict-only (2026-07-19) and *produces* those very nodes. The
   clean shape is a native **accept-list** admission gate (the inverse): "these HIR
   shapes are legal native input", which *also* rejects ink-only baggage
-  (`root_content`, ambient `ThreadStart`, relative weave) that a native frontend
-  should never emit. (Q6.)
+  (`root_content` outside the single synthesized `flow main()` entry divert,
+  ambient `ThreadStart`, relative weave) that a native frontend should
+  otherwise never emit. (Q6.)
 - **Cross-dialect calls are mediated, not merged** (2026-07-19): ink symbols enter
   native code as `Unknown`; strict rejects `Unknown` escapes; annotate at the
   seam. The contract does not need to unify the two dialects' type regimes — it
@@ -587,7 +624,8 @@ gate?** (§4.4)
   extensions to a fixed base; native *is* the base and forbids the ink-only edges.
   An accept-list is the honest shape for a strict-only surface.
 
-**Q7 — Fix the `Return.ptr`-as-semantic-bit coupling now?** (D5)
+**Q7 — Fix the `Return.ptr`-as-semantic-bit coupling now?** (D5) — **RULED
+(a), LANDED by B0.2** (`ReturnKind` on `hir::Return`; see the D5 stamp).
 - (a) Add `Return.kind: ReturnKind { Explicit, TunnelRedirect }`; stop overloading
   pointer presence. Small, local.
 - (b) Leave it; document the `ptr==None`-means-tunnel convention as a contract

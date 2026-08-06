@@ -81,7 +81,11 @@ impl EffectRowView {
             reads,
             writes,
             calls,
-            opaque: row.opaque,
+            // `is_pessimal`, not the intrinsic `opaque` bit: a row that still
+            // carries a §6.1 row variable (issue #1680) is unbounded until a
+            // caller instantiates it, and this view has no hole channel to
+            // show one in.
+            opaque: row.is_pessimal(),
             emits: row.emits,
             tags: row.tags,
             faults: row.faults,

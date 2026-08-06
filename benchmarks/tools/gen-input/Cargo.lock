@@ -44,8 +44,10 @@ version = "0.0.11"
 dependencies = [
  "brink-format",
  "brink-ir",
+ "brink-project-config",
  "brink-syntax",
  "rowan",
+ "serde",
 ]
 
 [[package]]
@@ -77,7 +79,9 @@ dependencies = [
  "brink-codegen-inkb",
  "brink-format",
  "brink-ir",
+ "brink-source-tree",
  "brink-syntax",
+ "brink-syntax-native",
  "rowan",
  "salsa",
  "thiserror",
@@ -91,6 +95,8 @@ dependencies = [
  "brink-analyzer",
  "brink-db",
  "brink-ir",
+ "brink-project-config",
+ "brink-source-tree",
  "thiserror",
  "tracing",
 ]
@@ -100,6 +106,7 @@ name = "brink-format"
 version = "0.0.11"
 dependencies = [
  "bitflags",
+ "glam",
  "serde",
 ]
 
@@ -110,7 +117,9 @@ dependencies = [
  "bitflags",
  "brink-format",
  "brink-syntax",
+ "brink-syntax-native",
  "regex",
+ "regex-syntax",
  "rowan",
  "serde",
  "thiserror",
@@ -118,16 +127,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "brink-project-config"
+version = "0.0.11"
+dependencies = [
+ "brink-source-tree",
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "brink-runtime"
 version = "0.0.11"
 dependencies = [
  "brink-format",
+ "glam",
  "serde",
  "thiserror",
 ]
 
 [[package]]
+name = "brink-source-tree"
+version = "0.0.11"
+
+[[package]]
 name = "brink-syntax"
+version = "0.0.11"
+dependencies = [
+ "rowan",
+]
+
+[[package]]
+name = "brink-syntax-native"
 version = "0.0.11"
 dependencies = [
  "rowan",
@@ -194,6 +225,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -243,6 +283,12 @@ name = "libc"
 version = "0.2.182"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+
+[[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "lock_api"
@@ -512,6 +558,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -572,6 +627,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.8.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
+dependencies = [
+ "serde",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_edit",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.22.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_write",
+ "winnow",
+]
+
+[[package]]
+name = "toml_write"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
+
+[[package]]
 name = "tracing"
 version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -628,6 +724,15 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "wit-bindgen"

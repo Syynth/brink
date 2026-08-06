@@ -14,7 +14,7 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 use proptest::prelude::*;
 
 /// Compile+run `source` under the brink dialect to completion (choice-free).
@@ -37,12 +37,11 @@ fn run_brink(source: &str) -> String {
     let mut hit_choices = false;
     loop {
         match story.continue_single().expect(&step_msg) {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => {
+            Step::Choices(_) => {
                 hit_choices = true;
                 break;
             }
@@ -157,13 +156,28 @@ proptest! {
             }
         }
 
+        // A repeated key can no longer be *spelled in a literal* — that is
+        // `E138` since #1103's cascade ruling (A) — so the generated
+        // program puts each key's first occurrence in the literal and
+        // re-inserts every repeat through an indexed write. Same
+        // `OrderedMap::insert` path, same property under test (a repeated
+        // key keeps its original slot), spelled the way the ruling leaves
+        // available.
         let entries: Vec<String> = keys
             .iter()
             .enumerate()
+            .filter(|(i, k)| keys.iter().position(|other| other == *k) == Some(*i))
             .map(|(i, k)| format!("\"{k}\": {i}"))
             .collect();
+        let mut repeats = String::new();
+        for (i, k) in keys.iter().enumerate() {
+            if keys.iter().position(|other| other == k) != Some(i) {
+                use std::fmt::Write as _;
+                let _ = writeln!(repeats, "    m[\"{k}\"] = {i}");
+            }
+        }
         let source = format!(
-            "VAR out = \"\"\n~ {{\n    temp m = #{{{}}}\n    for k in m {{\n        out = out + k\n    }}\n}}\n{{out}}\n-> END\n",
+            "VAR out = \"\"\n~ {{\n    temp m = #{{{}}}\n{repeats}    for k in m {{\n        out = out + k\n    }}\n}}\n{{out}}\n-> END\n",
             entries.join(", "),
         );
         let out = run_brink(&source);
@@ -227,12 +241,14 @@ proptest! {
         prop_assert_eq!(out.trim(), expected.trim());
     }
 
-    /// `insert(a, i, v)` (shift right) then `remove(a, j)` (shift left) on a
-    /// compiled brink program must equal the same sequence of `Vec::insert`/
-    /// `Vec::remove` calls on a Rust reference — the RMW chain equivalence
-    /// law (§6) extended to the mutators, not just indexed assignment.
+    /// `insert(a, i, v)` (shift right) then `remove_at(a, j)` (shift left)
+    /// on a compiled brink program must equal the same sequence of
+    /// `Vec::insert`/`Vec::remove` calls on a Rust reference — the RMW chain
+    /// equivalence law (§6) extended to the mutators, not just indexed
+    /// assignment. (Issue #1484: this used `remove(a, j)`; the array-index
+    /// leg is `remove_at` now.)
     #[test]
-    fn insert_then_remove_matches_manual_vec_ops(
+    fn insert_then_remove_at_matches_manual_vec_ops(
         base in prop::collection::vec(0i32..100, 1..5),
         insert_at in 0usize..5,
         insert_v in -1000i32..1000,
@@ -249,7 +265,7 @@ proptest! {
             base.iter().map(i32::to_string).collect::<Vec<_>>().join(", ")
         );
         let source = format!(
-            "VAR arr = 0\nVAR out = \"\"\n~ {{\n    arr = {literal}\n    insert(arr, {clamped_insert}, {insert_v})\n    remove(arr, {remove_at})\n    for x in arr {{\n        out = out + \" \" + x\n    }}\n}}\n{{out}}\n-> END\n",
+            "VAR arr = 0\nVAR out = \"\"\n~ {{\n    arr = {literal}\n    insert(arr, {clamped_insert}, {insert_v})\n    remove_at(arr, {remove_at})\n    for x in arr {{\n        out = out + \" \" + x\n    }}\n}}\n{{out}}\n-> END\n",
         );
         let out = run_brink(&source);
         let expected = space_joined(&reference);

@@ -3,14 +3,16 @@
 //! `name: type` after params and `VAR`/`temp` declarations, `): type ===`
 //! in the function-header return position. Superset grammar — parses
 //! identically in both dialects; `strict-ink` rejection (E051) happens at
-//! analysis (`brink-analyzer::dialect_gate`), never here. Nominal type names
-//! are lowercase: `int`, `float`, `bool`, `string`, `divert`, `void`,
-//! `list<L>`, `array<T>`, `map<K, V>`, `fn(T…): R`, `handle<K>` (T1d-2,
-//! docs/t1d-spec.md §3 — a manifest-declared handle kind name). Grammar
-//! accepts *any* identifier as a type name or generic head — recognizing
-//! the fixed set, rejecting unknown names, and flagging `fn(...)` as
-//! reserved-until-T1c are semantic checks (`brink-analyzer`), not parser
-//! concerns.
+//! analysis (`brink-analyzer::dialect_gate`), never here. Primitive leaf
+//! names are lowercase: `int`, `float`, `bool`, `string`, `divert`, `void`.
+//! Every non-primitive type name is Uppercase (issue #1552,
+//! `docs/decision-log.md` 2026-07-27 "Type-name surface ruled"): `List<L>`,
+//! `Array<T>`, `Map<K, V>`, `Option<T>`, `Weighted<T>`, `Handle<K>` (T1d-2,
+//! docs/t1d-spec.md §3 — a manifest-declared handle kind name), plus
+//! `fn(T…): R`. Grammar accepts *any* identifier as a type name or generic
+//! head — recognizing the fixed set, rejecting unknown names, and flagging
+//! `fn(...)` as reserved-until-T1c are semantic checks (`brink-analyzer`),
+//! not parser concerns.
 
 use crate::SyntaxKind::{
     COLON, COMMA, GT, IDENTIFIER, L_PAREN, LT, R_PAREN, TYPE_ANNOTATION, TYPE_EXPR, TYPE_FN,
@@ -80,9 +82,19 @@ fn type_name_or_generic(p: &mut Parser<'_, '_>) {
     p.start_node(IDENTIFIER);
     p.expect_ident_or_keyword();
     p.finish_node();
-    p.skip_ws();
 
+    // `current()` peeks past trivia without consuming it (`nth`/`non_trivia`),
+    // so this branch check is safe before any trivia is flushed. Only the
+    // `TYPE_GENERIC` arm actually consumes it here — that trivia belongs
+    // *inside* the generic node, before the `<`. The `TYPE_NAME` arm must
+    // NOT consume it before `start_node_at`: doing so pulled trailing
+    // whitespace inside the `TYPE_NAME` node (`checkpoint` is pinned before
+    // `IDENTIFIER`, so anything bumped before `start_node_at` gets wrapped
+    // into it), corrupting the node's range for any consumer that treats it
+    // as the type name's true span (e.g. rename/find-references) — mirrors
+    // `brink-syntax-native/src/parser/types.rs`'s `type_name_or_generic`.
     if p.current() == LT {
+        p.skip_ws();
         p.start_node_at(checkpoint, TYPE_GENERIC);
         p.bump(); // LT
         if p.at_depth_limit() {
@@ -173,6 +185,37 @@ mod tests {
         assert!(out.contains("TYPE_NAME"), "{out}");
     }
 
+    /// PR #2271 review finding: `TYPE_NAME`'s range must be exactly the
+    /// identifier's range, never absorbing the trailing trivia the ink
+    /// lexer folds between a type name and whatever follows it (`=`, `)`,
+    /// `===`, …). `brink-ide::rename` registers a `RefKind::Type` reference
+    /// at `TypeExpr::Named`'s (the `TYPE_EXPR` node's) range and emits an
+    /// edit over exactly that span — a `TYPE_NAME`/`TYPE_EXPR` that swallows
+    /// trailing whitespace corrupts a rename's replacement text (e.g.
+    /// `Point`→`Cue` on `VAR p: Point = 0` would emit `Cue= 0`, eating the
+    /// space). Before this fix, `type_name_or_generic` called `p.skip_ws()`
+    /// *before* `start_node_at(checkpoint, TYPE_NAME)`, and since
+    /// `checkpoint` is pinned ahead of the `IDENTIFIER` node, the already
+    /// bumped whitespace token got retroactively wrapped inside `TYPE_NAME`.
+    #[test]
+    fn type_name_range_excludes_trailing_trivia() {
+        let parsed = parse("VAR p: Point = 0\n");
+        let root = parsed.syntax();
+        let type_name = root
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::TYPE_NAME)
+            .expect("TYPE_NAME node");
+        let ident = type_name
+            .descendants_with_tokens()
+            .find_map(|e| e.into_token().filter(|t| t.kind() == SyntaxKind::IDENT))
+            .expect("IDENT token inside TYPE_NAME");
+        assert_eq!(
+            type_name.text_range(),
+            ident.text_range(),
+            "TYPE_NAME must span exactly its IDENT, not any trailing trivia: {root:#?}"
+        );
+    }
+
     #[test]
     fn var_annotation_parses() {
         let out = dump("VAR gold: int = 100\n");
@@ -188,7 +231,7 @@ mod tests {
 
     #[test]
     fn generic_list_type_parses() {
-        let out = dump("VAR w: list<Weathers> = sunny\n");
+        let out = dump("VAR w: List<Weathers> = sunny\n");
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
@@ -197,7 +240,7 @@ mod tests {
 
     #[test]
     fn generic_map_type_parses_two_args() {
-        let out = dump("VAR m: map<string, int> = 0\n");
+        let out = dump("VAR m: Map<string, int> = 0\n");
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
@@ -205,21 +248,21 @@ mod tests {
     }
 
     /// T1d-2 (docs/t1d-spec.md §3, typed-mode-spec.md §3 amendment):
-    /// `handle<K>` needs no grammar change at all — the generic-instantiation
+    /// `Handle<K>` needs no grammar change at all — the generic-instantiation
     /// rule already accepts any identifier as a generic head (this test's
-    /// whole point), same as `list<L>`/`array<T>`/`map<K, V>` before it.
-    /// Recognizing `handle` specifically, and validating `K` against the
+    /// whole point), same as `List<L>`/`Array<T>`/`Map<K, V>` before it.
+    /// Recognizing `Handle` specifically, and validating `K` against the
     /// manifest's declared kinds, are `brink-analyzer` semantic concerns
     /// (`annotations::resolve`/`check`), not this parser's.
     #[test]
     fn generic_handle_type_parses_like_any_other_generic() {
-        let out = dump("VAR h: handle<AudioInstance> = 0\n");
+        let out = dump("VAR h: Handle<AudioInstance> = 0\n");
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
         );
         assert_eq!(
-            parse("VAR h: handle<AudioInstance> = 0\n").errors().len(),
+            parse("VAR h: Handle<AudioInstance> = 0\n").errors().len(),
             0
         );
     }
@@ -234,6 +277,35 @@ mod tests {
     fn void_return_type_parses_as_type_name() {
         let out = dump("=== function noop(): void ===\n~ return\n");
         assert!(out.contains("TYPE_NAME"), "{out}");
+    }
+
+    /// #1509 review finding: no test in that PR proved the new
+    /// `stitch_header` grammar position (`= name(params)?: type`, mirroring
+    /// `knot_header`'s) actually parses — every lowering test went through
+    /// `lower_hir`, which discards `parsed.errors()`. Covers both shapes
+    /// `stitch_header`'s `if p.current() == L_PAREN` / `at_type_annotation`
+    /// split allows: with params and the paramless form, neither of which
+    /// had a test anywhere in the PR.
+    #[test]
+    fn stitch_header_return_type_annotation_parses() {
+        for src in [
+            "=== camp ===\n= fire(logs): int\n~ return logs\n",
+            "=== camp ===\n= fire: int\n~ return 1\n",
+        ] {
+            let parsed = parse(src);
+            assert_eq!(parsed.errors().len(), 0, "{src:?}: {:?}", parsed.errors());
+            let stitch_header = parsed
+                .syntax()
+                .descendants()
+                .find(|n| n.kind() == SyntaxKind::STITCH_HEADER)
+                .expect("STITCH_HEADER node for the parsed stitch");
+            assert!(
+                stitch_header
+                    .descendants()
+                    .any(|n| n.kind() == SyntaxKind::TYPE_ANNOTATION),
+                "{src:?}: {stitch_header:#?}"
+            );
+        }
     }
 
     #[test]

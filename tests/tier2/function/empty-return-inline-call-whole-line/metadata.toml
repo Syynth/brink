@@ -1,0 +1,11 @@
+description = "A whole line whose only content is a call ({f()}) to a function returning an empty string — pins issue #2147's gap 3 (oracle coverage for the empty-render display-position shape #2140 claimed to cover). See issue #2158 for the full trace: this exact construct compiles to a direct call+emit_value, NOT the BeginFragment/EndFragment composition #2140's PR body cited it as an example of — no Value::FragmentRef is ever produced, so brink-runtime::output's suppression never fires here either. It passes because oracle ALSO renders the blank line (no suppression, no regression) — not because the cited mechanism engaged and agreed with oracle."
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "empty-return-inline-call-whole-line"
+
+[classification]
+tier = 2
+feature = "function"
+tags = ["function", "empty-value", "issue-2147"]

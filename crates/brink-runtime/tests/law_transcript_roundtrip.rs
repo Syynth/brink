@@ -193,6 +193,53 @@ fn arb_output_part() -> impl Strategy<Value = OutputPart> {
     ]
 }
 
+/// Structural exhaustiveness guard (issue #1521, mirroring the identical
+/// guard `brink-format`'s `proptest_inkb.rs`/`proptest_inkt.rs` added for
+/// #667/#883): a match over every current [`OutputPart`] variant with **no
+/// wildcard arm**, so this fails to compile the moment a new variant is
+/// added to the enum. Never called — the only purpose is the compile-time
+/// forcing function: `arb_output_part` above used to be a free-standing
+/// `prop_oneof!` over 7 hand-listed variants, so a newly added `OutputPart`
+/// variant got zero generated coverage and the round-trip law stayed green
+/// having tested nothing about it. Whoever adds an `OutputPart` variant must
+/// now also add an arm here — and either extend `arb_output_part` to
+/// generate it, or (like `Checkpoint` below) document why it is deliberately
+/// excluded. This is a prophylactic guard, not a response to a scheduled
+/// change to this exact enum: the nearest ruled `.inkb` v6 wire churn is the
+/// decision-log "Choice-guard `as` un-deferred ... rides v6" entry
+/// (2026-07-26), which grows the `Choice` record, not `OutputPart` — and
+/// `docs/prose-dialect-spec.md` §4.4 puts markup spans in the line table's
+/// `LinePart`, explicitly *not* the runtime fragment model this enum is
+/// part of.
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_output_part_variants_exhaustive(part: &OutputPart) {
+    match part {
+        OutputPart::Text(_)
+        | OutputPart::LineRef { .. }
+        | OutputPart::ValueRef(_)
+        | OutputPart::Newline
+        | OutputPart::Spring
+        | OutputPart::Glue
+        | OutputPart::Tag(_)
+        // `Checkpoint` is deliberately excluded from `arb_output_part` —
+        // `write_transcript` filters every `Checkpoint` out on write
+        // (transient capture marker, never meant to persist; see the
+        // module doc above and `checkpoint_filtered_on_write` in
+        // `transcript.rs`), so there is nothing for the round-trip law to
+        // generate coverage for. It stays listed in this match (rather
+        // than a wildcard) so the guard still trips if `Checkpoint` is
+        // ever removed or split.
+        | OutputPart::Checkpoint
+        // `ElementAttach`/`ElementAttachEnd` (issue #2108) are excluded for
+        // the identical reason `Checkpoint` is: transient, in-memory-only
+        // markers `write_transcript` filters out on write (see
+        // `OutputPart::ElementAttach`'s own doc and `is_persisted` in
+        // `transcript.rs`) — nothing for a round-trip law to prove.
+        | OutputPart::ElementAttach(..)
+        | OutputPart::ElementAttachEnd => {}
+    }
+}
+
 /// One `Fragment` — a small run of parts plus tags. `tags` is generated
 /// (including the empty case) so the round-trip law below exercises the
 /// full `Fragment` — parts *and* tags — pinning the #953 fix (module doc).

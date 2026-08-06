@@ -1,0 +1,18 @@
+# INTERIM hand-respelled fixture. See ../README.md.
+ink_source = "tests/tier1/gather/gather-basic/story.ink"
+oracle_case = "tier1::gather::gather-basic"
+family = "gather (dissolved)"
+status = "hand-respelled, parse-verified only"
+notes = """
+The canonical dissolved-gather case (charter §5, "the single most
+identity-altering respelling in this charter"): ink's unlabeled `-` gather
+line becomes plain content immediately after the closed `{? }` block --
+no gather sigil, no depth-matching squint. Each choice's multi-line body
+moves into a brace opened on the choice's own line (charter: "choice
+bodies take braces when they have nested content"). No gaps encountered.
+
+ENTRY POINT (`main`-flow convention, ruled 2026-07-21, #1106 G-batch): the
+ink source has no knot at all -- its entire body is root content. Wrapped
+verbatim (2-space re-indent only) in `flow main() { ... }`, the ruled
+native story-entry convention.
+"""
