@@ -730,6 +730,12 @@ export class EditorSessionHandle {
    * {@link openFragment}. A caller under a fragment view cannot map these
    * ranges back into its own document as-is; see
    * `crates/brink-web/src/editor/explain_match.rs`'s own module doc for why.
+   *
+   * `winner.kind` (issue #2310) is the claimed line's compile-time
+   * structural shape, read from this file's **last-compiled** snapshot —
+   * it can be absent (`undefined`) even on a hit, whenever nothing has
+   * compiled this file yet or an edit since the last compile makes the
+   * live answer above disagree with it. It is never a guess.
    */
   explainMatch(offset: number): ExplainMatch | null {
     const json = this.session.explain_match(offset);

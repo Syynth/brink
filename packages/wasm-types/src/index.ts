@@ -516,11 +516,19 @@ export interface ExplainCapture {
   end: number;
 }
 
-/** One handler's classification-time match — the winner or a shadowed runner-up. */
+/**
+ * One handler's classification-time match — the winner or a shadowed
+ * runner-up. `kind` (issue #2310) — the claimed line's compile-time
+ * structural shape — is present only on the `winner` a caller receives via
+ * {@link ExplainMatch.winner}; a shadowed entry never carries one, since
+ * only the actual winning claim has a compiled record to read it from (see
+ * `crates/brink-web/src/editor/explain_match.rs`'s own module doc).
+ */
 export interface ExplainClassifiedMatch {
   handler: ExplainHandler;
   order: number;
   mode: "attach" | "wrap";
+  kind?: "content_line" | "scene_heading" | "bang_dispatch" | "cue" | "parenthetical";
   captures: ExplainCapture[];
 }
 

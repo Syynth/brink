@@ -63,6 +63,15 @@
 //! already does for an actually-compiled file; nothing here forecloses
 //! that), rather than shipped half-correct.
 //!
+//! **Delivered by issue #2310**, one layer up: `brink-web`'s
+//! `editor::explain_match` module is exactly that caller — it holds the
+//! last-compiled `HirFile` for the active document and reads `kind` off
+//! [`ElementMatch`](crate::ElementMatch) for the winning line, rather than
+//! re-deriving it, and declines (reports no kind) rather than guess
+//! whenever that compiled snapshot disagrees with this module's own live
+//! winner. This module's own contract is unchanged by that: it still never
+//! sees or reports `ElementKind` itself.
+//!
 //! # Memoization (issue #2113's own reassigned remainder)
 //!
 //! [`ExplainMatchCache`] is the memoized query the ruled cost compensation

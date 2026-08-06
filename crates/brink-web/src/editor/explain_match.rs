@@ -45,11 +45,35 @@
 //! same caveat applies to the `explainMatch`/`explainMatchDoc` TS wrappers
 //! in `@brink-lang/web` (`packages/wasm/src/index.ts`).
 
-use rowan::TextSize;
+use rowan::{TextRange, TextSize};
 use wasm_bindgen::prelude::*;
 
 use super::{EditorSession, ViewContext};
 use crate::editor_dto::explain_match_to_js;
+
+// ── `kind` composition (issue #2310) ────────────────────────────────
+//
+// `brink_ir::explain_match`'s own module doc traces why it cannot derive
+// `brink_ir::ElementKind` ("matched kind") for its own bare-`text` inputs:
+// one variant (`Parenthetical`) is chain-gated on the *previous* line,
+// which a standalone line of text cannot answer. This module is the traced
+// follow-up — "a caller that does hold a parsed CST node... can call
+// `candidate` itself and pair its result alongside this module's
+// `LineExplanation`" — except it does even better than re-calling
+// `candidate`: `brink_ir::HirFile::element_matches` already carries the
+// compile-time-correct `kind` for every line a handler claimed in the last
+// successfully compiled snapshot of this file, so `matched_element_kind`
+// below only *reads* that, never re-derives anything.
+//
+// That snapshot can be stale relative to `explanation`'s own live
+// `classify_line` answer — an edit since the last compile can change which
+// handler wins, or claim a line that used to miss. `matched_element_kind`
+// guards against reporting a kind for the wrong handler by requiring the
+// compiled `ElementMatch`'s own `handler` name to agree with the live
+// winner, in addition to the line ranges overlapping; on any disagreement
+// (or no compiled file at all, or a miss) it reports `None` rather than
+// guess — the same "never imply more than we know" discipline
+// `brink_ir::explain_match`'s own doc holds captures to.
 
 #[wasm_bindgen]
 impl EditorSession {
@@ -89,8 +113,49 @@ impl EditorSession {
         let explanation =
             self.explain_cache
                 .explain(&projection, TextSize::new(line_start), &line_text);
-        serde_json::to_string(&explain_match_to_js(explanation)).unwrap_or_default()
+        let kind = self.matched_element_kind(path, line_start, &line_text, &explanation);
+        serde_json::to_string(&explain_match_to_js(explanation, kind)).unwrap_or_default()
     }
+
+    /// The compile-time [`brink_ir::ElementKind`] ("matched kind") for the
+    /// line `explanation` classified, read from the last-compiled
+    /// [`brink_ir::HirFile::element_matches`] for `path` — see this
+    /// module's own doc for why this is a read, not a re-derivation, and
+    /// why it can decline rather than guess.
+    fn matched_element_kind(
+        &self,
+        path: &str,
+        line_start: u32,
+        line_text: &str,
+        explanation: &brink_ir::LineExplanation,
+    ) -> Option<brink_ir::ElementKind> {
+        let brink_ir::LineExplanation::Matched { winner, .. } = explanation else {
+            // Only a claimed line ever gets an `ElementMatch` at all —
+            // `hir::lower_native::element::try_claim` never pushes one for
+            // a line no handler claims — so a miss has no kind to report.
+            return None;
+        };
+        let db = self.session.db();
+        let file_id = db.file_id(path)?;
+        let hir = db.hir(file_id)?;
+        let line_range = TextRange::new(
+            TextSize::from(line_start),
+            TextSize::from(line_start) + TextSize::of(line_text),
+        );
+        hir.element_matches
+            .iter()
+            .find(|m| m.handler.text == winner.handler.text && ranges_overlap(m.line, line_range))
+            .map(|m| m.kind)
+    }
+}
+
+/// Whether `a` and `b` share any byte at all — tolerant of the two ranges
+/// not being byte-identical (the compiled `ElementMatch::line` is a CST
+/// node's own range; this call site's `line_range` is derived from a naive
+/// `\n`-split of the live source), since both describe "the same source
+/// line" for any well-formed file.
+fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
+    a.start() < b.end() && b.start() < a.end()
 }
 
 /// The byte range `[start, end)` of the line containing `offset` in
@@ -177,6 +242,27 @@ flow main() {
             serde_json::json!("cue"),
             "the winning handler must be `cue`, the only one declared — \
              got {v}"
+        );
+    }
+
+    /// Issue #2310: the compile-time `ElementKind` ("matched kind") is
+    /// composed onto `winner.kind`, read from the last-compiled
+    /// `HirFile::element_matches` for the active file — not re-derived.
+    /// The `VENDOR` line carries no structural sigil (no `@`, no
+    /// `INT./EXT.` prefix), so its compile-time shape is
+    /// `ElementKind::ContentLine`.
+    #[test]
+    fn explain_match_composes_the_compiled_element_kind_onto_the_winner() {
+        let mut s = session_with_conventions();
+        let offset =
+            u32::try_from(CONVENTIONS.find("VENDOR").expect("VENDOR line")).expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            v["winner"]["kind"],
+            serde_json::json!("content_line"),
+            "a bare, sigil-free line's compile-time shape is ContentLine — got {v}"
         );
     }
 
