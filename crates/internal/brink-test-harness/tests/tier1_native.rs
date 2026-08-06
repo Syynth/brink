@@ -334,6 +334,15 @@ fn annotations_element_block() {
 /// structural default form"; exercised end to end by `tests/tier1-native/
 /// conventions-attach-schema`) — confirmed against a real compile+run, not
 /// assumed.
+///
+/// Extended by issue #2079, RULED 2026-08-06 ("Compact cue desugars to cue
+/// plus content line"), with a **compact** cue, `@KID: I have {count}
+/// coins.`, proving `cue` claims the compact form too, matching only the
+/// name segment (`KID`), while the fused dialogue keeps interpolation
+/// rights and lowers as an ordinary content line inside `cue`'s attached
+/// run. Before this issue, `COMPACT_CUE` was structurally invisible to
+/// `candidate()` and always fell to the loud `E129` default — this line
+/// could not have compiled at all.
 #[test]
 fn conventions_screenplay_preset() {
     assert_case("conventions-screenplay-preset");

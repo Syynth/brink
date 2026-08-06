@@ -182,18 +182,24 @@
 // is the only guard today — there is no kind restriction to fall back
 // on.
 //
-// ⚠ **Compact cues (`@NAME: text`, §8b.9) and any cue carrying a tag
-// extension are NOT covered** — a `SCENE_HEADING` carrying a `[slug]`
-// and/or trailing `#tag`s IS covered, since issue #2077 (above).
-// `COMPACT_CUE` fuses a `CUE_NAME` and an ordinary `CONTENT_LINE` (which
-// may itself carry markup) into one node; `candidate()` widens to
-// `CUE`/`PARENTHETICAL` for issue #1720 but deliberately not to
-// `COMPACT_CUE`, since matching it safely needs either a two-piece
-// capture (name AND fused text) `try_claim`'s single-text-node contract
-// does not support today, or a policy for what happens when the fused
-// line is not wholly literal. Left unclaimed — a compact cue still
-// reports the pre-existing loud `E129`, never silently read as ordinary
-// prose.
+// ⚠ **Compact cues (`@NAME: text`, §8b.9) ARE covered by `cue` itself, as
+// of issue #2079 (RULED 2026-08-06, "Compact cue desugars to cue +
+// content line").** `COMPACT_CUE` fuses a `CUE_NAME` and an ordinary
+// `CONTENT_LINE` (which may itself carry markup) into one node;
+// `candidate()` now offers just the `CUE_NAME` segment to matching —
+// exactly as it would for a block cue's own name — so `cue`'s pattern
+// above claims `@KID: …` the same way it claims a bare `@KID`. The fused
+// dialogue is never shown to the pattern (literalness applies to the name
+// segment only) and lowers as an ordinary content line **inside** the
+// attached run `cue`'s `AttachElement` opens, keeping full markup/
+// interpolation rights — `@KID: I have {count} coins.` claims exactly
+// like `@KID` followed by `I have {count} coins.` on its own line would.
+// A `CUE`/`COMPACT_CUE` carrying a tag extension (`@VENDOR #(v.o.)`) is
+// still NOT covered — the tag is structure the pattern is never shown,
+// and unlike a `SCENE_HEADING`, a cue's slug/tag structure is not
+// stripped-and-recovered by issue #2077, which is scoped to headings
+// only. A `SCENE_HEADING` carrying a `[slug]` and/or trailing `#tag`s IS
+// covered, since issue #2077 (above).
 //
 // # `@[style]` — deliberately NOT declared here
 //
