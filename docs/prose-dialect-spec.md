@@ -534,9 +534,10 @@ fn radio(chan: string, text: content) {
   declaration-surface-only posture `E166`/`E171` already take for
   `block`/captured-parameter checks — real name resolution (does a
   struct of that name actually exist) is deliberately out of scope here.
-  `ClaimHandlerDecl::attach` carries the schema name onward — the field a
-  future NS-T projection (#2111, blocked on this landing) reads to
-  surface a handler's declared output schema to the editor/host.
+  `ClaimHandlerDecl::attach` carries the schema name onward — the field
+  the NS-T projection (#2111, landed 2026-08-04 via PR #2212, as
+  `ConventionProjectionEntry::attach: Option<ConventionAttachSchema>`)
+  reads to surface a handler's declared output schema to the editor/host.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -560,15 +561,27 @@ fn radio(chan: string, text: content) {
   decoration, firmly distinct from the runtime markup layer (output
   styling = the handler emits markup spans). Considered-deferred:
   indent-level tokens.
-- **Tooling transparency (no invisible expansion)** — unchanged, and
-  half-landed by #1838: `brink_ir::HirFile::element_matches` records
-  every claimed line as `(line range, matched kind, handler name + its
-  declaration range, the claiming annotation's range, captures as spans,
-  disposition)`. `LineContext` carries the matched handler (fn + source
-  location) and capture bindings as spans (now with their style hooks);
-  hover shows the handler's signature and body; the explain-match query
-  answers is/isn't-matched + what bound — those consumers ride the held
-  editor track and read this record rather than re-running the match.
+- **Tooling transparency (no invisible expansion)** — half-landed by
+  #1838: `brink_ir::HirFile::element_matches` records every claimed line
+  as `(line range, matched kind, handler name + its declaration range,
+  the claiming annotation's range, captures as spans, disposition)`.
+  `LineContext` carries the matched handler (fn + source location) and
+  capture bindings as spans (now with their style hooks) — the record a
+  hover consumer would surface as the handler's signature and body, but
+  no hover call site reads it yet (`crates/internal/brink-ide/src/hover.rs`
+  has no `element_matches`/`ClassifiedMatch` reference); that piece stays
+  unbuilt, tracked at #2006's "Hover shows the handler body" row.
+  **The explain-match query is built**
+  (issue #2113, shipped by PR #2309): `brink_ir::explain_match`/
+  `ExplainMatchCache` compose #2112's classification walk and #2111's
+  projection into is/isn't-matched + what bound (patterns attempted on a
+  miss, other matches shadowed on a hit), reading this record rather
+  than re-running the match — exposed to the wasm editor surface as
+  `EditorSession::explain_match`/`explain_match_doc`. This is not a
+  consumer "riding a held editor track": per the ruling recorded at
+  item 6 below, this compiler-side query family was never covered by
+  the 2026-08-01 hold in the first place, and the hold itself is lifted
+  as of 2026-08-05 regardless.
 - **Deferred**: numeric capture coercion (issue #1849 added `E171`, a
   declaration-time diagnostic for a `claims` handler's non-`string`
   captured param, so the gap is loud rather than silent — the coercion
