@@ -556,10 +556,18 @@ pub(crate) enum Language {
 /// change, no `HashMap` iteration. Uses `Path::extension` to match the
 /// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
 /// "ink"`).
+///
+/// Compared case-insensitively (issue #2329, the case-handling bug flagged
+/// on #2327's review): a real ink file spelled `story.INK` is reachable on
+/// a case-insensitive filesystem (macOS/Windows default) and must classify
+/// identically to `story.ink`, not fall through to the "everything else is
+/// ink" branch by accident of extension casing — which happens to give the
+/// same answer for `Language::Ink` but would have silently misclassified a
+/// `.BRINK` file as ink.
 pub(crate) fn file_language(path: &str) -> Language {
     if std::path::Path::new(path)
         .extension()
-        .is_some_and(|ext| ext == "brink")
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("brink"))
     {
         Language::Native
     } else {
@@ -610,6 +618,14 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
 
     let mut graph = IncludeGraph::new();
     for file in files {
+        // Issue #2329: a non-source document (`brink.toml`, `.md`, `.json`,
+        // `.ink.json`) never lowers through the ink frontend here — `path_to_id`
+        // above still lists it as a resolution *target* (an ink file could, in
+        // principle, name it in an `INCLUDE`, which is a different diagnostic's
+        // problem), but it never contributes edges of its own.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         let hir = &raw_lowered_query(db, *file).hir;
         let include_ids: Vec<FileId> = hir
             .includes
@@ -709,20 +725,41 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
 }
 
 /// Whether `path` names a file this db treats as compiler source at all —
-/// an ink (`.ink`) or native (`.brink`) extension. [`file_language`]
-/// classifies *every* path as one of its two variants (`.brink` → native,
-/// everything else → ink), which is the right call for lowering dispatch —
-/// an unrecognized extension has to lower as *something*. But
-/// [`project_is_all_native`] asks a narrower question ("is every real
-/// source file in this project native"), and something like a project's own
-/// `brink.toml` is neither: a session that loads it as an ordinary document
-/// alongside real source files — `IdeSession`'s wasm/editor callers do
-/// exactly this, so the Binder can list/edit it (issue #2318) — must not
-/// have it counted as "an ink file" by that check.
-fn has_recognized_source_extension(path: &str) -> bool {
+/// an ink (`.ink`) or native (`.brink`) extension, compared
+/// case-insensitively (issue #2329: the same reasoning [`file_language`]'s
+/// doc gives for a `story.INK` reachable on a case-insensitive filesystem).
+/// [`file_language`] classifies *every* path as one of its two variants
+/// (`.brink` → native, everything else → ink), which is the right call for
+/// lowering dispatch — an unrecognized extension has to lower as
+/// *something*. But this predicate asks a narrower question ("is this
+/// actually a source file at all"), and something like a project's own
+/// `brink.toml`, a README, or the retired converter's `.ink.json`/`.json`
+/// siblings are none of the above: a session that loads them as ordinary
+/// documents alongside real source files — `IdeSession`'s wasm/editor
+/// callers do exactly this, so the Binder can list/edit them (issue #2318)
+/// — must not have them lowered through the ink frontend, joined into the
+/// symbol index, or surfaced as diagnostics sources at all (issue #2329).
+///
+/// This is the **one shared predicate** every whole-project query that
+/// iterates `project.files(db)` for parsing/symbol-index/diagnostics
+/// purposes gates on — [`project_is_all_native`] below,
+/// [`module_map_query`], [`symbol_index_query`], [`harvest_index_query`],
+/// [`include_graph_query`], and the diagnostics-aggregation family in
+/// `queries/analysis.rs` (`resolutions_index_query`,
+/// `contributor_diagnostics_query`, `inline_docs_query`,
+/// `whole_project_diagnostics_query`, `ufcs_resolution_query`,
+/// `coalesce_types_query`, `analysis_diagnostics_query`, `has_errors_query`)
+/// — rather than each re-deriving its own ad-hoc extension check (the
+/// #2334-family "shared seam, not N copies" lesson). Queries already scoped
+/// to [`compilation_closure_files`]'s reachable set (e.g.
+/// `struct_shape_data_query`, `lir_lowering_query`,
+/// `has_errors_in_closure_query`) don't need this gate: a non-source
+/// document is never reachable through an `INCLUDE`/native-module edge, so
+/// it can never enter that closure in the first place.
+pub(crate) fn is_source_file(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
-        .is_some_and(|ext| ext == "brink" || ext == "ink")
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("brink") || ext.eq_ignore_ascii_case("ink"))
 }
 
 /// Whether every *recognized source file* (ink or native) currently tracked
@@ -763,7 +800,7 @@ pub(crate) fn project_is_all_native(db: &dyn salsa::Database, project: ProjectIn
     let mut saw_source = false;
     for f in files {
         let path = f.path(db);
-        if !has_recognized_source_extension(path) {
+        if !is_source_file(path) {
             continue;
         }
         saw_source = true;
@@ -796,9 +833,16 @@ pub(crate) fn module_map_query(
     // entirely — they have no `#@module` inheritance and no INCLUDE graph, so
     // routing them through the ink resolver would only couple their save-key
     // identity to machinery they never use. Only ink files feed `resolve_modules`.
+    //
+    // `is_source_file`, not just `file_language(..) == Ink` (issue #2329):
+    // `file_language`'s "everything else is ink" fallback previously handed
+    // a project's own `brink.toml`/`.md`/`.json`/`.ink.json` straight into
+    // `resolve_modules` as if it were real ink source, minting it a bogus
+    // stem-derived module entry that could then collide with (or shadow) a
+    // real file's declared module.
     let ink_inputs: Vec<crate::modules::FileModuleInput> = files
         .iter()
-        .filter(|f| file_language(f.path(db)) == Language::Ink)
+        .filter(|f| is_source_file(f.path(db)) && file_language(f.path(db)) == Language::Ink)
         .map(|f| {
             // `raw_lowered_query`, not the project-aware `lowered_query`
             // (issue #2289): `hir.module` is a structural top-of-file
@@ -871,8 +915,12 @@ pub(crate) fn symbol_index_query(
     project: ProjectInput,
 ) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
     let files = project.files(db);
+    // `is_source_file` (issue #2329): a non-source document's manifest never
+    // joins the project symbol index — see that predicate's own doc for the
+    // full list of gated query surfaces.
     let manifest_refs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).manifest))
         .collect();
 
@@ -927,8 +975,11 @@ pub(crate) fn harvest_index_query(
     project: ProjectInput,
 ) -> Arc<HarvestIndex> {
     let files = project.files(db);
+    // `is_source_file` (issue #2329): a non-source document's HIR never
+    // contributes cues/markup to the harvest index.
     let hir_refs: Vec<(FileId, &HirFile)> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
     let manifest = project.analysis_options(db).host_manifest.as_ref();
@@ -2542,8 +2593,13 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         .iter()
         .find(|f| f.file_id(db) == entry)
         .is_some_and(|f| suppressions_query(db, *f).disable_all);
+    // `is_source_file` (issue #2329): a non-source document's lowering
+    // (bogus ink-parse) diagnostics never contribute to the build gate — the
+    // exact same filter `has_errors_query` applies to the identical input
+    // shape this query's own doc says it must match.
     let inputs: Vec<FileDiagnostics<'_>> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| FileDiagnostics {
             file: f.file_id(db),
             source: f.text(db),

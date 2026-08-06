@@ -53,9 +53,9 @@ use brink_ir::{
 use crate::determinism::LookupSet;
 
 use super::{
-    DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, lowered_query,
-    module_map_query, raw_lowered_query, resolution_index_query, resolve_query, symbol_index_query,
-    type_inference_query,
+    DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, is_source_file,
+    lowered_query, module_map_query, raw_lowered_query, resolution_index_query, resolve_query,
+    symbol_index_query, type_inference_query,
 };
 
 /// Index + resolutions, aggregated across every file's [`resolve_query`]
@@ -84,6 +84,11 @@ pub(crate) fn resolutions_index_query(
     let (index, _diags) = symbol_index_query(db, project).clone();
     let mut resolutions = ResolutionMap::new();
     for file in project.files(db) {
+        // Issue #2329: a non-source document never contributes resolutions —
+        // see `is_source_file`'s own doc for the full gated-surface list.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         let (file_map, _file_diags) = resolve_query(db, project, *file);
         resolutions.extend(file_map.iter().cloned());
     }
@@ -165,6 +170,12 @@ pub(crate) fn contributor_diagnostics_query(
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for file in project.files(db) {
+        // Issue #2329: a non-source document never runs validate/
+        // dialect_gate/annotation-content checks — its bogus "parse"
+        // diagnostics must never surface.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         out.extend(
             per_file_diagnostics_query(db, project, *file)
                 .iter()
@@ -189,6 +200,7 @@ pub(crate) fn inline_docs_query(
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).manifest))
         .collect();
     Arc::new(brink_analyzer::project_inline_docs(&manifest_inputs))
@@ -929,6 +941,7 @@ pub(crate) fn whole_project_diagnostics_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
@@ -979,7 +992,13 @@ pub(crate) fn whole_project_diagnostics_query(
     diagnostics.extend(ext.diagnostics.iter().cloned());
     let mut symbol_meta = ext.symbol_meta.clone();
 
+    // `is_source_file` gates every loop below (issue #2329): a non-source
+    // document never contributes a value-meta entry, a call-site check, or
+    // any of the lazy per-file effect/comparator/conventions passes.
     for file in project.files(db) {
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         symbol_meta.extend(
             value_meta_query(db, project, *file)
                 .iter()
@@ -987,6 +1006,9 @@ pub(crate) fn whole_project_diagnostics_query(
         );
     }
     for file in project.files(db) {
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         diagnostics.extend(
             call_site_diagnostics_query(db, project, *file)
                 .iter()
@@ -998,6 +1020,9 @@ pub(crate) fn whole_project_diagnostics_query(
     // doc): a project with no `#@effects` directive never triggers effect
     // inference here.
     for file in project.files(db) {
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         diagnostics.extend(
             effects_assertion_diagnostics_query(db, project, *file)
                 .iter()
@@ -1009,6 +1034,9 @@ pub(crate) fn whole_project_diagnostics_query(
     // `await_purity_diagnostics_query`'s doc): an await-free project never
     // triggers effect inference here.
     for file in project.files(db) {
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         diagnostics.extend(
             await_purity_diagnostics_query(db, project, *file)
                 .iter()
@@ -1022,6 +1050,9 @@ pub(crate) fn whole_project_diagnostics_query(
     // inline-`#fn` comparator/callback site never triggers effect
     // inference here.
     for file in project.files(db) {
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         diagnostics.extend(
             comparator_contract_diagnostics_query(db, project, *file)
                 .iter()
@@ -1032,6 +1063,9 @@ pub(crate) fn whole_project_diagnostics_query(
     // lazy (see `conventions_confinement_diagnostics_query`'s doc): a file
     // with no declared claim handler never even reads `module_map_query`.
     for file in project.files(db) {
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         diagnostics.extend(
             conventions_confinement_diagnostics_query(db, project, *file)
                 .iter()
@@ -1093,6 +1127,7 @@ pub(crate) fn ufcs_resolution_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
@@ -1160,6 +1195,7 @@ pub(crate) fn coalesce_types_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
@@ -1200,6 +1236,11 @@ pub(crate) fn analysis_diagnostics_query(
 ) -> Vec<Diagnostic> {
     let (_index, mut diagnostics) = symbol_index_query(db, project).clone();
     for file in project.files(db) {
+        // Issue #2329: a non-source document's `resolve_query` diagnostics
+        // never join the project-wide diagnostic stream.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         let (_file_map, file_diags) = resolve_query(db, project, *file);
         diagnostics.extend(file_diags.iter().cloned());
     }
@@ -1295,8 +1336,13 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
         .iter()
         .find(|f| f.file_id(db) == entry)
         .is_some_and(|f| super::suppressions_query(db, *f).disable_all);
+    // `is_source_file` (issue #2329): a non-source document's lowering
+    // (bogus ink-parse) diagnostics never contribute to the error gate —
+    // `lir_query`'s identical `inputs` construction mirrors this exactly, so
+    // the two stay in lockstep (see this function's own doc).
     let inputs: Vec<super::FileDiagnostics<'_>> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| super::FileDiagnostics {
             file: f.file_id(db),
             source: f.text(db),
