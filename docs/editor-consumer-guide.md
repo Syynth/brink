@@ -95,6 +95,26 @@ Data-loss prevention lives in `ProjectSession` + `FileChangeHub`, not in any UI:
 `compileProject` · `dirtyPaths` / `markAllSaved` / `save` · the conflict methods above ·
 `refreshIncludes` · `initialize` / `destroy`.
 
+## `brink.toml` project-config discovery (#2324)
+
+`ProjectSession` discovers and applies `brink.toml` itself — no separate host call needed. As long
+as your `FileProvider` serves `brink.toml` like any other project file (an ordinary `readFile`/
+`listFiles` entry, at the project root or any ancestor of `entryFile`), `initialize()` walks up from
+`entryFile` and applies it — via `EditorSessionHandle.discoverProjectConfig` — before returning, and
+re-runs automatically on every subsequent `brink.toml` create (`addFile`), edit (`applyEdit`/CM6),
+rename/move into or out of the tree (`renameFile`), delete (`deleteFile`), and external rewrite.
+Two callbacks surface the result:
+- Pass `onProjectConfigWarnings: (warnings: string[]) => void` to `ProjectSession` for
+  unrecognized-`[project]`-key / unrecognized-`[lints]`-code warnings. Fires once per discovery run,
+  including with an empty array (a host that wants to clear a previous warning list can rely on
+  that firing).
+- Pass `onProjectConfigError: (message: string) => void` for a discovery *failure* — malformed TOML,
+  or a recognized key with an invalid value (e.g. `dialect = "brnik"`). `ProjectSession` always
+  catches this at its single internal call site and reports it here; it never rethrows out of
+  `initialize()`, an edit, or any of the file ops above, so a typo mid-edit in the one file this
+  feature exists to make effective can't take your mount or your linter down with it. The file's
+  previously-applied config (if any) stays in effect until a valid edit re-discovers it.
+
 ## `DocumentSessions` view-state persistence (#347)
 
 Per-tab cursor + scroll save/restore across app reloads:
