@@ -120,6 +120,18 @@ pub struct LanguageOptions {
     /// site's `effective_severity` call, so a re-leveled code's
     /// LSP-published severity matches its build-gating severity.
     lints: Arc<Mutex<LintPolicy>>,
+    /// `brink.toml`'s `[project] conventions` pointer (issue #1844; renamed
+    /// from `elements` by #2180). `resolve_language_options` already
+    /// resolves this correctly (it runs the file straight through
+    /// `AnalysisOptions::apply_project_config`), but until issue #1880
+    /// nothing carried the resolved value past `store` into
+    /// `analysis_loop`'s own `AnalysisOptions` — every background pass
+    /// analyzed as if `conventions` were always unset. Harmless while
+    /// `None` meant "nothing to check" for the confinement gate (`E169`);
+    /// #2289 repurposed `None` into "misconfigured", turning this gap into
+    /// a false positive firing on every claim handler in every native
+    /// project the LSP served. Mirrors `dialect`/`types`/`lints` exactly.
+    conventions: Arc<Mutex<Option<String>>>,
 }
 
 impl LanguageOptions {
@@ -128,12 +140,13 @@ impl LanguageOptions {
             dialect: Arc::new(Mutex::new(Dialect::default())),
             types: Arc::new(Mutex::new(None)),
             lints: Arc::new(Mutex::new(LintPolicy::default())),
+            conventions: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Write a freshly `resolve_language_options`-resolved dialect/types/
-    /// lints into the shared session state (poisoned-lock-safe, mirrors
-    /// [`Backend::dialect`]) — the common tail of `initialize` and
+    /// lints/conventions into the shared session state (poisoned-lock-safe,
+    /// mirrors [`Backend::dialect`]) — the common tail of `initialize` and
     /// [`Backend::reload_brink_toml`], both of which compute a fresh
     /// resolution and must publish it identically. Takes `resolved` by value
     /// since neither caller reads it again afterward.
@@ -146,6 +159,9 @@ impl LanguageOptions {
         }
         if let Ok(mut guard) = self.lints.lock() {
             *guard = resolved.lints;
+        }
+        if let Ok(mut guard) = self.conventions.lock() {
+            *guard = resolved.conventions;
         }
     }
 }
@@ -2826,6 +2842,17 @@ pub async fn analysis_loop(
                 .lints
                 .lock()
                 .map_or_else(|_| LintPolicy::default(), |g| g.clone()),
+            // `[project] conventions` (issue #1880): without this, every
+            // background analysis pass fed `snapshot_for_analysis` a
+            // hardcoded `None` regardless of what `brink.toml` configured,
+            // which `conventions_confinement_diagnostics_query` (#2289)
+            // reads as "misconfigured" rather than "nothing to check" —
+            // firing `E169` on every claim handler in every native
+            // project the LSP served.
+            conventions: language
+                .conventions
+                .lock()
+                .map_or_else(|_| None, |g| g.clone()),
             ..AnalysisOptions::default()
         };
 
@@ -3384,9 +3411,10 @@ mod tests {
     use rowan::{TextRange, TextSize};
 
     use super::{
-        ConfigLoadOutcome, ConfigOverrides, LineIndex, PublishDecision, PublishRecord, PublishTier,
-        collect_source_files, config_error_diagnostic, is_native_path, native_source_root,
-        path_under_ignored_dir, publish_decision, rename_suspicion_diags, resolve_language_options,
+        ConfigLoadOutcome, ConfigOverrides, LanguageOptions, LineIndex, PublishDecision,
+        PublishRecord, PublishTier, collect_source_files, config_error_diagnostic, is_native_path,
+        native_source_root, path_under_ignored_dir, publish_decision, rename_suspicion_diags,
+        resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -3685,6 +3713,55 @@ mod tests {
             "diagnostic message must name the file, got: {}",
             diag.message
         );
+    }
+
+    /// Issue #1880: `resolve_language_options` already resolves
+    /// `[project] conventions` correctly (it runs the file straight through
+    /// `AnalysisOptions::apply_project_config`, the same seam every other
+    /// field uses) — the gap was `LanguageOptions::store` silently dropping
+    /// the resolved value on the floor instead of writing it into the
+    /// shared session state `analysis_loop` reads. This proves the whole
+    /// chain end to end: a real `resolve_language_options` call against a
+    /// `brink.toml` that sets a path-shaped `conventions` pointer, stored
+    /// into a fresh `LanguageOptions`, must be readable back out — a
+    /// regression test for this exact fix, not just the pre-existing
+    /// resolution.
+    #[test]
+    fn resolve_language_options_conventions_pointer_survives_store() {
+        let root = temp_dir("conventions-store");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[project]\nconventions = \"conventions.brink\"\n",
+        )
+        .expect("write brink.toml");
+
+        let (resolved, _outcome) =
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&root));
+        assert_eq!(
+            resolved.conventions.as_deref(),
+            Some("conventions.brink"),
+            "resolve_language_options must resolve a path-shaped [project] \
+             conventions pointer"
+        );
+
+        let language = LanguageOptions::new();
+        language.store(resolved);
+        let stored = language
+            .conventions
+            .lock()
+            .expect("uncontended lock")
+            .clone();
+        assert_eq!(
+            stored,
+            Some("conventions.brink".to_owned()),
+            "LanguageOptions::store must carry the resolved conventions \
+             pointer into shared session state — before issue #1880's fix \
+             this field did not exist and the value was silently dropped, \
+             so analysis_loop's background passes always analyzed as if no \
+             conventions module were configured"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// #1572: `brink_project_config::find_config` only ever walks *up* from

@@ -761,6 +761,25 @@ impl EditorSession {
         let mut lint_options = brink_analyzer::AnalysisOptions::default();
         let lint_warnings = lint_options.apply_project_config(config, true, true);
         self.file_lint_policy = lint_options.lints;
+        // `[project] conventions` (issue #1880): `lint_options` is a fresh
+        // `AnalysisOptions::default()` on every call, so `apply_project_config`
+        // resolved `.conventions` to exactly what `config` says right now —
+        // `Some(pointer)` when set (and either path-shaped or a recognized
+        // preset), `None` otherwise, wholesale-replacing whatever this
+        // session had registered before rather than merging (the same
+        // "long-lived, repeatedly-reapplied session" reasoning `[lints]`
+        // above documents: a `conventions` key removed from `brink.toml`
+        // between two calls must actually clear, not stay stuck). No
+        // `_explicit` precedence tier exists for this field (mirrors
+        // `AnalysisOptions::apply_project_config`'s own doc comment on
+        // `conventions`), so unlike `dialect`/`types` there is nothing to
+        // skip here. Guarded on change to avoid a redundant full
+        // `IdeSession::reanalyze` on every keystroke that doesn't touch
+        // `[project] conventions`.
+        if self.session.conventions() != lint_options.conventions.as_deref() {
+            self.session
+                .set_conventions(lint_options.conventions.clone());
+        }
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
@@ -3464,6 +3483,69 @@ mod tests {
         assert_eq!(parsed.len(), 1, "{parsed:?}");
         assert!(parsed[0].contains("project.elements"));
         assert!(parsed[0].contains("deprecated"));
+    }
+
+    // ── Issue #1880: the conventions pointer reaches the live db ───────────
+    // (regression: since #2289, an unwired `conventions` reads as
+    // "misconfigured" and fires E169 on every claim handler)
+
+    /// A pattern-claiming handler declared inside the project's own
+    /// correctly-configured conventions module must NOT be flagged `E169`.
+    /// Before issue #1880's fix, `IdeSession::analysis_options()` hardcoded
+    /// `conventions: None` regardless of what `apply_project_config` above
+    /// resolved, and `conventions_confinement_diagnostics_query` (#2289)
+    /// reads `None` as "no module configured at all" — a misconfiguration —
+    /// so this exact handler, living in the exact file `brink.toml` names,
+    /// was flagged anyway. Mirrors `brink-db`'s own
+    /// `issue_2111_conventions_projection.rs::
+    /// the_configured_modules_own_handlers_are_projected_in_order` fixture,
+    /// at the layer a real embedder actually drives (`compile_project`, not
+    /// a direct `ProjectDb` call).
+    #[test]
+    fn compile_project_does_not_misfire_e169_once_conventions_reaches_the_editor_session() {
+        const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", \
+             order = 10)]\nfn interior(place: content) {\n  return place;\n}\n";
+        let mut s = EditorSession::new();
+        s.update_file(
+            "conventions.brink",
+            &format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+        );
+        s.apply_project_config("[project]\nconventions = \"conventions.brink\"\n")
+            .expect("valid conventions pointer");
+
+        let result = s.compile_project("conventions.brink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let warnings = v["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !warnings.iter().any(|w| w["code"] == "E169"),
+            "a claim handler correctly declared inside its OWN configured \
+             conventions module must not misfire E169 once the pointer \
+             reaches the live db — got {result}"
+        );
+    }
+
+    /// The zero-handler sibling of the test above, called out explicitly by
+    /// the #1880 review: `conventions_unconfigured_diagnostics` maps over
+    /// `hir.claim_handlers`, so an empty set must still yield nothing now
+    /// that `IdeSession` actually carries whatever `[project] conventions`
+    /// says (or doesn't) — verified here rather than assumed, for the
+    /// overwhelmingly common case of a project with no `@[convention]`
+    /// handlers at all and no `conventions` key configured.
+    #[test]
+    fn compile_project_stays_silent_with_zero_convention_handlers() {
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", "flow main() {\n  Hi. -> END\n}\n");
+        s.apply_project_config("[project]\n")
+            .expect("an empty [project] table is valid");
+
+        let result = s.compile_project("main.brink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let warnings = v["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !warnings.iter().any(|w| w["code"] == "E169"),
+            "a project with zero @[convention] handlers must stay silent \
+             regardless of the (unset) conventions pointer — got {result}"
+        );
     }
 
     // ── Issue #1414: `discover_project_config` (SourceTree seam, no ────────

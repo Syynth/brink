@@ -47,6 +47,7 @@ pub struct IdeSnapshot {
     dialect: Dialect,
     types: Option<TypePolicy>,
     lints: LintPolicy,
+    conventions: Option<String>,
 }
 
 impl IdeSnapshot {
@@ -75,15 +76,16 @@ impl IdeSnapshot {
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
             // `brink.toml`'s `[project] conventions` pointer (issue #1844;
-            // renamed from `elements` by #2180) has no `IdeSession` setter
-            // yet — nothing in this crate resolves or carries it, so there
-            // is nothing to read here. The confinement check it feeds
-            // (`E169`) is wired only into `brink-db`'s salsa query graph
-            // (`ProjectDb::analysis`/`diagnostics`), reachable through
-            // `brink compile`/`brink check`, not through this off-db
-            // snapshot path — a follow-up, not a silent default (see the
-            // issue thread).
-            conventions: None,
+            // renamed from `elements` by #2180), set via
+            // `IdeSession::set_conventions` (issue #1880) and carried into
+            // this snapshot by `IdeSession::snapshot`. Until #1880, this was
+            // hardcoded `None` regardless of what the project configured —
+            // harmless while `None` meant "nothing to check" for the
+            // confinement gate (`E169`), but #2289 repurposed `None` into
+            // "misconfigured", which turned the missing wire into a false
+            // positive firing on every claim handler in every project this
+            // snapshot analyzed. See `conventions` field doc for the wiring.
+            conventions: self.conventions.clone(),
         };
         // The snapshot's own native classification (issue #1358) — see
         // `is_native`'s field doc. `brink-lsp`'s `analysis_loop` passes the
@@ -172,6 +174,20 @@ pub struct IdeSession {
     /// `LintPolicy::default()` in both `snapshot` and `analysis_options`, so
     /// a project's `[lints]` never reached the IDE/LSP/web surface).
     lints: LintPolicy,
+    /// `brink.toml`'s `[project] conventions` pointer (issue #1844; renamed
+    /// from `elements` by #2180), set via `set_conventions`. `None` means
+    /// "no conventions module configured" — the confinement check
+    /// (`E169`) consuming this reads `None` as a real misconfiguration
+    /// since #2289, not "nothing to check", so this field must reflect
+    /// whatever `brink.toml`'s `[project] conventions` key actually says
+    /// rather than a hardcoded default (issue #1880: before this field
+    /// existed, every session read as unconfigured, firing `E169` on every
+    /// claim handler in every native project opened in the editor).
+    /// Authoring-time/tooling input only, mirroring `language_dialect`/
+    /// `type_policy`/`lints` — feeds
+    /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` the
+    /// same way.
+    conventions: Option<String>,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
     /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
@@ -197,6 +213,7 @@ impl IdeSession {
             language_dialect: Dialect::default(),
             type_policy: None,
             lints: LintPolicy::default(),
+            conventions: None,
             projection_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -317,6 +334,28 @@ impl IdeSession {
         &self.lints
     }
 
+    /// Set `brink.toml`'s `[project] conventions` pointer (issue #1880),
+    /// then re-analyze — the diagnostics-facing counterpart of the compiler
+    /// CLI/`brink-db`'s already-working salsa path. Mirrors
+    /// `set_type_policy`/`set_lint_policy` exactly: no explicit-vs-file
+    /// precedence tier exists for this field yet (see
+    /// `AnalysisOptions::apply_project_config`'s doc comment on
+    /// `conventions`), so a caller reloading `brink.toml` always passes the
+    /// freshly-resolved value — `None` when the file no longer sets the
+    /// key, `Some(pointer)` otherwise — and this replaces whatever was
+    /// registered before, the same wholesale-replace posture `[lints]` uses
+    /// for the same reason (issue #1397).
+    pub fn set_conventions(&mut self, conventions: Option<String>) {
+        self.conventions = conventions;
+        self.reanalyze();
+    }
+
+    /// The currently registered `[project] conventions` pointer, if any.
+    #[must_use]
+    pub fn conventions(&self) -> Option<&str> {
+        self.conventions.as_deref()
+    }
+
     /// Set the severity policy for manifest-driven external checks, then
     /// re-analyze.
     pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
@@ -401,6 +440,7 @@ impl IdeSession {
             dialect: self.language_dialect,
             types: self.type_policy,
             lints: self.lints.clone(),
+            conventions: self.conventions.clone(),
         }
     }
 
@@ -594,17 +634,14 @@ impl IdeSession {
             // the policy `set_lint_policy` resolved. Spelled out explicitly,
             // not `..Default::default()` — see that note for why.
             lints: self.lints.clone(),
-            // No `IdeSession` setter carries `brink.toml`'s `[project]
-            // conventions` pointer yet (issue #1844; renamed from
-            // `elements` by #2180) — see the matching note on
+            // `set_conventions` (issue #1880) — see the matching note on
             // `IdeSnapshot::analyze` above. This method's result is also
-            // what `sync_db_options` writes into `ProjectDb`, so today no
-            // `IdeSession`-mounted project can reach the `E169` confinement
-            // check even through the db-direct query surface; a project
-            // compiled via `brink compile`/`brink check` (which resolve
-            // `AnalysisOptions` from `brink.toml` independently, not
-            // through this struct) does reach it.
-            conventions: None,
+            // what `sync_db_options` writes into `ProjectDb`, so an
+            // `IdeSession`-mounted project now reaches the `E169`
+            // confinement check identically through both the off-db
+            // snapshot path and the db-direct query surface, matching a
+            // project compiled via `brink compile`/`brink check`.
+            conventions: self.conventions.clone(),
         }
     }
 
