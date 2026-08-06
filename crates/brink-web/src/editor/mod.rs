@@ -1421,7 +1421,10 @@ mod tests {
         let mut s = EditorSession::new();
         s.update_file("economy.ink", "=== trade ===\nbuy.\n-> END\n");
         let doc = s.open_document(key);
-        assert_ne!(doc, 0, "open_document on a mounted stdlib file must succeed");
+        assert_ne!(
+            doc, 0,
+            "open_document on a mounted stdlib file must succeed"
+        );
 
         let mounted_text = s.session.source(s.session.file_id(key).unwrap()).unwrap();
         let mounted_text = mounted_text.to_owned();
@@ -1448,8 +1451,7 @@ mod tests {
             "a refused auto_import_apply_include_doc must not mutate the mounted copy"
         );
         assert!(
-            s.mounted_std_ids
-                .contains(&s.session.file_id(key).unwrap()),
+            s.mounted_std_ids.contains(&s.session.file_id(key).unwrap()),
             "a refused write must not un-mount the stdlib file"
         );
     }
