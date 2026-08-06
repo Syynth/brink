@@ -821,6 +821,14 @@ pub(super) fn diagnose_duplicate_patterns(
 /// number of items consumed is returned alongside the statements so the
 /// caller (`body::lower_items`) can skip them rather than lowering them
 /// a second time.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one already-large claim-dispatch body; issue #2079's compact-cue \
+              desugar adds one more per-flavor branch (block/attach/plain) to \
+              an existing three-way split, not a second responsibility — \
+              splitting it would scatter one claim's bookkeeping across \
+              several functions threading the same half-dozen locals"
+)]
 pub(super) fn try_claim(
     file_id: FileId,
     node: &SyntaxNode,
@@ -903,6 +911,28 @@ pub(super) fn try_claim(
         })
         .collect();
 
+    // Issue #2079, RULED 2026-08-06 "Compact cue desugars to cue + content
+    // line": a `COMPACT_CUE`'s fused dialogue (its second child, an
+    // ordinary `CONTENT_LINE`) is not a sibling of `node` — it lives
+    // *inside* it — but the ruling treats it as the first line of whatever
+    // run follows the (virtual) cue line, in every handler flavor. `None`
+    // for every other candidate kind, so this changes nothing for `CUE`/
+    // `SCENE_HEADING`/`PARENTHETICAL`/plain `CONTENT_LINE` claims.
+    let compact_dialogue = (node.kind() == N::COMPACT_CUE)
+        .then(|| node.children().find(|c| c.kind() == N::CONTENT_LINE))
+        .flatten();
+    // Shared by the `is_block`/`is_attach` arms below: dispatches to
+    // whichever of `capture_block`/`capture_block_with_compact_dialogue`
+    // applies, so neither arm repeats the `match`.
+    let capture = |following: &[SyntaxNode],
+                   elements: &mut Elements,
+                   diags: &mut Vec<Diagnostic>| match &compact_dialogue {
+        Some(dialogue) => {
+            capture_block_with_compact_dialogue(file_id, dialogue, following, elements, diags)
+        }
+        None => capture_block(file_id, following, elements, diags),
+    };
+
     let mut consumed = 0;
     let mut content_range = None;
     // Only populated in the `is_attach` branch below — the captured
@@ -925,7 +955,7 @@ pub(super) fn try_claim(
     // inventing "what should happen when a handler wraps AND attaches"
     // unilaterally.
     if is_block {
-        let (fragment_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        let (fragment_stmts, n, range) = capture(following, elements, diags);
         consumed = n;
         content_range = range;
         call_args.push(Expr::Fragment(fragment_stmts));
@@ -938,11 +968,21 @@ pub(super) fn try_claim(
         // statements are spliced back into the returned stream as ordinary
         // sibling statements (bracketed by `EndElementRun`) rather than
         // embedded as this call's own argument.
-        let (run_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        let (run_stmts, n, range) = capture(following, elements, diags);
         consumed = n;
         content_range = range;
         attach_run_stmts = run_stmts;
     }
+    // Neither `block` nor `attach`: the handler's own claimed line still
+    // lowers to a plain call (below), but a compact cue's fused dialogue
+    // must not vanish — it lowers right after the call, as though it were a
+    // bare sibling `CONTENT_LINE` nobody claimed (no `following` absorbed:
+    // a plain handler never has been).
+    let plain_dialogue_stmts = (!is_block && !is_attach && compact_dialogue.is_some()).then(|| {
+        let (stmts, _n, range) = capture(&[], elements, diags);
+        content_range = range;
+        stmts
+    });
 
     let call = Expr::Call(
         Path {
@@ -1007,17 +1047,25 @@ pub(super) fn try_claim(
         return Some((stmts, consumed));
     }
 
-    Some((
-        vec![
-            Stmt::Content(Content {
-                ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
-                parts: vec![ContentPart::Interpolation(call)],
-                tags: Vec::new(),
-            }),
-            Stmt::EndOfLine,
-        ],
-        consumed,
-    ))
+    let mut stmts = vec![
+        Stmt::Content(Content {
+            ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
+            parts: vec![ContentPart::Interpolation(call)],
+            tags: Vec::new(),
+        }),
+        Stmt::EndOfLine,
+    ];
+    // Compact cue (#2079), plain (non-attach, non-block) handler flavor:
+    // the fused dialogue's own statements go right after the call's line —
+    // see `plain_dialogue_stmts`'s own comment above for why this can
+    // never be `Some` unless `compact_dialogue` is, and `None` here is the
+    // overwhelming common case (every non-compact-cue claim, and every
+    // compact cue whose handler is `block`/`attach`) so this is a no-op
+    // extend for them.
+    if let Some(dialogue_stmts) = plain_dialogue_stmts {
+        stmts.extend(dialogue_stmts);
+    }
+    Some((stmts, consumed))
 }
 
 /// The block-capture terminator search (issue #1839, ruled 2026-07-31):
@@ -1073,6 +1121,54 @@ fn capture_block(
         _ => None,
     };
     let stmts = super::body::lower_items(file_id, captured, 0, elements, diags);
+    (stmts, end, range)
+}
+
+/// [`capture_block`]'s twin for a compact cue's fused dialogue (issue
+/// #2079, RULED 2026-08-06 "Compact cue desugars to cue + content line").
+///
+/// `dialogue` is unconditionally the captured run's first line — it is
+/// **not** run through [`is_plain_content_line`]/[`blank_line_precedes`]
+/// the way a real sibling is: those two checks exist to decide whether a
+/// *sibling* item is eligible to extend an already-open run (a `LABEL` or
+/// fused divert/choice on a sibling would otherwise get silently absorbed
+/// into the wrong shape — see `capture_block`'s own doc for the two
+/// concrete failure modes those checks prevent). `dialogue` isn't a
+/// sibling being offered for absorption; it is structurally *part of* the
+/// compact cue itself, and the ruling is unconditional that it "lands
+/// inside the run" — gating it on the same eligibility check that exists
+/// to protect *sibling* boundaries would silently drop it whenever it
+/// happened to carry a label or a trailing divert/choice, exactly the
+/// silent-drop failure mode this compiler's own house rules treat as a bug
+/// until proven otherwise. `following`'s normal terminator search still
+/// applies to whatever comes *after* `dialogue` — only `dialogue` itself
+/// is exempt.
+///
+/// Returns the same three-part shape as [`capture_block`], except the
+/// range is never `None`: `dialogue` alone guarantees at least one
+/// captured item.
+fn capture_block_with_compact_dialogue(
+    file_id: FileId,
+    dialogue: &SyntaxNode,
+    following: &[SyntaxNode],
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<Stmt>, usize, Option<TextRange>) {
+    let mut end = 0;
+    while end < following.len() {
+        let item = &following[end];
+        if !is_plain_content_line(item) || blank_line_precedes(item) {
+            break;
+        }
+        end += 1;
+    }
+    let mut captured: Vec<SyntaxNode> = Vec::with_capacity(1 + end);
+    captured.push(dialogue.clone());
+    captured.extend(following[..end].iter().cloned());
+    let range = captured
+        .last()
+        .map(|last| dialogue.text_range().cover(last.text_range()));
+    let stmts = super::body::lower_items(file_id, &captured, 0, elements, diags);
     (stmts, end, range)
 }
 
@@ -1358,6 +1454,26 @@ fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
             let first = children.next()?;
             (first.kind() == N::CUE_NAME && children.next().is_none())
                 .then_some((ElementKind::Cue, first))
+        }
+        // A compact cue (`@NAME: dialogue`, §8b.9) — issue #2079, RULED
+        // 2026-08-06 "Compact cue desugars to cue + content line": it
+        // matches its pattern against the name segment only, **exactly as
+        // if it were a block cue's line** — same `ElementKind::Cue`, same
+        // `CUE_NAME` sub-node offered to matching. Structurally identical
+        // to the `CUE` arm above, except this one deliberately does NOT
+        // require `children.next().is_none()`: `COMPACT_CUE` has exactly
+        // two children by construction (`CUE_NAME`, then the fused
+        // dialogue `CONTENT_LINE` — `brink-syntax-native`'s `cue_line`), so
+        // requiring a lone child would make every compact cue unclaimable.
+        // Literalness still applies to the name segment (an interpolated
+        // or otherwise non-`CUE_NAME`-shaped first child still declines);
+        // the fused dialogue keeps full markup/interpolation rights and is
+        // never inspected here — `try_claim` desugars it separately into
+        // an ordinary content line inside the attached run.
+        N::COMPACT_CUE => {
+            let mut children = node.children();
+            let first = children.next()?;
+            (first.kind() == N::CUE_NAME).then_some((ElementKind::Cue, first))
         }
         N::PARENTHETICAL => {
             let mut children = node.children();

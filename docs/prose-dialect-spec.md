@@ -1621,12 +1621,19 @@ same way (only a wholly literal run, no tag extension) — so `@NAME` and
 `(delivery)` lines now reach output through the same mechanism once a
 preset or project declares a matching handler; `std/conventions/
 screenplay.brink` is the shipped built-in one. `COMPACT_CUE` (`@NAME:
-text`) stays unclaimed (its fused name+text shape doesn't fit
-`try_claim`'s single-text-node contract), as does any cue/heading
+text`) is claimable too, as of issue #2079 (RULED 2026-08-06, "Compact cue
+desugars to cue + content line"): it matches the SAME pattern a block
+cue's `@NAME` line would, against the name segment only — the fused
+dialogue is never shown to the pattern and keeps full markup/interpolation
+rights, since it lowers separately as an ordinary content line inside the
+handler's attached run (or, for a `block`/plain handler, inside its
+captured fragment/appended statements respectively). A cue/heading
 carrying a tag extension, and a heading carrying an explicit `[slug]`
-(every worked-page heading in §8/§8c/§8d does) — `candidate`'s literalness
-rule declines all three the same way it declines a `CONTENT_LINE` with
-interpolation. Promoting a slug-bearing heading to a genuine HIR stitch (a
+(every worked-page heading in §8/§8c/§8d does), still decline —
+`candidate`'s literalness rule declines both the same way it declines a
+`CONTENT_LINE` with interpolation (literalness on a compact cue applies
+only to its name segment, never its dialogue). Promoting a slug-bearing
+heading to a genuine HIR stitch (a
 real divert target, §3.2/§3.3) is not built anywhere — issue #1717, which
 would have owned that, was closed as superseded by the §9.1 ruling without
 delivering it — so a heading-declared divert target, as §8c/§8d's worked

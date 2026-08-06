@@ -233,6 +233,74 @@ flow main() {
     );
 }
 
+/// Issue #2079, RULED 2026-08-06 "Compact cue desugars to cue + content
+/// line": a compact cue (`@NAME: dialogue`) claims and attaches exactly
+/// like the block form does — matching the pattern against the name
+/// segment only — while the fused dialogue keeps full interpolation
+/// rights, since it lowers as an ordinary content line *inside* `cue`'s
+/// attached run rather than being flattened into the matched text.
+///
+/// Confirmed to fail without the fix (rule 20a): reverting the
+/// `N::COMPACT_CUE` arm in `hir::lower_native::element::candidate` (and
+/// its `try_claim` desugar) reproduces the pre-#2079 state — this exact
+/// source fails to *compile* at all (`E169`/`E129`: `COMPACT_CUE` is
+/// invisible to `candidate()`, so nothing claims `@KID: …` and it falls to
+/// the loud "parses but has no HIR lowering yet" default) — never a wrong
+/// transcript, always a hard compile failure, which is itself the
+/// regression this test guards against reintroducing.
+#[test]
+fn compact_cue_fused_dialogue_attaches_and_keeps_interpolation() {
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+var count = 3
+
+flow main() {
+  @KID: I have {count} coins.
+  -> END
+}
+"#;
+    let mut story = story_from_native_source(src);
+    let steps = story.continue_maximally().expect("drive to END");
+
+    let lines: Vec<_> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+
+    let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec!["I have 3 coins.\n"],
+        "cue's own claimed line must consume itself and produce no event; \
+         the fused dialogue must interpolate `count` exactly like ordinary \
+         prose: {steps:?}"
+    );
+
+    let dialogue_line = lines[0];
+    assert_eq!(
+        dialogue_line
+            .element
+            .data
+            .get("speaker")
+            .map(String::as_str),
+        Some("KID"),
+        "the fused dialogue must land INSIDE cue's attached run, carrying \
+         its speaker data, not just render as plain unattached text: \
+         {dialogue_line:?}"
+    );
+}
+
 /// Review finding on issue #2108's PR: `OutputBuffer::flush_lines` seeded
 /// `resolve_lines_annotated` with `pending_element` but never wrote the
 /// end-of-slice state back (unlike `take_first_line`, which does) — so an
