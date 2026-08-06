@@ -114,14 +114,31 @@ fn interface_body<'a>(source: &'a str, name: &str) -> &'a str {
     &rest[..end]
 }
 
-/// Assert every `field` from `keys` appears, verbatim, inside `body` — as
-/// either `field:` or `field?:` (TS's optional-member spelling).
+/// Assert every `field` from `keys` appears, verbatim, as an actual TS
+/// interface member inside `body` — spelled `field:` or `field?:` (TS's
+/// optional-member spelling).
+///
+/// Scans line-by-line rather than a whole-body substring search: every
+/// interface in this file is one member per line, so a bare
+/// `body.contains("{key}:")` over the full text (doc comments included)
+/// false-passes two ways — a future field named `id`/`block_id` would be
+/// "found" by an unrelated `next_block_id:` member, and doc-comment prose
+/// of the form `word:` (e.g. "already true of the structs it covers:")
+/// would satisfy a field that was never declared. Requiring the *trimmed*
+/// line itself to *start with* `field:`/`field?:` closes both holes.
 fn assert_fields_present(interface_name: &str, body: &str, keys: &[&str]) {
     for key in keys {
         let required = format!("{key}:");
         let optional = format!("{key}?:");
+        let found = body.lines().any(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('*') || trimmed.starts_with('/') {
+                return false;
+            }
+            trimmed.starts_with(&required) || trimmed.starts_with(&optional)
+        });
         assert!(
-            body.contains(&required) || body.contains(&optional),
+            found,
             "packages/wasm-types/src/index.ts's `{interface_name}` interface is missing \
              field `{key}` — the Rust struct `brink_format::{interface_name}` serializes it. \
              This is exactly the drift issue #2313/#2311 fixed; keep the TS mirror in sync \
@@ -146,6 +163,18 @@ fn save_state_ts_mirror_has_every_field() {
     );
     let body = interface_body(&source, "SaveState");
     assert_fields_present("SaveState", body, &keys);
+
+    // `visits`/`turns` are nested `VisitEntry` — check its own field set the
+    // same way. Use the `visits[0]` sample, which has `path: Some(..)`, so
+    // its JSON carries all three fields (`id`, `path`, `count`).
+    let visit_json = serde_json::to_value(&save.visits[0]).expect("serialize sample VisitEntry");
+    let visit_object = visit_json
+        .as_object()
+        .expect("VisitEntry serializes to a JSON object");
+    let mut visit_keys: Vec<&str> = visit_object.keys().map(String::as_str).collect();
+    visit_keys.sort_unstable();
+    let visit_body = interface_body(&source, "VisitEntry");
+    assert_fields_present("VisitEntry", visit_body, &visit_keys);
 }
 
 #[test]

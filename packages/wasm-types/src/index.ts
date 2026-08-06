@@ -182,8 +182,10 @@ export interface SaveState {
    * hashes its identity as `(module, name)`, so a bare name alone can't
    * reconstruct the id a `#@was` alias-table entry was compiled against —
    * this is the id `Story::load_state` consults when a saved global's name
-   * no longer matches any current global slot. Empty for saves predating
-   * this field. */
+   * no longer matches any current global slot. Older saves predating this
+   * field carry no `global_ids` key at all on the wire
+   * (`#[serde(default)]` on the Rust side); the loader defaults it to
+   * empty rather than the key being present-but-empty. */
   global_ids: Record<string, string>;
   visits: VisitEntry[];
   turns: VisitEntry[];
@@ -237,14 +239,19 @@ export interface SuspendedFlow {
   wake: WakePolicy;
   /** The flow's `Flow::next_block_id` counter at the instant it was parked
    * (#2108, 2026-08-05 ruling: a resumed flow continues its block-id
-   * sequence rather than colliding with fresh numbering). `0` for a save
-   * predating this field, identical to the pre-ruling behavior. */
+   * sequence rather than colliding with fresh numbering). A save predating
+   * this field carries no `next_block_id` key at all on the wire
+   * (`#[serde(default)]` on the Rust side); the loader defaults it to `0`,
+   * identical to the pre-ruling behavior. */
   next_block_id: number;
   /** Element-attachment metadata (`@[convention(..., attach = X)]`, #2108)
-   * accumulated on the dialogue run open at the instant this flow parked;
-   * empty when no attach run was open, or for a save predating this
-   * field. */
-  pending_element: Record<string, string>;
+   * accumulated on the dialogue run open at the instant this flow parked.
+   * `#[serde(skip_serializing_if = "BTreeMap::is_empty")]` on the Rust side
+   * means the key is entirely ABSENT from the wire (not present as `{}`)
+   * whenever no attach run was open, or for a save predating this field —
+   * which is every save today, since `Story::save_state` always produces
+   * `suspended: None` (no runtime spill/restore yet, FS-3/#889). */
+  pending_element?: Record<string, string>;
 }
 
 /** A parked flow's wake policy (`docs/flow-suspension-spec.md` §2 point 4;
