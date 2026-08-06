@@ -65,15 +65,34 @@ use crate::editor_dto::explain_match_to_js;
 // successfully compiled snapshot of this file, so `matched_element_kind`
 // below only *reads* that, never re-derives anything.
 //
-// That snapshot can be stale relative to `explanation`'s own live
-// `classify_line` answer — an edit since the last compile can change which
-// handler wins, or claim a line that used to miss. `matched_element_kind`
-// guards against reporting a kind for the wrong handler by requiring the
-// compiled `ElementMatch`'s own `handler` name to agree with the live
-// winner, in addition to the line ranges overlapping; on any disagreement
-// (or no compiled file at all, or a miss) it reports `None` rather than
-// guess — the same "never imply more than we know" discipline
-// `brink_ir::explain_match`'s own doc holds captures to.
+// This is a live read, not a stored snapshot: `self.session.db().hir(..)`
+// (`brink-db`'s `ProjectDb::hir`) is a salsa query recomputed off the
+// current revision — the same revision `self.source_of` reads text from —
+// and `EditorSession::update_file` re-analyzes synchronously on every edit
+// (`update_and_analyze`), so there is no window in which the compiled
+// record can lag behind the live text `explanation` was just computed
+// from (issue #2310 review). `matched_element_kind` still declines (reports
+// `None`) on a real hit, for reasons that have nothing to do with
+// staleness:
+//
+//   - `path` names an ink-dialect file — `HirFile::element_matches` is
+//     always empty for the ink frontend, which has no `@[element]`
+//     channel at all (see that field's own doc, `hir/types.rs`).
+//   - `path` has no compiled `FileId`/`HirFile` at all, or its
+//     `element_matches` simply has no entry for this line.
+//   - the live winner claimed a line the compiler structurally declined
+//     to record its own claim for — e.g. a scene heading carrying a
+//     `[slug]` or trailing tags (`candidate` only recognizes a bare
+//     `SCENE_HEADING` with nothing but its `SCENE_TITLE` child), or a
+//     line folded into a block handler's own captured run rather than
+//     claimed on its own.
+//
+// `matched_element_kind` guards against reporting a kind for the wrong
+// handler by requiring the compiled `ElementMatch`'s own `handler` name
+// to agree with the live winner, in addition to the line ranges
+// overlapping; on any disagreement, or no compiled record at all, it
+// reports `None` rather than guess — the same "never imply more than we
+// know" discipline `brink_ir::explain_match`'s own doc holds captures to.
 
 #[wasm_bindgen]
 impl EditorSession {
@@ -200,8 +219,15 @@ fn cue(name: string) {
   return name;
 }
 
+@[convention(claims = \"^(?<kind>INT|EXT)\\. (?<title>.+)$\", order = 20)]
+fn heading(kind: string, title: string) {
+  return title;
+}
+
 flow main() {
   VENDOR
+  @VENDOR
+  INT. MARKET SQUARE
 }
 ";
 
@@ -263,6 +289,73 @@ flow main() {
             v["winner"]["kind"],
             serde_json::json!("content_line"),
             "a bare, sigil-free line's compile-time shape is ContentLine — got {v}"
+        );
+    }
+
+    /// Issue #2310 review (finding 3): a test that only ever sees
+    /// `ContentLine` cannot tell a real read of the compiled record from a
+    /// hardcoded/misindexed one, since `ContentLine` is also what a
+    /// `matched_element_kind` bug (e.g. always returning the fixture's
+    /// first `element_matches` entry) would produce. `INT. MARKET SQUARE`
+    /// structurally parses as a `SCENE_HEADING` (the `INT.`/`EXT.` prefix
+    /// rule, native syntax) and the fixture's `heading` handler claims it,
+    /// so its compile-time shape is `ElementKind::SceneHeading` — a kind
+    /// the compiled record genuinely differs on from the `VENDOR` case
+    /// above.
+    #[test]
+    fn explain_match_reports_a_kind_that_differs_from_content_line() {
+        let mut s = session_with_conventions();
+        let offset = u32::try_from(
+            CONVENTIONS
+                .find("INT. MARKET SQUARE")
+                .expect("heading line"),
+        )
+        .expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            v["winner"]["handler"]["name"],
+            serde_json::json!("heading"),
+            "got {v}"
+        );
+        assert_eq!(
+            v["winner"]["kind"],
+            serde_json::json!("scene_heading"),
+            "a structural INT./EXT. heading's compile-time shape is \
+             SceneHeading, not ContentLine — got {v}"
+        );
+    }
+
+    /// Issue #2310 review (finding 2): `kind` can never report `"cue"`
+    /// today, even for a real `@NAME` cue line. `candidate` hands
+    /// `try_claim` only the `CUE_NAME` run (excluding the leading `@`), so
+    /// the *compiled* record does claim a bare `@VENDOR` line as a Cue —
+    /// but the *live* raw-line walk this endpoint's `matched` answer comes
+    /// from sees the whole `"@VENDOR"` text, which the `cue` handler's own
+    /// `^[A-Z][A-Z ]*$` pattern (no `@` in its character class) can never
+    /// match. The live walk misses entirely, so the whole answer is
+    /// `matched: false` and `winner`/`kind` are both absent — never a
+    /// guess, per this module's own decline discipline.
+    #[test]
+    fn explain_match_never_reports_a_cue_kind_for_a_real_at_cue_line() {
+        let mut s = session_with_conventions();
+        let offset =
+            u32::try_from(CONVENTIONS.find("@VENDOR").expect("@VENDOR cue line")).expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            v["matched"],
+            serde_json::json!(false),
+            "a real @VENDOR cue line's raw text can never match the cue \
+             handler's own pattern (the '@' isn't in its character \
+             class), so the live walk misses even though the compiled \
+             record claims it — got {v}"
+        );
+        assert!(
+            v.get("winner").is_none(),
+            "a miss must never carry a winner or a kind — got {v}"
         );
     }
 

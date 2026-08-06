@@ -523,6 +523,16 @@ export interface ExplainCapture {
  * {@link ExplainMatch.winner}; a shadowed entry never carries one, since
  * only the actual winning claim has a compiled record to read it from (see
  * `crates/brink-web/src/editor/explain_match.rs`'s own module doc).
+ *
+ * All five `ElementKind` variants are declared for completeness, but only
+ * `"content_line"` and `"scene_heading"` are reachable today: the native
+ * frontend hands a claiming handler's pattern only the inner `CUE_NAME`/
+ * `TEXT` run (excluding the `@`/parens), which the built-in screenplay
+ * preset's own `cue`/`parenthetical` patterns require and so never match
+ * against the live raw-line walk this field is checked against, and
+ * `!name` dispatch handlers are registered on a path that live walk never
+ * consults at all — so `"cue"`, `"parenthetical"`, and `"bang_dispatch"`
+ * cannot surface through this field yet.
  */
 export interface ExplainClassifiedMatch {
   handler: ExplainHandler;

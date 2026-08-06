@@ -65,12 +65,19 @@
 //!
 //! **Delivered by issue #2310**, one layer up: `brink-web`'s
 //! `editor::explain_match` module is exactly that caller — it holds the
-//! last-compiled `HirFile` for the active document and reads `kind` off
-//! [`ElementMatch`](crate::ElementMatch) for the winning line, rather than
-//! re-deriving it, and declines (reports no kind) rather than guess
-//! whenever that compiled snapshot disagrees with this module's own live
-//! winner. This module's own contract is unchanged by that: it still never
-//! sees or reports `ElementKind` itself.
+//! active document's `FileId` and reads `kind` off
+//! [`ElementMatch`](crate::ElementMatch) for the winning line via
+//! `ProjectDb::hir`, a salsa query recomputed off the current revision (the
+//! same revision this module's own live walk reads its line text from) —
+//! never a stored snapshot that could lag an edit. It declines (reports no
+//! kind) rather than guess whenever there is simply no compiled record to
+//! read agreement from: an ink-dialect file (`element_matches` is always
+//! empty there), a file with no compiled `HirFile` at all, or a line the
+//! compiler structurally declined to claim on its own — a heading carrying
+//! a `[slug]`/tags, or a line folded into a block handler's captured run —
+//! even though this module's own live walk matched it. This module's own
+//! contract is unchanged by that: it still never sees or reports
+//! `ElementKind` itself.
 //!
 //! # Memoization (issue #2113's own reassigned remainder)
 //!
