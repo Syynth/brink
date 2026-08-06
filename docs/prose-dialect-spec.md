@@ -560,15 +560,23 @@ fn radio(chan: string, text: content) {
   decoration, firmly distinct from the runtime markup layer (output
   styling = the handler emits markup spans). Considered-deferred:
   indent-level tokens.
-- **Tooling transparency (no invisible expansion)** — unchanged, and
-  half-landed by #1838: `brink_ir::HirFile::element_matches` records
-  every claimed line as `(line range, matched kind, handler name + its
-  declaration range, the claiming annotation's range, captures as spans,
-  disposition)`. `LineContext` carries the matched handler (fn + source
-  location) and capture bindings as spans (now with their style hooks);
-  hover shows the handler's signature and body; the explain-match query
-  answers is/isn't-matched + what bound — those consumers ride the held
-  editor track and read this record rather than re-running the match.
+- **Tooling transparency (no invisible expansion)** — half-landed by
+  #1838: `brink_ir::HirFile::element_matches` records every claimed line
+  as `(line range, matched kind, handler name + its declaration range,
+  the claiming annotation's range, captures as spans, disposition)`.
+  `LineContext` carries the matched handler (fn + source location) and
+  capture bindings as spans (now with their style hooks); hover shows
+  the handler's signature and body. **The explain-match query is built**
+  (issue #2113, shipped by PR #2309): `brink_ir::explain_match`/
+  `ExplainMatchCache` compose #2112's classification walk and #2111's
+  projection into is/isn't-matched + what bound (patterns attempted on a
+  miss, other matches shadowed on a hit), reading this record rather
+  than re-running the match — exposed to the wasm editor surface as
+  `EditorSession::explain_match`/`explain_match_doc`. This is not a
+  consumer "riding a held editor track": per the ruling recorded at
+  item 6 below, this compiler-side query family was never covered by
+  the 2026-08-01 hold in the first place, and the hold itself is lifted
+  as of 2026-08-05 regardless.
 - **Deferred**: numeric capture coercion (issue #1849 added `E171`, a
   declaration-time diagnostic for a `claims` handler's non-`string`
   captured param, so the gap is loud rather than silent — the coercion
