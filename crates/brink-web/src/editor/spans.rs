@@ -72,9 +72,7 @@ impl EditorSession {
                     &projection,
                     dialect,
                 ),
-                None => {
-                    brink_ide::line_context::line_contexts_native(source, &root, &projection)
-                }
+                None => brink_ide::line_context::line_contexts_native(source, &root, &projection),
             }
         } else {
             let Some(root) = self.session.syntax_root(file_id) else {
