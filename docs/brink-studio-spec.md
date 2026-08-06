@@ -834,6 +834,10 @@ The standalone app is brink's answer to Inky — a self-contained application fo
 
 ### Desktop app (Tauri)
 
+> **Owned by [desktop-shell-spec.md](desktop-shell-spec.md) since 2026-08-06** (v1 = local
+> build; ruling-ledger #28 revived). This section is the original design sketch and stays
+> for context; where they disagree, the desktop-shell spec wins.
+
 The primary standalone distribution is a **Tauri desktop app**. Tauri wraps the same CM6+wasm frontend in a lightweight native shell (~5-10MB), providing:
 
 - Native filesystem access — open/save/watch files without browser API limitations
