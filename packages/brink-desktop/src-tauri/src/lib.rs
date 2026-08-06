@@ -153,10 +153,95 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+/// Build the native menu bar. Project lifecycle (Open/Close) is
+/// SHELL-owned — it sits above `mountStudio`, so hand-wiring it here does
+/// not conflict with the D2 ruling that *studio* commands reach menus via
+/// the command registry (docs/desktop-shell-spec.md "Menus"); Save/Play
+/// items arrive in D2 through that registry. The Edit submenu's predefined
+/// roles are load-bearing: without them the webview loses ⌘C/⌘V/⌘X on
+/// macOS.
+fn build_menu(
+    handle: &tauri::AppHandle,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let app_menu = Submenu::with_items(
+        handle,
+        "Brink Studio",
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, None, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::quit(handle, None)?,
+        ],
+    )?;
+    let open = MenuItem::with_id(
+        handle,
+        "open-project",
+        "Open Project…",
+        true,
+        Some("CmdOrCtrl+O"),
+    )?;
+    // Shift-modified so plain ⌘W keeps its native close-window role.
+    let close = MenuItem::with_id(
+        handle,
+        "close-project",
+        "Close Project",
+        true,
+        Some("CmdOrCtrl+Shift+W"),
+    )?;
+    let file_menu = Submenu::with_items(
+        handle,
+        "File",
+        true,
+        &[
+            &open,
+            &close,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::close_window(handle, None)?,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(handle, None)?,
+            &PredefinedMenuItem::redo(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::cut(handle, None)?,
+            &PredefinedMenuItem::copy(handle, None)?,
+            &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
+        ],
+    )?;
+    Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Emitter;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let menu = build_menu(app.handle())?;
+            app.set_menu(menu)?;
+            // Menu events forward to the webview as plain events; the
+            // frontend owns what "open" and "close" mean (it holds the
+            // StudioHandle). The shell stays policy-free.
+            app.on_menu_event(|app, event| {
+                let forwarded = match event.id().as_ref() {
+                    "open-project" => Some("menu:open-project"),
+                    "close-project" => Some("menu:close-project"),
+                    _ => None,
+                };
+                if let Some(name) = forwarded {
+                    let _ = app.emit(name, ());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_files,
             read_file,
