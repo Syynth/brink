@@ -151,11 +151,23 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       state.searchOptions.regex,
     );
     // Through the shared apply-edits seam (#137): provider write-back +
-    // host egress, exactly like the binder structural-op path.
-    project.applyEdit(
+    // host egress, exactly like the binder structural-op path. `applyEdit`
+    // refuses a mounted stdlib path (issue #2306) — `listFiles`-derived
+    // results never include one today, but a caller reaching this with a
+    // by-id path outside that listing (the exact hole #2306 closes) must
+    // not silently fork the library.
+    const applied = project.applyEdit(
       path,
       applyReplacements(source, [{ start: match.start, end: match.end, text }]),
     );
+    if (!applied) {
+      get()._notify?.({
+        severity: "warning",
+        source: "search",
+        message: `"${path}" is part of the read-only library and cannot be edited`,
+      });
+      return;
+    }
     documents.invalidateFile(path);
     documents.triggerCompile();
     get().runSearch();
@@ -216,16 +228,26 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       return;
     }
 
+    // Shared apply-edits seam (#137): see replaceSearchMatch. `applyEdit`
+    // refuses a mounted stdlib path (issue #2306) — skipped files are
+    // reported alongside the replace count rather than silently dropped.
+    let skipped = 0;
+    let filesChanged = 0;
     for (const { path, source, edits } of planned) {
-      // Shared apply-edits seam (#137): see replaceSearchMatch.
-      project.applyEdit(path, applyReplacements(source, edits));
+      if (!project.applyEdit(path, applyReplacements(source, edits))) {
+        skipped += 1;
+        continue;
+      }
       documents.invalidateFile(path);
+      filesChanged += 1;
     }
     documents.triggerCompile();
+    const skippedSuffix =
+      skipped > 0 ? ` (skipped ${plural(skipped, "read-only file", "read-only files")})` : "";
     get()._notify?.({
       severity: "info",
       source: "search",
-      message: `Replaced ${plural(results.totalMatches, "match", "matches")} in ${plural(planned.length, "file", "files")}`,
+      message: `Replaced ${plural(results.totalMatches, "match", "matches")} in ${plural(filesChanged, "file", "files")}${skippedSuffix}`,
     });
     get().runSearch();
   },
@@ -251,7 +273,15 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
 
     // Through the shared apply-edits seam (#137), exactly like the tree's
     // per-row replace: provider write-back + host egress + view refresh.
-    project.applyEdit(path, applyReplacements(source, [edit]));
+    // `applyEdit` refuses a mounted stdlib path (issue #2306).
+    if (!project.applyEdit(path, applyReplacements(source, [edit]))) {
+      get()._notify?.({
+        severity: "warning",
+        source: "search",
+        message: `"${path}" is part of the read-only library and cannot be edited`,
+      });
+      return;
+    }
     documents.invalidateFile(path);
     documents.triggerCompile();
     get().runSearch();

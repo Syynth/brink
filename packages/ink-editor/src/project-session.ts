@@ -346,10 +346,29 @@ export class ProjectSession {
    * content AND report it. Bulk edit paths (binder structural ops, search
    * replace, binder undo) MUST use this instead of raw `updateFile` so the
    * provider write-back and the host egress callback always see them.
+   *
+   * Session-level read-only enforcement (issue #2306, ruled 2026-08-06
+   * "Mounted stdlib presents as a read-only library node"): refuses (no
+   * write, no notify) when `path` currently resolves to a mounted stdlib
+   * copy — the by-id route named in that ruling (project-wide search/
+   * replace, or any future bulk caller not gated by `listFiles`) must not
+   * be able to silently fork the library into the project. Returns whether
+   * the edit actually applied, so a caller can surface the refusal instead
+   * of assuming success.
+   *
+   * Deliberately NOT applied to `initialize()`/`addFile()`/the external-
+   * change handler above, which call `session.updateFile` directly: those
+   * are the host seeding real project content, including the legal case of
+   * a real file deliberately shadowing a mounted stdlib key (see
+   * `EditorSession::new`'s doc in `crates/brink-web/src/editor/mod.rs`) —
+   * that must keep winning by construction-time ordering, not be rejected
+   * because the id is still (momentarily) mounted at call time.
    */
-  applyEdit(path: string, newSource: string): void {
+  applyEdit(path: string, newSource: string): boolean {
+    if (this.session.isReadOnly(path)) return false;
     this.session.updateFile(path, newSource);
     this.notifyFileChanged(path);
+    return true;
   }
 
   // ── Host egress (issue #154) ─────────────────────────────────────

@@ -120,6 +120,27 @@ pub struct EditorSession {
     /// the same key, mirroring `NativeProjects::set_file`'s
     /// already-present-wins precedent — so the mount stays invisible only
     /// until a project file shadows it.
+    ///
+    /// Also the read-only enforcement fence (issue #2306, ruled 2026-08-06
+    /// "Mounted stdlib presents as a read-only library node"): `is_read_only`
+    /// and `update_document` consult this same set to refuse editing the
+    /// mounted copy through a doc handle — a route not gated by any of the
+    /// three listings above (e.g. a handle opened via goto-def navigation
+    /// into an inherited symbol). `update_file`/`update_source` are
+    /// deliberately left unguarded: they are the host's whole-file
+    /// "this is the content now" API, and a real project file placed at a
+    /// mounted key is legal, deliberate shadowing (see `EditorSession::new`'s
+    /// doc above) that must keep winning by construction-time ordering, not
+    /// be rejected because the id is still (momentarily) mounted. The
+    /// by-id "editor route" hole named in #2306 — a bulk TS-level path like
+    /// project-wide search/replace calling `updateFile` on an unshadowed
+    /// mounted path — is closed one layer up, in `ProjectSession.applyEdit`
+    /// (`packages/ink-editor/src/project-session.ts`), which checks
+    /// `isReadOnly` before writing; that seam sits above every bulk-edit
+    /// caller (search replace, results-buffer edits, binder undo) while
+    /// leaving `ProjectSession.initialize()`/`addFile()`/external-change
+    /// sync — which call `updateFile` directly, exactly like a legitimate
+    /// shadow — untouched.
     mounted_std_ids: BTreeSet<brink_ir::FileId>,
     /// The explain-match query's memoized cache (issue #2113, NS-T seam
     /// 3/6) — kept on the session so it survives across keystrokes, per the
@@ -1309,6 +1330,92 @@ mod tests {
         assert!(
             paths.contains(&key),
             "a real project file at a mounted key must reappear in list_files(), got {paths:?}"
+        );
+    }
+
+    // ── Session-level read-only enforcement (issue #2306) ────────────
+    // Ruled 2026-08-06 "Mounted stdlib presents as a read-only library
+    // node": editing the mounted library copy through an editor route must
+    // be rejected at the session layer, while a real project file
+    // deliberately shadowing the mount (proven above) must keep working.
+
+    #[test]
+    fn is_read_only_true_for_mount_false_once_shadowed_or_ordinary() {
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        assert!(
+            s.is_read_only(key),
+            "a freshly mounted stdlib key must report read-only"
+        );
+        assert!(
+            !s.is_read_only("main.ink"),
+            "an unknown path must not report read-only"
+        );
+
+        s.update_file("main.ink", "-> DONE\n");
+        assert!(
+            !s.is_read_only("main.ink"),
+            "an ordinary project file must not report read-only"
+        );
+
+        // Shadowing (the legal path, per `project_file_at_stdlib_key_wins_over_mounted_copy`
+        // above) clears the flag — the file is now a real project file.
+        s.update_file(key, "-> DONE\n");
+        assert!(
+            !s.is_read_only(key),
+            "a stdlib key shadowed by a real project file must no longer be read-only"
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_file_is_openable_but_update_document_is_refused() {
+        // The Library-node contract (issue #2306, part 2): a mounted file
+        // must stay browsable/openable (e.g. reached via goto-def into an
+        // inherited symbol) even though it is read-only. `open_document`
+        // succeeds and returns a real handle...
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        let doc = s.open_document(key);
+        assert_ne!(
+            doc, 0,
+            "open_document on a mounted stdlib file must succeed"
+        );
+
+        // ...but writing through that handle is refused: same "did not
+        // apply" sentinel as an unknown handle, and the mounted content is
+        // left byte-for-byte unchanged (the silent-fork hole this issue
+        // closes).
+        let mounted_text = s.session.source(s.session.file_id(key).unwrap()).unwrap();
+        let mounted_text = mounted_text.to_owned();
+        let result = s.update_document(doc, "-> DONE\n");
+        assert_eq!(
+            result, "null",
+            "update_document on a mounted stdlib handle must be refused"
+        );
+        assert_eq!(
+            s.session.source(s.session.file_id(key).unwrap()),
+            Some(mounted_text.as_str()),
+            "a refused update_document must not mutate the mounted copy"
+        );
+    }
+
+    #[test]
+    fn update_file_still_shadows_a_mount_reached_via_read_only_id_check() {
+        // Companion to `project_file_at_stdlib_key_wins_over_mounted_copy`:
+        // pins that the new `is_read_only` fence does not regress the
+        // shadowing contract even when checked immediately beforehand,
+        // exactly as a caller (e.g. `ProjectSession.initialize()`) would.
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        assert!(s.is_read_only(key));
+        s.update_file(key, "-> DONE\n");
+        assert!(
+            !s.is_read_only(key),
+            "update_file must still be able to shadow a mounted key"
+        );
+        assert_eq!(
+            s.session.source(s.session.file_id(key).unwrap()),
+            Some("-> DONE\n")
         );
     }
 
