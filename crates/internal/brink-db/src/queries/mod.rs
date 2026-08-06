@@ -724,21 +724,38 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
         .is_some_and(|f| file_language(f.path(db)) == Language::Native)
 }
 
-/// Whether `path` names a file this db treats as compiler source at all —
-/// an ink (`.ink`) or native (`.brink`) extension, compared
-/// case-insensitively (issue #2329: the same reasoning [`file_language`]'s
-/// doc gives for a `story.INK` reachable on a case-insensitive filesystem).
-/// [`file_language`] classifies *every* path as one of its two variants
-/// (`.brink` → native, everything else → ink), which is the right call for
-/// lowering dispatch — an unrecognized extension has to lower as
-/// *something*. But this predicate asks a narrower question ("is this
-/// actually a source file at all"), and something like a project's own
-/// `brink.toml`, a README, or the retired converter's `.ink.json`/`.json`
-/// siblings are none of the above: a session that loads them as ordinary
-/// documents alongside real source files — `IdeSession`'s wasm/editor
-/// callers do exactly this, so the Binder can list/edit them (issue #2318)
-/// — must not have them lowered through the ink frontend, joined into the
-/// symbol index, or surfaced as diagnostics sources at all (issue #2329).
+/// Extensions of documents brink-db must never treat as compiler source,
+/// regardless of dialect (issue #2329): project config (`brink.toml`),
+/// documentation (`.md`), and the retired converter's/oracle-regeneration
+/// JSON family (`.json`, which also covers `.ink.json` — `Path::extension`
+/// only ever reports the last dotted segment, so `story.ink.json` already
+/// matches on `"json"`). Compared case-insensitively in [`is_source_file`].
+///
+/// Deliberately a **blocklist**, not an allowlist of `.ink`/`.brink`: a path
+/// with no extension at all (`Path::extension` returns `None`) must still
+/// count as source, matching [`file_language`]'s own "everything
+/// unrecognized is ink" fallback — `brink_compiler::compile_with_options`'s
+/// test/bench callers pass an in-memory pseudo-path with no extension at
+/// all as `entry`, relying on exactly that fallback. An allowlist would
+/// silently exclude that pseudo-path from parsing/the symbol index and
+/// break every such caller (caught by
+/// `algorithms_ground_truth::sorting_matches_rust_sort_property_mode_over_pcg_seeded_random_arrays`
+/// during review of this fix, which failed with "0 diagnostics" on an
+/// allowlist-shaped first attempt).
+const NON_SOURCE_EXTENSIONS: [&str; 3] = ["toml", "md", "json"];
+
+/// Whether `path` names a file this db treats as compiler source at all.
+/// [`file_language`] classifies *every* path as one of its two dialect
+/// variants (`.brink` → native, everything else → ink) for lowering
+/// dispatch — an unrecognized extension has to lower as *something*. But
+/// this predicate asks a narrower question ("is this actually a source file
+/// at all"), and something like a project's own `brink.toml`, a README, or
+/// the retired converter's `.ink.json`/`.json` siblings are none of the
+/// above: a session that loads them as ordinary documents alongside real
+/// source files — `IdeSession`'s wasm/editor callers do exactly this, so
+/// the Binder can list/edit them (issue #2318) — must not have them lowered
+/// through the ink frontend, joined into the symbol index, or surfaced as
+/// diagnostics sources at all (issue #2329).
 ///
 /// This is the **one shared predicate** every whole-project query that
 /// iterates `project.files(db)` for parsing/symbol-index/diagnostics
@@ -757,9 +774,11 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
 /// document is never reachable through an `INCLUDE`/native-module edge, so
 /// it can never enter that closure in the first place.
 pub(crate) fn is_source_file(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("brink") || ext.eq_ignore_ascii_case("ink"))
+    !std::path::Path::new(path).extension().is_some_and(|ext| {
+        NON_SOURCE_EXTENSIONS
+            .iter()
+            .any(|non_source| ext.eq_ignore_ascii_case(non_source))
+    })
 }
 
 /// Whether every *recognized source file* (ink or native) currently tracked
@@ -768,10 +787,15 @@ pub(crate) fn is_source_file(path: &str) -> bool {
 /// files are non-source documents (there is then no native file to be "all"
 /// of).
 ///
-/// A tracked file with neither a `.brink` nor an `.ink` extension is
+/// A tracked file whose extension is [`NON_SOURCE_EXTENSIONS`] (config,
+/// docs, oracle-regeneration JSON — [`is_source_file`] is `false`) is
 /// invisible to this check in both directions: it neither disqualifies
-/// nativity nor counts toward it. Before this fix (issue #2318), a
-/// project's own `brink.toml` sharing a session with its native source
+/// nativity nor counts toward it. Every other file — including one with no
+/// extension at all, or an extension this db doesn't otherwise recognize —
+/// *does* count (matching [`is_source_file`]'s "everything not explicitly
+/// non-source is source" contract), so it disqualifies nativity unless
+/// [`file_language`] also classifies it `Native`. Before this fix (issue
+/// #2318), a project's own `brink.toml` sharing a session with its native source
 /// files — exactly how `IdeSession`'s editor callers load it, so the Binder
 /// can show/edit it — silently classified as [`Language::Ink`] via
 /// [`file_language`]'s "everything else is ink" fallback and flipped this to
