@@ -47,6 +47,22 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "null".to_owned();
         };
+        // #2291: `line_convert::convert_element` isn't just reading the
+        // wrong CST here (`syntax_root` always runs ink's parser regardless
+        // of extension — `IdeSession::syntax_root`'s doc comment, #2280's
+        // failure mode) — the *feature itself* doesn't apply to native.
+        // It detects/rewrites bare-line `*`/`+`/`-` choice and gather
+        // sigils, but the native grammar has no such thing: choices only
+        // exist inside an explicit `{? ... }` choice point
+        // (`brink-syntax-native/src/parser/choice.rs`'s own doc: "there is
+        // no bare knot-level `*`/`+` anymore — that ambiguity died with the
+        // gather"). Converting a native line by inserting an ink sigil
+        // would write syntactically invalid `.brink` source, not just
+        // compute from the wrong tree — a native file gets no conversion
+        // rather than a corrupting one.
+        if self.session.is_native(file_id) {
+            return "null".to_owned();
+        }
         let (Some(hir), Some(source), Some(root)) = (
             self.session.hir(file_id),
             self.session.source(file_id),
@@ -97,6 +113,18 @@ impl EditorSession {
         let Some(source) = self.session.source(file_id) else {
             return "\"\"".to_owned();
         };
+
+        // #2291: `sort_knots_in_source` unconditionally calls
+        // `brink_syntax::parse` and looks for ink `Knot` nodes (`=== name
+        // ===`) — a `.brink` file has no such header, so this is a no-op
+        // today (native has no `=== ===` for ink's parser to ever match
+        // >= 2 of), but it is still the always-ink-parse pattern
+        // `IdeSession::syntax_root`'s doc comment warns against, and no
+        // native knot-sort exists yet to route to instead. Gate explicitly
+        // rather than rely on the coincidental no-op.
+        if self.session.is_native(file_id) {
+            return serde_json::to_string(source).unwrap_or_default();
+        }
 
         let formatted = brink_ide::sort_knots_in_source(source);
         serde_json::to_string(&formatted).unwrap_or_default()

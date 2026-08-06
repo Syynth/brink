@@ -72,6 +72,20 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
+        // #2291: `brink_ide::inlay_hints::inlay_hints` walks `root.descendants()`
+        // casting to *ink-only* typed AST nodes (`ast::FunctionCall`,
+        // `ast::DivertTargetWithArgs`, `ast::TempDecl`) — there is no native
+        // equivalent of this pass yet. `syntax_root` always runs the ink
+        // parser regardless of extension (`IdeSession::syntax_root`'s doc
+        // comment, #2280's failure mode), so computing hints from it for a
+        // `.brink` file would walk a garbled tree and cast nodes that don't
+        // mean what the classifier assumes — "present and wrong" per #2280's
+        // own standard. Until a native-CST inlay-hints pass exists (tracked
+        // as a follow-up, mirroring #2286's brink-lsp scope note), a native
+        // file gets no inlay hints rather than wrong ones.
+        if self.session.is_native(file_id) {
+            return "[]".to_owned();
+        }
         let (Some(analysis), Some(root)) =
             (self.session.analysis(), self.session.syntax_root(file_id))
         else {
@@ -116,6 +130,15 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
+        // #2291: same ink-only-AST dependency as `inlay_hints_impl` above
+        // (`brink_ide::color::color_hints` casts `ast::FunctionCall`/
+        // `ast::DivertTargetWithArgs` directly) — see that function's
+        // comment for the full reasoning. No native color-hints pass exists
+        // yet; a native file gets no color hints rather than ones computed
+        // from ink's mis-parse of its text.
+        if self.session.is_native(file_id) {
+            return "[]".to_owned();
+        }
         let (Some(analysis), Some(root)) =
             (self.session.analysis(), self.session.syntax_root(file_id))
         else {
@@ -154,6 +177,15 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
+        // #2291: same ink-only-AST dependency as `inlay_hints_impl` above
+        // (`brink_ide::argument_widgets::argument_widgets` walks ink's typed
+        // `ast::FunctionCall`/`ast::ArgList` directly) — see that function's
+        // comment for the full reasoning. No native argument-widgets pass
+        // exists yet; a native file gets no widget sites rather than ones
+        // computed from ink's mis-parse of its text.
+        if self.session.is_native(file_id) {
+            return "[]".to_owned();
+        }
         let (Some(analysis), Some(root)) =
             (self.session.analysis(), self.session.syntax_root(file_id))
         else {

@@ -266,6 +266,35 @@ fn gate_project_wide_symbols_reach_completions() {
     }
 }
 
+/// Folding on the canonical native project (#2291) reaches the
+/// `is_native`-gated native-CST path end to end, decoded onto the fixture's
+/// own line numbers rather than merely asserted non-empty (#2280's own
+/// verification standard) — `STORY`'s `pub flow main() { ... }` spans every
+/// line of the file's body, so its structural fold's `end_line` pins the
+/// exact last content line, a value only the real native parse (not ink's
+/// mis-parse of this text, which has no `pub`/`flow` grammar at all) can
+/// produce correctly.
+#[test]
+fn gate_folding_reaches_the_native_cst_path() {
+    let mut s = gate_session();
+    assert!(s.set_active_file("story.brink"));
+
+    let ranges: serde_json::Value =
+        serde_json::from_str(&s.folding_ranges()).expect("folding_ranges returns valid JSON");
+    let array = ranges.as_array().expect("array");
+    assert!(!array.is_empty(), "expected at least one fold: {ranges}");
+
+    let last_line = u32::try_from(STORY.lines().count()).expect("fixture line count fits u32") - 1; // 0-based, the closing `}`
+    assert!(
+        array
+            .iter()
+            .any(|r| r["kind"] == "structural" && r["end_line"] == last_line),
+        "the `pub flow main()` body must fold to its real closing brace \
+         (line {last_line}) — a fold ending elsewhere means folding read \
+         the wrong CST: {ranges}"
+    );
+}
+
 /// The compile road (what the studio's debounced-compile lint and the Play
 /// button actually run) produces a real artifact with zero warnings.
 #[test]
