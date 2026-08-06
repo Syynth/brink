@@ -730,6 +730,21 @@ export class EditorSessionHandle {
    * {@link openFragment}. A caller under a fragment view cannot map these
    * ranges back into its own document as-is; see
    * `crates/brink-web/src/editor/explain_match.rs`'s own module doc for why.
+   *
+   * `winner.kind` (issue #2310) is the claimed line's compile-time
+   * structural shape, read live off this file's compiled `HirFile` (a
+   * salsa query recomputed off the current revision on every edit — not a
+   * snapshot that can go stale). It can still be absent (`undefined`) on a
+   * hit: `path` is an ink-dialect file (which never populates a compiled
+   * element record at all), nothing has compiled this file yet, or the
+   * live match above claimed a line the compiler declined to record its
+   * own claim for (a heading carrying a `[slug]`/tags, or a line folded
+   * into a block handler's captured run). It is never a guess.
+   *
+   * Only `"content_line"` and `"scene_heading"` are reachable today —
+   * `"cue"`, `"parenthetical"`, and `"bang_dispatch"` are declared in the
+   * type for completeness but cannot yet surface here; see
+   * `crates/brink-web/src/editor/explain_match.rs`'s own module doc.
    */
   explainMatch(offset: number): ExplainMatch | null {
     const json = this.session.explain_match(offset);
