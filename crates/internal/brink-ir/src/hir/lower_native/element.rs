@@ -63,8 +63,14 @@
 //!   restriction applies identically to a `CUE`'s name and a
 //!   `PARENTHETICAL`'s delivery text (issue #1720 widens [`candidate`] to
 //!   these two shapes, alongside `CONTENT_LINE`/`SCENE_HEADING`) — a cue
-//!   or parenthetical carrying a trailing tag extension declines the same
-//!   way a slug/tag-carrying heading does.
+//!   or parenthetical carrying a trailing tag extension still declines.
+//!   **A `SCENE_HEADING` is the one exception** (issue #2077,
+//!   `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+//!   structure, then match"): its optional `[slug]` and trailing `#tag`s
+//!   are structure, not payload, so they are stripped before matching
+//!   rather than causing a decline — see [`candidate`]'s own "Issue
+//!   #2077" comment and [`try_claim`]'s for what happens to the stripped
+//!   pieces.
 //! - A claiming handler's **own body is not claimable** (the staging rule
 //!   §3.5 states for the conventions module: it cannot use the conventions
 //!   it defines). Without this, a handler whose body repeats the shape it
@@ -161,7 +167,7 @@ use rowan::{TextRange, TextSize};
 use crate::hir::FileId;
 use crate::{
     Content, ContentPart, Diagnostic, DiagnosticCode, ElementCapture, ElementDisposition,
-    ElementKind, ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart,
+    ElementKind, ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart, Tag,
 };
 
 use super::SyntaxNode;
@@ -821,6 +827,14 @@ pub(super) fn diagnose_duplicate_patterns(
 /// number of items consumed is returned alongside the statements so the
 /// caller (`body::lower_items`) can skip them rather than lowering them
 /// a second time.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one already-large claim-dispatch body; issue #2079's compact-cue \
+              desugar adds one more per-flavor branch (block/attach/plain) to \
+              an existing three-way split, not a second responsibility — \
+              splitting it would scatter one claim's bookkeeping across \
+              several functions threading the same half-dozen locals"
+)]
 pub(super) fn try_claim(
     file_id: FileId,
     node: &SyntaxNode,
@@ -876,6 +890,25 @@ pub(super) fn try_claim(
         });
     }
 
+    // Issue #2077: recover the two pieces `candidate` stripped from a
+    // `SCENE_HEADING`'s title text before this point — see
+    // `heading_extras`'s own doc for what each one is and why. `None`/empty
+    // for every other node kind, since `CUE`/`PARENTHETICAL`/`CONTENT_LINE`
+    // still decline outright on a slug or tag (candidate would already have
+    // returned `None` for those).
+    //
+    // Deliberately called here — below both the handler lookup (`?` above)
+    // and the per-param capture loop (`?` inside it), not up where
+    // `candidate` first returns — because `heading_extras` is not
+    // side-effect-free: it runs `body::lower_tag` on every trailing tag,
+    // which can itself push a diagnostic (`E172`, for an `@`-leading tag).
+    // Calling it any earlier would run that speculatively for a claim this
+    // function might still abandon (no handler matches, or an alternation
+    // branch left a param's capture group unpopulated), reporting a
+    // diagnostic against a line that never actually lowered through this
+    // handler at all.
+    let (slug, heading_tags) = heading_extras(node, file_id, diags);
+
     // Every field taken from `handler` past this point is copied/cloned out
     // — `handler` (and so the borrow of `elements.handlers` it holds) is
     // never referenced again, which is what lets the `block` branch below
@@ -888,6 +921,22 @@ pub(super) fn try_claim(
     // borrow of `elements.handlers`/`.external` `handler` holds must end
     // before the `is_block`/attach branches below borrow `elements` mutably.
     let is_attach = handler.attach.is_some();
+    // Attach-mode never emits a `Stmt::Content` at all — ruling item 6,
+    // "AN EVENT EXISTS IFF A LINE EXISTS" (`docs/decision-log.md`
+    // 2026-08-03) — so there is no line left for a tag-bearing heading's
+    // `heading_tags` to ride on if this claim went through
+    // (`build_attach_stmts` only ever emits `Stmt::AttachElement`/
+    // `Stmt::EndElementRun`, neither of which carries tags). Declining the
+    // claim here — rather than silently discarding the tags, the gap
+    // review caught in this PR — falls through to the same loud `E129`
+    // `body::lower_one_item`'s `SCENE_STITCH` arm already reports for any
+    // other unclaimed heading (house rule 9: never a silent drop). Scoped
+    // to attach handlers with a nonempty `heading_tags` only: block-mode
+    // and ordinary Call-mode handlers both still deliver a tag-bearing
+    // heading's tags through the existing `Content.tags` channel below.
+    if is_attach && !heading_tags.is_empty() {
+        return None;
+    }
     // Issue #2289: `decl.is_none()` is exactly "this handler was injected
     // from the project's configured conventions module, not declared in
     // this file" (see `ClaimHandler::decl`'s own doc) — copied out now for
@@ -902,6 +951,57 @@ pub(super) fn try_claim(
             })
         })
         .collect();
+
+    // Issue #2079, RULED 2026-08-06 "Compact cue desugars to cue + content
+    // line": a `COMPACT_CUE`'s fused dialogue (its second child, an
+    // ordinary `CONTENT_LINE`) is not a sibling of `node` — it lives
+    // *inside* it — but the ruling treats it as the first line of whatever
+    // run follows the (virtual) cue line, in every handler flavor. `None`
+    // for every other candidate kind, so this changes nothing for `CUE`/
+    // `SCENE_HEADING`/`PARENTHETICAL`/plain `CONTENT_LINE` claims.
+    let compact_dialogue = (node.kind() == N::COMPACT_CUE)
+        .then(|| node.children().find(|c| c.kind() == N::CONTENT_LINE))
+        .flatten();
+    // Review finding on #2079's PR: a compact cue's fused dialogue is not
+    // shown to the pattern, but it still needs to be checked before it is
+    // folded into the claim's captured run/fragment — `content::content_line`
+    // parses the SAME shapes here that `is_plain_content_line`'s own doc
+    // names for a sibling body item: a leading `(ident)` right after the
+    // `@NAME:` prefix is a `LABEL` (`content.rs`'s own comment: the check
+    // "fires right after a compact cue's `@NAME:` prefix"), and a trailing
+    // `-> target`/`->->`/`{?}` folds into a `DIVERT_STMT`/`TUNNEL_CALL`/
+    // `CHOICE_POINT` child of the same `CONTENT_LINE`. Both are "element-
+    // level" in exactly the sense `capture_block`'s terminator search
+    // already treats as run-ending for a sibling — but `dialogue` isn't
+    // offered to that search at all (`capture_block_with_compact_dialogue`
+    // takes it unconditionally as the run's first line), so without this
+    // check a fused divert would transfer control before the fragment/run's
+    // own closing statement (`EndFragment`/`EndElementRun`) ever executes,
+    // and a fused label would silently vanish into `Stmt::LabeledBlock`.
+    // Declining the whole claim here — before anything is recorded in
+    // `elements.matches` or emitted to `diags` — mirrors `try_dispatch`'s
+    // own precedent (this file, `candidate(&remainder)?` a few hundred
+    // lines below): a fused remainder that isn't itself claimable makes the
+    // WHOLE line decline, falling through to the loud "parses but has no
+    // HIR lowering yet" `E129` default rather than silently corrupting the
+    // run.
+    if compact_dialogue
+        .as_ref()
+        .is_some_and(|dialogue| !is_plain_content_line(dialogue))
+    {
+        return None;
+    }
+    // Shared by the `is_block`/`is_attach` arms below: dispatches to
+    // whichever of `capture_block`/`capture_block_with_compact_dialogue`
+    // applies, so neither arm repeats the `match`.
+    let capture = |following: &[SyntaxNode],
+                   elements: &mut Elements,
+                   diags: &mut Vec<Diagnostic>| match &compact_dialogue {
+        Some(dialogue) => {
+            capture_block_with_compact_dialogue(file_id, dialogue, following, elements, diags)
+        }
+        None => capture_block(file_id, following, elements, diags),
+    };
 
     let mut consumed = 0;
     let mut content_range = None;
@@ -925,7 +1025,7 @@ pub(super) fn try_claim(
     // inventing "what should happen when a handler wraps AND attaches"
     // unilaterally.
     if is_block {
-        let (fragment_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        let (fragment_stmts, n, range) = capture(following, elements, diags);
         consumed = n;
         content_range = range;
         call_args.push(Expr::Fragment(fragment_stmts));
@@ -938,11 +1038,21 @@ pub(super) fn try_claim(
         // statements are spliced back into the returned stream as ordinary
         // sibling statements (bracketed by `EndElementRun`) rather than
         // embedded as this call's own argument.
-        let (run_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        let (run_stmts, n, range) = capture(following, elements, diags);
         consumed = n;
         content_range = range;
         attach_run_stmts = run_stmts;
     }
+    // Neither `block` nor `attach`: the handler's own claimed line still
+    // lowers to a plain call (below), but a compact cue's fused dialogue
+    // must not vanish — it lowers right after the call, as though it were a
+    // bare sibling `CONTENT_LINE` nobody claimed (no `following` absorbed:
+    // a plain handler never has been).
+    let plain_dialogue_stmts = (!is_block && !is_attach && compact_dialogue.is_some()).then(|| {
+        let (stmts, _n, range) = capture(&[], elements, diags);
+        content_range = range;
+        stmts
+    });
 
     let call = Expr::Call(
         Path {
@@ -968,56 +1078,149 @@ pub(super) fn try_claim(
         disposition: ElementDisposition::Call,
         content: content_range,
         injected: is_injected,
+        slug,
     });
 
     if is_attach {
-        // Ruling item 6: "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
-        // convention emits no `Stmt::Content`/`Stmt::EndOfLine` at all, only
-        // `AttachElement` (evaluates `call`, merges its fields into the
-        // VM's per-block attachment state) followed by the captured
-        // following run's own already-lowered statements and, usually, a
-        // closing `EndElementRun`.
-        //
-        // **The one exception** (found by tracing the actual bytecode for
-        // `cue` immediately followed by `parenthetical` — #2108's own
-        // fixture): `capture_block`'s terminator search stops at ANY
-        // element-level line, including another `CUE`/`PARENTHETICAL` —
-        // so `cue`'s own captured run is *empty* when a `parenthetical`
-        // immediately follows it, exactly the shape ruling item 3
-        // ("cue and parenthetical both attach to the SAME run") requires
-        // to chain. Closing right there (as an earlier version of this
-        // code unconditionally did) would clear `cue`'s data before
-        // `parenthetical`'s own `AttachElement` — or the dialogue after
-        // it — ever reads it. So: an empty capture caused SPECIFICALLY by
-        // an immediately-following `CUE`/`PARENTHETICAL` node leaves the
-        // run open (no `EndElementRun` here — the following claim's own
-        // rewrite closes it once IT finishes); any other empty-capture
-        // reason (a blank line, a heading, a dispatch, end of statements)
-        // closes immediately, so an attach with genuinely nothing after it
-        // never leaks into unrelated later content.
-        let chains_into_next_attach = attach_run_stmts.is_empty()
-            && following
-                .first()
-                .is_some_and(|n| matches!(n.kind(), N::CUE | N::PARENTHETICAL));
-        let mut stmts = vec![Stmt::AttachElement(call)];
-        stmts.extend(attach_run_stmts);
-        if !chains_into_next_attach {
-            stmts.push(Stmt::EndElementRun);
-        }
-        return Some((stmts, consumed));
+        return Some((
+            build_attach_stmts(call, attach_run_stmts, following),
+            consumed,
+        ));
     }
 
-    Some((
-        vec![
-            Stmt::Content(Content {
-                ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
-                parts: vec![ContentPart::Interpolation(call)],
-                tags: Vec::new(),
-            }),
-            Stmt::EndOfLine,
-        ],
-        consumed,
-    ))
+    let mut stmts = vec![
+        Stmt::Content(Content {
+            ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
+            parts: vec![ContentPart::Interpolation(call)],
+            // Empty for every non-heading match (a tag-carrying `CUE`/
+            // `PARENTHETICAL`/`CONTENT_LINE` never reaches here — see
+            // this function's own "Issue #2077" comment above); a
+            // claimed heading's own trailing tags ride this same field,
+            // the existing ordinary per-line tag channel.
+            //
+            // This is a deliberate INTERIM carrier, not a ruled
+            // semantic: `docs/prose-dialect-spec.md` §8b.4 rules a
+            // header line's trailing `#tag`s **container-level
+            // per-flow tags** — the authoring surface issue #474 (the
+            // per-flow tag API) is iceboxed waiting for — and the
+            // 2026-08-06 "Slug-bearing headings: strip structure, then
+            // match" ruling this function implements says only that
+            // tags are stripped before matching, nothing about which
+            // channel delivers them. Routing them here, onto the
+            // heading's own output `Stmt::Content`, is the closest
+            // existing mechanism and better than the silent drop this
+            // PR would otherwise have reintroduced, but it is ordinary
+            // per-line runtime tag delivery, not §8b.4's per-flow
+            // tags. Re-route (or remove, if #474 supersedes this
+            // entirely) once #474 lands.
+            tags: heading_tags,
+        }),
+        Stmt::EndOfLine,
+    ];
+    // Compact cue (#2079), plain (non-attach, non-block) handler flavor:
+    // the fused dialogue's own statements go right after the call's line —
+    // see `plain_dialogue_stmts`'s own comment above for why this can
+    // never be `Some` unless `compact_dialogue` is, and `None` here is the
+    // overwhelming common case (every non-compact-cue claim, and every
+    // compact cue whose handler is `block`/`attach`) so this is a no-op
+    // extend for them.
+    if let Some(dialogue_stmts) = plain_dialogue_stmts {
+        stmts.extend(dialogue_stmts);
+    }
+    Some((stmts, consumed))
+}
+
+/// [`try_claim`]'s attach-mode (issue #2108) rewrite: `call` becomes a
+/// `Stmt::AttachElement` rather than ordinary `Stmt::Content`, followed by
+/// the captured following run's own already-lowered statements and,
+/// usually, a closing `EndElementRun`.
+///
+/// Ruling item 6: "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
+/// convention emits no `Stmt::Content`/`Stmt::EndOfLine` at all.
+///
+/// **The one exception** (found by tracing the actual bytecode for `cue`
+/// immediately followed by `parenthetical` — #2108's own fixture):
+/// [`capture_block`]'s terminator search stops at ANY element-level line,
+/// including another `CUE`/`PARENTHETICAL` — so `cue`'s own captured run is
+/// *empty* when a `parenthetical` immediately follows it, exactly the
+/// shape ruling item 3 ("cue and parenthetical both attach to the SAME
+/// run") requires to chain. Closing right there (as an earlier version of
+/// this code unconditionally did) would clear `cue`'s data before
+/// `parenthetical`'s own `AttachElement` — or the dialogue after it — ever
+/// reads it. So: an empty capture caused SPECIFICALLY by an
+/// immediately-following `CUE`/`PARENTHETICAL` node leaves the run open
+/// (no `EndElementRun` here — the following claim's own rewrite closes it
+/// once IT finishes); any other empty-capture reason (a blank line, a
+/// heading, a dispatch, end of statements) closes immediately, so an
+/// attach with genuinely nothing after it never leaks into unrelated later
+/// content.
+fn build_attach_stmts(
+    call: Expr,
+    attach_run_stmts: Vec<Stmt>,
+    following: &[SyntaxNode],
+) -> Vec<Stmt> {
+    let chains_into_next_attach = attach_run_stmts.is_empty()
+        && following
+            .first()
+            .is_some_and(|n| matches!(n.kind(), N::CUE | N::PARENTHETICAL));
+    let mut stmts = vec![Stmt::AttachElement(call)];
+    stmts.extend(attach_run_stmts);
+    if !chains_into_next_attach {
+        stmts.push(Stmt::EndElementRun);
+    }
+    stmts
+}
+
+/// [`try_claim`]'s issue #2077 seam: recover the two pieces `candidate`
+/// stripped from a `SCENE_HEADING`'s title text before matching
+/// (`docs/decision-log.md` 2026-08-06, "Slug-bearing headings: strip
+/// structure, then match"). `(None, Vec::new())` for every non-heading
+/// `node` — `CUE`, `PARENTHETICAL` and `CONTENT_LINE` still decline
+/// outright on a slug or tag (this issue is scoped to headings only), so
+/// `try_claim` never reaches this call for those at all.
+///
+/// - The slug: the *address capture* role `docs/prose-dialect-spec.md`
+///   §8b.5 reserves, returned as a reserved `ElementCapture` for the caller
+///   to store ALONGSIDE `ElementMatch::captures`, not merged into it —
+///   `captures`' own doc says "bound into the call, in parameter order",
+///   and the slug is never bound into the rewritten call. Named `slug`,
+///   not the spec's more generic "address": only a scene heading has one
+///   today (`SCENE_SLUG`, §3.3), so the concrete CST/spec term is more
+///   honest than a generalization nothing else uses yet — a future element
+///   gaining its own address capture can rename/generalize then. Wiring
+///   the slug into structure/`DefinitionId` (what would make it
+///   load-bearing rather than descriptive) is heading→stitch promotion,
+///   issue #2078 — deliberately untouched here; a caller reads a real
+///   source span and nothing more.
+/// - The tags: the EXISTING tag channel (`Content.tags`, via the same
+///   `lower_tag` every other tagged line already goes through) — not a
+///   second delivery mechanism invented for headings. This is a
+///   deliberate INTERIM carrier pending issue #474 (the per-flow tag
+///   API), not a ruled semantic — see `try_claim`'s own call site for
+///   why. `docs/prose-dialect-spec.md` §8b.4 names a header line's
+///   trailing `#tag`s **container-level per-flow tags**, a different
+///   concept from an ordinary per-line runtime tag.
+fn heading_extras(
+    node: &SyntaxNode,
+    file_id: FileId,
+    diags: &mut Vec<Diagnostic>,
+) -> (Option<ElementCapture>, Vec<Tag>) {
+    let Some(heading) = ast::SceneHeading::cast(node.clone()) else {
+        return (None, Vec::new());
+    };
+    let slug = heading
+        .slug()
+        .and_then(|s| s.name_token())
+        .map(|tok| ElementCapture {
+            name: "slug".to_string(),
+            text: tok.text().to_string(),
+            range: tok.text_range(),
+        });
+    let tags = heading
+        .tags()
+        .map(|t| super::body::lower_tag(file_id, &t, diags))
+        .collect();
+    (slug, tags)
 }
 
 /// The block-capture terminator search (issue #1839, ruled 2026-07-31):
@@ -1073,6 +1276,54 @@ fn capture_block(
         _ => None,
     };
     let stmts = super::body::lower_items(file_id, captured, 0, elements, diags);
+    (stmts, end, range)
+}
+
+/// [`capture_block`]'s twin for a compact cue's fused dialogue (issue
+/// #2079, RULED 2026-08-06 "Compact cue desugars to cue + content line").
+///
+/// `dialogue` is unconditionally the captured run's first line — it is
+/// **not** run through [`is_plain_content_line`]/[`blank_line_precedes`]
+/// the way a real sibling is: those two checks exist to decide whether a
+/// *sibling* item is eligible to extend an already-open run, and `dialogue`
+/// isn't a sibling being offered for absorption, it is structurally *part
+/// of* the compact cue itself. That said, the caller ([`try_claim`]) has
+/// already required `dialogue` itself to satisfy [`is_plain_content_line`]
+/// before ever reaching here — a fused `LABEL` or trailing divert/choice on
+/// `dialogue` declines the WHOLE claim instead (review finding, #2079's PR:
+/// unconditionally absorbing either shape here let a divert transfer
+/// control before this run's own closing statement ran, corrupting the
+/// runtime's fragment/attach-run bookkeeping). So by the time this function
+/// runs, `dialogue` is known plain — this function itself does not
+/// re-check it, it only extends the run with whatever *plain* siblings
+/// follow. `following`'s normal terminator search still applies to
+/// whatever comes after `dialogue` — unchanged from before this finding.
+///
+/// Returns the same three-part shape as [`capture_block`], except the
+/// range is never `None`: `dialogue` alone guarantees at least one
+/// captured item.
+fn capture_block_with_compact_dialogue(
+    file_id: FileId,
+    dialogue: &SyntaxNode,
+    following: &[SyntaxNode],
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<Stmt>, usize, Option<TextRange>) {
+    let mut end = 0;
+    while end < following.len() {
+        let item = &following[end];
+        if !is_plain_content_line(item) || blank_line_precedes(item) {
+            break;
+        }
+        end += 1;
+    }
+    let mut captured: Vec<SyntaxNode> = Vec::with_capacity(1 + end);
+    captured.push(dialogue.clone());
+    captured.extend(following[..end].iter().cloned());
+    let range = captured
+        .last()
+        .map(|last| dialogue.text_range().cover(last.text_range()));
+    let stmts = super::body::lower_items(file_id, &captured, 0, elements, diags);
     (stmts, end, range)
 }
 
@@ -1289,6 +1540,11 @@ pub(super) fn try_dispatch(
         // module's own doc, "Deliberately not here") — every
         // `DispatchHandler` is declared in this same file.
         injected: false,
+        // A `BANG_DISPATCH`'s remainder is always a fused `CONTENT_LINE`
+        // (this function's own comment above) — never a `SCENE_HEADING` —
+        // so there is never a slug to recover here (issue #2077 is a
+        // `try_claim`-only concern).
+        slug: None,
     });
 
     Some((
@@ -1309,11 +1565,21 @@ pub(super) fn try_dispatch(
 ///
 /// A `CONTENT_LINE` qualifies only when it is *wholly* literal — exactly
 /// one `TEXT` child and nothing else (no `LABEL`, `INTERPOLATION`, `SPAN`,
-/// `TAG`, `GLUE_NODE`, `ESCAPE`, embedded divert or choice point). A
-/// `SCENE_HEADING`'s title run qualifies the same way; the heading's
-/// optional `[slug]` and trailing tags are structure the pattern is not
-/// shown, so a heading carrying either is declined rather than matched
-/// against a partial line.
+/// `TAG`, `GLUE_NODE`, `ESCAPE`, embedded divert or choice point).
+///
+/// A `SCENE_HEADING`'s title run qualifies by selecting its `SCENE_TITLE`
+/// child, **not** by requiring it be the heading's only child (issue
+/// #2077, `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+/// structure, then match"): the heading's optional `[slug]` and trailing
+/// `#tag`s are structure the pattern is never shown, so they are simply
+/// not selected — rather than causing the whole heading to decline, the
+/// way an equivalent shape does for the other three node kinds below.
+/// `try_claim` recovers both stripped pieces separately: the slug as a
+/// reserved capture (the *address capture* role
+/// `docs/prose-dialect-spec.md` §8b.5 reserves), the tags through the
+/// same `Content.tags` channel any other tagged line already uses. This
+/// makes `SCENE_HEADING` the one arm below whose "wholly literal" bar is
+/// about the *title* alone, not the whole node.
 ///
 /// **Issue #1720** (the built-in screenplay preset) widens this to the
 /// two remaining literal-line grammar shapes `docs/prose-dialect-spec.md`
@@ -1328,18 +1594,43 @@ pub(super) fn try_dispatch(
 ///
 /// - A `CUE`'s `CUE_NAME` run qualifies the same way — exactly that one
 ///   child, nothing else. A cue carrying a trailing tag extension (§8d.4,
-///   `@VENDOR #(v.o.)`) is declined, mirroring the heading/slug case: the
-///   tag is structure the pattern is not shown.
+///   `@VENDOR #(v.o.)`) is declined — unlike `SCENE_HEADING` (above), a
+///   `CUE`'s tags are not stripped-and-recovered by issue #2077, which is
+///   scoped to headings only.
 /// - A `PARENTHETICAL`'s `TEXT` run (the text strictly between the
 ///   parens — `(`/`)` are tokens, not part of the child) qualifies the
 ///   same way; a parenthetical carrying trailing tags is declined too.
 ///
-/// Both new arms feed the exact same `try_claim`/`try_dispatch`
-/// mechanism unchanged — this function is the only seam that needed
-/// widening; the block-capture terminator (`capture_block`) already
-/// treats an upcoming `CUE`/`PARENTHETICAL` as "ends the run" regardless
-/// of whether either is itself claimable, so nothing there changes.
-fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
+/// **Issue #2079** (RULED 2026-08-06, "Compact cue desugars to cue +
+/// content line") adds a third arm: `COMPACT_CUE` (`@NAME: text`)
+/// qualifies against its `CUE_NAME` segment alone, exactly like a bare
+/// `CUE`'s own arm — but unlike the two arms above, `COMPACT_CUE` is not a
+/// lone-child node (it always carries a second child, the fused dialogue
+/// `CONTENT_LINE`), so its arm below deliberately does not require
+/// `children.next().is_none()`. The fused dialogue itself is never shown
+/// to the pattern here — `try_claim` desugars it separately (its own
+/// "Compact cue" note) and, unlike the two arms above, does not feed the
+/// *same* mechanism unchanged: `try_claim` requires the fused dialogue to
+/// independently satisfy `is_plain_content_line` before folding it into
+/// the claim's captured run, declining the whole line otherwise (review
+/// finding, #2079's PR) — a check the `CUE`/`PARENTHETICAL` arms have no
+/// analog of, since neither carries any fused content of its own.
+///
+/// The `CUE`/`PARENTHETICAL` arms feed the exact same `try_claim`/
+/// `try_dispatch` mechanism unchanged; the block-capture terminator
+/// (`capture_block`) already treats an upcoming `CUE`/`COMPACT_CUE`/
+/// `PARENTHETICAL` as "ends the run" regardless of whether any of them is
+/// itself claimable, so nothing there changes.
+///
+/// `pub(crate)` (issue #2351): this is the ONE place the sub-node selection
+/// rules above are written down. `crate::hir::classify`'s node-aware
+/// entry points (`classify_node_compiled`, `nearest_element_candidate`)
+/// call this exact function — via `super::candidate` in
+/// `hir::lower_native::mod`'s crate-visible re-export — rather than
+/// re-deriving the selection against the raw line text, which is
+/// precisely the divergence #2351 exists to close: a copy would
+/// re-diverge from this one the next time a `candidate` arm changes.
+pub(crate) fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
     match node.kind() {
         N::CONTENT_LINE => {
             let mut children = node.children();
@@ -1347,17 +1638,45 @@ fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
             (first.kind() == N::TEXT && children.next().is_none())
                 .then_some((ElementKind::ContentLine, first))
         }
-        N::SCENE_HEADING => {
-            let mut children = node.children();
-            let first = children.next()?;
-            (first.kind() == N::SCENE_TITLE && children.next().is_none())
-                .then_some((ElementKind::SceneHeading, first))
-        }
+        // Issue #2077 (`docs/decision-log.md` 2026-08-06, "Slug-bearing
+        // headings: strip structure, then match"): unlike the other three
+        // arms, a `SCENE_HEADING` does NOT require its `SCENE_TITLE` to be
+        // the only child — an optional `SCENE_SLUG` and any trailing `TAG`s
+        // are grammar-parsed siblings, not part of the title. Selecting the
+        // `SCENE_TITLE` child directly (rather than requiring it be alone)
+        // is the whole fix: the pattern sees only the title text exactly as
+        // it always did, so no existing preset pattern needs to change.
+        // `try_claim` recovers the stripped slug/tags separately — see its
+        // own "Issue #2077" comment.
+        N::SCENE_HEADING => node
+            .children()
+            .find(|c| c.kind() == N::SCENE_TITLE)
+            .map(|title| (ElementKind::SceneHeading, title)),
         N::CUE => {
             let mut children = node.children();
             let first = children.next()?;
             (first.kind() == N::CUE_NAME && children.next().is_none())
                 .then_some((ElementKind::Cue, first))
+        }
+        // A compact cue (`@NAME: dialogue`, §8b.9) — issue #2079, RULED
+        // 2026-08-06 "Compact cue desugars to cue + content line": it
+        // matches its pattern against the name segment only, **exactly as
+        // if it were a block cue's line** — same `ElementKind::Cue`, same
+        // `CUE_NAME` sub-node offered to matching. Structurally identical
+        // to the `CUE` arm above, except this one deliberately does NOT
+        // require `children.next().is_none()`: `COMPACT_CUE` has exactly
+        // two children by construction (`CUE_NAME`, then the fused
+        // dialogue `CONTENT_LINE` — `brink-syntax-native`'s `cue_line`), so
+        // requiring a lone child would make every compact cue unclaimable.
+        // Literalness still applies to the name segment (an interpolated
+        // or otherwise non-`CUE_NAME`-shaped first child still declines);
+        // the fused dialogue keeps full markup/interpolation rights and is
+        // never inspected here — `try_claim` desugars it separately into
+        // an ordinary content line inside the attached run.
+        N::COMPACT_CUE => {
+            let mut children = node.children();
+            let first = children.next()?;
+            (first.kind() == N::CUE_NAME).then_some((ElementKind::Cue, first))
         }
         N::PARENTHETICAL => {
             let mut children = node.children();

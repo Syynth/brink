@@ -263,7 +263,8 @@ interface Command {
 - **Hamburger menu (resolved §10.2):** a single icon at the top of the left strip
   (JetBrains new-UI placement) opens a grouped menu *generated from the command
   registry* — no hand-maintained menu structure, embed-friendly, and the same registry
-  could feed a native menu bar in a future desktop shell. There is no in-page menu bar.
+  feeds the native menu bar in the desktop shell ([desktop-shell-spec.md](desktop-shell-spec.md),
+  v1 ruled 2026-08-06 — no longer merely "future"). There is no in-page menu bar.
 - The **palette** is a shell overlay listing enabled commands, fuzzy-filtered, showing
   keybindings. **Quick-open** reuses the same overlay component with a different provider
   (binder items instead of commands).
