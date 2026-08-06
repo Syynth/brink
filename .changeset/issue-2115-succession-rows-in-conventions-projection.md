@@ -9,10 +9,13 @@ succession rows and template/picker metadata, the editing-time dual of
 chain rules — now **re-key against declared convention kinds instead of
 carrying an independent element list**, and `brink_ir::ConventionsProjection`
 (the compiler's `@[convention]`-handler projection) gains a
-`with_succession` method plus `transitions`/`templates` fields to carry
-them through to a serialized wire shape. The compiler transports these
-rows; it never interprets them (§5 of `docs/prose-dialect-spec.md`,
-"ignored by the compiler").
+`with_succession` method plus `transitions`/`templates` fields for
+validating succession rows against the projection's declared convention
+kinds. The compiler never interprets them (§5 of
+`docs/prose-dialect-spec.md`, "ignored by the compiler"); per the
+2026-08-05 ruling *"Succession is EDITOR-OWNED and externally defined"*
+(PR #2304), they stay in-process validator state and are never carried
+into a serialized wire shape.
 
 - **Observable behavior change, `set_dialect`:** `brink-web`'s
   `set_dialect(json)` calls the same `brink_ir::dialect::validate` this
@@ -29,15 +32,7 @@ rows; it never interprets them (§5 of `docs/prose-dialect-spec.md`,
   `dialect::validate_succession`, and `dialect::reserved_structural_kinds`
   are now exported from the crate root alongside `Templates`,
   `TemplateEntry`, `TransitionAction`, `TransitionRow`.
-- **Wire shape (brink-format):** `ConventionsProjectionDef` gains
-  `transitions`/`templates` fields (`TransitionRowDef`, `TransitionActionDef`,
-  `TemplatesDef`, `TemplateEntryDef`), and `CONVENTIONS_PROJECTION_WIRE_VERSION`
-  bumps `1` → `2`. Nothing has emitted a version-`1` payload into a real
-  `.inkb`/`StoryData` file yet (this section is still not wired into
-  `crate::StoryData` — see `brink_format::conventions`'s own module doc),
-  so the bump orphans no on-disk data; it exists so a future reader can
-  tell the two shapes apart.
 
-Scope fence held: this is transport only. Actually wiring Tab/Enter
-succession in CM6 stays held as editor-frontend work (NS-T hold,
-2026-08-01 sequencing ruling).
+Scope fence held: this is validator-only, in-process state — it never
+travels beyond tooling. Actually wiring Tab/Enter succession in CM6 stays
+held as editor-frontend work (NS-T hold, 2026-08-01 sequencing ruling).

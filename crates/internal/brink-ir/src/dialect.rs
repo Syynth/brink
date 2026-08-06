@@ -403,62 +403,6 @@ pub struct TemplateEntry {
     pub blank_tab: bool,
 }
 
-// ─── Succession-row wire conversion (issue #2115) ─────────────────────
-
-/// See [`crate::ConventionsProjection::to_wire`]'s doc — these rows travel
-/// to the wire **as data**, never interpreted by the compiler (§5 of
-/// `docs/prose-dialect-spec.md`: "ignored by the compiler"). Conversion is
-/// a plain field-for-field mirror, the same posture
-/// `ConventionProjectionEntry::to_wire` already takes.
-impl TransitionRow {
-    #[must_use]
-    pub fn to_wire(&self) -> brink_format::TransitionRowDef {
-        brink_format::TransitionRowDef {
-            on: self.on.clone(),
-            key: self.key.clone(),
-            has_content: self.has_content,
-            action: self.action.to_wire(),
-            hint: self.hint.clone(),
-        }
-    }
-}
-
-impl TransitionAction {
-    #[must_use]
-    pub fn to_wire(&self) -> brink_format::TransitionActionDef {
-        match self {
-            Self::Convert { kind } => {
-                brink_format::TransitionActionDef::Convert { kind: kind.clone() }
-            }
-            Self::Newline => brink_format::TransitionActionDef::Newline,
-            Self::Strip => brink_format::TransitionActionDef::Strip,
-            Self::Clear => brink_format::TransitionActionDef::Clear,
-            Self::Trap => brink_format::TransitionActionDef::Trap,
-        }
-    }
-}
-
-impl Templates {
-    #[must_use]
-    pub fn to_wire(&self) -> brink_format::TemplatesDef {
-        brink_format::TemplatesDef {
-            entries: self.entries.iter().map(TemplateEntry::to_wire).collect(),
-        }
-    }
-}
-
-impl TemplateEntry {
-    #[must_use]
-    pub fn to_wire(&self) -> brink_format::TemplateEntryDef {
-        brink_format::TemplateEntryDef {
-            kind: self.kind.clone(),
-            label: self.label.clone(),
-            picker_key: self.picker_key.clone(),
-            blank_tab: self.blank_tab,
-        }
-    }
-}
-
 // ─── Malformed diagnostics ─────────────────────────────────────────────
 
 /// A near-miss diagnostic: a pattern that almost matches a kind but doesn't

@@ -34,7 +34,6 @@ mod inkt;
 pub use conventions::{
     CONVENTIONS_PROJECTION_WIRE_VERSION, ConventionAttachDef, ConventionAttachFieldDef,
     ConventionEntryDef, ConventionModeDef, ConventionsProjectionDef, SchemaTypeDef,
-    TemplateEntryDef, TemplatesDef, TransitionActionDef, TransitionRowDef,
     read_conventions_projection, write_conventions_projection,
 };
 pub use counting::CountingFlags;
