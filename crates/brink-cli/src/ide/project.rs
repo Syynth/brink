@@ -625,29 +625,41 @@ impl Project {
     ///
     /// Issue #1393: forwards the already-resolved project policy —
     /// `Project::load` has already merged `brink.toml`'s `[project]
-    /// dialect`/`types` and `[lints]` into `driver`'s `AnalysisOptions` via
-    /// `resolve_analysis_options` — onto the session via
-    /// `set_language_dialect`/`set_type_policy`/`set_lint_policy`. Previously
-    /// this built a bare `IdeSession::new()` and never called any of those
-    /// setters (issue #1382 audit), so `structural_result::gate`/
-    /// `gate_with_source` (which `rename_file` calls internally) always saw
-    /// `LintPolicy::default()`/`Dialect::default()` and — because
-    /// `session.analysis()` also stayed `None` with no setter ever
-    /// triggering a `reanalyze()` — short-circuited to an empty breakage
-    /// report regardless. Today's one caller (`run_move_file`) discards that
-    /// `StructuralResult`'s `safe`/`introduced` fields entirely, re-deriving
-    /// the real safety-gate diagnostics through `introduced_diagnostics`
-    /// (this struct's own method, which *does* resolve `[lints]`), so this
-    /// was not a live behavioral drop for `move-file` specifically — but the
+    /// dialect`/`types`/`conventions` and `[lints]` into `driver`'s
+    /// `AnalysisOptions` via `resolve_analysis_options` — onto the session
+    /// via `set_language_dialect`/`set_type_policy`/`set_lint_policy`/
+    /// `set_conventions`. Previously this built a bare `IdeSession::new()`
+    /// and never called any of those setters (issue #1382 audit), so
+    /// `structural_result::gate`/`gate_with_source` (which `rename_file`
+    /// calls internally) always saw `LintPolicy::default()`/
+    /// `Dialect::default()` and — because `session.analysis()` also stayed
+    /// `None` with no setter ever triggering a `reanalyze()` —
+    /// short-circuited to an empty breakage report regardless. Today's one
+    /// caller (`run_move_file`) discards that `StructuralResult`'s
+    /// `safe`/`introduced` fields entirely, re-deriving the real
+    /// safety-gate diagnostics through `introduced_diagnostics` (this
+    /// struct's own method, which *does* resolve `[lints]`), so this was
+    /// not a live behavioral drop for `move-file` specifically — but the
     /// CLI IDE surface was still silently ignoring project config that
     /// `brink compile` (and `brink ide check`, which reads `project.driver`
-    /// directly rather than going through this session) already honored, and
-    /// any future caller reading `rename_file`'s own gate output, or a new
-    /// `ide_session()` consumer, would have inherited the drop. Each setter
-    /// re-analyzes, so they're called after every source is loaded — calling
-    /// them first would reanalyze against an empty file set, then leave that
-    /// stale (empty) result in place once sources are added via
-    /// `update_source` (which does not itself trigger re-analysis).
+    /// directly rather than going through this session) already honored,
+    /// and any future caller reading `rename_file`'s own gate output, or a
+    /// new `ide_session()` consumer, would have inherited the drop.
+    ///
+    /// `conventions` (issue #2317, the third `IdeSession` producer after
+    /// #2316 fixed `brink-web`'s `EditorSession` and `brink-lsp`'s
+    /// `analysis_loop`): since #2289, `IdeSession::analysis_options()`
+    /// reading `conventions: None` means "misconfigured", not "nothing to
+    /// check" — so leaving this unset here would misfire `E169` on every
+    /// `@[convention]` handler for any `ide_session()` consumer that reads
+    /// the session's own diagnostics, the moment one exists. Mirrors the
+    /// other three setters exactly.
+    ///
+    /// Each setter re-analyzes, so they're called after every source is
+    /// loaded — calling them first would reanalyze against an empty file
+    /// set, then leave that stale (empty) result in place once sources are
+    /// added via `update_source` (which does not itself trigger
+    /// re-analysis).
     pub(super) fn ide_session(&self) -> IdeSession {
         let db = self.driver.db();
         let mut session = IdeSession::new();
@@ -663,6 +675,7 @@ impl Project {
             session.set_type_policy(types);
         }
         session.set_lint_policy(options.lints.clone());
+        session.set_conventions(options.conventions.clone());
         session
     }
 
@@ -1575,7 +1588,7 @@ mod ide_session_project_config_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("brink.toml"),
-            "[project]\ndialect = \"brink\"\ntypes = \"gradual\"\n\n[lints]\nE014 = \"deny\"\n",
+            "[project]\ndialect = \"brink\"\ntypes = \"gradual\"\nconventions = \"conventions.brink\"\n\n[lints]\nE014 = \"deny\"\n",
         )
         .unwrap();
         std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
@@ -1603,6 +1616,16 @@ mod ide_session_project_config_tests {
             session.lint_policy().overrides.get("E014"),
             Some(&brink_analyzer::LintLevel::Deny),
             "ide_session() must forward the resolved [lints] re-level"
+        );
+        // Issue #2317: `conventions` defaults to `None` on a bare
+        // `IdeSession::new()`, so `"conventions.brink"` is a pointer value
+        // the unset default could never produce — this only stays green if
+        // `ide_session()` actually calls `set_conventions`, not merely if
+        // some unrelated code path happens to leave the field `None`.
+        assert_eq!(
+            session.conventions(),
+            Some("conventions.brink"),
+            "ide_session() must forward the resolved [project] conventions pointer"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -1637,6 +1660,11 @@ mod ide_session_project_config_tests {
         assert_eq!(
             *session.lint_policy(),
             brink_analyzer::LintPolicy::default()
+        );
+        assert_eq!(
+            session.conventions(),
+            None,
+            "no brink.toml must resolve conventions to None, not invent a pointer"
         );
 
         std::fs::remove_dir_all(&dir).ok();
