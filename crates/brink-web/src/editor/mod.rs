@@ -122,19 +122,28 @@ pub struct EditorSession {
     /// until a project file shadows it.
     ///
     /// Also the read-only enforcement fence (issue #2306, ruled 2026-08-06
-    /// "Mounted stdlib presents as a read-only library node"): `is_read_only`
-    /// and `update_document` consult this same set to refuse editing the
-    /// mounted copy through a doc handle — a route not gated by any of the
-    /// three listings above (e.g. a handle opened via goto-def navigation
-    /// into an inherited symbol). `update_file`/`update_source` are
-    /// deliberately left unguarded: they are the host's whole-file
-    /// "this is the content now" API, and a real project file placed at a
-    /// mounted key is legal, deliberate shadowing (see `EditorSession::new`'s
-    /// doc above) that must keep winning by construction-time ordering, not
-    /// be rejected because the id is still (momentarily) mounted. The
-    /// by-id "editor route" hole named in #2306 — a bulk TS-level path like
-    /// project-wide search/replace calling `updateFile` on an unshadowed
-    /// mounted path — is closed one layer up, in `ProjectSession.applyEdit`
+    /// "Mounted stdlib presents as a read-only library node"): `is_read_only`,
+    /// `update_document`, and `auto_import_apply_include_doc` all consult
+    /// this same set to refuse editing the mounted copy through a doc
+    /// handle — a route not gated by any of the three listings above (e.g. a
+    /// handle opened via goto-def navigation into an inherited symbol, or
+    /// completion-accept auto-import in a fragment/document view).
+    /// `update_file` is deliberately left unguarded: it is the host's
+    /// whole-file "this is the content now" API, and a real project file
+    /// placed at a mounted key is legal, deliberate shadowing (see
+    /// `EditorSession::new`'s doc above) that must keep winning by
+    /// construction-time ordering, not be rejected because the id is still
+    /// (momentarily) mounted. `update_source` — the singleton-session
+    /// counterpart, including its fragment-splice branch — is **also** left
+    /// unguarded here: it has no in-repo caller today (the editor package
+    /// drives everything through per-view doc handles), but as published
+    /// `@brink-lang/web` surface an external embedder using the singleton
+    /// API directly can still reach the same silent-fork hole this PR
+    /// otherwise closes. That gap is a known, disclosed follow-up, not
+    /// something this PR claims to close. The by-id "editor route" hole
+    /// named in #2306 — a bulk TS-level path like project-wide
+    /// search/replace calling `updateFile` on an unshadowed mounted path —
+    /// is closed one layer up, in `ProjectSession.applyEdit`
     /// (`packages/ink-editor/src/project-session.ts`), which checks
     /// `isReadOnly` before writing; that seam sits above every bulk-edit
     /// caller (search replace, results-buffer edits, binder undo) while
@@ -1396,6 +1405,52 @@ mod tests {
             s.session.source(s.session.file_id(key).unwrap()),
             Some(mounted_text.as_str()),
             "a refused update_document must not mutate the mounted copy"
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_file_auto_import_apply_include_doc_is_refused() {
+        // Structural sibling of `mounted_stdlib_file_is_openable_but_update_document_is_refused`
+        // (issue #2306 review finding): `auto_import_apply_include_doc` is a
+        // second doc-handle write path — reached via completion-accept
+        // auto-import in a fragment/document view opened on a mounted file —
+        // that must be refused the same way `update_document` is, or it
+        // silently forks the library file into the project via
+        // `session.update_and_analyze`.
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        s.update_file("economy.ink", "=== trade ===\nbuy.\n-> END\n");
+        let doc = s.open_document(key);
+        assert_ne!(doc, 0, "open_document on a mounted stdlib file must succeed");
+
+        let mounted_text = s.session.source(s.session.file_id(key).unwrap()).unwrap();
+        let mounted_text = mounted_text.to_owned();
+
+        let resp: serde_json::Value =
+            serde_json::from_str(&s.auto_import_apply_include_doc(doc, "economy.ink"))
+                .expect("valid auto-import JSON");
+        assert_eq!(
+            resp["ok"], false,
+            "auto_import_apply_include_doc on a mounted stdlib handle must be refused: {resp}"
+        );
+        assert!(
+            resp["error"].as_str().is_some(),
+            "refusal carries an error message: {resp}"
+        );
+        assert!(
+            resp.get("edit").is_none() || resp["edit"].is_null(),
+            "no edit is applied on refusal: {resp}"
+        );
+
+        assert_eq!(
+            s.session.source(s.session.file_id(key).unwrap()),
+            Some(mounted_text.as_str()),
+            "a refused auto_import_apply_include_doc must not mutate the mounted copy"
+        );
+        assert!(
+            s.mounted_std_ids
+                .contains(&s.session.file_id(key).unwrap()),
+            "a refused write must not un-mount the stdlib file"
         );
     }
 

@@ -329,6 +329,16 @@ export class ProjectSession {
    * baseline) are dropped by the hub.
    */
   notifyFileChanged(path: string): void {
+    // Session-level read-only enforcement (issue #2306, ruled 2026-08-06
+    // "Mounted stdlib presents as a read-only library node"): a still-
+    // mounted path has no host baseline to diff against, so egressing it
+    // here would persist the library's content into the host provider
+    // (`InMemoryFileProvider.onFileChanged`) and record a false "modified"
+    // change — forking the mount into the user's project with no actual
+    // edit having been legitimately applied. The legitimate shadow path
+    // (a real file replacing a mount) calls `session.updateFile` first,
+    // which un-mounts the id before this method is ever reached for it.
+    if (this.session.isReadOnly(path)) return;
     const source = this.session.getFileSource(path);
     if (source !== null) {
       this.provider.onFileChanged?.(path, source);

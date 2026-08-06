@@ -233,6 +233,7 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     // reported alongside the replace count rather than silently dropped.
     let skipped = 0;
     let filesChanged = 0;
+    let matchesReplaced = 0;
     for (const { path, source, edits } of planned) {
       if (!project.applyEdit(path, applyReplacements(source, edits))) {
         skipped += 1;
@@ -240,6 +241,7 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       }
       documents.invalidateFile(path);
       filesChanged += 1;
+      matchesReplaced += edits.length;
     }
     documents.triggerCompile();
     const skippedSuffix =
@@ -247,7 +249,7 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     get()._notify?.({
       severity: "info",
       source: "search",
-      message: `Replaced ${plural(results.totalMatches, "match", "matches")} in ${plural(filesChanged, "file", "files")}${skippedSuffix}`,
+      message: `Replaced ${plural(matchesReplaced, "match", "matches")} in ${plural(filesChanged, "file", "files")}${skippedSuffix}`,
     });
     get().runSearch();
   },

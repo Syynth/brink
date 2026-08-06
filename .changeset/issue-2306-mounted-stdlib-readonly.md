@@ -11,12 +11,17 @@ listings — a doc handle opened via goto-def navigation into an inherited symbo
 like project-wide search/replace — could still write through to the mounted copy and hand the edit to the
 host to persist, silently forking the stdlib into the project.
 
-`EditorSession` (`@brink-lang/web`) gains `is_read_only(path)`, and `update_document` now refuses (returns
-`"null"`, the existing "did not apply" sentinel) when the handle's file currently resolves to a mounted
+`EditorSession` (`@brink-lang/web`) gains `is_read_only(path)`, and `update_document` /
+`auto_import_apply_include_doc` now refuse (returning the existing "did not apply" sentinel for each —
+`"null"` and `{ ok: false, error }` respectively) when the handle's file currently resolves to a mounted
 id — `open_document`/`open_fragment` still succeed on a mounted path, so it stays browsable/openable, only
-writing through the handle is rejected. `update_file`/`update_source` are deliberately left unguarded:
-they are the host's whole-file "this is the content now" API, and a real project file placed at a mounted
-key must keep winning by construction-time ordering (the existing shadowing contract).
+writing through the handle is rejected. `update_file` is deliberately left unguarded: it is the host's
+whole-file "this is the content now" API, and a real project file placed at a mounted key must keep
+winning by construction-time ordering (the existing shadowing contract). `update_source` — the singleton-
+session sibling, including its fragment-splice branch — is **also** left unguarded in this PR: it has no
+in-repo caller today, but as published `@brink-lang/web` surface an external embedder driving the
+singleton API can still reach the same silent-fork hole this PR otherwise closes. That gap is not fixed
+here; tracked as a known follow-up rather than guessed at.
 
 `EditorSessionHandle.isReadOnly` (`@brink-lang/web`) exposes the new query. `ProjectSession.applyEdit`
 (`@brink-lang/editor`) — the shared seam every bulk-edit caller (search/replace, results-buffer edits,
