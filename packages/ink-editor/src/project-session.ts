@@ -55,6 +55,16 @@ export interface ProjectSessionOptions {
   /** Trailing debounce for `onFilesChanged` batches (default 500 ms). */
   changeDebounceMs?: number;
   /**
+   * Whether `onFilesChanged` delivery counts as persistence (default
+   * `true`, the write-through contract). Overlay hosts — whose egress
+   * handler feeds a **backup ring** rather than canonical storage (the
+   * celeris file model; brink-desktop D2) — set `false`: batches still
+   * deliver, but dirty means "diverges from the last canonical save" and
+   * only `markFilesSaved`/`markAllSaved` clears it. See
+   * {@link FileChangeHubOptions.deliveryPersists}.
+   */
+  egressPersists?: boolean;
+  /**
    * Unrecognized-key/lint-code warnings from the most recent `brink.toml`
    * discovery/apply (issue #2324) — forwarded verbatim from
    * `EditorSessionHandle.discoverProjectConfig`'s return value. Fires once
@@ -107,6 +117,7 @@ export class ProjectSession {
       onFlush: options.onFilesChanged,
       onFileConflict: options.onFileConflict,
       debounceMs: options.changeDebounceMs,
+      deliveryPersists: options.egressPersists,
     });
   }
 

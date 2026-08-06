@@ -149,6 +149,16 @@ export interface MountStudioOptions {
    */
   onFilesChanged?: (changes: FileChange[]) => void;
   /**
+   * Whether `onFilesChanged` delivery counts as persistence (default
+   * `true`, the write-through contract). Overlay hosts whose egress
+   * handler feeds a backup ring rather than canonical storage (the
+   * celeris file model; brink-desktop D2 + `OverlayPersistence`) set
+   * `false`: batches still deliver, but dirty means "diverges from the
+   * last canonical save" and only the save commands clear it. See
+   * `ProjectSessionOptions.egressPersists`.
+   */
+  egressPersists?: boolean;
+  /**
    * File provider override (issue #320 / testability). Defaults to an
    * {@link InMemoryFileProvider} seeded from `files`. A host can pass its own
    * provider (e.g. one whose `onExternalChange` is driven by a real filesystem
@@ -355,6 +365,9 @@ export async function mountStudio(
     // Host egress (#154): every session-content mutation reports through
     // the project's FileChangeHub, which batches + debounces into this.
     onFilesChanged: options.onFilesChanged,
+    // Overlay hosts (backup-ring egress) declare that delivery is NOT
+    // persistence, so dirty survives until a canonical save (D2 model).
+    egressPersists: options.egressPersists,
     // External-conflict surface (#320, Track V): the B1 hook fires here when
     // an on-disk change collides with an unsaved buffer. Mirror it into the
     // store so the merge view (banner + 2-way MergeView) can render + resolve.
