@@ -40,36 +40,163 @@
 //!
 //! # What this module deliberately does not do
 //!
-//! - **No memoization.** The ruled cost compensation — "memoize on `(line
-//!   text, projection revision)`" — is a caller concern: a salsa query
-//!   wrapping this function (keyed on the line's own text, depending on
-//!   [`ConventionsProjection`] the ordinary salsa way so a projection edit
-//!   invalidates it) or a small cache the wasm boundary keeps across
-//!   keystrokes. Building that cache is left to whichever seam wires this
-//!   walk to a live query (#2113's explain-match query is the first
-//!   consumer) — inventing a caching layer with no consumer yet risks
-//!   locking in the wrong shape, exactly the reasoning
-//!   [`ConventionsProjection`]'s own doc gives for deferring its `.inkb`
-//!   wire emission.
+//! - **No memoization here.** **Built by #2113**, one layer up:
+//!   [`crate::ExplainMatchCache`] memoizes on `(line text, projection)` —
+//!   the ruled cost compensation — and additionally caches the *compiled
+//!   pattern set* per projection (`compile_entries`/`classify_line_compiled`
+//!   in this module), since the w133 review finding on PR #2257 measured
+//!   per-entry `Regex::new` compilation, not matching, as the dominant cost
+//!   of a *first* classification. This module still never caches anything
+//!   itself — `classify_line` alone stays a pure, no-cache function of its
+//!   inputs, exactly as before.
 //! - **No line-kind detection.** Whether a line is a scene heading, a cue,
 //!   plain content, etc. ([`crate::ElementKind`]) is a structural fact
 //!   about the line's own syntax shape, computed once already by
-//!   [`crate::hir::lower_native::element::candidate`] at compile time (and
-//!   by the editor's own structural facet interactively) — reusing that
-//!   classification is the caller's job, not this walk's; a "matched kind"
-//!   column in a composed per-line record is the caller pairing that fact
-//!   alongside this function's `LineClassification`, not this module
-//!   inventing a second way to derive it.
-//! - **No wasm binding.** Follows from the point above: a bare wasm export
-//!   of this pure function would have nothing driving it (no memoized
-//!   query, no consumer UI) until #2113 exists — see that issue's own
-//!   design-backport comment, which reads this exact projection and is
-//!   subject to this exact raw-captures boundary.
+//!   [`crate::hir::lower_native::element::candidate`] at compile time — a
+//!   full-CST classification (parenthetical is chain-gated: it only exists
+//!   directly after a live cue, so a *single line of bare text* cannot
+//!   answer it correctly in isolation). **#2113 decided not to compose this
+//!   here either** — see [`crate::ExplainMatchCache`]'s own module doc for
+//!   the reasoning and the follow-up this left open.
+//! - **No wasm binding here.** **Built by #2113** in `@brink-lang/web`'s
+//!   `EditorSession::explain_match`, which wraps
+//!   [`crate::ExplainMatchCache`] — see that module's doc for the JSON
+//!   shape. This module itself still exports nothing wasm-specific.
 
 use regex::Regex;
 use rowan::{TextRange, TextSize};
 
 use super::types::{ConventionMode, ConventionsProjection, ElementDisposition, Name};
+
+// ─── Compiled-pattern caching (issue #2113) ──────────────────────────
+//
+// `classify_line` below compiles every entry's pattern fresh, every call —
+// fine for a one-off classification, but the w133 review finding on PR
+// #2257 measured this as the dominant cost for the *first* classification
+// of each distinct line (the ruled `(line text, projection revision)` memo
+// only helps a *repeat* classification of the same line). A caller that
+// classifies many distinct lines against the same, unchanging projection —
+// [`crate::ExplainMatchCache`], the first such caller — compiles each
+// pattern here exactly once per projection, mirroring the precedent the
+// finding names: the TS-side `ResolvedDialect` is "the only place regex
+// compilation happens; classifying a line never re-compiles."
+
+/// One [`crate::ConventionProjectionEntry`], with its pattern already
+/// compiled. Exists only for [`compile_entries`]/[`classify_line_compiled`]
+/// — a caller with a single line to classify against a projection it will
+/// never reuse should keep calling [`classify_line`], not build one of
+/// these for a single use.
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledEntry {
+    name: Name,
+    order: i64,
+    mode: ConventionMode,
+    disposition: ElementDisposition,
+    pattern: Regex,
+}
+
+/// Compile every entry in `projection`, once, in the projection's own
+/// ascending-`order` sequence — the shared building block behind
+/// [`classify_line_compiled`]. A pattern that fails to compile is skipped
+/// rather than treated as an error, for the exact reason
+/// [`classify_line`]'s own doc gives: every entry
+/// [`ConventionsProjection::from_decls`] can produce was already compiled
+/// successfully once, upstream, to exist as a
+/// [`crate::ClaimHandlerDecl`] at all.
+#[must_use]
+pub(crate) fn compile_entries(projection: &ConventionsProjection) -> Vec<CompiledEntry> {
+    projection
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            Some(CompiledEntry {
+                name: entry.name.clone(),
+                order: entry.order,
+                mode: entry.mode,
+                disposition: entry.disposition,
+                pattern: Regex::new(&entry.pattern).ok()?,
+            })
+        })
+        .collect()
+}
+
+/// Trim `text` and compute the base-adjusted start offset, exactly
+/// [`classify_line`]'s own "Trim contract" — factored out so
+/// [`classify_line_compiled`] shares it instead of re-deriving it. `None`
+/// means nothing should be tried at all (a whitespace-only line, or an
+/// offset that cannot fit a `u32`).
+fn trim_for_classification(base: TextSize, text: &str) -> Option<(TextSize, &str)> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lead = u32::try_from(text.len() - text.trim_start().len()).ok()?;
+    Some((base + TextSize::from(lead), trimmed))
+}
+
+/// The walk's shared core: run every already-compiled `compiled` entry
+/// against `trimmed` (already trimmed, per [`trim_for_classification`]), in
+/// order — see [`classify_line`]'s own doc for the ruled semantics this
+/// implements. Both [`classify_line`] and [`classify_line_compiled`]
+/// delegate here so the walk itself is written exactly once.
+fn classify_trimmed(
+    compiled: &[CompiledEntry],
+    base: TextSize,
+    trimmed: &str,
+) -> LineClassification {
+    let mut hits = Vec::with_capacity(compiled.len());
+    for entry in compiled {
+        let Some(caps) = entry.pattern.captures(trimmed) else {
+            continue;
+        };
+        let Some(captures) = bind_captures(&entry.pattern, &caps, base) else {
+            // Either a capture's byte offset does not fit a `u32` (cannot
+            // be a real span on any line short enough for an editor to
+            // hold in memory), or a named group declared by the pattern
+            // failed to participate in this particular match — e.g. an
+            // alternation branch that did not fire. `try_claim` declines
+            // the claim entirely in that second case (`caps.name(param)?`
+            // returns from the whole function), and this walk mirrors that
+            // exactly: such an entry is neither `matched` nor `shadowed`,
+            // not reported with a partial capture list. This is a
+            // deliberate divergence from a *static* "these patterns could
+            // collide" heuristic — the compiler's refusal is total, so
+            // this walk's is too.
+            continue;
+        };
+        hits.push(ClassifiedMatch {
+            handler: entry.name.clone(),
+            order: entry.order,
+            mode: entry.mode,
+            disposition: entry.disposition,
+            captures,
+        });
+    }
+    let mut hits = hits.into_iter();
+    let matched = hits.next();
+    LineClassification {
+        matched,
+        shadowed: hits.collect(),
+    }
+}
+
+/// [`classify_line`], but against an already-[`compile_entries`]-compiled
+/// pattern set — the entry point [`crate::ExplainMatchCache`] uses so
+/// classifying many lines against one projection compiles nothing after the
+/// first line. Semantics are identical to [`classify_line`] in every other
+/// respect (same trim contract, same declined-entirely rule); only the
+/// compile step moves to the caller.
+#[must_use]
+pub(crate) fn classify_line_compiled(
+    compiled: &[CompiledEntry],
+    base: TextSize,
+    text: &str,
+) -> LineClassification {
+    let Some((base, trimmed)) = trim_for_classification(base, text) else {
+        return LineClassification::default();
+    };
+    classify_trimmed(compiled, base, trimmed)
+}
 
 /// One named capture a matched pattern bound, as a span into the **real
 /// source** the caller handed this walk — never a copied string alone
@@ -183,55 +310,16 @@ pub fn classify_line(
     base: TextSize,
     text: &str,
 ) -> LineClassification {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return LineClassification::default();
-    }
-    // Where `trimmed` starts inside `text`, so capture offsets land on real
-    // source bytes rather than on the untrimmed line's start — mirrors
-    // `try_claim`'s own `lead`/`base` composition exactly.
-    let Ok(lead) = u32::try_from(text.len() - text.trim_start().len()) else {
+    let Some((base, trimmed)) = trim_for_classification(base, text) else {
         return LineClassification::default();
     };
-    let base = base + TextSize::from(lead);
-
-    let mut hits = Vec::with_capacity(projection.entries.len());
-    for entry in &projection.entries {
-        let Ok(pattern) = Regex::new(&entry.pattern) else {
-            continue;
-        };
-        let Some(caps) = pattern.captures(trimmed) else {
-            continue;
-        };
-        let Some(captures) = bind_captures(&pattern, &caps, base) else {
-            // Either a capture's byte offset does not fit a `u32` (cannot
-            // be a real span on any line short enough for an editor to
-            // hold in memory), or a named group declared by the pattern
-            // failed to participate in this particular match — e.g. an
-            // alternation branch that did not fire. `try_claim` declines
-            // the claim entirely in that second case (`caps.name(param)?`
-            // returns from the whole function), and this walk mirrors that
-            // exactly: such an entry is neither `matched` nor `shadowed`,
-            // not reported with a partial capture list. This is a
-            // deliberate divergence from a *static* "these patterns could
-            // collide" heuristic — the compiler's refusal is total, so
-            // this walk's is too.
-            continue;
-        };
-        hits.push(ClassifiedMatch {
-            handler: entry.name.clone(),
-            order: entry.order,
-            mode: entry.mode,
-            disposition: entry.disposition,
-            captures,
-        });
-    }
-    let mut hits = hits.into_iter();
-    let matched = hits.next();
-    LineClassification {
-        matched,
-        shadowed: hits.collect(),
-    }
+    // Compiled fresh, every call — the right choice for a one-off
+    // classification. A caller classifying many lines against the same
+    // projection should use [`classify_line_compiled`] instead (via
+    // [`crate::ExplainMatchCache`]) — see this module's own "Compiled-pattern
+    // caching" doc for why.
+    let compiled = compile_entries(projection);
+    classify_trimmed(&compiled, base, trimmed)
 }
 
 /// Bind every named capture group `pattern` declares to its span in this

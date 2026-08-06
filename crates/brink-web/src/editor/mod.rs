@@ -8,6 +8,7 @@ use crate::compile::{CompileResult, DiagnosticJs};
 mod code_actions;
 mod completion;
 mod doc_handles;
+mod explain_match;
 mod folding;
 mod hints;
 mod hover;
@@ -118,6 +119,11 @@ pub struct EditorSession {
     /// already-present-wins precedent — so the mount stays invisible only
     /// until a project file shadows it.
     mounted_std_ids: BTreeSet<brink_ir::FileId>,
+    /// The explain-match query's memoized cache (issue #2113, NS-T seam
+    /// 3/6) — kept on the session so it survives across keystrokes, per the
+    /// ruled cost compensation (`(line text, projection revision)`
+    /// memoization). See `explain_match.rs`'s own doc.
+    explain_cache: brink_ir::ExplainMatchCache,
 }
 
 impl Default for EditorSession {
@@ -169,6 +175,7 @@ impl EditorSession {
             lint_overrides: BTreeMap::new(),
             deny_warnings_override: None,
             mounted_std_ids,
+            explain_cache: brink_ir::ExplainMatchCache::new(),
         }
     }
 

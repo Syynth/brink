@@ -667,6 +667,239 @@ pub(crate) fn convert_document_symbol(
     }
 }
 
+// ── Explain-match (issue #2113, NS-T seam 3/6) ──────────────────────
+//
+// Unlike every other DTO in this file, ranges here are **raw byte
+// offsets**, not UTF-16 — see `editor::explain_match`'s own module doc for
+// why: a matched handler's declaration range lives in the project's
+// configured conventions module, a file this session may never have
+// opened as a document, so there is no single file's text to convert
+// against. The classified line's own capture ranges *could* be converted
+// against the active document the ordinary way, but this DTO keeps every
+// range in the same unit for one consistent contract rather than mixing
+// UTF-16 (captures) with raw bytes (handler locations) in one payload.
+
+/// One handler location — a name plus its declaration-site byte range in
+/// the project's conventions module.
+#[derive(Serialize)]
+pub(crate) struct ExplainHandlerJs {
+    pub(crate) name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+/// One named capture, as a raw byte range into the classified line's own
+/// file.
+#[derive(Serialize)]
+pub(crate) struct ExplainCaptureJs {
+    pub(crate) name: String,
+    pub(crate) text: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+/// One handler's classification-time match — the winner or one of the
+/// shadowed runners-up; see `ExplainMatchJs`'s own doc.
+#[derive(Serialize)]
+pub(crate) struct ExplainClassifiedMatchJs {
+    pub(crate) handler: ExplainHandlerJs,
+    pub(crate) order: i64,
+    pub(crate) mode: &'static str,
+    pub(crate) captures: Vec<ExplainCaptureJs>,
+}
+
+/// One entry the walk attempted but that did not match — the miss-case
+/// sibling of `ExplainClassifiedMatchJs`, carrying the pattern source
+/// instead of captures (there is nothing to capture from a non-match).
+#[derive(Serialize)]
+pub(crate) struct ExplainAttemptedJs {
+    pub(crate) handler: ExplainHandlerJs,
+    pub(crate) order: i64,
+    pub(crate) pattern: String,
+}
+
+/// The explain-match query's full per-line answer (issue #2113): is this
+/// line matched, by what, what did it bind, and — on a miss — what was
+/// attempted, or — on a hit — what else matched but was shadowed.
+/// `winner`/`shadowed` are populated only when `matched` is `true`;
+/// `attempted` only when it is `false` — the two are mutually exclusive by
+/// construction (`brink_ir::LineExplanation`'s own shape), not by
+/// convention here.
+#[derive(Serialize)]
+pub(crate) struct ExplainMatchJs {
+    pub(crate) matched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) winner: Option<ExplainClassifiedMatchJs>,
+    pub(crate) shadowed: Vec<ExplainClassifiedMatchJs>,
+    pub(crate) attempted: Vec<ExplainAttemptedJs>,
+}
+
+fn explain_handler_to_js(name: &brink_ir::Name) -> ExplainHandlerJs {
+    ExplainHandlerJs {
+        name: name.text.clone(),
+        start: name.range.start().into(),
+        end: name.range.end().into(),
+    }
+}
+
+fn explain_classified_match_to_js(m: brink_ir::ClassifiedMatch) -> ExplainClassifiedMatchJs {
+    ExplainClassifiedMatchJs {
+        handler: explain_handler_to_js(&m.handler),
+        order: m.order,
+        mode: match m.mode {
+            brink_ir::ConventionMode::Attach => "attach",
+            brink_ir::ConventionMode::Wrap => "wrap",
+        },
+        captures: m
+            .captures
+            .into_iter()
+            .map(|c| ExplainCaptureJs {
+                name: c.name,
+                text: c.text,
+                start: c.range.start().into(),
+                end: c.range.end().into(),
+            })
+            .collect(),
+    }
+}
+
+fn explain_attempted_to_js(entry: brink_ir::ConventionProjectionEntry) -> ExplainAttemptedJs {
+    ExplainAttemptedJs {
+        handler: explain_handler_to_js(&entry.name),
+        order: entry.order,
+        pattern: entry.pattern,
+    }
+}
+
+/// Convert [`brink_ir::LineExplanation`] into its wasm-facing JSON shape —
+/// see `ExplainMatchJs`'s own doc for the contract.
+pub(crate) fn explain_match_to_js(explanation: brink_ir::LineExplanation) -> ExplainMatchJs {
+    match explanation {
+        brink_ir::LineExplanation::Matched { winner, shadowed } => ExplainMatchJs {
+            matched: true,
+            winner: Some(explain_classified_match_to_js(winner)),
+            shadowed: shadowed
+                .into_iter()
+                .map(explain_classified_match_to_js)
+                .collect(),
+            attempted: Vec::new(),
+        },
+        brink_ir::LineExplanation::Unmatched { attempted } => ExplainMatchJs {
+            matched: false,
+            winner: None,
+            shadowed: Vec::new(),
+            attempted: attempted.into_iter().map(explain_attempted_to_js).collect(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod explain_match_to_js_tests {
+    use rowan::TextRange;
+
+    use super::explain_match_to_js;
+
+    fn name(text: &str, start: u32, end: u32) -> brink_ir::Name {
+        brink_ir::Name {
+            text: text.to_owned(),
+            range: TextRange::new(start.into(), end.into()),
+        }
+    }
+
+    /// The `Matched` arm: `matched` is `true`, `winner` serializes with its
+    /// handler/order/mode/captures, `shadowed` lists every runner-up in the
+    /// same shape, and `attempted` is the empty array (never populated on a
+    /// hit) — this is the arm nothing else in this crate exercises (issue
+    /// #2113 review, w143).
+    #[test]
+    fn matched_arm_serializes_winner_and_shadowed_with_attempted_empty() {
+        let winner = brink_ir::ClassifiedMatch {
+            handler: name("interior", 0, 8),
+            order: 10,
+            mode: brink_ir::ConventionMode::Attach,
+            disposition: brink_ir::ElementDisposition::Call,
+            captures: vec![brink_ir::ClassifiedCapture {
+                name: "place".to_owned(),
+                text: "MARKET SQUARE".to_owned(),
+                range: TextRange::new(105.into(), 118.into()),
+            }],
+        };
+        let shadowed = brink_ir::ClassifiedMatch {
+            handler: name("any_line", 20, 28),
+            order: 20,
+            mode: brink_ir::ConventionMode::Wrap,
+            disposition: brink_ir::ElementDisposition::Call,
+            captures: Vec::new(),
+        };
+        let explanation = brink_ir::LineExplanation::Matched {
+            winner,
+            shadowed: vec![shadowed],
+        };
+
+        let json = serde_json::to_value(explain_match_to_js(explanation)).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "matched": true,
+                "winner": {
+                    "handler": {"name": "interior", "start": 0, "end": 8},
+                    "order": 10,
+                    "mode": "attach",
+                    "captures": [
+                        {"name": "place", "text": "MARKET SQUARE", "start": 105, "end": 118},
+                    ],
+                },
+                "shadowed": [
+                    {
+                        "handler": {"name": "any_line", "start": 20, "end": 28},
+                        "order": 20,
+                        "mode": "wrap",
+                        "captures": [],
+                    },
+                ],
+                "attempted": [],
+            })
+        );
+    }
+
+    /// The `Unmatched` arm: `matched` is `false`, `winner` is omitted
+    /// entirely (`skip_serializing_if`), `shadowed` is the empty array, and
+    /// `attempted` lists every tried entry with its pattern (never a
+    /// `ClassifiedMatch` shape — a miss has no captures).
+    #[test]
+    fn unmatched_arm_serializes_attempted_with_winner_omitted() {
+        let attempted = vec![brink_ir::ConventionProjectionEntry {
+            name: name("interior", 0, 8),
+            pattern: "^INT\\. (?<place>.+)$".to_owned(),
+            order: 10,
+            mode: brink_ir::ConventionMode::Attach,
+            disposition: brink_ir::ElementDisposition::Call,
+            attach: None,
+        }];
+        let explanation = brink_ir::LineExplanation::Unmatched { attempted };
+
+        let json = serde_json::to_value(explain_match_to_js(explanation)).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "matched": false,
+                "shadowed": [],
+                "attempted": [
+                    {
+                        "handler": {"name": "interior", "start": 0, "end": 8},
+                        "order": 10,
+                        "pattern": "^INT\\. (?<place>.+)$",
+                    },
+                ],
+            })
+        );
+        assert!(
+            json.get("winner").is_none(),
+            "winner must be omitted (skip_serializing_if), not null"
+        );
+    }
+}
+
 // ── Legacy stateless functions (token legend) ───────────────────────
 
 /// Get token type names for the legend.
