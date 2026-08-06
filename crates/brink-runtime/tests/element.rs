@@ -337,7 +337,7 @@ flow main() {
     let heading_line = lines
         .iter()
         .find(|l| l.text.contains("MARKET SQUARE"))
-        .unwrap_or_else(|| panic!("expected the claimed heading's own line: {lines:?}"));
+        .expect("expected the claimed heading's own line");
     assert_eq!(
         heading_line.tags,
         vec!["act1".to_string()],
