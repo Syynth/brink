@@ -45,6 +45,7 @@
 //! same caveat applies to the `explainMatch`/`explainMatchDoc` TS wrappers
 //! in `@brink-lang/web` (`packages/wasm/src/index.ts`).
 
+use brink_syntax_native::SyntaxNode;
 use rowan::{TextRange, TextSize};
 use wasm_bindgen::prelude::*;
 
@@ -129,11 +130,46 @@ impl EditorSession {
         };
 
         let projection = self.session.db().conventions_projection();
-        let explanation =
-            self.explain_cache
-                .explain(&projection, TextSize::new(line_start), &line_text);
+        // Issue #2351: when this exact line CST-parses to one of the five
+        // claim-candidate shapes `hir::lower_native::element::candidate`
+        // recognizes (`CUE`, `COMPACT_CUE`, `PARENTHETICAL`,
+        // `SCENE_HEADING`, a wholly-literal `CONTENT_LINE`), classify that
+        // node instead of the raw line text — the same sub-node text the
+        // compiler's own `try_claim` matches against, so a real `@NAME`
+        // cue or `(delivery)` parenthetical reports the same `matched`
+        // answer the compiler's own claiming pass would. `node` stays
+        // `None` (falling back to the pre-#2351 raw-text walk, unchanged)
+        // for an ink-dialect file (no native parse tree at all), a file
+        // with no compiled `FileId`, or a line that structurally is not
+        // one of those five shapes (a knot/stitch header, a logic line,
+        // blank text).
+        let node = self.claim_candidate_node_at(path, abs_offset);
+        let base = node
+            .as_ref()
+            .map_or_else(|| TextSize::new(line_start), |n| n.text_range().start());
+        let explanation = self
+            .explain_cache
+            .explain(&projection, base, &line_text, node.as_ref());
         let kind = self.matched_element_kind(path, line_start, &line_text, &explanation);
         serde_json::to_string(&explain_match_to_js(explanation, kind)).unwrap_or_default()
+    }
+
+    /// The claim-candidate CST node covering `abs_offset` in `path`'s
+    /// current parse, if any — issue #2351. `None` whenever there is
+    /// nothing to hand `ExplainMatchCache::explain`'s node-aware path: an
+    /// ink-dialect file (`db.parse_native` is native-only), an unknown
+    /// path, or an offset that lands on a line outside the five shapes
+    /// [`brink_ir::nearest_element_candidate`] recognizes.
+    fn claim_candidate_node_at(&self, path: &str, abs_offset: u32) -> Option<SyntaxNode> {
+        let db = self.session.db();
+        let file_id = db.file_id(path)?;
+        let parse = db.parse_native(file_id)?;
+        let root = parse.syntax();
+        let token = root
+            .token_at_offset(TextSize::from(abs_offset))
+            .right_biased()?;
+        let start_node = token.parent()?;
+        brink_ir::nearest_element_candidate(&start_node)
     }
 
     /// The compile-time [`brink_ir::ElementKind`] ("matched kind") for the
@@ -327,18 +363,20 @@ flow main() {
         );
     }
 
-    /// Issue #2310 review (finding 2): `kind` can never report `"cue"`
-    /// today, even for a real `@NAME` cue line. `candidate` hands
-    /// `try_claim` only the `CUE_NAME` run (excluding the leading `@`), so
-    /// the *compiled* record does claim a bare `@VENDOR` line as a Cue —
-    /// but the *live* raw-line walk this endpoint's `matched` answer comes
-    /// from sees the whole `"@VENDOR"` text, which the `cue` handler's own
-    /// `^[A-Z][A-Z ]*$` pattern (no `@` in its character class) can never
-    /// match. The live walk misses entirely, so the whole answer is
-    /// `matched: false` and `winner`/`kind` are both absent — never a
-    /// guess, per this module's own decline discipline.
+    /// Issue #2351 (fixing the gap issue #2310's own review finding 2
+    /// named): `explain_match_impl` now classifies the CUE's `CUE_NAME`
+    /// sub-node — the exact text `candidate`/`try_claim` match against —
+    /// instead of the whole raw `"@VENDOR"` line, so the live walk agrees
+    /// with the compiler: a real `@NAME` cue line reports a genuine hit,
+    /// `winner.handler == "cue"`, `captures[0].text == "VENDOR"`, and (via
+    /// #2310's existing `matched_element_kind` composition, now finally
+    /// reachable for this shape) `kind == "cue"`. Before this fix, the
+    /// live walk saw the whole `"@VENDOR"` text, which the `cue` handler's
+    /// own `^[A-Z][A-Z ]*$` pattern (no `@` in its character class) could
+    /// never match — a false, whole-answer `matched: false` even though
+    /// the compiler's own compiled record claimed the exact same line.
     #[test]
-    fn explain_match_never_reports_a_cue_kind_for_a_real_at_cue_line() {
+    fn explain_match_reports_a_real_cue_kind_for_a_real_at_cue_line() {
         let mut s = session_with_conventions();
         let offset =
             u32::try_from(CONVENTIONS.find("@VENDOR").expect("@VENDOR cue line")).expect("offset");
@@ -347,15 +385,25 @@ flow main() {
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(
             v["matched"],
-            serde_json::json!(false),
-            "a real @VENDOR cue line's raw text can never match the cue \
-             handler's own pattern (the '@' isn't in its character \
-             class), so the live walk misses even though the compiled \
-             record claims it — got {v}"
+            serde_json::json!(true),
+            "a real @VENDOR cue line must agree with the compiler's own claim — got {v}"
         );
-        assert!(
-            v.get("winner").is_none(),
-            "a miss must never carry a winner or a kind — got {v}"
+        assert_eq!(
+            v["winner"]["handler"]["name"],
+            serde_json::json!("cue"),
+            "got {v}"
+        );
+        assert_eq!(
+            v["winner"]["captures"][0]["text"],
+            serde_json::json!("VENDOR"),
+            "the cue's own pattern must see only the name segment, without the leading \
+             '@' — got {v}"
+        );
+        assert_eq!(
+            v["winner"]["kind"],
+            serde_json::json!("cue"),
+            "a real @NAME cue's compile-time shape is Cue, and #2310's kind composition \
+             can finally reach it now that `matched` agrees — got {v}"
         );
     }
 

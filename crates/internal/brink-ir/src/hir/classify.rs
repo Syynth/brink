@@ -49,20 +49,29 @@
 //!   of a *first* classification. This module still never caches anything
 //!   itself — `classify_line` alone stays a pure, no-cache function of its
 //!   inputs, exactly as before.
-//! - **No line-kind detection.** Whether a line is a scene heading, a cue,
-//!   plain content, etc. ([`crate::ElementKind`]) is a structural fact
-//!   about the line's own syntax shape, computed once already by
-//!   [`crate::hir::lower_native::element::candidate`] at compile time — a
-//!   full-CST classification (parenthetical is chain-gated: it only exists
-//!   directly after a live cue, so a *single line of bare text* cannot
-//!   answer it correctly in isolation). **#2113 decided not to compose this
-//!   here either** — see [`crate::ExplainMatchCache`]'s own module doc for
-//!   the reasoning and the follow-up this left open.
+//! - **No line-kind detection, still, in `classify_line`/
+//!   `classify_line_compiled` themselves.** Whether a line is a scene
+//!   heading, a cue, plain content, etc. ([`crate::ElementKind`]) is a
+//!   structural fact about the line's own syntax shape, computed once
+//!   already by [`crate::hir::lower_native::element::candidate`] at
+//!   compile time — a full-CST classification (parenthetical is
+//!   chain-gated: it only exists directly after a live cue, so a *single
+//!   line of bare text* cannot answer it correctly in isolation). **#2113
+//!   decided not to compose this into the bare-text entry points** — see
+//!   [`crate::ExplainMatchCache`]'s own module doc for the reasoning.
+//!   `classify_node_compiled`/[`nearest_element_candidate`] (issue #2351,
+//!   below) are the traced follow-up for a caller that DOES hold a parsed
+//!   node: they still don't return an [`crate::ElementKind`] of their own
+//!   (that composition stays #2310's job, one layer up, reading the
+//!   compiler's own compiled record), but they DO select the same
+//!   sub-node `candidate` would, so the winner they report agrees with
+//!   the compiler by construction rather than by accident.
 //! - **No wasm binding here.** **Built by #2113** in `@brink-lang/web`'s
 //!   `EditorSession::explain_match`, which wraps
 //!   [`crate::ExplainMatchCache`] — see that module's doc for the JSON
 //!   shape. This module itself still exports nothing wasm-specific.
 
+use brink_syntax_native::SyntaxNode;
 use regex::Regex;
 use rowan::{TextRange, TextSize};
 
@@ -196,6 +205,76 @@ pub(crate) fn classify_line_compiled(
         return LineClassification::default();
     };
     classify_trimmed(compiled, base, trimmed)
+}
+
+// ─── Node-aware classification (issue #2351) ─────────────────────────
+//
+// `classify_line`/`classify_line_compiled` above match a pattern against
+// the WHOLE line text handed to them. `crate::hir::lower_native::element`'s
+// own `candidate`/`try_claim` — the compiler's real claiming path — never
+// does that: it selects a SUB-NODE first (a `CUE`'s `CUE_NAME` alone, a
+// `PARENTHETICAL`'s inner `TEXT` alone, a `SCENE_HEADING`'s `SCENE_TITLE`
+// stripped of its slug/tags, a `COMPACT_CUE`'s `CUE_NAME` segment alone)
+// and matches only that. A caller that hands this module the raw line for
+// one of those four shapes structurally cannot agree with the compiler —
+// the two matchers are seeing different text. The functions below are for
+// a caller that DOES hold a parsed CST node (the editor, via a real
+// document's syntax tree) and wants the walk's answer to agree with
+// `try_claim`'s, by construction, rather than by keeping two independent
+// copies of the same selection rules in sync by hand.
+
+/// Classify the CST node `node` — one of the five shapes
+/// [`crate::hir::lower_native::element::candidate`] recognizes (`CUE`,
+/// `COMPACT_CUE`, `PARENTHETICAL`, `SCENE_HEADING`, or a wholly-literal
+/// `CONTENT_LINE`) — against an already-[`compile_entries`]-compiled
+/// pattern set, matching the exact sub-node text `candidate`/`try_claim`
+/// extract for that shape (issue #2351) rather than `node`'s own whole
+/// text.
+///
+/// Ranges in the result are relative to `node`'s own start, as if `node`
+/// began at offset zero — mirrors [`classify_line`]'s own
+/// zero-based-then-rebase convention (see its own doc), so a caller (e.g.
+/// [`crate::ExplainMatchCache`]) can shift the result onto `node`'s real
+/// position the same way it already does for the raw-text path.
+///
+/// `None` when `node`'s own kind is not one of the five shapes `candidate`
+/// recognizes at all (e.g. a knot/stitch header, a logic line, a
+/// `BANG_DISPATCH`) — the caller should fall back to
+/// [`classify_line_compiled`] against `node`'s own raw text in that case,
+/// exactly the pre-#2351 behavior for anything outside these five shapes.
+#[must_use]
+pub(crate) fn classify_node_compiled(
+    compiled: &[CompiledEntry],
+    node: &SyntaxNode,
+) -> Option<LineClassification> {
+    let node_start = node.text_range().start();
+    let (_kind, text_node) = super::lower_native::candidate(node)?;
+    // `text_node` is always a descendant of `node` (one of its children, or
+    // a child's child for `SCENE_HEADING`), so its start never precedes
+    // `node`'s own — this subtraction never underflows.
+    let local_base = text_node.text_range().start() - node_start;
+    let text = text_node.text().to_string();
+    Some(classify_line_compiled(compiled, local_base, &text))
+}
+
+/// The innermost node in `node`'s own ancestor chain (`node` itself,
+/// first) that is one of the five CST shapes
+/// [`crate::hir::lower_native::element::candidate`] recognizes as a claim
+/// candidate — issue #2351. Lets a caller that only holds a token/offset
+/// derived starting point (e.g. `root.token_at_offset(offset)` then
+/// `.parent()`) find the right node to hand to
+/// [`classify_node_compiled`]/[`crate::explain_match_node`], without
+/// keeping its own copy of `candidate`'s kind list — asking `candidate`
+/// itself, on each ancestor in turn, is what keeps this from re-diverging
+/// the way #2351 itself happened.
+///
+/// `None` if no ancestor up to the file root is one of those five shapes at
+/// all (e.g. `offset` lands on a knot/stitch header or a logic line) — the
+/// caller should fall back to the raw-text walk in that case.
+#[must_use]
+pub fn nearest_element_candidate(node: &SyntaxNode) -> Option<SyntaxNode> {
+    std::iter::successors(Some(node.clone()), SyntaxNode::parent)
+        .find(|n| super::lower_native::candidate(n).is_some())
 }
 
 /// One named capture a matched pattern bound, as a span into the **real
@@ -558,5 +637,231 @@ mod tests {
         let p = projection(&[decl("any_line", 10, "^.*$")]);
         let result = classify_line(&p, TextSize::from(0), "   \t  ");
         assert!(result.is_empty());
+    }
+
+    // ─── Node-aware classification (issue #2351) ─────────────────────
+
+    /// The four claim-candidate shapes this issue names explicitly: a
+    /// block cue (`@VENDOR`), a chain-gated parenthetical (`(hushed)`), a
+    /// compact cue with genuinely interpolated fused dialogue
+    /// (`@KID: I have {count} coins.`), and a slugged/tag-bearing scene
+    /// heading — mirrors `tests/tier1-native/conventions-screenplay-preset/
+    /// story.brink`'s own fixture shape.
+    fn node_agreement_fixture_src() -> &'static str {
+        "\
+var count = 3
+
+@[convention(claims = \"^(?<kind>INT|EXT)\\\\. (?<title>.+)$\", order = 10)]
+fn heading(kind: string, title: string) {
+  return title;
+}
+
+@[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", order = 20)]
+fn cue(name: string) {
+  return name;
+}
+
+@[convention(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", order = 30)]
+fn parenthetical(delivery: string) {
+  return delivery;
+}
+
+flow main() {
+  INT. MARKET SQUARE - NIGHT [market] #act1
+  @VENDOR
+  (hushed)
+  @KID: I have {count} coins.
+  -> END
+}
+"
+    }
+
+    /// Lower `src` through the real native frontend, returning the compiled
+    /// `HirFile` (whose `element_matches` is the compiler's own claiming
+    /// record, `try_claim`'s output) alongside the root [`SyntaxNode`] the
+    /// same parse produced — so a test can find the exact node `try_claim`
+    /// saw for each claimed line.
+    fn lower_src(src: &str) -> (crate::HirFile, SyntaxNode) {
+        use brink_syntax_native::ast::AstNode as _;
+
+        let parse = brink_syntax_native::parse(src);
+        let tree = parse.tree();
+        let (hir, _manifest, diags) = crate::hir::lower_native::lower(crate::FileId(0), &tree);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        (hir, tree.syntax().clone())
+    }
+
+    /// The projection a real file's own declared `@[convention]` handlers
+    /// give, exactly as `brink_db::queries::analysis::conventions_projection_query`
+    /// builds it from `HirFile::claim_handlers` — none of the fixture's
+    /// handlers declares `attach`, so an empty struct map is enough.
+    fn projection_from(hir: &crate::HirFile) -> ConventionsProjection {
+        ConventionsProjection::from_decls(&hir.claim_handlers, &BTreeMap::new())
+    }
+
+    /// Find the node `try_claim` claimed for `elm` (via
+    /// [`nearest_element_candidate`], starting from the token at the
+    /// claimed line's own start) and assert [`classify_node_compiled`]'s
+    /// answer for it agrees with `elm` — the compiler's own compiled
+    /// record — on both the winning handler and every capture's text and
+    /// span. This is issue #2351's own ask: "assert winner + captures
+    /// against the compiled `ElementMatch` for the same fixture" (the
+    /// agreement-guard precedent PR #2328's review names).
+    fn assert_agrees_with_compiled(
+        root: &SyntaxNode,
+        compiled: &[CompiledEntry],
+        elm: &crate::ElementMatch,
+    ) {
+        let token = root
+            .token_at_offset(elm.line.start())
+            .right_biased()
+            .expect("a real token must start at the claimed line's own start");
+        let start_node = token
+            .parent()
+            .expect("every token in a well-formed tree has a parent node");
+        let not_a_candidate_msg = format!(
+            "the compiler claimed this line ({:?}), so some ancestor must be one of \
+             candidate's five recognized shapes: {elm:?}",
+            elm.kind
+        );
+        let node = nearest_element_candidate(&start_node).expect(&not_a_candidate_msg);
+        assert_eq!(
+            node.text_range(),
+            elm.line,
+            "the located node must be the EXACT node try_claim saw for this claim"
+        );
+        // `classify_node_compiled`'s own doc: ranges come back relative to
+        // `node`'s own start, exactly [`classify_line`]'s zero-based
+        // convention — rebase onto the node's real position before
+        // comparing against `elm`'s absolute, file-real spans.
+        let node_start = node.text_range().start();
+        let classification = classify_node_compiled(compiled, &node)
+            .expect("candidate() must recognize a node this same call just found via it");
+        let missed_msg = format!(
+            "the live node-aware walk must agree the compiler DID claim this line (issue \
+             #2351's own bug: it used to miss every sigil-bearing line here) — attempted \
+             nothing for {elm:?}"
+        );
+        let winner = classification.matched.expect(&missed_msg);
+        assert_eq!(
+            winner.handler.text, elm.handler.text,
+            "must agree with the compiler on which handler claimed the line"
+        );
+        assert_eq!(
+            winner.captures.len(),
+            elm.captures.len(),
+            "must bind exactly the same number of captures as the compiler did"
+        );
+        for (live, from_compiler) in winner.captures.iter().zip(&elm.captures) {
+            assert_eq!(live.name, from_compiler.name);
+            assert_eq!(
+                live.text, from_compiler.text,
+                "capture text must match the compiler's own recorded capture exactly"
+            );
+            let live_range = TextRange::new(
+                live.range.start() + node_start,
+                live.range.end() + node_start,
+            );
+            assert_eq!(
+                live_range, from_compiler.range,
+                "capture spans, rebased onto the node's real position, must land on the \
+                 exact same source bytes the compiler recorded"
+            );
+        }
+    }
+
+    /// The core fix: for a cue, a parenthetical, a compact cue with
+    /// interpolated dialogue, and a slugged/tag-bearing scene heading, the
+    /// node-aware walk's winner and captures agree EXACTLY with what the
+    /// compiler's own `try_claim` actually claimed — not just "also
+    /// matched something".
+    #[test]
+    fn classify_node_agrees_with_the_compiler_for_every_claim_candidate_shape() {
+        let src = node_agreement_fixture_src();
+        let (hir, root) = lower_src(src);
+        assert_eq!(
+            hir.element_matches.len(),
+            4,
+            "expected one match each for the heading/cue/parenthetical/compact-cue \
+             lines: {:?}",
+            hir.element_matches
+        );
+        let kinds: Vec<_> = hir.element_matches.iter().map(|m| m.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::ElementKind::SceneHeading,
+                crate::ElementKind::Cue,
+                crate::ElementKind::Parenthetical,
+                crate::ElementKind::Cue,
+            ],
+            "the fixture must exercise all four named shapes, in this order — a smaller \
+             set here would silently weaken the agreement check below"
+        );
+        let compiled = compile_entries(&projection_from(&hir));
+        for elm in &hir.element_matches {
+            assert_agrees_with_compiled(&root, &compiled, elm);
+        }
+    }
+
+    /// Issue #2351's own bug, pinned so a future change cannot silently
+    /// resurrect it: the raw-line-text walk ([`classify_line_compiled`])
+    /// genuinely diverges from the compiler for every one of these four
+    /// shapes — a cue/parenthetical/compact-cue line is missed entirely
+    /// (the pattern never sees the `@`/`(`/`)`), and a slugged/tag-bearing
+    /// heading, while it still matches (its own `.+` is greedy enough to
+    /// swallow the trailing slug/tag too), captures the WRONG, longer text.
+    /// `classify_node_compiled` (proven correct above) is a genuinely
+    /// different code path from this one, not a thin wrapper around it.
+    #[test]
+    fn classify_line_against_the_raw_text_still_diverges_from_the_compiler() {
+        let src = node_agreement_fixture_src();
+        let (hir, _root) = lower_src(src);
+        let compiled = compile_entries(&projection_from(&hir));
+        for elm in &hir.element_matches {
+            let start = usize::from(elm.line.start());
+            let end = usize::from(elm.line.end());
+            let raw = classify_line_compiled(&compiled, elm.line.start(), &src[start..end]);
+            match elm.kind {
+                crate::ElementKind::Cue | crate::ElementKind::Parenthetical => {
+                    assert!(
+                        raw.matched.is_none(),
+                        "the raw whole-line walk must still miss a real {:?} line \
+                         entirely — got {:?}",
+                        elm.kind,
+                        raw.matched
+                    );
+                }
+                crate::ElementKind::SceneHeading => {
+                    let raw_winner = raw
+                        .matched
+                        .as_ref()
+                        .expect("the raw walk still matches a heading line at all");
+                    // `captures[0]` is `kind` (`"INT"`), unaffected by the
+                    // trailing slug/tag — the divergence is in `title`,
+                    // whose greedy `.+` swallows the slug/tag on the raw
+                    // walk but not on the compiler's own stripped one.
+                    let raw_title = &raw_winner
+                        .captures
+                        .iter()
+                        .find(|c| c.name == "title")
+                        .expect("heading pattern declares a `title` capture")
+                        .text;
+                    let compiled_title = &elm
+                        .captures
+                        .iter()
+                        .find(|c| c.name == "title")
+                        .expect("heading pattern declares a `title` capture")
+                        .text;
+                    assert_ne!(
+                        raw_title, compiled_title,
+                        "the raw walk's `title` capture must diverge from the compiler's \
+                         own stripped-slug/tag capture — raw: {raw_title:?}, compiler: \
+                         {compiled_title:?}"
+                    );
+                }
+                other => unreachable!("fixture should not produce a {other:?} match"),
+            }
+        }
     }
 }
