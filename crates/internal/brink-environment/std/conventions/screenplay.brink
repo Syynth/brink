@@ -241,8 +241,15 @@
 /// The host-facing scene-entry notification (issue #2092). Fires once per
 /// claimed heading, before the handler's display text returns. `title` is
 /// the claimed heading's title text verbatim (e.g. `MARKET SQUARE -
-/// NIGHT`); `slug` is always the empty string today — no slug-bearing
-/// heading is claimable by this handler yet (#2077/#2078). No fallback
+/// NIGHT`); `slug` is always the empty string today — NOT because a
+/// slug-bearing heading declines the claim (#2077 ruled and landed "Slug-
+/// bearing headings: strip structure, then match": a heading's `[slug]`/
+/// `#tag`s are stripped before pattern matching, so this handler claims a
+/// slugged heading exactly as it claims an unslugged one), but because the
+/// `heading` handler below still hardcodes `scene_entered(title, "")` — the
+/// captured slug is delivered to `HirFile::element_matches` but not yet
+/// wired into this call. That wiring is heading→stitch promotion, #2078,
+/// still open and deliberately untouched here. No fallback
 /// body is written inline on the `extern` itself — native `extern`
 /// declarations never carry one (`brink-syntax-native`'s own
 /// `extern_decl` doc: "no body, ever"). Instead a same-named `fn` below

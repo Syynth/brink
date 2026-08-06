@@ -73,8 +73,16 @@ flow main() {
   // proves the preset's `heading` handler claims it end to end — the
   // rendered line below is UNCHANGED (the pattern only ever saw the title
   // text; the slug was never part of it), which is the regression this
-  // pins: a slug present or absent must not move what gets printed.
-  INT. MARKET SQUARE - NIGHT [market]
+  // pins: a slug present or absent must not move what gets printed. The
+  // trailing `#act1` exercises the same PR's other half — a tag-bearing
+  // heading also claims (previously an outright decline too) — through
+  // this fixture's full compiler pipeline; `expected.txt` stays UNCHANGED
+  // here too, since `drive_native_transcript` only ever appends line text,
+  // never `OutputLine.tags` (the tag's actual delivery is pinned at the
+  // runtime-output level by `crates/brink-runtime/tests/element.rs`'s
+  // `a_claimed_headings_own_tags_reach_the_output_line`, not this
+  // text-only transcript).
+  INT. MARKET SQUARE - NIGHT [market] #act1
   The square is empty.
 
   @VENDOR

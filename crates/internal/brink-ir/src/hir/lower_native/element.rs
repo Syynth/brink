@@ -848,14 +848,6 @@ pub(super) fn try_claim(
     let lead = u32::try_from(text.len() - text.trim_start().len()).unwrap_or(0);
     let base = text_node.text_range().start() + TextSize::from(lead);
 
-    // Issue #2077: recover the two pieces `candidate` stripped from a
-    // `SCENE_HEADING`'s title text before this point — see
-    // `heading_extras`'s own doc for what each one is and why. `None`/empty
-    // for every other node kind, since `CUE`/`PARENTHETICAL`/`CONTENT_LINE`
-    // still decline outright on a slug or tag (candidate would already have
-    // returned `None` for those).
-    let (slug, heading_tags) = heading_extras(node, file_id, diags);
-
     let claimed = node.text_range();
     // `decl` suppresses a claim inside the handler's own body (the staging
     // rule — see `ClaimHandler::decl`'s doc); `None` (an injected handler,
@@ -890,6 +882,25 @@ pub(super) fn try_claim(
         });
     }
 
+    // Issue #2077: recover the two pieces `candidate` stripped from a
+    // `SCENE_HEADING`'s title text before this point — see
+    // `heading_extras`'s own doc for what each one is and why. `None`/empty
+    // for every other node kind, since `CUE`/`PARENTHETICAL`/`CONTENT_LINE`
+    // still decline outright on a slug or tag (candidate would already have
+    // returned `None` for those).
+    //
+    // Deliberately called here — below both the handler lookup (`?` above)
+    // and the per-param capture loop (`?` inside it), not up where
+    // `candidate` first returns — because `heading_extras` is not
+    // side-effect-free: it runs `body::lower_tag` on every trailing tag,
+    // which can itself push a diagnostic (`E172`, for an `@`-leading tag).
+    // Calling it any earlier would run that speculatively for a claim this
+    // function might still abandon (no handler matches, or an alternation
+    // branch left a param's capture group unpopulated), reporting a
+    // diagnostic against a line that never actually lowered through this
+    // handler at all.
+    let (slug, heading_tags) = heading_extras(node, file_id, diags);
+
     // Every field taken from `handler` past this point is copied/cloned out
     // — `handler` (and so the borrow of `elements.handlers` it holds) is
     // never referenced again, which is what lets the `block` branch below
@@ -902,6 +913,22 @@ pub(super) fn try_claim(
     // borrow of `elements.handlers`/`.external` `handler` holds must end
     // before the `is_block`/attach branches below borrow `elements` mutably.
     let is_attach = handler.attach.is_some();
+    // Attach-mode never emits a `Stmt::Content` at all — ruling item 6,
+    // "AN EVENT EXISTS IFF A LINE EXISTS" (`docs/decision-log.md`
+    // 2026-08-03) — so there is no line left for a tag-bearing heading's
+    // `heading_tags` to ride on if this claim went through
+    // (`build_attach_stmts` only ever emits `Stmt::AttachElement`/
+    // `Stmt::EndElementRun`, neither of which carries tags). Declining the
+    // claim here — rather than silently discarding the tags, the gap
+    // review caught in this PR — falls through to the same loud `E129`
+    // `body::lower_one_item`'s `SCENE_STITCH` arm already reports for any
+    // other unclaimed heading (house rule 9: never a silent drop). Scoped
+    // to attach handlers with a nonempty `heading_tags` only: block-mode
+    // and ordinary Call-mode handlers both still deliver a tag-bearing
+    // heading's tags through the existing `Content.tags` channel below.
+    if is_attach && !heading_tags.is_empty() {
+        return None;
+    }
     // Issue #2289: `decl.is_none()` is exactly "this handler was injected
     // from the project's configured conventions module, not declared in
     // this file" (see `ClaimHandler::decl`'s own doc) — copied out now for
@@ -1001,7 +1028,23 @@ pub(super) fn try_claim(
                 // `PARENTHETICAL`/`CONTENT_LINE` never reaches here — see
                 // this function's own "Issue #2077" comment above); a
                 // claimed heading's own trailing tags ride this same field,
-                // the existing tag channel, rather than a new one.
+                // the existing ordinary per-line tag channel.
+                //
+                // This is a deliberate INTERIM carrier, not a ruled
+                // semantic: `docs/prose-dialect-spec.md` §8b.4 rules a
+                // header line's trailing `#tag`s **container-level
+                // per-flow tags** — the authoring surface issue #474 (the
+                // per-flow tag API) is iceboxed waiting for — and the
+                // 2026-08-06 "Slug-bearing headings: strip structure, then
+                // match" ruling this function implements says only that
+                // tags are stripped before matching, nothing about which
+                // channel delivers them. Routing them here, onto the
+                // heading's own output `Stmt::Content`, is the closest
+                // existing mechanism and better than the silent drop this
+                // PR would otherwise have reintroduced, but it is ordinary
+                // per-line runtime tag delivery, not §8b.4's per-flow
+                // tags. Re-route (or remove, if #474 supersedes this
+                // entirely) once #474 lands.
                 tags: heading_tags,
             }),
             Stmt::EndOfLine,
@@ -1074,7 +1117,12 @@ fn build_attach_stmts(
 ///   source span and nothing more.
 /// - The tags: the EXISTING tag channel (`Content.tags`, via the same
 ///   `lower_tag` every other tagged line already goes through) — not a
-///   second delivery mechanism invented for headings.
+///   second delivery mechanism invented for headings. This is a
+///   deliberate INTERIM carrier pending issue #474 (the per-flow tag
+///   API), not a ruled semantic — see `try_claim`'s own call site for
+///   why. `docs/prose-dialect-spec.md` §8b.4 names a header line's
+///   trailing `#tag`s **container-level per-flow tags**, a different
+///   concept from an ordinary per-line runtime tag.
 fn heading_extras(
     node: &SyntaxNode,
     file_id: FileId,

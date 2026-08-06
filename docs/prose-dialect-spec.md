@@ -1533,7 +1533,14 @@ unless marked:
 4. **Tags on declarations**: trailing `#tag`s on header lines — both
    the heading spelling and `flow x #tag { }` — captured as
    **container-level per-flow tags**. This is the authoring surface
-   #474 (per-flow tag APIs) was iceboxed waiting for.
+   #474 (per-flow tag APIs) was iceboxed waiting for. **Interim
+   carrier (#2077, pending #474):** until the per-flow tag API exists,
+   a claimed scene heading's stripped trailing tags are delivered
+   through the ordinary per-line `Content.tags` channel
+   (`hir::lower_native::element::try_claim`) rather than left
+   undelivered — this is explicitly NOT the container-level semantic
+   ruled above, only the closest existing mechanism. Re-route once
+   #474 lands.
 5. **The conventions schema gains an *address capture* role** — the
    slug capture feeds structure/`DefinitionId`, unlike ordinary
    payload captures.

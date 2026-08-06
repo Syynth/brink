@@ -597,6 +597,14 @@ fn hir_file_heap(hir: &HirFile) -> usize {
                         .iter()
                         .map(|c| c.name.capacity() + c.text.capacity())
                         .sum::<usize>()
+                    // Issue #2077: `slug` is a reserved capture alongside
+                    // `captures`, not inside it — same owned-`String`
+                    // shape (`name`/`text`), so it needs the same
+                    // accounting `vec_heap` can't see.
+                    + m
+                        .slug
+                        .as_ref()
+                        .map_or(0, |s| s.name.capacity() + s.text.capacity())
             })
             .sum::<usize>()
         // Declared claiming handlers (issue #1844, extended by #1863's

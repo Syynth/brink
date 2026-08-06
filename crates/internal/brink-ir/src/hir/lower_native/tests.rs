@@ -2656,12 +2656,24 @@ fn a_tag_bearing_heading_is_now_claimable() {
     assert_eq!(callee, "interior");
     assert_eq!(args, vec!["MARKET SQUARE".to_string()]);
     // The tag rides the EXISTING tag channel (`Content.tags`), not a
-    // second delivery mechanism — assert it actually arrived there rather
-    // than merely not breaking the claim.
-    let rendered = format!("{:?}", main.body.stmts);
+    // second delivery mechanism — assert the CLAIMED HEADING's own
+    // `Stmt::Content { tags, .. }` directly (a `Debug`-contains check on
+    // the whole body would pass equally if the tag landed on a different
+    // statement or a different field entirely).
+    let Stmt::Content(c) = main
+        .body
+        .stmts
+        .iter()
+        .find(|s| matches!(s, Stmt::Content(_)))
+        .expect("the claimed heading must lower to a Content statement")
+    else {
+        unreachable!("just matched Stmt::Content above");
+    };
+    assert_eq!(c.tags.len(), 1, "expected exactly one tag: {:?}", c.tags);
     assert!(
-        rendered.contains("act1"),
-        "the heading's own trailing tag must reach `Content.tags`: {rendered}"
+        matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "act1"),
+        "the heading's own trailing tag must reach `Content.tags`: {:?}",
+        c.tags[0].parts
     );
 }
 
