@@ -32,9 +32,18 @@
 //!
 //! This module reuses the exact same call-graph substrate
 //! [`crate::infer::effects_project`]'s per-def [`crate::EffectRow`]s are
-//! built from — [`crate::infer::def_body`] (itself built on the same
-//! `collect_defs` walk `call_edges`/`effects_project` use) — rather than
-//! inventing a second call-graph traversal. What it does NOT reuse is the
+//! built from — the same `collect_defs` walk `call_edges`/`effects_project`
+//! use — rather than inventing a second call-graph traversal. Unlike
+//! [`crate::infer::def_body`] (which re-runs `collect_defs` on every call,
+//! the right tradeoff for its own one-def-at-a-time salsa query shape),
+//! this module calls `collect_defs` exactly **once per [`check`] call** and
+//! indexes the result by [`DefinitionId`] — `check`'s own BFS visits many
+//! defs per handler and many handlers per project, so paying the
+//! whole-project walk on every visited node would be quadratic in the
+//! project's call-graph size. Same for the per-file resolution index
+//! (`crate::infer::index_resolutions_by_file`): built once, not rebuilt by
+//! filtering the whole project's [`ResolutionMap`] on every node. What this
+//! module does NOT reuse is the
 //! aggregated [`crate::EffectRow`]/[`crate::EffectAtoms`] shape itself:
 //! both are **sets** (`calls: BTreeSet<String>` — external binding
 //! *names*, already transitively closed, but with no site attached), and
@@ -72,10 +81,35 @@
 //!   (spec §6.2/§6.3). Closing it is a widening of this same mechanism,
 //!   not a new one, and is left for a follow-up if it proves reachable in
 //!   practice.
-//! - A divert/tunnel-call/thread-start target: `EXTERNAL` bindings are
-//!   invoked as ordinary calls, never as divert targets, so
-//!   [`Stmt::Divert`]/[`Stmt::TunnelCall`]/[`Stmt::ThreadStart`] carry no
-//!   call shape this check needs to inspect.
+//! - **A divert/tunnel-call/thread-start *to a knot or stitch* that itself
+//!   calls a `Query`/`Plain` external.** It is true, as originally noted
+//!   here, that an `EXTERNAL` binding is never itself invoked as a divert
+//!   target — [`Stmt::Divert`]/[`Stmt::TunnelCall`]/[`Stmt::ThreadStart`]
+//!   never name an `EXTERNAL` directly. But that is not the whole gap: the
+//!   BFS below only enqueues a callee discovered as a literal
+//!   [`Expr::Call`] (via [`CallSiteCollector`]), so a handler that reaches a
+//!   world-reading external *only* by diverting/tunnel-calling/threading
+//!   into a knot or stitch that then calls it is invisible to this check
+//!   today — the closure never follows that edge. Left as a known gap
+//!   (same "reachable in practice?" bar as the opaque-call gap above), not
+//!   silently assumed covered.
+//!
+//! # Reserved-root (`std::`) files are NOT exempt
+//!
+//! Unlike [`crate::conventions_confinement`]'s `E169` (which exempts a
+//! reserved peer root — `std::…`,
+//! [`brink_ir::symbols::is_reserved_root_module`] — because *that* check is
+//! about which module a claiming handler must be declared in, and the
+//! mounted std preset was never authored to live in a project's own
+//! configured module), this check is about whether a handler's call
+//! closure ever reads world state — a property of the handler's *body*,
+//! not of which file it happens to be mounted from. A `std::` preset
+//! handler that reaches a `Query`/`Plain` external is just as illegal as a
+//! project-authored one, and correctly so: `std::conventions::screenplay`'s
+//! own `heading` handler calls the `scene_entered` host extern (issue
+//! #2092), which must be classified `Effect` (an inline `@kind effect` doc
+//! tag on the `extern`) for exactly this reason — not exempted from the
+//! fence, but proven legal under it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -88,7 +122,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::external_check::SymbolMeta;
-use crate::infer::def_body;
+use crate::infer::{collect_defs, index_resolutions_by_file};
 
 /// `(start, end)` key for range-indexed lookups (`TextRange` has no `Ord`) —
 /// the same convention [`crate::fn_values`]/[`crate::await_purity`] use.
@@ -137,10 +171,28 @@ pub fn check(
         .map(|s| (range_key(s.range), s.id))
         .collect();
 
+    // Hoisted once for the whole `check` call (this module's own doc,
+    // "Mechanism") — the BFS below visits many defs per handler and many
+    // handlers per project; rebuilding either map per visited node would
+    // pay a whole-project walk on every step instead of once total.
+    let defs_by_id: BTreeMap<DefinitionId, _> = collect_defs(project_files, index)
+        .into_iter()
+        .map(|d| (d.id, d))
+        .collect();
+    let resolutions_by_file = index_resolutions_by_file(resolutions);
+
     let mut out = Vec::new();
     // Dedup across handlers sharing a helper: two handlers reaching the
     // same illegal call through a common callee must not double-report it.
     let mut diagnosed: BTreeSet<(FileId, (u32, u32))> = BTreeSet::new();
+    // Shared across every handler in this `check` call, not reset per
+    // handler: a def already fully explored (via an earlier handler's
+    // closure) needs no second walk — any violation inside it is already
+    // in `diagnosed`, keyed on the real call site, not on which handler
+    // found it first, so re-walking a shared callee per handler would only
+    // waste work, never change the output.
+    let mut visited: BTreeSet<DefinitionId> = BTreeSet::new();
+    let mut queue: VecDeque<DefinitionId> = VecDeque::new();
 
     for handler in &hir.claim_handlers {
         let Some(&handler_def) = handler_defs.get(&range_key(handler.name.range)) else {
@@ -150,30 +202,28 @@ pub fn check(
             continue;
         };
 
-        let mut visited: BTreeSet<DefinitionId> = BTreeSet::new();
-        let mut queue: VecDeque<DefinitionId> = VecDeque::new();
-        visited.insert(handler_def);
+        if !visited.insert(handler_def) {
+            // Already explored (as some other handler's transitive
+            // callee); its closure's violations, if any, are already
+            // reported.
+            continue;
+        }
         queue.push_back(handler_def);
 
         while let Some(def) = queue.pop_front() {
-            let Some(def_file) = index.symbols.get(&def).map(|s| s.file) else {
+            let Some(d) = defs_by_id.get(&def) else {
                 continue;
             };
-            let Some((_, _, body)) = def_body(def, project_files, index) else {
+            let def_file = d.file;
+            let Some(by_range) = resolutions_by_file.get(&def_file) else {
                 continue;
             };
-
-            let by_range: BTreeMap<(u32, u32), DefinitionId> = resolutions
-                .iter()
-                .filter(|r| r.file == def_file)
-                .map(|r| (range_key(r.range), r.target))
-                .collect();
 
             let mut collector = CallSiteCollector {
-                by_range: &by_range,
+                by_range,
                 sites: Vec::new(),
             };
-            visit::walk_block(&body, &mut collector);
+            visit::walk_block(d.body, &mut collector);
 
             for (call_range, target) in collector.sites {
                 match index.symbols.get(&target).map(|s| s.kind) {
