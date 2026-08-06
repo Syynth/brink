@@ -5,6 +5,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::compile::{CompileResult, DiagnosticJs};
 
+#[cfg(test)]
+mod acceptance_gate;
 mod code_actions;
 mod completion;
 mod doc_handles;
