@@ -9,34 +9,40 @@
  * folder. Provider keys are project-relative `/`-separated paths — the
  * studio's convention; absolute OS paths never leak into the session.
  *
- * ## Persistence model (D1)
+ * ## Persistence model (D2 — the overlay contract, 2026-08-07 ruling)
  *
  * - **Structural ops are disk-immediate**: `createFile` / `deleteFile` /
  *   `renameFile` are called directly by `ProjectSession` on binder
  *   operations and write through to disk at once.
- * - **Content edits persist via the #154 egress**: `mountStudio`'s
- *   `onFilesChanged` delivers full-content batches (debounced ~500 ms,
- *   flushed immediately on `file.save`/`file.saveAll` and on unmount) and
- *   the shell writes each batch to disk (`writeChanges`). This is
- *   write-through-with-debounce rather than the spec's strict
- *   explicit-save model — a deliberate D1 simplification, recorded in the
- *   spec's D-stage notes: the egress is the one delivery channel that is
- *   reliable today, and writing it eagerly can never lose work. D2
- *   revisits explicit-save once the shell owns dirty-state UI.
- * - `requestSave` flushes anything staged through `onFileChanged` as a
- *   belt-and-braces path; with the egress wired it is normally a no-op.
- *
- * `onExternalChange` is deliberately absent in D1 (no fs watcher yet) —
- * `ProjectSession` treats an absent subscription as "no external changes",
- * and the #320 conflict surface stays dormant until D2 wires the watcher.
+ * - **Content edits stage** (`onFileChanged` → `staged`); the #154 egress
+ *   feeds the bounded **backup ring** (`ringBackups` → `append_backups`),
+ *   which is crash protection, orthogonal to dirty.
+ * - **`requestSave` is THE canonical write**: the save commands await it
+ *   (⌘S narrowed to the focused path, saveAll/autosave unnarrowed) and
+ *   only re-baseline on success — a rejected write stays staged and dirty
+ *   for retry.
+ * - **`onExternalChange` is a real fs watcher** (shell `start_watch`,
+ *   debounced + filtered): events forward into `ProjectSession`'s #320
+ *   never-clobber machinery, with self-write suppression so our own
+ *   canonical writes never masquerade as conflicts.
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { FileChange, FileProvider } from "@brink-lang/editor";
 
 export class TauriFileProvider implements FileProvider {
   /** Latest editor content per path, staged by `onFileChanged`. */
   private staged = new Map<string, string>();
+  /**
+   * Content of our own recent canonical writes, for watcher self-write
+   * suppression: a save triggers an fs event for the file we just wrote,
+   * and without suppression a buffer that moved on during the write's
+   * flight would false-positive the #320 conflict surface against our own
+   * save. An event whose content matches the recorded self-write is
+   * swallowed; anything else is genuinely external.
+   */
+  private selfWrites = new Map<string, string>();
 
   constructor(private readonly root: string) {}
 
@@ -61,6 +67,7 @@ export class TauriFileProvider implements FileProvider {
   }
 
   async createFile(path: string, content: string): Promise<void> {
+    this.selfWrites.set(path, content);
     await invoke("write_file", { root: this.root, rel: path, content });
   }
 
@@ -92,9 +99,42 @@ export class TauriFileProvider implements FileProvider {
       ([rel]) => wanted === null || wanted.has(rel),
     );
     for (const [rel, content] of pending) {
+      this.selfWrites.set(rel, content);
       await invoke("write_file", { root: this.root, rel, content });
       this.staged.delete(rel);
     }
+  }
+
+  /**
+   * Watch the project root (D2): shell fs events arrive as
+   * `fs:external-change` `{ path, content|null }`, debounced and filtered
+   * shell-side. Self-writes are swallowed here; everything else forwards
+   * into `ProjectSession`'s #320 never-clobber machinery. The returned
+   * unsubscribe stops the watch (the contract requires calling it on
+   * teardown so a late event can't fire into a freed session).
+   */
+  onExternalChange(callback: (path: string, content: string | null) => void): () => void {
+    let live = true;
+    const unlistenPromise = listen<{ path: string; content: string | null }>(
+      "fs:external-change",
+      (event) => {
+        if (!live) return;
+        const { path, content } = event.payload;
+        if (content !== null && this.selfWrites.get(path) === content) {
+          this.selfWrites.delete(path);
+          return; // our own canonical write echoing back
+        }
+        callback(path, content);
+      },
+    );
+    void invoke("start_watch", { root: this.root }).catch((e: unknown) => {
+      console.error("[brink-desktop] start_watch failed", e);
+    });
+    return () => {
+      live = false;
+      void unlistenPromise.then((unlisten) => unlisten());
+      void invoke("stop_watch").catch(() => {});
+    };
   }
 
   /**

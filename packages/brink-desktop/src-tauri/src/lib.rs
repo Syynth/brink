@@ -136,6 +136,110 @@ async fn rename_file(root: String, from: String, to: String) -> Result<(), Shell
     std::fs::rename(&from_path, &to_path).map_err(|e| io_err(&from_path, e))
 }
 
+// ── Filesystem watcher (docs/desktop-shell-spec.md D2) ──────────────
+//
+// Watches the open project root and emits `fs:external-change` events to
+// the webview: `{ path: <project-relative key>, content: <text|null> }`,
+// null meaning deleted. Events are debounced (300 ms of quiet) and
+// filtered to project files, mirroring `list_files`' rules. The provider
+// forwards them into `ProjectSession`'s #320 machinery — never-clobber
+// 3-way against the last canonical save — which this watcher gives its
+// first real filesystem.
+
+/// The live watcher for the (single) open project. Dropping the watcher
+/// stops event delivery; the debounce thread then exits on channel close.
+struct WatchState(std::sync::Mutex<Option<notify::RecommendedWatcher>>);
+
+#[derive(Clone, serde::Serialize)]
+struct ExternalChangeOut {
+    path: String,
+    content: Option<String>,
+}
+
+/// Project-relative key for an absolute path inside `root`, applying the
+/// same skip rules as `list_files` (dotdirs, node_modules, target, dist)
+/// and the same file filter. None ⇒ not a project file, ignore.
+fn watch_key(root: &Path, abs: &Path) -> Option<String> {
+    let rel = abs.strip_prefix(root).ok()?;
+    let mut parts: Vec<&str> = Vec::new();
+    for c in rel.components() {
+        let s = c.as_os_str().to_str()?;
+        parts.push(s);
+    }
+    let (file, dirs) = parts.split_last()?;
+    if dirs.iter().any(|d| is_skipped_dir(d)) {
+        return None;
+    }
+    if !is_project_file(Path::new(file)) {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+#[tauri::command]
+async fn start_watch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WatchState>,
+    root: String,
+) -> Result<(), ShellError> {
+    use notify::Watcher;
+    use tauri::Emitter;
+
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .map_err(|e| ShellError::Io {
+        path: root.clone(),
+        source: std::io::Error::other(e),
+    })?;
+    watcher
+        .watch(Path::new(&root), notify::RecursiveMode::Recursive)
+        .map_err(|e| ShellError::Io {
+            path: root.clone(),
+            source: std::io::Error::other(e),
+        })?;
+
+    // Replacing any previous watcher stops its delivery; its debounce
+    // thread exits when the dropped watcher's channel disconnects.
+    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
+
+    let root_path = PathBuf::from(root);
+    std::thread::spawn(move || {
+        let mut pending: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                Ok(Ok(event)) => pending.extend(event.paths),
+                Ok(Err(_)) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    for abs in std::mem::take(&mut pending) {
+                        let Some(key) = watch_key(&root_path, &abs) else {
+                            continue;
+                        };
+                        let content = match std::fs::read_to_string(&abs) {
+                            Ok(text) => Some(text),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                            Err(_) => continue, // transient; a later event retries
+                        };
+                        let _ = app.emit("fs:external-change", ExternalChangeOut {
+                            path: key,
+                            content,
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_watch(state: tauri::State<'_, WatchState>) -> Result<(), ShellError> {
+    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    Ok(())
+}
+
 // ── Backup ring (docs/desktop-shell-spec.md D2; 2026-08-07 overlay ruling) ──
 
 /// One ring entry from the webview (`TauriBackupSink.append`).
@@ -310,6 +414,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(WatchState(std::sync::Mutex::new(None)))
         .setup(|app| {
             let menu = build_menu(app.handle())?;
             app.set_menu(menu)?;
@@ -335,6 +440,8 @@ pub fn run() {
             delete_file,
             rename_file,
             append_backups,
+            start_watch,
+            stop_watch,
             pick_project_folder,
         ])
         .run(tauri::generate_context!())
