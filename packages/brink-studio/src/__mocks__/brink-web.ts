@@ -508,7 +508,7 @@ export class EditorSession {
       if (!kv) continue;
       const key = kv[1]!.trim();
       if (section === "project" && !KNOWN_PROJECT_KEYS.has(key)) {
-        warnings.push(`unknown key \`${key}\` in [project] (ignored)`);
+        warnings.push(`unknown key \`project.${key}\` in brink.toml (ignored)`);
       }
     }
     return warnings;

@@ -370,6 +370,15 @@ export async function mountStudio(
         store.getState().appendOutput("compile", `brink.toml: ${w}`);
       }
     },
+    // `brink.toml` discovery/apply error (#2324 review finding): malformed
+    // TOML or a recognized key with an invalid value used to propagate as an
+    // uncaught exception out of `initialize()` (aborting mount entirely, with
+    // no editor open yet to fix the file in) or out of every subsequent
+    // keystroke's `notifyFileChanged`. Surfaced through the same Output
+    // channel as the warnings above instead.
+    onProjectConfigError: (message) => {
+      store.getState().appendOutput("compile", `brink.toml: ${message}`);
+    },
   });
   await project.initialize();
 

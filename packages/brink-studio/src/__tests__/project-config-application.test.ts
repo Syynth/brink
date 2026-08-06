@@ -28,7 +28,7 @@
 
 import { describe, it, expect } from "vitest";
 import { InMemoryFileProvider, ProjectSession } from "@brink-lang/editor";
-import { initWasm } from "@brink-lang/web";
+import { initWasm, type EditorSessionHandle } from "@brink-lang/web";
 
 async function makeProject(files: Record<string, string>, entryFile: string) {
   await initWasm();
@@ -87,6 +87,73 @@ describe("ProjectSession applies brink.toml (#2324)", () => {
     await project.addFile("brink.toml", '[project]\nunknown-thing = 1\n');
     expect(warnings).toHaveLength(2);
     expect(warnings[1]).toEqual([expect.stringContaining("unknown-thing")]);
+  });
+
+  /**
+   * A minimal stand-in for `EditorSessionHandle` whose `discoverProjectConfig`
+   * always throws (issue #2324's review finding: the mock wasm session in
+   * `__mocks__/brink-web.ts` never throws for any input, so no test built on
+   * it can observe the real `discoverProjectConfig` throw path — malformed
+   * TOML/an invalid recognized-key value). Injected via `ProjectSessionOptions.
+   * session`, the seam every other test in this file leaves to the default
+   * `new EditorSessionHandle()`. Implements only the handful of methods
+   * `ProjectSession` actually calls; cast through `unknown` since it does not
+   * (and should not need to) implement the rest of the real class's surface.
+   */
+  class ThrowingConfigSession {
+    private files = new Map<string, string>();
+    generation = 0;
+
+    getFileSource(path: string): string | null {
+      return this.files.get(path) ?? null;
+    }
+    updateFile(path: string, content: string): void {
+      this.files.set(path, content);
+      this.generation++;
+    }
+    removeFile(path: string): void {
+      this.files.delete(path);
+      this.generation++;
+    }
+    listFiles(): { path: string }[] {
+      return [...this.files.keys()].map((path) => ({ path }));
+    }
+    getFileIncludes(): [] {
+      return [];
+    }
+    discoverProjectConfig(_entry: string): string[] {
+      throw new Error("malformed TOML: unexpected character");
+    }
+    free(): void {
+      /* no-op */
+    }
+  }
+
+  it("reports a discoverProjectConfig throw through onProjectConfigError instead of rethrowing (#2324 review finding)", async () => {
+    const provider = new InMemoryFileProvider({
+      "brink.toml": "this is not valid toml <<<",
+      "story.ink": "-> END\n",
+    });
+    const errors: string[] = [];
+    const warnings: string[][] = [];
+    const project = new ProjectSession({
+      provider,
+      entryFile: "story.ink",
+      session: new ThrowingConfigSession() as unknown as EditorSessionHandle,
+      onProjectConfigWarnings: (w) => warnings.push(w),
+      onProjectConfigError: (message) => errors.push(message),
+    });
+
+    // initialize() must resolve, not reject, even though discovery throws
+    // partway through it — a malformed brink.toml must not abort mounting.
+    await expect(project.initialize()).resolves.toBeUndefined();
+    expect(errors).toEqual(["malformed TOML: unexpected character"]);
+    expect(warnings).toHaveLength(0); // onProjectConfigWarnings never fires for a caught throw
+
+    // An in-session edit to brink.toml (the CM6/notifyFileChanged path) must
+    // also swallow the throw rather than escaping the debounced linter call.
+    expect(() => project.notifyFileChanged("brink.toml")).not.toThrow();
+    expect(errors).toHaveLength(2);
   });
 
   it("does not reapply for an edit to an unrelated file", async () => {

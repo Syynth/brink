@@ -61,11 +61,24 @@ export interface ProjectSessionOptions {
    * after `initialize()` loads the project's files (even with an empty
    * array — a host that wants to clear a previous warning list can rely on
    * that), and again every time a `brink.toml` in the session is created,
-   * edited, renamed into/out of, or externally rewritten. Never fires for
-   * a thrown discovery error (malformed TOML / an invalid recognized-key
-   * value) — that propagates as a normal exception instead.
+   * edited, renamed into/out of, or externally rewritten. Never fires for a
+   * discovery error (malformed TOML / an invalid recognized-key value) — see
+   * {@link onProjectConfigError} instead.
    */
   onProjectConfigWarnings?: (warnings: string[]) => void;
+  /**
+   * A `brink.toml` discovery/apply error (issue #2324): `discoverProjectConfig`
+   * throws on malformed TOML or a recognized key with an invalid value (e.g.
+   * `dialect = "brnik"`). Without this callback such an error would otherwise
+   * propagate out of whichever call triggered discovery — `initialize()`,
+   * `notifyFileChanged`/`applyEdit`, `addFile`, `deleteFile`, `renameFile`, or
+   * the external-change handler — and a mid-edit typo in the one file this
+   * feature exists to make effective would take the whole session down with
+   * it. `applyProjectConfig` catches the throw at its single call site and
+   * reports it here instead; the file's *previous* successfully-applied
+   * config (if any) stays in effect until a valid edit re-discovers it.
+   */
+  onProjectConfigError?: (message: string) => void;
 }
 
 export class ProjectSession {
@@ -76,6 +89,7 @@ export class ProjectSession {
   private onExternalFileChange?: (path: string, content: string | null) => void;
   private onFileConflict?: (conflict: FileConflict) => void;
   private onProjectConfigWarnings?: (warnings: string[]) => void;
+  private onProjectConfigError?: (message: string) => void;
   private unsubscribeExternal?: () => void;
   private destroyed = false;
   private lastCompile: { generation: number; result: CompileResult } | null = null;
@@ -87,6 +101,7 @@ export class ProjectSession {
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
     this.onProjectConfigWarnings = options.onProjectConfigWarnings;
+    this.onProjectConfigError = options.onProjectConfigError;
     this.changes = new FileChangeHub({
       getContent: (path) => (this.destroyed ? null : this.session.getFileSource(path)),
       onFlush: options.onFilesChanged,
@@ -109,9 +124,26 @@ export class ProjectSession {
    * Safe to call whenever `brink.toml` might have changed — a missing file
    * is not an error (`discoverProjectConfig` returns `[]`), and a
    * recognized-key/lint-code warning list is forwarded even when empty.
+   *
+   * `discoverProjectConfig` throws on malformed TOML or a recognized key
+   * with an invalid value (issue #2324's review finding): every caller of
+   * this method — `initialize()`, `notifyFileChanged`/`applyEdit`,
+   * `addFile`, `deleteFile`, `renameFile`, and the external-change handler —
+   * is a place a mid-edit typo in `brink.toml` could otherwise take down,
+   * from a mount-time failure with no editor to fix the file in, to an
+   * uncaught exception on every subsequent keystroke. Caught here, once, at
+   * the single call site all of them share, and reported through
+   * {@link ProjectSessionOptions.onProjectConfigError} instead of
+   * rethrowing.
    */
   private applyProjectConfig(): void {
-    const warnings = this.session.discoverProjectConfig(this.entryFile);
+    let warnings: string[];
+    try {
+      warnings = this.session.discoverProjectConfig(this.entryFile);
+    } catch (err) {
+      this.onProjectConfigError?.(err instanceof Error ? err.message : String(err));
+      return;
+    }
     this.onProjectConfigWarnings?.(warnings);
   }
 

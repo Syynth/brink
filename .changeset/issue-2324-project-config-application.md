@@ -20,3 +20,10 @@ unrecognized `brink.toml` key is now visible instead of silently dropped. `[proj
 `crates/internal/brink-project-config/src/lib.rs`), so it always reports as an unrecognized key — `mountStudio`'s
 explicit `entryFile` argument remains the only thing that decides the compiled entry file; there was nothing at
 the wasm-session layer for it to conflict with.
+
+**Review-finding fix:** `discoverProjectConfig` throws on malformed TOML or a recognized key with an
+invalid value, and that throw was unhandled — a typo'd `brink.toml` aborted `mountStudio` entirely (no
+editor to fix the file in), or, once mounted, threw out of every subsequent keystroke's debounced
+`notifyFileChanged`/`applyEdit` call. `ProjectSession.applyProjectConfig` now catches the throw at its
+single call site and reports it through a new optional `ProjectSessionOptions.onProjectConfigError`
+callback instead of rethrowing; `mountStudio` wires it into the same Output channel as the warnings.
