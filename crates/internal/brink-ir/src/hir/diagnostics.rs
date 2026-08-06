@@ -1740,6 +1740,38 @@ pub enum DiagnosticCode {
     /// diagnostic from the prelude side in the same compile. See that
     /// function's own doc comment for the full argument.
     E181,
+
+    // ── #2179: `@[convention]` no-world-reads fence ────────────────────
+    /// A `@[convention]` handler's transitive call closure reaches an
+    /// `EXTERNAL` classified [`crate::ExternalKind::Query`] (a world read)
+    /// or left [`crate::ExternalKind::Plain`] (unclassified) —
+    /// `docs/decision-log.md` 2026-08-06 "No-world-reads fence: analyzer
+    /// effect-row check; unclassified externals are diagnosed".
+    ///
+    /// A claiming handler competes for lines it never announced, which
+    /// only holds together if classification is a pure function of the
+    /// text: if it depended on game state, the editor could never display
+    /// it, the projection could never be cached, and explain-match would
+    /// depend on a save file. So a handler may call pure functions and
+    /// [`crate::ExternalKind::Effect`]/[`crate::ExternalKind::Presentation`]
+    /// externals ("commands"), but never one that reads world state — and
+    /// an unclassified (`Plain`, the default) external is treated the same
+    /// as a proven read, not the same as a proven pure call: "unprovable
+    /// is not passable." The fix is classifying the external, via an
+    /// inline `@kind` doc tag or the registered host manifest.
+    ///
+    /// Computed by `brink_analyzer::no_world_reads` over the **transitive**
+    /// call closure — a handler calling a helper `fn` that itself calls a
+    /// `Query`/`Plain` external is diagnosed exactly like a direct call —
+    /// reusing the same call-graph substrate
+    /// (`brink_analyzer::infer::{collect_defs,call_edges,def_body}`) T2-1's
+    /// effect rows are built from, per the #2179 decline comment's finding
+    /// that the aggregated row/`compute_container_access` route has no
+    /// span to diagnose with: this walks for the real call-site span the
+    /// aggregated row structurally cannot carry. Reported at the offending
+    /// call's own site, which may be inside a different definition (and a
+    /// different file) than the handler's own declaration.
+    E182,
 }
 
 impl DiagnosticCode {
@@ -1933,6 +1965,7 @@ impl DiagnosticCode {
         Self::E179,
         Self::E180,
         Self::E181,
+        Self::E182,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2123,6 +2156,7 @@ impl DiagnosticCode {
             Self::E179 => "E179",
             Self::E180 => "E180",
             Self::E181 => "E181",
+            Self::E182 => "E182",
         }
     }
 
@@ -2428,6 +2462,9 @@ impl DiagnosticCode {
             Self::E181 => {
                 "a declared STRUCT's own definition could not be resolved while building the struct-shape table — every surviving same-name candidate is std-declared"
             }
+            Self::E182 => {
+                "a `@[convention]` handler's call closure reaches a world-reading (or unclassified) `EXTERNAL` — handlers may call pure functions and commands, but never read world state"
+            }
         }
     }
 
@@ -2683,6 +2720,7 @@ impl DiagnosticCode {
             "E179" => Some(Self::E179),
             "E180" => Some(Self::E180),
             "E181" => Some(Self::E181),
+            "E182" => Some(Self::E182),
             _ => None,
         }
     }
