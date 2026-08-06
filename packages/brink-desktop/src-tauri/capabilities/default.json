@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "brink-desktop main window: core + the folder-picker dialog. File I/O goes through the shell's own guarded commands, not the fs plugin.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}
