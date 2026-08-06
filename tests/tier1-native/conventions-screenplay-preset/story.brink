@@ -50,6 +50,8 @@
 var count = 3
 
 /// @kind effect
+/// @param title {string}
+/// @param slug {string}
 extern scene_entered(title, slug)
 
 fn scene_entered(title: string, slug: string) {
