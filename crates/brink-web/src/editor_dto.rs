@@ -705,7 +705,30 @@ pub(crate) struct ExplainClassifiedMatchJs {
     pub(crate) handler: ExplainHandlerJs,
     pub(crate) order: i64,
     pub(crate) mode: &'static str,
+    /// The claimed line's compile-time structural shape
+    /// (`brink_ir::ElementKind`, issue #2310) — populated only on `winner`,
+    /// omitted from the JSON entirely (not `null`) whenever it is absent.
+    /// A `shadowed` entry never carries one: only the actual winning claim
+    /// has a compiled `ElementMatch` to read it from (see
+    /// `editor::explain_match`'s own module doc for why this is a read of
+    /// the last-compiled snapshot, not a re-derivation, and why it can
+    /// decline rather than guess).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<&'static str>,
     pub(crate) captures: Vec<ExplainCaptureJs>,
+}
+
+/// The stable wire spelling for [`brink_ir::ElementKind`] (issue #2310) —
+/// `snake_case`, matching this module's other stringified enums (`mode`
+/// above).
+fn element_kind_str(kind: brink_ir::ElementKind) -> &'static str {
+    match kind {
+        brink_ir::ElementKind::ContentLine => "content_line",
+        brink_ir::ElementKind::SceneHeading => "scene_heading",
+        brink_ir::ElementKind::BangDispatch => "bang_dispatch",
+        brink_ir::ElementKind::Cue => "cue",
+        brink_ir::ElementKind::Parenthetical => "parenthetical",
+    }
 }
 
 /// One entry the walk attempted but that did not match — the miss-case
@@ -742,7 +765,10 @@ fn explain_handler_to_js(name: &brink_ir::Name) -> ExplainHandlerJs {
     }
 }
 
-fn explain_classified_match_to_js(m: brink_ir::ClassifiedMatch) -> ExplainClassifiedMatchJs {
+fn explain_classified_match_to_js(
+    m: brink_ir::ClassifiedMatch,
+    kind: Option<brink_ir::ElementKind>,
+) -> ExplainClassifiedMatchJs {
     ExplainClassifiedMatchJs {
         handler: explain_handler_to_js(&m.handler),
         order: m.order,
@@ -750,6 +776,7 @@ fn explain_classified_match_to_js(m: brink_ir::ClassifiedMatch) -> ExplainClassi
             brink_ir::ConventionMode::Attach => "attach",
             brink_ir::ConventionMode::Wrap => "wrap",
         },
+        kind: kind.map(element_kind_str),
         captures: m
             .captures
             .into_iter()
@@ -772,15 +799,22 @@ fn explain_attempted_to_js(entry: brink_ir::ConventionProjectionEntry) -> Explai
 }
 
 /// Convert [`brink_ir::LineExplanation`] into its wasm-facing JSON shape —
-/// see `ExplainMatchJs`'s own doc for the contract.
-pub(crate) fn explain_match_to_js(explanation: brink_ir::LineExplanation) -> ExplainMatchJs {
+/// see `ExplainMatchJs`'s own doc for the contract. `kind` is the caller's
+/// own [`brink_ir::ElementKind`] composition (issue #2310,
+/// `editor::explain_match`'s own module doc) — `None` whenever the caller
+/// has no compiled kind to report; ignored entirely on the `Unmatched` arm,
+/// which never has one.
+pub(crate) fn explain_match_to_js(
+    explanation: brink_ir::LineExplanation,
+    kind: Option<brink_ir::ElementKind>,
+) -> ExplainMatchJs {
     match explanation {
         brink_ir::LineExplanation::Matched { winner, shadowed } => ExplainMatchJs {
             matched: true,
-            winner: Some(explain_classified_match_to_js(winner)),
+            winner: Some(explain_classified_match_to_js(winner, kind)),
             shadowed: shadowed
                 .into_iter()
-                .map(explain_classified_match_to_js)
+                .map(|m| explain_classified_match_to_js(m, None))
                 .collect(),
             attempted: Vec::new(),
         },
@@ -810,7 +844,9 @@ mod explain_match_to_js_tests {
     /// handler/order/mode/captures, `shadowed` lists every runner-up in the
     /// same shape, and `attempted` is the empty array (never populated on a
     /// hit) — this is the arm nothing else in this crate exercises (issue
-    /// #2113 review, w143).
+    /// #2113 review, w143). No `kind` is passed here, so — per issue
+    /// #2310's `skip_serializing_if` contract — neither `winner` nor
+    /// `shadowed` carries a `kind` key at all.
     #[test]
     fn matched_arm_serializes_winner_and_shadowed_with_attempted_empty() {
         let winner = brink_ir::ClassifiedMatch {
@@ -836,7 +872,8 @@ mod explain_match_to_js_tests {
             shadowed: vec![shadowed],
         };
 
-        let json = serde_json::to_value(explain_match_to_js(explanation)).expect("serializes");
+        let json =
+            serde_json::to_value(explain_match_to_js(explanation, None)).expect("serializes");
         assert_eq!(
             json,
             serde_json::json!({
@@ -862,6 +899,47 @@ mod explain_match_to_js_tests {
         );
     }
 
+    /// Issue #2310: when the caller supplies a `kind`, it lands on `winner`
+    /// only — `shadowed` never carries one, since only the actual winning
+    /// claim has a compiled `ElementMatch` to read a kind from at all (see
+    /// `editor::explain_match`'s own module doc).
+    #[test]
+    fn a_supplied_kind_serializes_on_winner_only_never_on_shadowed() {
+        let winner = brink_ir::ClassifiedMatch {
+            handler: name("cue", 0, 3),
+            order: 10,
+            mode: brink_ir::ConventionMode::Attach,
+            disposition: brink_ir::ElementDisposition::Call,
+            captures: Vec::new(),
+        };
+        let shadowed = brink_ir::ClassifiedMatch {
+            handler: name("any_line", 20, 28),
+            order: 20,
+            mode: brink_ir::ConventionMode::Wrap,
+            disposition: brink_ir::ElementDisposition::Call,
+            captures: Vec::new(),
+        };
+        let explanation = brink_ir::LineExplanation::Matched {
+            winner,
+            shadowed: vec![shadowed],
+        };
+
+        let json = serde_json::to_value(explain_match_to_js(
+            explanation,
+            Some(brink_ir::ElementKind::Cue),
+        ))
+        .expect("serializes");
+        assert_eq!(
+            json["winner"]["kind"],
+            serde_json::json!("cue"),
+            "got {json}"
+        );
+        assert!(
+            json["shadowed"][0].get("kind").is_none(),
+            "a shadowed entry must never carry a kind — got {json}"
+        );
+    }
+
     /// The `Unmatched` arm: `matched` is `false`, `winner` is omitted
     /// entirely (`skip_serializing_if`), `shadowed` is the empty array, and
     /// `attempted` lists every tried entry with its pattern (never a
@@ -878,7 +956,8 @@ mod explain_match_to_js_tests {
         }];
         let explanation = brink_ir::LineExplanation::Unmatched { attempted };
 
-        let json = serde_json::to_value(explain_match_to_js(explanation)).expect("serializes");
+        let json =
+            serde_json::to_value(explain_match_to_js(explanation, None)).expect("serializes");
         assert_eq!(
             json,
             serde_json::json!({
