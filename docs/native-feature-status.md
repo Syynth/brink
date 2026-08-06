@@ -1,6 +1,6 @@
 # Native surface — feature status board
 
-**As of 2026-08-01**, against `origin/main`.
+**As of 2026-08-06**, against `origin/main`.
 
 A per-feature checklist for the `.brink` native surface. It exists because
 "is X supported?" has four different answers on this project and collapsing
@@ -91,7 +91,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **LANDED #1839** (PR #2067) — capture stops at a line carrying a divert/label |
 | `fn conventions()` registration | — | — | — | — | **DISSOLVED** (2026-08-03 ruling) — the well-known registration fn, `register` intrinsic, and #1840's entire Q1–Q6 comptime chain are removed from the design; precedence is now a declared `order = N` property directly on `@[convention]`/`@[element]` (split from #2164, landed via PR #2176) — no comptime involved |
 | Comptime evaluation of conventions | — | — | — | — | **DEFERRED, not blocked** — moot for conventions specifically since ordering no longer needs it; comptime as a general capability remains wanted but undesigned, to be decided when something genuinely needs it |
-| `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
+| `@[style]` declaration surface | ✅ | ✅ | ⚠️ | — | `StyleToken` produced (#1719) and now **read by one consumer**: `style_hover_text` (`brink-ide/src/style_hover.rs`), wired into `hover()` and reached via CLI/LSP/web — issue #2116, closed 2026-08-03 via PR #2069. No CSS class / CM6 decoration rendering yet, matching #2116's own scope fence |
 | Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **SHIPS** as `std/conventions/screenplay.brink` (#1720/PR #2081) + `scene_entered` extern (#2092), and **#2080 mounts its source into every compiled `Environment`** — **but still not importable**: nothing in it is `pub` and no confinement rule scopes a `use` into it yet (needs #1582's pub marker + #2167's confinement) |
 | `[project] conventions` name validation | ✅ | ✅ | ✅ | — | **LANDED #1874**; key renamed from `elements` by **#2180** (deprecated alias still accepted, warns) |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
@@ -101,33 +101,48 @@ whole vocabulary by naming a different conventions module. Sequenced as
 Under conventions, a prose line silently becomes a function call. The ruled
 compensation — **"no invisible expansion", a stated maintainer requirement** —
 is that the editor can always show which handler claimed a line, why, and what
-it bound. **That compensation is currently a promise, not a property.**
+it bound. **#2006's six slices are all now closed (2026-08-03 through
+2026-08-06), and the compiler-side half of that compensation is a property,
+not just a promise, for most rows below** — classification, explain-match, the
+projection, `@[style]` consumption, and the harvest index all exist and are
+exercised by real callers. What is still a promise: a hover consumer that
+surfaces the handler body, CM6 decoration rendering of capture spans, and the
+`IdeSession`/`EditorSession` wiring gap that keeps a live editor project from
+reaching its own configured conventions at all (see the two remaining ❌ rows).
 
 Tracked as **#2006**.
 
 | Feature | Ruled | Built | Notes |
 |---|---|---|---|
-| Per-line classification metadata | ✅ | ❌ | slice #2112 — walk records shadowed matches (ruled) |
-| Explain-match query | ✅ | ❌ | slice #2113 — reads #2112's data |
-| Hover shows the handler body | ✅ | ❌ | every matched line points at a real function (§9.1's improvement over the dissolved table) |
-| Capture spans as decoration ranges | ✅ | ❌ | the same spans drive editor decoration |
+| Per-line classification metadata | ✅ | ✅ | **LANDED #2112** (PR #2257, 2026-08-04) — `classify_line` records matched handler, captures, disposition, and shadowed matches |
+| Explain-match query | ✅ | ✅ | **LANDED #2113** (PR #2309, 2026-08-06) — `brink_ir::explain_match`/`ExplainMatchCache`, composing #2112's walk and #2111's projection; wasm binding `EditorSession::explain_match`/`explain_match_doc` |
+| Hover shows the handler body | ✅ | ❌ | the record a hover consumer would read now exists (#2112/#2113), but no hover call site reads it yet — `crates/internal/brink-ide/src/hover.rs` has no reference to `element_matches`/`ClassifiedMatch` |
+| Capture spans as decoration ranges | ✅ | ❌ | the spans themselves are produced (explain-match's `captures`, raw byte ranges), but nothing renders them as editor decoration — CM6 wiring is the missing half |
 | Harvest index (cues, span kinds) | ✅ | ✅ | **LANDED #2114** — project-wide, sibling of the symbol index |
 | Succession rules (Tab/Enter) | ✅ | ⚠️ | slice #2115 — validator-only: `ConventionsProjection::with_succession`/`dialect::validate_succession` re-key `DialogueDialect`'s surviving `transitions`/`templates` off the projection's own convention kinds and validate them in-process; per the 2026-08-05 ruling *"Succession is EDITOR-OWNED and externally defined"* (PR #2304) there is no `.inkb`-codec wire mirror — these fields never travel beyond tooling; actually wiring Tab/Enter in CM6 stays held (editor-frontend, NS-T hold) |
-| Serialized conventions projection | ✅ | ❌ | slice #2111 — behind #1840 |
-| Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
-| `@[style]` consumption | ✅ | ❌ | slice #2116 — declaration surface landed (#1719/PR #2069) |
-| Elements reach `IdeSession` | ✅ | ❌ | #1880 — `E169` unreachable from live typing |
-| Match ordering | ✅ | ❌ | **RULED 2026-08-02** — walk keeps going, records shadowed |
-| Editor re-evaluation loop | ✅ | ❌ | **RULED 2026-08-02** — projection cached on closure |
+| Serialized conventions projection | ✅ | ✅ | **LANDED #2111** (PR #2212, 2026-08-04) — salsa-tracked `conventions_projection_query`; the old "behind #1840" note no longer applies — #1840's `fn conventions()` comptime chain was dissolved (issue #2165, below), and `order` reads straight off the `@[convention]` annotation |
+| Last-good caching on comptime fault | — | — | **DISSOLVED** — the mechanism this ruling (Q2, 2026-08-01) guarded against — comptime-evaluating `fn conventions()` — was itself removed by the 2026-08-03 dissolution (issue #2165). Every `ConventionProjectionEntry` field is now a pure, total read off HIR; there is no VM execution in the path and so no fault case left to cache against (`brink_ir::hir::types`'s own "why there is no comptime-fault / last-good-value case here" doc) |
+| `@[style]` consumption | ✅ | ✅ | **slice #2116, closed 2026-08-03** — delivered by PR #2069 (which predates the slice's own filing): `style_hover_text` (`brink-ide/src/style_hover.rs`) reads `StyleToken`/`StyleAnnotation` and is wired into `hover()`, reached by the CLI, LSP, and web hover call sites alike. No CSS class / CM6 decoration is produced (that half stays out of scope per the issue's own scope fence) |
+| Elements reach `IdeSession` | ✅ | ❌ | #1880 (still OPEN) — `IdeSession::analysis_options` hardcodes `conventions: None`. This is not one uniform "unreachable" gap: `E169`'s *confinement* variant (`conventions_module_diagnostics`, a configured module with a handler outside it) is genuinely unreachable, since there is no configured module to check against; but the *unconfigured* variant (`conventions_unconfigured_diagnostics`, `conventions_confinement.rs:144-158`) fires on **every** claim handler whenever the pointer is unset — a live regression in the editor since #2289, per #1880's own title. The projection/explain-match queries (this section's own rows above) stay reachably empty. Discovered again independently while building #2113; #2308 filed the same gap and was closed as a duplicate of #1880, not a live follow-up |
+| Match ordering | ✅ | ✅ | **LANDED #2112** — the walk tries every registered pattern, uses the first match, records the rest as shadowed |
+| Editor re-evaluation loop | ✅ | ✅ | **LANDED** — the projection is a salsa-cached query keyed on the conventions module's import closure (#2111); per-line classification/explain-match is memoized on `(line text, projection)` (#2113's `ExplainMatchCache`) |
 
-⚠ **Two rulings are still owed here**, and one of them has already been
-depended on: Q2's last-good caching is justified *because* "§3.5's owed
-re-evaluation loop re-runs on every keystroke" — a ruling shipped ahead of the
-thing it assumes.
+⚠ **Both rulings from the §9.1 sitting are ruled and now implemented, not
+owed.** Match ordering and the editor re-evaluation loop were both ruled
+2026-08-02 (`docs/decision-log.md`) and both landed via #2111/#2112/#2113
+(rows above). The one dependency that *was* live when this section was first
+written — Q2's last-good caching leaning on "the owed re-evaluation loop" —
+is now moot rather than resolved: the 2026-08-03 dissolution removed the only
+mechanism (`fn conventions()` comptime evaluation) that could ever fault, so
+there is nothing left for a last-good value to guard (see the row above).
 
-⚠ **Sequencing note.** NS-T (#1131) is held behind the compiler work by
-deliberate choice. But this seam is **compiler-side** — queries emitted from
-`brink-db`/`brink-ide` — so it is not obviously covered by that hold.
+⚠ **Sequencing note.** NS-T (#1131) was held behind the compiler work by
+deliberate choice, 2026-08-01 through 2026-08-05. This seam is **compiler-side**
+— queries emitted from `brink-db`/`brink-ide` — so per the 2026-08-01 scoping
+it was never actually covered by that hold; and per the 2026-08-05 maintainer
+ruling ("The compiler-first hold on the native editor track (#1131 / NS-T) is
+LIFTED", `docs/decision-log.md`) the hold itself no longer applies to anything,
+compiler-side or not.
 
 ## Output side — what the host actually receives
 

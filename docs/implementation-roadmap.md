@@ -223,9 +223,17 @@ becomes N voice lines").
 ### E3 — the prose surface (gated on Track 1)
 
 Decorations for renderer-elidable structural marks · element completions
-(character names, markup tags) · element hover / explain-match · the **live
-renderer** the charter promises. **None of it can start before Track 1 steps
-5–8 ship the data it renders.**
+(character names, markup tags) · element hover · the **live renderer** the
+charter promises. **None of it can start before Track 1 steps 5–8 ship the
+data it renders.**
+
+⚠ **The explain-match query itself is no longer part of this gate.** This
+section pre-dates the #2006 decomposition: the explain-match query is a
+compiler-side read (`brink_ir::explain_match`, issue #2113, PR #2309), not a
+Track-1-gated renderer consumer, and it shipped 2026-08-06 — see
+`docs/native-feature-status.md`'s "Editor side" table for the current,
+per-slice status of #2006's six seams. What remains gated here is CM6/the
+live renderer actually *consuming* that query, not the query's existence.
 
 So the honest answer to "how far from the editor working": *native code
 editing* is a handful of issues away and mostly already built; the **writer's**

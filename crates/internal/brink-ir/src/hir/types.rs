@@ -555,11 +555,12 @@ pub struct ClaimHandlerDecl {
     /// no "no order" case to represent).
     pub order: i64,
     /// The `attach = StructName` clause (issue #2178), if declared — see
-    /// [`ConventionAnnotation::attach`]'s own doc. This is the field a
-    /// future NS-T projection (#2111, blocked on this landing) reads to
-    /// surface a handler's declared output schema to the editor/host,
-    /// same "compiler reads the conventions module's CST" role
-    /// `params`/`pattern` already play for this struct.
+    /// [`ConventionAnnotation::attach`]'s own doc. This is the field the
+    /// NS-T projection (#2111, landed 2026-08-04 via PR #2212, as
+    /// [`ConventionProjectionEntry::attach`]) reads to surface a handler's
+    /// declared output schema to the editor/host, same "compiler reads the
+    /// conventions module's CST" role `params`/`pattern` already play for
+    /// this struct.
     pub attach: Option<String>,
 }
 
