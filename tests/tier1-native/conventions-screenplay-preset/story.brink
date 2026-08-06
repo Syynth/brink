@@ -49,6 +49,7 @@
 
 var count = 3
 
+/// @kind effect
 extern scene_entered(title, slug)
 
 fn scene_entered(title: string, slug: string) {

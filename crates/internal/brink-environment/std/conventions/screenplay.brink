@@ -244,6 +244,7 @@
 /// `ExternalFnHandler` resolves the call (mirrors ink's own
 /// `EXTERNAL`+matching-knot fallback idiom, `lir::lower::decls::
 /// collect_externals`).
+/// @kind effect
 /// @param title {string}
 /// @param slug {string}
 extern scene_entered(title, slug)
