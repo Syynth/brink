@@ -328,6 +328,11 @@ export class ProjectSession {
    * through {@link applyEdit}. No-op changes (content equal to the host
    * baseline) are dropped by the hub.
    */
+  /** See the feature-detection note at the first call site. */
+  private sessionIsReadOnly(path: string): boolean {
+    return typeof this.session.isReadOnly === "function" && this.session.isReadOnly(path);
+  }
+
   notifyFileChanged(path: string): void {
     // Session-level read-only enforcement (issue #2306, ruled 2026-08-06
     // "Mounted stdlib presents as a read-only library node"): a still-
@@ -338,7 +343,12 @@ export class ProjectSession {
     // edit having been legitimately applied. The legitimate shadow path
     // (a real file replacing a mount) calls `session.updateFile` first,
     // which un-mounts the id before this method is ever reached for it.
-    if (this.session.isReadOnly(path)) return;
+    //
+    // Feature-detected: `session` is a public injection seam
+    // (`ProjectSessionOptions.session`) and pre-#2306 stubs/handles have
+    // no `isReadOnly` — absent means "nothing is read-only", which is
+    // exactly their world (only the real wasm handle mounts a stdlib).
+    if (this.sessionIsReadOnly(path)) return;
     const source = this.session.getFileSource(path);
     if (source !== null) {
       this.provider.onFileChanged?.(path, source);
@@ -375,7 +385,7 @@ export class ProjectSession {
    * because the id is still (momentarily) mounted at call time.
    */
   applyEdit(path: string, newSource: string): boolean {
-    if (this.session.isReadOnly(path)) return false;
+    if (this.sessionIsReadOnly(path)) return false;
     this.session.updateFile(path, newSource);
     this.notifyFileChanged(path);
     return true;
