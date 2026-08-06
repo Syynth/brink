@@ -17,8 +17,13 @@ candidate` widens with a `COMPACT_CUE` arm alongside the existing `CUE`/
 - The fused dialogue lowers as an **ordinary content line**, landing
   inside whatever run the matched handler's `attach`/`block` flavor
   captures (or, for a plain handler, right after its own call) — it keeps
-  full markup/interpolation rights, since literalness only ever applies to
-  the name segment.
+  full interpolation rights, since literalness only ever applies to the
+  name segment. It does not, however, get a free pass on structure: a
+  dialogue carrying a fused `LABEL` (a leading `(word)`) or a fused
+  `DIVERT_STMT`/`TUNNEL_CALL`/`CHOICE_POINT` (a trailing `->`/`->->`/`{?}`)
+  declines the WHOLE claim (loud `E129`) rather than being silently folded
+  into the captured run, matching what `capture_block`'s own terminator
+  search already requires of an ordinary sibling line.
 - Observable consequence for `std::conventions::screenplay` (mounted into
   every compiled project's `Environment` manifest since #2080): `cue`
   (attach mode, issue #2166) now claims `@NAME: dialogue` the same way it

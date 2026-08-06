@@ -301,6 +301,115 @@ flow main() {
     );
 }
 
+/// Review finding on issue #2079's PR: a compact cue's fused dialogue that
+/// carries a fused divert must not be silently folded into the claim's
+/// attached run — the divert would transfer control before that run's own
+/// `EndElementRun`/`EndFragment` closes it, corrupting the runtime's
+/// attachment bookkeeping (`speaker: KID` would otherwise leak onto every
+/// line at the divert target). The claim declines instead (loud `E129`, the
+/// same posture `try_dispatch` already takes when a `!name` dispatch's own
+/// fused remainder isn't itself claimable), so this fixture must fail to
+/// *compile*, not silently produce a corrupted transcript.
+///
+/// Confirmed to fail without the fix (rule 20a): before the
+/// `is_plain_content_line` guard on `compact_dialogue` in `try_claim`, this
+/// exact source compiled cleanly and merged `-> outside`'s divert into
+/// `cue`'s captured attach run.
+#[test]
+fn compact_cue_dialogue_with_fused_divert_declines_the_claim() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+flow main() {
+  @KID: Goodbye. -> outside
+}
+
+flow outside() {
+  You are outside.
+  -> END
+}
+"#;
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brink_element_compact_cue_divert_{}_{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("main.brink");
+    std::fs::write(&path, src).expect("write fixture");
+    let options = brink_analyzer::AnalysisOptions {
+        conventions: Some("main.brink".to_owned()),
+        ..brink_analyzer::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&path, options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_err(),
+        "a compact cue whose fused dialogue carries a divert must decline \
+         the claim and fail to compile (E129), not silently corrupt the \
+         attached run: {result:?}"
+    );
+}
+
+/// [`compact_cue_dialogue_with_fused_divert_declines_the_claim`]'s twin for
+/// a fused `LABEL` (`(beat)`) instead of a divert — G-1's `(label)` syntax
+/// parses right after a compact cue's `@NAME:` prefix exactly as it would
+/// at the start of any other content line, and absorbing it unconditionally
+/// into the claim's captured fragment would fold it into a
+/// `Stmt::LabeledBlock` instead of the plain dialogue statement it should
+/// be. Declines the same way, for the same reason.
+#[test]
+fn compact_cue_dialogue_with_fused_label_declines_the_claim() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+flow main() {
+  @KID: (beat) I have an idea.
+  -> END
+}
+"#;
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brink_element_compact_cue_label_{}_{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("main.brink");
+    std::fs::write(&path, src).expect("write fixture");
+    let options = brink_analyzer::AnalysisOptions {
+        conventions: Some("main.brink".to_owned()),
+        ..brink_analyzer::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&path, options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_err(),
+        "a compact cue whose fused dialogue carries a label must decline \
+         the claim and fail to compile (E129), not silently absorb it into \
+         a labeled block: {result:?}"
+    );
+}
+
 /// Review finding on issue #2108's PR: `OutputBuffer::flush_lines` seeded
 /// `resolve_lines_annotated` with `pending_element` but never wrote the
 /// end-of-slice state back (unlike `take_first_line`, which does) — so an

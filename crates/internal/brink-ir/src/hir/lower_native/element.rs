@@ -921,6 +921,35 @@ pub(super) fn try_claim(
     let compact_dialogue = (node.kind() == N::COMPACT_CUE)
         .then(|| node.children().find(|c| c.kind() == N::CONTENT_LINE))
         .flatten();
+    // Review finding on #2079's PR: a compact cue's fused dialogue is not
+    // shown to the pattern, but it still needs to be checked before it is
+    // folded into the claim's captured run/fragment — `content::content_line`
+    // parses the SAME shapes here that `is_plain_content_line`'s own doc
+    // names for a sibling body item: a leading `(ident)` right after the
+    // `@NAME:` prefix is a `LABEL` (`content.rs`'s own comment: the check
+    // "fires right after a compact cue's `@NAME:` prefix"), and a trailing
+    // `-> target`/`->->`/`{?}` folds into a `DIVERT_STMT`/`TUNNEL_CALL`/
+    // `CHOICE_POINT` child of the same `CONTENT_LINE`. Both are "element-
+    // level" in exactly the sense `capture_block`'s terminator search
+    // already treats as run-ending for a sibling — but `dialogue` isn't
+    // offered to that search at all (`capture_block_with_compact_dialogue`
+    // takes it unconditionally as the run's first line), so without this
+    // check a fused divert would transfer control before the fragment/run's
+    // own closing statement (`EndFragment`/`EndElementRun`) ever executes,
+    // and a fused label would silently vanish into `Stmt::LabeledBlock`.
+    // Declining the whole claim here — before anything is recorded in
+    // `elements.matches` or emitted to `diags` — mirrors `try_dispatch`'s
+    // own precedent (this file, `candidate(&remainder)?` a few hundred
+    // lines below): a fused remainder that isn't itself claimable makes the
+    // WHOLE line decline, falling through to the loud "parses but has no
+    // HIR lowering yet" `E129` default rather than silently corrupting the
+    // run.
+    if compact_dialogue
+        .as_ref()
+        .is_some_and(|dialogue| !is_plain_content_line(dialogue))
+    {
+        return None;
+    }
     // Shared by the `is_block`/`is_attach` arms below: dispatches to
     // whichever of `capture_block`/`capture_block_with_compact_dialogue`
     // applies, so neither arm repeats the `match`.
@@ -1130,19 +1159,19 @@ fn capture_block(
 /// `dialogue` is unconditionally the captured run's first line — it is
 /// **not** run through [`is_plain_content_line`]/[`blank_line_precedes`]
 /// the way a real sibling is: those two checks exist to decide whether a
-/// *sibling* item is eligible to extend an already-open run (a `LABEL` or
-/// fused divert/choice on a sibling would otherwise get silently absorbed
-/// into the wrong shape — see `capture_block`'s own doc for the two
-/// concrete failure modes those checks prevent). `dialogue` isn't a
-/// sibling being offered for absorption; it is structurally *part of* the
-/// compact cue itself, and the ruling is unconditional that it "lands
-/// inside the run" — gating it on the same eligibility check that exists
-/// to protect *sibling* boundaries would silently drop it whenever it
-/// happened to carry a label or a trailing divert/choice, exactly the
-/// silent-drop failure mode this compiler's own house rules treat as a bug
-/// until proven otherwise. `following`'s normal terminator search still
-/// applies to whatever comes *after* `dialogue` — only `dialogue` itself
-/// is exempt.
+/// *sibling* item is eligible to extend an already-open run, and `dialogue`
+/// isn't a sibling being offered for absorption, it is structurally *part
+/// of* the compact cue itself. That said, the caller ([`try_claim`]) has
+/// already required `dialogue` itself to satisfy [`is_plain_content_line`]
+/// before ever reaching here — a fused `LABEL` or trailing divert/choice on
+/// `dialogue` declines the WHOLE claim instead (review finding, #2079's PR:
+/// unconditionally absorbing either shape here let a divert transfer
+/// control before this run's own closing statement ran, corrupting the
+/// runtime's fragment/attach-run bookkeeping). So by the time this function
+/// runs, `dialogue` is known plain — this function itself does not
+/// re-check it, it only extends the run with whatever *plain* siblings
+/// follow. `following`'s normal terminator search still applies to
+/// whatever comes after `dialogue` — unchanged from before this finding.
 ///
 /// Returns the same three-part shape as [`capture_block`], except the
 /// range is never `None`: `dialogue` alone guarantees at least one
@@ -1430,11 +1459,26 @@ pub(super) fn try_dispatch(
 ///   parens — `(`/`)` are tokens, not part of the child) qualifies the
 ///   same way; a parenthetical carrying trailing tags is declined too.
 ///
-/// Both new arms feed the exact same `try_claim`/`try_dispatch`
-/// mechanism unchanged — this function is the only seam that needed
-/// widening; the block-capture terminator (`capture_block`) already
-/// treats an upcoming `CUE`/`PARENTHETICAL` as "ends the run" regardless
-/// of whether either is itself claimable, so nothing there changes.
+/// **Issue #2079** (RULED 2026-08-06, "Compact cue desugars to cue +
+/// content line") adds a third arm: `COMPACT_CUE` (`@NAME: text`)
+/// qualifies against its `CUE_NAME` segment alone, exactly like a bare
+/// `CUE`'s own arm — but unlike the two arms above, `COMPACT_CUE` is not a
+/// lone-child node (it always carries a second child, the fused dialogue
+/// `CONTENT_LINE`), so its arm below deliberately does not require
+/// `children.next().is_none()`. The fused dialogue itself is never shown
+/// to the pattern here — `try_claim` desugars it separately (its own
+/// "Compact cue" note) and, unlike the two arms above, does not feed the
+/// *same* mechanism unchanged: `try_claim` requires the fused dialogue to
+/// independently satisfy `is_plain_content_line` before folding it into
+/// the claim's captured run, declining the whole line otherwise (review
+/// finding, #2079's PR) — a check the `CUE`/`PARENTHETICAL` arms have no
+/// analog of, since neither carries any fused content of its own.
+///
+/// The `CUE`/`PARENTHETICAL` arms feed the exact same `try_claim`/
+/// `try_dispatch` mechanism unchanged; the block-capture terminator
+/// (`capture_block`) already treats an upcoming `CUE`/`COMPACT_CUE`/
+/// `PARENTHETICAL` as "ends the run" regardless of whether any of them is
+/// itself claimable, so nothing there changes.
 fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
     match node.kind() {
         N::CONTENT_LINE => {
