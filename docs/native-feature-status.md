@@ -112,7 +112,7 @@ Tracked as **#2006**.
 | Hover shows the handler body | ✅ | ❌ | every matched line points at a real function (§9.1's improvement over the dissolved table) |
 | Capture spans as decoration ranges | ✅ | ❌ | the same spans drive editor decoration |
 | Harvest index (cues, span kinds) | ✅ | ✅ | **LANDED #2114** — project-wide, sibling of the symbol index |
-| Succession rules (Tab/Enter) | ✅ | ⚠️ | slice #2115 — carrier + `.inkb`-codec wire mirror LANDED (`ConventionsProjection::with_succession` re-keys `DialogueDialect`'s surviving `transitions`/`templates` off the projection's own convention kinds); no producer wired — `conventions_projection_query`'s only path (`ConventionsProjection::from_decls`) hard-codes empty `transitions`/`templates`, so every consumer sees empty succession fields today; actually wiring Tab/Enter in CM6 stays held (editor-frontend, NS-T hold) |
+| Succession rules (Tab/Enter) | ✅ | ⚠️ | slice #2115 — validator-only: `ConventionsProjection::with_succession`/`dialect::validate_succession` re-key `DialogueDialect`'s surviving `transitions`/`templates` off the projection's own convention kinds and validate them in-process; per the 2026-08-05 ruling *"Succession is EDITOR-OWNED and externally defined"* (PR #2304) there is no `.inkb`-codec wire mirror — these fields never travel beyond tooling; actually wiring Tab/Enter in CM6 stays held (editor-frontend, NS-T hold) |
 | Serialized conventions projection | ✅ | ❌ | slice #2111 — behind #1840 |
 | Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
 | `@[style]` consumption | ✅ | ❌ | slice #2116 — declaration surface landed (#1719/PR #2069) |

@@ -1293,22 +1293,28 @@ module. What shipped:
   each producing its own error variant
   (`DialectError::TransitionUndeclaredKind` /
   `DialectError::TemplateUndeclaredKind`).
-- **The wire mirror.** `brink_format::ConventionsProjectionDef` carries
+- ~~**The wire mirror.** `brink_format::ConventionsProjectionDef` carries
   `transitions`/`templates` through the `.inkb`-section-codec shape
   verbatim (`CONVENTIONS_PROJECTION_WIRE_VERSION` bumped `1` → `2`); nothing
   emits this section into a real `.inkb`/`StoryData` file yet (unchanged
-  from #2111).
+  from #2111).~~ **REVERSED, 2026-08-05.** The ruling *"Succession is
+  EDITOR-OWNED and externally defined"* (`docs/decision-log.md`) undid this
+  half: `transitions`/`templates` never carry on the wire at all —
+  `ConventionsProjectionDef` only ever mirrors `entries`
+  (`CONVENTIONS_PROJECTION_WIRE_VERSION` bumped `2` → `3`, issue #2277).
+  These fields are editor-overlay data that "never travels beyond tooling"
+  (`brink-ir/src/dialect.rs`'s own doc), and `.inkb` is beyond tooling — it
+  is the compiled artifact a game host loads, and a runtime has no Tab key.
 
-What has **not** shipped: a producer. `ConventionsProjection::from_decls` —
-the only path `ProjectDb::conventions_projection()` (`brink-db`) actually
-calls — hard-codes `transitions: Vec::new()` and `templates:
-Templates::default()`; nothing sources a `DialogueDialect` (or any other
-succession input) into `conventions_projection_query`, so every consumer of
-the real projection sees empty succession fields regardless of what the
-project declares. `with_succession` itself is exercised only from
-`brink-ir`'s own test module today. This is transport with no wiring, not a
-feature — see #2115's tracked remainder for the project-config surface that
-would supply the input.
+What survives: the **validator**, unchanged. `ConventionsProjection::
+with_succession` still re-keys externally (editor-)supplied
+`transitions`/`templates` against the projection's real convention kinds,
+in-process, via the same shared `dialect::validate_succession` described
+above — so a rule naming a nonexistent kind still fails loudly. The editor
+owns the succession data and its storage; the Rust side's only job is that
+validation, never sourcing or transporting the rows itself. `with_succession`
+is exercised only from `brink-ir`'s own test module today — this is a
+validation service with no wiring to a real producer yet, not a feature.
 
 ## 6. Display metrics & measurement (#362 becomes a consumer)
 
