@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Merge-queue candidates (2026-08-06 decision, docs/decision-log.md "Move
+  # toward a GitHub merge queue for main"): the queue tests each candidate on
+  # a temporary gh-readonly-queue/main/… ref, which fires a `merge_group`
+  # event — not `push` or `pull_request`. Without this trigger, queued PRs
+  # wait forever for required checks that never start. A no-op until a merge
+  # queue is actually enabled on the repo.
+  merge_group:
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
 permissions: {}
