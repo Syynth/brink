@@ -494,3 +494,31 @@ spec + decision log rule, book cites; spellings — ruled charter
 spellings in class-B prose, compiling dialect spellings in class-A
 examples; behavior — every claim about behavior is backed by a
 CI-run example or a spec cite, preferably both.
+
+---
+
+## 5. Writing-wave findings (BW) — RULED 2026-07-19 (evening walkthrough)
+
+Findings surfaced by the wave-1 chapter-writing sessions, ruled in the
+2026-07-19 evening walkthrough; recorded here as the outline's
+findings/notes section (one consolidated decision-log entry covers the
+batch):
+
+- **BW-1 — RULED: paths stay.** The book's existing file paths are kept
+  as-is; the §2 migration map's slot mapping does not force on-disk
+  moves.
+- **BW-2 — RULED:** error fences carry the diagnostic code in the fence
+  info-string — ` ```ink,error(Exxx) ` — and the fence walker **asserts
+  the named code** (this sharpens §4's ` ```ink,error ` convention:
+  "must fail with the named diagnostic code" is machine-checked from the
+  info-string, not prose).
+- **BW-3 — RULED:** the Option annotation asymmetry is
+  **intended-until-B1** — a known, deliberate state, not a bug to patch;
+  revisit at B1.
+- **BW-4 — RULED:** `insert` = **compat-with-expiry** — the spelling is
+  carried as a compatibility form with a named expiry, neither removed
+  now nor blessed as permanent.
+- **BW-5 — RULED:** the **fence walker is commissioned now** — the
+  generalized fence-info-string CI walker (§4's proposed infra task /
+  findings F6, adopted D6) proceeds immediately rather than waiting on
+  further chapters.

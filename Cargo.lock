@@ -2386,6 +2386,7 @@ dependencies = [
  "brink-runtime",
  "brink-source-tree",
  "brink-syntax",
+ "brink-syntax-native",
  "js-sys",
  "rmp-serde",
  "rowan",
