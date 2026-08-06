@@ -2926,3 +2926,11 @@
 - **SCOPE:** moderate
 - **WHAT:** A scene heading's grammar-parsed `[slug]` and trailing `#tags` are stripped before `@[convention]` pattern matching — the pattern sees only the title text, so preset patterns work unchanged on slugged headings. The slug is delivered as a reserved capture alongside the pattern's own captures, mirroring §8b.5's reserved address-capture role. (Closes the #2077 design question.)
 - **WHY:** Every worked heading in the prose-dialect spec carries a slug, so the previous decline-on-slug rule meant no preset could claim any of the spec's own examples. Stripping keeps the pattern about the prose and the structure structural — and keeps #2078 orthogonal: slug = addressability, claim = presentation/metadata.
+
+## Compact cue desugars to cue + content line
+- **WHEN:** 2026-08-06
+- **PROJECT:** brink
+- **SYSTEM:** prose-dialect / conventions
+- **SCOPE:** moderate
+- **WHAT:** A compact cue (`@NAME: dialogue`) matches its `@[convention]` pattern against the **name segment only**, exactly as if it were a block cue's line; the fused dialogue lowers as an ordinary content line that the attachment applies to (the first line of the attached run). Literalness applies only to the name segment; dialogue keeps full markup/interpolation rights. (Closes the #2079 design question.)
+- **WHY:** The rejected alternative (flattening name + separator + dialogue into one run for a two-capture pattern) would decline the whole cue whenever the dialogue carried markup or interpolation, making compact cues second-class next to block cues. The desugar makes compact and block cues the same thing spelled two ways. Feasibility was checked before ruling: `candidate` (element.rs) is already a per-node-kind dispatch that selects which sub-node's text is offered to matching (`CUE` → `CUE_NAME`, `SCENE_HEADING` → `SCENE_TITLE`), so a `COMPACT_CUE` → `CUE_NAME` arm is structurally identical to existing arms — no new matching machinery, no `try_claim` contract change. Implementer must pin with a test that the fused dialogue lands **inside** the attached run rather than being treated as a run boundary.
