@@ -116,31 +116,19 @@ fn line_containing(source: &str, offset: u32) -> (u32, &str) {
 mod tests {
     use super::EditorSession;
 
-    /// A pre-existing, already-documented gap this PR discovered while
-    /// writing an end-to-end test, NOT something #2113 introduces:
-    /// `brink_ide::session::IdeSession::analysis_options` hardcodes
-    /// `conventions: None` on every call ("No `IdeSession` setter carries
-    /// `brink.toml`'s `[project] conventions` pointer yet… today no
-    /// `IdeSession`-mounted project can reach the `E169` confinement check
-    /// even through the db-direct query surface"). `EditorSession::
-    /// apply_project_config` only reads `config.conventions` far enough to
-    /// validate/warn (`apply_parsed_config`'s throwaway `lint_options`) —
-    /// it never reaches the live `ProjectDb`'s real `AnalysisOptions`. So
+    /// Fixture for the conventions-reaches-the-editor tests below. Until
+    /// issue #1880 landed, `brink_ide::session::IdeSession::analysis_options`
+    /// hardcoded `conventions: None` on every call, so
     /// `self.session.db().conventions_projection()` — what
-    /// `explain_match_impl` reads — is **always empty** for every project
+    /// `explain_match_impl` reads — was **always empty** for every project
     /// configured the only way an embedder can: `apply_project_config`/
-    /// `discover_project_config`. This blocks the *editor* path for
-    /// anything built on `ConventionsProjection` (the E169 diagnostic
-    /// included, already, before this PR) — the query itself is proven
-    /// correct against real project data at the `brink-db`/`brink-ir`
-    /// layer (`crates/internal/brink-db/tests/
-    /// issue_2111_conventions_projection.rs`, this crate's own
-    /// `hir::explain` unit tests), just not reachable from here yet.
-    ///
-    /// These tests pin the CURRENT, honest wasm-surface behavior — the
-    /// query is wired, callable, and correctly reports "nothing configured"
-    /// — rather than fabricate a false-positive hit no real embedder could
-    /// actually observe today.
+    /// `discover_project_config`. That blocked the *editor* path for
+    /// anything built on `ConventionsProjection` (the `E169` diagnostic
+    /// included) even though the query itself was already proven correct
+    /// against real project data at the `brink-db`/`brink-ir` layer
+    /// (`crates/internal/brink-db/tests/issue_2111_conventions_projection.rs`,
+    /// this crate's own `hir::explain` unit tests) — #1880 is what threads
+    /// the pointer the rest of the way through `IdeSession`.
     const CONVENTIONS: &str = "\
 @[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10)]
 fn cue(name: string) {
@@ -162,11 +150,15 @@ flow main() {
     }
 
     /// The wasm entry point is wired all the way to
-    /// `brink_ir::ExplainMatchCache` and returns well-formed JSON, even
-    /// though — see this module's own doc — the conventions pointer never
-    /// actually reaches the live `ProjectDb` through `EditorSession` today.
+    /// `brink_ir::ExplainMatchCache` AND, since issue #1880, all the way to
+    /// the live `ProjectDb`'s real `ConventionsProjection` through
+    /// `EditorSession` — a real hit reports a real winner, not just
+    /// well-formed JSON reporting "nothing configured". Before #1880's fix
+    /// this asserted `matched: false` with `attempted: []` (see this
+    /// module's own doc): a false `true`/populated `attempted` was the
+    /// signal the gap had closed. It has.
     #[test]
-    fn explain_match_reaches_the_cache_and_reports_unconfigured_honestly() {
+    fn explain_match_reaches_the_live_conventions_projection_through_editor_session() {
         let mut s = session_with_conventions();
         let offset =
             u32::try_from(CONVENTIONS.find("VENDOR").expect("VENDOR line")).expect("offset");
@@ -175,12 +167,37 @@ flow main() {
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(
             v["matched"],
-            serde_json::json!(false),
-            "no conventions module reaches the live db through EditorSession \
-             yet (see this test's own doc) — a false `true` here would mean \
-             either that gap closed (great — update this test) or a bug"
+            serde_json::json!(true),
+            "the conventions pointer must reach the live db through \
+             EditorSession, so `cue`'s pattern really matches the VENDOR \
+             line — got {v}"
         );
-        assert_eq!(v["attempted"], serde_json::json!([]));
+        assert_eq!(
+            v["winner"]["handler"]["name"],
+            serde_json::json!("cue"),
+            "the winning handler must be `cue`, the only one declared — \
+             got {v}"
+        );
+    }
+
+    /// The miss sibling of the hit above, at the same live-db layer: a line
+    /// that matches no declared handler must report a real (non-empty)
+    /// `attempted` list, not the pre-#1880 "unconfigured" empty list.
+    #[test]
+    fn explain_match_reports_a_real_miss_through_editor_session() {
+        let mut s = session_with_conventions();
+        let offset =
+            u32::try_from(CONVENTIONS.find("flow main").expect("flow line")).expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(v["matched"], serde_json::json!(false), "got {v}");
+        let attempted = v["attempted"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !attempted.is_empty(),
+            "a real miss must report the handlers it tried against, now \
+             that the conventions module is reachable — got {v}"
+        );
     }
 
     /// The core composition logic itself — a real hit reporting its winner,
