@@ -116,7 +116,7 @@ fn heading(kind: string, title: string) {
   "story.brink": `use story::market::barter;
 
 pub flow main() {
-  INT. MARKET SQUARE - NIGHT
+  INT. MARKET SQUARE - NIGHT [market] #act1
   The square is empty.
 
   VENDOR

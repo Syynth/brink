@@ -85,7 +85,23 @@ fn parenthetical(delivery: string): Parenthetical {
 }
 
 flow main() {
-  INT. MARKET SQUARE - NIGHT
+  // Issue #2077 (`docs/decision-log.md` 2026-08-06, "Slug-bearing headings:
+  // strip structure, then match"): every worked-page heading in
+  // `docs/prose-dialect-spec.md` carries an explicit `[slug]`, which used
+  // to decline outright here. Spelling one on this fixture's own heading
+  // proves the preset's `heading` handler claims it end to end — the
+  // rendered line below is UNCHANGED (the pattern only ever saw the title
+  // text; the slug was never part of it), which is the regression this
+  // pins: a slug present or absent must not move what gets printed. The
+  // trailing `#act1` exercises the same PR's other half — a tag-bearing
+  // heading also claims (previously an outright decline too) — through
+  // this fixture's full compiler pipeline; `expected.txt` stays UNCHANGED
+  // here too, since `drive_native_transcript` only ever appends line text,
+  // never `OutputLine.tags` (the tag's actual delivery is pinned at the
+  // runtime-output level by `crates/brink-runtime/tests/element.rs`'s
+  // `a_claimed_headings_own_tags_reach_the_output_line`, not this
+  // text-only transcript).
+  INT. MARKET SQUARE - NIGHT [market] #act1
   The square is empty.
 
   @VENDOR

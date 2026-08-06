@@ -474,3 +474,50 @@ flow main() {
         );
     }
 }
+
+/// Issue #2077, the tag half's end-to-end proof: a claimed scene heading's
+/// own trailing `#tag`s reach `OutputLine.tags` on the CLAIMED line's
+/// output — not just the HIR `Content.tags` field a unit test can see, but
+/// the real runtime output a host actually reads.
+///
+/// A `heading` handler here is Call-mode (no `attach`), same shape as
+/// `tests/tier1-native/conventions-screenplay-preset/story.brink`'s own —
+/// that fixture's own transcript is text-only (`brink_test_harness::
+/// corpus::drive_native_transcript` appends only `line.text`, never
+/// `line.tags`) and so, before this test, the tag half of issue #2077 had
+/// zero coverage past the claimed line's own HIR statement.
+#[test]
+fn a_claimed_headings_own_tags_reach_the_output_line() {
+    let src = r#"
+@[convention(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$", order = 10)]
+fn heading(kind: string, title: string) {
+  return "-- {kind}. {title} --";
+}
+
+flow main() {
+  INT. MARKET SQUARE - NIGHT [market] #act1
+  The square is empty.
+  -> END
+}
+"#;
+    let mut story = story_from_native_source(src);
+    let steps = story.continue_maximally().expect("drive to END");
+
+    let lines: Vec<_> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+
+    let heading_line = lines
+        .iter()
+        .find(|l| l.text.contains("MARKET SQUARE"))
+        .expect("expected the claimed heading's own line");
+    assert_eq!(
+        heading_line.tags,
+        vec!["act1".to_string()],
+        "the heading's own trailing tag must reach OutputLine.tags: {heading_line:?}"
+    );
+}
