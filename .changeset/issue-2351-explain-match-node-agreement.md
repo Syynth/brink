@@ -39,3 +39,14 @@ because the live walk missed those lines outright before this fix.
 `"bang_dispatch"` is still not reachable (a `!name`-dispatched handler
 is registered on a path this walk never consults at all) — tracked
 separately.
+
+Review follow-up: the claim-candidate node lookup now probes from the
+line's own first non-whitespace byte, not the caret's raw offset — three
+of the five claim-candidate shapes fuse their own trailing content into a
+child `CONTENT_LINE` (an indented cue's surrounding whitespace/newline
+sit outside the `CUE` node, a compact cue's literal dialogue and a
+`!name` bang-dispatch's remainder are both fused `CONTENT_LINE` children),
+so the previous caret-offset probe could return the wrong node — or a
+false claim for a bang-dispatch line the compiler never makes — purely
+because of which column the cursor happened to sit on. The answer no
+longer depends on caret column within the line.
