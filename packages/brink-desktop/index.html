@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Brink Studio</title>
+    <style>
+      html,
+      body,
+      #app {
+        margin: 0;
+        height: 100%;
+        background: #1a1c22;
+        color: #c8ccd4;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      #landing {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+      }
+      #landing button {
+        font-size: 15px;
+        padding: 10px 22px;
+        border-radius: 6px;
+        border: 1px solid #3a3f4b;
+        background: #262a33;
+        color: #c8ccd4;
+        cursor: pointer;
+      }
+      #landing button:hover {
+        background: #2e3340;
+      }
+      #landing .hint {
+        font-size: 13px;
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="landing">
+        <button id="open-project">Open Project Folder…</button>
+        <div class="hint">A folder containing .brink / .ink files (and optionally a brink.toml)</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

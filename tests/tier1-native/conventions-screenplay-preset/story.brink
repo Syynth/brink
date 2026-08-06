@@ -30,6 +30,24 @@
 // longer shows those two lines at all; the dialogue that follows now
 // carries their data as `Element.data` instead (asserted in
 // `crates/brink-runtime/tests/element.rs`, not this text-only transcript).
+//
+// ⚠ UPDATED (issue #2079, RULED 2026-08-06 "Compact cue desugars to cue +
+// content line"): `@KID: I have {count} coins.` proves the compact form
+// (`@NAME: dialogue`) reaches `cue` too, not just the block form (`@KID`
+// on its own line, above). `count` is a `var` specifically so the fused
+// dialogue's interpolation has something real to read — the ruling's own
+// rejected alternative (matching a flattened name+dialogue run) would have
+// declined this exact line, since a two-capture pattern over one run
+// requires the WHOLE run to be literal, and `{count}` is not. `cue`'s
+// pattern (`^(?<name>[A-Z][A-Z '-]*)$`) only ever sees `KID` — the name
+// segment — so it claims and attaches `speaker: KID` exactly as it does
+// for the block form; the dialogue keeps full interpolation rights and
+// renders as "I have 3 coins." (asserted in `crates/brink-runtime/tests/
+// element.rs`'s `compact_cue_fused_dialogue_attaches_and_keeps_
+// interpolation`, which also pins the attach data — invisible to this
+// text-only transcript, same as `VENDOR`/`KID`'s block-form turns above).
+
+var count = 3
 
 extern scene_entered(title, slug)
 
@@ -75,6 +93,8 @@ flow main() {
 
   @KID
   Says who?
+
+  @KID: I have {count} coins.
 
   CUT TO:
   -> END
