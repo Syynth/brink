@@ -98,9 +98,22 @@ async function openProject(root: string): Promise<void> {
     // to dirty. Backups never clear dirty; ⌘S does.
     onFilesChanged: (changes: FileChange[]) => {
       void provider.ringBackups(changes).catch((e: unknown) => {
-        // Ring failures must never block editing; Output-channel routing
-        // is queued in the epic. A console error beats a silent drop.
-        console.error("[brink-desktop] backup ring append failed", e);
+        // Ring failures must never block editing — but after two silent
+        // -failure hunts (the unregistered command; the unwired hook),
+        // they must be VISIBLE: route through the studio's notification
+        // surface once the handle exists. The ref is assigned right after
+        // mountStudio resolves; a failure in the first ~500 ms window
+        // falls back to the console.
+        const api = current?.api;
+        if (api) {
+          api.notify({
+            severity: "error",
+            source: "backup",
+            message: `Backup ring append failed: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        } else {
+          console.error("[brink-desktop] backup ring append failed", e);
+        }
       });
     },
   });
