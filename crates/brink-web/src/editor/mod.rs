@@ -115,10 +115,31 @@ impl Default for EditorSession {
 #[wasm_bindgen]
 impl EditorSession {
     /// Create a new empty editor session.
+    ///
+    /// Mounts the shared stdlib (issue #2231, the `brink-web` sibling of
+    /// #2198/#2225) into the session before anything else runs: every
+    /// `(root-relative key, source text)` pair from
+    /// `brink_environment::stdlib_sources()` is fed through
+    /// `IdeSession::update_source` — the same source of truth
+    /// `brink_environment::Project::load`'s own `mount_stdlib` and `brink
+    /// ide`/`brink-lsp`'s (#2225) loaders use — so a project opened in the
+    /// wasm/studio editor sees `std::` exactly as a real compile does.
+    /// `update_source` (unlike `update_and_analyze`) doesn't trigger
+    /// analysis, matching `Project::ide_session()`'s ordering precedent
+    /// (`crates/brink-cli/src/ide/project.rs`): the stdlib is seeded first,
+    /// with no project files loaded yet, so any later `update_file`/
+    /// `update_source` call at the same key (a real project file shadowing
+    /// `std/`) naturally wins by simply overwriting it — before any
+    /// dialect/type-policy setter has a chance to run and reanalyze against
+    /// a stdlib-less file set.
     #[wasm_bindgen(constructor)]
     pub fn new() -> EditorSession {
+        let mut session = IdeSession::new();
+        for (key, text) in brink_environment::stdlib_sources() {
+            session.update_source(key, (*text).to_owned());
+        }
         EditorSession {
-            session: IdeSession::new(),
+            session,
             active_path: "main.ink".to_owned(),
             view: None,
             docs: BTreeMap::new(),
@@ -1112,6 +1133,46 @@ mod tests {
     // makes every byte offset past it 1 larger than its UTF-16 offset.
 
     use super::EditorSession;
+
+    // ── Stdlib mounting (issue #2231) ───────────────────────────────
+    // `EditorSession::new()` is the wasm/studio editor's own `IdeSession`
+    // producer — a third road alongside `brink-cli`/`brink-lsp` (#2198,
+    // fixed for those two by #2225). These pin that a freshly constructed
+    // session already sees every `brink_environment::stdlib_sources()` key,
+    // and that a real project file at the same key still wins.
+
+    #[test]
+    fn new_session_mounts_every_stdlib_source() {
+        let s = EditorSession::new();
+        for (key, text) in brink_environment::stdlib_sources() {
+            let id = s
+                .session
+                .file_id(key)
+                .expect("mounted stdlib key must be a registered file");
+            assert_eq!(
+                s.session.source(id),
+                Some(*text),
+                "mounted source for `{key}` must match brink_environment::stdlib_sources()"
+            );
+        }
+    }
+
+    #[test]
+    fn project_file_at_stdlib_key_wins_over_mounted_copy() {
+        // A project file loaded after construction at the same key as a
+        // mounted stdlib module must overwrite it — mirroring
+        // `mount_stdlib`'s own "project data always wins" precedence
+        // (`crates/brink-cli/src/ide/project.rs`).
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        s.update_file(key, "-> DONE\n");
+        let id = s.session.file_id(key).expect("key still registered");
+        assert_eq!(
+            s.session.source(id),
+            Some("-> DONE\n"),
+            "a real project file at a stdlib key must win over the mounted copy"
+        );
+    }
 
     #[test]
     fn hir_spans_doc_projects_spans_and_line_stacks() {
