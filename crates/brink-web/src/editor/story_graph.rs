@@ -16,6 +16,10 @@ impl EditorSession {
     /// ordered (nodes by id, edges by from/to/kind, occurrences by
     /// file/span). Returns JSON `StoryGraph`, or `"null"` when no analysis
     /// is available.
+    ///
+    /// Excludes mounted stdlib files (issue #2231 review finding): a mount
+    /// is not a file the project scan found or the user opened, so its
+    /// knots/stitches must not appear in the story graph.
     pub fn story_graph(&self) -> String {
         let Some(analysis) = self.session.analysis() else {
             return "null".to_owned();
@@ -23,6 +27,7 @@ impl EditorSession {
         let db = self.session.db();
         let files: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = db
             .file_ids()
+            .filter(|id| !self.mounted_std_ids.contains(id))
             .filter_map(|id| db.hir(id).map(|hir| (id, hir)))
             .collect();
         let graph = brink_ide::story_graph::story_graph(analysis, &files);

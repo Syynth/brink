@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_ide::session::IdeSession;
 use wasm_bindgen::prelude::*;
@@ -105,6 +105,19 @@ pub struct EditorSession {
     /// `lint_overrides`. `None` means unset — `file_lint_policy.deny_warnings`
     /// (or `false`, absent a file) applies.
     deny_warnings_override: Option<bool>,
+    /// Every `FileId` seeded by the constructor's stdlib mount, not a real
+    /// project file (issue #2231 review finding, mirroring `brink-lsp`'s
+    /// `NativeProjects::mounted_std_ids`). `list_files`, `project_outline`,
+    /// and `story_graph` all exclude these ids — a mount is not a file the
+    /// project scan found or the user opened, so it must not appear in the
+    /// Binder, project-wide search, or the story graph. It still fully
+    /// participates in analysis/resolution (nothing here touches
+    /// `db.file_ids()`'s use by the compiler/analyzer). `update_file`
+    /// removes an id from this set the moment a real file is written at
+    /// the same key, mirroring `NativeProjects::set_file`'s
+    /// already-present-wins precedent — so the mount stays invisible only
+    /// until a project file shadows it.
+    mounted_std_ids: BTreeSet<brink_ir::FileId>,
 }
 
 impl Default for EditorSession {
@@ -115,10 +128,35 @@ impl Default for EditorSession {
 #[wasm_bindgen]
 impl EditorSession {
     /// Create a new empty editor session.
+    ///
+    /// Mounts the shared stdlib (issue #2231, the `brink-web` sibling of
+    /// #2198/#2225) into the session before anything else runs: every
+    /// `(root-relative key, source text)` pair from
+    /// `brink_environment::stdlib_sources()` is fed through
+    /// `IdeSession::update_source` — the same source of truth
+    /// `brink_environment::Project::load`'s own `mount_stdlib` and `brink
+    /// ide`/`brink-lsp`'s (#2225) loaders use — so a project opened in the
+    /// wasm/studio editor sees `std::` exactly as a real compile does.
+    /// `update_source` (unlike `update_and_analyze`) doesn't trigger
+    /// analysis, matching `Project::ide_session()`'s ordering precedent
+    /// (`crates/brink-cli/src/ide/project.rs`): the stdlib is seeded first,
+    /// with no project files loaded yet, so any later `update_file`/
+    /// `update_source` call at the same key (a real project file shadowing
+    /// `std/`) naturally wins by simply overwriting it — before any
+    /// dialect/type-policy setter has a chance to run and reanalyze against
+    /// a stdlib-less file set.
     #[wasm_bindgen(constructor)]
     pub fn new() -> EditorSession {
+        let mut session = IdeSession::new();
+        let mut mounted_std_ids = BTreeSet::new();
+        for (key, text) in brink_environment::stdlib_sources() {
+            session.update_source(key, (*text).to_owned());
+            if let Some(id) = session.file_id(key) {
+                mounted_std_ids.insert(id);
+            }
+        }
         EditorSession {
-            session: IdeSession::new(),
+            session,
             active_path: "main.ink".to_owned(),
             view: None,
             docs: BTreeMap::new(),
@@ -130,6 +168,7 @@ impl EditorSession {
             file_lint_policy: brink_analyzer::LintPolicy::default(),
             lint_overrides: BTreeMap::new(),
             deny_warnings_override: None,
+            mounted_std_ids,
         }
     }
 
@@ -154,11 +193,29 @@ impl EditorSession {
             self.session
                 .update_and_analyze(&self.active_path, source.to_owned());
         }
+        // Same already-present-wins precedent as `update_file` (issue
+        // #2231 review finding): a real edit at a mounted stdlib key's
+        // path un-mounts it.
+        if let Some(id) = self.session.file_id(&self.active_path) {
+            self.mounted_std_ids.remove(&id);
+        }
     }
 
     /// Add or update a file by path. Re-analyzes the project.
+    ///
+    /// A real file arriving at a path that used to be (or still is) a
+    /// mounted stdlib key wins over the mount, mirroring `mount_stdlib`'s
+    /// own already-present precedence and `brink-lsp`'s
+    /// `NativeProjects::set_file` (issue #2231 review finding):
+    /// `update_and_analyze` reuses the same `FileId` for an existing path,
+    /// so without this the id would stay marked as a mount forever —
+    /// excluded from `list_files`/`project_outline`/`story_graph` even
+    /// after its real content replaced the stdlib copy.
     pub fn update_file(&mut self, path: &str, source: &str) {
         self.session.update_and_analyze(path, source.to_owned());
+        if let Some(id) = self.session.file_id(path) {
+            self.mounted_std_ids.remove(&id);
+        }
     }
 
     /// Remove a file from the project.
@@ -1112,6 +1169,120 @@ mod tests {
     // makes every byte offset past it 1 larger than its UTF-16 offset.
 
     use super::EditorSession;
+
+    // ── Stdlib mounting (issue #2231) ───────────────────────────────
+    // `EditorSession::new()` is the wasm/studio editor's own `IdeSession`
+    // producer — a third road alongside `brink-cli`/`brink-lsp` (#2198,
+    // fixed for those two by #2225). These pin that a freshly constructed
+    // session already sees every `brink_environment::stdlib_sources()` key,
+    // and that a real project file at the same key still wins.
+
+    #[test]
+    fn new_session_mounts_every_stdlib_source() {
+        let s = EditorSession::new();
+        for (key, text) in brink_environment::stdlib_sources() {
+            let id = s
+                .session
+                .file_id(key)
+                .expect("mounted stdlib key must be a registered file");
+            assert_eq!(
+                s.session.source(id),
+                Some(*text),
+                "mounted source for `{key}` must match brink_environment::stdlib_sources()"
+            );
+        }
+    }
+
+    #[test]
+    fn project_file_at_stdlib_key_wins_over_mounted_copy() {
+        // A project file loaded after construction at the same key as a
+        // mounted stdlib module must overwrite it. Unlike `brink-cli`'s
+        // `mount_stdlib`, this isn't an already-present *guard* — `new()`
+        // seeds the stdlib first, with no project files loaded, so a later
+        // `update_file` at the same key wins purely by construction-time
+        // ordering (last write wins), exactly as `EditorSession::new()`'s
+        // doc comment says (issue #2231 review finding).
+        let (key, mounted_text) = brink_environment::stdlib_sources()[0];
+        let mut s = EditorSession::new();
+
+        // Pre-state: the mounted stdlib copy, at some FileId.
+        let mounted_id = s
+            .session
+            .file_id(key)
+            .expect("mounted stdlib key must be a registered file");
+        assert_eq!(
+            s.session.source(mounted_id),
+            Some(mounted_text),
+            "pre-state must be the mounted stdlib copy, not the project text"
+        );
+
+        // A real project file at the same key overwrites the same FileId
+        // (`ProjectDb::set_file`/`update_file` reuse the id for an existing
+        // path) rather than allocating a new one.
+        s.update_file(key, "-> DONE\n");
+        let id = s.session.file_id(key).expect("key still registered");
+        assert_eq!(id, mounted_id, "overwrite must reuse the same FileId");
+        assert_eq!(
+            s.session.source(id),
+            Some("-> DONE\n"),
+            "a real project file at a stdlib key must win over the mounted copy"
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_files_are_excluded_from_client_facing_listings() {
+        // Mounted stdlib files must not appear in list_files/project_outline/
+        // story_graph — they are not a file the project scan found or the
+        // user opened (issue #2231 review finding, mirroring `brink-lsp`'s
+        // `mounted_std_ids` exclusion from `all_file_metadata`).
+        let s = EditorSession::new();
+        let files: serde_json::Value = serde_json::from_str(&s.list_files()).unwrap_or_default();
+        let paths: Vec<&str> = files
+            .as_array()
+            .expect("list_files must return a JSON array")
+            .iter()
+            .map(|f| f["path"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p.starts_with("std/")),
+            "a fresh session's list_files() must contain no std/ key, got {paths:?}"
+        );
+
+        let outline: serde_json::Value =
+            serde_json::from_str(&s.project_outline()).unwrap_or_default();
+        let outline_paths: Vec<&str> = outline
+            .as_array()
+            .expect("project_outline must return a JSON array")
+            .iter()
+            .map(|f| f["path"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            !outline_paths.iter().any(|p| p.starts_with("std/")),
+            "a fresh session's project_outline() must contain no std/ key, got {outline_paths:?}"
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_key_reappears_in_listings_once_shadowed() {
+        // Once a real project file is written at a mounted stdlib key, it
+        // must reappear in list_files/project_outline (issue #2231 review
+        // finding) — the mount is no longer "not a file the user opened".
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        s.update_file(key, "-> DONE\n");
+
+        let files: serde_json::Value = serde_json::from_str(&s.list_files()).unwrap_or_default();
+        let paths: Vec<&str> = files
+            .as_array()
+            .expect("list_files must return a JSON array")
+            .iter()
+            .map(|f| f["path"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            paths.contains(&key),
+            "a real project file at a mounted key must reappear in list_files(), got {paths:?}"
+        );
+    }
 
     #[test]
     fn hir_spans_doc_projects_spans_and_line_stacks() {

@@ -39,11 +39,19 @@ impl EditorSession {
     }
 
     /// Get project outline — all files with their symbols. Returns JSON `[{path, symbols}]`.
+    ///
+    /// Excludes mounted stdlib files (issue #2231 review finding): a mount
+    /// is not a file the project scan found or the user opened, so it must
+    /// not appear in the Binder (`packages/brink-studio/src/mount.tsx`
+    /// feeds the Binder from this on every compile).
     pub fn project_outline(&self) -> String {
         let db = self.session.db();
         let mut outline: Vec<FileOutlineJs> = Vec::new();
 
         for id in db.file_ids() {
+            if self.mounted_std_ids.contains(&id) {
+                continue;
+            }
             let Some(path) = db.file_path(id) else {
                 continue;
             };
