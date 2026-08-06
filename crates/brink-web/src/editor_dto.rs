@@ -667,6 +667,132 @@ pub(crate) fn convert_document_symbol(
     }
 }
 
+// ── Explain-match (issue #2113, NS-T seam 3/6) ──────────────────────
+//
+// Unlike every other DTO in this file, ranges here are **raw byte
+// offsets**, not UTF-16 — see `editor::explain_match`'s own module doc for
+// why: a matched handler's declaration range lives in the project's
+// configured conventions module, a file this session may never have
+// opened as a document, so there is no single file's text to convert
+// against. The classified line's own capture ranges *could* be converted
+// against the active document the ordinary way, but this DTO keeps every
+// range in the same unit for one consistent contract rather than mixing
+// UTF-16 (captures) with raw bytes (handler locations) in one payload.
+
+/// One handler location — a name plus its declaration-site byte range in
+/// the project's conventions module.
+#[derive(Serialize)]
+pub(crate) struct ExplainHandlerJs {
+    pub(crate) name: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+/// One named capture, as a raw byte range into the classified line's own
+/// file.
+#[derive(Serialize)]
+pub(crate) struct ExplainCaptureJs {
+    pub(crate) name: String,
+    pub(crate) text: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+/// One handler's classification-time match — the winner or one of the
+/// shadowed runners-up; see `ExplainMatchJs`'s own doc.
+#[derive(Serialize)]
+pub(crate) struct ExplainClassifiedMatchJs {
+    pub(crate) handler: ExplainHandlerJs,
+    pub(crate) order: i64,
+    pub(crate) mode: &'static str,
+    pub(crate) captures: Vec<ExplainCaptureJs>,
+}
+
+/// One entry the walk attempted but that did not match — the miss-case
+/// sibling of `ExplainClassifiedMatchJs`, carrying the pattern source
+/// instead of captures (there is nothing to capture from a non-match).
+#[derive(Serialize)]
+pub(crate) struct ExplainAttemptedJs {
+    pub(crate) handler: ExplainHandlerJs,
+    pub(crate) order: i64,
+    pub(crate) pattern: String,
+}
+
+/// The explain-match query's full per-line answer (issue #2113): is this
+/// line matched, by what, what did it bind, and — on a miss — what was
+/// attempted, or — on a hit — what else matched but was shadowed.
+/// `winner`/`shadowed` are populated only when `matched` is `true`;
+/// `attempted` only when it is `false` — the two are mutually exclusive by
+/// construction (`brink_ir::LineExplanation`'s own shape), not by
+/// convention here.
+#[derive(Serialize)]
+pub(crate) struct ExplainMatchJs {
+    pub(crate) matched: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) winner: Option<ExplainClassifiedMatchJs>,
+    pub(crate) shadowed: Vec<ExplainClassifiedMatchJs>,
+    pub(crate) attempted: Vec<ExplainAttemptedJs>,
+}
+
+fn explain_handler_to_js(name: &brink_ir::Name) -> ExplainHandlerJs {
+    ExplainHandlerJs {
+        name: name.text.clone(),
+        start: name.range.start().into(),
+        end: name.range.end().into(),
+    }
+}
+
+fn explain_classified_match_to_js(m: brink_ir::ClassifiedMatch) -> ExplainClassifiedMatchJs {
+    ExplainClassifiedMatchJs {
+        handler: explain_handler_to_js(&m.handler),
+        order: m.order,
+        mode: match m.mode {
+            brink_ir::ConventionMode::Attach => "attach",
+            brink_ir::ConventionMode::Wrap => "wrap",
+        },
+        captures: m
+            .captures
+            .into_iter()
+            .map(|c| ExplainCaptureJs {
+                name: c.name,
+                text: c.text,
+                start: c.range.start().into(),
+                end: c.range.end().into(),
+            })
+            .collect(),
+    }
+}
+
+fn explain_attempted_to_js(entry: brink_ir::ConventionProjectionEntry) -> ExplainAttemptedJs {
+    ExplainAttemptedJs {
+        handler: explain_handler_to_js(&entry.name),
+        order: entry.order,
+        pattern: entry.pattern,
+    }
+}
+
+/// Convert [`brink_ir::LineExplanation`] into its wasm-facing JSON shape —
+/// see `ExplainMatchJs`'s own doc for the contract.
+pub(crate) fn explain_match_to_js(explanation: brink_ir::LineExplanation) -> ExplainMatchJs {
+    match explanation {
+        brink_ir::LineExplanation::Matched { winner, shadowed } => ExplainMatchJs {
+            matched: true,
+            winner: Some(explain_classified_match_to_js(winner)),
+            shadowed: shadowed
+                .into_iter()
+                .map(explain_classified_match_to_js)
+                .collect(),
+            attempted: Vec::new(),
+        },
+        brink_ir::LineExplanation::Unmatched { attempted } => ExplainMatchJs {
+            matched: false,
+            winner: None,
+            shadowed: Vec::new(),
+            attempted: attempted.into_iter().map(explain_attempted_to_js).collect(),
+        },
+    }
+}
+
 // ── Legacy stateless functions (token legend) ───────────────────────
 
 /// Get token type names for the legend.
