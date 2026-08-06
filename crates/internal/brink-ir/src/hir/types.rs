@@ -789,14 +789,22 @@ pub struct ConventionsProjection {
     /// [`Self::from_decls`] never sets these, since succession rows are not
     /// part of a `@[convention]` declaration (`@[convention]` "deliberately
     /// has no succession property", `docs/decision-log.md` 2026-08-03
-    /// backport on #2115). **Tooling-grade: the compiler transports these
-    /// rows, it never interprets them** (`docs/prose-dialect-spec.md` §5,
-    /// "ignored by the compiler").
+    /// backport on #2115).
+    ///
+    /// **In-process only — never rides [`Self::to_wire`].** The 2026-08-05
+    /// ruling *"Succession is EDITOR-OWNED and externally defined"* (issue
+    /// #2277) undid issue #2115's *transport* half: these rows are
+    /// editor-overlay data that "never travels beyond tooling"
+    /// (`crate::dialect`'s own doc), and `.inkb` is beyond tooling. What
+    /// survives is the *validator* half: [`Self::with_succession`] still
+    /// re-keys externally (editor-)supplied rows against this projection's
+    /// real convention kinds, in-process, so a rule naming a nonexistent
+    /// kind still fails loudly.
     pub transitions: Vec<crate::dialect::TransitionRow>,
     /// Editor-overlay template/picker metadata (issue #2115) —
     /// `DialogueDialect`'s surviving `templates` field. See
     /// [`Self::transitions`]'s own doc for provenance and the
-    /// transports-not-interprets contract.
+    /// in-process-only, never-on-the-wire contract.
     pub templates: crate::dialect::Templates,
 }
 
@@ -867,10 +875,13 @@ impl ConventionsProjection {
     /// produced between editor and compiler when `DialogueDialect` was the
     /// only ground truth.
     ///
-    /// The compiler **transports** these rows; it never interprets them
+    /// The compiler never interprets these rows
     /// (`docs/prose-dialect-spec.md` §5, "ignored by the compiler") — this
     /// validation only proves each row points at a real convention kind, it
-    /// never gives the rows compiler-preferred meaning.
+    /// never gives the rows compiler-preferred meaning. Nor (as of the
+    /// 2026-08-05 ruling, issue #2277) does the compiler transport them
+    /// anywhere: they stay in-process, attached here for validation only —
+    /// see [`ConventionsProjection::transitions`]'s own doc.
     ///
     /// # Errors
     ///
@@ -908,9 +919,14 @@ impl ConventionsProjection {
     /// `brink_format::conventions::ConventionEntryDef`'s own doc for that
     /// omission's reasoning. See `brink_format::conventions`'s own module
     /// doc for why this exists but is not yet wired into `StoryData`.
-    /// `transitions`/`templates` (issue #2115) ride the same wire shape,
-    /// carried verbatim — see [`Self::with_succession`]'s own doc for why
-    /// the compiler never reshapes them.
+    ///
+    /// `transitions`/`templates` do **not** ride this wire shape (2026-08-05
+    /// ruling *"Succession is EDITOR-OWNED and externally defined"*, issue
+    /// #2277, reversing issue #2115's transport half): they are editor-overlay
+    /// data that "never travels beyond tooling" (`crate::dialect`'s own doc),
+    /// and `.inkb` is beyond tooling — it is what a game host loads, and a
+    /// runtime has no Tab key. [`Self::with_succession`]'s validator half
+    /// survives intact; only the wire transport was undone.
     #[must_use]
     pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
         brink_format::ConventionsProjectionDef {
@@ -919,12 +935,6 @@ impl ConventionsProjection {
                 .iter()
                 .map(ConventionProjectionEntry::to_wire)
                 .collect(),
-            transitions: self
-                .transitions
-                .iter()
-                .map(crate::dialect::TransitionRow::to_wire)
-                .collect(),
-            templates: self.templates.to_wire(),
         }
     }
 }
@@ -3270,12 +3280,13 @@ mod conventions_projection_tests {
         );
     }
 
-    /// `to_wire` carries `transitions`/`templates` losslessly through the
-    /// `.inkb`-codec round trip, mirroring
-    /// `to_wire_round_trips_through_the_inkb_codec`'s own coverage of
-    /// `entries`.
+    /// `to_wire` does **not** carry `transitions`/`templates` (2026-08-05
+    /// ruling, issue #2277 undoing #2115's transport half): `with_succession`
+    /// still attaches and validates them in-process, but the wire mirror
+    /// only ever carries `entries` — proving the wire shape stays unaffected
+    /// by whatever succession rows this projection happens to hold.
     #[test]
-    fn to_wire_round_trips_succession_rows_through_the_inkb_codec() {
+    fn to_wire_does_not_carry_succession_rows() {
         let decls = vec![
             decl("character", 1, false, None),
             decl("dialogue", 2, false, None),
@@ -3293,16 +3304,11 @@ mod conventions_projection_tests {
                 },
             )
             .expect("keyed to a declared convention kind");
+        assert_eq!(projection.transitions.len(), 1, "attached in-process");
+        assert_eq!(projection.templates.entries.len(), 1, "attached in-process");
+
         let wire = projection.to_wire();
-        assert_eq!(wire.transitions.len(), 1);
-        assert_eq!(wire.transitions[0].on, "character");
-        assert_eq!(
-            wire.transitions[0].action,
-            brink_format::TransitionActionDef::Convert {
-                kind: "dialogue".to_string()
-            }
-        );
-        assert_eq!(wire.templates.entries.len(), 1);
+        assert_eq!(wire.entries.len(), 2);
 
         let mut buf = Vec::new();
         brink_format::write_conventions_projection(&wire, &mut buf);
