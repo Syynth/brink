@@ -341,13 +341,14 @@ export async function mountStudio(
   await initWasm(options.wasmLocation);
 
   // Initialize the project BEFORE rendering so the wasm session has files
-  // loaded.
+  // loaded. The store is constructed here (rather than after, as before
+  // #2324) purely so its callbacks below have somewhere real to write to —
+  // `createStudioStore()` takes no arguments and nothing else here depends
+  // on ordering; `initialize()` (which binds `project`/`documents` into it)
+  // still runs later, at its original call site.
   const provider = options.provider ?? new InMemoryFileProvider(options.files);
   const { entryFile } = options;
-  // Holder so the conflict bridge can reach the store: the ProjectSession
-  // callback only fires after `initialize`, by which point `storeRef.current`
-  // is the live store.
-  const storeRef: { current: StudioStore | null } = { current: null };
+  const store = createStudioStore();
   const project = new ProjectSession({
     provider,
     entryFile,
@@ -358,7 +359,16 @@ export async function mountStudio(
     // an on-disk change collides with an unsaved buffer. Mirror it into the
     // store so the merge view (banner + 2-way MergeView) can render + resolve.
     onFileConflict: (conflict: FileConflict) => {
-      storeRef.current?.getState().setConflict(conflict);
+      store.getState().setConflict(conflict);
+    },
+    // `brink.toml` project-config warnings (#2324): unrecognized `[project]`/
+    // `[lints]` keys from `discoverProjectConfig` — surfaced through Output
+    // (Mod-5) rather than dropped, since a silently-ignored typo in the one
+    // file this whole feature exists to make effective would defeat the point.
+    onProjectConfigWarnings: (warnings) => {
+      for (const w of warnings) {
+        store.getState().appendOutput("compile", `brink.toml: ${w}`);
+      }
     },
   });
   await project.initialize();
@@ -368,9 +378,6 @@ export async function mountStudio(
   if (options.hostManifest !== undefined) {
     project.getSession().setHostManifest(options.hostManifest);
   }
-
-  const store = createStudioStore();
-  storeRef.current = store;
 
   // Mirror the project's dirty-file count into the store — it feeds the
   // StudioPublicState.dirtyFiles summary (#154). Cheap scalar only; file
