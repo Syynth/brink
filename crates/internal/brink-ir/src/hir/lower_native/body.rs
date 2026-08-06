@@ -1262,7 +1262,11 @@ pub(super) fn lower_interpolation(
     }
 }
 
-fn lower_tag(file_id: FileId, t: &ast::Tag, diags: &mut Vec<Diagnostic>) -> Tag {
+// `pub(super)`, not private: issue #2077's `try_claim` (`element.rs`, a
+// sibling module) reuses this so a claimed heading's own trailing tags
+// ride the exact same channel any other tagged line does, rather than a
+// second delivery mechanism invented for headings.
+pub(super) fn lower_tag(file_id: FileId, t: &ast::Tag, diags: &mut Vec<Diagnostic>) -> Tag {
     // `ast::Tag::text()` owns the tag's own materialization: skipping only
     // the leading `HASH` (not every `HASH` in the node — an interior one
     // survives via `\#`, #1738), trimming surrounding whitespace, and

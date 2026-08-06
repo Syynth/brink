@@ -2606,6 +2606,116 @@ fn an_unclaimed_scene_heading_is_still_loudly_unlowered() {
     );
 }
 
+// ─── Slug-bearing headings (issue #2077) ─────────────────────────────
+//
+// `docs/decision-log.md` 2026-08-06, "Slug-bearing headings: strip
+// structure, then match" — before this ruling, EVERY heading in
+// `an_unclaimed_scene_heading_is_still_loudly_unlowered`'s shape that also
+// carried a `[slug]` or trailing `#tag`s declined outright, per the old
+// `candidate()` "exactly one child" rule. That is exactly the regression
+// these tests pin: revert the `candidate()`/`try_claim` change and the
+// first two go red (`E129` instead of a clean claim); leave it in and they
+// pass. Verified by hand: reverting just the `candidate()` `SCENE_HEADING`
+// arm to its pre-fix "exactly one child" form reintroduces `E129` on
+// `a_slug_bearing_heading_is_now_claimable`.
+
+#[test]
+fn a_slug_bearing_heading_is_now_claimable() {
+    // The exact shape #2077's own filing names as unreachable: every
+    // worked-page heading in `docs/prose-dialect-spec.md` carries a slug.
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 20)]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE [market]\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the slugged heading must lower to one call");
+    assert_eq!(callee, "interior");
+    // The pattern still sees only the title text — the slug is stripped,
+    // not appended or otherwise leaked into the payload capture.
+    assert_eq!(args, vec!["MARKET SQUARE".to_string()]);
+}
+
+#[test]
+fn a_tag_bearing_heading_is_now_claimable() {
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 20)]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE #act1\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the tag-carrying heading must lower to one call");
+    assert_eq!(callee, "interior");
+    assert_eq!(args, vec!["MARKET SQUARE".to_string()]);
+    // The tag rides the EXISTING tag channel (`Content.tags`), not a
+    // second delivery mechanism — assert the CLAIMED HEADING's own
+    // `Stmt::Content { tags, .. }` directly (a `Debug`-contains check on
+    // the whole body would pass equally if the tag landed on a different
+    // statement or a different field entirely).
+    let Stmt::Content(c) = main
+        .body
+        .stmts
+        .iter()
+        .find(|s| matches!(s, Stmt::Content(_)))
+        .expect("the claimed heading must lower to a Content statement")
+    else {
+        unreachable!("just matched Stmt::Content above");
+    };
+    assert_eq!(c.tags.len(), 1, "expected exactly one tag: {:?}", c.tags);
+    assert!(
+        matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "act1"),
+        "the heading's own trailing tag must reach `Content.tags`: {:?}",
+        c.tags[0].parts
+    );
+}
+
+#[test]
+fn a_slug_and_tag_bearing_heading_claims_and_delivers_both() {
+    let src = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 20)]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE [market] #act1\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.kind, crate::ElementKind::SceneHeading);
+    // The reserved slug capture: delivered ALONGSIDE `captures`, not
+    // merged into it (`captures` stays exactly the pattern's own payload
+    // capture, `place`).
+    assert_eq!(m.captures.len(), 1);
+    assert_eq!(m.captures[0].name, "place");
+    let slug = m
+        .slug
+        .as_ref()
+        .expect("a spelled `[slug]` must be delivered");
+    assert_eq!(slug.name, "slug");
+    assert_eq!(slug.text, "market");
+    // The span is a real source range, not a copied string alone — the
+    // no-invisible-expansion guard this module's own doc opens with.
+    assert_eq!(&src[slug.range], "market");
+}
+
+#[test]
+fn an_unslugged_heading_delivers_no_slug_capture() {
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 20)]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    assert!(
+        hir.element_matches[0].slug.is_none(),
+        "no explicit `[slug]` means no slug capture — an inferred address \
+         is not represented here: {:?}",
+        hir.element_matches[0].slug
+    );
+}
+
 // ─── `CUE`/`PARENTHETICAL` claim candidates (issue #1720) ───────────
 //
 // `candidate()`'s widening to the two remaining literal-line grammar

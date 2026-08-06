@@ -68,6 +68,23 @@ flow main() {{\n\
     )
 }
 
+/// The same driver, but the heading now spells an explicit `[slug]` (issue
+/// #2077 makes this claimable at all — before that ruling this whole file
+/// would fall to a loud `E129` instead of compiling).
+fn screenplay_preset_with_slugged_driver() -> String {
+    let path = screenplay_preset_path();
+    let preset = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    format!(
+        "{preset}\n\
+flow main() {{\n\
+  INT. MARKET SQUARE - NIGHT [market]\n\
+  The square is empty.\n\
+  -> END\n\
+}}\n"
+    )
+}
+
 /// Records every external call it sees, resolving `scene_entered` to
 /// `Value::Null` (a fire-and-forget host notification) and falling back to
 /// the ink-declared body for anything else (there is nothing else to call
@@ -144,5 +161,63 @@ fn scene_entered_fires_with_the_claimed_title_and_an_empty_slug() {
         text.contains("-- INT. MARKET SQUARE - NIGHT --"),
         "the heading handler must still emit its display text alongside \
          the host notification, not instead of it — got {text:?}"
+    );
+}
+
+/// Issue #2077 pins the same boundary this file's module doc states for
+/// #2078: "slug = addressability, claim = presentation/metadata". Claiming
+/// now succeeds on a slugged heading, but the captured slug is delivered
+/// only to `HirFile::element_matches` (tooling), not wired into this
+/// handler's own `scene_entered` call — `heading`'s body still hardcodes
+/// `scene_entered(title, "")` verbatim. This test is the same driver as
+/// [`scene_entered_fires_with_the_claimed_title_and_an_empty_slug`] with one
+/// difference — the heading now spells `[market]` — asserting the recorded
+/// call is BYTE-IDENTICAL regardless. If a future change wires the reserved
+/// slug capture into this call (issue #2078's territory), this assertion is
+/// the one that should change, deliberately, not by accident.
+#[test]
+fn scene_entered_still_receives_an_empty_slug_even_when_the_heading_spells_one() {
+    let source = screenplay_preset_with_slugged_driver();
+    let (story_data, _episodes) =
+        compile_and_explore_from_brink_native(&source, &ExploreConfig::default())
+            .unwrap_or_else(|e| panic!("slugged preset + driver must compile and link: {e}"));
+
+    let (program, line_tables) =
+        brink_runtime::link(&story_data).expect("compiled screenplay preset must link");
+    let mut story = Story::<brink_runtime::DotNetRng>::new(Arc::new(program), line_tables);
+    let handler = RecordingHandler::new();
+
+    let mut text = String::new();
+    loop {
+        match story
+            .continue_single_with(&handler)
+            .expect("slugged screenplay preset must run without a runtime fault")
+        {
+            Step::Line(line) => text.push_str(&line.text),
+            Step::Done | Step::End => break,
+            Step::Choices(_) => panic!("fixture is choice-free"),
+            Step::Suspended => panic!("fixture never suspends — no pending external"),
+        }
+    }
+
+    let calls = handler.calls.into_inner();
+    assert_eq!(
+        calls,
+        vec![(
+            "scene_entered".to_string(),
+            vec![
+                Value::String("MARKET SQUARE - NIGHT".into()),
+                Value::String(String::new().into()),
+            ],
+        )],
+        "an explicit `[slug]` on the heading must not change what \
+         `scene_entered` receives — the slug isn't wired into the call \
+         today (issue #2078's territory, deliberately untouched)"
+    );
+    assert!(
+        text.contains("-- INT. MARKET SQUARE - NIGHT --"),
+        "the rendered display text must be identical to the unslugged case \
+         — the slug is stripped before the pattern ever sees the line: got \
+         {text:?}"
     );
 }

@@ -63,8 +63,14 @@
 //!   restriction applies identically to a `CUE`'s name and a
 //!   `PARENTHETICAL`'s delivery text (issue #1720 widens [`candidate`] to
 //!   these two shapes, alongside `CONTENT_LINE`/`SCENE_HEADING`) — a cue
-//!   or parenthetical carrying a trailing tag extension declines the same
-//!   way a slug/tag-carrying heading does.
+//!   or parenthetical carrying a trailing tag extension still declines.
+//!   **A `SCENE_HEADING` is the one exception** (issue #2077,
+//!   `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+//!   structure, then match"): its optional `[slug]` and trailing `#tag`s
+//!   are structure, not payload, so they are stripped before matching
+//!   rather than causing a decline — see [`candidate`]'s own "Issue
+//!   #2077" comment and [`try_claim`]'s for what happens to the stripped
+//!   pieces.
 //! - A claiming handler's **own body is not claimable** (the staging rule
 //!   §3.5 states for the conventions module: it cannot use the conventions
 //!   it defines). Without this, a handler whose body repeats the shape it
@@ -161,7 +167,7 @@ use rowan::{TextRange, TextSize};
 use crate::hir::FileId;
 use crate::{
     Content, ContentPart, Diagnostic, DiagnosticCode, ElementCapture, ElementDisposition,
-    ElementKind, ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart,
+    ElementKind, ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart, Tag,
 };
 
 use super::SyntaxNode;
@@ -884,6 +890,25 @@ pub(super) fn try_claim(
         });
     }
 
+    // Issue #2077: recover the two pieces `candidate` stripped from a
+    // `SCENE_HEADING`'s title text before this point — see
+    // `heading_extras`'s own doc for what each one is and why. `None`/empty
+    // for every other node kind, since `CUE`/`PARENTHETICAL`/`CONTENT_LINE`
+    // still decline outright on a slug or tag (candidate would already have
+    // returned `None` for those).
+    //
+    // Deliberately called here — below both the handler lookup (`?` above)
+    // and the per-param capture loop (`?` inside it), not up where
+    // `candidate` first returns — because `heading_extras` is not
+    // side-effect-free: it runs `body::lower_tag` on every trailing tag,
+    // which can itself push a diagnostic (`E172`, for an `@`-leading tag).
+    // Calling it any earlier would run that speculatively for a claim this
+    // function might still abandon (no handler matches, or an alternation
+    // branch left a param's capture group unpopulated), reporting a
+    // diagnostic against a line that never actually lowered through this
+    // handler at all.
+    let (slug, heading_tags) = heading_extras(node, file_id, diags);
+
     // Every field taken from `handler` past this point is copied/cloned out
     // — `handler` (and so the borrow of `elements.handlers` it holds) is
     // never referenced again, which is what lets the `block` branch below
@@ -896,6 +921,22 @@ pub(super) fn try_claim(
     // borrow of `elements.handlers`/`.external` `handler` holds must end
     // before the `is_block`/attach branches below borrow `elements` mutably.
     let is_attach = handler.attach.is_some();
+    // Attach-mode never emits a `Stmt::Content` at all — ruling item 6,
+    // "AN EVENT EXISTS IFF A LINE EXISTS" (`docs/decision-log.md`
+    // 2026-08-03) — so there is no line left for a tag-bearing heading's
+    // `heading_tags` to ride on if this claim went through
+    // (`build_attach_stmts` only ever emits `Stmt::AttachElement`/
+    // `Stmt::EndElementRun`, neither of which carries tags). Declining the
+    // claim here — rather than silently discarding the tags, the gap
+    // review caught in this PR — falls through to the same loud `E129`
+    // `body::lower_one_item`'s `SCENE_STITCH` arm already reports for any
+    // other unclaimed heading (house rule 9: never a silent drop). Scoped
+    // to attach handlers with a nonempty `heading_tags` only: block-mode
+    // and ordinary Call-mode handlers both still deliver a tag-bearing
+    // heading's tags through the existing `Content.tags` channel below.
+    if is_attach && !heading_tags.is_empty() {
+        return None;
+    }
     // Issue #2289: `decl.is_none()` is exactly "this handler was injected
     // from the project's configured conventions module, not declared in
     // this file" (see `ClaimHandler::decl`'s own doc) — copied out now for
@@ -1037,50 +1078,42 @@ pub(super) fn try_claim(
         disposition: ElementDisposition::Call,
         content: content_range,
         injected: is_injected,
+        slug,
     });
 
     if is_attach {
-        // Ruling item 6: "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
-        // convention emits no `Stmt::Content`/`Stmt::EndOfLine` at all, only
-        // `AttachElement` (evaluates `call`, merges its fields into the
-        // VM's per-block attachment state) followed by the captured
-        // following run's own already-lowered statements and, usually, a
-        // closing `EndElementRun`.
-        //
-        // **The one exception** (found by tracing the actual bytecode for
-        // `cue` immediately followed by `parenthetical` — #2108's own
-        // fixture): `capture_block`'s terminator search stops at ANY
-        // element-level line, including another `CUE`/`PARENTHETICAL` —
-        // so `cue`'s own captured run is *empty* when a `parenthetical`
-        // immediately follows it, exactly the shape ruling item 3
-        // ("cue and parenthetical both attach to the SAME run") requires
-        // to chain. Closing right there (as an earlier version of this
-        // code unconditionally did) would clear `cue`'s data before
-        // `parenthetical`'s own `AttachElement` — or the dialogue after
-        // it — ever reads it. So: an empty capture caused SPECIFICALLY by
-        // an immediately-following `CUE`/`PARENTHETICAL` node leaves the
-        // run open (no `EndElementRun` here — the following claim's own
-        // rewrite closes it once IT finishes); any other empty-capture
-        // reason (a blank line, a heading, a dispatch, end of statements)
-        // closes immediately, so an attach with genuinely nothing after it
-        // never leaks into unrelated later content.
-        let chains_into_next_attach = attach_run_stmts.is_empty()
-            && following
-                .first()
-                .is_some_and(|n| matches!(n.kind(), N::CUE | N::PARENTHETICAL));
-        let mut stmts = vec![Stmt::AttachElement(call)];
-        stmts.extend(attach_run_stmts);
-        if !chains_into_next_attach {
-            stmts.push(Stmt::EndElementRun);
-        }
-        return Some((stmts, consumed));
+        return Some((
+            build_attach_stmts(call, attach_run_stmts, following),
+            consumed,
+        ));
     }
 
     let mut stmts = vec![
         Stmt::Content(Content {
             ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
             parts: vec![ContentPart::Interpolation(call)],
-            tags: Vec::new(),
+            // Empty for every non-heading match (a tag-carrying `CUE`/
+            // `PARENTHETICAL`/`CONTENT_LINE` never reaches here — see
+            // this function's own "Issue #2077" comment above); a
+            // claimed heading's own trailing tags ride this same field,
+            // the existing ordinary per-line tag channel.
+            //
+            // This is a deliberate INTERIM carrier, not a ruled
+            // semantic: `docs/prose-dialect-spec.md` §8b.4 rules a
+            // header line's trailing `#tag`s **container-level
+            // per-flow tags** — the authoring surface issue #474 (the
+            // per-flow tag API) is iceboxed waiting for — and the
+            // 2026-08-06 "Slug-bearing headings: strip structure, then
+            // match" ruling this function implements says only that
+            // tags are stripped before matching, nothing about which
+            // channel delivers them. Routing them here, onto the
+            // heading's own output `Stmt::Content`, is the closest
+            // existing mechanism and better than the silent drop this
+            // PR would otherwise have reintroduced, but it is ordinary
+            // per-line runtime tag delivery, not §8b.4's per-flow
+            // tags. Re-route (or remove, if #474 supersedes this
+            // entirely) once #474 lands.
+            tags: heading_tags,
         }),
         Stmt::EndOfLine,
     ];
@@ -1095,6 +1128,99 @@ pub(super) fn try_claim(
         stmts.extend(dialogue_stmts);
     }
     Some((stmts, consumed))
+}
+
+/// [`try_claim`]'s attach-mode (issue #2108) rewrite: `call` becomes a
+/// `Stmt::AttachElement` rather than ordinary `Stmt::Content`, followed by
+/// the captured following run's own already-lowered statements and,
+/// usually, a closing `EndElementRun`.
+///
+/// Ruling item 6: "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
+/// convention emits no `Stmt::Content`/`Stmt::EndOfLine` at all.
+///
+/// **The one exception** (found by tracing the actual bytecode for `cue`
+/// immediately followed by `parenthetical` — #2108's own fixture):
+/// [`capture_block`]'s terminator search stops at ANY element-level line,
+/// including another `CUE`/`PARENTHETICAL` — so `cue`'s own captured run is
+/// *empty* when a `parenthetical` immediately follows it, exactly the
+/// shape ruling item 3 ("cue and parenthetical both attach to the SAME
+/// run") requires to chain. Closing right there (as an earlier version of
+/// this code unconditionally did) would clear `cue`'s data before
+/// `parenthetical`'s own `AttachElement` — or the dialogue after it — ever
+/// reads it. So: an empty capture caused SPECIFICALLY by an
+/// immediately-following `CUE`/`PARENTHETICAL` node leaves the run open
+/// (no `EndElementRun` here — the following claim's own rewrite closes it
+/// once IT finishes); any other empty-capture reason (a blank line, a
+/// heading, a dispatch, end of statements) closes immediately, so an
+/// attach with genuinely nothing after it never leaks into unrelated later
+/// content.
+fn build_attach_stmts(
+    call: Expr,
+    attach_run_stmts: Vec<Stmt>,
+    following: &[SyntaxNode],
+) -> Vec<Stmt> {
+    let chains_into_next_attach = attach_run_stmts.is_empty()
+        && following
+            .first()
+            .is_some_and(|n| matches!(n.kind(), N::CUE | N::PARENTHETICAL));
+    let mut stmts = vec![Stmt::AttachElement(call)];
+    stmts.extend(attach_run_stmts);
+    if !chains_into_next_attach {
+        stmts.push(Stmt::EndElementRun);
+    }
+    stmts
+}
+
+/// [`try_claim`]'s issue #2077 seam: recover the two pieces `candidate`
+/// stripped from a `SCENE_HEADING`'s title text before matching
+/// (`docs/decision-log.md` 2026-08-06, "Slug-bearing headings: strip
+/// structure, then match"). `(None, Vec::new())` for every non-heading
+/// `node` — `CUE`, `PARENTHETICAL` and `CONTENT_LINE` still decline
+/// outright on a slug or tag (this issue is scoped to headings only), so
+/// `try_claim` never reaches this call for those at all.
+///
+/// - The slug: the *address capture* role `docs/prose-dialect-spec.md`
+///   §8b.5 reserves, returned as a reserved `ElementCapture` for the caller
+///   to store ALONGSIDE `ElementMatch::captures`, not merged into it —
+///   `captures`' own doc says "bound into the call, in parameter order",
+///   and the slug is never bound into the rewritten call. Named `slug`,
+///   not the spec's more generic "address": only a scene heading has one
+///   today (`SCENE_SLUG`, §3.3), so the concrete CST/spec term is more
+///   honest than a generalization nothing else uses yet — a future element
+///   gaining its own address capture can rename/generalize then. Wiring
+///   the slug into structure/`DefinitionId` (what would make it
+///   load-bearing rather than descriptive) is heading→stitch promotion,
+///   issue #2078 — deliberately untouched here; a caller reads a real
+///   source span and nothing more.
+/// - The tags: the EXISTING tag channel (`Content.tags`, via the same
+///   `lower_tag` every other tagged line already goes through) — not a
+///   second delivery mechanism invented for headings. This is a
+///   deliberate INTERIM carrier pending issue #474 (the per-flow tag
+///   API), not a ruled semantic — see `try_claim`'s own call site for
+///   why. `docs/prose-dialect-spec.md` §8b.4 names a header line's
+///   trailing `#tag`s **container-level per-flow tags**, a different
+///   concept from an ordinary per-line runtime tag.
+fn heading_extras(
+    node: &SyntaxNode,
+    file_id: FileId,
+    diags: &mut Vec<Diagnostic>,
+) -> (Option<ElementCapture>, Vec<Tag>) {
+    let Some(heading) = ast::SceneHeading::cast(node.clone()) else {
+        return (None, Vec::new());
+    };
+    let slug = heading
+        .slug()
+        .and_then(|s| s.name_token())
+        .map(|tok| ElementCapture {
+            name: "slug".to_string(),
+            text: tok.text().to_string(),
+            range: tok.text_range(),
+        });
+    let tags = heading
+        .tags()
+        .map(|t| super::body::lower_tag(file_id, &t, diags))
+        .collect();
+    (slug, tags)
 }
 
 /// The block-capture terminator search (issue #1839, ruled 2026-07-31):
@@ -1414,6 +1540,11 @@ pub(super) fn try_dispatch(
         // module's own doc, "Deliberately not here") — every
         // `DispatchHandler` is declared in this same file.
         injected: false,
+        // A `BANG_DISPATCH`'s remainder is always a fused `CONTENT_LINE`
+        // (this function's own comment above) — never a `SCENE_HEADING` —
+        // so there is never a slug to recover here (issue #2077 is a
+        // `try_claim`-only concern).
+        slug: None,
     });
 
     Some((
@@ -1434,11 +1565,21 @@ pub(super) fn try_dispatch(
 ///
 /// A `CONTENT_LINE` qualifies only when it is *wholly* literal — exactly
 /// one `TEXT` child and nothing else (no `LABEL`, `INTERPOLATION`, `SPAN`,
-/// `TAG`, `GLUE_NODE`, `ESCAPE`, embedded divert or choice point). A
-/// `SCENE_HEADING`'s title run qualifies the same way; the heading's
-/// optional `[slug]` and trailing tags are structure the pattern is not
-/// shown, so a heading carrying either is declined rather than matched
-/// against a partial line.
+/// `TAG`, `GLUE_NODE`, `ESCAPE`, embedded divert or choice point).
+///
+/// A `SCENE_HEADING`'s title run qualifies by selecting its `SCENE_TITLE`
+/// child, **not** by requiring it be the heading's only child (issue
+/// #2077, `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+/// structure, then match"): the heading's optional `[slug]` and trailing
+/// `#tag`s are structure the pattern is never shown, so they are simply
+/// not selected — rather than causing the whole heading to decline, the
+/// way an equivalent shape does for the other three node kinds below.
+/// `try_claim` recovers both stripped pieces separately: the slug as a
+/// reserved capture (the *address capture* role
+/// `docs/prose-dialect-spec.md` §8b.5 reserves), the tags through the
+/// same `Content.tags` channel any other tagged line already uses. This
+/// makes `SCENE_HEADING` the one arm below whose "wholly literal" bar is
+/// about the *title* alone, not the whole node.
 ///
 /// **Issue #1720** (the built-in screenplay preset) widens this to the
 /// two remaining literal-line grammar shapes `docs/prose-dialect-spec.md`
@@ -1453,8 +1594,9 @@ pub(super) fn try_dispatch(
 ///
 /// - A `CUE`'s `CUE_NAME` run qualifies the same way — exactly that one
 ///   child, nothing else. A cue carrying a trailing tag extension (§8d.4,
-///   `@VENDOR #(v.o.)`) is declined, mirroring the heading/slug case: the
-///   tag is structure the pattern is not shown.
+///   `@VENDOR #(v.o.)`) is declined — unlike `SCENE_HEADING` (above), a
+///   `CUE`'s tags are not stripped-and-recovered by issue #2077, which is
+///   scoped to headings only.
 /// - A `PARENTHETICAL`'s `TEXT` run (the text strictly between the
 ///   parens — `(`/`)` are tokens, not part of the child) qualifies the
 ///   same way; a parenthetical carrying trailing tags is declined too.
@@ -1487,12 +1629,20 @@ fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
             (first.kind() == N::TEXT && children.next().is_none())
                 .then_some((ElementKind::ContentLine, first))
         }
-        N::SCENE_HEADING => {
-            let mut children = node.children();
-            let first = children.next()?;
-            (first.kind() == N::SCENE_TITLE && children.next().is_none())
-                .then_some((ElementKind::SceneHeading, first))
-        }
+        // Issue #2077 (`docs/decision-log.md` 2026-08-06, "Slug-bearing
+        // headings: strip structure, then match"): unlike the other three
+        // arms, a `SCENE_HEADING` does NOT require its `SCENE_TITLE` to be
+        // the only child — an optional `SCENE_SLUG` and any trailing `TAG`s
+        // are grammar-parsed siblings, not part of the title. Selecting the
+        // `SCENE_TITLE` child directly (rather than requiring it be alone)
+        // is the whole fix: the pattern sees only the title text exactly as
+        // it always did, so no existing preset pattern needs to change.
+        // `try_claim` recovers the stripped slug/tags separately — see its
+        // own "Issue #2077" comment.
+        N::SCENE_HEADING => node
+            .children()
+            .find(|c| c.kind() == N::SCENE_TITLE)
+            .map(|title| (ElementKind::SceneHeading, title)),
         N::CUE => {
             let mut children = node.children();
             let first = children.next()?;

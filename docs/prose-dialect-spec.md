@@ -1533,7 +1533,14 @@ unless marked:
 4. **Tags on declarations**: trailing `#tag`s on header lines — both
    the heading spelling and `flow x #tag { }` — captured as
    **container-level per-flow tags**. This is the authoring surface
-   #474 (per-flow tag APIs) was iceboxed waiting for.
+   #474 (per-flow tag APIs) was iceboxed waiting for. **Interim
+   carrier (#2077, pending #474):** until the per-flow tag API exists,
+   a claimed scene heading's stripped trailing tags are delivered
+   through the ordinary per-line `Content.tags` channel
+   (`hir::lower_native::element::try_claim`) rather than left
+   undelivered — this is explicitly NOT the container-level semantic
+   ruled above, only the closest existing mechanism. Re-route once
+   #474 lands.
 5. **The conventions schema gains an *address capture* role** — the
    slug capture feeds structure/`DefinitionId`, unlike ordinary
    payload captures.
@@ -1555,9 +1562,15 @@ unless marked:
    superseded by §9.1 without delivering it) and not planted by pure
    codegen — it is an ordinary logic-line statement the handler's
    author wrote, riding the same extern/`ExternalFnHandler` call path
-   any other call would. `slug` is currently always the empty string
-   (no slug-bearing heading is claimable by this handler yet,
-   #2077/#2078). **Written transitions** (`SMASH CUT TO:`)
+   any other call would. `slug` is currently always the empty string —
+   not because a slug-bearing heading declines the claim (#2077 ruled
+   and landed "Slug-bearing headings: strip structure, then match": a
+   heading's `[slug]`/`#tag`s are stripped before pattern matching, not
+   a decline reason, and the slug is captured and delivered to
+   `HirFile::element_matches` as a reserved capture), but because
+   wiring that captured slug into this call is heading→stitch
+   promotion, #2078, still open and deliberately untouched.
+   **Written transitions** (`SMASH CUT TO:`)
    = a departure-site style call; the bare-scene-divert default cut
    needs no authored transition (the slugline implies the cut, as in
    real screenwriting). **Diverts remain absolutely invisible** — no
