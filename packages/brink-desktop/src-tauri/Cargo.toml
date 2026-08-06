@@ -1,0 +1,29 @@
+# The Tauri shell crate for brink-desktop (docs/desktop-shell-spec.md).
+#
+# DELIBERATELY ITS OWN WORKSPACE (the empty [workspace] table below), per the
+# 2026-08-06 ruling: Tauri's dependency graph must not join the root cargo
+# workspace, where it would land in every `cargo test --workspace`, every
+# wave agent's shared target, and CI's required lanes for zero coverage
+# benefit. Versions are therefore managed here, not in the root workspace
+# table — the one accepted cost of exclusion.
+[package]
+name = "brink-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lib]
+name = "brink_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
