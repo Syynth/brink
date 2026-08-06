@@ -1442,13 +1442,24 @@ dispatch.
 
 **Persistence — RULED 2026-08-05, `docs/decision-log.md`** ("Two rulings:
 … block metadata persists with `next_block_id`"): **block metadata
-persists, and `next_block_id` persists with it.** Element attachment is
-keyed by the run `BlockId` counts, so if attachment must survive a save,
-block-id continuity must too — rejecting both a separate stable key (a
-second identity for one runtime concept, plus a drift-prone mapping) and
-accepting the loss (a player saving mid-dialogue and reloading with the
-speaker silently dropped is the exact class this project refuses to
-ship). ⚠ This corrects the paragraph's earlier claim that `BlockId` "was
+persists, and `next_block_id` persists with it** — for two independent
+reasons, not one. (a) `pending_element` must persist because an open
+attach run's accumulated data lives only in the VM output buffer's
+`pending_element`/the transcript (`resolve_lines_annotated`'s
+`current_element` accumulator, `crates/brink-runtime/src/output/mod.rs`),
+neither of which survives a park — losing it drops the attributed
+speaker/metadata on resume, the exact class this project refuses to ship.
+(b) `next_block_id` must persist on its own account, independent of
+attachment: restarting it at 0 would give the *same* uninterrupted run a
+different id after resume (and could collide with ids already emitted
+before the park), breaking `BlockId`'s documented "same id iff same
+uninterrupted run" contract (`crates/brink-runtime/src/story/types.rs`).
+Attachment and `BlockId` remain the two independent concepts they always
+were (this section's own note above, and `BlockId`'s doc, both stand
+unchanged) — they simply share one park boundary, so both need a
+save-stable value at that boundary.
+
+⚠ This corrects the paragraph's earlier claim that `BlockId` "was
 already never persisted" — that was true, and remains true, for the
 *ordinary* game-state save (`SaveState` still never captures execution
 position or the output buffer — `brink-runtime::save`'s own module doc,
