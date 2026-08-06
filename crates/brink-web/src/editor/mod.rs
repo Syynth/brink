@@ -1313,6 +1313,43 @@ mod tests {
     }
 
     #[test]
+    fn project_outline_includes_native_struct_alongside_knot() {
+        // #2292: the Binder reads project_outline(); a native `struct`
+        // declaration must survive the whole road (EditorSession ->
+        // brink-ide::document_symbols) alongside its knot, not just the
+        // knot.
+        let mut s = EditorSession::new();
+        s.update_file(
+            "cue.brink",
+            "struct Cue {\n  text: string\n}\n\nflow main() {\n  Hi!\n}\n",
+        );
+
+        let outline: serde_json::Value =
+            serde_json::from_str(&s.project_outline()).unwrap_or_default();
+        let file = outline
+            .as_array()
+            .expect("project_outline must return a JSON array")
+            .iter()
+            .find(|f| f["path"] == "cue.brink")
+            .expect("cue.brink must appear in the project outline");
+        let symbol_kinds: Vec<&str> = file["symbols"]
+            .as_array()
+            .expect("file entry must carry a symbols array")
+            .iter()
+            .map(|sym| sym["kind"].as_str().unwrap_or_default())
+            .collect();
+
+        assert!(
+            symbol_kinds.contains(&"knot"),
+            "knot must still be present: {symbol_kinds:?}"
+        );
+        assert!(
+            symbol_kinds.contains(&"struct"),
+            "struct Cue must be present in the outline, not just the knot: {symbol_kinds:?}"
+        );
+    }
+
+    #[test]
     fn hir_spans_doc_projects_spans_and_line_stacks() {
         // é in the content line shifts bytes vs UTF-16 by 1 for anything after it.
         let mut s = EditorSession::new();
