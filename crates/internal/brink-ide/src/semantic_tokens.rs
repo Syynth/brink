@@ -584,9 +584,18 @@ fn classify_native_token(
     // `tag()`'s raw-bump loop is even less restrictive — it doesn't stop on
     // `DIVERT`/`GLUE` either, so a `#tag -> text` tag body could still
     // paint `->` as an operator.
-    if token
-        .parent()
-        .is_some_and(|p| is_prose_run_container(p.kind()))
+    //
+    // `HASH`/`AT_L_BRACKET` are exempted: `tag()` (`content.rs`) makes
+    // `HASH` a *direct child of `TAG`* — the same node this guard treats as
+    // a prose container — so the sigil itself would otherwise be swallowed
+    // as prose and never reach `classify_native_fixed_kind`'s decorator arm
+    // below (review finding on #2293: the widened guard regressed every
+    // tag's own `#`/`@[` sigil colour, which #2280/#2286 had established).
+    // The sigil is structure, not prose — only the *text after* it is.
+    if !matches!(kind, NK::HASH | NK::AT_L_BRACKET)
+        && token
+            .parent()
+            .is_some_and(|p| is_prose_run_container(p.kind()))
     {
         return None;
     }
@@ -1195,7 +1204,16 @@ mod tests {
         // operator arm; a literal quote mark in dialogue (also not a
         // `text_content` stop character) still reached the unconditional
         // string arm.
-        let src = "The well-known hero shouted, \"Wait! Really?\"\n";
+        //
+        // Review finding on #2293: the quoted line alone does not exercise
+        // `!`/`?` at all — inside `"Wait! Really?"` the lexer emits
+        // QUOTE + STRING_TEXT("Wait! Really?") + QUOTE, all as direct `TEXT`
+        // children, so `!`/`?` never surface as their own BANG/QUESTION
+        // tokens there; only the `-` in "well-known" was actually covered.
+        // An *unquoted* `Wait! Really?` line is required to reach the
+        // BANG/QUESTION operator arm at all (unquoted prose does produce
+        // them: `TEXT > IDENT, BANG, WHITESPACE, IDENT, QUESTION`).
+        let src = "The well-known hero shouted, \"Wait! Really?\"\nWait! Really?\n";
         let tokens = parse_and_tokens(src);
         assert!(
             tokens.iter().all(|t| t.token_type != TT_OPERATOR),
@@ -1699,6 +1717,23 @@ mod tests {
         assert!(
             tokens.iter().all(|t| t.token_type != TT_OPERATOR),
             "no prose/tag punctuation should classify as an operator: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn native_tag_hash_is_still_a_decorator() {
+        // Regression for the review finding on #2293's own widened prose
+        // guard: `tag()` (`content.rs`) makes `HASH` a direct child of
+        // `TAG`, which `is_prose_run_container` treats as a prose
+        // container — so the blanket "punctuation inside a prose container
+        // is text" guard swallowed the tag sigil itself along with the tag
+        // body, losing the `decorator` colour every `#tag` line had before
+        // this PR. Mirrors ink's `hash_is_decorator`.
+        let tokens = analyzed_native_tokens("#a tag about cats\n");
+        let dec = tokens.iter().find(|t| t.token_type == TT_DECORATOR);
+        assert!(
+            dec.is_some(),
+            "expected a decorator token for `#`: {tokens:?}"
         );
     }
 
