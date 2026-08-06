@@ -115,10 +115,16 @@ impl EditorSession {
     }
 
     /// List all loaded files. Returns JSON `[{path}]`.
+    ///
+    /// Excludes mounted stdlib files (issue #2231 review finding): a mount
+    /// is not a file the project scan found or the user opened, so it must
+    /// not appear in the Binder or in project-wide search
+    /// (`packages/studio-store/src/slices/search.ts` iterates this list).
     pub fn list_files(&self) -> String {
         let db = self.session.db();
         let files: Vec<ProjectFileJs> = db
             .file_ids()
+            .filter(|id| !self.mounted_std_ids.contains(id))
             .filter_map(|id| {
                 db.file_path(id)
                     .map(|p| ProjectFileJs { path: p.to_owned() })
