@@ -1306,8 +1306,8 @@ module. What shipped:
   (`brink-ir/src/dialect.rs`'s own doc), and `.inkb` is beyond tooling — it
   is the compiled artifact a game host loads, and a runtime has no Tab key.
 
-What survives: the **validator**, unchanged. `ConventionsProjection::
-with_succession` still re-keys externally (editor-)supplied
+What survives: the **validator**, unchanged. `ConventionsProjection::with_succession`
+still re-keys externally (editor-)supplied
 `transitions`/`templates` against the projection's real convention kinds,
 in-process, via the same shared `dialect::validate_succession` described
 above — so a rule naming a nonexistent kind still fails loudly. The editor
