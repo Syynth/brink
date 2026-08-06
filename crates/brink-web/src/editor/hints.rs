@@ -81,8 +81,8 @@ impl EditorSession {
         // `.brink` file would walk a garbled tree and cast nodes that don't
         // mean what the classifier assumes — "present and wrong" per #2280's
         // own standard. Until a native-CST inlay-hints pass exists (tracked
-        // as a follow-up, mirroring #2286's brink-lsp scope note), a native
-        // file gets no inlay hints rather than wrong ones.
+        // on #2359), a native file gets no inlay hints rather than wrong
+        // ones.
         if self.session.is_native(file_id) {
             return "[]".to_owned();
         }
