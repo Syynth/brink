@@ -2215,6 +2215,7 @@ dependencies = [
  "brink-analyzer",
  "brink-compiler",
  "brink-db",
+ "brink-environment",
  "brink-fmt",
  "brink-format",
  "brink-ir",

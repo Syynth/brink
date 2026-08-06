@@ -416,8 +416,13 @@ impl ProjectDb {
         })
     }
 
-    /// Whether **every** file this db holds is a native (`.brink`) module —
-    /// `false` for an empty db or one holding even a single ink file.
+    /// Whether **every recognized source file** (`.ink` or `.brink`) this db
+    /// holds is a native (`.brink`) module — `false` for an empty db, one
+    /// holding even a single ink source file, or one whose tracked files are
+    /// all non-source documents. A tracked file with neither extension (a
+    /// project's own `brink.toml`, e.g. — issue #2318) does not count either
+    /// way; see [`crate::queries::project_is_all_native`]'s doc for the full
+    /// reasoning and the bug this exemption fixes.
     ///
     /// The whole-db view of [`crate::queries::project_is_all_native`], for a
     /// caller that analyzes this db's entire file set as one unit off-db
