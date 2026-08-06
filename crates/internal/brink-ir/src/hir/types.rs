@@ -410,11 +410,12 @@ pub enum ElementKind {
     BangDispatch,
     /// A block cue (`CUE`, `docs/prose-dialect-spec.md` §8b.9/§8d.4) — a
     /// bare `@NAME` speaker line with no tag extension (a cue carrying a
-    /// tag, e.g. `@VENDOR #(v.o.)`, is declined the same way a
-    /// slug/tag-carrying [`Self::SceneHeading`] is — see
-    /// [`crate::hir::lower_native::element::candidate`]'s own doc).
-    /// Issue #1720: the built-in screenplay preset's `cue` handler is the
-    /// first consumer.
+    /// tag, e.g. `@VENDOR #(v.o.)`, is declined — see
+    /// [`crate::hir::lower_native::element::candidate`]'s own doc; unlike
+    /// [`Self::SceneHeading`], a `CUE`'s slug/tag structure is not
+    /// stripped-and-recovered by issue #2077, which is scoped to headings
+    /// only). Issue #1720: the built-in screenplay preset's `cue` handler
+    /// is the first consumer.
     Cue,
     /// A parenthetical delivery line (`PARENTHETICAL`,
     /// `docs/prose-dialect-spec.md` §8.), chain-gated by the parser (only
@@ -429,7 +430,10 @@ pub enum ElementKind {
 /// no-invisible-expansion guard).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementCapture {
-    /// The capture group's name — also the handler parameter it binds.
+    /// The capture group's name — also the handler parameter it binds, for
+    /// an ordinary payload capture in [`ElementMatch::captures`]. The one
+    /// exception is [`ElementMatch::slug`] (issue #2077): its `name` is
+    /// always the reserved literal `"slug"`, and it binds no param at all.
     pub name: String,
     /// The captured text.
     pub text: String,
@@ -509,6 +513,22 @@ pub struct ElementMatch {
     /// `ResolvedRef`s by `(file, range)` alone, with no new identifier
     /// needed on either side.
     pub injected: bool,
+    /// A `SceneHeading`'s explicit `[slug]`, when spelled (issue #2077,
+    /// `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+    /// structure, then match") — the *address capture* role
+    /// `docs/prose-dialect-spec.md` §8b.5 reserves, delivered as a
+    /// **reserved capture alongside `captures`, not merged into it**:
+    /// `captures`' own doc says "bound into the call, in parameter order",
+    /// and the slug is never bound into the rewritten call — a caller gets
+    /// a real source span (`ElementCapture::name` is always the literal
+    /// string `"slug"`) and nothing more. Wiring it into structure/
+    /// `DefinitionId` — what would make it load-bearing rather than
+    /// descriptive — is heading→stitch promotion, issue #2078, and is
+    /// deliberately untouched by this field. `None` for every non-heading
+    /// `kind`, and for a heading with no explicit slug (an inferred
+    /// address, §3.3) — the two cases are indistinguishable here on
+    /// purpose, since neither carries a real source span to point at.
+    pub slug: Option<ElementCapture>,
 }
 
 /// One natural-notation claiming handler *declared* in a file — recorded

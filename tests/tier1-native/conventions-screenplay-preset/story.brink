@@ -66,7 +66,15 @@ fn parenthetical(delivery: string): Parenthetical {
 }
 
 flow main() {
-  INT. MARKET SQUARE - NIGHT
+  // Issue #2077 (`docs/decision-log.md` 2026-08-06, "Slug-bearing headings:
+  // strip structure, then match"): every worked-page heading in
+  // `docs/prose-dialect-spec.md` carries an explicit `[slug]`, which used
+  // to decline outright here. Spelling one on this fixture's own heading
+  // proves the preset's `heading` handler claims it end to end — the
+  // rendered line below is UNCHANGED (the pattern only ever saw the title
+  // text; the slug was never part of it), which is the regression this
+  // pins: a slug present or absent must not move what gets printed.
+  INT. MARKET SQUARE - NIGHT [market]
   The square is empty.
 
   @VENDOR

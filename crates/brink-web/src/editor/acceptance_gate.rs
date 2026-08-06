@@ -42,6 +42,11 @@
 //!   same-named declarations (peer roots, #2245).
 //! - **Config discovery through the virtual mount** (#2324/#1414): the
 //!   session learns everything from `brink.toml`, not from setters.
+//! - **Slug-bearing headings claim** (#2077): `story.brink`'s heading
+//!   spells an explicit `[market]` slug — before the 2026-08-06 ruling
+//!   "Slug-bearing headings: strip structure, then match", this exact
+//!   line would have declined the claim and analyzed with an `E129`
+//!   through the editor path, not just the CLI.
 
 #![cfg(test)]
 
@@ -64,7 +69,7 @@ const CONVENTIONS: &str = "struct Cue {\n  \
 
 const STORY: &str = "use story::market::barter;\n\n\
  pub flow main() {\n  \
-   INT. MARKET SQUARE - NIGHT\n  \
+   INT. MARKET SQUARE - NIGHT [market]\n  \
    The square is empty.\n\n  \
    VENDOR\n  \
    You shouldn't be here after dark.\n\n  \

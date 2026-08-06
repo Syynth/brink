@@ -75,19 +75,26 @@
 //   string) { }` fallback ships alongside the `extern` so a project with
 //   no host `ExternalFnHandler` bound (bare `brink play`, this preset's
 //   own golden fixture) still runs cleanly — a real host's handler
-//   intercepts the call before that empty body ever executes. **Only
-//   claims a heading with NO explicit `[slug]` and no trailing tags** —
-//   `hir::lower_native::element::candidate`'s literalness rule declines
-//   a heading carrying either, the same way it declines a `CONTENT_LINE`
-//   carrying interpolation; every worked-page heading in the spec
-//   (`[market]`, `[chapel_found]`, `[alley_escape]`) uses an explicit
-//   slug and so is NOT claimable by this handler as written — that gap
-//   (slug-claiming) is tracked separately as #2077/#2078, not this
-//   issue. Because no slug ever reaches this handler today, `slug` is
-//   passed through as an empty string — a deliberate non-choice, not a
-//   derived/materialized value (slug materialization on fmt is #1718,
-//   blocked on #1730's missing `.brink` fmt pipeline; this preset does
-//   not build that here). Promoting a heading to a real HIR stitch (a
+//   intercepts the call before that empty body ever executes. **Claims a
+//   heading with or without an explicit `[slug]`/trailing `#tag`s**
+//   (issue #2077, `docs/decision-log.md` 2026-08-06 "Slug-bearing
+//   headings: strip structure, then match" — before this ruling,
+//   `hir::lower_native::element::candidate`'s literalness rule declined a
+//   heading carrying either, the same way it still declines a
+//   `CONTENT_LINE` carrying interpolation; every worked-page heading in
+//   the spec — `[market]`, `[chapel_found]`, `[alley_escape]` — uses an
+//   explicit slug, so this handler could not claim any of the spec's own
+//   examples until this ruling landed). The slug is now captured and
+//   delivered to `HirFile::element_matches` as a reserved capture
+//   (`ElementMatch::slug`) — tooling-visible, but **not** wired into this
+//   call: `slug` below is still always passed through as an empty
+//   string, a deliberate non-choice, not a derived/materialized value.
+//   Wiring the captured slug into this call — what would make it
+//   load-bearing rather than descriptive — is heading→stitch promotion,
+//   issue #2078, deliberately untouched here (slug materialization on
+//   fmt is the separate #1718, blocked on #1730's missing `.brink` fmt
+//   pipeline; this preset does not build that here either). Promoting a
+//   heading to a real HIR stitch (a
 //   genuine divert target, §3.2/§3.3's "a scene heading may declare a
 //   stitch") is not built anywhere in the compiler — issue #1717, which
 //   would have owned that, was closed as superseded by the §9.1 ruling
@@ -112,8 +119,9 @@
 //   VM's per-block attachment state instead, and the dialogue line(s)
 //   that follow each carry a copy (`OutputLine.element.data`). Only
 //   claims a cue with no trailing tag extension (`@VENDOR #(v.o.)`
-//   declines the same way a slug-carrying heading does — the tag is
-//   structure the pattern is never shown).
+//   declines — the tag is structure the pattern is never shown, and
+//   unlike `heading` above, a `CUE`'s structure is not stripped-and-
+//   recovered by issue #2077, which is scoped to headings only).
 // - `parenthetical` — a chain-gated `(delivery)` line (parser-enforced:
 //   only recognized directly after a live cue). **Also migrated to
 //   ATTACH MODE by issue #2166**, for the identical reason `cue` was:
@@ -174,16 +182,18 @@
 // is the only guard today — there is no kind restriction to fall back
 // on.
 //
-// ⚠ **Compact cues (`@NAME: text`, §8b.9) and any cue/heading carrying a
-// tag extension are NOT covered.** `COMPACT_CUE` fuses a `CUE_NAME` and
-// an ordinary `CONTENT_LINE` (which may itself carry markup) into one
-// node; `candidate()` widens to `CUE`/`PARENTHETICAL` for issue #1720
-// but deliberately not to `COMPACT_CUE`, since matching it safely needs
-// either a two-piece capture (name AND fused text) `try_claim`'s
-// single-text-node contract does not support today, or a policy for
-// what happens when the fused line is not wholly literal. Left
-// unclaimed — a compact cue still reports the pre-existing loud `E129`,
-// never silently read as ordinary prose.
+// ⚠ **Compact cues (`@NAME: text`, §8b.9) and any cue carrying a tag
+// extension are NOT covered** — a `SCENE_HEADING` carrying a `[slug]`
+// and/or trailing `#tag`s IS covered, since issue #2077 (above).
+// `COMPACT_CUE` fuses a `CUE_NAME` and an ordinary `CONTENT_LINE` (which
+// may itself carry markup) into one node; `candidate()` widens to
+// `CUE`/`PARENTHETICAL` for issue #1720 but deliberately not to
+// `COMPACT_CUE`, since matching it safely needs either a two-piece
+// capture (name AND fused text) `try_claim`'s single-text-node contract
+// does not support today, or a policy for what happens when the fused
+// line is not wholly literal. Left unclaimed — a compact cue still
+// reports the pre-existing loud `E129`, never silently read as ordinary
+// prose.
 //
 // # `@[style]` — deliberately NOT declared here
 //

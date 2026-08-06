@@ -1555,9 +1555,15 @@ unless marked:
    superseded by §9.1 without delivering it) and not planted by pure
    codegen — it is an ordinary logic-line statement the handler's
    author wrote, riding the same extern/`ExternalFnHandler` call path
-   any other call would. `slug` is currently always the empty string
-   (no slug-bearing heading is claimable by this handler yet,
-   #2077/#2078). **Written transitions** (`SMASH CUT TO:`)
+   any other call would. `slug` is currently always the empty string —
+   not because a slug-bearing heading declines the claim (#2077 ruled
+   and landed "Slug-bearing headings: strip structure, then match": a
+   heading's `[slug]`/`#tag`s are stripped before pattern matching, not
+   a decline reason, and the slug is captured and delivered to
+   `HirFile::element_matches` as a reserved capture), but because
+   wiring that captured slug into this call is heading→stitch
+   promotion, #2078, still open and deliberately untouched.
+   **Written transitions** (`SMASH CUT TO:`)
    = a departure-site style call; the bare-scene-divert default cut
    needs no authored transition (the slugline implies the cut, as in
    real screenwriting). **Diverts remain absolutely invisible** — no
