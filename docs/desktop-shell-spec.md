@@ -126,6 +126,15 @@ in `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
    to `main.ink` / single-file heuristics — whatever the studio already
    does for the playground, unchanged.
 3. Reopening: recent-projects list → same flow.
+4. File association (D3, #2393), bundled `.app` only: the OS delivers a
+   double-clicked (or Dock-dropped) `.ink`/`.brink` file as `RunEvent::Opened`;
+   the file's **containing folder** becomes the project root, opened via the
+   same `openProject` path as (1). If the file is already inside the
+   currently-open project, this focuses it in place instead of reopening the
+   project; if it's outside, the ruled close-save flow runs first (same
+   teardown `openProject` always does before mounting a new root). A dev run
+   (`pnpm tauri dev`) never receives `RunEvent::Opened`, so this path is
+   unreached outside the bundled build.
 
 ## Stages
 
