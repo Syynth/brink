@@ -568,6 +568,21 @@ impl EditorSession {
         let Some(config_key) = brink_project_config::discover_from_entry_in_tree(&tree, entry)
             .map_err(|e| JsError::new(&format!("failed to discover brink.toml: {e}")))?
         else {
+            // No `brink.toml` anywhere from `entry`'s directory up to the
+            // tree root: `apply_parsed_config` (the only writer of
+            // `configured_entry`) never runs on this path, so without this
+            // it would keep whatever value a *previously* discovered
+            // `brink.toml` had set — contradicting this field's own doc,
+            // `Self::configured_entry`'s doc, `EditorSessionHandle
+            // .getConfiguredEntry()`'s doc (packages/wasm/src/index.ts),
+            // and the changeset, all of which say `None`/`null` "when no
+            // brink.toml was found" (issue #2331 review finding). `dialect`
+            // and `conventions` deliberately keep their prior value when no
+            // config is found ("missing config = unchanged defaults"); this
+            // field's contract is different because a stale entry silently
+            // repoints compilation/the initial tab at a file the current
+            // tree no longer names one.
+            self.configured_entry = None;
             return Ok("[]".to_owned());
         };
         let text = brink_source_tree::SourceTree::read(&tree, &config_key).map_err(|e| {
@@ -4348,6 +4363,33 @@ mod tests {
             s.configured_entry(),
             None,
             "a brink.toml that dropped `entry` must clear configured_entry, not keep the stale value"
+        );
+    }
+
+    #[test]
+    fn removing_brink_toml_entirely_clears_configured_entry() {
+        // Issue #2331 review finding: the not-found branch of
+        // `discover_project_config` returned `Ok("[]")` before ever
+        // reaching `apply_parsed_config` (the sole writer of
+        // `configured_entry`), so deleting/renaming `brink.toml` out of the
+        // tree left a stale `Some(..)` behind — contradicting this field's
+        // own doc, `configured_entry()`'s doc, and
+        // `EditorSessionHandle.getConfiguredEntry()`'s doc, all of which say
+        // `None`/`null` "when no brink.toml was found".
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\nentry = \"story.ink\"\n");
+        s.update_file("story.ink", "-> END\n");
+        s.discover_project_config("story.ink")
+            .expect("first discovery applies entry");
+        assert_eq!(s.configured_entry().as_deref(), Some("story.ink"));
+
+        s.remove_file("brink.toml");
+        s.discover_project_config("story.ink")
+            .expect("re-discovery with no brink.toml anywhere must not error");
+        assert_eq!(
+            s.configured_entry(),
+            None,
+            "a deleted brink.toml must clear configured_entry, not keep the stale value"
         );
     }
 

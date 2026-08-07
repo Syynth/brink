@@ -100,6 +100,24 @@ describe("ProjectSession applies brink.toml (#2324)", () => {
     );
   });
 
+  it("un-sticks when brink.toml's entry key is removed: getEntryFile() reverts to the host's entryFile argument, not the last config value (issue #2331 review finding)", async () => {
+    const { project } = await makeProject(
+      {
+        "brink.toml": '[project]\nentry = "other.ink"\n',
+        "story.ink": "-> END\n",
+        "other.ink": "-> END\n",
+      },
+      "story.ink",
+    );
+    // Config wins while it says so.
+    expect(project.getEntryFile()).toBe("other.ink");
+
+    // Removing `entry` from brink.toml must un-stick getEntryFile() — it
+    // must NOT stay pinned to the superseded config value forever.
+    project.applyEdit("brink.toml", "[project]\n");
+    expect(project.getEntryFile()).toBe("story.ink");
+  });
+
   it("re-applies when brink.toml is edited in the session (applyEdit path)", async () => {
     const { project, warnings } = await makeProject(
       { "brink.toml": '[project]\nconventions = "conventions.brink"\n', "story.ink": "-> END\n" },
@@ -155,6 +173,9 @@ describe("ProjectSession applies brink.toml (#2324)", () => {
     }
     discoverProjectConfig(_entry: string): string[] {
       throw new Error("malformed TOML: unexpected character");
+    }
+    getConfiguredEntry(): null {
+      return null;
     }
     free(): void {
       /* no-op */
