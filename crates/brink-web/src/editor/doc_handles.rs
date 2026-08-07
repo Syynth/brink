@@ -47,15 +47,22 @@ impl EditorSession {
     /// caller already has — unless `text` is present, in which case the
     /// fragment splice appended a `\n` separator and `text` carries what was
     /// actually inserted (`source` + `"\n"`). Returns `"null"` for an
-    /// unknown handle.
-    ///
-    /// Other handles on the same file keep their ranges as-is; rebasing
-    /// sibling fragment views from the change spec is the caller's job.
+    /// unknown handle, **and for a handle whose file is currently a mounted
+    /// stdlib copy** (issue #2306): `open_document`/`open_fragment` on a
+    /// `std/` path succeed (a mounted file is legitimately browsable/openable
+    /// — e.g. a goto-def into an inherited symbol), but writing through that
+    /// handle would silently fork the library into the project, so it is
+    /// refused with the same "did not apply" sentinel a caller already
+    /// handles for an unknown handle. The content is left untouched, unlike
+    /// an unknown handle there is no ambiguity to log — see `is_read_only`.
     pub fn update_document(&mut self, doc: u32, source: &str) -> String {
         let Some(state) = self.docs.get(&doc) else {
             return "null".to_owned();
         };
         let path = state.path.clone();
+        if self.is_read_only(&path) {
+            return "null".to_owned();
+        }
         let view = state.view;
         let full = self
             .session
@@ -143,5 +150,21 @@ impl EditorSession {
             Some(s) => serde_json::to_string(s).unwrap_or_default(),
             None => "null".to_owned(),
         }
+    }
+
+    /// Whether `path` currently resolves to the mounted stdlib copy — the
+    /// session-level read-only fence (issue #2306, ruled 2026-08-06 "Mounted
+    /// stdlib presents as a read-only library node"). `false` for an unknown
+    /// path, an ordinary project file, and a path that *used to* be a mount
+    /// but was shadowed by a real project file (`mounted_std_ids` no longer
+    /// contains its id at that point — see the field's own doc). Consumed by
+    /// `update_document` directly, and by the TS session/API layer
+    /// (`EditorSessionHandle.isReadOnly`, `ProjectSession.applyEdit`) to
+    /// refuse a bulk write (search/replace, results-buffer edits, binder
+    /// undo) before it ever reaches `update_file`.
+    pub fn is_read_only(&self, path: &str) -> bool {
+        self.session
+            .file_id(path)
+            .is_some_and(|id| self.mounted_std_ids.contains(&id))
     }
 }

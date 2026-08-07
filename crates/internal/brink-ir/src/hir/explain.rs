@@ -79,6 +79,23 @@
 //! contract is unchanged by that: it still never sees or reports
 //! `ElementKind` itself.
 //!
+//! **Issue #2351 adds the node-aware entry point this w133 comment named**
+//! ([`explain_match_node`], and `ExplainMatchCache::explain`'s `node`
+//! parameter) — but for a narrower, different reason than `ElementKind`
+//! composition: `classify_line` matching a *whole raw line* against a
+//! preset pattern structurally cannot agree with the compiler's own
+//! `try_claim` for a cue, a parenthetical, a compact cue, or a
+//! slugged/tag-bearing heading, all of which the compiler matches against
+//! a *sub-node's* extracted text instead. `explain_match_node` still takes
+//! `text: &str` nowhere near it — it takes a real parsed
+//! [`brink_syntax_native::SyntaxNode`], selects the exact sub-node
+//! `candidate` would, and classifies THAT. It still never composes
+//! `ElementKind` itself (that stays #2310's job, reading the compiler's
+//! own compiled record one layer up) — `matched`/`winner`/`shadowed` now
+//! simply agree with the compiler on more lines than before, which is what
+//! lets #2310's existing `kind` composition finally reach a real cue or
+//! parenthetical line at all.
+//!
 //! # Memoization (issue #2113's own reassigned remainder)
 //!
 //! [`ExplainMatchCache`] is the memoized query the ruled cost compensation
@@ -91,10 +108,12 @@
 
 use std::collections::BTreeMap;
 
+use brink_syntax_native::SyntaxNode;
 use rowan::{TextRange, TextSize};
 
 use super::classify::{
-    ClassifiedCapture, ClassifiedMatch, CompiledEntry, classify_line_compiled, compile_entries,
+    ClassifiedCapture, ClassifiedMatch, CompiledEntry, classify_line_compiled,
+    classify_node_compiled, compile_entries,
 };
 use super::types::ConventionProjectionEntry;
 use crate::ConventionsProjection;
@@ -182,7 +201,41 @@ fn explain_match_compiled(
             attempted: Vec::new(),
         };
     }
-    let classification = classify_line_compiled(compiled, base, text);
+    from_classification(classify_line_compiled(compiled, base, text), entries)
+}
+
+/// Explain the CST node `node` — one of the five claim-candidate shapes
+/// [`crate::hir::lower_native::element::candidate`] recognizes (`CUE`,
+/// `COMPACT_CUE`, `PARENTHETICAL`, `SCENE_HEADING`, or a wholly-literal
+/// `CONTENT_LINE`) — matching the exact sub-node text `candidate`/
+/// `try_claim` extract for that shape, the same way
+/// [`crate::hir::classify::classify_node_compiled`] does (issue #2351).
+/// Pure and uncached, `node`'s own [`compile_entries`] counterpart to
+/// [`explain_match`] — see [`ExplainMatchCache`] for the memoized entry
+/// point.
+///
+/// `None` when `node`'s own kind is not one of those five shapes at all —
+/// the caller should fall back to [`explain_match`] against `node`'s own
+/// raw text in that case, exactly the pre-#2351 behavior for anything
+/// outside these five shapes.
+#[must_use]
+pub fn explain_match_node(
+    projection: &ConventionsProjection,
+    node: &SyntaxNode,
+) -> Option<LineExplanation> {
+    let compiled = compile_entries(projection);
+    let classification = classify_node_compiled(&compiled, node)?;
+    Some(from_classification(classification, &projection.entries))
+}
+
+/// Shared tail of [`explain_match_compiled`]/[`explain_match_node`]:
+/// compose a raw [`crate::LineClassification`] into [`LineExplanation`]'s
+/// caller-facing shape — written once so the two entry points cannot drift
+/// on what "matched" vs. "unmatched" means.
+fn from_classification(
+    classification: crate::LineClassification,
+    entries: &[ConventionProjectionEntry],
+) -> LineExplanation {
     match classification.matched {
         Some(winner) => LineExplanation::Matched {
             winner,
@@ -327,12 +380,43 @@ impl ExplainMatchCache {
     /// differs (by `Eq`) from the last call's — an unchanged projection
     /// reuses both the compiled patterns and, for a repeat `text`, the
     /// classification itself.
+    ///
+    /// `node` (issue #2351): when the caller holds a parsed claim-candidate
+    /// CST node for this exact line (e.g. via
+    /// [`crate::nearest_element_candidate`]), pass it here so the walk
+    /// matches the SAME sub-node text the compiler's own `try_claim` would,
+    /// rather than `text` whole — `text` still identifies the line (it
+    /// remains the cache key, see below) and still gates the blank-line
+    /// short-circuit, but `node`, when given, decides what is actually
+    /// classified. `None` keeps the pre-#2351 raw-text behavior, unchanged.
+    ///
+    /// `base` means "the file-absolute offset that offset zero in the
+    /// classified text corresponds to": `text`'s own start when `node` is
+    /// `None`, or `node.text_range().start()` when it is `Some` — passing
+    /// the wrong one of the two silently mis-shifts every returned range.
+    ///
+    /// # Why a node-derived result is never cached by `text` alone
+    ///
+    /// The raw-text cache below (keyed on `text`) assumes classifying the
+    /// same text twice always yields the same answer. That is true for the
+    /// text-only walk, but not for the node-aware one: the identical raw
+    /// line text can select a *different* CST shape depending on parser
+    /// context alone — e.g. `(hushed)` parses as a chain-gated
+    /// `PARENTHETICAL` (stripping the parens before matching) only directly
+    /// after a live cue; the same text elsewhere is an ordinary
+    /// `CONTENT_LINE` (matched with the parens still in it). Caching a
+    /// node-derived result under the bare-text key would let one
+    /// occurrence's classification leak onto an unrelated occurrence of the
+    /// same text. So the node path bypasses `self.lines` entirely — it
+    /// still reuses `self.compiled` (the w133 review's dominant-cost fix),
+    /// just not per-line memoization.
     #[must_use]
     pub fn explain(
         &mut self,
         projection: &ConventionsProjection,
         base: TextSize,
         text: &str,
+        node: Option<&SyntaxNode>,
     ) -> LineExplanation {
         if &self.projection != projection {
             self.projection = projection.clone();
@@ -347,6 +431,18 @@ impl ExplainMatchCache {
                 attempted: Vec::new(),
             };
         }
+        if let Some(node) = node
+            && let Some(classification) = classify_node_compiled(&self.compiled, node)
+        {
+            return rebase(
+                from_classification(classification, &self.projection.entries),
+                base,
+            );
+        }
+        // `node` is `None`, or is not (and has no ancestor that is, if the
+        // caller already resolved via `nearest_element_candidate`) one of
+        // the five claim-candidate shapes at all — fall through to the
+        // ordinary raw-text walk below, exactly the pre-#2351 behavior.
         if let Some(cached) = self.lines.get(text) {
             return rebase(from_cached(cached.clone(), &self.projection.entries), base);
         }
@@ -496,7 +592,7 @@ mod tests {
         ]);
         let direct = explain_match(&p, TextSize::from(50), "INT. MARKET SQUARE");
         let mut cache = ExplainMatchCache::new();
-        let cached = cache.explain(&p, TextSize::from(50), "INT. MARKET SQUARE");
+        let cached = cache.explain(&p, TextSize::from(50), "INT. MARKET SQUARE", None);
         assert_eq!(direct, cached);
     }
 
@@ -510,8 +606,8 @@ mod tests {
         let p = projection(&[decl("interior", 10, "^INT\\. (?<place>.+)$")]);
         let mut cache = ExplainMatchCache::new();
 
-        let first = cache.explain(&p, TextSize::from(0), "INT. MARKET SQUARE");
-        let second = cache.explain(&p, TextSize::from(1000), "INT. MARKET SQUARE");
+        let first = cache.explain(&p, TextSize::from(0), "INT. MARKET SQUARE", None);
+        let second = cache.explain(&p, TextSize::from(1000), "INT. MARKET SQUARE", None);
 
         let (w1, _) = first.into_matched().expect("expected a match");
         let (w2, _) = second.into_matched().expect("expected a match");
@@ -533,11 +629,11 @@ mod tests {
         let after = projection(&[decl("cue", 10, "^(?<name>[A-Z]+)$")]);
 
         let mut cache = ExplainMatchCache::new();
-        let first = cache.explain(&before, TextSize::from(0), "VENDOR");
+        let first = cache.explain(&before, TextSize::from(0), "VENDOR", None);
         let (winner, _) = first.into_matched().expect("expected a match");
         assert_eq!(winner.handler.text, "any_line");
 
-        let second = cache.explain(&after, TextSize::from(0), "VENDOR");
+        let second = cache.explain(&after, TextSize::from(0), "VENDOR", None);
         let (winner, _) = second.into_matched().expect("expected a match");
         assert_eq!(
             winner.handler.text, "cue",
@@ -554,7 +650,7 @@ mod tests {
         let p = projection(&[decl("any_line", 10, "^.*$")]);
         let mut cache = ExplainMatchCache::new();
         for i in 0..(MAX_CACHED_LINES + 10) {
-            let _ = cache.explain(&p, TextSize::from(0), &format!("line number {i}"));
+            let _ = cache.explain(&p, TextSize::from(0), &format!("line number {i}"), None);
         }
         assert!(
             cache.lines.len() <= MAX_CACHED_LINES,
@@ -569,7 +665,7 @@ mod tests {
     fn a_blank_line_never_occupies_a_cache_slot() {
         let p = projection(&[decl("any_line", 10, "^.*$")]);
         let mut cache = ExplainMatchCache::new();
-        let _ = cache.explain(&p, TextSize::from(0), "   \t  ");
+        let _ = cache.explain(&p, TextSize::from(0), "   \t  ", None);
         assert!(cache.lines.is_empty());
     }
 
@@ -584,16 +680,164 @@ mod tests {
         ]);
 
         let mut cache = ExplainMatchCache::new();
-        let first = cache.explain(&before, TextSize::from(0), "plain content");
+        let first = cache.explain(&before, TextSize::from(0), "plain content", None);
         let attempted = first.into_attempted().expect("expected a miss");
         assert_eq!(attempted.len(), 1);
 
-        let second = cache.explain(&after, TextSize::from(0), "plain content");
+        let second = cache.explain(&after, TextSize::from(0), "plain content", None);
         let attempted = second.into_attempted().expect("expected a miss");
         assert_eq!(
             attempted.len(),
             2,
             "the new entry must appear after the projection changed"
+        );
+    }
+
+    // ─── Node-aware explain (issue #2351) ────────────────────────────
+
+    /// Lower `src` through the real native frontend, returning the compiled
+    /// `HirFile` alongside the root [`SyntaxNode`] the same parse produced
+    /// — mirrors `classify::tests::lower_src`, this module's own layer of
+    /// the same fixture-building need.
+    fn lower_src(src: &str) -> (crate::HirFile, SyntaxNode) {
+        use brink_syntax_native::ast::AstNode as _;
+
+        let parse = brink_syntax_native::parse(src);
+        let tree = parse.tree();
+        let (hir, _manifest, diags) = crate::hir::lower_native::lower(crate::FileId(0), &tree);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        (hir, tree.syntax().clone())
+    }
+
+    fn projection_from(hir: &crate::HirFile) -> ConventionsProjection {
+        ConventionsProjection::from_decls(&hir.claim_handlers, &no_structs())
+    }
+
+    /// Find the exact node `try_claim` claimed for `elm`, via
+    /// [`crate::nearest_element_candidate`] starting from the token at the
+    /// claimed line's own start.
+    fn node_for(root: &SyntaxNode, elm: &crate::ElementMatch) -> SyntaxNode {
+        let token = root
+            .token_at_offset(elm.line.start())
+            .right_biased()
+            .expect("a real token must start at the claimed line's own start");
+        let start_node = token.parent().expect("every token has a parent node");
+        crate::nearest_element_candidate(&start_node)
+            .expect("the compiler claimed this line, so some ancestor must be a candidate")
+    }
+
+    const CUE_FIXTURE: &str = "\
+@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10)]
+fn cue(name: string) {
+  return name;
+}
+@[convention(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", order = 20)]
+fn parenthetical(delivery: string) {
+  return delivery;
+}
+
+flow main() {
+  @VENDOR
+  (hushed)
+}
+";
+
+    /// Issue #2351's own headline case: [`explain_match_node`] against a
+    /// real `@VENDOR` cue node agrees with the compiler — `matched: true`,
+    /// winner `cue`, capture `name = "VENDOR"` — where the pre-fix raw-text
+    /// walk reported a flat miss (see `EditorSession`'s own
+    /// `explain_match_never_reports_a_cue_kind_for_a_real_at_cue_line`,
+    /// renamed by this issue's fix to prove the opposite).
+    #[test]
+    fn explain_match_node_reports_a_real_hit_for_a_cue_line() {
+        let (hir, root) = lower_src(CUE_FIXTURE);
+        let projection = projection_from(&hir);
+        let cue_match = hir
+            .element_matches
+            .iter()
+            .find(|m| m.kind == crate::ElementKind::Cue)
+            .expect("the @VENDOR line must be claimed");
+        let node = node_for(&root, cue_match);
+
+        let explanation = explain_match_node(&projection, &node).expect("a recognized shape");
+        let (winner, _shadowed) = explanation
+            .into_matched()
+            .expect("the node-aware walk must agree the compiler claimed this line");
+        assert_eq!(winner.handler.text, "cue");
+        assert_eq!(winner.captures.len(), 1);
+        assert_eq!(winner.captures[0].name, "name");
+        assert_eq!(winner.captures[0].text, "VENDOR");
+    }
+
+    /// [`explain_match_node`] declines (returns `None`) for a node that is
+    /// not, and has no ancestor that is, one of the five claim-candidate
+    /// shapes — the caller's documented fallback-to-raw-text signal.
+    #[test]
+    fn explain_match_node_declines_for_a_non_candidate_node() {
+        let (hir, root) = lower_src(CUE_FIXTURE);
+        let projection = projection_from(&hir);
+        // The `flow main() { ... }` header itself is not one of the five
+        // shapes at all.
+        let flow_kw = root
+            .descendants_with_tokens()
+            .find_map(rowan::NodeOrToken::into_token)
+            .expect("the file must start with a real token");
+        let start_node = flow_kw.parent().expect("every token has a parent");
+        assert!(
+            crate::nearest_element_candidate(&start_node).is_none(),
+            "the file's very first token must not resolve to a claim candidate"
+        );
+        assert!(explain_match_node(&projection, &start_node).is_none());
+    }
+
+    /// [`ExplainMatchCache::explain`] uses the node path when given one,
+    /// reporting the SAME real hit `explain_match_node` does directly —
+    /// proving the cache is genuinely wired to the node-aware walk, not
+    /// silently still falling through to the raw-text miss.
+    #[test]
+    fn explain_cache_reports_a_real_hit_through_the_node_path() {
+        let (hir, root) = lower_src(CUE_FIXTURE);
+        let projection = projection_from(&hir);
+        let cue_match = hir
+            .element_matches
+            .iter()
+            .find(|m| m.kind == crate::ElementKind::Cue)
+            .expect("the @VENDOR line must be claimed");
+        let node = node_for(&root, cue_match);
+        let node_start = node.text_range().start();
+
+        let mut cache = ExplainMatchCache::new();
+        let explanation = cache.explain(&projection, node_start, "@VENDOR", Some(&node));
+        let (winner, _) = explanation
+            .into_matched()
+            .expect("the cache must report the same real hit explain_match_node does");
+        assert_eq!(winner.handler.text, "cue");
+        assert_eq!(winner.captures[0].text, "VENDOR");
+    }
+
+    /// Documented design decision (this module's own `explain` doc, "Why a
+    /// node-derived result is never cached by `text` alone"): a node-path
+    /// classification must never occupy a `self.lines` slot, since caching
+    /// it under the bare-text key would be unsound the moment the same raw
+    /// text can select a different CST shape elsewhere in a file.
+    #[test]
+    fn explain_cache_never_caches_a_node_derived_result_by_raw_text() {
+        let (hir, root) = lower_src(CUE_FIXTURE);
+        let projection = projection_from(&hir);
+        let cue_match = hir
+            .element_matches
+            .iter()
+            .find(|m| m.kind == crate::ElementKind::Cue)
+            .expect("the @VENDOR line must be claimed");
+        let node = node_for(&root, cue_match);
+        let node_start = node.text_range().start();
+
+        let mut cache = ExplainMatchCache::new();
+        let _ = cache.explain(&projection, node_start, "@VENDOR", Some(&node));
+        assert!(
+            cache.lines.is_empty(),
+            "a node-derived hit must never be inserted into the raw-text cache: {:?}",
+            cache.lines
         );
     }
 }

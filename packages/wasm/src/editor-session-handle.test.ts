@@ -53,6 +53,10 @@ const hoisted = vi.hoisted(() => {
     clear_deny_warnings_override(): void {
       calls.push({ method: "clear_deny_warnings_override", args: [] });
     }
+    is_read_only(path: unknown): boolean {
+      calls.push({ method: "is_read_only", args: [path] });
+      return path === "std/core.brink";
+    }
   }
   return { calls, EditorSessionStub };
 });
@@ -251,5 +255,32 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
       { method: "clear_deny_warnings_override", args: [] },
     ]);
     expect(handle.generation).toBe(before + 1);
+  });
+
+  // Issue #2306 (ruled 2026-08-06 "Mounted stdlib presents as a read-only
+  // library node"): the session-level read-only query — the primitive
+  // `ProjectSession.applyEdit` consults before writing through the bulk
+  // edit seam (search/replace, results-buffer edits, binder undo).
+
+  it("exposes isReadOnly (#2306: the session-level read-only query)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.isReadOnly).toBe("function");
+  });
+
+  it("forwards isReadOnly to is_read_only and does NOT bump generation (a query, not a mutation)", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const readOnly = handle.isReadOnly("std/core.brink");
+    const notReadOnly = handle.isReadOnly("main.ink");
+
+    expect(hoisted.calls).toEqual([
+      { method: "is_read_only", args: ["std/core.brink"] },
+      { method: "is_read_only", args: ["main.ink"] },
+    ]);
+    expect(readOnly).toBe(true);
+    expect(notReadOnly).toBe(false);
+    expect(handle.generation).toBe(before);
   });
 });

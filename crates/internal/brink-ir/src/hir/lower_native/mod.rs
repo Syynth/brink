@@ -155,6 +155,14 @@ use crate::{
 
 mod import;
 
+// Issue #2351: `hir::classify`'s node-aware entry points need to select the
+// SAME sub-node `try_claim` matches against, for the SAME reason `try_claim`
+// itself does — a copy of `candidate`'s match arms would re-diverge, which
+// is exactly the bug #2351 exists to close. Crate-internal only
+// (`pub(crate)`): no external consumer of `brink-ir` selects a claim
+// candidate itself.
+pub(crate) use element::candidate;
+
 /// Lower a complete native source file to HIR.
 ///
 /// Produces the same `(HirFile, SymbolManifest, Vec<Diagnostic>)` triple

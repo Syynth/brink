@@ -149,6 +149,16 @@ export interface MountStudioOptions {
    */
   onFilesChanged?: (changes: FileChange[]) => void;
   /**
+   * Whether `onFilesChanged` delivery counts as persistence (default
+   * `true`, the write-through contract). Overlay hosts whose egress
+   * handler feeds a backup ring rather than canonical storage (the
+   * celeris file model; brink-desktop D2 + `OverlayPersistence`) set
+   * `false`: batches still deliver, but dirty means "diverges from the
+   * last canonical save" and only the save commands clear it. See
+   * `ProjectSessionOptions.egressPersists`.
+   */
+  egressPersists?: boolean;
+  /**
    * File provider override (issue #320 / testability). Defaults to an
    * {@link InMemoryFileProvider} seeded from `files`. A host can pass its own
    * provider (e.g. one whose `onExternalChange` is driven by a real filesystem
@@ -349,12 +359,29 @@ export async function mountStudio(
   const provider = options.provider ?? new InMemoryFileProvider(options.files);
   const { entryFile } = options;
   const store = createStudioStore();
+  // Late-bound: DocumentSessions is constructed after ProjectSession but
+  // external-change events only fire after initialize(), by which point the
+  // assignment below has run.
+  let documentsRef: DocumentSessions | null = null;
+
   const project = new ProjectSession({
     provider,
     entryFile,
     // Host egress (#154): every session-content mutation reports through
     // the project's FileChangeHub, which batches + debounces into this.
     onFilesChanged: options.onFilesChanged,
+    // The #320 CLEAN path's view half: the session content just changed
+    // under an open editor, so re-sync its mounted views — otherwise the
+    // stale view's next flush silently reverts the external update (found
+    // live by brink-desktop's D2 watcher, this hook's first real producer).
+    // Deletions skip: the session file was removed; open views of it are
+    // the shell's lifecycle concern, not a content re-sync.
+    onExternalFileChange: (path, content) => {
+      if (content !== null) documentsRef?.refreshExternal(path);
+    },
+    // Overlay hosts (backup-ring egress) declare that delivery is NOT
+    // persistence, so dirty survives until a canonical save (D2 model).
+    egressPersists: options.egressPersists,
     // External-conflict surface (#320, Track V): the B1 hook fires here when
     // an on-disk change collides with an unsaved buffer. Mirror it into the
     // store so the merge view (banner + 2-way MergeView) can render + resolve.
@@ -511,6 +538,7 @@ export async function mountStudio(
   // line info, auto-pin, focus tracking, and the e2e `__brinkView` hook all
   // flow through these callbacks; the manager keeps them targeted at the
   // focused group's active view.
+  documentsRef = null; // (re)assigned immediately below
   const documents = new DocumentSessions(project, {
     onCursorChange: (line, col) => store.getState().setCursor(line, col),
     onLineInfoChange: (info, hints) => store.getState().setLineInfo(info, hints),
@@ -575,6 +603,7 @@ export async function mountStudio(
     documents,
     notify: (n) => void notifications.notify(n),
   });
+  documentsRef = documents;
 
   // The store's document opener (Binder rows, addFile): note the target so
   // symbol mounts can fall back to the outline range, then open through the

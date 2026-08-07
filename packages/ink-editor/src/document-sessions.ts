@@ -675,6 +675,29 @@ export class DocumentSessions {
   }
 
   /**
+   * An external change landed in the session (#320's clean path — a real
+   * fs watcher's update, or `pushExternalChange` in tests): re-sync every
+   * mounted view of `path` from the session, exactly like the mount-time
+   * refresh. The replace is sync-annotated, so it never flows back through
+   * the user-edit flush as an edit of its own.
+   *
+   * This is the wire `onExternalFileChange` existed for and never had:
+   * without it, an open view of an externally-updated file keeps its stale
+   * text and the next view flush silently writes that stale text back over
+   * the session — the reverse of the clobber #320 fixed (found live by the
+   * brink-desktop D2 watcher, the clean path's first real consumer:
+   * session updated, Player compiled the update, the visible editor and
+   * every later save reverted it).
+   */
+  refreshExternal(path: string): void {
+    for (const slot of this.slots.values()) {
+      if (slot.path !== path) continue;
+      if (slot.view !== null) this.refreshSlotFromFile(slot);
+      else slot.state = null; // cached-only slot rebuilds from the session on next mount
+    }
+  }
+
+  /**
    * A knot/stitch was renamed in place (#305): re-key the open fragment slot
    * for `${path}::${oldName}` to `${path}::${newName}` — slot map key, docKey,
    * `slot.symbol`, focused-slot id — dropping the stale symbol hint so the view

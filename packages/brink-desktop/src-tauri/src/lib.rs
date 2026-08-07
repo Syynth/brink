@@ -136,6 +136,196 @@ async fn rename_file(root: String, from: String, to: String) -> Result<(), Shell
     std::fs::rename(&from_path, &to_path).map_err(|e| io_err(&from_path, e))
 }
 
+// ── Filesystem watcher (docs/desktop-shell-spec.md D2) ──────────────
+//
+// Watches the open project root and emits `fs:external-change` events to
+// the webview: `{ path: <project-relative key>, content: <text|null> }`,
+// null meaning deleted. Events are debounced (300 ms of quiet) and
+// filtered to project files, mirroring `list_files`' rules. The provider
+// forwards them into `ProjectSession`'s #320 machinery — never-clobber
+// 3-way against the last canonical save — which this watcher gives its
+// first real filesystem.
+
+/// The live watcher for the (single) open project. Dropping the watcher
+/// stops event delivery; the debounce thread then exits on channel close.
+struct WatchState(std::sync::Mutex<Option<notify::RecommendedWatcher>>);
+
+#[derive(Clone, serde::Serialize)]
+struct ExternalChangeOut {
+    path: String,
+    content: Option<String>,
+}
+
+/// Project-relative key for an absolute path inside `root`, applying the
+/// same skip rules as `list_files` (dotdirs, node_modules, target, dist)
+/// and the same file filter. None ⇒ not a project file, ignore.
+fn watch_key(root: &Path, abs: &Path) -> Option<String> {
+    let rel = abs.strip_prefix(root).ok()?;
+    let mut parts: Vec<&str> = Vec::new();
+    for c in rel.components() {
+        let s = c.as_os_str().to_str()?;
+        parts.push(s);
+    }
+    let (file, dirs) = parts.split_last()?;
+    if dirs.iter().any(|d| is_skipped_dir(d)) {
+        return None;
+    }
+    if !is_project_file(Path::new(file)) {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+#[tauri::command]
+async fn start_watch(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WatchState>,
+    root: String,
+) -> Result<(), ShellError> {
+    use notify::Watcher;
+    use tauri::Emitter;
+
+    let (tx, rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    })
+    .map_err(|e| ShellError::Io {
+        path: root.clone(),
+        source: std::io::Error::other(e),
+    })?;
+    watcher
+        .watch(Path::new(&root), notify::RecursiveMode::Recursive)
+        .map_err(|e| ShellError::Io {
+            path: root.clone(),
+            source: std::io::Error::other(e),
+        })?;
+
+    // Replacing any previous watcher stops its delivery; its debounce
+    // thread exits when the dropped watcher's channel disconnects.
+    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
+
+    let root_path = PathBuf::from(root);
+    std::thread::spawn(move || {
+        let mut pending: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+        loop {
+            match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                Ok(Ok(event)) => pending.extend(event.paths),
+                Ok(Err(_)) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    for abs in std::mem::take(&mut pending) {
+                        let Some(key) = watch_key(&root_path, &abs) else {
+                            continue;
+                        };
+                        let content = match std::fs::read_to_string(&abs) {
+                            Ok(text) => Some(text),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                            Err(_) => continue, // transient; a later event retries
+                        };
+                        let _ = app.emit("fs:external-change", ExternalChangeOut {
+                            path: key,
+                            content,
+                        });
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn stop_watch(state: tauri::State<'_, WatchState>) -> Result<(), ShellError> {
+    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    Ok(())
+}
+
+// ── Backup ring (docs/desktop-shell-spec.md D2; 2026-08-07 overlay ruling) ──
+
+/// One ring entry from the webview (`TauriBackupSink.append`).
+#[derive(serde::Deserialize)]
+struct BackupEntryIn {
+    path: String,
+    content: String,
+    /// Milliseconds since epoch, from the frontend's clock.
+    at: u64,
+}
+
+/// Ring bounds — enforced HERE, next to the storage (the sink owns its
+/// bounds per the OverlayPersistence contract). Working defaults from the
+/// 2026-08-07 ruling; a Settings surface can adjust later.
+const RING_MAX_ENTRIES: usize = 25;
+const RING_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// A filesystem-safe, deterministic key for one project's ring directory.
+/// The full sanitized path (not a hash): stable forever, debuggable by eye.
+fn project_ring_key(root: &str) -> String {
+    root.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .collect()
+}
+
+/// Append crash-protection snapshots to the project's backup ring, then
+/// prune oldest-first until the bounds hold. Filenames are
+/// `{at:013}_{seq:02}_{sanitized-rel}.txt` — zero-padded millis make
+/// lexicographic order chronological, so pruning is a sort + truncate.
+#[tauri::command]
+async fn append_backups(
+    app: tauri::AppHandle,
+    root: String,
+    entries: Vec<BackupEntryIn>,
+) -> Result<(), ShellError> {
+    use tauri::Manager;
+
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| ShellError::Io {
+            path: "app-data dir".to_owned(),
+            source: std::io::Error::other(e),
+        })?
+        .join("backups")
+        .join(project_ring_key(&root));
+    std::fs::create_dir_all(&base).map_err(|e| io_err(&base, e))?;
+
+    for (i, entry) in entries.iter().enumerate() {
+        // Guard the rel path exactly like the project commands do; a ring
+        // write must never become a path-escape vector either.
+        resolve(&root, &entry.path)?;
+        let name = format!(
+            "{:013}_{:02}_{}.txt",
+            entry.at,
+            i,
+            project_ring_key(&entry.path)
+        );
+        let file = base.join(name);
+        std::fs::write(&file, &entry.content).map_err(|e| io_err(&file, e))?;
+    }
+
+    // Prune: oldest first (lexicographic == chronological by construction).
+    let mut files: Vec<(PathBuf, u64)> = std::fs::read_dir(&base)
+        .map_err(|e| io_err(&base, e))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            meta.is_file().then(|| (e.path(), meta.len()))
+        })
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|(_, len)| len).sum();
+    let mut count = files.len();
+    for (path, len) in &files {
+        if count <= RING_MAX_ENTRIES && total <= RING_MAX_BYTES {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            count -= 1;
+            total -= len;
+        }
+    }
+    Ok(())
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
@@ -153,16 +343,105 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+/// Build the native menu bar. Project lifecycle (Open/Close) is
+/// SHELL-owned — it sits above `mountStudio`, so hand-wiring it here does
+/// not conflict with the D2 ruling that *studio* commands reach menus via
+/// the command registry (docs/desktop-shell-spec.md "Menus"); Save/Play
+/// items arrive in D2 through that registry. The Edit submenu's predefined
+/// roles are load-bearing: without them the webview loses ⌘C/⌘V/⌘X on
+/// macOS.
+fn build_menu(
+    handle: &tauri::AppHandle,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let app_menu = Submenu::with_items(
+        handle,
+        "Brink Studio",
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, None, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::quit(handle, None)?,
+        ],
+    )?;
+    let open = MenuItem::with_id(
+        handle,
+        "open-project",
+        "Open Project…",
+        true,
+        Some("CmdOrCtrl+O"),
+    )?;
+    // Shift-modified so plain ⌘W keeps its native close-window role.
+    let close = MenuItem::with_id(
+        handle,
+        "close-project",
+        "Close Project",
+        true,
+        Some("CmdOrCtrl+Shift+W"),
+    )?;
+    let file_menu = Submenu::with_items(
+        handle,
+        "File",
+        true,
+        &[
+            &open,
+            &close,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::close_window(handle, None)?,
+        ],
+    )?;
+    let edit_menu = Submenu::with_items(
+        handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(handle, None)?,
+            &PredefinedMenuItem::redo(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::cut(handle, None)?,
+            &PredefinedMenuItem::copy(handle, None)?,
+            &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
+        ],
+    )?;
+    Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Emitter;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(WatchState(std::sync::Mutex::new(None)))
+        .setup(|app| {
+            let menu = build_menu(app.handle())?;
+            app.set_menu(menu)?;
+            // Menu events forward to the webview as plain events; the
+            // frontend owns what "open" and "close" mean (it holds the
+            // StudioHandle). The shell stays policy-free.
+            app.on_menu_event(|app, event| {
+                let forwarded = match event.id().as_ref() {
+                    "open-project" => Some("menu:open-project"),
+                    "close-project" => Some("menu:close-project"),
+                    _ => None,
+                };
+                if let Some(name) = forwarded {
+                    let _ = app.emit(name, ());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_files,
             read_file,
             write_file,
             delete_file,
             rename_file,
+            append_backups,
+            start_watch,
+            stop_watch,
             pick_project_folder,
         ])
         .run(tauri::generate_context!())

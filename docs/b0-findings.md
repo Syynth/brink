@@ -6,6 +6,12 @@ decision-log says so. Standing caveat inherited from the batch-4 delegated
 ruling: these build on Q1–Q7 rulings that were adopted not-fully-reviewed —
 surprises get flagged, not presumed settled.
 
+**Status update — RULED 2026-07-19 (evening walkthrough): NF-1–NF-6 are
+all ruled** (batch 7); dated stamps sit at each section below. NF-4's
+ruling **overrides** the recommendation; NF-5's extends it with a new
+slice (B0.8b). See the decision-log's consolidated 2026-07-19
+evening-walkthrough entry. No B0 slice remains ruling-blocked.
+
 ---
 
 ## NF-1 — Where does the native lexer/CST live?
@@ -35,6 +41,10 @@ clean: frontends are peers behind opaque provenance, so the second
 frontend's syntax layer should be a peer crate. The two-client framing
 (chart as a body-dialect *inside* the native frontend, Q5(a)) also lives
 more honestly in a crate whose parser owns the body-dialect dispatch seam.
+
+**RULED 2026-07-19 (evening walkthrough): (a)** — the native lexer/CST is
+a new peer crate, **`crates/internal/brink-syntax-native`**. B0.5's text
+in `b0-sequencing.md` names the crate.
 
 ---
 
@@ -69,6 +79,13 @@ code-bodied `flow` is honestly spellable in the subset. Rider: publish the
 gap list to the writer at first light so the friction journal separates
 "missing feature" from "confusing syntax" — both are data, but they route
 differently.
+
+**RULED 2026-07-19 (evening walkthrough): (b)** — writer-sufficient
+subset: prose dialect complete, code dialect minimal (only constructs that
+lower to existing HIR); deferred constructs parse but are rejected loudly
+("ruled but not yet lowered"); the gap list is published at **writer
+onboarding** (which, per NF-4's ruling below, is B0 completion, not first
+light).
 
 ---
 
@@ -105,6 +122,12 @@ converters stay in charter §8.5's later round. Rider to confirm: an
 ink-dialect `INCLUDE` of a `.brink` file (or vice versa) is a hard error,
 not a silent skip.
 
+**RULED 2026-07-19 (evening walkthrough): (b)** — declared source root in
+`brink.toml`; module path = relative path; the INCLUDE machinery is never
+consumed for `.brink`. **RIDER, ruled with it (confirming the above):
+cross-dialect INCLUDE — `.ink`↔`.brink`, either direction — is a hard
+error, never a silent skip.**
+
 ---
 
 ## NF-4 — What is the earliest slice at which the writer can author a scene? (the season clock)
@@ -129,6 +152,14 @@ through the editor, so first light needs at least highlighting +
 diagnostics surfacing. Rider: the maintainer should explicitly
 prioritize the NS-T minimum bar against B0.6/B0.7's timeline — B0 cannot
 ship the season's exit criterion alone.
+
+**RULED 2026-07-19 (evening walkthrough): (a) — this OVERRIDES the
+recommendation (b) above.** Writer onboarding gates on **ALL of B0**
+(including B0.8/B0.9/B0.10 — and B0.8b's ratification gate, per NF-5's
+ruling), not on the first-light checkpoint. The NS-T timing pressure is
+correspondingly **relaxed but not void**: the editor minimum bar has B0's
+full runway, but it still gates onboarding itself. B0.10's text in
+`b0-sequencing.md` is updated accordingly.
 
 ---
 
@@ -157,6 +188,21 @@ translation of all 390 cases — a converter is charter §8.5's later round;
 and respelled cases live beside their ink twins in-tree so drift is
 reviewable.
 
+**RULED 2026-07-19 (evening walkthrough): (c+)** — (c) as recommended
+(snapshots + hand-curated respelled differentials as the B0.7/B0.8 exit
+gates), **PLUS a new slice — B0.8b: HIR→brink emitter + mechanical corpus
+converter** (parallel lane; entry: B0.8 merged): emit `.brink` from HIR
+(comment-free output is fine for corpus purposes), mechanically convert
+the full 390-case corpus, and the **full-corpus episode-identity
+differential becomes the B0 ratification exit gate**. This extends the
+hand-curated-only rider above: the hand-curated set remains the B0.7/B0.8
+gate; the mechanical corpus differential is B0's *ratification* gate. The
+ruling's rationale is deliberate machinery-sharing — the emitter is shared
+with the future `.brink` formatter and printer-based IDE rewrites.
+Crate-name suggestion: **`brink-respell`** — NEVER `brink-converter`,
+which names the retired `.ink.json` crate (#544). Slice text in
+`b0-sequencing.md` §2.
+
 ---
 
 ## NF-6 — Does the B0.3 admission validator run always-on, or dev/test-only?
@@ -180,6 +226,11 @@ maintainer ruling per check, never a blanket switch. (Note the fence:
 the dev/prod split is ruled available only where prod behavior is defined
 and fabricates nothing — a skipped admission check "fabricates" trust, so
 any demotion request should expect pushback; that is by design.)
+
+**RULED 2026-07-19 (evening walkthrough): (a)** — the admission validator
+is always-on; a **measured perf budget** joins B0.3's exit criteria;
+per-check dev-mode demotion happens only by an individual maintainer
+ruling per check, never a blanket switch.
 
 ---
 

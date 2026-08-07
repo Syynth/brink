@@ -23,6 +23,12 @@ brink-runtime = { workspace = true }
 brink-syntax = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
+# `SyntaxNode` (issue #2351): `explain_match.rs` walks the native parse
+# tree `brink-db`'s `parse_native` already hands back, to find the exact
+# claim-candidate node `hir::lower_native::element::candidate` would select
+# for the line under the cursor — no new parse of its own, just naming the
+# type `ProjectDb::parse_native`'s return value is made of.
+brink-syntax-native = { workspace = true }
 # `InMemory`: the map-backed `SourceTree` — the web mount's natural home,
 # since compile.rs's documents already live in memory.
 brink-source-tree = { workspace = true }
