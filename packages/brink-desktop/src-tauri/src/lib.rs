@@ -23,6 +23,12 @@ enum ShellError {
         #[source]
         source: std::io::Error,
     },
+    #[error("no subcommand given")]
+    MissingSubcommand,
+    #[error("subcommand not in the sidecar allowlist: {0}")]
+    DisallowedCommand(String),
+    #[error("brink-cli sidecar error: {0}")]
+    Sidecar(String),
 }
 
 impl serde::Serialize for ShellError {
@@ -326,6 +332,104 @@ async fn append_backups(
     Ok(())
 }
 
+// ── CLI sidecar (docs/desktop-shell-spec.md D3; #2392) ──────────────
+//
+// `brink-cli` ships as a Tauri sidecar (`bundle.externalBin` in
+// `tauri.conf.json`, staged by `scripts/ensure-cli-sidecar.mjs`) so batch
+// xliff/locale operations run against the exact workspace version the
+// shell was built from, never whatever `brink` happens to be on the
+// user's PATH. `run_cli` is the ONLY way the webview can reach it, and it
+// is deliberately not a passthrough: the first argument must be one of a
+// fixed subcommand allowlist. A webview that can run arbitrary sidecar
+// args is a webview that can run arbitrary code with the app's
+// filesystem reach — this allowlist is the real security boundary, not
+// the `shell:allow-execute` capability scope (which only pins *which
+// binary*, not *which arguments*).
+//
+// ⚠ House rule: the intl pipeline never consumes `.ink.json` — every
+// allowed subcommand here (mirroring `brink-cli`'s own surface) operates
+// on `.ink`/`.brink`/`.inkb`/`.inkt` inputs only.
+const ALLOWED_CLI_SUBCOMMANDS: &[&str] = &[
+    "export-xliff",
+    "compile-locale",
+    "regenerate-xliff",
+    "compile",
+];
+
+/// One line of sidecar output, forwarded to the webview as it streams
+/// rather than buffered until exit — `compile-locale` on a large story can
+/// run for seconds, and a future fuller intl UI wants live progress.
+#[derive(Clone, serde::Serialize)]
+struct CliOutputLine {
+    /// `"stdout"` or `"stderr"`.
+    stream: &'static str,
+    line: String,
+}
+
+/// The allowlist check, pulled out of [`run_cli`] so it's testable without
+/// an `AppHandle`/sidecar: `args[0]` must be one of
+/// [`ALLOWED_CLI_SUBCOMMANDS`], checked before the sidecar is ever spawned.
+fn validate_cli_args(args: &[String]) -> Result<(), ShellError> {
+    let subcommand = args.first().ok_or(ShellError::MissingSubcommand)?;
+    if !ALLOWED_CLI_SUBCOMMANDS.contains(&subcommand.as_str()) {
+        return Err(ShellError::DisallowedCommand(subcommand.clone()));
+    }
+    Ok(())
+}
+
+/// Run an allowlisted `brink-cli` subcommand as a Tauri sidecar, streaming
+/// its stdout/stderr to the webview as `cli:output` events and resolving
+/// to the process exit code once it terminates. `args[0]` must be one of
+/// [`ALLOWED_CLI_SUBCOMMANDS`]; anything else is rejected before the
+/// sidecar is ever spawned.
+#[tauri::command]
+async fn run_cli(app: tauri::AppHandle, args: Vec<String>) -> Result<i32, ShellError> {
+    use tauri::Emitter;
+    use tauri_plugin_shell::process::CommandEvent;
+    use tauri_plugin_shell::ShellExt;
+
+    validate_cli_args(&args)?;
+
+    let sidecar = app
+        .shell()
+        .sidecar("brink-cli")
+        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
+    let (mut rx, _child) = sidecar
+        .args(&args)
+        .spawn()
+        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
+
+    let mut exit_code: i32 = -1;
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                let _ = app.emit(
+                    "cli:output",
+                    CliOutputLine {
+                        stream: "stdout",
+                        line: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
+                );
+            }
+            CommandEvent::Stderr(bytes) => {
+                let _ = app.emit(
+                    "cli:output",
+                    CliOutputLine {
+                        stream: "stderr",
+                        line: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
+                );
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code.unwrap_or(-1);
+            }
+            CommandEvent::Error(message) => return Err(ShellError::Sidecar(message)),
+            _ => {}
+        }
+    }
+    Ok(exit_code)
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
@@ -395,6 +499,11 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+Shift+W"),
     )?;
+    // Proves the sidecar path end-to-end (D3, #2392); the fuller intl UI
+    // (locale picker, progress, batch ops beyond xliff export) is future
+    // work — this item exists to exercise one real path, not to be it.
+    let export_xliff =
+        MenuItem::with_id(handle, "export-xliff", "Export XLIFF…", true, None::<&str>)?;
     let file_menu = Submenu::with_items(
         handle,
         "File",
@@ -402,6 +511,8 @@ fn build_menu(
         &[
             &open,
             &close,
+            &PredefinedMenuItem::separator(handle)?,
+            &export_xliff,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::close_window(handle, None)?,
         ],
@@ -429,6 +540,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
         .setup(|app| {
             let menu = build_menu(app.handle())?;
@@ -440,6 +552,7 @@ pub fn run() {
                 let forwarded = match event.id().as_ref() {
                     "open-project" => Some("menu:open-project"),
                     "close-project" => Some("menu:close-project"),
+                    "export-xliff" => Some("menu:export-xliff"),
                     "quit" => Some("menu:quit"),
                     _ => None,
                 };
@@ -459,6 +572,7 @@ pub fn run() {
             start_watch,
             stop_watch,
             pick_project_folder,
+            run_cli,
         ])
         .run(tauri::generate_context!())
         .expect("error while running brink-desktop");
@@ -483,5 +597,48 @@ mod tests {
         assert!(is_project_file(Path::new("brink.toml")));
         assert!(!is_project_file(Path::new("a/story.ink.json")));
         assert!(!is_project_file(Path::new("Cargo.toml")));
+    }
+
+    fn args(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn cli_allowlist_accepts_every_documented_subcommand() {
+        for sub in [
+            "export-xliff",
+            "compile-locale",
+            "regenerate-xliff",
+            "compile",
+        ] {
+            assert!(
+                validate_cli_args(&args(&[sub, "story.brink"])).is_ok(),
+                "expected {sub} to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_allowlist_rejects_arbitrary_passthrough() {
+        // The whole point of the allowlist: a subcommand `brink-cli` really
+        // has (`play`) but that isn't fenced for the sidecar, and an
+        // arbitrary non-brink-cli binary name/shell metacharacter, must
+        // both be rejected before the sidecar is ever spawned.
+        assert!(matches!(
+            validate_cli_args(&args(&["play", "story.brink"])),
+            Err(ShellError::DisallowedCommand(_))
+        ));
+        assert!(matches!(
+            validate_cli_args(&args(&["--", "/bin/sh"])),
+            Err(ShellError::DisallowedCommand(_))
+        ));
+    }
+
+    #[test]
+    fn cli_allowlist_rejects_empty_args() {
+        assert!(matches!(
+            validate_cli_args(&args(&[])),
+            Err(ShellError::MissingSubcommand)
+        ));
     }
 }

@@ -21,10 +21,12 @@
 
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { save } from "@tauri-apps/plugin-dialog";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
 import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
+import { runCli } from "./cli.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
@@ -33,6 +35,13 @@ const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 let current: StudioHandle | null = null;
 /** The autosave ticker for the open project; cleared on close. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+/**
+ * The open project's absolute root and resolved entry file — tracked
+ * alongside `current` so `exportXliff` (D3, #2392) has an absolute input
+ * path to hand the sidecar without re-deriving it from the provider.
+ */
+let currentRoot: string | null = null;
+let currentEntryFile: string | null = null;
 
 /**
  * Resolve the tab to open first, for a configless project (no `brink.toml`,
@@ -93,10 +102,14 @@ async function openProject(root: string): Promise<void> {
   const folderName = root.split("/").at(-1) ?? root;
   document.title = `${folderName} — Brink Studio`;
 
+  const entryFile = resolveEntryFile(files);
+  currentRoot = root;
+  currentEntryFile = entryFile;
+
   current = await mountStudio(el, {
     files,
     provider,
-    entryFile: resolveEntryFile(files),
+    entryFile,
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -168,8 +181,56 @@ function closeProject(): void {
   }
   current.unmount();
   current = null;
+  currentRoot = null;
+  currentEntryFile = null;
   document.title = "Brink Studio";
   renderLanding();
+}
+
+/**
+ * File > Export XLIFF… (D3, #2392) — proves the `brink-cli` sidecar path
+ * end to end. Deliberately minimal: export the currently open project's
+ * entry file at the source language, prompting only for where to save the
+ * `.xlf`. The fuller intl UI (locale picker, compile-locale/regenerate
+ * batch ops, progress from the streamed `cli:output` events) is future
+ * work — this item exists to exercise one real path, not to be it.
+ *
+ * The input handed to the sidecar is always the entry file's `.ink`/
+ * `.brink` source (never `.ink.json` — house rule, and there is no
+ * `.ink.json` anywhere in this flow to begin with).
+ */
+async function exportXliff(): Promise<void> {
+  const api = current?.api;
+  if (currentRoot === null || currentEntryFile === null || api === undefined) {
+    console.warn("[brink-desktop] Export XLIFF: no project open");
+    return;
+  }
+  const inputPath = `${currentRoot}/${currentEntryFile}`;
+  const defaultName = `${currentEntryFile.split("/").at(-1)?.replace(/\.(ink|brink)$/, "") ?? "story"}.xlf`;
+  const outputPath = await save({
+    defaultPath: defaultName,
+    filters: [{ name: "XLIFF", extensions: ["xlf"] }],
+  });
+  if (outputPath === null) return; // user cancelled
+
+  try {
+    const exitCode = await runCli(["export-xliff", inputPath, "--output", outputPath]);
+    if (exitCode === 0) {
+      api.notify({ severity: "info", source: "cli", message: `Exported XLIFF to ${outputPath}` });
+    } else {
+      api.notify({
+        severity: "error",
+        source: "cli",
+        message: `export-xliff exited with code ${exitCode}`,
+      });
+    }
+  } catch (e: unknown) {
+    api.notify({
+      severity: "error",
+      source: "cli",
+      message: `export-xliff failed: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
 }
 
 /**
@@ -190,6 +251,7 @@ async function handleQuitRequested(): Promise<void> {
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+void listen("menu:export-xliff", () => void exportXliff());
 // The app-menu Quit item (⌘Q) is routed here as a plain shell event — like
 // open/close-project — instead of `PredefinedMenuItem::quit`, specifically
 // so it funnels through the same guarded path as the window close below

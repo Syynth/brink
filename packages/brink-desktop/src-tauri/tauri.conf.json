@@ -27,6 +27,9 @@
     "active": false,
     "icon": [
       "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/brink-cli"
     ]
   }
 }
