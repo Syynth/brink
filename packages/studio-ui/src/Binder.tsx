@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Overlay } from "@brink/studio-shell";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import {
@@ -17,6 +17,20 @@ const ICON_FOLDER = "\ud83d\udcc1"; // \ud83d\udcc1
 const ICON_KNOT = "\u25c6";
 const ICON_STITCH = "\u25c7";
 const ICON_FUNCTION = "\u0192"; // \u0192 \u2014 a knot declared as a function
+/** The Binder's "Library" section (mounted `std/` files, issue #2306/#2343):
+ *  a closed-book glyph, visually distinct from the project's own open-book
+ *  file/folder icons. */
+const ICON_LIBRARY = "\ud83d\udcda";
+
+/** Synthetic row key for the Library section's own collapse toggle \u2014 distinct
+ *  from any real file/folder key (which never contain a NUL byte). */
+export const LIBRARY_ROW_KEY = "\u0000library";
+
+/** Prefix applied to a mounted folder's own key so it never collides with the
+ *  identically-named real-project folder key in the shared `collapsed` set. */
+function libraryFolderKey(folderKey: string): string {
+  return `${LIBRARY_ROW_KEY}:${folderKey}`;
+}
 
 function iconChar(kind: string, isFunction = false): string {
   switch (kind) {
@@ -28,6 +42,8 @@ function iconChar(kind: string, isFunction = false): string {
       return isFunction ? ICON_FUNCTION : ICON_KNOT;
     case "stitch":
       return ICON_STITCH;
+    case "library":
+      return ICON_LIBRARY;
     default:
       return "\u00b7";
   }
@@ -43,6 +59,8 @@ function iconClass(kind: string, isFunction = false): string {
       return isFunction ? "brink-binder-icon-function" : "brink-binder-icon-knot";
     case "stitch":
       return "brink-binder-icon-stitch";
+    case "library":
+      return "brink-binder-icon-library";
     default:
       return "";
   }
@@ -169,6 +187,7 @@ interface RowProps {
 }
 
 function BinderRow({
+  rowKey,
   depth,
   kind,
   isFunction = false,
@@ -255,6 +274,7 @@ function BinderRow({
       {dropLinePosition === "before" && <div className="brink-binder-drop-line" />}
       <div
         className={rowClass}
+        data-binder-row-key={rowKey}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={onContextMenu}
@@ -432,13 +452,23 @@ export function computeReorder(
 // ── Main Binder component ──────────────────────────────────────────
 
 function BinderInner() {
-  const outline = useStudioStore((s) => s.outline);
+  const rawOutline = useStudioStore((s) => s.outline);
+  // The Binder's own file tree only ever shows real project files (issue
+  // #2306/#2343): `outline` now lists mounted stdlib files alongside them
+  // (flagged `mounted`, #2343's flag flip on `list_files`/`project_outline`/
+  // `story_graph`), so every existing tree/drag/search/rename/delete code
+  // path below keeps operating on exactly the same file set it always did —
+  // the Library section (below) is the only new consumer of the mounted half.
+  const outline = useMemo(() => rawOutline.filter((f) => !f.mounted), [rawOutline]);
+  const libraryFiles = useMemo(() => rawOutline.filter((f) => f.mounted), [rawOutline]);
   const activeDocKey = useStudioStore((s) => s.activeDocKey);
   const collapsed = useStudioStore((s) => s.collapsed);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
   const focusedKey = useStudioStore((s) => s.focusedKey);
   const openTarget = useStudioStore((s) => s.openTarget);
   const toggleCollapsed = useStudioStore((s) => s.toggleCollapsed);
+  const libraryExpanded = useStudioStore((s) => s.libraryExpanded);
+  const toggleLibraryExpanded = useStudioStore((s) => s.toggleLibraryExpanded);
   const selectKey = useStudioStore((s) => s.selectKey);
   const clearSelection = useStudioStore((s) => s.clearSelection);
   const setFocusedKey = useStudioStore((s) => s.setFocusedKey);
@@ -527,6 +557,23 @@ function BinderInner() {
       handleOpenUnpinned(target);
     },
     [selectKey, handleOpenUnpinned],
+  );
+
+  // Library rows (mounted std/ files) never join `selectedKeys`: they have
+  // no drag/rename/delete/move affordances, so there is nothing a
+  // multi-select could do with one, and routing them through `selectKey`
+  // would silently co-select a mounted path into an otherwise-ordinary
+  // project-file drag/move — `handleDragStart` expands a drag to every
+  // selected key, and that path has no visual indicator here (`isSelected`
+  // is always `false` for a Library row) so the user would never see it
+  // happen (issue #2343 review finding). A click here only opens the file
+  // and clears any existing project-file selection instead.
+  const handleLibraryFileClick = useCallback(
+    (target: TabTarget) => {
+      clearSelection();
+      handleOpenUnpinned(target);
+    },
+    [clearSelection, handleOpenUnpinned],
   );
 
   // ── New file input ──────────────────────────────────────────────
@@ -1192,6 +1239,96 @@ function BinderInner() {
     );
   }
 
+  // ── Library section (mounted std/ files, issue #2306/#2343) ──────
+  //
+  // A visually distinct, read-only counterpart to the project's own file
+  // tree: browsable (folders expand/collapse) and openable (click/double-
+  // click opens the file exactly like a project file — reads work through
+  // the normal `openTarget` path), but no drag, no context menu, and no
+  // inline rename/new-file affordances. Files render at folder granularity
+  // only (no knot/stitch drill-down): opening a file shows its full
+  // contents, including every knot/stitch, in the same read-only editor
+  // view — see `DocumentSessions.slotExtensions` (`EditorState.readOnly`).
+  // Actual edit refusal lives at the wasm/session layer regardless of what
+  // this component renders; this section exists so a mounted file is
+  // discoverable at all instead of the pre-#2343 "hidden entirely".
+
+  function renderLibraryFolder(folder: FolderNode, depth: number) {
+    const key = libraryFolderKey(folder.key);
+    const isExpanded = !collapsed.has(key);
+    return (
+      <div key={key}>
+        <BinderRow
+          rowKey={key}
+          depth={depth}
+          kind="folder"
+          label={folder.name}
+          expandable
+          isExpanded={isExpanded}
+          isActive={false}
+          isSelected={false}
+          isFocused={false}
+          isDragging={false}
+          isDropInto={false}
+          dropLinePosition={null}
+          draggable={false}
+          onChevronClick={() => toggleCollapsed(key)}
+          onClick={() => toggleCollapsed(key)}
+          onDoubleClick={() => {}}
+          onContextMenu={(e) => e.preventDefault()}
+          onDragStart={(e) => e.preventDefault()}
+          onDragEnd={() => {}}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => e.preventDefault()}
+        />
+        {isExpanded && renderLibraryTree(folder, depth + 1)}
+      </div>
+    );
+  }
+
+  function renderLibraryFile(file: FileOutline, depth: number) {
+    const fileKey = file.path;
+    const isActive = activeDocKey === fileKey;
+    const target: TabTarget = { kind: "file", path: file.path };
+    return (
+      <BinderRow
+        key={fileKey}
+        rowKey={fileKey}
+        depth={depth}
+        kind="file"
+        label={displayName(file.path)}
+        expandable={false}
+        isExpanded={false}
+        isActive={isActive}
+        isSelected={false}
+        isFocused={false}
+        isDragging={false}
+        isDropInto={false}
+        dropLinePosition={null}
+        draggable={false}
+        onChevronClick={() => {}}
+        onClick={() => handleLibraryFileClick(target)}
+        onDoubleClick={() => handleOpenPinned(target)}
+        onContextMenu={(e) => e.preventDefault()}
+        onDragStart={(e) => e.preventDefault()}
+        onDragEnd={() => {}}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => e.preventDefault()}
+      />
+    );
+  }
+
+  function renderLibraryTree(level: TreeLevel, depth: number) {
+    return (
+      <>
+        {level.folders.map((folder) => renderLibraryFolder(folder, depth))}
+        {level.files.map((file) => renderLibraryFile(file, depth))}
+      </>
+    );
+  }
+
+  const libraryTree = buildBinderTree(libraryFiles);
+
   return (
     <div
       ref={containerRef}
@@ -1200,6 +1337,34 @@ function BinderInner() {
       onKeyDown={handleKeyDown}
     >
       {renderTree(buildBinderTree(outline), 0)}
+      {libraryFiles.length > 0 && (
+        <div className="brink-binder-library-section">
+          <BinderRow
+            rowKey={LIBRARY_ROW_KEY}
+            depth={0}
+            kind="library"
+            label="Library"
+            expandable
+            isExpanded={libraryExpanded}
+            isActive={false}
+            isSelected={false}
+            isFocused={false}
+            isDragging={false}
+            isDropInto={false}
+            dropLinePosition={null}
+            draggable={false}
+            onChevronClick={toggleLibraryExpanded}
+            onClick={toggleLibraryExpanded}
+            onDoubleClick={() => {}}
+            onContextMenu={(e) => e.preventDefault()}
+            onDragStart={(e) => e.preventDefault()}
+            onDragEnd={() => {}}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => e.preventDefault()}
+          />
+          {libraryExpanded && renderLibraryTree(libraryTree, 1)}
+        </div>
+      )}
       {dragState?.sourceKind === "file" && dragState.sourceKeys.some((k) => k.includes("/")) && (
         <div
           className={"brink-binder-root-drop" + (rootDropActive ? " active" : "")}

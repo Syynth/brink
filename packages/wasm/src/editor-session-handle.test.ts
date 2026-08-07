@@ -57,6 +57,12 @@ const hoisted = vi.hoisted(() => {
       calls.push({ method: "is_read_only", args: [path] });
       return path === "std/core.brink";
     }
+    remove_file(path: unknown): boolean {
+      calls.push({ method: "remove_file", args: [path] });
+      // Mirrors the real Rust-side refusal (issue #2306/#2343): a mounted
+      // path's remove is refused (returns false), everything else succeeds.
+      return path !== "std/core.brink";
+    }
   }
   return { calls, EditorSessionStub };
 });
@@ -282,5 +288,31 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
     expect(readOnly).toBe(true);
     expect(notReadOnly).toBe(false);
     expect(handle.generation).toBe(before);
+  });
+
+  // Issue #2306/#2343: `remove_file` gained a boolean return (refused for a
+  // mounted path) alongside the listed-but-marked flag flip on `listFiles`/
+  // `getProjectOutline`/`getStoryGraph` — the delete-route gap #2343's
+  // review comment named. `removeFile` must forward that boolean, not
+  // swallow it back to `void`.
+
+  it("forwards remove_file's boolean return (issue #2306/#2343)", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const refused = handle.removeFile("std/core.brink");
+    const applied = handle.removeFile("main.ink");
+
+    expect(hoisted.calls).toEqual([
+      { method: "remove_file", args: ["std/core.brink"] },
+      { method: "remove_file", args: ["main.ink"] },
+    ]);
+    expect(refused).toBe(false);
+    expect(applied).toBe(true);
+    // `removeFile` still bumps generation unconditionally — a refusal is a
+    // property of what the write attempted, not evidence nothing needs
+    // re-analyzing (mirrors `updateFile`'s bump-regardless contract).
+    expect(handle.generation).toBe(before + 2);
   });
 });

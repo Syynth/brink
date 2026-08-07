@@ -195,7 +195,9 @@ function StoryNodeInner({ data }: NodeProps<StoryFlowNode>) {
   const { node, current, visits, onToggle } = data;
   const kindClass = `brink-graph-node brink-graph-node-${node.kind}`;
   const stateClass =
-    (node.expanded ? " expanded" : "") + (current ? " current" : "");
+    (node.expanded ? " expanded" : "") +
+    (current ? " current" : "") +
+    (node.mounted === true ? " mounted" : "");
 
   return (
     <div
@@ -204,7 +206,9 @@ function StoryNodeInner({ data }: NodeProps<StoryFlowNode>) {
       data-kind={node.kind}
       data-expanded={node.expandable ? node.expanded : undefined}
       data-current={current ? "true" : undefined}
+      data-mounted={node.mounted === true ? "true" : undefined}
       data-visits={visits ?? undefined}
+      title={node.mounted === true ? "Mounted stdlib content (read-only)" : undefined}
     >
       <Handle type="target" position={Position.Top} isConnectable={false} />
       <div className="brink-graph-node-header">

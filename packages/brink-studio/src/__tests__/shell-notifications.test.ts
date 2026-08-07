@@ -260,7 +260,16 @@ describe("binder notification bridge", () => {
       _project: {
         getSession: () => session,
         // The shared apply-edits seam (#137) structural ops route through.
-        applyEdit: (path: string, source: string) => session.updateFile(path, source),
+        // Real `ProjectSession.applyEdit` returns whether the write applied
+        // (issue #2306/#2343: `false` for a refused mounted-path write) —
+        // this double must return that boolean explicitly, not whatever
+        // `session.updateFile` (void) happens to produce, or the binder
+        // slice's own "was this skipped?" bookkeeping misreads a successful
+        // write as a refusal.
+        applyEdit: (path: string, source: string) => {
+          session.updateFile(path, source);
+          return true;
+        },
       } as never,
       _documents: { invalidateFile: vi.fn(), triggerCompile: vi.fn() } as never,
     });

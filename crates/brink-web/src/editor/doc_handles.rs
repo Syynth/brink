@@ -121,20 +121,26 @@ impl EditorSession {
         self.active_path.clone()
     }
 
-    /// List all loaded files. Returns JSON `[{path}]`.
+    /// List all loaded files. Returns JSON `[{path, mounted}]`.
     ///
-    /// Excludes mounted stdlib files (issue #2231 review finding): a mount
-    /// is not a file the project scan found or the user opened, so it must
-    /// not appear in the Binder or in project-wide search
-    /// (`packages/studio-store/src/slices/search.ts` iterates this list).
+    /// Lists mounted stdlib files alongside real project files, flagged
+    /// `mounted: true` (issue #2306/#2343, "Mounted stdlib presents as a
+    /// read-only library node"): #2231 originally excluded them entirely
+    /// (a mount is not a file the project scan found or the user opened),
+    /// but the ruling supersedes "hide" with "list, but mark read-only" so
+    /// the Binder can render a distinct "Library" section. Consumers that
+    /// must still exclude them (project-wide search —
+    /// `packages/studio-store/src/slices/search.ts`; `file.saveAll` —
+    /// `ProjectSession.markAllSaved`) filter on the flag themselves.
     pub fn list_files(&self) -> String {
         let db = self.session.db();
         let files: Vec<ProjectFileJs> = db
             .file_ids()
-            .filter(|id| !self.mounted_std_ids.contains(id))
             .filter_map(|id| {
-                db.file_path(id)
-                    .map(|p| ProjectFileJs { path: p.to_owned() })
+                db.file_path(id).map(|p| ProjectFileJs {
+                    path: p.to_owned(),
+                    mounted: self.mounted_std_ids.contains(&id),
+                })
             })
             .collect();
         serde_json::to_string(&files).unwrap_or_default()

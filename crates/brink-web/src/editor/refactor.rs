@@ -61,6 +61,14 @@ impl EditorSession {
     /// files' rewrites. The op computes edits only — the caller applies them
     /// (write `new`, remove `old`).
     pub fn rename_file(&self, old: &str, new: &str) -> String {
+        // Session-level read-only fence (issue #2306/#2343): a mounted
+        // stdlib copy must not be renamed/moved out from under the mount —
+        // the TS `ProjectSession.renameFile` layer also checks this before
+        // touching the provider, but the wasm op itself must not hand back
+        // edits a caller could apply regardless.
+        if self.is_read_only(old) {
+            return error_json("cannot rename: file is part of the read-only library");
+        }
         match brink_ide::file_rename::rename_file(&self.session, old, new) {
             Ok(result) => structural_result_json(&self.session, &result, old),
             Err(e) => error_json(&e.to_string()),

@@ -828,6 +828,21 @@ export class DocumentSessions {
           },
         }),
         ...this.extraExtensions,
+        // A mounted stdlib file's view is genuinely read-only (issue
+        // #2306/#2343): `updateDocument`/`applyEdit` already refuse the
+        // write at the wasm/session layer, but without this a keystroke
+        // still lands in the CM6 doc and silently reverts on the next
+        // wasm round-trip (`DocHandle.pushSource` drops a refused push) —
+        // the user sees their typing vanish rather than being told the
+        // file can't be edited. `EditorView.editable.of(false)` is what
+        // actually stops the keystroke (-> `contenteditable="false"` on the
+        // DOM); `EditorState.readOnly` is advisory — CM6 core doesn't
+        // consult it for typing, but `@codemirror/commands` and
+        // search/replace do, so it still guards those paths. Matches
+        // `conflict-view.ts`'s "ON DISK" read-only pane.
+        ...(this.project.isReadOnly(slot.path)
+          ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+          : []),
       ];
     }
     return slot.extensions;

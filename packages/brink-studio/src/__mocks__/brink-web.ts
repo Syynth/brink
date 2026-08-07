@@ -114,8 +114,17 @@ export class EditorSession {
     this.readOnlyPaths.delete(path);
   }
 
-  remove_file(path: string): void {
+  /**
+   * Mock of the real `remove_file` (issue #2306/#2343): refuses (returns
+   * `false`, no mutation) for a read-only (mounted) path, mirroring the
+   * Rust-side fence added alongside `list_files`'s flag flip — deleting a
+   * mounted file used to be unreachable only because `list_files` excluded
+   * it from the Binder.
+   */
+  remove_file(path: string): boolean {
+    if (this.readOnlyPaths.has(path)) return false;
     this.files.delete(path);
+    return true;
   }
 
   private viewStart: number | null = null;
@@ -155,13 +164,12 @@ export class EditorSession {
   }
 
   list_files(): string {
-    // Excludes read-only (mounted) paths, mirroring the real `list_files`'s
-    // `mounted_std_ids` exclusion (issue #2231/#2306) — a mount is not a
-    // file the project scan found or the user opened.
+    // Lists read-only (mounted) paths alongside real files, flagged
+    // `mounted`, mirroring the real `list_files`'s flag flip (issue
+    // #2306/#2343 — superseding #2231's original exclusion, which the
+    // ruling found left stdlib neither hidden nor marked read-only).
     return JSON.stringify(
-      [...this.files.keys()]
-        .filter((p) => !this.readOnlyPaths.has(p))
-        .map((p) => ({ path: p })),
+      [...this.files.keys()].map((p) => ({ path: p, mounted: this.readOnlyPaths.has(p) })),
     );
   }
 
@@ -211,6 +219,14 @@ export class EditorSession {
    * by Rust unit tests in brink-ide.
    */
   rename_file(oldPath: string, newPath: string): string {
+    // Session-level read-only fence (issue #2306/#2343): mirrors the real
+    // `rename_file`'s refusal for a mounted source path.
+    if (this.readOnlyPaths.has(oldPath)) {
+      return JSON.stringify({
+        ok: false,
+        error: "cannot rename: file is part of the read-only library",
+      });
+    }
     const source = this.files.get(oldPath);
     if (source === undefined) {
       return JSON.stringify({ ok: false, error: "file not loaded" });
@@ -564,10 +580,12 @@ export class EditorSession {
   clear_dialect(): void { /* no-op */ }
   set_fold_runs_enabled(_enabled: boolean): void { /* no-op */ }
 
+  /** Lists read-only (mounted) files alongside real ones, flagged `mounted`
+   *  — see {@link list_files}'s doc (issue #2306/#2343). */
   project_outline(): string {
     const outline = [];
     for (const [path, source] of this.files) {
-      outline.push({ path, symbols: parseOutline(source) });
+      outline.push({ path, symbols: parseOutline(source), mounted: this.readOnlyPaths.has(path) });
     }
     return JSON.stringify(outline);
   }
@@ -575,11 +593,13 @@ export class EditorSession {
   /**
    * Story graph (#96): nodes derived from the same header parse as the
    * outline (knots + stitches with parent ids), no edges. The real edge
-   * extraction is covered by Rust tests in brink-ide/brink-web.
+   * extraction is covered by Rust tests in brink-ide/brink-web. Nodes carry
+   * `mounted` — see {@link list_files}'s doc (issue #2306/#2343).
    */
   story_graph(): string {
     const nodes = [];
     for (const [path, source] of this.files) {
+      const mounted = this.readOnlyPaths.has(path);
       for (const sym of parseOutline(source)) {
         nodes.push({
           id: sym.name,
@@ -588,6 +608,7 @@ export class EditorSession {
           file: path,
           start: sym.start,
           end: sym.end,
+          mounted,
         });
         for (const child of sym.children) {
           const id = `${sym.name}.${child.name}`;
@@ -599,6 +620,7 @@ export class EditorSession {
             start: child.start,
             end: child.end,
             parent: sym.name,
+            mounted,
           });
         }
       }

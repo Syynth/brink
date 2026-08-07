@@ -78,6 +78,7 @@
 .brink-studio .brink-binder-icon-knot { color: var(--bs-symbol-knot); }
 .brink-studio .brink-binder-icon-function { color: var(--bs-symbol-function); font-style: italic; }
 .brink-studio .brink-binder-icon-stitch { color: var(--bs-symbol-stitch); }
+.brink-studio .brink-binder-icon-library { color: var(--bs-fg-muted); }
 /* Label */
 .brink-studio .brink-binder-label {
   flex: 1;
@@ -111,6 +112,25 @@
 }
 .brink-studio .brink-binder-input-wrapper {
   padding: 4px 8px;
+}
+
+/* Library section (mounted std/ files, issue #2306/#2343): visually
+   distinct, read-only counterpart to the project's own tree — separated by
+   a rule, muted/italic labels (no bold "this is your content" weight), and
+   a "not-allowed" cursor over the label itself as a quiet edit-affordance
+   hint (the row remains clickable — opening a library file for reading is
+   allowed, only editing is refused). */
+.brink-studio .brink-binder-library-section {
+  margin-top: 4px;
+  border-top: 1px solid rgb(var(--bs-fg-muted-rgb) / 15%);
+}
+.brink-studio .brink-binder-library-section .brink-binder-label {
+  font-style: italic;
+  color: var(--bs-fg-muted);
+  cursor: not-allowed;
+}
+.brink-studio .brink-binder-library-section .brink-binder-row.brink-binder-active {
+  background: rgb(var(--bs-fg-muted-rgb) / 12%);
 }
 
 /* "Move to project root" drop zone — appears only while dragging a nested file. */

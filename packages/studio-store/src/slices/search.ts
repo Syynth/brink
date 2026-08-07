@@ -116,8 +116,16 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     }
     const session = _project.getSession();
     // Sorted for deterministic file order (listFiles order is not a contract).
+    // Excludes mounted stdlib files (issue #2306/#2343, "Excluded from
+    // save-all and search/replace"): `listFiles()` now lists them alongside
+    // real project files (flagged `mounted`, #2343's flag flip) so the
+    // Binder's Library section has something to render, but project-wide
+    // search must keep treating the library as out of scope — searching
+    // into it would surface matches the replace path below (`applyEdit`)
+    // then has to silently skip anyway.
     const paths = session
       .listFiles()
+      .filter((f) => !f.mounted)
       .map((f) => f.path)
       .sort();
     const sources: Array<{ path: string; source: string }> = [];

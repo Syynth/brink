@@ -91,10 +91,11 @@ describe("Search-replace store actions cannot fork a mounted file (issue #2306)"
       _notify: (n) => notifications.push(n),
     });
 
-    // The exact by-id shape #2306 names: a row edit against a path NOT
-    // derived from `listFiles()` (which already excludes a mount) — e.g. a
-    // stale results-buffer row, or any future caller that resolves a file
-    // by id rather than by listing.
+    // The exact by-id shape #2306 names: a row edit against a path that
+    // bypasses `runSearch`'s explicit mounted-file exclusion (the search
+    // slice's candidate list, not `listFiles()`, is what filters mounts out
+    // now) — e.g. a stale results-buffer row, or any future caller that
+    // resolves a file by id rather than by running a fresh search.
     store.getState().applySearchRowEdit(MOUNTED_PATH, { start: 0, end: 4, text: "XXXX" });
 
     expect(session.getFileSource(MOUNTED_PATH)).toBe(MOUNTED_TEXT);
@@ -127,9 +128,24 @@ describe("Search-replace store actions cannot fork a mounted file (issue #2306)"
     expect(session.getFileSource(MOUNTED_PATH)).toBe(MOUNTED_TEXT);
   });
 
-  it("a mounted path never appears in listFiles(), so it is never a normal search result", async () => {
-    const { project } = await makeProject();
-    const paths = project.getSession().listFiles().map((f) => f.path);
-    expect(paths).not.toContain(MOUNTED_PATH);
-  });
+  it(
+    "a mounted path is listed but flagged mounted:true (issue #2306/#2343 " +
+      "listed-but-marked flip), and project-wide search still never treats " +
+      "it as a candidate even though its content would otherwise match",
+    async () => {
+      const { project } = await makeProject();
+      const files = project.getSession().listFiles();
+      const mountedEntry = files.find((f) => f.path === MOUNTED_PATH);
+      expect(mountedEntry?.mounted).toBe(true);
+      const mainEntry = files.find((f) => f.path === "main.ink");
+      expect(mainEntry?.mounted).toBe(false);
+
+      const store = createStudioStore();
+      store.setState({ _project: project, _documents: stubDocuments(), _notify: () => {} });
+      store.setState({ searchQuery: "core" }); // MOUNTED_TEXT contains "core" — would match if not excluded.
+      store.getState().runSearch();
+      const resultPaths = store.getState().searchResults?.files.map((f) => f.path) ?? [];
+      expect(resultPaths).not.toContain(MOUNTED_PATH);
+    },
+  );
 });
