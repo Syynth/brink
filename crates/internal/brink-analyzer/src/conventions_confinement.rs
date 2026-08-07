@@ -76,7 +76,7 @@
 //!   the validation verdict; this module's own confinement check still has
 //!   nothing to confine a preset-shaped pointer against, unchanged.
 
-use brink_ir::symbols::{RESERVED_ROOTS, is_reserved_root_module};
+use brink_ir::symbols::{RESERVED_ROOTS, STORY_ROOT, is_reserved_root_module};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
 use crate::manifest::ModuleMap;
@@ -111,16 +111,21 @@ pub fn is_path_shaped_conventions_pointer(pointer: &str) -> bool {
 
 /// A native `.brink` file's module path, derived **purely** from its
 /// root-relative key. DELIBERATELY duplicates `brink_db::modules::
-/// native_module_path` byte-for-byte rather than sharing it: `brink-db`
-/// already depends on `brink-analyzer` (for [`ModuleMap`]/`ResolvedModule`),
-/// so the reverse dependency this module's own
-/// [`is_path_shaped_conventions_pointer`] precedent relies on cannot run in
-/// this direction, and lowering `brink-analyzer` to sit *under* `brink-db`
+/// native_module_path`'s control flow rather than sharing the function:
+/// `brink-db` already depends on `brink-analyzer` (for
+/// [`ModuleMap`]/`ResolvedModule`), so the reverse dependency this module's
+/// own [`is_path_shaped_conventions_pointer`] precedent relies on cannot run
+/// in this direction, and lowering `brink-analyzer` to sit *under* `brink-db`
 /// is a bigger structural change than this issue's slice covers. See
 /// `brink_db::modules::native_module_path`'s own doc for the full
 /// path-to-module derivation this mirrors, including the peer-root exception
 /// for [`RESERVED_ROOTS`] (decision-log 2026-08-04, "`std::` and libraries
-/// are PEER ROOTS of `story::`").
+/// are PEER ROOTS of `story::`"). The entire justification for the
+/// duplication is drift management, so — unlike the control flow — the
+/// literal `"story"` root name is NOT re-hardcoded here: both this function
+/// and `brink_db::modules::native_module_path` read the same
+/// [`brink_ir::symbols::STORY_ROOT`] constant, so that one piece cannot
+/// drift between the two copies even by a typo.
 ///
 /// The one caller that needs it, [`conventions_confinement_diagnostics`]
 /// (issue #2335's off-db road), never applies a `ProjectDb::native_root`
@@ -150,13 +155,13 @@ fn native_module_path_in(roots: &[&str], relative_path: &str) -> String {
         .filter(|segment| !segment.is_empty() && *segment != ".");
 
     let Some(first) = segments.next() else {
-        return String::from("story");
+        return String::from(STORY_ROOT);
     };
 
     let mut out = if roots.contains(&first) {
         first.to_string()
     } else {
-        format!("story::{first}")
+        format!("{STORY_ROOT}::{first}")
     };
     for segment in segments {
         out.push_str("::");
