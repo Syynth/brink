@@ -17,9 +17,13 @@ impl EditorSession {
     /// file/span). Returns JSON `StoryGraph`, or `"null"` when no analysis
     /// is available.
     ///
-    /// Excludes mounted stdlib files (issue #2231 review finding): a mount
-    /// is not a file the project scan found or the user opened, so its
-    /// knots/stitches must not appear in the story graph.
+    /// Lists mounted stdlib files' knots/stitches alongside real project
+    /// files' (issue #2306/#2343, "Mounted stdlib presents as a read-only
+    /// library node"): #2231 originally excluded them entirely (a mount is
+    /// not a file the project scan found or the user opened), but the
+    /// ruling supersedes "hide" with "list, but mark read-only" so the
+    /// Binder's Library section can render its own story-graph nodes. Each
+    /// node carries `mounted` (see [`StoryGraphNodeJs::mounted`]).
     pub fn story_graph(&self) -> String {
         let Some(analysis) = self.session.analysis() else {
             return "null".to_owned();
@@ -27,7 +31,6 @@ impl EditorSession {
         let db = self.session.db();
         let files: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = db
             .file_ids()
-            .filter(|id| !self.mounted_std_ids.contains(id))
             .filter_map(|id| db.hir(id).map(|hir| (id, hir)))
             .collect();
         let graph = brink_ide::story_graph::story_graph(analysis, &files);
@@ -36,6 +39,7 @@ impl EditorSession {
             .nodes
             .into_iter()
             .map(|n| {
+                let mounted = n.file.is_some_and(|f| self.mounted_std_ids.contains(&f));
                 let (file, start, end) = match (n.file, n.range) {
                     (Some(f), Some(r)) => {
                         let src = db.source(f).unwrap_or("");
@@ -55,6 +59,7 @@ impl EditorSession {
                     start,
                     end,
                     parent: n.parent,
+                    mounted,
                 }
             })
             .collect();

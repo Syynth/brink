@@ -111,11 +111,16 @@ pub struct EditorSession {
     /// Every `FileId` seeded by the constructor's stdlib mount, not a real
     /// project file (issue #2231 review finding, mirroring `brink-lsp`'s
     /// `NativeProjects::mounted_std_ids`). `list_files`, `project_outline`,
-    /// and `story_graph` all exclude these ids — a mount is not a file the
-    /// project scan found or the user opened, so it must not appear in the
-    /// Binder, project-wide search, or the story graph. It still fully
-    /// participates in analysis/resolution (nothing here touches
-    /// `db.file_ids()`'s use by the compiler/analyzer). `update_file`
+    /// and `story_graph` all **list** these ids alongside real project
+    /// files, flagged `mounted: true` on the returned DTOs (issue
+    /// #2306/#2343, "Mounted stdlib presents as a read-only library node"
+    /// — superseding #2231's original "exclude entirely", which the
+    /// ruling found left stdlib neither fully hidden nor marked read-only).
+    /// The flag lets the Binder render a distinct, collapsed, read-only
+    /// "Library" section instead of hiding stdlib or letting it masquerade
+    /// as an ordinary project file. It still fully participates in
+    /// analysis/resolution (nothing here touches `db.file_ids()`'s use by
+    /// the compiler/analyzer). `update_file`
     /// removes an id from this set the moment a real file is written at
     /// the same key, mirroring `NativeProjects::set_file`'s
     /// already-present-wins precedent — so the mount stays invisible only
@@ -257,9 +262,18 @@ impl EditorSession {
         }
     }
 
-    /// Remove a file from the project.
-    pub fn remove_file(&mut self, path: &str) {
+    /// Remove a file from the project. Returns `false` (no-op) when `path`
+    /// currently resolves to a mounted stdlib copy — the delete-route gap
+    /// #2343 named alongside the listed-but-marked flag it lands with:
+    /// deleting a mounted file was unreachable only while `list_files`
+    /// excluded it from the Binder, and that exclusion is exactly what this
+    /// issue removes. Mirrors `is_read_only`/`update_document`'s fence.
+    pub fn remove_file(&mut self, path: &str) -> bool {
+        if self.is_read_only(path) {
+            return false;
+        }
         self.session.remove_file(path);
+        true
     }
 
     /// Register (or replace) the host-capability manifest from a JSON string,
@@ -1288,57 +1302,73 @@ mod tests {
     }
 
     #[test]
-    fn mounted_stdlib_files_are_excluded_from_client_facing_listings() {
-        // Mounted stdlib files must not appear in list_files/project_outline/
-        // story_graph — they are not a file the project scan found or the
-        // user opened (issue #2231 review finding, mirroring `brink-lsp`'s
-        // `mounted_std_ids` exclusion from `all_file_metadata`).
-        let s = EditorSession::new();
+    fn mounted_stdlib_files_are_listed_but_flagged_in_client_facing_listings() {
+        // Mounted stdlib files must appear in list_files/project_outline/
+        // story_graph alongside real project files, flagged `mounted: true`
+        // (issue #2306/#2343, "Mounted stdlib presents as a read-only
+        // library node" — superseding #2231's original exclude-entirely,
+        // which the ruling found left stdlib neither hidden nor marked
+        // read-only). A real project file must be flagged `mounted: false`.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> DONE\n");
+
         let files: serde_json::Value = serde_json::from_str(&s.list_files()).unwrap_or_default();
-        let paths: Vec<&str> = files
+        let files = files
             .as_array()
-            .expect("list_files must return a JSON array")
+            .expect("list_files must return a JSON array");
+        let std_entry = files
             .iter()
-            .map(|f| f["path"].as_str().unwrap_or_default())
-            .collect();
-        assert!(
-            !paths.iter().any(|p| p.starts_with("std/")),
-            "a fresh session's list_files() must contain no std/ key, got {paths:?}"
+            .find(|f| f["path"].as_str().unwrap_or_default().starts_with("std/"))
+            .expect("a fresh session's list_files() must still contain std/ entries");
+        assert_eq!(
+            std_entry["mounted"], true,
+            "a mounted stdlib file must be flagged mounted:true, got {std_entry}"
+        );
+        let project_entry = files
+            .iter()
+            .find(|f| f["path"] == "main.ink")
+            .expect("list_files() must contain the real project file");
+        assert_eq!(
+            project_entry["mounted"], false,
+            "a real project file must be flagged mounted:false, got {project_entry}"
         );
 
         let outline: serde_json::Value =
             serde_json::from_str(&s.project_outline()).unwrap_or_default();
-        let outline_paths: Vec<&str> = outline
+        let outline = outline
             .as_array()
-            .expect("project_outline must return a JSON array")
+            .expect("project_outline must return a JSON array");
+        let std_outline_entry = outline
             .iter()
-            .map(|f| f["path"].as_str().unwrap_or_default())
-            .collect();
-        assert!(
-            !outline_paths.iter().any(|p| p.starts_with("std/")),
-            "a fresh session's project_outline() must contain no std/ key, got {outline_paths:?}"
+            .find(|f| f["path"].as_str().unwrap_or_default().starts_with("std/"))
+            .expect("a fresh session's project_outline() must still contain std/ entries");
+        assert_eq!(
+            std_outline_entry["mounted"], true,
+            "a mounted stdlib outline entry must be flagged mounted:true, got {std_outline_entry}"
         );
     }
 
     #[test]
-    fn mounted_stdlib_key_reappears_in_listings_once_shadowed() {
+    fn mounted_stdlib_key_is_unflagged_once_shadowed() {
         // Once a real project file is written at a mounted stdlib key, it
-        // must reappear in list_files/project_outline (issue #2231 review
-        // finding) — the mount is no longer "not a file the user opened".
+        // must be flagged `mounted: false` in list_files/project_outline
+        // (issue #2231/#2306 review finding) — the mount is no longer "not
+        // a file the user opened".
         let key = brink_environment::stdlib_sources()[0].0;
         let mut s = EditorSession::new();
         s.update_file(key, "-> DONE\n");
 
         let files: serde_json::Value = serde_json::from_str(&s.list_files()).unwrap_or_default();
-        let paths: Vec<&str> = files
+        let files = files
             .as_array()
-            .expect("list_files must return a JSON array")
+            .expect("list_files must return a JSON array");
+        let entry = files
             .iter()
-            .map(|f| f["path"].as_str().unwrap_or_default())
-            .collect();
-        assert!(
-            paths.contains(&key),
-            "a real project file at a mounted key must reappear in list_files(), got {paths:?}"
+            .find(|f| f["path"] == key)
+            .expect("shadowed key must reappear in list_files()");
+        assert_eq!(
+            entry["mounted"], false,
+            "a real project file at a shadowed mounted key must be flagged mounted:false, got {entry}"
         );
     }
 
@@ -1473,6 +1503,54 @@ mod tests {
         assert_eq!(
             s.session.source(s.session.file_id(key).unwrap()),
             Some("-> DONE\n")
+        );
+    }
+
+    // ── Delete/rename route enforcement (issue #2306/#2343) ──────────
+    // #2343's review-comment finding: `remove_file` (the delete-route gap)
+    // and `rename_file` (the rename-route gap) had no read-only guard —
+    // unreachable only while `list_files` excluded the mount from the
+    // Binder, which #2343's flag flip removes. Both must refuse a mounted
+    // path, leaving the mounted copy byte-for-byte untouched.
+
+    #[test]
+    fn remove_file_on_a_mounted_stdlib_key_is_refused() {
+        let key = brink_environment::stdlib_sources()[0].0;
+        let mut s = EditorSession::new();
+        assert!(
+            !s.remove_file(key),
+            "remove_file on a mounted stdlib key must be refused (return false)"
+        );
+        assert!(
+            s.session.file_id(key).is_some(),
+            "a refused remove_file must leave the mounted file loaded"
+        );
+    }
+
+    #[test]
+    fn remove_file_on_an_ordinary_project_file_succeeds() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", "-> DONE\n");
+        assert!(
+            s.remove_file("main.ink"),
+            "remove_file on an ordinary project file must succeed (return true)"
+        );
+        assert!(s.session.file_id("main.ink").is_none());
+    }
+
+    #[test]
+    fn rename_file_from_a_mounted_stdlib_key_is_refused() {
+        let key = brink_environment::stdlib_sources()[0].0;
+        let s = EditorSession::new();
+        let resp: serde_json::Value =
+            serde_json::from_str(&s.rename_file(key, "new_name.ink")).expect("valid JSON");
+        assert_eq!(
+            resp["ok"], false,
+            "rename_file from a mounted stdlib key must be refused: {resp}"
+        );
+        assert!(
+            s.session.file_id(key).is_some(),
+            "a refused rename_file must leave the mounted file loaded at its original key"
         );
     }
 
@@ -2318,6 +2396,10 @@ mod tests {
         assert_eq!(start["start"].as_u64().unwrap(), 6, "must be UTF-16");
         assert_eq!(start["end"].as_u64().unwrap(), 11);
         assert!(start.get("parent").is_none(), "knots carry no parent");
+        assert_eq!(
+            start["mounted"], false,
+            "a real project file's node must be flagged mounted:false"
+        );
 
         let gate = node("east.gate");
         assert_eq!(gate["kind"], "stitch");
@@ -2328,6 +2410,10 @@ mod tests {
         assert_eq!(end["kind"], "end");
         assert!(end.get("file").is_none(), "pseudo-nodes have no file");
         assert!(end.get("start").is_none(), "pseudo-nodes have no span");
+        assert_eq!(
+            end["mounted"], false,
+            "a pseudo-node (no owning file) must be flagged mounted:false"
+        );
 
         // Edges sorted by (from, to, kind); choice aggregation + cross-file
         // resolution + the auto-enter divert east -> east.gate.
@@ -2355,6 +2441,49 @@ mod tests {
                 ("start", "END", "divert"),
                 ("start", "east.gate", "choice"),
             ]
+        );
+    }
+
+    #[test]
+    fn story_graph_flags_a_mounted_file_knot() {
+        // #2306/#2343: story_graph now lists a mounted file's knots/stitches
+        // alongside real project files' (superseding #2231's exclusion),
+        // flagged `mounted: true` — so the Binder's Library section can
+        // render its own story-graph nodes rather than the mount vanishing
+        // from the graph entirely.
+        //
+        // The real stdlib mount (`std/conventions/screenplay.brink`) declares
+        // no knots at all (it's `extern`/`fn`/`struct` handlers, no `===`
+        // weave) — asserting against it would prove nothing about this
+        // code path. Instead, mark an ordinary loaded file's id as mounted
+        // directly (the same `mounted_std_ids` set `EditorSession::new`
+        // seeds from the real mount), which exercises exactly the flag
+        // computation `story_graph` performs, on content that actually has
+        // a knot node to flag.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", GRAPH_MAIN);
+        s.update_file("mounted.ink", "=== waypoint ===\n-> END\n");
+        let mounted_id = s.session.file_id("mounted.ink").unwrap();
+        s.mounted_std_ids.insert(mounted_id);
+
+        let json = s.story_graph();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let nodes = v["nodes"].as_array().unwrap();
+        let mounted_node = nodes
+            .iter()
+            .find(|n| n["file"] == "mounted.ink")
+            .expect("the mounted file's knot must still appear in story_graph()");
+        assert_eq!(
+            mounted_node["mounted"], true,
+            "a mounted file's node must be flagged mounted:true, got {mounted_node}"
+        );
+        let real_node = nodes
+            .iter()
+            .find(|n| n["file"] == "main.ink")
+            .expect("real project files' nodes must still appear");
+        assert_eq!(
+            real_node["mounted"], false,
+            "a real project file's node must be flagged mounted:false, got {real_node}"
         );
     }
 

@@ -9,6 +9,15 @@ use crate::editor::byte_to_utf16;
 #[derive(Serialize)]
 pub(crate) struct ProjectFileJs {
     pub(crate) path: String,
+    /// Whether `path` currently resolves to a mounted stdlib copy rather
+    /// than a file the project scan found or the user created (issue
+    /// #2306/#2343, "Mounted stdlib presents as a read-only library node").
+    /// `list_files` used to exclude these ids entirely (#2231); it now
+    /// lists them with this flag set instead, so the Binder can render a
+    /// distinct, read-only "Library" section rather than hiding them —
+    /// dropping the filter without this flag would reintroduce the exact
+    /// phantom-row bug #2231/#2303 fixed. Mirrors `EditorSession::is_read_only`.
+    pub(crate) mounted: bool,
 }
 
 /// Change spec returned by `update_document`, describing what actually
@@ -38,6 +47,8 @@ pub(crate) struct IncludeInfoJs {
 pub(crate) struct FileOutlineJs {
     pub(crate) path: String,
     pub(crate) symbols: Vec<DocumentSymbolJs>,
+    /// See [`ProjectFileJs::mounted`] — same flag, same issue (#2306/#2343).
+    pub(crate) mounted: bool,
 }
 
 /// Whole-project story graph (spec §4.1) — mirrored as `StoryGraph` in
@@ -64,6 +75,9 @@ pub(crate) struct StoryGraphNodeJs {
     pub(crate) end: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) parent: Option<String>,
+    /// See [`ProjectFileJs::mounted`] — same flag, same issue (#2306/#2343).
+    /// Always `false` for the `END`/`DONE` pseudo-nodes (no owning `file`).
+    pub(crate) mounted: bool,
 }
 
 /// A story-graph edge. `occurrences` lists the divert sites that produced

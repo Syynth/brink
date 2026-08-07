@@ -828,6 +828,19 @@ export class DocumentSessions {
           },
         }),
         ...this.extraExtensions,
+        // A mounted stdlib file's view is genuinely read-only (issue
+        // #2306/#2343): `updateDocument`/`applyEdit` already refuse the
+        // write at the wasm/session layer, but without this a keystroke
+        // still lands in the CM6 doc and silently reverts on the next
+        // wasm round-trip (`DocHandle.pushSource` drops a refused push) —
+        // the user sees their typing vanish rather than being told the
+        // file can't be edited. `EditorState.readOnly` blocks the
+        // transaction outright; `EditorView.editable` also disables the
+        // caret/selection-handle affordances, matching `conflict-view.ts`'s
+        // "ON DISK" read-only pane.
+        ...(this.project.isReadOnly(slot.path)
+          ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+          : []),
       ];
     }
     return slot.extensions;

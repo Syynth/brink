@@ -891,13 +891,29 @@ export interface DirMoveResult {
 
 // ── Multi-file project types ────────────────────────────────────
 
+/**
+ * `mounted` (issue #2306/#2343, "Mounted stdlib presents as a read-only
+ * library node"): true when `path` currently resolves to a mounted stdlib
+ * copy rather than a file the project scan found or the user created.
+ * `list_files`/`project_outline`/`story_graph` used to exclude these paths
+ * entirely (#2231); they now list them with this flag instead, so the
+ * Binder can render a distinct, collapsed, read-only "Library" section.
+ * Also read-only — see `EditorSessionHandle.isReadOnly`. Optional (like the
+ * other situational fields on `StoryGraphNode` below) rather than required:
+ * the real wasm/mock always sends it, but a hand-written test fixture that
+ * doesn't care about the Library section shouldn't have to populate it —
+ * every consumer treats an absent flag the same as `false` (`!f.mounted`).
+ */
 export interface ProjectFile {
   path: string;
+  mounted?: boolean;
 }
 
 export interface FileOutline {
   path: string;
   symbols: DocumentSymbol[];
+  /** See {@link ProjectFile.mounted} — same flag, same issue. */
+  mounted?: boolean;
 }
 
 // ── Story graph types (studio-shell spec §4.1) ──────────────────
@@ -922,6 +938,9 @@ export interface StoryGraphNode {
   end?: number;
   /** For stitches: the owning knot's node id (the UI nests them). */
   parent?: string;
+  /** See {@link ProjectFile.mounted} — same flag, same issue (#2306/#2343).
+   *  Always `false` for the `END`/`DONE` pseudo-nodes (no owning file). */
+  mounted?: boolean;
 }
 
 /**

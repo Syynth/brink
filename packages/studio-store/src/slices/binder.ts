@@ -55,8 +55,12 @@ export interface BinderSlice {
   selectedKeys: Set<string>;
   focusedKey: string | null;
   undoStack: UndoEntry[];
+  /** Whether the Binder's "Library" section (mounted `std/` files, issue
+   *  #2306/#2343) is expanded. Collapsed by default, per the ruling. */
+  libraryExpanded: boolean;
 
   toggleCollapsed(key: string): void;
+  toggleLibraryExpanded(): void;
   selectKey(key: string, multi: boolean): void;
   clearSelection(): void;
   setFocusedKey(key: string | null): void;
@@ -98,6 +102,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
   selectedKeys: new Set<string>(),
   focusedKey: null,
   undoStack: [],
+  libraryExpanded: false,
 
   toggleCollapsed(key) {
     const next = new Set(get().collapsed);
@@ -107,6 +112,10 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       next.add(key);
     }
     set({ collapsed: next });
+  },
+
+  toggleLibraryExpanded() {
+    set({ libraryExpanded: !get().libraryExpanded });
   },
 
   selectKey(key, multi) {
@@ -169,14 +178,20 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     // 2. Apply new_source to the target file (from result.path) — through
     //    the project's shared apply-edits seam (#137), so the provider
     //    write-back and the host egress callback see structural ops too.
+    //    `applyEdit` refuses a mounted stdlib path (issue #2306/#2343) —
+    //    the Binder offers no structural-move affordance on the Library
+    //    section, but a cross-file edit (below) or a stale target could
+    //    still name one; track refusals instead of silently no-opping a
+    //    move the caller's toast reports as having succeeded.
+    let skipped = 0;
     if (result.new_source != null && result.path) {
-      project.applyEdit(result.path, result.new_source);
+      if (!project.applyEdit(result.path, result.new_source)) skipped += 1;
     }
 
     // 3. Apply cross-file reference edits — each carries the full new source
     //    of an affected file, keyed by path.
     for (const edit of result.cross_file_edits) {
-      project.applyEdit(edit.path, edit.new_source);
+      if (!project.applyEdit(edit.path, edit.new_source)) skipped += 1;
     }
 
     // 4. Push undo entry
@@ -197,10 +212,12 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
 
     // 7. Notify, with Undo dispatching the binder.undo command (spec §7.5).
     set({ undoStack });
+    const skippedSuffix =
+      skipped > 0 ? ` (skipped ${skipped} read-only ${skipped === 1 ? "file" : "files"})` : "";
     get()._notify?.({
-      severity: "info",
+      severity: skipped > 0 ? "warning" : "info",
       source: "binder",
-      message: description,
+      message: `${description}${skippedSuffix}`,
       actions: [{ label: "Undo", commandId: "binder.undo" }],
     });
   },
@@ -285,12 +302,17 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     const entry = stack.pop();
     if (!entry) return;
 
+    let undoSkipped = 0;
     if (entry.kind === "edits") {
       // Restore each snapshot — through the shared apply-edits seam (#137):
       // an undo changes file content like any other edit, and the host must
-      // see the reverted text.
+      // see the reverted text. `applyEdit` refuses a mounted stdlib path
+      // (issue #2306/#2343) — a snapshot can only name one if the original
+      // edit somehow reached it (the structural-op path above already
+      // tracks that), so this is defense-in-depth: track it rather than
+      // let the undo notification claim a restore that didn't happen.
       for (const { path, source } of entry.snapshots) {
-        project.applyEdit(path, source);
+        if (!project.applyEdit(path, source)) undoSkipped += 1;
       }
       // Refresh editor views for the restored files.
       for (const { path } of entry.snapshots) {
@@ -317,10 +339,14 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     documents.triggerCompile();
 
     set({ undoStack: stack });
+    const undoSkippedSuffix =
+      undoSkipped > 0
+        ? ` (skipped ${undoSkipped} read-only ${undoSkipped === 1 ? "file" : "files"})`
+        : "";
     get()._notify?.({
-      severity: "info",
+      severity: undoSkipped > 0 ? "warning" : "info",
       source: "binder",
-      message: `Undid: ${entry.description}`,
+      message: `Undid: ${entry.description}${undoSkippedSuffix}`,
     });
   },
 });

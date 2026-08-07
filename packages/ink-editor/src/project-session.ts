@@ -245,12 +245,25 @@ export class ProjectSession {
     return this.provider.deleteFile !== undefined;
   }
 
-  /** Delete a file: remove it from the provider and the wasm session, and
-   *  record a "deleted" change so the host's mirror drops it too. Unlike
-   *  {@link closeFile} (session-only eviction), this is a real deletion. The
-   *  caller is responsible for snapshotting content first if undo is wanted
-   *  and for closing any open views (see the store's `deleteFile`). */
+  /**
+   * Delete a file: remove it from the provider and the wasm session, and
+   * record a "deleted" change so the host's mirror drops it too. Unlike
+   * {@link closeFile} (session-only eviction), this is a real deletion. The
+   * caller is responsible for snapshotting content first if undo is wanted
+   * and for closing any open views (see the store's `deleteFile`).
+   *
+   * Refuses (no provider write, no session mutation) when `path` currently
+   * resolves to a mounted stdlib copy (issue #2306/#2343): the Binder's
+   * Library section offers no delete affordance, but `list_files` now
+   * lists mounted files (the exact route this guard closes — a caller
+   * reaching a mounted path outside the Binder's own gating must not
+   * delete the mount, and definitely must not have the provider write a
+   * "deletion" of a file it never wrote in the first place).
+   */
   async deleteFile(path: string): Promise<void> {
+    if (this.sessionIsReadOnly(path)) {
+      throw new Error(`"${path}" is part of the read-only library and cannot be deleted`);
+    }
     await this.provider.deleteFile?.(path);
     this.session.removeFile(path);
     this.changes.record(path, "deleted");
@@ -344,6 +357,19 @@ export class ProjectSession {
     return typeof this.session.isReadOnly === "function" && this.session.isReadOnly(path);
   }
 
+  /**
+   * Whether `path` currently resolves to a mounted stdlib copy (issue
+   * #2306/#2343) — the public wrapper `DocumentSessions` reads to put a
+   * mounted file's CM6 view into `EditorState.readOnly` (`document-sessions.ts`
+   * `slotExtensions`), so a keystroke over the Binder's Library section
+   * genuinely can't type rather than silently no-oping at the wasm layer.
+   * Same feature-detected fallback as {@link sessionIsReadOnly}: `false` for
+   * an injected session/stub that predates #2306.
+   */
+  isReadOnly(path: string): boolean {
+    return this.sessionIsReadOnly(path);
+  }
+
   notifyFileChanged(path: string): void {
     // Session-level read-only enforcement (issue #2306, ruled 2026-08-06
     // "Mounted stdlib presents as a read-only library node"): a still-
@@ -415,9 +441,20 @@ export class ProjectSession {
     this.changes.markSaved(paths);
   }
 
-  /** Re-baseline every session file (file.saveAll). */
+  /** Re-baseline every session file (file.saveAll). Excludes mounted stdlib
+   *  files (issue #2306/#2343): the Library section has no save affordance
+   *  and a mounted path never gets a dirty baseline in the first place
+   *  (`notifyFileChanged`/`applyEdit` refuse it), but `listFiles()` now
+   *  lists it alongside real files (#2343's flag flip) — filtering here
+   *  keeps this method's own contract ("re-baseline every session file")
+   *  from silently growing to include files that were never dirty. */
   markAllSaved(): void {
-    this.changes.markSaved(this.session.listFiles().map((f) => f.path));
+    this.changes.markSaved(
+      this.session
+        .listFiles()
+        .filter((f) => !f.mounted)
+        .map((f) => f.path),
+    );
   }
 
   /** Snapshot of every session file's current content, by path (sorted). */

@@ -38,20 +38,22 @@ impl EditorSession {
         serde_json::to_string(&items).unwrap_or_default()
     }
 
-    /// Get project outline — all files with their symbols. Returns JSON `[{path, symbols}]`.
+    /// Get project outline — all files with their symbols. Returns JSON
+    /// `[{path, symbols, mounted}]`.
     ///
-    /// Excludes mounted stdlib files (issue #2231 review finding): a mount
-    /// is not a file the project scan found or the user opened, so it must
-    /// not appear in the Binder (`packages/brink-studio/src/mount.tsx`
-    /// feeds the Binder from this on every compile).
+    /// Lists mounted stdlib files alongside real project files, flagged
+    /// `mounted: true` (issue #2306/#2343, "Mounted stdlib presents as a
+    /// read-only library node"): #2231 originally excluded them entirely
+    /// (a mount is not a file the project scan found or the user opened),
+    /// but the ruling supersedes "hide" with "list, but mark read-only" so
+    /// the Binder (`packages/brink-studio/src/mount.tsx` feeds the Binder
+    /// from this on every compile) can render a distinct "Library" section.
     pub fn project_outline(&self) -> String {
         let db = self.session.db();
         let mut outline: Vec<FileOutlineJs> = Vec::new();
 
         for id in db.file_ids() {
-            if self.mounted_std_ids.contains(&id) {
-                continue;
-            }
+            let mounted = self.mounted_std_ids.contains(&id);
             let Some(path) = db.file_path(id) else {
                 continue;
             };
@@ -59,6 +61,7 @@ impl EditorSession {
                 outline.push(FileOutlineJs {
                     path: path.to_owned(),
                     symbols: Vec::new(),
+                    mounted,
                 });
                 continue;
             };
@@ -72,6 +75,7 @@ impl EditorSession {
             outline.push(FileOutlineJs {
                 path: path.to_owned(),
                 symbols: items,
+                mounted,
             });
         }
 

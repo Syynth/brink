@@ -186,9 +186,13 @@ export class EditorSessionHandle {
     this.session.update_file(path, source);
   }
 
-  removeFile(path: string): void {
+  /** Remove a file from the project. Returns `false` (no-op) when `path`
+   *  currently resolves to a mounted stdlib copy (issue #2306/#2343) — the
+   *  Rust-side read-only fence, mirroring `updateFile`'s refusal for a
+   *  mounted key. */
+  removeFile(path: string): boolean {
     this.bump();
-    this.session.remove_file(path);
+    return this.session.remove_file(path);
   }
 
   /**
