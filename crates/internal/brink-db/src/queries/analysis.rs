@@ -456,12 +456,16 @@ fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) 
 /// #1847 cover the *placement* half, `E112`). A pattern-claiming
 /// `@[convention(claims = "…", order = N)]` handler is legal only in the project's
 /// configured conventions module (`brink.toml`'s `[project] conventions`,
-/// renamed from `elements` by issue #2180); this is the one seam that has
-/// both a file's real module identity
-/// ([`module_map_query`]'s native branch, `crate::modules::
-/// native_module_path`) and the resolved `AnalysisOptions` the pointer
-/// travels on — `brink_analyzer::analyze_with_modules` is not it, since
-/// `brink-db` never calls that path (issue #1863's own finding).
+/// renamed from `elements` by issue #2180); this is the db-direct seam that
+/// has both a file's real module identity ([`module_map_query`]'s native
+/// branch, `crate::modules::native_module_path`) and the resolved
+/// `AnalysisOptions` the pointer travels on. `brink_analyzer::
+/// analyze_with_modules` (the off-db road: `IdeSnapshot::analyze`,
+/// `brink-lsp`'s `analysis_loop`) is now a second such seam — issue #2335
+/// added `brink_analyzer::conventions_confinement_diagnostics`, which
+/// mirrors this query file-for-file via its own caller-computed module
+/// identity, since a caller with no `ProjectDb` cannot ask
+/// [`module_map_query`] directly.
 ///
 /// Lazy in the same shape as [`await_purity_diagnostics_query`]/
 /// [`comparator_contract_diagnostics_query`]: a file with no declared claim

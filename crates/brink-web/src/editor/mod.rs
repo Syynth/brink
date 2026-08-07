@@ -3217,44 +3217,47 @@ mod tests {
         );
     }
 
-    // ── #2291: inlay hints / color hints / argument widgets gate a native
-    // (`.brink`) file to empty rather than computing them from
-    // `syntax_root`'s always-ink parse of the source text. Unlike folding,
-    // these passes classify by casting `root.descendants()` to *ink-only*
-    // typed AST nodes (`ast::FunctionCall`, `ast::DivertTargetWithArgs`) —
-    // there is no native-CST equivalent yet, so the honest fix is "no hints"
-    // rather than hints computed from a mis-cast tree. ─────────────────────
+    // ── #2291/#2359: inlay hints / color hints / argument widgets now route
+    // through the native-CST-aware path (`IdeSession::syntax_root_native` +
+    // native-typed AST casts) rather than gating a `.brink` file to empty
+    // or computing garbage from `syntax_root`'s always-ink parse. Unlike
+    // folding, these passes previously classified by casting
+    // `root.descendants()` to *ink-only* typed AST nodes
+    // (`ast::FunctionCall`, `ast::DivertTargetWithArgs`); they now have a
+    // native-CST equivalent, so a `.brink` file gets real, correctly
+    // dialected hints instead of "no hints". ───────────────────────────────
 
     // Fixture note: ink's grammar mis-parses `fn heal(hp: int): int { ... }`
     // as opaque prose text (confirmed with a throwaway probe dumping the
     // ink CST — no `FunctionCall`/`CallExpr` node forms at all there), so a
     // bare call like `heal(5)` inside prose produces NO ink-side hint
-    // either way and cannot prove this gate matters (rule 12b). But native's
+    // either way and cannot prove this path matters (rule 12b). But native's
     // divert-with-args syntax `-> target(args)` is **textually identical**
     // to ink's own divert-with-args grammar (confirmed by the same probe:
     // ink forms a real `DIVERT_TARGET_WITH_ARGS`/`ARG_LIST` node for it) —
-    // so when `heal`/`set_tint` also resolves in the correctly-dialected
-    // `analysis()` (which is independent of which CST `root` feeds these
-    // ink-AST-cast functions), ink's mis-parse produces a real, plausible,
-    // WRONG hint. This is #2280's exact "present and wrong" failure mode.
+    // so this fixture proves the wasm-facing entry point actually reaches
+    // the native CST path (per #2358's precedent
+    // `native_folding_ranges_reach_the_native_cst_path`) rather than
+    // ink's mis-parse of the same text, which would produce a different,
+    // WRONG hint (#2280's "present and wrong" failure mode).
     const NATIVE_DIVERT_WITH_ARGS_FIXTURE: &str =
         "fn heal(hp: int): int {\n  return hp;\n}\n\nflow main() {\n  -> heal(5)\n}\n";
 
     #[test]
-    fn native_inlay_hints_are_gated_to_empty_not_ink_mis_parse_garbage() {
+    fn native_inlay_hints_reach_the_native_cst_path() {
         let mut s = EditorSession::new();
         s.update_file("main.brink", NATIVE_DIVERT_WITH_ARGS_FIXTURE);
         assert!(s.set_active_file("main.brink"));
         assert_eq!(
             s.inlay_hints(0, 200),
-            "[]",
-            "a native file must get no inlay hints, not the `\"hp:\"` \
-             parameter hint ink's mis-parse of `-> heal(5)` computes"
+            "[{\"offset\":64,\"label\":\"hp:\",\"kind\":\"parameter\",\"padding_right\":true}]",
+            "a native file's `-> heal(5)` divert-with-args must get the \
+             `\"hp:\"` parameter hint computed from the native CST"
         );
     }
 
     #[test]
-    fn native_color_hints_are_gated_to_empty_not_ink_mis_parse_garbage() {
+    fn native_color_hints_reach_the_native_cst_path() {
         use brink_ir::{
             BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
             TypeRef, WidgetDecl,
@@ -3292,23 +3295,23 @@ mod tests {
             .expect("manifest validates");
         assert_eq!(
             s.color_hints_doc(doc, 0, 200),
-            "[]",
-            "a native file must get no color-picker hints, not the \
-             `\"#FF8800\"` hint ink's mis-parse of `-> set_tint(\"#FF8800\")` \
-             computes"
+            "[{\"start\":61,\"end\":70,\"value\":\"#FF8800\"}]",
+            "a native file's `-> set_tint(\"#FF8800\")` argument must get \
+             the `\"#FF8800\"` color-picker hint computed from the native \
+             CST"
         );
     }
 
     #[test]
-    fn native_argument_widgets_are_gated_to_empty_not_ink_mis_parse_garbage() {
+    fn native_argument_widgets_reach_the_native_cst_path() {
         let mut s = EditorSession::new();
         s.update_file("main.brink", NATIVE_DIVERT_WITH_ARGS_FIXTURE);
         let doc = s.open_document("main.brink");
         assert_eq!(
             s.argument_widgets_doc(doc, 0, 200),
-            "[]",
-            "a native file must get no argument-widget sites, not the \
-             `heal` call site ink's mis-parse of `-> heal(5)` computes"
+            "[{\"callee\":\"heal\",\"name_start\":59,\"name_end\":63,\"slots\":[{\"param_name\":\"hp\",\"state\":{\"kind\":\"filled\",\"start\":64,\"end\":65,\"value\":\"5\"}}],\"groups\":[]}]",
+            "a native file's `-> heal(5)` call site must get the `heal` \
+             argument-widget site computed from the native CST"
         );
     }
 

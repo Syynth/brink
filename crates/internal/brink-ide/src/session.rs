@@ -88,16 +88,15 @@ impl IdeSnapshot {
             // renamed from `elements` by #2180), set via
             // `IdeSession::set_conventions` (issue #1880) and carried into
             // this snapshot by `IdeSession::snapshot`, mirroring
-            // `dialect`/`types`/`lints` for whole-struct consistency. Note
-            // this is inert on this off-db path: `analyze_with_modules` (the
-            // only thing `IdeSnapshot::analyze` calls) never reads
-            // `opts.conventions` — the confinement gate (`E169`) lives only
-            // in `brink-db`'s `conventions_confinement_diagnostics_query`,
-            // which this analyzer-only snapshot never invokes. Carried here
-            // anyway so the next `AnalysisOptions` field consumer added to
-            // `analyze_with_modules` finds it already wired rather than
-            // silently defaulted. See `conventions` field doc for how the
-            // pointer is actually set.
+            // `dialect`/`types`/`lints` for whole-struct consistency.
+            // `analyze_with_modules` (the only thing `IdeSnapshot::analyze`
+            // calls) now runs the same confinement/unconfigured `E169` check
+            // off this field that `brink-db`'s db-direct
+            // `conventions_confinement_diagnostics_query` runs against the
+            // live db (issue #2335) — the two roads agree on the canonical
+            // fixture (`crates/brink-web/src/editor/acceptance_gate.rs`).
+            // See `conventions` field doc for how the pointer is actually
+            // set.
             conventions: self.conventions.clone(),
         };
         // The snapshot's own native classification (issue #1358) — see

@@ -517,6 +517,37 @@ export interface ExplainCapture {
 }
 
 /**
+ * A field type's structural shape — mirrors `brink_ir::SchemaTypeShape`
+ * verbatim, span-free (issue #2311): a bare nominal name, a generic
+ * instantiation, or a function type, recursively.
+ */
+export type ExplainSchemaTypeShape =
+  | { kind: "named"; name: string }
+  | { kind: "generic"; name: string; args: ExplainSchemaTypeShape[] }
+  | { kind: "fn"; params: ExplainSchemaTypeShape[]; ret: ExplainSchemaTypeShape };
+
+/**
+ * One resolved field of an `attach = StructName` schema (issue #2311):
+ * the field's declared name and resolved type — schema, never a value any
+ * handler computed.
+ */
+export interface ExplainAttachField {
+  name: string;
+  ty: ExplainSchemaTypeShape;
+}
+
+/**
+ * The `attach = StructName` clause's resolution outcome (issue #2311) —
+ * mirrors `brink_ir::ConventionAttachSchema`: `resolved` carries the
+ * struct's declared name plus every field; `unresolved` carries just the
+ * declared name for a clause that named a struct that does not exist
+ * anywhere in the conventions module's own file or its import closure.
+ */
+export type ExplainAttachSchema =
+  | { kind: "resolved"; name: string; fields: ExplainAttachField[] }
+  | { kind: "unresolved"; name: string };
+
+/**
  * One handler's classification-time match — the winner or a shadowed
  * runner-up. `kind` (issue #2310) — the claimed line's compile-time
  * structural shape — is present only on the `winner` a caller receives via
@@ -540,6 +571,13 @@ export interface ExplainClassifiedMatch {
   order: number;
   mode: "attach" | "wrap";
   kind?: "content_line" | "scene_heading" | "bang_dispatch" | "cue" | "parenthetical";
+  /** What a match on this handler produces — one variant today: `"call"`. */
+  disposition: "call";
+  /**
+   * The handler's declared `attach = StructName` schema, if any (issue
+   * #2311) — absent for a handler that only ever emits text.
+   */
+  attach?: ExplainAttachSchema;
   captures: ExplainCapture[];
 }
 
@@ -547,6 +585,14 @@ export interface ExplainClassifiedMatch {
 export interface ExplainAttempted {
   handler: ExplainHandler;
   order: number;
+  mode: "attach" | "wrap";
+  /** What a match on this handler would produce — one variant today: `"call"`. */
+  disposition: "call";
+  /**
+   * The handler's declared `attach = StructName` schema, if any (issue
+   * #2311) — absent for a handler that only ever emits text.
+   */
+  attach?: ExplainAttachSchema;
   pattern: string;
 }
 

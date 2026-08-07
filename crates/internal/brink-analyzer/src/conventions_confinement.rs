@@ -29,9 +29,19 @@
 //! `module_map_query`) — this crate stays dependency-free of that path
 //! machinery, matching every other project-identity-gated check
 //! (`native_strict_only_error`'s `is_native` flag is the precedent this
-//! follows). The caller computes `is_conventions_module` once per file and
-//! hands it in alongside the raw pointer string (for the diagnostic
-//! message only).
+//! follows). [`conventions_module_diagnostics`]/
+//! [`conventions_unconfigured_diagnostics`] themselves stay pure and
+//! caller-fed exactly this way: the caller computes `is_conventions_module`
+//! once per file and hands it in alongside the raw pointer string (for the
+//! diagnostic message only).
+//!
+//! [`conventions_confinement_diagnostics`] (issue #2335) is the one
+//! exception: a caller with no `ProjectDb` at all — the off-db analysis
+//! road — has no db to ask "is this file the conventions module", so this
+//! function does that resolution itself, via a small duplicated
+//! [`native_module_path`] rather than an injected callback. See that
+//! function's own doc for why duplication, not a dependency, is the
+//! shape here.
 //!
 //! # What IS now enforced (issue #2289, part 2 of the 2026-08-05 ruling)
 //!
@@ -66,7 +76,10 @@
 //!   the validation verdict; this module's own confinement check still has
 //!   nothing to confine a preset-shaped pointer against, unchanged.
 
+use brink_ir::symbols::{RESERVED_ROOTS, STORY_ROOT, is_reserved_root_module};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
+
+use crate::manifest::ModuleMap;
 
 /// Whether a `[project] conventions` pointer names a project-relative path
 /// to a `.brink` conventions module, as opposed to a bare built-in preset
@@ -94,6 +107,168 @@ pub fn is_path_shaped_conventions_pointer(pointer: &str) -> bool {
         || std::path::Path::new(pointer)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("brink"))
+}
+
+/// A native `.brink` file's module path, derived **purely** from its
+/// root-relative key. DELIBERATELY duplicates `brink_db::modules::
+/// native_module_path`'s control flow rather than sharing the function:
+/// `brink-db` already depends on `brink-analyzer` (for
+/// [`ModuleMap`]/`ResolvedModule`), so the reverse dependency this module's
+/// own [`is_path_shaped_conventions_pointer`] precedent relies on cannot run
+/// in this direction, and lowering `brink-analyzer` to sit *under* `brink-db`
+/// is a bigger structural change than this issue's slice covers. See
+/// `brink_db::modules::native_module_path`'s own doc for the full
+/// path-to-module derivation this mirrors, including the peer-root exception
+/// for [`RESERVED_ROOTS`] (decision-log 2026-08-04, "`std::` and libraries
+/// are PEER ROOTS of `story::`"). The entire justification for the
+/// duplication is drift management, so — unlike the control flow — the
+/// literal `"story"` root name is NOT re-hardcoded here: both this function
+/// and `brink_db::modules::native_module_path` read the same
+/// [`brink_ir::symbols::STORY_ROOT`] constant, so that one piece cannot
+/// drift between the two copies even by a typo.
+///
+/// The one caller that needs it, [`conventions_confinement_diagnostics`]
+/// (issue #2335's off-db road), never applies a `ProjectDb::native_root`
+/// offset before calling this — every current off-db caller of that function
+/// (`IdeSession`'s producers: `brink-web`'s `EditorSession`, the CLI's
+/// `ide_session()`) registers files under already root-relative keys and
+/// never declares a root, so `brink_db::modules::root_relative_key`'s own
+/// no-root branch (return the path unchanged) is exactly what skipping it
+/// here reproduces. `brink-lsp`'s `analysis_loop` is the one production
+/// caller of `analyze_with_modules` that *does* declare a native root
+/// (its files are keyed by absolute OS path) — this function's parity with
+/// the db road is unverified for that caller and is not this issue's scope.
+fn native_module_path(relative_path: &str) -> String {
+    native_module_path_in(RESERVED_ROOTS, relative_path)
+}
+
+/// [`native_module_path`], parameterized over the reserved-root set instead
+/// of hardcoding [`RESERVED_ROOTS`] — same rationale as `brink-db`'s own
+/// `native_module_path_in` (a test needs a root-agnostic exercise the real,
+/// one-member `RESERVED_ROOTS` constant cannot provide by itself).
+fn native_module_path_in(roots: &[&str], relative_path: &str) -> String {
+    let without_ext = relative_path
+        .strip_suffix(".brink")
+        .unwrap_or(relative_path);
+    let mut segments = without_ext
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty() && *segment != ".");
+
+    let Some(first) = segments.next() else {
+        return String::from(STORY_ROOT);
+    };
+
+    let mut out = if roots.contains(&first) {
+        first.to_string()
+    } else {
+        format!("{STORY_ROOT}::{first}")
+    };
+    for segment in segments {
+        out.push_str("::");
+        out.push_str(segment);
+    }
+    out
+}
+
+/// Run the confinement/unconfigured `E169` checks
+/// ([`conventions_module_diagnostics`]/[`conventions_unconfigured_diagnostics`])
+/// for a caller with no live `ProjectDb` to ask per-file — the off-db
+/// analysis road (issue #2335: `IdeSnapshot::analyze`/`session.analysis()`,
+/// reached through [`crate::analyze_with_modules`], this function's one
+/// caller).
+///
+/// Mirrors `brink_db::queries::analysis::conventions_confinement_diagnostics_query`
+/// file for file:
+///
+/// - a file with no declared claim handler is skipped immediately (lazy,
+///   matching the db query's own doc: it never even reads `modules` for
+///   such a file);
+/// - a file whose resolved module is an [`is_reserved_root_module`] peer
+///   (the mounted `std::…` tree) is exempt entirely (issue #2251's
+///   exemption, folded into the db query on 2026-08-05) — a project that
+///   configures its OWN conventions module must not have the *mounted*
+///   preset's handlers flagged as living outside it;
+/// - an entirely unset `conventions` pointer diagnoses every declared
+///   handler as unconfigured (issue #2289 part 2's ruling: this is a
+///   misconfiguration, not an opt-out);
+/// - a bare preset name (not [`is_path_shaped_conventions_pointer`]) stays
+///   silent — a preset names a `std::conventions::*` module, not a project
+///   file, so there is nothing in `modules` to confine against (see that
+///   function's own doc);
+/// - a path-shaped pointer that resolves (via [`native_module_path`]) to no
+///   real module in `modules` stays silent too, `tracing::warn!`-logged —
+///   the same "warn, never silently drop" channel the db road uses for a
+///   typo'd/moved/deleted pointer, so it never misfires `E169` against every
+///   claiming handler in the project (including the real intended module)
+///   for a config problem that is not their fault.
+///
+/// An entirely **empty** `modules` map opts a caller out of this whole check
+/// (issue #2335 review finding), matching the established "empty `ModuleMap`
+/// is inert" contract every other module-identity-gated behavior in
+/// [`crate::analyze_with_modules`] already honors ([`crate::analyze_with_options`]'s
+/// own doc: "An empty map reproduces `analyze_with_options` exactly"). A
+/// real `IdeSession`/`brink-lsp` caller with a native claim handler always
+/// has a non-empty map — native module identity is a pure, always-computed
+/// function of the file's path — so this can only trigger for a
+/// module-blind harness that compiles one in-memory source string with no
+/// path at all (`brink_test_harness::corpus::compile_and_explore_from_brink_native`,
+/// whose own doc records exactly this "no path-derived identity to qualify
+/// by" tradeoff). Without this guard, that harness — used by
+/// `issue_2092_scene_entered_extern.rs` to drive the *real* shipped
+/// `std/conventions/screenplay.brink` source directly, outside the real
+/// stdlib-mounting pipeline that would otherwise classify it as a
+/// [`is_reserved_root_module`] peer — misfired unconfigured `E169` on the
+/// preset's own handlers, which is not a real editor-path finding: nothing
+/// about a genuinely module-blind compile can tell "this claim handler is
+/// misplaced" from "there is no place for it to even be placed".
+#[must_use]
+pub fn conventions_confinement_diagnostics(
+    files: &[(FileId, &HirFile)],
+    modules: &ModuleMap,
+    conventions: Option<&str>,
+) -> Vec<Diagnostic> {
+    if modules.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for &(file_id, hir) in files {
+        if hir.claim_handlers.is_empty() {
+            continue;
+        }
+        if modules
+            .get(&file_id)
+            .is_some_and(|m| is_reserved_root_module(&m.name))
+        {
+            continue;
+        }
+        let Some(pointer) = conventions else {
+            out.extend(conventions_unconfigured_diagnostics(file_id, hir));
+            continue;
+        };
+        if !is_path_shaped_conventions_pointer(pointer) {
+            continue;
+        }
+        let expected_module = native_module_path(pointer);
+        if !modules.values().any(|m| m.name == expected_module) {
+            tracing::warn!(
+                "[project] conventions = \"{pointer}\" does not match any file in the project \
+                 (expected module `{expected_module}`) — conventions-module confinement (E169) \
+                 is skipped until this is fixed"
+            );
+            continue;
+        }
+        let Some(this_module) = modules.get(&file_id).map(|m| m.name.as_str()) else {
+            continue;
+        };
+        let is_conventions_module = this_module == expected_module;
+        out.extend(conventions_module_diagnostics(
+            file_id,
+            hir,
+            is_conventions_module,
+            pointer,
+        ));
+    }
+    out
 }
 
 /// Diagnose every claiming handler declared in `hir` when this file is not
@@ -162,6 +337,8 @@ pub fn conventions_unconfigured_diagnostics(file_id: FileId, hir: &HirFile) -> V
 mod tests {
     use super::*;
     use brink_ir::hir::lower_native;
+
+    use crate::manifest::ResolvedModule;
 
     fn build_native(src: &str) -> HirFile {
         let parsed = brink_syntax_native::parse(src);
@@ -280,5 +457,196 @@ mod tests {
         let diags = conventions_unconfigured_diagnostics(FileId(0), &hir);
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E169));
+    }
+
+    // ── `native_module_path` (duplicated from `brink_db::modules`, issue
+    // #2335) — same example table as that crate's own tests, so the two
+    // copies staying in sync is at least mechanically checkable. ─────────
+
+    #[test]
+    fn native_module_path_derives_purely_from_relative_path() {
+        assert_eq!(native_module_path("barter.brink"), "story::barter");
+        assert_eq!(
+            native_module_path("market/barter.brink"),
+            "story::market::barter"
+        );
+        assert_eq!(
+            native_module_path("npcs/quests/intro.brink"),
+            "story::npcs::quests::intro"
+        );
+        assert_eq!(
+            native_module_path("market\\barter.brink"),
+            "story::market::barter"
+        );
+        assert_eq!(native_module_path("./main.brink"), "story::main");
+    }
+
+    #[test]
+    fn native_module_path_roots_a_std_mounted_key_as_a_peer_of_story() {
+        assert_eq!(
+            native_module_path("std/conventions/screenplay.brink"),
+            "std::conventions::screenplay"
+        );
+        assert_eq!(native_module_path("std.brink"), "std");
+    }
+
+    #[test]
+    fn native_module_path_in_generalizes_to_a_second_reserved_root() {
+        let roots = &["gizmo"];
+        assert_eq!(
+            native_module_path_in(roots, "gizmo/leaf.brink"),
+            "gizmo::leaf"
+        );
+        assert_eq!(
+            native_module_path_in(roots, "market/barter.brink"),
+            "story::market::barter"
+        );
+    }
+
+    // ── `conventions_confinement_diagnostics` (issue #2335) ──────────────
+
+    fn resolved_module(name: &str) -> ResolvedModule {
+        ResolvedModule {
+            name: name.to_owned(),
+            declared: true,
+            was: None,
+        }
+    }
+
+    #[test]
+    fn correctly_placed_handler_is_silent() {
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(0), resolved_module("story::conventions"));
+        let diags =
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn misplaced_handler_with_a_configured_module_is_e169() {
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        // This file (id 0) is `story::other`, not the configured
+        // `story::conventions` — nothing in `modules` even names the file
+        // the pointer resolves to other than this mismatch.
+        modules.insert(FileId(0), resolved_module("story::other"));
+        modules.insert(FileId(1), resolved_module("story::conventions"));
+        let diags =
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E169);
+        assert!(diags[0].message.contains("conventions.brink"), "{diags:?}");
+    }
+
+    #[test]
+    fn unset_conventions_reports_unconfigured() {
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(0), resolved_module("story::main"));
+        let diags = conventions_confinement_diagnostics(&files, &modules, None);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(
+            diags[0]
+                .message
+                .contains("no conventions module is configured"),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn preset_shaped_pointer_stays_silent() {
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(0), resolved_module("story::main"));
+        let diags = conventions_confinement_diagnostics(&files, &modules, Some("screenplay"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_completely_empty_modules_map_opts_out_of_the_whole_check() {
+        // The module-blind harness case (issue #2335 review finding):
+        // `brink_test_harness::corpus::compile_and_explore_from_brink_native`
+        // compiles one in-memory source string with no path-derived module
+        // identity at all, so it can never tell a misplaced handler from a
+        // handler with nowhere to belong. An entirely empty `modules` map
+        // must not misfire `E169`, even with an unset `conventions` pointer
+        // and a real claim handler present.
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let modules = ModuleMap::new();
+        assert!(conventions_confinement_diagnostics(&files, &modules, None).is_empty());
+        assert!(
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unresolvable_pointer_stays_silent() {
+        // Path-shaped, but no file in `modules` resolves to that module —
+        // a typo'd/moved/deleted `[project] conventions` target must not
+        // misfire E169 against every claiming handler in the project.
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(0), resolved_module("story::somewhere_else"));
+        let diags =
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_mounted_reserved_root_file_is_exempt_even_when_unconfigured() {
+        // Issue #2251's peer-root exemption: `brink-environment` mounts
+        // `std::conventions::screenplay` into every compiled project
+        // regardless of whether that project's own `brink.toml` ever names
+        // it — without this exemption, every project with no `conventions`
+        // key would suddenly fail to compile against the mounted preset's
+        // own handlers.
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(0), resolved_module("std::conventions::screenplay"));
+        let diags = conventions_confinement_diagnostics(&files, &modules, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_claiming_file_absent_from_modules_stays_silent() {
+        // Parity fix (issue #2335 review finding): `modules` is fed by the
+        // caller and is NOT guaranteed to have an entry for every file in
+        // `files` (`brink_db::queries::analysis::
+        // conventions_confinement_diagnostics_query` skips such a file
+        // outright, `let Some(this_module) = module_map.get(&file_id)...
+        // else { return Arc::new(Vec::new()); }`). The claiming file here
+        // (id 0) has no `modules` entry at all; a second file (id 1)
+        // supplies the expected module so the pointer-resolvability check
+        // still passes. Before the fix, a missing entry was folded into
+        // "not the conventions module" and misfired E169 on a file this
+        // function has no module identity for.
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(1), resolved_module("story::conventions"));
+        let diags =
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn no_claim_handlers_is_silent_regardless_of_configuration() {
+        let hir = build_native("flow main() {\n  hi\n}\n");
+        let files = [(FileId(0), &hir)];
+        let modules = ModuleMap::new();
+        assert!(conventions_confinement_diagnostics(&files, &modules, None).is_empty());
+        assert!(
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"))
+                .is_empty()
+        );
     }
 }

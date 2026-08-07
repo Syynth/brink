@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use brink_analyzer::{ModuleMap, ResolvedModule};
-use brink_ir::{Diagnostic, DiagnosticCode, FileId, RESERVED_ROOTS};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, RESERVED_ROOTS, STORY_ROOT};
 use rowan::TextRange;
 
 use crate::include_graph::IncludeGraph;
@@ -160,13 +160,13 @@ fn native_module_path_in(roots: &[&str], relative_path: &str) -> String {
         .filter(|segment| !segment.is_empty() && *segment != ".");
 
     let Some(first) = segments.next() else {
-        return String::from("story");
+        return String::from(STORY_ROOT);
     };
 
     let mut out = if roots.contains(&first) {
         first.to_string()
     } else {
-        format!("story::{first}")
+        format!("{STORY_ROOT}::{first}")
     };
     for segment in segments {
         out.push_str("::");

@@ -650,16 +650,16 @@ impl Project {
     /// #2316 fixed `brink-web`'s `EditorSession` and `brink-lsp`'s
     /// `analysis_loop`): since #2289, `IdeSession::analysis_options()`
     /// reading `conventions: None` means "misconfigured", not "nothing to
-    /// check". That value never reaches `E169` through this session's own
-    /// off-db `analyze()`/`IdeSnapshot::analyze` path — `analyze_with_modules`
-    /// (the only thing that path calls) never reads `opts.conventions` (see
-    /// the field doc on `brink-ide/src/session.rs`'s `IdeSnapshot`). The gate
-    /// lives only in `brink-db`'s `conventions_confinement_diagnostics_query`,
-    /// reached through `sync_db_options` writing into the db-direct surface
-    /// (`per_file_diagnostics_query`, `compile`) — so leaving this unset here
-    /// would misfire `E169` on every `@[convention]` handler for that
-    /// db-direct surface, for any `ide_session()` consumer that reads it, the
-    /// moment one exists. Mirrors the other three setters exactly.
+    /// check". That value reaches `E169` through BOTH of this session's
+    /// roads: `brink-db`'s `conventions_confinement_diagnostics_query`
+    /// (reached through `sync_db_options` writing into the db-direct
+    /// surface — `per_file_diagnostics_query`, `compile`) and, since issue
+    /// #2335, this session's own off-db `analyze()`/`IdeSnapshot::analyze`
+    /// path too (`analyze_with_modules` now runs the same check off
+    /// `opts.conventions` — see the field doc on `brink-ide/src/session.rs`'s
+    /// `IdeSnapshot`). Leaving this unset here would misfire `E169` on every
+    /// `@[convention]` handler on both surfaces, for any `ide_session()`
+    /// consumer that reads either. Mirrors the other three setters exactly.
     ///
     /// Each setter re-analyzes, so they're called after every source is
     /// loaded — calling them first would reanalyze against an empty file

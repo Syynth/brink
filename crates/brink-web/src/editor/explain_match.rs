@@ -282,9 +282,13 @@ mod tests {
     /// this crate's own `hir::explain` unit tests) — #1880 is what threads
     /// the pointer the rest of the way through `IdeSession`.
     const CONVENTIONS: &str = "\
-@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10)]
-fn cue(name: string) {
-  return name;
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
 }
 
 @[convention(claims = \"^(?<kind>INT|EXT)\\. (?<title>.+)$\", order = 20)]
@@ -336,6 +340,34 @@ flow main() {
             serde_json::json!("cue"),
             "the winning handler must be `cue`, the only one declared — \
              got {v}"
+        );
+    }
+
+    /// #2311 review (finding 1): `attach = StructName` must resolve through
+    /// the *real* `EditorSession` road — `ExplainMatchCache`/rebase/
+    /// `CachedLine` and the db's own struct resolution — not just the
+    /// hand-constructed `ClassifiedMatch`/`ConventionsProjection::from_decls`
+    /// unit tests in `brink_ir::hir::classify`, which never touch any of
+    /// that machinery. `cue`'s `attach = Cue` clause (declared on
+    /// `CONVENTIONS` above) must come back `Resolved` with `Cue`'s real
+    /// field shape.
+    #[test]
+    fn explain_match_reaches_the_live_attach_schema_through_editor_session() {
+        let mut s = session_with_conventions();
+        let offset =
+            u32::try_from(CONVENTIONS.find("VENDOR").expect("VENDOR line")).expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            v["winner"]["attach"],
+            serde_json::json!({
+                "kind": "resolved",
+                "name": "Cue",
+                "fields": [{"name": "speaker", "ty": {"kind": "named", "name": "string"}}],
+            }),
+            "the cue handler's `attach = Cue` schema must resolve through \
+             the live EditorSession road — got {v}"
         );
     }
 
