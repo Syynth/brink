@@ -23,8 +23,8 @@ describe("defaultXliffName", () => {
     expect(defaultXliffName("main.ink")).toBe("main.xlf");
   });
 
-  it("falls back to story.xlf for an unrecognized shape", () => {
-    expect(defaultXliffName("")).toBe("story.xlf");
+  it("keeps the basename unchanged when the extension isn't .ink/.brink", () => {
+    expect(defaultXliffName("notes.txt")).toBe("notes.txt.xlf");
   });
 });
 
