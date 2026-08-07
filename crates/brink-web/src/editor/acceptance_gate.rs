@@ -104,9 +104,12 @@ fn gate_session() -> EditorSession {
 ///   (`IdeSnapshot::analyze` → `analyze_with_modules`).
 /// - `session.db().diagnostics(file)` — the db-direct road
 ///   (`per_file_diagnostics_query`), which is what the studio's Problems
-///   panel actually renders and the ONLY road that runs the E169
-///   conventions checks (`analyze_with_modules` never reads
-///   `opts.conventions`).
+///   panel actually renders.
+///
+/// Since issue #2335 BOTH roads run the E169 conventions confinement/
+/// unconfigured checks (`analyze_with_modules` used to never read
+/// `opts.conventions` at all) — see `gate_misplaced_convention_handler_
+/// is_e169_on_both_roads` below for the divergence case that proves it.
 ///
 /// The gate's own red-check proved reading only the first road is a trap:
 /// with config discovery disabled, the off-db road stayed clean while the
@@ -177,6 +180,71 @@ fn gate_the_canonical_project_analyzes_clean() {
         "the canonical native project must analyze clean through the editor \
          path (CLI already compiles it clean — divergence here is an \
          editor-path bug):\n{diags:#?}"
+    );
+}
+
+// ── Divergence case (issue #2335): the off-db `analysis` road must agree ──
+// with the db-direct road on a MISPLACED `@[convention]` handler, not just
+// on the canonical (correctly-configured) fixture above. Same file names as
+// `gate_session()` so `all_diagnostics`'s hardcoded db-road file list still
+// applies — only `heading` moves out of `conventions.brink` and into
+// `story.brink` itself, everything else byte-identical to the canonical
+// fixture.
+
+const CONVENTIONS_MISSING_HEADING: &str = "struct Cue {\n  \
+   speaker: string,\n\
+ }\n\n\
+ @[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", attach = Cue, order = 10)]\n\
+ fn cue(name: string): Cue {\n  \
+   return Cue { speaker: name };\n\
+ }\n";
+
+const STORY_WITH_MISPLACED_HEADING: &str = "use story::market::barter;\n\n\
+ @[convention(claims = \"^(?<kind>INT|EXT)\\\\. (?<title>.+)$\", order = 20)]\n\
+ fn heading(kind: string, title: string) {\n  \
+   return \"-- {kind}. {title} --\";\n\
+ }\n\n\
+ pub flow main() {\n  \
+   INT. MARKET SQUARE - NIGHT [market] #act1\n  \
+   The square is empty.\n\n  \
+   VENDOR\n  \
+   You shouldn't be here after dark.\n\n  \
+   -> barter::haggle\n\
+ }\n";
+
+fn misplaced_handler_session() -> EditorSession {
+    let mut s = EditorSession::new();
+    s.update_file("brink.toml", BRINK_TOML);
+    s.update_file("conventions.brink", CONVENTIONS_MISSING_HEADING);
+    s.update_file("story.brink", STORY_WITH_MISPLACED_HEADING);
+    s.update_file("market/barter.brink", BARTER);
+    s.discover_project_config("story.brink")
+        .expect("brink.toml discovery from the entry file must succeed");
+    s
+}
+
+/// `heading` claims prose exactly like the canonical fixture, but is
+/// declared directly in `story.brink` instead of the configured
+/// `conventions.brink` — `E169` must fire on BOTH analysis roads. Before
+/// issue #2335, the off-db `analysis` road silently passed this fixture
+/// with zero diagnostics (`analyze_with_modules` never read
+/// `opts.conventions`) while only the db-direct road caught it — exactly
+/// the kind of two-roads divergence this gate exists to catch.
+#[test]
+fn gate_misplaced_convention_handler_is_e169_on_both_roads() {
+    let s = misplaced_handler_session();
+    let diags = all_diagnostics(&s);
+    let e169: Vec<&String> = diags.iter().filter(|d| d.contains("[E169]")).collect();
+
+    assert!(
+        e169.iter().any(|d| d.starts_with("analysis:")),
+        "a claim handler declared outside its configured conventions module \
+         must be E169 on the off-db `analysis` road (issue #2335) — got {diags:#?}"
+    );
+    assert!(
+        e169.iter().any(|d| d.starts_with("db:")),
+        "a claim handler declared outside its configured conventions module \
+         must still be E169 on the db-direct road — got {diags:#?}"
     );
 }
 
