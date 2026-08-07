@@ -194,6 +194,20 @@ export interface MountStudioOptions {
 export interface StudioHandle {
   /** The curated facade (spec §8.2) — the same one `useStudioApi()` serves. */
   api: StudioApi;
+  /**
+   * The project's EFFECTIVE entry file, project-relative —
+   * `ProjectSession.getEntryFile()`'s result once `initialize()` has run,
+   * i.e. with `[project] entry` precedence already applied (issue #2331,
+   * ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s
+   * `entryFile`"). A host that needs to act on "the file the editor
+   * actually treats as the entry" (batch tooling, an export command) must
+   * read this rather than echoing back its own `MountStudioOptions.entryFile`
+   * argument — that argument is only the fallback for a configless project,
+   * and a host that used it directly would silently disagree with the
+   * editor for any project whose `brink.toml` names a different entry
+   * (2026-08 review finding, brink-desktop's `exportXliff`).
+   */
+  entryFile: string;
   /** Tear down: unmount React, dispose editor views, free the wasm session. */
   unmount(): void;
 }
@@ -960,6 +974,10 @@ export async function mountStudio(
 
   return {
     api,
+    // `project.initialize()` (above) already ran `brink.toml` discovery, so
+    // this reads the FINAL resolved entry — see `StudioHandle.entryFile`'s
+    // doc comment.
+    entryFile: project.getEntryFile(),
     // Unmounting runs Root's cleanup effect: dispose session + views + project.
     // Editor views unmount (child effects) before Root's cleanup runs, so the
     // egress flush must happen first, while the views still exist: push every

@@ -222,6 +222,8 @@ interface StudioApi {
   getDirtyFiles(): string[];
   /** Files deleted externally while a kept editor buffer survives (#2371). */
   getOrphanedFiles(): string[];
+  /** The latest successful compile's story bytes, or `null` if none (#2391). */
+  getStoryBytes(): Uint8Array | null;
 }
 ```
 

@@ -27,6 +27,17 @@
     "active": false,
     "icon": [
       "icons/icon.png"
+    ],
+    "externalBin": [
+      "binaries/brink-cli"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["ink", "brink"],
+        "name": "Brink Story",
+        "description": "Ink/Brink interactive-fiction source",
+        "role": "Editor"
+      }
     ]
   }
 }
