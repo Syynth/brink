@@ -940,6 +940,24 @@ pub(crate) struct WholeProjectDiagnostics {
     pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
 }
 
+/// Run `per_file` over every SOURCE file in file order, skipping non-source
+/// documents (issue #2329: brink.toml/.md/.json never contribute analysis).
+/// The shared shape of every per-file pass in
+/// [`whole_project_diagnostics_query`] — the gate lives here once, not
+/// copy-pasted per loop (and clippy's `too_many_lines` on the aggregator is
+/// what finally forced the extraction).
+fn for_each_source_file(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    mut per_file: impl FnMut(SourceFile),
+) {
+    for file in project.files(db) {
+        if is_source_file(file.path(db)) {
+            per_file(*file);
+        }
+    }
+}
+
 #[salsa::tracked(returns(ref))]
 pub(crate) fn whole_project_diagnostics_query(
     db: &dyn salsa::Database,
@@ -1001,86 +1019,69 @@ pub(crate) fn whole_project_diagnostics_query(
     diagnostics.extend(ext.diagnostics.iter().cloned());
     let mut symbol_meta = ext.symbol_meta.clone();
 
-    // `is_source_file` gates every loop below (issue #2329): a non-source
-    // document never contributes a value-meta entry, a call-site check, or
-    // any of the lazy per-file effect/comparator/conventions passes.
-    for file in project.files(db) {
-        if !is_source_file(file.path(db)) {
-            continue;
-        }
+    // Every per-file pass below runs through `for_each_source_file`
+    // (issue #2329): a non-source document never contributes a value-meta
+    // entry, a call-site check, or any lazy effect/comparator/conventions
+    // pass.
+    for_each_source_file(db, project, |file| {
         symbol_meta.extend(
-            value_meta_query(db, project, *file)
+            value_meta_query(db, project, file)
                 .iter()
                 .map(|(k, v)| (*k, v.clone())),
         );
-    }
-    for file in project.files(db) {
-        if !is_source_file(file.path(db)) {
-            continue;
-        }
+    });
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            call_site_diagnostics_query(db, project, *file)
+            call_site_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // T2-2 `#@effects(…)` exceedance check (docs/effects-spec.md §10, issue
     // #861) — per-file, lazy (see `effects_assertion_diagnostics_query`'s
     // doc): a project with no `#@effects` directive never triggers effect
     // inference here.
-    for file in project.files(db) {
-        if !is_source_file(file.path(db)) {
-            continue;
-        }
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            effects_assertion_diagnostics_query(db, project, *file)
+            effects_assertion_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // FS-2 `await`-condition purity gate (E105,
     // docs/flow-suspension-spec.md §3/§5, issue #928) — per-file, lazy (see
     // `await_purity_diagnostics_query`'s doc): an await-free project never
     // triggers effect inference here.
-    for file in project.files(db) {
-        if !is_source_file(file.path(db)) {
-            continue;
-        }
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            await_purity_diagnostics_query(db, project, *file)
+            await_purity_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b, issue
     // #1110 — extended to the fn-value verb trio `map`/`filter`/`fold` by
     // issue #1679, §4) — per-file, lazy (see
     // `comparator_contract_diagnostics_query`'s doc): a project with no
     // inline-`#fn` comparator/callback site never triggers effect
     // inference here.
-    for file in project.files(db) {
-        if !is_source_file(file.path(db)) {
-            continue;
-        }
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            comparator_contract_diagnostics_query(db, project, *file)
+            comparator_contract_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // Conventions-module confinement gate (E169, issue #1844) — per-file,
     // lazy (see `conventions_confinement_diagnostics_query`'s doc): a file
     // with no declared claim handler never even reads `module_map_query`.
-    for file in project.files(db) {
-        if !is_source_file(file.path(db)) {
-            continue;
-        }
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            conventions_confinement_diagnostics_query(db, project, *file)
+            conventions_confinement_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // #2179 the `@[convention]` no-world-reads fence (`E182`,
     // docs/decision-log.md 2026-08-06) — reuses this aggregator's own
     // `hir_refs`/`resolved`/`symbol_meta` (the same whole-project inputs
