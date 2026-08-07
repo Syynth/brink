@@ -326,6 +326,146 @@ async fn append_backups(
     Ok(())
 }
 
+// ── Recent projects (docs/desktop-shell-spec.md D2; #2394) ─────────────
+//
+// `recents.json` in app-data: a JSON array of project-root paths,
+// most-recent-first, capped at `RECENTS_MAX`, deduplicated by exact path.
+// Same app-data-dir precedent as `append_backups`. `push_recent` is called
+// by the frontend after every successful project open; `prune_recent` is
+// called lazily — only when the frontend actually tried to open a recent
+// entry and the open failed (e.g. the folder was deleted or moved) — never
+// by a proactive existence sweep, so a normal `read_recents` stays a single
+// fast file read with no filesystem stat per entry.
+
+/// Cap on the persisted recents list (#2394's "~10").
+const RECENTS_MAX: usize = 10;
+
+/// The menu-id prefix for an Open Recent entry. Shared by `build_menu`
+/// (producer, `format!("{OPEN_RECENT_ID_PREFIX}{path}")`) and
+/// `on_menu_event` (consumer, `id.strip_prefix(OPEN_RECENT_ID_PREFIX)`) so
+/// the two can never drift out of sync — this crate has no CI at all
+/// (`docs/desktop-shell-spec.md`: "CI in v1: none required"), so a typo'd
+/// duplicate literal at either site would ship a silently inert menu behind
+/// a fully green required gate. See `open_recent_id_round_trips_posix_and_windows_paths`
+/// for the round-trip this prefix is expected to survive.
+const OPEN_RECENT_ID_PREFIX: &str = "open-recent:";
+
+/// The app-data path for `recents.json`.
+fn recents_path(app: &tauri::AppHandle) -> Result<PathBuf, ShellError> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| ShellError::Io {
+            path: "app-data dir".to_owned(),
+            source: std::io::Error::other(e),
+        })?
+        .join("recents.json"))
+}
+
+/// Load the persisted list, most-recent-first. A missing file is a fresh
+/// install, not an error. A corrupt file is non-critical cached state (not
+/// compiled project data — nothing here is a silent drop of anything the
+/// user authored) so it self-heals to an empty list rather than surfacing a
+/// parse error that would otherwise block every future project open.
+fn load_recents(path: &Path) -> Result<Vec<String>, ShellError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(io_err(path, e)),
+    };
+    Ok(serde_json::from_str(&text).unwrap_or_default())
+}
+
+/// Persist the list.
+fn save_recents(path: &Path, list: &[String]) -> Result<(), ShellError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+    }
+    let json = serde_json::to_string_pretty(list).map_err(|e| ShellError::Io {
+        path: path.display().to_string(),
+        source: std::io::Error::other(e),
+    })?;
+    std::fs::write(path, json).map_err(|e| io_err(path, e))
+}
+
+/// Recents policy, pure and unit-testable without an `AppHandle` (mirrors
+/// `resolve` / `project_ring_key` above): move `path` to the front,
+/// deduplicating any existing entry for the same path, then cap.
+fn recents_after_push(mut existing: Vec<String>, path: String, cap: usize) -> Vec<String> {
+    existing.retain(|p| p != &path);
+    existing.insert(0, path);
+    existing.truncate(cap);
+    existing
+}
+
+/// Drop one path from the list. Only ever called on a failed open — the
+/// lazy half of "lazy-prune missing paths".
+fn recents_after_prune(mut existing: Vec<String>, path: &str) -> Vec<String> {
+    existing.retain(|p| p != path);
+    existing
+}
+
+/// Rebuild the whole native menu bar with a fresh Open Recent submenu and
+/// install it in place of the current one.
+///
+/// **Decision: rebuild-on-change, not a dynamic submenu.** Tauri v2 (muda)
+/// menus have no "insert/remove item from this live submenu, in place"
+/// affordance that plays nicely with a scalar list rebuilt from disk on
+/// every push/prune — the closest primitives (`append_items` /
+/// `remove_item`) would need us to track item identity across calls
+/// ourselves for zero benefit at this size (a handful of items). Rebuilding
+/// the entire `Menu` from scratch on every recents change and calling
+/// `app.set_menu` is simpler, always correct (the new menu is built from
+/// the just-persisted list, so it can never drift from `recents.json`), and
+/// unmeasurably cheap next to the fs write that already happened in the
+/// same command. `on_menu_event` is registered once on the `App` in
+/// `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
+fn rebuild_menu(app: &tauri::AppHandle, recents: &[String]) -> Result<(), ShellError> {
+    let to_shell_err = |e: tauri::Error| ShellError::Io {
+        path: "menu".to_owned(),
+        source: std::io::Error::other(e),
+    };
+    let menu = build_menu(app, recents).map_err(to_shell_err)?;
+    app.set_menu(menu).map_err(to_shell_err)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn read_recents(app: tauri::AppHandle) -> Result<Vec<String>, ShellError> {
+    load_recents(&recents_path(&app)?)
+}
+
+#[tauri::command]
+async fn push_recent(app: tauri::AppHandle, path: String) -> Result<Vec<String>, ShellError> {
+    let file = recents_path(&app)?;
+    let list = recents_after_push(load_recents(&file)?, path, RECENTS_MAX);
+    save_recents(&file, &list)?;
+    rebuild_menu(&app, &list)?;
+    Ok(list)
+}
+
+#[tauri::command]
+async fn prune_recent(app: tauri::AppHandle, path: String) -> Result<Vec<String>, ShellError> {
+    let file = recents_path(&app)?;
+    let list = recents_after_prune(load_recents(&file)?, &path);
+    save_recents(&file, &list)?;
+    rebuild_menu(&app, &list)?;
+    Ok(list)
+}
+
+/// Whether a project root still exists as a directory. Used by the frontend
+/// to gate lazy recents pruning (#2394 review finding): `openRecent`'s catch
+/// handler must only prune an entry when the folder itself is actually
+/// gone, not on every failure `openProject` can raise (a transient
+/// `mountStudio` error, a permission error, a file deleted mid-listing) —
+/// those must surface to the user, not silently delete a valid project from
+/// `recents.json` and the native Open Recent submenu.
+#[tauri::command]
+async fn project_root_exists(path: String) -> bool {
+    Path::new(&path).is_dir()
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
@@ -358,10 +498,18 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
 /// await-the-final-save quit path entirely. Routing it as `menu:quit`, the
 /// same way Open/Close Project already forward, guarantees ⌘Q funnels
 /// through the identical guarded path as closing the window.
+///
+/// `recents` (#2394) drives the File → Open Recent submenu; see
+/// `rebuild_menu`'s doc comment for why this whole function is re-run on
+/// every recents change rather than mutating a live submenu. Each entry's
+/// item id is `open-recent:{path}`; `on_menu_event` in `run()` strips that
+/// prefix back off to recover the path (paths may themselves contain `:`
+/// on Windows, but `strip_prefix` only ever touches the leading match).
 fn build_menu(
     handle: &tauri::AppHandle,
+    recents: &[String],
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+    use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     let quit = MenuItem::with_id(
         handle,
@@ -395,12 +543,40 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+Shift+W"),
     )?;
+    let recent_items: Vec<MenuItem<tauri::Wry>> = if recents.is_empty() {
+        vec![MenuItem::with_id(
+            handle,
+            "no-recents",
+            "No Recent Projects",
+            false,
+            None::<&str>,
+        )?]
+    } else {
+        recents
+            .iter()
+            .map(|path| {
+                MenuItem::with_id(
+                    handle,
+                    format!("{OPEN_RECENT_ID_PREFIX}{path}"),
+                    path,
+                    true,
+                    None::<&str>,
+                )
+            })
+            .collect::<tauri::Result<Vec<_>>>()?
+    };
+    let recent_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = recent_items
+        .iter()
+        .map(|item| item as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    let open_recent = Submenu::with_items(handle, "Open Recent", true, &recent_refs)?;
     let file_menu = Submenu::with_items(
         handle,
         "File",
         true,
         &[
             &open,
+            &open_recent,
             &close,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::close_window(handle, None)?,
@@ -431,13 +607,22 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
         .setup(|app| {
-            let menu = build_menu(app.handle())?;
+            // Load whatever recents.json already holds so a relaunch shows
+            // the File → Open Recent submenu populated immediately, not
+            // just after the first push in this session (#2394).
+            let initial_recents = load_recents(&recents_path(app.handle())?)?;
+            let menu = build_menu(app.handle(), &initial_recents)?;
             app.set_menu(menu)?;
             // Menu events forward to the webview as plain events; the
             // frontend owns what "open" and "close" mean (it holds the
             // StudioHandle). The shell stays policy-free.
             app.on_menu_event(|app, event| {
-                let forwarded = match event.id().as_ref() {
+                let id = event.id().as_ref();
+                if let Some(path) = id.strip_prefix(OPEN_RECENT_ID_PREFIX) {
+                    let _ = app.emit("menu:open-recent", path.to_owned());
+                    return;
+                }
+                let forwarded = match id {
                     "open-project" => Some("menu:open-project"),
                     "close-project" => Some("menu:close-project"),
                     "quit" => Some("menu:quit"),
@@ -459,6 +644,10 @@ pub fn run() {
             start_watch,
             stop_watch,
             pick_project_folder,
+            read_recents,
+            push_recent,
+            prune_recent,
+            project_root_exists,
         ])
         .run(tauri::generate_context!())
         .expect("error while running brink-desktop");
@@ -483,5 +672,98 @@ mod tests {
         assert!(is_project_file(Path::new("brink.toml")));
         assert!(!is_project_file(Path::new("a/story.ink.json")));
         assert!(!is_project_file(Path::new("Cargo.toml")));
+    }
+
+    /// A fresh, uniquely-named scratch file path under the OS temp dir —
+    /// same precedent as `crates/brink-cli/tests/*_cli.rs`'s `project_dir`.
+    fn scratch_recents_file(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "brink-desktop-recents-{}-{tag}.json",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn recents_after_push_dedups_by_path_moving_it_to_front() {
+        let existing = vec!["/a".to_owned(), "/b".to_owned(), "/c".to_owned()];
+        let after = recents_after_push(existing, "/b".to_owned(), 10);
+        assert_eq!(
+            after,
+            vec!["/b".to_owned(), "/a".to_owned(), "/c".to_owned()]
+        );
+    }
+
+    #[test]
+    fn recents_after_push_prepends_new_path() {
+        let existing = vec!["/a".to_owned()];
+        let after = recents_after_push(existing, "/new".to_owned(), 10);
+        assert_eq!(after, vec!["/new".to_owned(), "/a".to_owned()]);
+    }
+
+    #[test]
+    fn recents_after_push_caps_the_list() {
+        let existing: Vec<String> = (0..10).map(|i| format!("/p{i}")).collect();
+        let after = recents_after_push(existing, "/new".to_owned(), 10);
+        assert_eq!(after.len(), 10);
+        assert_eq!(after[0], "/new");
+        // The oldest entry ("/p9", pushed last of the original 10 so it
+        // sits at the back before the new push) falls off the cap.
+        assert!(!after.contains(&"/p9".to_owned()));
+    }
+
+    #[test]
+    fn recents_after_prune_removes_only_the_named_path() {
+        let existing = vec!["/a".to_owned(), "/b".to_owned(), "/c".to_owned()];
+        let after = recents_after_prune(existing, "/b");
+        assert_eq!(after, vec!["/a".to_owned(), "/c".to_owned()]);
+    }
+
+    #[test]
+    fn recents_after_prune_is_a_no_op_for_an_absent_path() {
+        let existing = vec!["/a".to_owned()];
+        let after = recents_after_prune(existing, "/not-there");
+        assert_eq!(after, vec!["/a".to_owned()]);
+    }
+
+    #[test]
+    fn load_recents_missing_file_is_empty_not_an_error() {
+        let path = scratch_recents_file("missing");
+        let _ = std::fs::remove_file(&path); // ensure absent
+        let loaded = load_recents(&path).expect("missing file loads as empty, not Err");
+        assert_eq!(loaded, Vec::<String>::new());
+    }
+
+    #[test]
+    fn save_then_load_recents_roundtrips() {
+        let path = scratch_recents_file("roundtrip");
+        let list = vec!["/one".to_owned(), "/two".to_owned()];
+        save_recents(&path, &list).expect("save_recents should succeed on a temp path");
+        let loaded = load_recents(&path).expect("load_recents should succeed right after save");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded, list);
+    }
+
+    /// The `open-recent:{path}` menu-id contract (#2394 review): the
+    /// producer (`build_menu`'s `format!`) and consumer
+    /// (`on_menu_event`'s `strip_prefix`) must agree on the exact prefix,
+    /// including for a Windows-drive-letter-shaped path whose own `:`
+    /// could plausibly confuse a naive strip. This crate has zero CI
+    /// (`docs/desktop-shell-spec.md`: "CI in v1: none required"), so this
+    /// is the only thing guarding the two literals from drifting apart.
+    #[test]
+    fn open_recent_id_round_trips_posix_and_windows_paths() {
+        for path in ["/Users/x/proj", r"C:\Users\x\proj"] {
+            let id = format!("{OPEN_RECENT_ID_PREFIX}{path}");
+            assert_eq!(id.strip_prefix(OPEN_RECENT_ID_PREFIX), Some(path));
+        }
+    }
+
+    #[test]
+    fn load_recents_self_heals_on_corrupt_json() {
+        let path = scratch_recents_file("corrupt");
+        std::fs::write(&path, "not json").expect("writing the fixture file should succeed");
+        let loaded = load_recents(&path).expect("corrupt json self-heals rather than erroring");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded, Vec::<String>::new());
     }
 }

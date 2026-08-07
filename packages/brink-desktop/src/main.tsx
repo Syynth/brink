@@ -23,7 +23,14 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
-import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
+import {
+  TauriFileProvider,
+  pickProjectFolder,
+  projectRootExists,
+  pruneRecent,
+  pushRecent,
+  readRecents,
+} from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
@@ -64,15 +71,40 @@ function appRoot(): HTMLElement {
   return el;
 }
 
-function renderLanding(): void {
+/**
+ * Render the landing screen, including the recent-projects list under the
+ * Open button (#2394). Paths are inserted via `textContent`, never HTML
+ * interpolation — filesystem paths are not attacker input in this shell,
+ * but a folder name is still untrusted-enough text that it shouldn't be
+ * concatenated into `innerHTML`.
+ */
+async function renderLanding(): Promise<void> {
   const root = appRoot();
   root.innerHTML = `
     <div id="landing">
       <button id="open-project">Open Project Folder…</button>
       <div class="hint">A folder containing .brink / .ink files (and optionally a brink.toml) — or ⌘O</div>
+      <ul id="recent-projects" class="recent-projects"></ul>
     </div>`;
   const button = document.getElementById("open-project");
   button?.addEventListener("click", () => void chooseAndOpen());
+
+  const list = document.getElementById("recent-projects");
+  if (list === null) return;
+  const recents = await readRecents().catch((e: unknown) => {
+    console.error("[brink-desktop] read_recents failed", e);
+    return [];
+  });
+  for (const path of recents) {
+    const item = document.createElement("li");
+    const entry = document.createElement("button");
+    entry.className = "recent-project";
+    entry.textContent = path;
+    entry.title = path;
+    entry.addEventListener("click", () => void openRecent(path));
+    item.appendChild(entry);
+    list.appendChild(item);
+  }
 }
 
 async function openProject(root: string): Promise<void> {
@@ -135,6 +167,14 @@ async function openProject(root: string): Promise<void> {
   autosaveTimer = setInterval(() => {
     if (api.getDirtyFiles().length > 0) api.dispatch("file.saveAll");
   }, AUTOSAVE_MS);
+
+  // Record the successful open (#2394). Fire-and-forget: a recents-store
+  // hiccup must never block the project the user just opened. The shell
+  // also keeps the native Open Recent submenu in sync as part of this
+  // command (`rebuild_menu` in src-tauri).
+  void pushRecent(root).catch((e: unknown) => {
+    console.error("[brink-desktop] push_recent failed", e);
+  });
 }
 
 async function chooseAndOpen(): Promise<void> {
@@ -144,7 +184,38 @@ async function chooseAndOpen(): Promise<void> {
     await openProject(root);
   } catch (e: unknown) {
     console.error("[brink-desktop] failed to open project", e);
-    if (current === null) renderLanding();
+    if (current === null) void renderLanding();
+  }
+}
+
+/**
+ * Open a project chosen from the recents list (native Open Recent submenu
+ * or the landing-screen list). Unlike {@link chooseAndOpen}, a failure here
+ * lazily prunes the stale entry (#2394's "do not crash the open flow;
+ * prune lazily") — the path came from a persisted list, not a fresh folder
+ * pick, so a missing/moved folder is an expected failure mode, not a rare
+ * edge case.
+ *
+ * Pruning is gated on {@link projectRootExists} (2026-08 review finding),
+ * not fired on every rejection: `openProject` can also reject from a
+ * permission error, a file deleted mid-listing, or a `mountStudio` failure
+ * — none of which mean the project itself is gone. Only an actually-missing
+ * root gets removed from `recents.json` and the native Open Recent submenu;
+ * every other failure just surfaces to the console and re-shows the
+ * landing screen with the entry intact.
+ */
+async function openRecent(path: string): Promise<void> {
+  try {
+    await openProject(path);
+  } catch (e: unknown) {
+    console.error("[brink-desktop] failed to open recent project", e);
+    // Default to "exists" on a failed check itself, so a transient
+    // check-command error can never masquerade as evidence of deletion.
+    const rootGone = !(await projectRootExists(path).catch(() => true));
+    if (rootGone) {
+      await pruneRecent(path).catch(() => {});
+    }
+    if (current === null) void renderLanding();
   }
 }
 
@@ -169,7 +240,7 @@ function closeProject(): void {
   current.unmount();
   current = null;
   document.title = "Brink Studio";
-  renderLanding();
+  void renderLanding();
 }
 
 /**
@@ -190,6 +261,9 @@ async function handleQuitRequested(): Promise<void> {
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+// File → Open Recent (#2394): src-tauri emits the chosen path as the event
+// payload (see `on_menu_event` in src-tauri/src/lib.rs).
+void listen<string>("menu:open-recent", (event) => void openRecent(event.payload));
 // The app-menu Quit item (⌘Q) is routed here as a plain shell event — like
 // open/close-project — instead of `PredefinedMenuItem::quit`, specifically
 // so it funnels through the same guarded path as the window close below
@@ -206,4 +280,4 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   await handleQuitRequested();
 });
 
-renderLanding();
+void renderLanding();
