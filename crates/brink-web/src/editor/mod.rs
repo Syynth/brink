@@ -779,14 +779,25 @@ impl EditorSession {
     /// `brink.toml` between two calls must actually revert instead of
     /// staying stuck at whatever an earlier call resolved.
     ///
-    /// Resolves the four fields into one `AnalysisOptions` and forwards it
-    /// via [`IdeSession::apply_analysis_options`] (issue #2334) — the same
-    /// shared seam `brink-cli`'s `Project::ide_session()` now uses — instead
-    /// of four hand-copied setter calls, each individually change-guarded.
-    /// `apply_analysis_options` change-guards the four fields together and
-    /// re-analyzes at most once, so this can no longer trigger more than one
-    /// redundant full re-analysis per call (previously up to two: one for an
-    /// unconditionally-applied `dialect`, one for a changed `conventions`).
+    /// Resolves `dialect`/`types`/`conventions` into one `AnalysisOptions`
+    /// and forwards it via [`IdeSession::apply_analysis_options`] (issue
+    /// #2334) — the same shared seam `brink-cli`'s `Project::ide_session()`
+    /// now uses — instead of three hand-copied setter calls, each
+    /// individually change-guarded.
+    ///
+    /// `lints` is deliberately **not** resolved into that call: it's seeded
+    /// with `self.session.lint_policy()`'s own current value (a guaranteed
+    /// no-op against `apply_analysis_options`'s change guard) rather than
+    /// the file-only `lint_options.lints` computed above, and
+    /// [`Self::reapply_lint_overrides`] below remains the sole pusher of
+    /// the real (file **+** #1417 CLI/API-tier override) lint policy — see
+    /// its own doc comment. Folding the file-only value in here instead
+    /// would make this call itself trip the guard and reanalyze once with
+    /// an override-less policy, and `reapply_lint_overrides` would then
+    /// immediately trip it *again* pushing the real one: two full
+    /// re-analyses (and a lint policy that's briefly wrong) for what should
+    /// be one (#2334 review — this restores the pre-#2334 invariant that
+    /// `apply_parsed_config` itself never pushes `lints`).
     ///
     /// Returns the `[lints]`/non-overridable-code warning strings (unknown
     /// top-level/`[project]` key warnings are the caller's own — parsed
@@ -827,9 +838,14 @@ impl EditorSession {
             } else {
                 config.types.or_else(|| self.session.type_policy_override())
             },
-            lints: lint_options.lints,
+            // See this function's doc comment: deliberately the session's
+            // own current value, never `lint_options.lints` — this field
+            // must not trip `apply_analysis_options`'s change guard.
+            lints: self.session.lint_policy().clone(),
             conventions: lint_options.conventions,
-            ..brink_analyzer::AnalysisOptions::default()
+            host_manifest: None,
+            external_check: brink_analyzer::ExternalCheckSeverity::default(),
+            semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
         };
         // Keep this session's own dialect cache (read by completion/
         // signature-help gating, see the field doc) in lockstep with what
@@ -841,9 +857,9 @@ impl EditorSession {
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
-        // can never silently drop a previously-set explicit override
-        // (`reapply_lint_overrides` is the one place that actually pushes
-        // into `self.session`).
+        // can never silently drop a previously-set explicit override.
+        // `reapply_lint_overrides` is the one place that actually pushes
+        // `lints` into `self.session` (see this function's doc comment).
         let override_warnings = self.reapply_lint_overrides();
         lint_warnings
             .into_iter()
