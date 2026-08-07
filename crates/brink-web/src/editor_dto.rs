@@ -1071,19 +1071,34 @@ mod explain_match_to_js_tests {
     /// disposition/attach schema (never a `ClassifiedMatch` shape — a miss
     /// has no captures). An `attach` clause naming a struct that failed to
     /// resolve serializes as `"unresolved"`, not silently dropped (issue
-    /// #2311, house rule: flag silent data drops).
+    /// #2311, house rule: flag silent data drops) — and, on the sibling
+    /// entry with no `attach` clause at all, the key is omitted from the
+    /// wire object entirely (`skip_serializing_if`), not emitted as `null`
+    /// (#2311 review, finding 2: `ExplainAttemptedJs`'s own omission
+    /// contract, which `packages/wasm-types/src/index.ts`'s
+    /// `ExplainAttempted.attach?` optional depends on).
     #[test]
     fn unmatched_arm_serializes_attempted_with_winner_omitted() {
-        let attempted = vec![brink_ir::ConventionProjectionEntry {
-            name: name("interior", 0, 8),
-            pattern: "^INT\\. (?<place>.+)$".to_owned(),
-            order: 10,
-            mode: brink_ir::ConventionMode::Attach,
-            disposition: brink_ir::ElementDisposition::Call,
-            attach: Some(brink_ir::ConventionAttachSchema::Unresolved(
-                "MissingStruct".to_owned(),
-            )),
-        }];
+        let attempted = vec![
+            brink_ir::ConventionProjectionEntry {
+                name: name("interior", 0, 8),
+                pattern: "^INT\\. (?<place>.+)$".to_owned(),
+                order: 10,
+                mode: brink_ir::ConventionMode::Attach,
+                disposition: brink_ir::ElementDisposition::Call,
+                attach: Some(brink_ir::ConventionAttachSchema::Unresolved(
+                    "MissingStruct".to_owned(),
+                )),
+            },
+            brink_ir::ConventionProjectionEntry {
+                name: name("any_line", 20, 28),
+                pattern: "^.*$".to_owned(),
+                order: 20,
+                mode: brink_ir::ConventionMode::Wrap,
+                disposition: brink_ir::ElementDisposition::Call,
+                attach: None,
+            },
+        ];
         let explanation = brink_ir::LineExplanation::Unmatched { attempted };
 
         let json =
@@ -1102,12 +1117,24 @@ mod explain_match_to_js_tests {
                         "attach": {"kind": "unresolved", "name": "MissingStruct"},
                         "pattern": "^INT\\. (?<place>.+)$",
                     },
+                    {
+                        "handler": {"name": "any_line", "start": 20, "end": 28},
+                        "order": 20,
+                        "mode": "wrap",
+                        "disposition": "call",
+                        "pattern": "^.*$",
+                    },
                 ],
             })
         );
         assert!(
             json.get("winner").is_none(),
             "winner must be omitted (skip_serializing_if), not null"
+        );
+        assert!(
+            json["attempted"][1].get("attach").is_none(),
+            "an attempted entry with no attach clause must omit the key \
+             entirely, not serialize it as null — got {json}"
         );
     }
 }

@@ -578,9 +578,13 @@ mod tests {
     /// #2311: a hit's `attach` schema must be the same resolved value the
     /// projection entry carries — this walk composes #2111's own data, it
     /// never drops it on the way through `CompiledEntry`/`ClassifiedMatch`.
-    /// Reverting `attach: entry.attach.clone()` in `compile_entries`/
-    /// `classify_trimmed` (leaving the field defaulted or unset) fails this
-    /// test.
+    /// This guards the value being carried through *unchanged*, not merely
+    /// present: `CompiledEntry`/`ClassifiedMatch` have no `Default` impl, so
+    /// deleting `attach: entry.attach.clone()` from `compile_entries`/
+    /// `classify_trimmed` is a compile error (missing-field `E0063`), not a
+    /// runtime failure this test would observe — what this test actually
+    /// catches is a *wrong* value on the way through (e.g. cloning the
+    /// wrong entry's `attach`, or losing it in a lossy conversion).
     #[test]
     fn a_hit_carries_the_resolved_attach_schema_through_from_the_projection_entry() {
         let mut decl_with_attach = decl("cue", 10, "^(?<who>[A-Z]+)$");
