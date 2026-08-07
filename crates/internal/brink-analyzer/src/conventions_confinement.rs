@@ -76,7 +76,7 @@
 //!   the validation verdict; this module's own confinement check still has
 //!   nothing to confine a preset-shaped pointer against, unchanged.
 
-use brink_ir::symbols::{RESERVED_ROOTS, is_reserved_root_module};
+use brink_ir::symbols::{RESERVED_ROOTS, STORY_ROOT, is_reserved_root_module};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
 use crate::manifest::ModuleMap;
@@ -111,16 +111,21 @@ pub fn is_path_shaped_conventions_pointer(pointer: &str) -> bool {
 
 /// A native `.brink` file's module path, derived **purely** from its
 /// root-relative key. DELIBERATELY duplicates `brink_db::modules::
-/// native_module_path` byte-for-byte rather than sharing it: `brink-db`
-/// already depends on `brink-analyzer` (for [`ModuleMap`]/`ResolvedModule`),
-/// so the reverse dependency this module's own
-/// [`is_path_shaped_conventions_pointer`] precedent relies on cannot run in
-/// this direction, and lowering `brink-analyzer` to sit *under* `brink-db`
+/// native_module_path`'s control flow rather than sharing the function:
+/// `brink-db` already depends on `brink-analyzer` (for
+/// [`ModuleMap`]/`ResolvedModule`), so the reverse dependency this module's
+/// own [`is_path_shaped_conventions_pointer`] precedent relies on cannot run
+/// in this direction, and lowering `brink-analyzer` to sit *under* `brink-db`
 /// is a bigger structural change than this issue's slice covers. See
 /// `brink_db::modules::native_module_path`'s own doc for the full
 /// path-to-module derivation this mirrors, including the peer-root exception
 /// for [`RESERVED_ROOTS`] (decision-log 2026-08-04, "`std::` and libraries
-/// are PEER ROOTS of `story::`").
+/// are PEER ROOTS of `story::`"). The entire justification for the
+/// duplication is drift management, so — unlike the control flow — the
+/// literal `"story"` root name is NOT re-hardcoded here: both this function
+/// and `brink_db::modules::native_module_path` read the same
+/// [`brink_ir::symbols::STORY_ROOT`] constant, so that one piece cannot
+/// drift between the two copies even by a typo.
 ///
 /// The one caller that needs it, [`conventions_confinement_diagnostics`]
 /// (issue #2335's off-db road), never applies a `ProjectDb::native_root`
@@ -150,13 +155,13 @@ fn native_module_path_in(roots: &[&str], relative_path: &str) -> String {
         .filter(|segment| !segment.is_empty() && *segment != ".");
 
     let Some(first) = segments.next() else {
-        return String::from("story");
+        return String::from(STORY_ROOT);
     };
 
     let mut out = if roots.contains(&first) {
         first.to_string()
     } else {
-        format!("story::{first}")
+        format!("{STORY_ROOT}::{first}")
     };
     for segment in segments {
         out.push_str("::");
@@ -252,9 +257,10 @@ pub fn conventions_confinement_diagnostics(
             );
             continue;
         }
-        let is_conventions_module = modules
-            .get(&file_id)
-            .is_some_and(|m| m.name == expected_module);
+        let Some(this_module) = modules.get(&file_id).map(|m| m.name.as_str()) else {
+            continue;
+        };
+        let is_conventions_module = this_module == expected_module;
         out.extend(conventions_module_diagnostics(
             file_id,
             hir,
@@ -607,6 +613,28 @@ mod tests {
         let mut modules = ModuleMap::new();
         modules.insert(FileId(0), resolved_module("std::conventions::screenplay"));
         let diags = conventions_confinement_diagnostics(&files, &modules, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_claiming_file_absent_from_modules_stays_silent() {
+        // Parity fix (issue #2335 review finding): `modules` is fed by the
+        // caller and is NOT guaranteed to have an entry for every file in
+        // `files` (`brink_db::queries::analysis::
+        // conventions_confinement_diagnostics_query` skips such a file
+        // outright, `let Some(this_module) = module_map.get(&file_id)...
+        // else { return Arc::new(Vec::new()); }`). The claiming file here
+        // (id 0) has no `modules` entry at all; a second file (id 1)
+        // supplies the expected module so the pointer-resolvability check
+        // still passes. Before the fix, a missing entry was folded into
+        // "not the conventions module" and misfired E169 on a file this
+        // function has no module identity for.
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(1), resolved_module("story::conventions"));
+        let diags =
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
         assert!(diags.is_empty(), "{diags:?}");
     }
 
