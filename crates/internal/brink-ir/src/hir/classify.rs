@@ -986,11 +986,12 @@ flow main() {
         let parse = brink_syntax_native::parse(src);
         let tree = parse.tree();
         let root = tree.syntax().clone();
-        let offset = u32::try_from(
-            src.find(probe_needle)
-                .unwrap_or_else(|| panic!("fixture must contain {probe_needle:?}")),
-        )
-        .expect("fixture source fits a u32 offset");
+        assert!(
+            src.contains(probe_needle),
+            "fixture must contain {probe_needle:?}"
+        );
+        let offset = u32::try_from(src.find(probe_needle).expect("just asserted above"))
+            .expect("fixture source fits a u32 offset");
         let token = root
             .token_at_offset(TextSize::from(offset))
             .right_biased()
@@ -998,8 +999,15 @@ flow main() {
         let start_node = token
             .parent()
             .expect("every token in a well-formed tree has a parent node");
-        nearest_element_candidate(&start_node)
-            .unwrap_or_else(|| panic!("{probe_needle:?} must sit on a claim-candidate shape"))
+        let candidate = nearest_element_candidate(&start_node);
+        // `expect` over `unwrap_or_else(panic!)`: `clippy::panic` is denied
+        // workspace-wide and its allow-in-tests carve-out does not reach
+        // this helper (same footgun as the acceptance gate's offset_of).
+        assert!(
+            candidate.is_some(),
+            "{probe_needle:?} must sit on a claim-candidate shape"
+        );
+        candidate.expect("just asserted above")
     }
 
     /// Issue #2351's review finding: `classify_node_compiled` must mirror
