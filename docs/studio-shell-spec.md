@@ -618,6 +618,7 @@ interface StudioApi {
   subscribe<T>(sel: (s: StudioPublicState) => T, cb: (value: T) => void): () => void;
   getFiles(): Record<string, string>;             // #154 pull egress — session file snapshot
   getDirtyFiles(): string[];                      // per-file detail behind dirtyFiles
+  getOrphanedFiles(): string[];                   // #2371 — externally-deleted, buffer kept
 }
 ```
 
