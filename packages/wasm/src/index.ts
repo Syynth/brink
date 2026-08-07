@@ -667,6 +667,25 @@ export class EditorSessionHandle {
     return result ?? null;
   }
 
+  /**
+   * Whether `path` currently resolves to a mounted stdlib copy (issue #2306,
+   * ruled 2026-08-06 "Mounted stdlib presents as a read-only library node") —
+   * `false` for an unknown path, an ordinary project file, or a stdlib key a
+   * real project file has already shadowed. Session-level enforcement query:
+   * `updateDocument`/auto-import-apply on a mounted file's handle are
+   * refused by the wasm side regardless of this check, but bulk-edit callers
+   * that write through {@link updateFile} (which stays unguarded — it is
+   * also the legitimate shadowing API) — like `ProjectSession.applyEdit` —
+   * must consult this first to avoid silently forking the library into the
+   * project. {@link updateSource}, the singleton-session sibling of
+   * `updateFile`, is *also* left unguarded (no in-repo caller drives it, but
+   * it is published surface) — a known, disclosed gap, not something this
+   * query closes.
+   */
+  isReadOnly(path: string): boolean {
+    return this.session.is_read_only(path);
+  }
+
   getFileSymbols(path: string): DocumentSymbol[] {
     const json = this.session.file_symbols(path);
     return JSON.parse(json) as DocumentSymbol[];
