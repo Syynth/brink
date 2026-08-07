@@ -3049,3 +3049,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Trailing `#tags` on a cue or parenthetical (`@VENDOR #(v.o.)`) strip before pattern matching, exactly as #2077 ruled for headings — one literalness doctrine across all claimed shapes; tags flow through the existing channel. (Settles #2350; the heading-tags delivery caveat from #2344 — Content.tags as an explicitly interim carrier pending #474 — applies identically here.)
 - **WHY:** The asymmetry was an accident of implementation order, not a design choice; uniform stripping keeps preset patterns clean everywhere.
+
+## Oracle conformance is no longer the core metric
+- **WHEN:** 2026-08-07
+- **PROJECT:** brink
+- **SYSTEM:** cross-system / process
+- **SCOPE:** architectural
+- **WHAT:** Oracle conformance is NO LONGER the project's core metric. The ratchet (5,608) remains enforced as a REGRESSION FLOOR — ink compatibility must not silently degrade, and unexpected movement in either direction is still stop-and-report — but the remaining ~1,000 mismatched episodes are not the priority backlog, and "the gap" is not the measure of progress. The project's center is the NATIVE surface and the authoring experience: the `.brink` language (conventions, prose dialect), the editor packages, and the desktop studio. CLAUDE.md's "Current state" framing rewritten accordingly; pump-wave rules keep the ratchet's enforcement language but drop "core metric" framing.
+- **WHY:** The C# oracle only measures the ink-compat subset, which is now a compatibility layer rather than the product; the last month's real progress (conventions, native syntax, editor, desktop) is invisible to that metric, and chasing the residual mismatches has poor return next to native-surface work.
