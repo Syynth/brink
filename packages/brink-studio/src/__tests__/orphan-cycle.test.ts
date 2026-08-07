@@ -7,9 +7,14 @@
  * fix, see external-view-sync.test.ts). This pins the pieces the issue named:
  *
  *  1. `FileChangeHub.applyExternal(path, null)` — verified here rather than
- *     assumed — flags the path ORPHANED, and (only once something recreates
- *     the session content from a kept buffer) DIRTY by the hub's existing
- *     no-baseline rule.
+ *     assumed — drops the baseline but does NOT itself flag the path
+ *     ORPHANED (a review finding on #2385: at deletion-detection time the
+ *     hub doesn't yet know whether any editor buffer survives, and a
+ *     headless deletion or the studio's own binder-delete echoing back
+ *     through an fs watcher must not permanently badge a path nobody is
+ *     editing). `noteOrphanRecreated` is what flags ORPHANED and DIRTY,
+ *     called only once something recreates the session content from a
+ *     confirmed kept buffer.
  *  2. `DocumentSessions.markOrphaned` — what `onExternalFileChange` now calls
  *     on a deletion instead of ignoring it: the open view's buffer is never
  *     touched (no refresh, no close), and the file is recreated in the wasm
@@ -73,34 +78,67 @@ function stubHub(deliveryPersists?: boolean) {
 }
 
 describe("FileChangeHub.applyExternal(path, null) — issue #2371", () => {
-  it("flags orphaned; NOT dirty when nothing recreates the session content", () => {
+  it("drops the baseline but does NOT flag orphaned on its own (review finding on #2385)", () => {
     const { files, hub } = stubHub();
     hub.setBaseline("a.ink", "on disk");
     files.delete("a.ink"); // the session dropped it, like ProjectSession.removeFile
 
     hub.applyExternal("a.ink", null);
 
-    expect(hub.isOrphaned("a.ink")).toBe(true);
-    expect(hub.orphanedPaths()).toEqual(["a.ink"]);
-    // No buffer survived to recreate the session content — nothing to
-    // report as dirty yet (matches ProjectSession.removeFile running BEFORE
-    // applyExternal, so `getContent` already reads null here).
+    // Nothing here knows whether an editor buffer survives — a headless
+    // deletion (no view open) or the studio's own binder-delete echoing back
+    // through an fs watcher must not permanently badge a path nobody is
+    // editing. `noteOrphanRecreated` is the only thing that flags it.
+    expect(hub.isOrphaned("a.ink")).toBe(false);
+    expect(hub.orphanedPaths()).toEqual([]);
     expect(hub.dirtyPaths()).toEqual([]);
   });
 
-  it("recreating the session content (a kept buffer) makes it dirty too, with no baseline", () => {
+  it("noteOrphanRecreated (a kept buffer confirmed) flags orphaned AND dirty, with no baseline", () => {
     const { files, hub } = stubHub();
     hub.setBaseline("a.ink", "on disk");
     files.delete("a.ink");
     hub.applyExternal("a.ink", null);
+    expect(hub.isOrphaned("a.ink")).toBe(false);
 
     // The kept buffer is pushed back into the session (what
-    // `DocumentSessions.markOrphaned` does via `ProjectSession.recreateOrphaned`).
+    // `DocumentSessions.markOrphaned` does via `ProjectSession.recreateOrphaned`,
+    // which calls `noteOrphanRecreated` — not `record()`, so this does not
+    // enqueue a pending change or arm the flush debounce).
     files.set("a.ink", "on disk"); // even byte-identical to the old baseline
-    hub.record("a.ink", "modified");
+    hub.noteOrphanRecreated("a.ink");
 
     expect(hub.isOrphaned("a.ink")).toBe(true);
     expect(hub.dirtyPaths()).toEqual(["a.ink"]); // no baseline ⇒ dirty, per the existing rule
+  });
+
+  it("noteOrphanRecreated does NOT enqueue a pending change or arm the flush debounce (review finding on #2385)", () => {
+    const { files, flushes, hub } = stubHub();
+    hub.setBaseline("a.ink", "on disk");
+    files.delete("a.ink");
+    hub.applyExternal("a.ink", null);
+    files.set("a.ink", "on disk");
+
+    hub.noteOrphanRecreated("a.ink");
+    expect(hub.isOrphaned("a.ink")).toBe(true);
+    expect(hub.dirtyPaths()).toEqual(["a.ink"]);
+
+    // Before the fix, `ProjectSession.recreateOrphaned` called
+    // `changes.record(path, "modified")` here instead, which enqueues a
+    // pending change AND arms the 500 ms flush debounce — so ~500 ms after
+    // the external deletion, `flush()` would deliver the recreated buffer
+    // with no save ever dispatched, and (under a write-through contract)
+    // silently re-baseline and clear both dirty and orphaned.
+    vi.advanceTimersByTime(600);
+    expect(flushes).toHaveLength(0); // no auto-delivery on a timer
+    expect(hub.isOrphaned("a.ink")).toBe(true); // still orphaned — no save happened
+    expect(hub.dirtyPaths()).toEqual(["a.ink"]);
+
+    // A real save records + delivers, the way `notifyFileChanged` would.
+    hub.record("a.ink", "modified");
+    vi.advanceTimersByTime(500);
+    expect(flushes).toEqual([[{ path: "a.ink", type: "modified", content: "on disk" }]]);
+    expect(hub.isOrphaned("a.ink")).toBe(false);
   });
 
   it("markSaved (a canonical save) clears both orphaned and dirty", () => {
@@ -109,7 +147,7 @@ describe("FileChangeHub.applyExternal(path, null) — issue #2371", () => {
     files.delete("a.ink");
     hub.applyExternal("a.ink", null);
     files.set("a.ink", "on disk");
-    hub.record("a.ink", "modified");
+    hub.noteOrphanRecreated("a.ink");
     expect(hub.dirtyPaths()).toEqual(["a.ink"]);
 
     hub.markSaved(["a.ink"]);
@@ -118,11 +156,26 @@ describe("FileChangeHub.applyExternal(path, null) — issue #2371", () => {
     expect(hub.dirtyPaths()).toEqual([]);
   });
 
+  it("markSaved does NOT clear orphaned when there is no content to have saved (review finding on #2385)", () => {
+    const { hub } = stubHub();
+    hub.setBaseline("a.ink", "on disk");
+    hub.applyExternal("a.ink", null);
+    // No buffer ever recreated the session content (the fragment-only gap,
+    // #2390) — getContent("a.ink") stays null. A save over an empty
+    // selection must not silently clear a badge for a file that is, in
+    // fact, still missing.
+    hub.markSaved(["a.ink"]);
+
+    expect(hub.isOrphaned("a.ink")).toBe(false); // never set — nothing to clear either way
+  });
+
   it("the path reappearing on disk (a non-null applyExternal) clears orphaned", () => {
     const { files, hub } = stubHub();
     hub.setBaseline("a.ink", "on disk");
     files.delete("a.ink");
     hub.applyExternal("a.ink", null);
+    files.set("a.ink", "on disk");
+    hub.noteOrphanRecreated("a.ink");
     expect(hub.isOrphaned("a.ink")).toBe(true);
 
     files.set("a.ink", "back again");
@@ -138,6 +191,11 @@ describe("FileChangeHub.applyExternal(path, null) — issue #2371", () => {
     files.delete("a.ink");
     hub.applyExternal("a.ink", null);
     files.set("a.ink", "on disk");
+    hub.noteOrphanRecreated("a.ink");
+    // A real flush delivers through `record`-enqueued pending changes; since
+    // `noteOrphanRecreated` doesn't enqueue one, record the save-triggered
+    // "modified" the way `notifyFileChanged` would, so `flush()` has
+    // something pending to deliver.
     hub.record("a.ink", "modified");
 
     hub.flush();
@@ -152,6 +210,7 @@ describe("FileChangeHub.applyExternal(path, null) — issue #2371", () => {
     files.delete("a.ink");
     hub.applyExternal("a.ink", null);
     files.set("a.ink", "on disk");
+    hub.noteOrphanRecreated("a.ink");
     hub.record("a.ink", "modified");
 
     hub.flush(); // feeds the backup ring only
@@ -202,18 +261,35 @@ function findView(dom: HTMLElement) {
 }
 let cachedEditorView: Awaited<ReturnType<typeof importEditorView>> | undefined;
 
+/** Wires `file.save`/`file.saveAll` the way the shell does, for tests that
+ *  need to dispatch a save without the full studio mount. */
+function saveHarness(documents: DocumentSessions, project: ProjectSession) {
+  const commands = new CommandRegistry();
+  const notifications = new NotificationCenter();
+  registerFileCommands(commands, {
+    project,
+    documents,
+    notify: (n) => void notifications.notify(n),
+  });
+  return commands;
+}
+
 describe("DocumentSessions.markOrphaned — issue #2371", () => {
   beforeEach(async () => {
     cachedEditorView = await importEditorView();
   });
 
-  it("with no open view: orphaned but not dirty, nothing to preserve", async () => {
+  it("with no open view: NOT orphaned (nothing confirms a kept buffer), nothing to preserve", async () => {
     const provider = new InMemoryFileProvider({ "main.ink": MAIN_INK });
     const { project } = await makeOrphanProject(provider);
 
     provider.pushExternalChange("main.ink", null);
 
-    expect(project.orphanedPaths()).toEqual(["main.ink"]);
+    // Review finding on #2385: no view means no buffer to badge — a
+    // headless deletion (git branch switch, the studio's own binder-delete
+    // echoing back through an fs watcher) must not permanently populate
+    // `getOrphanedFiles()` for a path nobody has open.
+    expect(project.orphanedPaths()).toEqual([]);
     expect(project.dirtyPaths()).toEqual([]);
     expect(project.getSession().getFileSource("main.ink")).toBeNull();
   });
@@ -291,17 +367,6 @@ describe("⌘S recreates the file — issue #2371 full cycle", () => {
   beforeEach(async () => {
     cachedEditorView = await importEditorView();
   });
-
-  function saveHarness(documents: DocumentSessions, project: ProjectSession) {
-    const commands = new CommandRegistry();
-    const notifications = new NotificationCenter();
-    registerFileCommands(commands, {
-      project,
-      documents,
-      notify: (n) => void notifications.notify(n),
-    });
-    return commands;
-  }
 
   it("host-save (desktop overlay contract): ⌘S recreates the file on disk even with an UNEDITED buffer", async () => {
     const provider = new HostSaveProvider({ "main.ink": MAIN_INK });
@@ -396,6 +461,14 @@ describe("StudioApi.getOrphanedFiles — issue #2371", () => {
     expect(api.getOrphanedFiles()).toEqual([]);
 
     provider.pushExternalChange("main.ink", null);
+    // No view is open in this harness, so nothing yet confirms a kept
+    // buffer (review finding on #2385) — the deletion alone doesn't badge.
+    expect(api.getOrphanedFiles()).toEqual([]);
+
+    // `DocumentSessions.markOrphaned` found a kept full-file buffer and
+    // recreated the session content from it — the real call this stands in
+    // for.
+    project.recreateOrphaned("main.ink", MAIN_INK);
     expect(api.getOrphanedFiles()).toEqual(["main.ink"]);
 
     project.markFilesSaved(["main.ink"]);

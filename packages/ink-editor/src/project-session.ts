@@ -509,12 +509,18 @@ export class ProjectSession {
   /**
    * Recreate `path` in the wasm session from a kept editor buffer after an
    * external deletion (issue #2371) — `DocumentSessions.markOrphaned`'s only
-   * call site. Unlike {@link applyEdit}, this deliberately does NOT notify
-   * the provider yet: `record()` marks the path dirty (no baseline — the
-   * existing `FileChangeHub` rule) so the dirty indicator and IDE queries
-   * are correct immediately, but `provider.onFileChanged` — the step that
-   * actually stages/persists content, depending on the provider — fires only
-   * from the next real `notifyFileChanged`, which a save always triggers
+   * call site, and the point at which a kept buffer is first confirmed to
+   * survive. Unlike {@link applyEdit}, this deliberately does NOT notify the
+   * provider yet, and does NOT go through `record()`/`notifyFileChanged`:
+   * `changes.noteOrphanRecreated` flags the path orphaned (no earlier call
+   * site knows a buffer exists) and marks it dirty (no baseline — the
+   * existing `FileChangeHub` rule) so the badge, dirty indicator, and IDE
+   * queries are all correct immediately, WITHOUT enqueuing a pending change
+   * or arming the flush debounce — a debounced delivery here would
+   * "save" the recreated buffer on a timer under a write-through contract,
+   * not on an actual ⌘S. `provider.onFileChanged` — the step that actually
+   * stages/persists content, depending on the provider — fires only from the
+   * next real `notifyFileChanged`, which a save always triggers
    * (`DocumentSessions.flushSlot` calls it unconditionally, whether or not
    * the buffer was edited since the deletion). That keeps "⌘S recreates the
    * file" literally true even for a provider whose `onFileChanged` IS its
@@ -525,7 +531,7 @@ export class ProjectSession {
   recreateOrphaned(path: string, content: string): void {
     if (this.sessionIsReadOnly(path)) return;
     this.session.updateFile(path, content);
-    this.changes.record(path, "modified");
+    this.changes.noteOrphanRecreated(path);
   }
 
   /**
