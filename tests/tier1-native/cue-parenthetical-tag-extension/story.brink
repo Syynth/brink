@@ -1,0 +1,44 @@
+// Issue #2350, `docs/decision-log.md` 2026-08-07 "Cue/parenthetical tag
+// extensions: strip-then-match, uniformly" — the #2077 heading rule
+// (slug/tag structure stripped before matching, rather than declining the
+// whole line) widened to `CUE`/`PARENTHETICAL` too.
+//
+// Before this issue, `hir::lower_native::element::candidate`'s literalness
+// rule declined a `CUE`/`PARENTHETICAL` carrying a trailing tag extension
+// outright (§8d.4, `@VENDOR #(v.o.)`) — this exact fixture would have
+// failed to compile with two `E129`s, one per claimed line below. Both
+// handlers are plain `claims` (no `attach`), so — unlike the built-in
+// screenplay preset's attach-mode `cue`/`parenthetical`
+// (`tests/tier1-native/conventions-screenplay-preset`), which still
+// declines a tag-bearing line under the *separate* "attach mode has
+// nowhere to carry a claim's tags" rule — these claim and lower to a call
+// exactly as their untagged counterparts already did.
+//
+// The tag's own text isn't observable in `run_native_transcript`'s output
+// (`Step::Line`'s `tags` field is dropped by that helper — only the
+// printed prose is, the same limitation `inline-tag-embedded-brace`'s own
+// doc names); `crates/internal/brink-ir/src/hir/lower_native/tests.rs`'s
+// `a_cue_with_a_tag_extension_is_now_claimable` and
+// `a_parenthetical_with_a_tag_extension_is_now_claimable` assert the tag
+// actually reaches `Content.tags` directly. This fixture's signal is
+// narrower but end-to-end: a tag-carrying cue/parenthetical compiles and
+// runs at all, claimed rather than falling through to a loud `E129`, and
+// the pattern still sees only the name/delivery text — the tag is
+// stripped, not appended or otherwise leaked into the captured payload.
+
+@[convention(claims = "^(?<name>[A-Z][A-Z ]*)$", order = 10)]
+fn cue(name: string) {
+  return name;
+}
+
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", order = 20)]
+fn parenthetical(delivery: string) {
+  return delivery;
+}
+
+flow main() {
+  @VENDOR #(v.o.)
+  (hushed) #whisper
+  You shouldn't be here after dark.
+  -> END
+}

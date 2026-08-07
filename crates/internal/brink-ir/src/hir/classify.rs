@@ -259,7 +259,26 @@ pub(crate) fn classify_node_compiled(
     // `node`'s own — this subtraction never underflows.
     let local_base = text_node.text_range().start() - node_start;
     let text = text_node.text().to_string();
-    Some(classify_line_compiled(compiled, local_base, &text))
+    let classification = classify_line_compiled(compiled, local_base, &text);
+    // Issue #2351 review finding: mirror `try_claim`'s own attach-mode
+    // decline (`hir::lower_native::element`'s `if is_attach &&
+    // !extra_tags.is_empty() { return None; }`) — an attach handler has
+    // nowhere to carry a tag-bearing claim's tags at all
+    // (`build_attach_stmts` never emits a `Stmt::Content`), so the real
+    // compiler declines the WHOLE line rather than handing it to a
+    // different handler. Without this, a tag-bearing CUE/PARENTHETICAL
+    // under an attach handler explained as `Matched` here while `brink
+    // compile` rejected the identical line with `E129` — exactly the
+    // divergence this module's own doc (above) promises never happens.
+    // `has_trailing_tags` shares `element_extras`'s own tag-node selection
+    // so the two gates can never drift apart.
+    if let Some(winner) = &classification.matched
+        && winner.attach.is_some()
+        && super::lower_native::has_trailing_tags(node)
+    {
+        return Some(LineClassification::default());
+    }
+    Some(classification)
 }
 
 /// The innermost node in `node`'s own ancestor chain (`node` itself,
@@ -466,6 +485,25 @@ mod tests {
             block: false,
             order,
             attach: None,
+        }
+    }
+
+    /// [`decl`], but declaring `attach = attach_struct` — for a fixture
+    /// exercising [`classify_node_compiled`]'s issue #2351 review-finding
+    /// gate, which only fires for an attach-mode entry. `attach_struct`
+    /// need not resolve against any real struct (`no_structs()` covers
+    /// every caller here): `ConventionsProjection::from_decls` sets
+    /// `attach` to `Some(..)` either way (`Resolved` or `Unresolved`), and
+    /// the gate only ever checks `.is_some()`.
+    fn decl_attach(
+        name_text: &str,
+        order: i64,
+        pattern: &str,
+        attach_struct: &str,
+    ) -> ClaimHandlerDecl {
+        ClaimHandlerDecl {
+            attach: Some(attach_struct.to_string()),
+            ..decl(name_text, order, pattern)
         }
     }
 
@@ -931,5 +969,90 @@ flow main() {
                 other => unreachable!("fixture should not produce a {other:?} match"),
             }
         }
+    }
+
+    /// The node a claim candidate's tag-bearing shape resolves to, for the
+    /// two review-finding regression tests below — parses `src`, locates
+    /// the token at `probe_needle`'s own start, and walks up to the
+    /// nearest [`nearest_element_candidate`]. Mirrors `lower_src`'s own
+    /// `AstNode` import, but skips `hir::lower_native::lower` entirely:
+    /// these two tests exercise `classify_node_compiled` directly against
+    /// a synthetic [`ClaimHandlerDecl`] set, not the compiler's own
+    /// claiming record, so there is nothing for a full lowering pass to
+    /// add.
+    fn candidate_node_at(src: &str, probe_needle: &str) -> SyntaxNode {
+        use brink_syntax_native::ast::AstNode as _;
+
+        let parse = brink_syntax_native::parse(src);
+        let tree = parse.tree();
+        let root = tree.syntax().clone();
+        assert!(
+            src.contains(probe_needle),
+            "fixture must contain {probe_needle:?}"
+        );
+        let offset = u32::try_from(src.find(probe_needle).expect("just asserted above"))
+            .expect("fixture source fits a u32 offset");
+        let token = root
+            .token_at_offset(TextSize::from(offset))
+            .right_biased()
+            .expect("a real token must start at the probe needle");
+        let start_node = token
+            .parent()
+            .expect("every token in a well-formed tree has a parent node");
+        let candidate = nearest_element_candidate(&start_node);
+        // `expect` over `unwrap_or_else(panic!)`: `clippy::panic` is denied
+        // workspace-wide and its allow-in-tests carve-out does not reach
+        // this helper (same footgun as the acceptance gate's offset_of).
+        assert!(
+            candidate.is_some(),
+            "{probe_needle:?} must sit on a claim-candidate shape"
+        );
+        candidate.expect("just asserted above")
+    }
+
+    /// Issue #2351's review finding: `classify_node_compiled` must mirror
+    /// `try_claim`'s own attach-mode decline (`hir::lower_native::element`'s
+    /// `if is_attach && !extra_tags.is_empty() { return None; }`) — an
+    /// attach handler has nowhere to carry a tag-bearing claim's tags at
+    /// all, so the real compiler declines the WHOLE line rather than
+    /// reporting it as claimed. Before the gate, this walk disagreed with
+    /// the compiler here: it reported `Matched` for exactly the line
+    /// `brink compile` rejects with `E129`.
+    #[test]
+    fn a_tag_bearing_cue_under_an_attach_handler_explains_as_unmatched() {
+        let src = "flow main() {\n  @VENDOR #(v.o.)\n}\n";
+        let decls = vec![decl_attach("cue", 10, "^(?<name>[A-Z][A-Z ]*)$", "Cue")];
+        let compiled = compile_entries(&projection(&decls));
+
+        let node = candidate_node_at(src, "@VENDOR");
+        let classification = classify_node_compiled(&compiled, &node)
+            .expect("a CUE node is always one of candidate's recognized shapes");
+        assert!(
+            classification.matched.is_none(),
+            "an attach-mode handler with nowhere to carry a claim's tags must decline \
+             the whole line, mirroring try_claim's own gate — got {:?}",
+            classification.matched
+        );
+    }
+
+    /// [`a_tag_bearing_cue_under_an_attach_handler_explains_as_unmatched`]'s
+    /// negative-control twin: a handler that only ever emits text (no
+    /// `attach` clause at all) must still explain the identical tag-bearing
+    /// shape as `Matched` — the #2351 gate is scoped to attach-mode
+    /// entries only, exactly like `try_claim`'s own, and must not decline a
+    /// claims-only handler's tag-bearing line.
+    #[test]
+    fn a_tag_bearing_cue_under_a_claims_only_handler_still_explains_as_matched() {
+        let src = "flow main() {\n  @VENDOR #(v.o.)\n}\n";
+        let decls = vec![decl("cue", 10, "^(?<name>[A-Z][A-Z ]*)$")];
+        let compiled = compile_entries(&projection(&decls));
+
+        let node = candidate_node_at(src, "@VENDOR");
+        let classification = classify_node_compiled(&compiled, &node)
+            .expect("a CUE node is always one of candidate's recognized shapes");
+        let winner = classification
+            .matched
+            .expect("a claims-only handler must still claim a tag-bearing line");
+        assert_eq!(winner.handler.text, "cue");
     }
 }
