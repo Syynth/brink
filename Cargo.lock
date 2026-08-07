@@ -2081,6 +2081,7 @@ dependencies = [
  "proptest",
  "rowan",
  "serde",
+ "tracing",
 ]
 
 [[package]]
