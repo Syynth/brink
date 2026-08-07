@@ -28,6 +28,9 @@
     "icon": [
       "icons/icon.png"
     ],
+    "externalBin": [
+      "binaries/brink-cli"
+    ],
     "fileAssociations": [
       {
         "ext": ["ink", "brink"],

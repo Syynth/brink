@@ -28,6 +28,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { save } from "@tauri-apps/plugin-dialog";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
 import {
@@ -39,6 +40,8 @@ import {
   readRecents,
 } from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
+import { runCli } from "./cli.js";
+import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { resolveFileOpenAction } from "./file-open.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
@@ -47,10 +50,24 @@ const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
 /** The open project's root path (absolute), or null when none is open —
- * the D3 file-association handler's "is this file inside it?" test. */
+ * the D3 file-association handler's "is this file inside it?" test, and
+ * (with `currentEntryFile`) the project-relative key `exportXliff` hands
+ * the sidecar via the shell's own `resolve()` guard rather than an
+ * absolute path built by hand here. */
 let currentRoot: string | null = null;
 /** The autosave ticker for the open project; cleared on close. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+/**
+ * The open project's EFFECTIVE entry file — `StudioHandle.entryFile`,
+ * i.e. `ProjectSession.getEntryFile()`'s result with `[project] entry`
+ * precedence already applied (issue #2331), never the raw host fallback
+ * `resolveEntryFile` computed before `mountStudio` ran (2026-08 review
+ * finding: using the host fallback here would export a different story
+ * than the editor compiles for any project whose `brink.toml` names an
+ * entry outside `ENTRY_FALLBACKS`). Set once `mountStudio` resolves; see
+ * `openProject`.
+ */
+let currentEntryFile: string | null = null;
 
 /**
  * Resolve the tab to open first, for a configless project (no `brink.toml`,
@@ -137,10 +154,18 @@ async function openProject(root: string): Promise<void> {
   const folderName = root.split("/").at(-1) ?? root;
   document.title = `${folderName} — Brink Studio`;
 
+  // A configless-project fallback ONLY — `ProjectSession.initialize()` may
+  // supersede this with a `brink.toml`-named entry the instant mountStudio
+  // resolves (issue #2331). `currentEntryFile` is set from the resolved
+  // `StudioHandle.entryFile` below, never from this local, so callers like
+  // `exportXliff` always see the effective entry.
+  const entryFile = resolveEntryFile(files);
+  currentRoot = root;
+
   current = await mountStudio(el, {
     files,
     provider,
-    entryFile: resolveEntryFile(files),
+    entryFile,
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -170,6 +195,9 @@ async function openProject(root: string): Promise<void> {
       });
     },
   });
+  // The EFFECTIVE entry (issue #2331 precedence already applied), not the
+  // host fallback computed above — see `currentEntryFile`'s doc comment.
+  currentEntryFile = current.entryFile;
 
   // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
   // class. Clean ticks are no-ops inside the command. 2-minute default
@@ -255,8 +283,32 @@ function closeProject(): void {
   current.unmount();
   current = null;
   currentRoot = null;
+  currentEntryFile = null;
   document.title = "Brink Studio";
   void renderLanding();
+}
+
+/**
+ * File > Export XLIFF… (D3, #2392) — proves the `brink-cli` sidecar path
+ * end to end. The export logic itself lives in `export-xliff.ts` (2026-08
+ * review finding: logic living directly in `main.tsx` cannot be unit-tested
+ * — `quit.ts` + `QuitSaveApi` exist for exactly this reason); this wrapper's
+ * only job is gathering the currently-open project (root + EFFECTIVE entry,
+ * `currentEntryFile`, never the host fallback) and the studio's notify sink,
+ * then handing them to the extracted, unit-tested function.
+ */
+async function handleExportXliff(): Promise<void> {
+  const api = current?.api;
+  if (currentRoot === null || currentEntryFile === null || api === undefined) {
+    console.warn("[brink-desktop] Export XLIFF: no project open");
+    return;
+  }
+  const exportApi: ExportXliffApi = {
+    runCli: (invocation) => runCli(invocation),
+    save,
+    notify: (entry) => api.notify(entry),
+  };
+  await exportXliff({ root: currentRoot, entryFile: currentEntryFile }, exportApi);
 }
 
 /**
@@ -366,6 +418,7 @@ void listen<string[]>("shell:file-open", (event) => {
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+void listen("menu:export-xliff", () => void handleExportXliff());
 // File → Open Recent (#2394): src-tauri emits the chosen path as the event
 // payload (see `on_menu_event` in src-tauri/src/lib.rs).
 void listen<string>("menu:open-recent", (event) => void openRecent(event.payload));

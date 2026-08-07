@@ -1,2 +1,6 @@
 /target
 /gen
+# Staged sidecar binary (docs/desktop-shell-spec.md D3, #2392) — built
+# per-machine by scripts/ensure-cli-sidecar.mjs, never committed: the
+# target-triple suffix in the filename is host-specific.
+/binaries

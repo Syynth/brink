@@ -4,8 +4,13 @@
 //! policy, and the stay-inside-the-project-root guard lives here, next to
 //! the I/O it guards. The frontend passes the project root (obtained from
 //! our own `pick_project_folder` dialog) plus project-relative paths; this
-//! module rejects anything absolute or `..`-carrying, so the webview can
-//! never reach outside the folder the user picked.
+//! module rejects anything absolute or `..`-carrying for every project-file
+//! path it resolves (`resolve`, used by `read_file`/`write_file`/
+//! `rename_file`/`delete_file`/`append_backups`/`run_cli`'s input path). The
+//! one deliberate exception is `run_cli`'s trailing `rest` args (e.g.
+//! `export-xliff`'s `--output <path>`), which may still be absolute — that
+//! path comes from a native save dialog, not from a project-relative key,
+//! so it is never run through `resolve` at all (see `prepare_cli_invocation`).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -23,6 +28,12 @@ enum ShellError {
         #[source]
         source: std::io::Error,
     },
+    #[error("no subcommand given")]
+    MissingSubcommand,
+    #[error("subcommand not in the sidecar allowlist: {0}")]
+    DisallowedCommand(String),
+    #[error("brink-cli sidecar error: {0}")]
+    Sidecar(String),
 }
 
 impl serde::Serialize for ShellError {
@@ -326,6 +337,147 @@ async fn append_backups(
     Ok(())
 }
 
+// ── CLI sidecar (docs/desktop-shell-spec.md D3; #2392) ──────────────
+//
+// `brink-cli` ships as a Tauri sidecar (`bundle.externalBin` in
+// `tauri.conf.json`, staged by `scripts/ensure-cli-sidecar.mjs`) so batch
+// xliff/locale operations run against the exact workspace version the
+// shell was built from, never whatever `brink` happens to be on the
+// user's PATH. `run_cli` is the ONLY way the webview can reach it, and it
+// is deliberately not a passthrough: the first argument must be one of a
+// fixed subcommand allowlist. A webview that can run arbitrary sidecar
+// args is a webview that can run arbitrary code with the app's
+// filesystem reach — this allowlist is the real security boundary
+// (`Shell::sidecar()` never consults the `shell:allow-execute` capability
+// scope at all, so that permission does not belong in `capabilities/
+// default.json` — 2026-08 review finding).
+//
+// The webview never hands this command a raw input path: `rel` is a
+// project-relative key resolved against `root` through the same
+// [`resolve`] guard every other filesystem command in this module uses,
+// exactly like `read_file`/`write_file` above. Only the *trailing* `rest`
+// args may still carry an absolute path — e.g. `export-xliff`'s
+// `--output <path>` — and that is fine, because that path comes from a
+// native save dialog (`src/main.tsx`'s `exportXliff`), never parsed out of
+// arbitrary webview input the way the old `args: Vec<String>` shape let
+// the *input* path be (2026-08 review finding: the old shape gave a
+// compromised webview an arbitrary-file-read/write primitive by passing
+// an absolute path as the positional input argument).
+//
+// ⚠ House rule: the intl pipeline never consumes `.ink.json` — every
+// allowed subcommand here (mirroring `brink-cli`'s own surface) operates
+// on `.ink`/`.brink`/`.inkb`/`.inkt` inputs only.
+const ALLOWED_CLI_SUBCOMMANDS: &[&str] = &[
+    "export-xliff",
+    "compile-locale",
+    "regenerate-xliff",
+    "compile",
+];
+
+/// One line of sidecar output, forwarded to the webview as it streams
+/// rather than buffered until exit — `compile-locale` on a large story can
+/// run for seconds, and a future fuller intl UI wants live progress.
+#[derive(Clone, serde::Serialize)]
+struct CliOutputLine {
+    /// `"stdout"` or `"stderr"`.
+    stream: &'static str,
+    line: String,
+}
+
+/// The allowlist check, pulled out of [`prepare_cli_invocation`] so it's
+/// testable in isolation: `subcommand` must be one of
+/// [`ALLOWED_CLI_SUBCOMMANDS`], checked before the sidecar is ever spawned.
+fn validate_cli_subcommand(subcommand: &str) -> Result<(), ShellError> {
+    if subcommand.is_empty() {
+        return Err(ShellError::MissingSubcommand);
+    }
+    if !ALLOWED_CLI_SUBCOMMANDS.contains(&subcommand) {
+        return Err(ShellError::DisallowedCommand(subcommand.to_owned()));
+    }
+    Ok(())
+}
+
+/// Build the full sidecar argv for one CLI invocation, pulled out of
+/// [`run_cli`] so it's testable without an `AppHandle`/sidecar (mirrors
+/// `resolve`/`project_ring_key` above): validate `subcommand` against the
+/// allowlist, resolve `rel` against `root` through the same [`resolve`]
+/// guard `read_file`/`write_file` use, and append `rest` verbatim after
+/// the resolved input path. `rest` may still contain an absolute path
+/// (e.g. `export-xliff`'s dialog-chosen `--output <path>`) — see this
+/// section's module doc for why that is the intended remaining shape.
+fn prepare_cli_invocation(
+    root: &str,
+    rel: &str,
+    subcommand: &str,
+    rest: &[String],
+) -> Result<Vec<String>, ShellError> {
+    validate_cli_subcommand(subcommand)?;
+    let input = resolve(root, rel)?;
+    let mut args = vec![subcommand.to_owned(), input.display().to_string()];
+    args.extend(rest.iter().cloned());
+    Ok(args)
+}
+
+/// Run an allowlisted `brink-cli` subcommand as a Tauri sidecar, streaming
+/// its stdout/stderr to the webview as `cli:output` events and resolving
+/// to the process exit code once it terminates. See
+/// [`prepare_cli_invocation`] for the argument-shaping/guard rules;
+/// anything it rejects is returned here before the sidecar is ever
+/// spawned.
+#[tauri::command]
+async fn run_cli(
+    app: tauri::AppHandle,
+    root: String,
+    rel: String,
+    subcommand: String,
+    rest: Vec<String>,
+) -> Result<i32, ShellError> {
+    use tauri::Emitter;
+    use tauri_plugin_shell::process::CommandEvent;
+    use tauri_plugin_shell::ShellExt;
+
+    let args = prepare_cli_invocation(&root, &rel, &subcommand, &rest)?;
+
+    let sidecar = app
+        .shell()
+        .sidecar("brink-cli")
+        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
+    let (mut rx, _child) = sidecar
+        .args(&args)
+        .spawn()
+        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
+
+    let mut exit_code: i32 = -1;
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                let _ = app.emit(
+                    "cli:output",
+                    CliOutputLine {
+                        stream: "stdout",
+                        line: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
+                );
+            }
+            CommandEvent::Stderr(bytes) => {
+                let _ = app.emit(
+                    "cli:output",
+                    CliOutputLine {
+                        stream: "stderr",
+                        line: String::from_utf8_lossy(&bytes).into_owned(),
+                    },
+                );
+            }
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code.unwrap_or(-1);
+            }
+            CommandEvent::Error(message) => return Err(ShellError::Sidecar(message)),
+            _ => {}
+        }
+    }
+    Ok(exit_code)
+}
+
 // ── File associations (docs/desktop-shell-spec.md D3; #2393) ───────────
 //
 // `bundle.fileAssociations` (tauri.conf.json) registers `.ink`/`.brink`
@@ -609,6 +761,11 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+Shift+W"),
     )?;
+    // Proves the sidecar path end-to-end (D3, #2392); the fuller intl UI
+    // (locale picker, progress, batch ops beyond xliff export) is future
+    // work — this item exists to exercise one real path, not to be it.
+    let export_xliff =
+        MenuItem::with_id(handle, "export-xliff", "Export XLIFF…", true, None::<&str>)?;
     let recent_items: Vec<MenuItem<tauri::Wry>> = if recents.is_empty() {
         vec![MenuItem::with_id(
             handle,
@@ -645,6 +802,8 @@ fn build_menu(
             &open_recent,
             &close,
             &PredefinedMenuItem::separator(handle)?,
+            &export_xliff,
+            &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::close_window(handle, None)?,
         ],
     )?;
@@ -671,6 +830,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
         .setup(|app| {
@@ -692,6 +852,7 @@ pub fn run() {
                 let forwarded = match id {
                     "open-project" => Some("menu:open-project"),
                     "close-project" => Some("menu:close-project"),
+                    "export-xliff" => Some("menu:export-xliff"),
                     "quit" => Some("menu:quit"),
                     _ => None,
                 };
@@ -711,6 +872,7 @@ pub fn run() {
             start_watch,
             stop_watch,
             pick_project_folder,
+            run_cli,
             take_pending_opens,
             read_recents,
             push_recent,
@@ -751,6 +913,92 @@ mod tests {
         assert!(is_project_file(Path::new("brink.toml")));
         assert!(!is_project_file(Path::new("a/story.ink.json")));
         assert!(!is_project_file(Path::new("Cargo.toml")));
+    }
+
+    fn rest(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn cli_allowlist_accepts_every_documented_subcommand() {
+        for sub in [
+            "export-xliff",
+            "compile-locale",
+            "regenerate-xliff",
+            "compile",
+        ] {
+            assert!(
+                prepare_cli_invocation("/tmp/proj", "story.brink", sub, &[]).is_ok(),
+                "expected {sub} to be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_allowlist_rejects_arbitrary_passthrough() {
+        // The whole point of the allowlist: a subcommand `brink-cli` really
+        // has (`play`) but that isn't fenced for the sidecar, and an
+        // arbitrary non-brink-cli binary name/shell metacharacter, must
+        // both be rejected before the sidecar is ever spawned.
+        assert!(matches!(
+            prepare_cli_invocation("/tmp/proj", "story.brink", "play", &[]),
+            Err(ShellError::DisallowedCommand(_))
+        ));
+        assert!(matches!(
+            prepare_cli_invocation("/tmp/proj", "story.brink", "--", &[]),
+            Err(ShellError::DisallowedCommand(_))
+        ));
+    }
+
+    #[test]
+    fn cli_allowlist_rejects_empty_args() {
+        assert!(matches!(
+            prepare_cli_invocation("/tmp/proj", "story.brink", "", &[]),
+            Err(ShellError::MissingSubcommand)
+        ));
+    }
+
+    /// Regression test for the 2026-08 review finding: the old `run_cli`
+    /// shape took a flat `Vec<String>` and forwarded it untouched, so a
+    /// compromised webview could pass an absolute (or `..`-carrying) input
+    /// path straight through to the sidecar — an arbitrary-file read/write
+    /// primitive. `prepare_cli_invocation` must run the input through the
+    /// same [`resolve`] guard every other filesystem command uses, exactly
+    /// like this test asserts. Reverting to the old passthrough shape (skip
+    /// `resolve` and just `args.extend([rel, ...rest])`) makes this fail.
+    #[test]
+    fn cli_invocation_rejects_path_escape_in_input() {
+        assert!(matches!(
+            prepare_cli_invocation("/tmp/proj", "../../etc/passwd", "export-xliff", &[]),
+            Err(ShellError::PathEscape(_))
+        ));
+        assert!(matches!(
+            prepare_cli_invocation("/tmp/proj", "/etc/passwd", "export-xliff", &[]),
+            Err(ShellError::PathEscape(_))
+        ));
+    }
+
+    /// The resolved input lands right after the subcommand, and trailing
+    /// `rest` args (the dialog-chosen, possibly-absolute `--output <path>`)
+    /// are forwarded verbatim after it.
+    #[test]
+    fn cli_invocation_resolves_input_and_keeps_rest_verbatim() {
+        let args = prepare_cli_invocation(
+            "/tmp/proj",
+            "story.brink",
+            "export-xliff",
+            &rest(&["--output", "/abs/out.xlf"]),
+        )
+        .expect("valid invocation should build");
+        assert_eq!(
+            args,
+            vec![
+                "export-xliff".to_owned(),
+                "/tmp/proj/story.brink".to_owned(),
+                "--output".to_owned(),
+                "/abs/out.xlf".to_owned(),
+            ]
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
