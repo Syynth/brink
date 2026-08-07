@@ -41,7 +41,7 @@ The shell is deliberately thin. Its entire job:
 | File I/O | `TauriFileProvider` implementing `packages/ink-editor/src/provider.ts` |
 | External edits | fs watcher → `onExternalChange` → the existing #320 conflict/merge UI |
 | Project config | nothing — `ProjectSession` already discovers `brink.toml` and re-runs on every change (#2324) |
-| Recent projects | Tauri store (or a JSON file in app-data) |
+| Recent projects | `recents.json` in app-data (#2394): most-recent-first, capped at 10, deduplicated by exact path, pruned lazily on a failed open — never a proactive existence sweep |
 | Export | `compile_project` bytes → native save dialog |
 
 Everything below the shell — analysis, diagnostics, claiming, completions,
@@ -103,6 +103,20 @@ webview (`on_menu_event`/`CloseRequested`) on every platform, which would
 silently bypass the guarded quit path (`awaitSaveAllBeforeQuit`) for ⌘Q,
 the most common real quit action on macOS.
 
+**Decision: rebuild-on-change menu, not a dynamic submenu (#2394).** The
+File → Open Recent submenu is regenerated in full — the whole native `Menu`
+is rebuilt from the just-persisted `recents.json` list and installed with
+`app.set_menu` — on every `push_recent`/`prune_recent`, rather than
+splicing an item into a live submenu in place. Tauri v2 (muda) has no
+in-place "insert/remove from this submenu" affordance that composes
+cleanly with a list rebuilt from disk on every change, and at this size (a
+handful of items) tracking item identity across calls to use one would buy
+nothing. Rebuilding from scratch is simple, always correct (the menu can
+never drift from `recents.json`, since it is built from the same list that
+was just written), and unmeasurably cheap next to the fs write already
+done in the same command. `on_menu_event` is registered once on the `App`
+in `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
+
 ## Entry flow
 
 1. Open Folder… → folder dialog → instantiate `TauriFileProvider` at that
@@ -112,6 +126,15 @@ the most common real quit action on macOS.
    to `main.ink` / single-file heuristics — whatever the studio already
    does for the playground, unchanged.
 3. Reopening: recent-projects list → same flow.
+4. File association (D3, #2393), bundled `.app` only: the OS delivers a
+   double-clicked (or Dock-dropped) `.ink`/`.brink` file as `RunEvent::Opened`;
+   the file's **containing folder** becomes the project root, opened via the
+   same `openProject` path as (1). If the file is already inside the
+   currently-open project, this focuses it in place instead of reopening the
+   project; if it's outside, the ruled close-save flow runs first (same
+   teardown `openProject` always does before mounting a new root). A dev run
+   (`pnpm tauri dev`) never receives `RunEvent::Opened`, so this path is
+   unreached outside the bundled build.
 
 ## Stages
 

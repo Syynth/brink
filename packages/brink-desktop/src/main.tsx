@@ -30,7 +30,14 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
-import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
+import {
+  TauriFileProvider,
+  pickProjectFolder,
+  projectRootExists,
+  pruneRecent,
+  pushRecent,
+  readRecents,
+} from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { resolveFileOpenAction } from "./file-open.js";
 
@@ -46,19 +53,20 @@ let currentRoot: string | null = null;
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Resolve the tab to open first. `ProjectSession` discovers `brink.toml`
- * itself (#2324) — dialect, conventions, lints all flow from discovery —
- * but `mountStudio` needs an `entryFile` for the initial tab before any
- * discovery has run, so the shell peeks at `[project] entry` with a
- * deliberately dumb regex (full TOML fidelity lives in Rust; a miss here
- * costs only which tab opens first).
+ * Resolve the tab to open first, for a configless project (no `brink.toml`,
+ * or one that doesn't set `[project] entry`). `ProjectSession` now owns
+ * `[project] entry` precedence itself (issue #2331, ruled 2026-08-07
+ * "`[project] entry` beats `mountStudio`'s `entryFile`") — it discovers
+ * `brink.toml` and supersedes whatever `entryFile` `mountStudio` was given
+ * the moment a valid `entry` is found, so this shell no longer needs to
+ * peek at the TOML itself to guess which tab wins: it just picks a
+ * reasonable fallback and lets `ProjectSession` override it. The regex peek
+ * this function used to do that job is DELETED, not merely unused — the
+ * schema slot `brink-project-config` now carries makes it redundant, and a
+ * dumb regex duplicating real TOML parsing was always the second-best way
+ * to answer this question.
  */
 function resolveEntryFile(files: Record<string, string>): string {
-  const toml = files["brink.toml"];
-  if (toml) {
-    const m = toml.match(/^\s*entry\s*=\s*"([^"]+)"\s*$/m);
-    if (m && files[m[1]] !== undefined) return m[1];
-  }
   for (const candidate of ENTRY_FALLBACKS) {
     if (files[candidate] !== undefined) return candidate;
   }
@@ -74,15 +82,40 @@ function appRoot(): HTMLElement {
   return el;
 }
 
-function renderLanding(): void {
+/**
+ * Render the landing screen, including the recent-projects list under the
+ * Open button (#2394). Paths are inserted via `textContent`, never HTML
+ * interpolation — filesystem paths are not attacker input in this shell,
+ * but a folder name is still untrusted-enough text that it shouldn't be
+ * concatenated into `innerHTML`.
+ */
+async function renderLanding(): Promise<void> {
   const root = appRoot();
   root.innerHTML = `
     <div id="landing">
       <button id="open-project">Open Project Folder…</button>
       <div class="hint">A folder containing .brink / .ink files (and optionally a brink.toml) — or ⌘O</div>
+      <ul id="recent-projects" class="recent-projects"></ul>
     </div>`;
   const button = document.getElementById("open-project");
   button?.addEventListener("click", () => void chooseAndOpen());
+
+  const list = document.getElementById("recent-projects");
+  if (list === null) return;
+  const recents = await readRecents().catch((e: unknown) => {
+    console.error("[brink-desktop] read_recents failed", e);
+    return [];
+  });
+  for (const path of recents) {
+    const item = document.createElement("li");
+    const entry = document.createElement("button");
+    entry.className = "recent-project";
+    entry.textContent = path;
+    entry.title = path;
+    entry.addEventListener("click", () => void openRecent(path));
+    item.appendChild(entry);
+    list.appendChild(item);
+  }
 }
 
 async function openProject(root: string): Promise<void> {
@@ -146,6 +179,14 @@ async function openProject(root: string): Promise<void> {
   autosaveTimer = setInterval(() => {
     if (api.getDirtyFiles().length > 0) api.dispatch("file.saveAll");
   }, AUTOSAVE_MS);
+
+  // Record the successful open (#2394). Fire-and-forget: a recents-store
+  // hiccup must never block the project the user just opened. The shell
+  // also keeps the native Open Recent submenu in sync as part of this
+  // command (`rebuild_menu` in src-tauri).
+  void pushRecent(root).catch((e: unknown) => {
+    console.error("[brink-desktop] push_recent failed", e);
+  });
 }
 
 async function chooseAndOpen(): Promise<void> {
@@ -155,7 +196,41 @@ async function chooseAndOpen(): Promise<void> {
     await openProject(root);
   } catch (e: unknown) {
     console.error("[brink-desktop] failed to open project", e);
-    if (current === null) renderLanding();
+    if (current === null) {
+      currentRoot = null;
+      void renderLanding();
+    }
+  }
+}
+
+/**
+ * Open a project chosen from the recents list (native Open Recent submenu
+ * or the landing-screen list). Unlike {@link chooseAndOpen}, a failure here
+ * lazily prunes the stale entry (#2394's "do not crash the open flow;
+ * prune lazily") — the path came from a persisted list, not a fresh folder
+ * pick, so a missing/moved folder is an expected failure mode, not a rare
+ * edge case.
+ *
+ * Pruning is gated on {@link projectRootExists} (2026-08 review finding),
+ * not fired on every rejection: `openProject` can also reject from a
+ * permission error, a file deleted mid-listing, or a `mountStudio` failure
+ * — none of which mean the project itself is gone. Only an actually-missing
+ * root gets removed from `recents.json` and the native Open Recent submenu;
+ * every other failure just surfaces to the console and re-shows the
+ * landing screen with the entry intact.
+ */
+async function openRecent(path: string): Promise<void> {
+  try {
+    await openProject(path);
+  } catch (e: unknown) {
+    console.error("[brink-desktop] failed to open recent project", e);
+    // Default to "exists" on a failed check itself, so a transient
+    // check-command error can never masquerade as evidence of deletion.
+    const rootGone = !(await projectRootExists(path).catch(() => true));
+    if (rootGone) {
+      await pruneRecent(path).catch(() => {});
+    }
+    if (current === null) void renderLanding();
   }
 }
 
@@ -181,7 +256,7 @@ function closeProject(): void {
   current = null;
   currentRoot = null;
   document.title = "Brink Studio";
-  renderLanding();
+  void renderLanding();
 }
 
 /**
@@ -221,11 +296,30 @@ function focusFile(rel: string): void {
  * project root. Opening reuses `openProject`, which already close-saves
  * any previously open project before mounting the new one (the ruled
  * close flow) — this never forks a second open path.
+ *
+ * Mirrors {@link chooseAndOpen}'s failure handling (2026-08 review finding):
+ * `openProject` can realistically reject (an unreadable subdirectory, a
+ * non-UTF-8 file, a `mountStudio` throw). Without a catch here, a failed
+ * open left `current === null` with the landing screen never re-rendered
+ * (blank window) and `currentRoot` already pointing at the failed root, so
+ * every later double-click under that root would resolve to a dead
+ * `focus` action against a null `current`. On failure, fall back to the
+ * landing screen exactly like `chooseAndOpen` and skip the focus dispatch
+ * — there is nothing mounted to focus into.
  */
 async function handleFileOpen(path: string): Promise<void> {
   const action = resolveFileOpenAction(path, currentRoot);
   if (action.kind === "open") {
-    await openProject(action.root);
+    try {
+      await openProject(action.root);
+    } catch (e: unknown) {
+      console.error("[brink-desktop] failed to open project from file-open", e);
+      if (current === null) {
+        currentRoot = null;
+        void renderLanding();
+      }
+      return;
+    }
   }
   focusFile(action.rel);
 }
@@ -241,6 +335,17 @@ async function handleFileOpen(path: string): Promise<void> {
  * boot for paths that arrived before this listener was attached (a cold
  * launch — the Rust side buffers until this exact call, then switches to
  * live emits; see `PendingOpens`'s doc comment there).
+ *
+ * The pull is sequenced strictly after the listener is registered
+ * (2026-08 review finding): `listen()` is itself an async IPC round-trip
+ * (`invoke('plugin:event|listen', …)` under the hood), so firing
+ * `take_pending_opens` at module top level without awaiting `listen()`
+ * first raced the two — `take_pending_opens` flips the Rust side's
+ * `PendingOpens` state to "ready" (live-emit) the instant it runs, which
+ * could land before the listener actually existed, silently dropping an
+ * `Opened` delivered in that exact window (Tauri's JS event bus has no
+ * replay). Chaining `.then()` off `listen()`'s own resolution closes that
+ * gap.
  */
 void listen<string[]>("shell:file-open", (event) => {
   void (async () => {
@@ -248,17 +353,22 @@ void listen<string[]>("shell:file-open", (event) => {
       await handleFileOpen(path);
     }
   })();
-});
-void invoke<string[]>("take_pending_opens").then((paths) => {
-  void (async () => {
+})
+  .then(() => invoke<string[]>("take_pending_opens"))
+  .then(async (paths) => {
     for (const path of paths) {
       await handleFileOpen(path);
     }
-  })();
-});
+  })
+  .catch((e: unknown) => {
+    console.error("[brink-desktop] file-open wiring failed", e);
+  });
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+// File → Open Recent (#2394): src-tauri emits the chosen path as the event
+// payload (see `on_menu_event` in src-tauri/src/lib.rs).
+void listen<string>("menu:open-recent", (event) => void openRecent(event.payload));
 // The app-menu Quit item (⌘Q) is routed here as a plain shell event — like
 // open/close-project — instead of `PredefinedMenuItem::quit`, specifically
 // so it funnels through the same guarded path as the window close below
@@ -275,4 +385,4 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   await handleQuitRequested();
 });
 
-renderLanding();
+void renderLanding();

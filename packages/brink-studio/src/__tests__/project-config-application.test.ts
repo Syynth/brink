@@ -12,14 +12,14 @@
  *     "before the first analysis", per the issue's fix shape.
  *  2. An edit to `brink.toml` in the session (the CM6/`applyEdit` path) is
  *     re-applied, not just the initial load.
- *  3. `[project] entry` — which the fixture this issue names
- *     (`packages/brink-studio/src/main.tsx`'s `NATIVE_FIXTURE`) sets — has no
- *     real schema slot in `brink_project_config::ProjectConfig` (verified
- *     against `crates/internal/brink-project-config/src/lib.rs`): it
- *     surfaces as an unrecognized-key warning, not a silently accepted
- *     setting. `mountStudio`'s explicit `entryFile` argument stays the only
- *     thing that decides the entry file — there is nothing at the wasm-session
- *     layer for it to conflict with.
+ *  3. `[project] entry` now has a real schema slot (issue #2331, ruled
+ *     2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`") —
+ *     the "config wins / config absent falls back / config names a missing
+ *     file" tests below. The fixture this suite's history names
+ *     (`packages/brink-studio/src/main.tsx`'s `NATIVE_FIXTURE`) sets
+ *     `entry = "story.brink"`, which AGREES with the `entryFile` argument
+ *     `main.tsx` passes for that fixture — #2331 asserts nothing visibly
+ *     changes there precisely because the two already agree.
  *
  * Revert the `applyProjectConfig()` calls in `project-session.ts` and test 1
  * fails (zero warnings recorded instead of one) — proving this suite
@@ -56,16 +56,66 @@ describe("ProjectSession applies brink.toml (#2324)", () => {
     expect(warnings).toEqual([[]]);
   });
 
-  it("reports [project] entry as an unrecognized key — it has no real schema slot", async () => {
-    const { warnings } = await makeProject(
+  // ── [project] entry precedence (issue #2331, ruled 2026-08-07) ────────
+
+  it("config wins: a brink.toml [project] entry naming a real file supersedes the entryFile argument", async () => {
+    const { project, warnings } = await makeProject(
       {
-        "brink.toml": '[project]\nentry = "story.ink"\nconventions = "conventions.brink"\n',
+        "brink.toml": '[project]\nentry = "other.ink"\nconventions = "conventions.brink"\n',
+        "story.ink": "-> END\n",
+        "other.ink": "-> END\n",
+      },
+      "story.ink",
+    );
+    // `entry` is now a recognized key — zero warnings, not one.
+    expect(warnings).toEqual([[]]);
+    expect(project.getEntryFile()).toBe("other.ink");
+  });
+
+  it("config absent falls back: no brink.toml leaves the entryFile argument in effect", async () => {
+    const { project, warnings } = await makeProject(
+      { "story.ink": "-> END\n" },
+      "story.ink",
+    );
+    expect(warnings).toEqual([[]]); // no brink.toml found — discovery finds nothing
+    expect(project.getEntryFile()).toBe("story.ink");
+  });
+
+  it("config-names-missing-file: an [project] entry naming a file outside the project falls back to entryFile and warns through onProjectConfigWarnings", async () => {
+    const { project, warnings } = await makeProject(
+      {
+        "brink.toml": '[project]\nentry = "nonexistent.ink"\n',
         "story.ink": "-> END\n",
       },
       "story.ink",
     );
+    // The fallback chain: entryFile stays the constructor argument.
+    expect(project.getEntryFile()).toBe("story.ink");
+    // No new warning channel invented — the existing onProjectConfigWarnings
+    // list carries the fallback notice.
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual([expect.stringContaining("entry")]);
+    expect(warnings[0]).toHaveLength(1);
+    expect(warnings[0]![0]).toEqual(
+      expect.stringContaining("nonexistent.ink"),
+    );
+  });
+
+  it("un-sticks when brink.toml's entry key is removed: getEntryFile() reverts to the host's entryFile argument, not the last config value (issue #2331 review finding)", async () => {
+    const { project } = await makeProject(
+      {
+        "brink.toml": '[project]\nentry = "other.ink"\n',
+        "story.ink": "-> END\n",
+        "other.ink": "-> END\n",
+      },
+      "story.ink",
+    );
+    // Config wins while it says so.
+    expect(project.getEntryFile()).toBe("other.ink");
+
+    // Removing `entry` from brink.toml must un-stick getEntryFile() — it
+    // must NOT stay pinned to the superseded config value forever.
+    project.applyEdit("brink.toml", "[project]\n");
+    expect(project.getEntryFile()).toBe("story.ink");
   });
 
   it("re-applies when brink.toml is edited in the session (applyEdit path)", async () => {
@@ -123,6 +173,9 @@ describe("ProjectSession applies brink.toml (#2324)", () => {
     }
     discoverProjectConfig(_entry: string): string[] {
       throw new Error("malformed TOML: unexpected character");
+    }
+    getConfiguredEntry(): null {
+      return null;
     }
     free(): void {
       /* no-op */

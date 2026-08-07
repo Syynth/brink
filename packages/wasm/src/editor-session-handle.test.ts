@@ -22,6 +22,7 @@ import { describe, it, expect, vi } from "vitest";
 
 const hoisted = vi.hoisted(() => {
   const calls: Array<{ method: string; args: unknown[] }> = [];
+  let configuredEntryStub: string | undefined;
   class EditorSessionStub {
     set_semantic_type_check(level: unknown): void {
       calls.push({ method: "set_semantic_type_check", args: [level] });
@@ -42,6 +43,10 @@ const hoisted = vi.hoisted(() => {
     discover_project_config(entry: unknown): string {
       calls.push({ method: "discover_project_config", args: [entry] });
       return "[]";
+    }
+    configured_entry(): string | undefined {
+      calls.push({ method: "configured_entry", args: [] });
+      return configuredEntryStub;
     }
     set_lint_overrides(json: unknown): string {
       calls.push({ method: "set_lint_overrides", args: [json] });
@@ -64,7 +69,13 @@ const hoisted = vi.hoisted(() => {
       return path !== "std/core.brink";
     }
   }
-  return { calls, EditorSessionStub };
+  return {
+    calls,
+    EditorSessionStub,
+    setConfiguredEntry: (value: string | undefined) => {
+      configuredEntryStub = value;
+    },
+  };
 });
 
 vi.mock("brink-web", () => ({
@@ -190,6 +201,34 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
     ]);
     expect(warnings).toEqual([]);
     expect(handle.generation).toBe(before + 1);
+  });
+
+  // Issue #2331: "[project] entry" beats mountStudio's entryFile — the
+  // read side hosts poll after discovery to learn whether brink.toml named
+  // an entry file.
+
+  it("exposes getConfiguredEntry (#2331)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.getConfiguredEntry).toBe("function");
+  });
+
+  it("forwards getConfiguredEntry to configured_entry, without bumping generation (a read, not a mutation)", () => {
+    hoisted.setConfiguredEntry("story.ink");
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const entry = handle.getConfiguredEntry();
+
+    expect(hoisted.calls).toEqual([{ method: "configured_entry", args: [] }]);
+    expect(entry).toBe("story.ink");
+    expect(handle.generation).toBe(before);
+  });
+
+  it("returns null (not undefined) when the wasm side has no configured entry", () => {
+    hoisted.setConfiguredEntry(undefined);
+    const handle = new EditorSessionHandle();
+    expect(handle.getConfiguredEntry()).toBeNull();
   });
 
   // Issue #1417: extends the CLI/API `[lints]`/`deny-warnings` override
