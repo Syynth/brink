@@ -47,6 +47,7 @@ graph TD
     B06["B0.6: declaration + module-skeleton lowering"]
     B07["B0.7: prose-dialect body lowering<br/>({?} points, dissolved gather)"]
     B08["B0.8: code-dialect body lowering<br/>(writer-sufficient subset)"]
+    B08b["B0.8b: HIR→brink emitter +<br/>mechanical corpus converter (NF-5 ruling)"]
     B09["B0.9: native accept-list gate (Q6b)"]
   end
 
@@ -64,6 +65,7 @@ graph TD
   B06 --> B09
   B07 --> B09
   B08 --> B09
+  B08 --> B08b
   B05 -.discovery sliver.-> B10
   B07 --> B10
 
@@ -78,7 +80,12 @@ no ink plumbing) and must be done when B0.4 lands so B0.6 starts
 immediately. B0.8 is a parallel lane off B0.6 (the body-dialect seam keeps
 it disjoint from B0.7) and is **not** on the writer's critical path — the
 writer authors scenes in the prose dialect. The two red nodes are the
-highest-risk slices (widest ink-frontend blast radius).
+highest-risk slices (widest ink-frontend blast radius). **B0.8b** (added
+by the 2026-07-19 NF-5 ruling) hangs off B0.8 in the same parallel lane;
+its full-corpus respell differential is the **B0 ratification exit gate**
+— and per the NF-4 ruling (2026-07-19), writer onboarding now gates on
+ALL of B0, so the "critical path to the writer's first scene" above reads
+as the path to *first light*, with onboarding at B0 completion.
 
 The ruled sequencing constraint, honored: **Q1(b) provenance decoupling
 comes first** — it is substrate the ink frontend needs too, and every other
@@ -155,8 +162,10 @@ resolvability.
 likely to burn the native frontend, invisible in code review); guards D3
 until B0.4 retires it.
 **Entry.** B0.2 merged (checks #4/#5 reference `ReturnKind` + kind-tokens).
-NF-6 (validator run mode) ruled — rec: always-on per the tier-1
-never-fail-silently posture (2026-07-18 capability-manifest ruling).
+NF-6 (validator run mode) **RULED 2026-07-19: (a) always-on** per the
+tier-1 never-fail-silently posture (2026-07-18 capability-manifest
+ruling); the measured perf budget is part of this slice's exit criteria;
+per-check dev-demotion only by individual maintainer ruling.
 **Exit (tests).** The **entire existing corpus is admission-clean** — the
 ink frontend passes its own gate with zero new diagnostics (this run is the
 proof the checks encode reality, not aspiration); one malformed-triple
@@ -186,7 +195,11 @@ stability, #719); oracle byte-identity.
 through the manifest's DefinitionIds).
 
 ### B0.5 — native lexer + CST: the `.brink` grammar skeleton (parallel lane, spine-reviewed)
-**Scope.** Token set + error-resilient CST for the ruled surface: `flow`/
+**Scope.** The native lexer/CST lives in a **new peer crate,
+`crates/internal/brink-syntax-native`** (NF-1 RULED 2026-07-19: own
+`SyntaxKind` space, own rowan tree, own AST layer; the oracle-guarded ink
+parser is physically untouchable from this lane). Token set +
+error-resilient CST for the ruled surface: `flow`/
 `fn` declarations with braced bodies; decl keywords `var const flags struct
 extern import use module`; the annotated-brace family openers (`{expr}`
 interpolation, `{if`/`{match`, `{~ {& {! {|` alternations, `{?` points,
@@ -206,8 +219,9 @@ renderer-elidable (charter §2).
 **Discharges.** Substrate for Q6(b); the Q5(a) seam physically exists.
 **Entry.** B0.1 merged (the CST's provenance story is designed against
 opaque `Provenance` from day one — never `AstPtr`); **NF-1** (crate home —
-rec: new `crates/internal/brink-syntax-native`) and **NF-2** (surface
-subset) ruled.
+RULED 2026-07-19: the new peer crate `crates/internal/brink-syntax-native`)
+and **NF-2** (surface subset — RULED 2026-07-19: writer-sufficient subset,
+deferred constructs parse-but-reject loudly) — both ruled.
 **Exit (tests).** CST insta snapshots incl. error-recovery fixtures;
 lossless lexer round-trip property (tokens + trivia reconstruct source —
 the fmt/renderer prerequisite); the two charter exhibits (the Fogg passage,
@@ -264,7 +278,9 @@ if any downstream pass turns out to inspect these values, flag loudly per
 the not-fully-reviewed caveat (this is the likeliest tripwire in B0).
 **Discharges.** Charter §5 (the single most identity-altering respelling);
 exercises D4 honestly.
-**Entry.** B0.6 merged; NF-5 (differential method) ruled.
+**Entry.** B0.6 merged; NF-5 (differential method) **RULED 2026-07-19:
+(c+)** — snapshots + hand-curated respelled differentials here, plus the
+B0.8b mechanical-corpus ratification gate below.
 **Exit (tests).** **Respelled-differential episode tests** — the flagship:
 selected tier-1 cases respelled in `.brink` compile and replay
 **episode-identical** to their ink spellings on the existing harness (the
@@ -294,6 +310,28 @@ provenance (snapshot equality mod ranges) — Track A's tested semantics
 inherited, not co-developed; await-site pre-order fixture; admission green.
 **Lane.** Parallel (not on the writer's critical path).
 
+### B0.8b — HIR→brink emitter + mechanical corpus converter (parallel lane; slice added by the NF-5 ruling, 2026-07-19)
+**Scope.** Emit `.brink` source from HIR (comment-free output is fine for
+corpus purposes); a mechanical converter runs the emitter over the **full
+390-case corpus**; the converted corpus compiles and replays
+**episode-identical** to its ink twins on the existing harness — the
+**full-corpus episode-identity differential is the B0 ratification exit
+gate**. The emitter is deliberately **shared machinery with the future
+`.brink` formatter and the printer-based IDE rewrites** — that sharing is
+the ruling's rationale for pulling it into B0. Crate-name suggestion:
+**`brink-respell`** — NEVER `brink-converter` (that name belongs to the
+retired `.ink.json` crate, #544). Hand-curated respelled differentials
+remain B0.7/B0.8's exit gates (NF-5's (c) half); this slice widens the
+differential to corpus width for ratification.
+**Discharges.** NF-5(c+)'s ratification leg — the tracker's "lowers to
+*tested* HIR" at full corpus width; substrate for the fmt/printer lane.
+**Entry.** B0.8 merged.
+**Exit (tests).** All 390 cases convert; the converted corpus replays
+episode-identical on the existing harness; divergences are flagged loudly,
+never patched at the emitter (the T-1 discipline applies).
+**Lane.** Parallel (the B0.5–B0.8 lane's tail); gates B0 *ratification*,
+not first light. No renumbering — B0.9/B0.10 keep their names.
+
 ### B0.9 — the native accept-list admission gate, Q6(b) (small spine, lands incrementally)
 **Scope.** The inverse of the ink reject-list `dialect_gate`: an
 **accept-list** enumerating legal native HIR shapes, rejecting (a)
@@ -316,7 +354,8 @@ a hard error.
 
 ### B0.10 — `.brink` in the project layer + writer first light (parallel lane, serial checkpoint)
 **Scope.** Extension registration (`.brink`, ruled 2026-07-19); source
-discovery per NF-3 (rec: a declared source root in `brink.toml`
+discovery per NF-3 (RULED 2026-07-19 (b), with the cross-dialect-INCLUDE
+hard-error rider: a declared source root in `brink.toml`
 (`brink-project-config` already walks up from entries), filesystem-derived
 module paths — path on disk = path in language — the tree-is-universe walk
 scoped to that root; the INCLUDE-closure machinery is **never** consumed
@@ -333,7 +372,15 @@ deliberately. **NS-T dependency flagged, not owned**: the writer validates
 coupling surfaced as the schedule risk it is.
 **Entry.** Discovery sliver after B0.5 (parallel); **first-light
 checkpoint** requires B0.6 + B0.7 + the NS-T minimum bar. NF-3 + NF-4
-ruled.
+ruled (2026-07-19 — see below).
+**NF-4 RULED 2026-07-19: (a) — OVERRIDES the first-light onboarding
+posture this slice was drafted around.** Writer onboarding gates on
+**ALL of B0** (B0.8/B0.9/B0.10 complete, plus B0.8b's ratification gate),
+not on the first-light checkpoint. First light remains a checkpoint — the
+toolchain proving itself end-to-end — but the friction journal opens at
+onboarding, i.e. at B0 completion. The NS-T timing pressure is
+correspondingly relaxed (the editor minimum bar has B0's full runway) but
+**not void** — NS-T still gates onboarding itself.
 **Exit (tests).** End-to-end: a `.brink` scene compiles and plays through
 the runtime; a **real scene authored by the writer** compiles, plays, and
 the journal has entries. That last clause is the exit criterion for B0 as
@@ -407,8 +454,9 @@ path.
 
 **Parallel lanes:** `B0.5` (after B0.1, concurrent with B0.2–B0.4 — must
 be done when B0.4 lands); `B0.8` (after B0.6, concurrent with B0.7);
-`B0.9` (incremental beside B0.6–B0.8); `B0.10`'s discovery sliver (after
-B0.5).
+`B0.8b` (after B0.8 — the mechanical-corpus differential; gates B0
+*ratification*, added by the 2026-07-19 NF-5 ruling); `B0.9` (incremental
+beside B0.6–B0.8); `B0.10`'s discovery sliver (after B0.5).
 
 **Blocking-finding gates before code** (the stdlib-sequencing §4 pattern —
 findings in `b0-findings.md`):
@@ -419,6 +467,10 @@ findings in `b0-findings.md`):
 | B0.5 | NF-1 (lexer/CST home), NF-2 (surface subset) |
 | B0.7 | NF-5 (differential-test method — gates the *exit criterion*, not the start) |
 | B0.10 | NF-3 (`.brink` discovery), NF-4 (first-light gate) |
+
+*(2026-07-19 evening walkthrough: NF-1–NF-6 are all RULED — dated stamps
+in `b0-findings.md`; NF-4's ruling overrides its recommendation, NF-5's
+adds B0.8b. No slice remains ruling-blocked.)*
 
 ---
 
@@ -443,11 +495,14 @@ lesson).
 | B0.6 | none to ink | admission validator green over native output · negative fixtures |
 | B0.7 | none to ink (D4 neutrals = watch item) | respelled-differential episode tests · accept-list |
 | B0.8 | none to ink | HIR-equality-vs-brink-dialect differentials · await pre-order fixture |
+| B0.8b | none to ink | full-corpus respell differential (episode identity) — the B0 ratification gate · divergences flagged, never emitter-patched |
 | B0.9 | none to ink | fixture-per-rejection · injection tests |
 | B0.10 | low (project layer) | end-to-end compile-and-play · existing project-config tests |
 
 ---
 
-**Summary: 10 slices — 7 spine (B0.1, B0.2, B0.3, B0.4, B0.6, B0.7, B0.9)
-/ 3 parallel lanes (B0.5, B0.8, B0.10).** Everything PROPOSED; findings in
-`b0-findings.md` are phone-rulable.
+**Summary: 11 slices — 7 spine (B0.1, B0.2, B0.3, B0.4, B0.6, B0.7, B0.9)
+/ 4 parallel lanes (B0.5, B0.8, B0.8b, B0.10)** *(B0.8b added by the
+2026-07-19 NF-5 ruling; no renumbering)*. Everything PROPOSED; findings in
+`b0-findings.md` are phone-rulable *(NF-1–NF-6 RULED 2026-07-19 — see the
+stamps there)*.

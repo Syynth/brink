@@ -1621,7 +1621,16 @@ pub(super) fn try_dispatch(
 /// (`capture_block`) already treats an upcoming `CUE`/`COMPACT_CUE`/
 /// `PARENTHETICAL` as "ends the run" regardless of whether any of them is
 /// itself claimable, so nothing there changes.
-fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
+///
+/// `pub(crate)` (issue #2351): this is the ONE place the sub-node selection
+/// rules above are written down. `crate::hir::classify`'s node-aware
+/// entry points (`classify_node_compiled`, `nearest_element_candidate`)
+/// call this exact function — via `super::candidate` in
+/// `hir::lower_native::mod`'s crate-visible re-export — rather than
+/// re-deriving the selection against the raw line text, which is
+/// precisely the divergence #2351 exists to close: a copy would
+/// re-diverge from this one the next time a `candidate` arm changes.
+pub(crate) fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
     match node.kind() {
         N::CONTENT_LINE => {
             let mut children = node.children();

@@ -75,6 +75,24 @@ export interface FileChangeHubOptions {
   onFileConflict?: (conflict: FileConflict) => void;
   /** Trailing debounce before an automatic flush (default 500 ms). */
   debounceMs?: number;
+  /**
+   * Whether a delivered flush counts as persistence (default `true`).
+   *
+   * `true` — the original write-through contract: "last-notified content
+   * is, by contract, content the host has persisted", so `flush()`
+   * re-baselines every delivered path and dirty clears on delivery. For
+   * hosts whose egress handler writes canonical files (e.g. RPG Maker MZ
+   * mirroring `data/brink/**`).
+   *
+   * `false` — the overlay contract (the celeris file model, 2026-08-07
+   * decision-log entry): delivery feeds a **backup ring**, not canonical
+   * storage, so `flush()` delivers batches but moves NO baselines — dirty
+   * means "diverges from the last canonical save" and only `markSaved`
+   * (an explicit save / autosave tick) clears it. The no-op check in
+   * `record()` still compares against the canonical baseline, so an undo
+   * back to the saved text correctly drops back to clean.
+   */
+  deliveryPersists?: boolean;
 }
 
 const DEFAULT_DEBOUNCE_MS = 500;
@@ -87,6 +105,7 @@ export class FileChangeHub {
   private onDirtyChange?: (dirtyCount: number) => void;
   private readonly onFileConflict?: (conflict: FileConflict) => void;
   private readonly debounceMs: number;
+  private readonly deliveryPersists: boolean;
 
   /** Pending (recorded, not yet flushed) changes, coalesced per path. */
   private readonly pending = new Map<string, FileChangeType>();
@@ -106,6 +125,7 @@ export class FileChangeHub {
     this.onDirtyChange = options.onDirtyChange;
     this.onFileConflict = options.onFileConflict;
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+    this.deliveryPersists = options.deliveryPersists ?? true;
   }
 
   /** Late-bind the dirty listener (the store exists after the session). */
@@ -254,10 +274,15 @@ export class FileChangeHub {
   /**
    * Deliver every pending change to the host now (save commands, unmount;
    * the debounce timer lands here too). Content is read at this moment.
-   * Delivered files are re-baselined — "last-notified" content is, by
-   * contract, content the host has persisted. Without an `onFlush` host
-   * hook this is a no-op: changes stay pending and dirty until an explicit
-   * `markSaved`. Returns the delivered batch (empty when nothing flushed).
+   *
+   * Under the default write-through contract (`deliveryPersists: true`),
+   * delivered files are re-baselined — "last-notified" content is, by
+   * contract, content the host has persisted. Under the overlay contract
+   * (`deliveryPersists: false`) delivery moves NO baselines: the batch
+   * feeds a backup ring, and only `markSaved` (a canonical save) clears
+   * dirty. Without an `onFlush` host hook this is a no-op: changes stay
+   * pending and dirty until an explicit `markSaved`. Returns the delivered
+   * batch (empty when nothing flushed).
    */
   flush(): FileChange[] {
     this.cancelTimer();
@@ -271,16 +296,18 @@ export class FileChangeHub {
       const type = this.pending.get(path)!;
       if (type === "deleted") {
         changes.push({ path, type });
-        this.baselines.delete(path);
+        if (this.deliveryPersists) this.baselines.delete(path);
       } else {
         const content = this.getContent(path);
         if (content === null) continue; // vanished between record and flush
         changes.push({ path, type, content });
-        this.baselines.set(path, content);
+        if (this.deliveryPersists) this.baselines.set(path, content);
       }
     }
     this.pending.clear();
-    for (const { path } of changes) this.updateDirty(path);
+    if (this.deliveryPersists) {
+      for (const { path } of changes) this.updateDirty(path);
+    }
 
     if (changes.length > 0) this.onFlush(changes);
     return changes;

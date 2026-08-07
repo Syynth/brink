@@ -134,7 +134,7 @@ script can decide for itself regardless of exit code.
 
 | Command | `brink-ide` fn | Notes |
 |---|---|---|
-| `brink ide symbols [--file F]` | `document::document_symbols` → `DocumentSymbol{name,kind,detail,range,full_range,children}` | Outline of one file: knots with stitches nested; vars/lists/externals at top. |
+| `brink ide symbols [--file F]` | `document::document_symbols` → `DocumentSymbol{name,kind,detail,range,full_range,children}` | Outline of one file: knots with stitches nested; vars/consts/lists/structs/externals at top. |
 | `brink ide symbols --search <q>` | `document::workspace_symbols` → `WorkspaceSymbol{name,kind,file,range}` | Project-wide substring search (the LSP workspace-symbol query). |
 
 ## 3. Information queries (read)

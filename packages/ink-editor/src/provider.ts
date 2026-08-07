@@ -40,8 +40,14 @@ export interface FileProvider {
    *  that must preserve history) implements this instead. */
   renameFile?(oldPath: string, newPath: string): Promise<void>;
 
-  /** Request save of the current project state. */
-  requestSave?(): Promise<void>;
+  /** Request a canonical save of the current project state. When `paths`
+   *  is given, the host may narrow the write to those files (the
+   *  `file.save` single-file command passes the focused path); absent
+   *  means save everything outstanding (`file.saveAll`, autosave). Under
+   *  the overlay contract (`egressPersists: false`) this is THE canonical
+   *  write — the save commands await it and only re-baseline on success,
+   *  so a rejection keeps the files dirty for retry. */
+  requestSave?(paths?: string[]): Promise<void>;
 }
 
 /**

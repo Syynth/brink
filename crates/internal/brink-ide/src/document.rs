@@ -84,7 +84,9 @@ pub fn document_symbols(
     // Top-level declarations from manifest
     let decl_groups: &[(&[brink_ir::DeclaredSymbol], SymbolKind)] = &[
         (&manifest.variables, SymbolKind::Variable),
+        (&manifest.constants, SymbolKind::Constant),
         (&manifest.lists, SymbolKind::List),
+        (&manifest.structs, SymbolKind::Struct),
         (&manifest.externals, SymbolKind::External),
     ];
 
@@ -231,6 +233,60 @@ candles
         assert!(
             shrine_text.starts_with("/// Quiet corner."),
             "{shrine_text:?}"
+        );
+    }
+
+    /// #2292: a native `struct` declaration must appear in the outline
+    /// alongside its knots, not just be projected into the manifest and
+    /// then dropped on the floor by `document_symbols`'s decl-group list.
+    ///
+    /// Also covers the review finding that `manifest.constants` was missing
+    /// from the same decl-group list — a `const` sitting alongside `struct`
+    /// and `flow` must show up too.
+    #[test]
+    fn native_struct_declaration_appears_alongside_knot() {
+        let src = "\
+const MAX_CUES = 100
+
+struct Cue {
+  text: string,
+  duration: float
+}
+
+flow main() {
+  Hello!
+}
+";
+        let parsed = brink_syntax_native::parse(src);
+        let (hir, manifest, _) =
+            brink_ir::hir::lower_native::lower(brink_ir::FileId(0), &parsed.tree());
+        let syms = document_symbols(&hir, &manifest, src);
+
+        let knot = syms
+            .iter()
+            .find(|s| s.kind == brink_ir::SymbolKind::Knot && s.name == "main");
+        assert!(
+            knot.is_some(),
+            "knot must still be present: {:?}",
+            syms.iter().map(|s| (&s.name, s.kind)).collect::<Vec<_>>()
+        );
+
+        let strukt = syms
+            .iter()
+            .find(|s| s.kind == brink_ir::SymbolKind::Struct && s.name == "Cue");
+        assert!(
+            strukt.is_some(),
+            "struct Cue must be present in the outline, not just the knot: {:?}",
+            syms.iter().map(|s| (&s.name, s.kind)).collect::<Vec<_>>()
+        );
+
+        let konst = syms
+            .iter()
+            .find(|s| s.kind == brink_ir::SymbolKind::Constant && s.name == "MAX_CUES");
+        assert!(
+            konst.is_some(),
+            "const MAX_CUES must be present in the outline: {:?}",
+            syms.iter().map(|s| (&s.name, s.kind)).collect::<Vec<_>>()
         );
     }
 
