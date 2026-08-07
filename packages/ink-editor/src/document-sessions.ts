@@ -834,10 +834,12 @@ export class DocumentSessions {
         // still lands in the CM6 doc and silently reverts on the next
         // wasm round-trip (`DocHandle.pushSource` drops a refused push) —
         // the user sees their typing vanish rather than being told the
-        // file can't be edited. `EditorState.readOnly` blocks the
-        // transaction outright; `EditorView.editable` also disables the
-        // caret/selection-handle affordances, matching `conflict-view.ts`'s
-        // "ON DISK" read-only pane.
+        // file can't be edited. `EditorView.editable.of(false)` is what
+        // actually stops the keystroke (-> `contenteditable="false"` on the
+        // DOM); `EditorState.readOnly` is advisory — CM6 core doesn't
+        // consult it for typing, but `@codemirror/commands` and
+        // search/replace do, so it still guards those paths. Matches
+        // `conflict-view.ts`'s "ON DISK" read-only pane.
         ...(this.project.isReadOnly(slot.path)
           ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
           : []),

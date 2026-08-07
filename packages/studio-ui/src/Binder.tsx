@@ -559,6 +559,23 @@ function BinderInner() {
     [selectKey, handleOpenUnpinned],
   );
 
+  // Library rows (mounted std/ files) never join `selectedKeys`: they have
+  // no drag/rename/delete/move affordances, so there is nothing a
+  // multi-select could do with one, and routing them through `selectKey`
+  // would silently co-select a mounted path into an otherwise-ordinary
+  // project-file drag/move — `handleDragStart` expands a drag to every
+  // selected key, and that path has no visual indicator here (`isSelected`
+  // is always `false` for a Library row) so the user would never see it
+  // happen (issue #2343 review finding). A click here only opens the file
+  // and clears any existing project-file selection instead.
+  const handleLibraryFileClick = useCallback(
+    (target: TabTarget) => {
+      clearSelection();
+      handleOpenUnpinned(target);
+    },
+    [clearSelection, handleOpenUnpinned],
+  );
+
   // ── New file input ──────────────────────────────────────────────
 
   /** Open the inline New File input, optionally pre-filled with a directory
@@ -1290,7 +1307,7 @@ function BinderInner() {
         dropLinePosition={null}
         draggable={false}
         onChevronClick={() => {}}
-        onClick={(e) => handleRowClick(fileKey, target, e)}
+        onClick={() => handleLibraryFileClick(target)}
         onDoubleClick={() => handleOpenPinned(target)}
         onContextMenu={(e) => e.preventDefault()}
         onDragStart={(e) => e.preventDefault()}

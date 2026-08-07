@@ -14,11 +14,13 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { InMemoryFileProvider, ProjectSession, type FileChange } from "@brink-lang/editor";
-import { initWasm } from "@brink-lang/web";
+import { EditorSessionHandle, initWasm } from "@brink-lang/web";
 import { createStudioStore, type DocumentSessions as StoreDocs } from "@brink/studio-store";
 
 const MAIN_INK = "-> start\n=== start ===\nHello apple.\n-> END\n";
 const SIDE_INK = "=== side ===\nAnother apple here.\n-> END\n";
+const MOUNTED_PATH = "std/conventions/screenplay.brink";
+const MOUNTED_TEXT = "=== screenplay ===\n-> DONE\n";
 
 interface Egress {
   provider: InMemoryFileProvider;
@@ -35,6 +37,35 @@ async function makeProject(
   const project = new ProjectSession({
     provider,
     entryFile: "main.ink",
+    onFilesChanged: (changes) => batches.push(changes),
+  });
+  await project.initialize();
+  return { provider, project, batches };
+}
+
+/** Reach into the mock's raw session to seed a read-only file — the
+ *  wasm-boundary equivalent of the real constructor's stdlib mount (mirrors
+ *  `mounted-stdlib-readonly.test.ts`'s `markReadOnly` helper). */
+function markReadOnly(handle: EditorSessionHandle, path: string, source: string): void {
+  (
+    handle as unknown as {
+      session: { __mockMarkReadOnlyForTest(path: string, source: string): void };
+    }
+  ).session.__mockMarkReadOnlyForTest(path, source);
+}
+
+/** Like {@link makeProject}, but with `MOUNTED_PATH` pre-seeded as a
+ *  mounted/read-only file, for the delete-refusal tests below. */
+async function makeProjectWithMount(): Promise<Egress> {
+  await initWasm();
+  const session = new EditorSessionHandle();
+  markReadOnly(session, MOUNTED_PATH, MOUNTED_TEXT);
+  const provider = new InMemoryFileProvider({ "main.ink": MAIN_INK, "side.ink": SIDE_INK });
+  const batches: FileChange[][] = [];
+  const project = new ProjectSession({
+    provider,
+    entryFile: "main.ink",
+    session,
     onFilesChanged: (changes) => batches.push(changes),
   });
   await project.initialize();
@@ -89,8 +120,21 @@ describe("ProjectSession.deleteFile", () => {
     await project.initialize();
 
     expect(project.canDeleteFiles()).toBe(false);
-    await expect(project.deleteFile("side.ink")).resolves.toBeUndefined();
+    await expect(project.deleteFile("side.ink")).resolves.toBe(true);
     expect(project.getSession().getFileSource("side.ink")).toBeNull();
+  });
+
+  it("refuses a mounted stdlib path: no provider write, no session mutation, returns false (issue #2343 review finding)", async () => {
+    const { provider, project, batches } = await makeProjectWithMount();
+    const providerDelete = vi.spyOn(provider, "deleteFile");
+
+    expect(project.isReadOnly(MOUNTED_PATH)).toBe(true);
+    await expect(project.deleteFile(MOUNTED_PATH)).resolves.toBe(false);
+
+    expect(providerDelete).not.toHaveBeenCalled();
+    expect(project.getSession().getFileSource(MOUNTED_PATH)).not.toBeNull();
+    vi.advanceTimersByTime(500);
+    expect(batches).toEqual([]);
   });
 });
 
@@ -146,6 +190,32 @@ describe("store.deleteFile", () => {
 
     expect(store.getState().undoStack).toHaveLength(0);
     expect(batches).toEqual([]);
+  });
+
+  it("a mounted stdlib path is skipped before any tab is closed, with a warning notification (issue #2343 review finding)", async () => {
+    const { project, batches } = await makeProjectWithMount();
+    const closeDocs = vi.fn();
+    const notifications: unknown[] = [];
+    const store = createStudioStore();
+    store.setState({
+      _project: project,
+      _documents: stubDocuments(),
+      _closeDocsForPath: closeDocs,
+      _notify: (n) => notifications.push(n),
+    });
+
+    await store.getState().deleteFile(MOUNTED_PATH);
+    vi.advanceTimersByTime(500);
+
+    // The tab must never be closed for a file whose delete gets refused —
+    // closing it is itself destructive to the user's view state.
+    expect(closeDocs).not.toHaveBeenCalled();
+    expect(project.getSession().getFileSource(MOUNTED_PATH)).not.toBeNull();
+    expect(store.getState().undoStack).toHaveLength(0);
+    expect(batches).toEqual([]);
+    expect(notifications).toEqual([
+      expect.objectContaining({ severity: "warning", source: "binder" }),
+    ]);
   });
 });
 

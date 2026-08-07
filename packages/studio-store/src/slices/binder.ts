@@ -359,6 +359,14 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
  * snapshot first so undo can fully reconstruct; close tabs before the file
  * leaves the session so no mounted view reads a dead path; delete (provider +
  * session + `deleted` egress) last.
+ *
+ * A mounted stdlib path (issue #2306/#2343) is filtered out before any of
+ * that teardown runs — `project.deleteFile` refuses it and returns `false`,
+ * but by then this function would already have closed the file's tabs via
+ * `closeDocsForPath`, which is itself destructive to the user's view state.
+ * Checking `project.isReadOnly` up front keeps a mounted path from ever
+ * reaching snapshot/close/delete, and `deleteFile`'s boolean return is kept
+ * as defense in depth for a path this filter didn't already catch.
  */
 async function deleteFilesWithUndo(
   get: () => StudioState,
@@ -373,18 +381,38 @@ async function deleteFilesWithUndo(
 
   const session = project.getSession();
 
+  // 0. Filter out mounted stdlib paths — never snapshot, close, or delete them.
+  let skipped = 0;
+  const deletable: string[] = [];
+  for (const path of paths) {
+    if (project.isReadOnly(path)) {
+      skipped += 1;
+    } else {
+      deletable.push(path);
+    }
+  }
+
   // 1. Snapshot content for undo (skip files that have already vanished).
   const files: Array<{ path: string; source: string }> = [];
-  for (const path of paths) {
+  for (const path of deletable) {
     const source = session.getFileSource(path);
     if (source != null) files.push({ path, source });
   }
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    if (skipped > 0) {
+      get()._notify?.({
+        severity: "warning",
+        source: "binder",
+        message: `Skipped ${skipped} read-only ${skipped === 1 ? "file" : "files"}: part of the read-only library`,
+      });
+    }
+    return;
+  }
 
   // 2. Close every open view for each file, then 3. delete it.
   for (const { path } of files) {
     state.closeDocsForPath(path);
-    await project.deleteFile(path);
+    if (!(await project.deleteFile(path))) skipped += 1;
   }
 
   // 4. Recompile (refreshes outline + surfaces any now-dangling INCLUDEs).
@@ -393,10 +421,12 @@ async function deleteFilesWithUndo(
   // 5. Push undo + notify with Undo (binder.undo command, spec §7.5).
   //    Read the stack fresh (deletes are async — don't clobber concurrent ops).
   set({ undoStack: [...get().undoStack, { kind: "recreate", description, files }] });
+  const skippedSuffix =
+    skipped > 0 ? ` (skipped ${skipped} read-only ${skipped === 1 ? "file" : "files"})` : "";
   get()._notify?.({
-    severity: "info",
+    severity: skipped > 0 ? "warning" : "info",
     source: "binder",
-    message: description,
+    message: `${description}${skippedSuffix}`,
     actions: [{ label: "Undo", commandId: "binder.undo" }],
   });
 }

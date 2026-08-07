@@ -122,6 +122,16 @@
   background: var(--bs-graph-expanded-bg);
 }
 
+/* Mounted stdlib content (issue #2306/#2343): still charted (dropping it
+   would reintroduce #2231's phantom-row bug for a project that diverts
+   into stdlib), but visually distinguished from ordinary project content
+   with a dashed border, matching the Binder Library section's read-only
+   treatment. */
+.brink-studio .brink-graph-node.mounted {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
 /* Live-session current location (§7.6 overlay). Loud on purpose — this is
    the "you are here" marker and must read at a glance, not on inspection:
    accent-tinted fill, full-strength accent ring, accent label. */

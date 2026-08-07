@@ -91,10 +91,11 @@ describe("Search-replace store actions cannot fork a mounted file (issue #2306)"
       _notify: (n) => notifications.push(n),
     });
 
-    // The exact by-id shape #2306 names: a row edit against a path NOT
-    // derived from `listFiles()` (which already excludes a mount) — e.g. a
-    // stale results-buffer row, or any future caller that resolves a file
-    // by id rather than by listing.
+    // The exact by-id shape #2306 names: a row edit against a path that
+    // bypasses `runSearch`'s explicit mounted-file exclusion (the search
+    // slice's candidate list, not `listFiles()`, is what filters mounts out
+    // now) — e.g. a stale results-buffer row, or any future caller that
+    // resolves a file by id rather than by running a fresh search.
     store.getState().applySearchRowEdit(MOUNTED_PATH, { start: 0, end: 4, text: "XXXX" });
 
     expect(session.getFileSource(MOUNTED_PATH)).toBe(MOUNTED_TEXT);

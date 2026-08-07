@@ -226,6 +226,33 @@ describe("buildGraphView", () => {
     expect(end.file).toBeUndefined();
     expect(end.span).toBeUndefined();
   });
+
+  // Issue #2306/#2343 review finding: `StoryGraphNode.mounted` must survive
+  // the view-model translation — a knot/stitch from a mounted stdlib file
+  // is still charted (dropping it would reintroduce #2231's phantom-row
+  // bug), but flagged so the renderer can mark it distinctly.
+  it("carries the mounted flag from a stdlib knot through to the view node", () => {
+    const graphWithMount: StoryGraph = {
+      nodes: [
+        ...GRAPH.nodes,
+        {
+          id: "screenplay",
+          name: "screenplay",
+          kind: "knot",
+          file: "std/conventions/screenplay.brink",
+          start: 0,
+          end: 10,
+          mounted: true,
+        },
+      ],
+      edges: GRAPH.edges,
+    };
+    const view = buildGraphView(graphWithMount, NONE);
+    const screenplay = view.nodes.find((n) => n.id === "screenplay")!;
+    expect(screenplay.mounted).toBe(true);
+    // An ordinary project knot never picks up the flag.
+    expect(view.nodes.find((n) => n.id === "intro")!.mounted).toBeUndefined();
+  });
 });
 
 // ── Session overlay mapping (spec §7.6 — plain data) ────────────────
@@ -371,6 +398,37 @@ describe("flow translation", () => {
     expect(intro.draggable).toBe(false);
     expect(intro.connectable).toBe(false);
     expect(intro.selectable).toBe(false);
+  });
+
+  it("maps a mounted node's flag through so it renders distinctly (issue #2306/#2343)", () => {
+    const graphWithMount: StoryGraph = {
+      nodes: [
+        ...GRAPH.nodes,
+        {
+          id: "screenplay",
+          name: "screenplay",
+          kind: "knot",
+          file: "std/conventions/screenplay.brink",
+          start: 0,
+          end: 10,
+          mounted: true,
+        },
+      ],
+      edges: GRAPH.edges,
+    };
+    const view = buildGraphView(graphWithMount, NONE);
+    const graphLayout = layoutGraphView(view);
+    const model: StoryGraphModel = {
+      view,
+      graphLayout,
+      overlay: null,
+      currentId: null,
+    };
+    const nodes = toFlowNodes(model, () => {});
+    const screenplay = nodes.find((n) => n.id === "screenplay")!;
+    expect(screenplay.data.node.mounted).toBe(true);
+    const intro = nodes.find((n) => n.id === "intro")!;
+    expect(intro.data.node.mounted).toBeUndefined();
   });
 
   it("maps edges with per-kind classes, arrow markers, and ×N labels", () => {

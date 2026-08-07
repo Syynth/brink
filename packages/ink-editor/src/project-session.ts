@@ -258,11 +258,16 @@ export class ProjectSession {
    * lists mounted files (the exact route this guard closes — a caller
    * reaching a mounted path outside the Binder's own gating must not
    * delete the mount, and definitely must not have the provider write a
-   * "deletion" of a file it never wrote in the first place).
+   * "deletion" of a file it never wrote in the first place). Returns `false`
+   * on refusal rather than throwing, matching {@link applyEdit}'s and
+   * `EditorSession::remove_file`'s sibling contract — the store's
+   * `deleteFilesWithUndo` awaits this with no try/catch, so a throw here
+   * would leave a tab already closed by the caller with nothing telling the
+   * user why the delete silently vanished (issue #2343 review finding).
    */
-  async deleteFile(path: string): Promise<void> {
+  async deleteFile(path: string): Promise<boolean> {
     if (this.sessionIsReadOnly(path)) {
-      throw new Error(`"${path}" is part of the read-only library and cannot be deleted`);
+      return false;
     }
     await this.provider.deleteFile?.(path);
     this.session.removeFile(path);
@@ -271,6 +276,7 @@ export class ProjectSession {
     // `brink.toml` discovery previously stopped short of (or find none,
     // which is not an error — see `applyProjectConfig`'s doc comment).
     if (isProjectConfigPath(path)) this.applyProjectConfig();
+    return true;
   }
 
   /** Whether files can be renamed/moved. True when the provider has an atomic

@@ -146,4 +146,44 @@ describe("Binder: Library section", () => {
     });
     expect(opened).toEqual([{ kind: "file", path: "std/conventions/screenplay.brink" }]);
   });
+
+  it("ctrl/cmd-clicking a Library row never joins the shared selection (issue #2343 review finding)", async () => {
+    // A Library row has no visual selected state (`isSelected` is hardcoded
+    // `false`) and no drag/rename/delete affordances, but before this fix a
+    // ctrl/cmd-click still routed through the same `handleRowClick` as an
+    // ordinary project-file row and called `selectKey`, silently adding the
+    // mounted path to `selectedKeys` — invisibly, since the row never
+    // reflects it — where a later drag of a co-selected project file would
+    // expand to include it and get refused by `applyMoveResult`.
+    //
+    // `BinderRow`'s own `onClick` handler debounces 200ms behind a real
+    // `setTimeout` to disambiguate a single click from a double-click (see
+    // the module doc above `toggleLibraryViaChevron`) — this test waits out
+    // that real delay (unlike the file's other click test, which sidesteps
+    // the debounce entirely with a `dblclick`) so the assertion runs after
+    // the debounced handler actually fires.
+    const store = createStudioStore();
+    store.setState({ outline: OUTLINE });
+    mount(store);
+
+    act(() => {
+      toggleLibraryViaChevron();
+    });
+
+    const fileRow = container!.querySelector(
+      '[data-binder-row-key="std/conventions/screenplay.brink"]',
+    );
+    expect(fileRow).not.toBeNull();
+
+    act(() => {
+      fileRow!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, ctrlKey: true, metaKey: true }),
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    });
+
+    expect(store.getState().selectedKeys.has("std/conventions/screenplay.brink")).toBe(false);
+  });
 });

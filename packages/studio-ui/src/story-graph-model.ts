@@ -38,6 +38,13 @@ export interface GraphViewNode {
   /** Source location for `editor.reveal`; absent on pseudo-nodes. */
   file?: string;
   span?: { start: number; end: number };
+  /** See {@link StoryGraphNode.mounted} (issue #2306/#2343) — a knot or
+   *  stitch declared in a mounted stdlib file. The graph still shows it
+   *  (dropping it would reintroduce #2231's phantom-row bug for a project
+   *  that diverts into stdlib content), but flagged so the renderer can
+   *  mark it distinctly rather than presenting it as ordinary project
+   *  content. Always absent/`false` on END/DONE pseudo-nodes. */
+  mounted?: boolean;
 }
 
 export interface GraphViewEdge {
@@ -136,6 +143,7 @@ export function buildGraphView(
       ...(node.start !== undefined && node.end !== undefined
         ? { span: { start: node.start, end: node.end } }
         : {}),
+      ...(node.mounted === true ? { mounted: true } : {}),
     });
   }
 

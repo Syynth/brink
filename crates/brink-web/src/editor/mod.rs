@@ -252,9 +252,9 @@ impl EditorSession {
     /// own already-present precedence and `brink-lsp`'s
     /// `NativeProjects::set_file` (issue #2231 review finding):
     /// `update_and_analyze` reuses the same `FileId` for an existing path,
-    /// so without this the id would stay marked as a mount forever —
-    /// excluded from `list_files`/`project_outline`/`story_graph` even
-    /// after its real content replaced the stdlib copy.
+    /// so without this the id would stay marked as a mount forever — it
+    /// would stay flagged `mounted: true` in `list_files`/`project_outline`/
+    /// `story_graph` even after its real content replaced the stdlib copy.
     pub fn update_file(&mut self, path: &str, source: &str) {
         self.session.update_and_analyze(path, source.to_owned());
         if let Some(id) = self.session.file_id(path) {
