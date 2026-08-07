@@ -186,6 +186,15 @@ impl EditorSession {
             .unwrap_or_default();
         };
         let current = d.path.clone();
+        if self.is_read_only(&current) {
+            return serde_json::to_string(&AutoImportJs {
+                ok: false,
+                already_reachable: false,
+                edit: None,
+                error: Some("document handle is read-only (mounted stdlib file)".to_owned()),
+            })
+            .unwrap_or_default();
+        }
         let result = match brink_ide::auto_import::ensure_include(&self.session, &current, target) {
             Ok(result) => result,
             Err(e) => {

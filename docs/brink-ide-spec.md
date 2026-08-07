@@ -407,6 +407,14 @@ pub struct DeltaToken {
 }
 ```
 
+**Ruling (#2293):** literal prose emits no semantic token at all, rather than
+falling back to `Variable`/`Operator`/`String`. This applies uniformly to
+every token kind a raw-bump prose run (`TEXT`, and native's `TEXT`/
+`CUE_NAME`/`TAG`/`SCENE_TITLE`) can contain — keyword lexemes, punctuation,
+digits, quote marks — not only identifiers. The tag/annotation sigil itself
+(`#`, `@[`) is structure, not prose, and keeps its `Decorator` classification
+even though it sits inside a `TAG` node.
+
 **Rationale:** `TokenType` is an enum (not bare `u32`) for type safety within brink-ide. The `repr(u32)` ensures shells can cheaply convert to protocol-specific numeric indices. The delta encoding function is also in brink-ide since both LSP and web editors use the same encoding scheme.
 
 ### Document structure
@@ -711,6 +719,10 @@ pub fn delta_encode(tokens: &[SemanticToken]) -> Vec<DeltaToken>;
 pub fn token_type_names() -> &'static [&'static str];
 pub fn token_modifier_names() -> &'static [&'static str];
 ```
+
+**Ruling (#2293):** literal prose emits no semantic token at all, rather than
+falling back to `Variable`/`Operator`/`String` — see the identical ruling
+under "Semantic tokens" above.
 
 ### Document structure
 

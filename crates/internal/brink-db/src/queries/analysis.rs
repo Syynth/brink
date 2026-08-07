@@ -1081,6 +1081,25 @@ pub(crate) fn whole_project_diagnostics_query(
                 .cloned(),
         );
     }
+    // #2179 the `@[convention]` no-world-reads fence (`E182`,
+    // docs/decision-log.md 2026-08-06) — reuses this aggregator's own
+    // `hir_refs`/`resolved`/`symbol_meta` (the same whole-project inputs
+    // `brink_analyzer::whole_project_diagnostics`' monolithic composition
+    // hands its own copy of this check, keeping `query_equivalence.rs`
+    // honest). Lazy inside `no_world_reads::check` itself, same shape as
+    // `conventions_confinement_diagnostics_query` just above: a file with
+    // no declared claim handler is skipped immediately.
+    for file in project.files(db) {
+        let hir = &lowered_query(db, project, *file).hir;
+        diagnostics.extend(brink_analyzer::no_world_reads_diagnostics(
+            file.file_id(db),
+            hir,
+            &hir_refs,
+            &resolved.index,
+            &resolved.resolutions,
+            &symbol_meta,
+        ));
+    }
     // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26) — last,
     // matching `brink_analyzer::whole_project_diagnostics`' own composition
     // order. The verdict table itself (issue #1506) is [`ufcs_resolution_

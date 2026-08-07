@@ -53,7 +53,7 @@ function registerMainToolWindows(registry: ToolWindowRegistry): void {
 }
 
 interface FakeProject {
-  project: { getSession(): unknown; applyEdit(path: string, source: string): void };
+  project: { getSession(): unknown; applyEdit(path: string, source: string): boolean };
   sources: Map<string, string>;
   updates: Array<{ path: string; source: string }>;
 }
@@ -73,7 +73,12 @@ function fakeProject(files: Record<string, string>): FakeProject {
     project: {
       getSession: () => session,
       // The shared apply-edits seam (#137) the replace paths route through.
-      applyEdit: (path: string, source: string) => session.updateFile(path, source),
+      // Real `applyEdit` (issue #2306) reports whether the write applied —
+      // this fake has no read-only concept, so it always applies.
+      applyEdit: (path: string, source: string) => {
+        session.updateFile(path, source);
+        return true;
+      },
     },
     sources,
     updates,

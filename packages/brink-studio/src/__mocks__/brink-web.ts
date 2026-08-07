@@ -109,6 +109,9 @@ export class EditorSession {
 
   update_file(path: string, source: string): void {
     this.files.set(path, source);
+    // Shadowing (issue #2306): a real write at a mounted key wins over the
+    // mount, mirroring the real `EditorSession::new` doc's contract.
+    this.readOnlyPaths.delete(path);
   }
 
   remove_file(path: string): void {
@@ -152,12 +155,46 @@ export class EditorSession {
   }
 
   list_files(): string {
-    return JSON.stringify([...this.files.keys()].map((p) => ({ path: p })));
+    // Excludes read-only (mounted) paths, mirroring the real `list_files`'s
+    // `mounted_std_ids` exclusion (issue #2231/#2306) — a mount is not a
+    // file the project scan found or the user opened.
+    return JSON.stringify(
+      [...this.files.keys()]
+        .filter((p) => !this.readOnlyPaths.has(p))
+        .map((p) => ({ path: p })),
+    );
   }
 
   get_file_source(path: string): string {
     const content = this.files.get(path);
     return JSON.stringify(content ?? null);
+  }
+
+  /**
+   * Mock of the real `is_read_only` (issue #2306): defaults to `false` for
+   * every path — the mock never mounts a stdlib copy on construction (unlike
+   * the real `EditorSession::new()`), so nothing is read-only unless a test
+   * opts a path in via {@link __mockMarkReadOnlyForTest}.
+   */
+  is_read_only(path: string): boolean {
+    return this.readOnlyPaths.has(path);
+  }
+
+  private readonly readOnlyPaths = new Set<string>();
+
+  /**
+   * Test-only seam (issue #2306): mark `path` as a mounted/read-only file,
+   * mirroring the real session's stdlib mount closely enough to exercise
+   * `is_read_only`/`update_document`'s refusal and the TS layers built on
+   * them (`ProjectSession.applyEdit`) without pre-seeding a phantom file
+   * into every mock session's `list_files()`/`files` map. `update_file`
+   * (unlike `update_document`) still un-marks `path` on write, mirroring
+   * the real shadowing contract (`EditorSession::new`'s doc,
+   * `crates/brink-web/src/editor/mod.rs`).
+   */
+  __mockMarkReadOnlyForTest(path: string, source: string): void {
+    this.files.set(path, source);
+    this.readOnlyPaths.add(path);
   }
 
   compile_project(_entry: string): string {
@@ -593,6 +630,9 @@ export class EditorSession {
   update_document(doc: number, source: string): string {
     const d = this.docs.get(doc);
     if (!d) return "null";
+    // Session-level read-only enforcement (issue #2306): mirrors the real
+    // `update_document`'s refusal for a handle whose file is still mounted.
+    if (this.readOnlyPaths.has(d.path)) return "null";
     const full = this.files.get(d.path) ?? "";
     if (d.viewStart != null && d.viewEnd != null) {
       const start = d.viewStart;

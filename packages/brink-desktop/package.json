@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Tauri desktop shell for brink-studio (docs/desktop-shell-spec.md, D1)",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/ensure-wasm.mjs && vite",
     "build": "vite build",
     "tauri": "tauri"
   },
