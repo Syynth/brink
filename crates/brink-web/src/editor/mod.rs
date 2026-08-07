@@ -768,64 +768,76 @@ impl EditorSession {
     /// `dialect`/`types` are skipped when the corresponding
     /// `set_language_dialect`/`set_type_policy` API was already called
     /// explicitly on this session (explicit calls always win over the
-    /// file). `[lints]`/`deny-warnings` (issue #1160) has no explicit-call
-    /// precedence to honor yet, so the file's table always **replaces**
-    /// (not merges onto, issue #1397) the session's resolved lint policy —
-    /// via a throwaway `AnalysisOptions` (`IdeSession` has no lint-specific
-    /// fields of its own to hand `apply_project_config`), pushed back only
-    /// when it actually changed (`LintPolicy` is `Eq`; `set_lint_policy`
-    /// always re-analyzes, so a `brink.toml` with no `[lints]` table — or
-    /// one resolving to the policy already in effect — must not trigger a
-    /// redundant full re-analysis). Replace semantics matter specifically
-    /// here: this is the one call site among `apply_project_config`'s
-    /// callers that's a long-lived, repeatedly-re-applied session rather
-    /// than a fresh one-shot compile, so a code (or `deny-warnings`)
-    /// deleted from `brink.toml` between two calls must actually revert
-    /// instead of staying stuck at whatever an earlier call resolved.
+    /// file). `[lints]`/`deny-warnings` (issue #1160) and `conventions`
+    /// (issue #1880) have no explicit-call precedence to honor yet, so the
+    /// file's value always **replaces** (not merges onto, issue #1397) the
+    /// session's resolved policy for those two. Replace semantics matter
+    /// specifically here: this is the one call site among
+    /// `apply_project_config`'s callers that's a long-lived,
+    /// repeatedly-re-applied session rather than a fresh one-shot compile,
+    /// so a code (or `deny-warnings`, or `conventions`) deleted from
+    /// `brink.toml` between two calls must actually revert instead of
+    /// staying stuck at whatever an earlier call resolved.
+    ///
+    /// Resolves the four fields into one `AnalysisOptions` and forwards it
+    /// via [`IdeSession::apply_analysis_options`] (issue #2334) — the same
+    /// shared seam `brink-cli`'s `Project::ide_session()` now uses — instead
+    /// of four hand-copied setter calls, each individually change-guarded.
+    /// `apply_analysis_options` change-guards the four fields together and
+    /// re-analyzes at most once, so this can no longer trigger more than one
+    /// redundant full re-analysis per call (previously up to two: one for an
+    /// unconditionally-applied `dialect`, one for a changed `conventions`).
     ///
     /// Returns the `[lints]`/non-overridable-code warning strings (unknown
     /// top-level/`[project]` key warnings are the caller's own — parsed
     /// alongside `config`, not part of it).
     fn apply_parsed_config(&mut self, config: &brink_project_config::ProjectConfig) -> Vec<String> {
-        if !self.dialect_explicit
-            && let Some(dialect) = config.dialect
-        {
-            self.dialect = dialect;
-            self.session.set_language_dialect(dialect);
-        }
-        if !self.types_explicit
-            && let Some(types) = config.types
-        {
-            self.session.set_type_policy(types);
-        }
         // No need to seed `lints` from the session's current policy:
         // `apply_project_config` replaces `.lints` wholesale from `config`
         // (issue #1397), so a throwaway `AnalysisOptions::default()` is
         // enough — `dialect_overridden`/`types_overridden` are passed
         // `true` (irrelevant to lint resolution; `dialect`/`types` are
-        // already applied above), so this call touches nothing but `.lints`.
+        // resolved separately below), so this call touches nothing but
+        // `.lints`/`.conventions`.
         let mut lint_options = brink_analyzer::AnalysisOptions::default();
         let lint_warnings = lint_options.apply_project_config(config, true, true);
-        self.file_lint_policy = lint_options.lints;
-        // `[project] conventions` (issue #1880): `lint_options` is a fresh
-        // `AnalysisOptions::default()` on every call, so `apply_project_config`
-        // resolved `.conventions` to exactly what `config` says right now —
-        // `Some(pointer)` when set (and either path-shaped or a recognized
-        // preset), `None` otherwise, wholesale-replacing whatever this
-        // session had registered before rather than merging (the same
-        // "long-lived, repeatedly-reapplied session" reasoning `[lints]`
-        // above documents: a `conventions` key removed from `brink.toml`
-        // between two calls must actually clear, not stay stuck). No
-        // `_explicit` precedence tier exists for this field (mirrors
-        // `AnalysisOptions::apply_project_config`'s own doc comment on
-        // `conventions`), so unlike `dialect`/`types` there is nothing to
-        // skip here. Guarded on change to avoid a redundant full
-        // `IdeSession::reanalyze` on every keystroke that doesn't touch
-        // `[project] conventions`.
-        if self.session.conventions() != lint_options.conventions.as_deref() {
-            self.session
-                .set_conventions(lint_options.conventions.clone());
-        }
+        self.file_lint_policy = lint_options.lints.clone();
+
+        // `dialect`/`types` (#1005 precedence): an explicit
+        // `set_language_dialect`/`set_type_policy` call always wins over
+        // the file: when `*_explicit` is true, keep exactly what's already
+        // registered (`self.dialect`/`self.session.type_policy_override()`)
+        // rather than anything `config` says. Otherwise the file supplies a
+        // *default* — `config`'s value if it sets one, else whatever was
+        // already registered (an unset key leaves the field untouched, the
+        // same "unset means untouched" rule `AnalysisOptions::
+        // apply_project_config` documents for these two fields).
+        // `type_policy_override()` (not `session.type_policy()`, the
+        // dialect-keyed *effective* value) is read here so an unset
+        // override round-trips as `None`, never gets frozen into an
+        // explicit choice by this reconstruction.
+        let resolved = brink_analyzer::AnalysisOptions {
+            dialect: if self.dialect_explicit {
+                self.dialect
+            } else {
+                config.dialect.unwrap_or(self.dialect)
+            },
+            types: if self.types_explicit {
+                self.session.type_policy_override()
+            } else {
+                config.types.or_else(|| self.session.type_policy_override())
+            },
+            lints: lint_options.lints,
+            conventions: lint_options.conventions,
+            ..brink_analyzer::AnalysisOptions::default()
+        };
+        // Keep this session's own dialect cache (read by completion/
+        // signature-help gating, see the field doc) in lockstep with what
+        // was just resolved — a no-op when `dialect_explicit` (both sides
+        // already equal `self.dialect`).
+        self.dialect = resolved.dialect;
+        self.session.apply_analysis_options(&resolved);
+
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
