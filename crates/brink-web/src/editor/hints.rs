@@ -72,37 +72,46 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        // #2291: `brink_ide::inlay_hints::inlay_hints` walks `root.descendants()`
-        // casting to *ink-only* typed AST nodes (`ast::FunctionCall`,
-        // `ast::DivertTargetWithArgs`, `ast::TempDecl`) — there is no native
-        // equivalent of this pass yet. `syntax_root` always runs the ink
-        // parser regardless of extension (`IdeSession::syntax_root`'s doc
-        // comment, #2280's failure mode), so computing hints from it for a
-        // `.brink` file would walk a garbled tree and cast nodes that don't
-        // mean what the classifier assumes — "present and wrong" per #2280's
-        // own standard. Until a native-CST inlay-hints pass exists (tracked
-        // on #2359), a native file gets no inlay hints rather than wrong
-        // ones.
-        if self.session.is_native(file_id) {
-            return "[]".to_owned();
-        }
-        let (Some(analysis), Some(root)) =
-            (self.session.analysis(), self.session.syntax_root(file_id))
-        else {
+        let Some(analysis) = self.session.analysis() else {
             return "[]".to_owned();
         };
 
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
         let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
-        let hints = brink_ide::inlay_hints::inlay_hints(
-            &root,
-            analysis,
-            self.session.db(),
-            file_id,
-            range,
-            Some(self.session.host_values()),
-        );
+
+        // #2291/#2359: `.brink` files route through the native-CST-aware
+        // sibling (`brink_ide::inlay_hints::inlay_hints_native`) instead of
+        // ink-parsing the source text regardless of extension
+        // (`IdeSession::syntax_root`'s doc comment, #2280's failure mode) —
+        // walking that garbled tree would cast nodes that don't mean what
+        // the classifier assumes, "present and wrong" per #2280's own
+        // standard.
+        let hints = if self.session.is_native(file_id) {
+            let Some(root) = self.session.syntax_root_native(file_id) else {
+                return "[]".to_owned();
+            };
+            brink_ide::inlay_hints::inlay_hints_native(
+                &root,
+                analysis,
+                self.session.db(),
+                file_id,
+                range,
+                Some(self.session.host_values()),
+            )
+        } else {
+            let Some(root) = self.session.syntax_root(file_id) else {
+                return "[]".to_owned();
+            };
+            brink_ide::inlay_hints::inlay_hints(
+                &root,
+                analysis,
+                self.session.db(),
+                file_id,
+                range,
+                Some(self.session.host_values()),
+            )
+        };
 
         let items: Vec<InlayHintJs> = hints
             .iter()
@@ -130,25 +139,30 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        // #2291: same ink-only-AST dependency as `inlay_hints_impl` above
-        // (`brink_ide::color::color_hints` casts `ast::FunctionCall`/
-        // `ast::DivertTargetWithArgs` directly) — see that function's
-        // comment for the full reasoning. No native color-hints pass exists
-        // yet; a native file gets no color hints rather than ones computed
-        // from ink's mis-parse of its text.
-        if self.session.is_native(file_id) {
-            return "[]".to_owned();
-        }
-        let (Some(analysis), Some(root)) =
-            (self.session.analysis(), self.session.syntax_root(file_id))
-        else {
+        let Some(analysis) = self.session.analysis() else {
             return "[]".to_owned();
         };
 
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
         let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
-        let hints = brink_ide::color::color_hints(&root, analysis, range);
+
+        // #2291/#2359: same native-CST routing as `inlay_hints_impl` above
+        // (`brink_ide::color::color_hints_native` casts `CallExpr`/
+        // `DivertTarget` over `brink_syntax_native::SyntaxKind` instead of
+        // ink's typed AST) — see that function's comment for the full
+        // reasoning.
+        let hints = if self.session.is_native(file_id) {
+            let Some(root) = self.session.syntax_root_native(file_id) else {
+                return "[]".to_owned();
+            };
+            brink_ide::color::color_hints_native(&root, analysis, range)
+        } else {
+            let Some(root) = self.session.syntax_root(file_id) else {
+                return "[]".to_owned();
+            };
+            brink_ide::color::color_hints(&root, analysis, range)
+        };
 
         let items: Vec<ColorHintJs> = hints
             .iter()
@@ -177,30 +191,17 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        // #2291: same ink-only-AST dependency as `inlay_hints_impl` above
-        // (`brink_ide::argument_widgets::argument_widgets` walks ink's typed
-        // `ast::FunctionCall`/`ast::ArgList` directly) — see that function's
-        // comment for the full reasoning. No native argument-widgets pass
-        // exists yet; a native file gets no widget sites rather than ones
-        // computed from ink's mis-parse of its text.
-        if self.session.is_native(file_id) {
-            return "[]".to_owned();
-        }
-        let (Some(analysis), Some(root)) =
-            (self.session.analysis(), self.session.syntax_root(file_id))
-        else {
+        let Some(analysis) = self.session.analysis() else {
             return "[]".to_owned();
         };
 
         let abs_start = self.to_absolute(path, view, start);
         let abs_end = self.to_absolute(path, view, end);
         let range = TextRange::new(TextSize::new(abs_start), TextSize::new(abs_end));
-        let sites = brink_ide::argument_widgets::argument_widgets(
-            &root,
-            analysis,
-            range,
-            Some(self.session.host_values()),
-        );
+
+        let Some(sites) = self.argument_widget_sites(file_id, analysis, range) else {
+            return "[]".to_owned();
+        };
 
         let out: Vec<CallWidgetSiteJs> = sites
             .iter()
@@ -289,6 +290,39 @@ impl EditorSession {
             .collect();
 
         serde_json::to_string(&out).unwrap_or_default()
+    }
+
+    /// The native/ink dispatch [`Self::argument_widgets_impl`] needs, split
+    /// out to keep that function under clippy's line budget. Same #2291/
+    /// #2359 native-CST routing as `inlay_hints_impl`/`color_hints_impl`
+    /// above (`brink_ide::argument_widgets::argument_widgets_native` walks
+    /// `CallExpr`/`DivertTarget` over `brink_syntax_native::SyntaxKind`
+    /// instead of ink's typed AST) — see `inlay_hints_impl`'s comment for
+    /// the full reasoning. `None` only when the resolved-dialect's syntax
+    /// root itself is unavailable.
+    fn argument_widget_sites(
+        &self,
+        file_id: brink_ir::FileId,
+        analysis: &brink_analyzer::AnalysisResult,
+        range: TextRange,
+    ) -> Option<Vec<brink_ide::argument_widgets::CallWidgetSite>> {
+        if self.session.is_native(file_id) {
+            let root = self.session.syntax_root_native(file_id)?;
+            Some(brink_ide::argument_widgets::argument_widgets_native(
+                &root,
+                analysis,
+                range,
+                Some(self.session.host_values()),
+            ))
+        } else {
+            let root = self.session.syntax_root(file_id)?;
+            Some(brink_ide::argument_widgets::argument_widgets(
+                &root,
+                analysis,
+                range,
+                Some(self.session.host_values()),
+            ))
+        }
     }
 
     /// Map one arg-group widget to its JSON shape (UTF-16); `None` when a span
