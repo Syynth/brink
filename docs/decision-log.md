@@ -3017,3 +3017,35 @@
 - **SCOPE:** architectural
 - **WHAT:** D2 replaces D1's write-through-with-debounce with the model celeris ruled 2026-06-29 (celeris `docs/decision-log.md`, "Narrative lens file model"): **overlay, not write-through** — keystroke-live buffer, dirty = buffer ≠ last canonical save; **autosave is a real save** (same canonical write + dirty-clear; triggers = ⌘S or every-X-min); a **bounded backup ring** in host app-data for crash-restore/rollback, orthogonal to dirty. Wiring insight adopted: **the #154 egress feeds the RING, not canonical files** — crash protection at ~500 ms granularity while canonical writes stay explicit. The generic half (ring policy + sink interface, autosave scheduler, restore) is built ONCE in `@brink-lang/editor` per celeris's own layering ruling ("editor lifts are a single editor epic; the lens consumes"); brink-desktop and celeris both consume it, and celeris's planned greenfield autosave/ring services (designed, never built) are superseded. Working defaults: autosave on at 2 min; ring ≤ 25 entries or 10 MB per project. Note: celeris §10's "brink today" snapshot is partially stale in brink's favor — its editor-epic item B (never-clobber conflict hook + merge view) landed upstream as #320 Track V, so celeris's interim dirty-guard is obsolete.
 - **WHY:** Celeris's ruling names the exact defect of D1's expedient model: dirty affordances, autosave, and crash protection are ORTHOGONAL axes that write-through conflates — under it dirty is meaningless, rollback impossible, and the #320 conflict machinery untestable (the egress re-baselines every 500 ms, so a real conflict window barely exists). Two Tauri hosts disagreeing about save semantics would be a permanent maintenance tax; one shared implementation with host-provided sinks serves both.
+
+## Desktop close: no dirty prompt; quit awaits the final save
+- **WHEN:** 2026-08-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** minor/local
+- **WHAT:** No dirty-close confirmation prompt — autosave (2 min) plus save-on-close make it dead UI. Instead, the one real safety piece: a Tauri on-close-requested hook that AWAITS the final `saveAll` before the process exits, closing the quit-mid-save data-loss window (today's close-save is fire-and-forget).
+- **WHY:** A prompt that almost never fires with anything at stake is noise; the narrow real hazard is process exit racing an in-flight write.
+
+## External deletion of an open file: keep the view, mark orphaned
+- **WHEN:** 2026-08-07
+- **PROJECT:** brink
+- **SYSTEM:** editor / studio
+- **SCOPE:** moderate
+- **WHAT:** When a file open in the editor is deleted externally, the session drops the file but the open view KEEPS its buffer, marked "deleted on disk" and dirty; ⌘S recreates the file. Never auto-close the tab.
+- **WHY:** The never-clobber principle applied to deletion — an external `rm` must not destroy an open buffer's content; auto-close is the same clobber class #320 exists to prevent.
+
+## [project] entry beats mountStudio's entryFile
+- **WHEN:** 2026-08-07
+- **PROJECT:** brink
+- **SYSTEM:** editor / project-config
+- **SCOPE:** moderate
+- **WHAT:** When both exist, `brink.toml`'s `[project] entry` wins; the host's `entryFile` argument is the fallback for configless projects. `ProjectSession` owns initial-tab selection; the desktop's regex peek at the TOML dies. (Settles #2331's precedence question; the schema slot follows.)
+- **WHY:** Config is authored project truth — hosts should stop duplicating the choice, and every host parsing the config itself to honor `entry` was the alternative.
+
+## Cue/parenthetical tag extensions: strip-then-match, uniformly
+- **WHEN:** 2026-08-07
+- **PROJECT:** brink
+- **SYSTEM:** prose-dialect / conventions
+- **SCOPE:** moderate
+- **WHAT:** Trailing `#tags` on a cue or parenthetical (`@VENDOR #(v.o.)`) strip before pattern matching, exactly as #2077 ruled for headings — one literalness doctrine across all claimed shapes; tags flow through the existing channel. (Settles #2350; the heading-tags delivery caveat from #2344 — Content.tags as an explicitly interim carrier pending #474 — applies identically here.)
+- **WHY:** The asymmetry was an accident of implementation order, not a design choice; uniform stripping keeps preset patterns clean everywhere.
