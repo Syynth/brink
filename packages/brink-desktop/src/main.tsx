@@ -17,30 +17,56 @@
  * the same way as open/close-project rather than through
  * `PredefinedMenuItem::quit`) both funnel into `handleQuitRequested`, which
  * awaits the final `saveAll` (capped) before the window is destroyed.
+ *
+ * File associations (D3, #2393) are a third way a project opens, bundled
+ * `.app` only: double-clicking a `.ink`/`.brink` file reaches `handleFileOpen`
+ * via `shell:file-open` events / the `take_pending_opens` boot pull, and
+ * routes through this same `openProject`/`closeProject` pair — see
+ * `file-open.ts` for the (unit-tested) focus-vs-reopen decision.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save } from "@tauri-apps/plugin-dialog";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
-import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
+import {
+  TauriFileProvider,
+  pickProjectFolder,
+  projectRootExists,
+  pruneRecent,
+  pushRecent,
+  readRecents,
+} from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { runCli } from "./cli.js";
+import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
+import { resolveFileOpenAction } from "./file-open.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
+/** The open project's root path (absolute), or null when none is open —
+ * the D3 file-association handler's "is this file inside it?" test, and
+ * (with `currentEntryFile`) the project-relative key `exportXliff` hands
+ * the sidecar via the shell's own `resolve()` guard rather than an
+ * absolute path built by hand here. */
+let currentRoot: string | null = null;
 /** The autosave ticker for the open project; cleared on close. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 /**
- * The open project's absolute root and resolved entry file — tracked
- * alongside `current` so `exportXliff` (D3, #2392) has an absolute input
- * path to hand the sidecar without re-deriving it from the provider.
+ * The open project's EFFECTIVE entry file — `StudioHandle.entryFile`,
+ * i.e. `ProjectSession.getEntryFile()`'s result with `[project] entry`
+ * precedence already applied (issue #2331), never the raw host fallback
+ * `resolveEntryFile` computed before `mountStudio` ran (2026-08 review
+ * finding: using the host fallback here would export a different story
+ * than the editor compiles for any project whose `brink.toml` names an
+ * entry outside `ENTRY_FALLBACKS`). Set once `mountStudio` resolves; see
+ * `openProject`.
  */
-let currentRoot: string | null = null;
 let currentEntryFile: string | null = null;
 
 /**
@@ -73,15 +99,40 @@ function appRoot(): HTMLElement {
   return el;
 }
 
-function renderLanding(): void {
+/**
+ * Render the landing screen, including the recent-projects list under the
+ * Open button (#2394). Paths are inserted via `textContent`, never HTML
+ * interpolation — filesystem paths are not attacker input in this shell,
+ * but a folder name is still untrusted-enough text that it shouldn't be
+ * concatenated into `innerHTML`.
+ */
+async function renderLanding(): Promise<void> {
   const root = appRoot();
   root.innerHTML = `
     <div id="landing">
       <button id="open-project">Open Project Folder…</button>
       <div class="hint">A folder containing .brink / .ink files (and optionally a brink.toml) — or ⌘O</div>
+      <ul id="recent-projects" class="recent-projects"></ul>
     </div>`;
   const button = document.getElementById("open-project");
   button?.addEventListener("click", () => void chooseAndOpen());
+
+  const list = document.getElementById("recent-projects");
+  if (list === null) return;
+  const recents = await readRecents().catch((e: unknown) => {
+    console.error("[brink-desktop] read_recents failed", e);
+    return [];
+  });
+  for (const path of recents) {
+    const item = document.createElement("li");
+    const entry = document.createElement("button");
+    entry.className = "recent-project";
+    entry.textContent = path;
+    entry.title = path;
+    entry.addEventListener("click", () => void openRecent(path));
+    item.appendChild(entry);
+    list.appendChild(item);
+  }
 }
 
 async function openProject(root: string): Promise<void> {
@@ -95,6 +146,7 @@ async function openProject(root: string): Promise<void> {
   // Tear down any previous project only after the new one's files loaded,
   // so a cancelled or failed open never leaves a blank window.
   closeProject();
+  currentRoot = root;
 
   const el = appRoot();
   el.replaceChildren();
@@ -102,9 +154,13 @@ async function openProject(root: string): Promise<void> {
   const folderName = root.split("/").at(-1) ?? root;
   document.title = `${folderName} — Brink Studio`;
 
+  // A configless-project fallback ONLY — `ProjectSession.initialize()` may
+  // supersede this with a `brink.toml`-named entry the instant mountStudio
+  // resolves (issue #2331). `currentEntryFile` is set from the resolved
+  // `StudioHandle.entryFile` below, never from this local, so callers like
+  // `exportXliff` always see the effective entry.
   const entryFile = resolveEntryFile(files);
   currentRoot = root;
-  currentEntryFile = entryFile;
 
   current = await mountStudio(el, {
     files,
@@ -139,6 +195,9 @@ async function openProject(root: string): Promise<void> {
       });
     },
   });
+  // The EFFECTIVE entry (issue #2331 precedence already applied), not the
+  // host fallback computed above — see `currentEntryFile`'s doc comment.
+  currentEntryFile = current.entryFile;
 
   // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
   // class. Clean ticks are no-ops inside the command. 2-minute default
@@ -148,6 +207,14 @@ async function openProject(root: string): Promise<void> {
   autosaveTimer = setInterval(() => {
     if (api.getDirtyFiles().length > 0) api.dispatch("file.saveAll");
   }, AUTOSAVE_MS);
+
+  // Record the successful open (#2394). Fire-and-forget: a recents-store
+  // hiccup must never block the project the user just opened. The shell
+  // also keeps the native Open Recent submenu in sync as part of this
+  // command (`rebuild_menu` in src-tauri).
+  void pushRecent(root).catch((e: unknown) => {
+    console.error("[brink-desktop] push_recent failed", e);
+  });
 }
 
 async function chooseAndOpen(): Promise<void> {
@@ -157,7 +224,41 @@ async function chooseAndOpen(): Promise<void> {
     await openProject(root);
   } catch (e: unknown) {
     console.error("[brink-desktop] failed to open project", e);
-    if (current === null) renderLanding();
+    if (current === null) {
+      currentRoot = null;
+      void renderLanding();
+    }
+  }
+}
+
+/**
+ * Open a project chosen from the recents list (native Open Recent submenu
+ * or the landing-screen list). Unlike {@link chooseAndOpen}, a failure here
+ * lazily prunes the stale entry (#2394's "do not crash the open flow;
+ * prune lazily") — the path came from a persisted list, not a fresh folder
+ * pick, so a missing/moved folder is an expected failure mode, not a rare
+ * edge case.
+ *
+ * Pruning is gated on {@link projectRootExists} (2026-08 review finding),
+ * not fired on every rejection: `openProject` can also reject from a
+ * permission error, a file deleted mid-listing, or a `mountStudio` failure
+ * — none of which mean the project itself is gone. Only an actually-missing
+ * root gets removed from `recents.json` and the native Open Recent submenu;
+ * every other failure just surfaces to the console and re-shows the
+ * landing screen with the entry intact.
+ */
+async function openRecent(path: string): Promise<void> {
+  try {
+    await openProject(path);
+  } catch (e: unknown) {
+    console.error("[brink-desktop] failed to open recent project", e);
+    // Default to "exists" on a failed check itself, so a transient
+    // check-command error can never masquerade as evidence of deletion.
+    const rootGone = !(await projectRootExists(path).catch(() => true));
+    if (rootGone) {
+      await pruneRecent(path).catch(() => {});
+    }
+    if (current === null) void renderLanding();
   }
 }
 
@@ -184,53 +285,30 @@ function closeProject(): void {
   currentRoot = null;
   currentEntryFile = null;
   document.title = "Brink Studio";
-  renderLanding();
+  void renderLanding();
 }
 
 /**
  * File > Export XLIFF… (D3, #2392) — proves the `brink-cli` sidecar path
- * end to end. Deliberately minimal: export the currently open project's
- * entry file at the source language, prompting only for where to save the
- * `.xlf`. The fuller intl UI (locale picker, compile-locale/regenerate
- * batch ops, progress from the streamed `cli:output` events) is future
- * work — this item exists to exercise one real path, not to be it.
- *
- * The input handed to the sidecar is always the entry file's `.ink`/
- * `.brink` source (never `.ink.json` — house rule, and there is no
- * `.ink.json` anywhere in this flow to begin with).
+ * end to end. The export logic itself lives in `export-xliff.ts` (2026-08
+ * review finding: logic living directly in `main.tsx` cannot be unit-tested
+ * — `quit.ts` + `QuitSaveApi` exist for exactly this reason); this wrapper's
+ * only job is gathering the currently-open project (root + EFFECTIVE entry,
+ * `currentEntryFile`, never the host fallback) and the studio's notify sink,
+ * then handing them to the extracted, unit-tested function.
  */
-async function exportXliff(): Promise<void> {
+async function handleExportXliff(): Promise<void> {
   const api = current?.api;
   if (currentRoot === null || currentEntryFile === null || api === undefined) {
     console.warn("[brink-desktop] Export XLIFF: no project open");
     return;
   }
-  const inputPath = `${currentRoot}/${currentEntryFile}`;
-  const defaultName = `${currentEntryFile.split("/").at(-1)?.replace(/\.(ink|brink)$/, "") ?? "story"}.xlf`;
-  const outputPath = await save({
-    defaultPath: defaultName,
-    filters: [{ name: "XLIFF", extensions: ["xlf"] }],
-  });
-  if (outputPath === null) return; // user cancelled
-
-  try {
-    const exitCode = await runCli(["export-xliff", inputPath, "--output", outputPath]);
-    if (exitCode === 0) {
-      api.notify({ severity: "info", source: "cli", message: `Exported XLIFF to ${outputPath}` });
-    } else {
-      api.notify({
-        severity: "error",
-        source: "cli",
-        message: `export-xliff exited with code ${exitCode}`,
-      });
-    }
-  } catch (e: unknown) {
-    api.notify({
-      severity: "error",
-      source: "cli",
-      message: `export-xliff failed: ${e instanceof Error ? e.message : String(e)}`,
-    });
-  }
+  const exportApi: ExportXliffApi = {
+    runCli: (invocation) => runCli(invocation),
+    save,
+    notify: (entry) => api.notify(entry),
+  };
+  await exportXliff({ root: currentRoot, entryFile: currentEntryFile }, exportApi);
 }
 
 /**
@@ -249,9 +327,101 @@ async function handleQuitRequested(): Promise<void> {
   await getCurrentWindow().destroy();
 }
 
+/**
+ * Focus an already-open project file through the studio's own navigation
+ * protocol (`editor.reveal`, docs/studio-shell-spec.md §6.1) — the same
+ * command Problems/Search/Story Graph dispatch, reused rather than forked
+ * (the span is a no-op placeholder; a source Location just needs a valid
+ * span shape to resolve, and reveal-at-file-open has no meaningful offset).
+ */
+function focusFile(rel: string): void {
+  current?.api.dispatch("editor.reveal", {
+    kind: "source",
+    file: rel,
+    span: { start: 0, end: 0 },
+  });
+}
+
+/**
+ * Handle one OS file-open request (D3, #2393): `resolveFileOpenAction`
+ * (file-open.ts) is the pure decision — focus in place, or open a new
+ * project root. Opening reuses `openProject`, which already close-saves
+ * any previously open project before mounting the new one (the ruled
+ * close flow) — this never forks a second open path.
+ *
+ * Mirrors {@link chooseAndOpen}'s failure handling (2026-08 review finding):
+ * `openProject` can realistically reject (an unreadable subdirectory, a
+ * non-UTF-8 file, a `mountStudio` throw). Without a catch here, a failed
+ * open left `current === null` with the landing screen never re-rendered
+ * (blank window) and `currentRoot` already pointing at the failed root, so
+ * every later double-click under that root would resolve to a dead
+ * `focus` action against a null `current`. On failure, fall back to the
+ * landing screen exactly like `chooseAndOpen` and skip the focus dispatch
+ * — there is nothing mounted to focus into.
+ */
+async function handleFileOpen(path: string): Promise<void> {
+  const action = resolveFileOpenAction(path, currentRoot);
+  if (action.kind === "open") {
+    try {
+      await openProject(action.root);
+    } catch (e: unknown) {
+      console.error("[brink-desktop] failed to open project from file-open", e);
+      if (current === null) {
+        currentRoot = null;
+        void renderLanding();
+      }
+      return;
+    }
+  }
+  focusFile(action.rel);
+}
+
+/**
+ * File associations (docs/desktop-shell-spec.md D3; #2393) ONLY bite in the
+ * bundled `.app` — `bundle.fileAssociations` registers `.ink`/`.brink` with
+ * the OS, and a dev run (`pnpm tauri dev`) never receives an OS file-open
+ * launch, so nothing below ever fires there. On a bundled build,
+ * double-clicking (or Dock-dropping) an associated file reaches
+ * `RunEvent::Opened` in src-tauri/src/lib.rs, which forwards paths here as
+ * live `shell:file-open` events. `take_pending_opens` is a one-time pull at
+ * boot for paths that arrived before this listener was attached (a cold
+ * launch — the Rust side buffers until this exact call, then switches to
+ * live emits; see `PendingOpens`'s doc comment there).
+ *
+ * The pull is sequenced strictly after the listener is registered
+ * (2026-08 review finding): `listen()` is itself an async IPC round-trip
+ * (`invoke('plugin:event|listen', …)` under the hood), so firing
+ * `take_pending_opens` at module top level without awaiting `listen()`
+ * first raced the two — `take_pending_opens` flips the Rust side's
+ * `PendingOpens` state to "ready" (live-emit) the instant it runs, which
+ * could land before the listener actually existed, silently dropping an
+ * `Opened` delivered in that exact window (Tauri's JS event bus has no
+ * replay). Chaining `.then()` off `listen()`'s own resolution closes that
+ * gap.
+ */
+void listen<string[]>("shell:file-open", (event) => {
+  void (async () => {
+    for (const path of event.payload) {
+      await handleFileOpen(path);
+    }
+  })();
+})
+  .then(() => invoke<string[]>("take_pending_opens"))
+  .then(async (paths) => {
+    for (const path of paths) {
+      await handleFileOpen(path);
+    }
+  })
+  .catch((e: unknown) => {
+    console.error("[brink-desktop] file-open wiring failed", e);
+  });
+
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
-void listen("menu:export-xliff", () => void exportXliff());
+void listen("menu:export-xliff", () => void handleExportXliff());
+// File → Open Recent (#2394): src-tauri emits the chosen path as the event
+// payload (see `on_menu_event` in src-tauri/src/lib.rs).
+void listen<string>("menu:open-recent", (event) => void openRecent(event.payload));
 // The app-menu Quit item (⌘Q) is routed here as a plain shell event — like
 // open/close-project — instead of `PredefinedMenuItem::quit`, specifically
 // so it funnels through the same guarded path as the window close below
@@ -268,4 +438,4 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   await handleQuitRequested();
 });
 
-renderLanding();
+void renderLanding();

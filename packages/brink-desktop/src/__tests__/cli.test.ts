@@ -9,29 +9,52 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: (...args: unknown[]) => listen
 const { runCli } = await import("../cli.js");
 
 describe("runCli", () => {
-  it("invokes run_cli with the given args and returns the exit code", async () => {
+  it("invokes run_cli with root/rel/subcommand/rest and returns the exit code", async () => {
     invoke.mockResolvedValueOnce(0);
-    const code = await runCli(["export-xliff", "story.brink", "--output", "out.xlf"]);
+    const code = await runCli({
+      root: "/proj",
+      rel: "story.brink",
+      subcommand: "export-xliff",
+      rest: ["--output", "out.xlf"],
+    });
     expect(code).toBe(0);
     expect(invoke).toHaveBeenCalledWith("run_cli", {
-      args: ["export-xliff", "story.brink", "--output", "out.xlf"],
+      root: "/proj",
+      rel: "story.brink",
+      subcommand: "export-xliff",
+      rest: ["--output", "out.xlf"],
+    });
+  });
+
+  it("defaults rest to an empty array when omitted", async () => {
+    invoke.mockResolvedValueOnce(0);
+    await runCli({ root: "/proj", rel: "story.brink", subcommand: "compile" });
+    expect(invoke).toHaveBeenCalledWith("run_cli", {
+      root: "/proj",
+      rel: "story.brink",
+      subcommand: "compile",
+      rest: [],
     });
   });
 
   it("propagates a non-zero exit code without throwing", async () => {
     invoke.mockResolvedValueOnce(1);
-    await expect(runCli(["compile", "story.brink"])).resolves.toBe(1);
+    await expect(
+      runCli({ root: "/proj", rel: "story.brink", subcommand: "compile" }),
+    ).resolves.toBe(1);
   });
 
   it("rejects when the shell rejects the invoke (e.g. disallowed subcommand)", async () => {
     invoke.mockRejectedValueOnce(new Error("subcommand not in the sidecar allowlist: play"));
-    await expect(runCli(["play", "story.brink"])).rejects.toThrow("sidecar allowlist");
+    await expect(
+      runCli({ root: "/proj", rel: "story.brink", subcommand: "play" }),
+    ).rejects.toThrow("sidecar allowlist");
   });
 
   it("does not subscribe to cli:output when no onOutput callback is given", async () => {
     invoke.mockResolvedValueOnce(0);
     listen.mockClear();
-    await runCli(["compile", "story.brink"]);
+    await runCli({ root: "/proj", rel: "story.brink", subcommand: "compile" });
     expect(listen).not.toHaveBeenCalled();
   });
 
@@ -48,7 +71,10 @@ describe("runCli", () => {
     });
 
     const onOutput = vi.fn();
-    const code = await runCli(["compile", "story.brink"], onOutput);
+    const code = await runCli(
+      { root: "/proj", rel: "story.brink", subcommand: "compile" },
+      onOutput,
+    );
 
     expect(code).toBe(0);
     expect(onOutput).toHaveBeenCalledWith({ stream: "stdout", line: "compiling…" });

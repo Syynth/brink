@@ -1,22 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "brink-desktop main window: core + the folder-picker dialog. File I/O goes through the shell's own guarded commands, not the fs plugin. `core:window:allow-destroy` is not in `core:window:default` (#2370) — the quit path needs it to force-close the window after the awaited save, bypassing another `closeRequested` round-trip. `shell:allow-execute` is scoped to exactly the `brink-cli` sidecar (D3, #2392) — the shell plugin's default permission set does not grant sidecar execution, and this scope is additionally narrowed at the `run_cli` command by a fixed subcommand allowlist, so a compromised webview can reach only `export-xliff` / `compile-locale` / `regenerate-xliff` / `compile`, never arbitrary process args.",
+  "description": "brink-desktop main window: core + the folder-picker dialog. File I/O goes through the shell's own guarded commands, not the fs plugin. `core:window:allow-destroy` is not in `core:window:default` (#2370) — the quit path needs it to force-close the window after the awaited save, bypassing another `closeRequested` round-trip. The `brink-cli` sidecar (D3, #2392) is spawned via `Shell::sidecar()`, which never consults this capability's shell scope — that path is gated only by `run_cli`'s own fixed subcommand allowlist (`export-xliff` / `compile-locale` / `regenerate-xliff` / `compile`), so no `shell:allow-execute` grant belongs here.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:default",
-    "core:window:allow-destroy",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "brink-cli",
-          "cmd": "binaries/brink-cli",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    }
+    "core:window:allow-destroy"
   ]
 }
