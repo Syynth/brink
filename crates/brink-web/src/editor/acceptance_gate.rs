@@ -266,6 +266,48 @@ fn gate_project_wide_symbols_reach_completions() {
     }
 }
 
+/// Folding on the canonical native project (#2291) decodes onto the
+/// fixture's own real line numbers rather than merely being asserted
+/// non-empty (#2280's own verification standard) — `STORY`'s
+/// `pub flow main() { ... }` spans every line of the file's body, so its
+/// structural fold's `end_line` pins the exact last content line.
+///
+/// This does **not** exercise the `is_native`-gated native-CST path this PR
+/// added: structural folds come from `brink_ide::folding::folding_ranges`,
+/// which reads only `hir`/`source`/`projection` (already dialect-correct
+/// via `IdeSession::hir`/`projection`'s own `is_native` dispatch through
+/// `lowered_query`) and never touches `syntax_root`/`syntax_root_native` —
+/// the machinery/narrative fold-run pass this PR gated is off by default
+/// (`fold_runs_enabled`) and this gate never opts in. That routing's own
+/// reachability coverage lives in
+/// `EditorSession`'s `native_folding_ranges_reach_the_native_cst_path` unit
+/// test (`crates/brink-web/src/editor/mod.rs`), which enables
+/// `set_fold_runs_enabled` and documents the same honest caveat: this
+/// fixture's fold-run classification comes from the projection, not the
+/// trivia root, so even that test cannot prove the routing changes output —
+/// only that the wasm-facing entry point reaches the native path without
+/// erroring.
+#[test]
+fn gate_folding_decodes_onto_real_native_line_numbers() {
+    let mut s = gate_session();
+    assert!(s.set_active_file("story.brink"));
+
+    let ranges: serde_json::Value =
+        serde_json::from_str(&s.folding_ranges()).expect("folding_ranges returns valid JSON");
+    let array = ranges.as_array().expect("array");
+    assert!(!array.is_empty(), "expected at least one fold: {ranges}");
+
+    let last_line = u32::try_from(STORY.lines().count()).expect("fixture line count fits u32") - 1; // 0-based, the closing `}`
+    assert!(
+        array
+            .iter()
+            .any(|r| r["kind"] == "structural" && r["end_line"] == last_line),
+        "the `pub flow main()` body must fold to its real closing brace \
+         (line {last_line}) — a fold ending elsewhere means folding read \
+         the wrong CST: {ranges}"
+    );
+}
+
 /// The compile road (what the studio's debounced-compile lint and the Play
 /// button actually run) produces a real artifact with zero warnings.
 #[test]

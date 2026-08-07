@@ -50,23 +50,53 @@ impl EditorSession {
         // registered dialect's declared `nature` (#368) flows into the fold
         // computation exactly as it flows into `line_contexts`. Gated (#479):
         // only hosts that opt in via `set_fold_runs_enabled` pay for it.
-        if self.fold_runs_enabled
-            && let Some(root) = self.session.syntax_root(file_id)
-        {
-            let ctx = match self.session.dialect() {
-                Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
-                    source,
-                    &root,
-                    &projection,
-                    dialect,
-                ),
-                None => brink_ide::line_context::line_contexts(source, &root, &projection),
+        //
+        // Dialect-gated (#2291): a native (`.brink`) file's real CST is
+        // `syntax_root_native`, not `syntax_root` (which always runs the
+        // ink parser over the source text regardless of extension —
+        // `IdeSession::syntax_root`'s doc comment, #2280's failure mode).
+        // Feeding a `.brink` file's text to ink's grammar would compute
+        // fold runs from a garbled tree; route to the native-CST-aware
+        // `line_context` siblings instead.
+        if self.fold_runs_enabled {
+            let ctx = if self.session.is_native(file_id) {
+                self.session
+                    .syntax_root_native(file_id)
+                    .map(|root| match self.session.dialect() {
+                        Some(dialect) => {
+                            brink_ide::line_context::line_contexts_with_dialect_native(
+                                source,
+                                &root,
+                                &projection,
+                                dialect,
+                            )
+                        }
+                        None => brink_ide::line_context::line_contexts_native(
+                            source,
+                            &root,
+                            &projection,
+                        ),
+                    })
+            } else {
+                self.session
+                    .syntax_root(file_id)
+                    .map(|root| match self.session.dialect() {
+                        Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
+                            source,
+                            &root,
+                            &projection,
+                            dialect,
+                        ),
+                        None => brink_ide::line_context::line_contexts(source, &root, &projection),
+                    })
             };
-            ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
-                &projection,
-                source,
-                &ctx,
-            ));
+            if let Some(ctx) = ctx {
+                ranges.extend(brink_ide::folding::machinery_and_narrative_folds(
+                    &projection,
+                    source,
+                    &ctx,
+                ));
+            }
         }
 
         let items: Vec<FoldRangeJs> = ranges
