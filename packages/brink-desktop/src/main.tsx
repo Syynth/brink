@@ -38,9 +38,11 @@ import {
   pruneRecent,
   pushRecent,
   readRecents,
+  saveBytesDialog,
 } from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { runCli } from "./cli.js";
+import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { resolveFileOpenAction } from "./file-open.js";
 
@@ -50,10 +52,11 @@ const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
 /** The open project's root path (absolute), or null when none is open —
- * the D3 file-association handler's "is this file inside it?" test, and
- * (with `currentEntryFile`) the project-relative key `exportXliff` hands
- * the sidecar via the shell's own `resolve()` guard rather than an
- * absolute path built by hand here. */
+ * the default Export filename derives from its final component, the D3
+ * file-association handler's "is this file inside it?" test, and (with
+ * `currentEntryFile`) the project-relative key `exportXliff` hands the
+ * sidecar via the shell's own `resolve()` guard rather than an absolute
+ * path built by hand here. Cleared on close, alongside `current`. */
 let currentRoot: string | null = null;
 /** The autosave ticker for the open project; cleared on close. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
@@ -312,6 +315,17 @@ async function handleExportXliff(): Promise<void> {
 }
 
 /**
+ * Export Story (.inkb) (D3 slice 1, #2391). The actual compile-then-save
+ * logic lives in `export.ts` (extracted for testability, like `quit.ts`);
+ * this wrapper just supplies the live `StudioApi`, the open project's root,
+ * and the real save dialog.
+ */
+async function handleExportInkb(): Promise<void> {
+  if (current === null || currentRoot === null) return;
+  await exportStoryToInkb(current.api, currentRoot, saveBytesDialog);
+}
+
+/**
  * App quit (#2370, docs/decision-log.md 2026-08-07 "Desktop close: no dirty
  * prompt; quit awaits the final save"): NO confirmation prompt — explicitly
  * ruled out. The one safety piece is that the window must not actually
@@ -418,6 +432,7 @@ void listen<string[]>("shell:file-open", (event) => {
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+void listen("menu:export-inkb", () => void handleExportInkb());
 void listen("menu:export-xliff", () => void handleExportXliff());
 // File → Open Recent (#2394): src-tauri emits the chosen path as the event
 // payload (see `on_menu_event` in src-tauri/src/lib.rs).

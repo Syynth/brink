@@ -159,6 +159,24 @@ export async function pickProjectFolder(): Promise<string | null> {
 }
 
 /**
+ * Export Story (.inkb) (D3 slice 1, #2391): write already-compiled bytes
+ * through a native save dialog. Returns the chosen path, or null if the
+ * user cancelled. `bytes` crosses the IPC boundary as a plain number array
+ * — the same encoding `CompileResult.story_bytes` already uses coming the
+ * other way out of wasm, so no new (de)serialization convention is
+ * introduced.
+ */
+export async function saveBytesDialog(
+  defaultName: string,
+  bytes: Uint8Array,
+): Promise<string | null> {
+  return invoke<string | null>("save_bytes_dialog", {
+    defaultName,
+    bytes: Array.from(bytes),
+  });
+}
+
+/**
  * Recent projects (#2394, `docs/desktop-shell-spec.md` D2): a persisted,
  * most-recent-first, capped, deduplicated-by-path list backed by
  * `recents.json` in app-data. All three commands return the resulting

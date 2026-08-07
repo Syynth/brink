@@ -180,6 +180,16 @@ export interface StudioApi {
    * for the same reason `getDirtyFiles` isn't — pull on demand.
    */
   getOrphanedFiles(): string[];
+  /**
+   * The latest successful compile's story bytes (issue #2391, "Export Story
+   * (.inkb)"), or `null` when the latest compile failed (or none has run
+   * yet). Same pull-on-demand shape as `getFiles`/`getDirtyFiles` — bytes
+   * are big and change on every compile, so they stay out of
+   * `StudioPublicState`. A host drives `dispatch("compile.run")` first (the
+   * same surface the Player's Run button uses) to get a fresh compile, then
+   * reads this to get the artifact.
+   */
+  getStoryBytes(): Uint8Array | null;
 }
 
 export interface StudioApiDeps {
@@ -239,6 +249,9 @@ export function createStudioApi({ store, commands, notifications }: StudioApiDep
     },
     getOrphanedFiles() {
       return store.getState()._project?.orphanedPaths() ?? [];
+    },
+    getStoryBytes() {
+      return store.getState().storyBytes;
     },
   };
 }

@@ -59,6 +59,27 @@ describe("StudioApi.dispatch / notify", () => {
   });
 });
 
+describe("StudioApi.getStoryBytes", () => {
+  it("is null before any compile has run", () => {
+    const { api } = harness();
+    expect(api.getStoryBytes()).toBeNull();
+  });
+
+  it("reflects the latest compile's bytes (#2391, Export Story)", () => {
+    const { store, api } = harness();
+    const bytes = new Uint8Array([1, 2, 3]);
+    store.getState().setCompileResult([], { errors: 0, warnings: 0 }, [], bytes);
+    expect(api.getStoryBytes()).toBe(bytes);
+  });
+
+  it("goes back to null after a compile that failed", () => {
+    const { store, api } = harness();
+    store.getState().setCompileResult([], { errors: 0, warnings: 0 }, [], new Uint8Array([1]));
+    store.getState().setCompileResult([], { errors: 1, warnings: 0 }, [], null);
+    expect(api.getStoryBytes()).toBeNull();
+  });
+});
+
 describe("StudioPublicState (select)", () => {
   it("exposes the versioned subset, derived from the store", () => {
     const { store, api } = harness();

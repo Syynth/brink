@@ -619,6 +619,7 @@ interface StudioApi {
   getFiles(): Record<string, string>;             // #154 pull egress — session file snapshot
   getDirtyFiles(): string[];                      // per-file detail behind dirtyFiles
   getOrphanedFiles(): string[];                   // #2371 — externally-deleted, buffer kept
+  getStoryBytes(): Uint8Array | null;              // #2391 — latest compile's bytes, or null
 }
 ```
 
