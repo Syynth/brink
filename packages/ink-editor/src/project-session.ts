@@ -35,6 +35,15 @@ function isProjectConfigPath(path: string): boolean {
 
 export interface ProjectSessionOptions {
   provider: FileProvider;
+  /**
+   * The project's entry file, used to seed `brink.toml` discovery (its
+   * walk-up starts at this path's directory) and as the compile/initial-tab
+   * entry UNTIL/UNLESS discovery finds a `brink.toml` naming a valid
+   * `[project] entry` (issue #2331, ruled 2026-08-07 "`[project] entry`
+   * beats `mountStudio`'s `entryFile`") — see {@link ProjectSession.getEntryFile}.
+   * This argument is the fallback for a configless project; it is never
+   * consulted again once a config-named entry supersedes it.
+   */
   entryFile: string;
   /** Re-use an existing session, or a new one is created. */
   session?: EditorSessionHandle;
@@ -93,7 +102,26 @@ export interface ProjectSessionOptions {
 
 export class ProjectSession {
   private provider: FileProvider;
-  private entryFile: string;
+  /**
+   * The host's constructor-time `entryFile` argument — the fallback for a
+   * configless project, and the seed for `discoverProjectConfig`'s walk-up.
+   * Set once in the constructor and never mutated afterward (issue #2331
+   * review finding): `applyProjectConfig` used to overwrite the equivalent
+   * field with a config-named entry, which both defeated the "config wins
+   * only while it says so" contract (deleting `entry` from `brink.toml` had
+   * no way back to the host's own choice) and shifted the discovery seed
+   * itself out from under the host on every subsequent re-discovery.
+   */
+  private readonly hostEntryFile: string;
+  /**
+   * The most recently discovered `[project] entry`, when it resolves to a
+   * real file in this session — `null` when no `brink.toml` was found, it
+   * doesn't set `entry`, or the named entry doesn't resolve. Wholesale
+   * replaced on every `applyProjectConfig` call (never merged with the
+   * previous value), so removing `entry` from `brink.toml` genuinely clears
+   * it and {@link getEntryFile} falls back to {@link hostEntryFile} again.
+   */
+  private configuredEntry: string | null = null;
   private session: EditorSessionHandle;
   private readonly changes: FileChangeHub;
   private onExternalFileChange?: (path: string, content: string | null) => void;
@@ -106,7 +134,7 @@ export class ProjectSession {
 
   constructor(options: ProjectSessionOptions) {
     this.provider = options.provider;
-    this.entryFile = options.entryFile;
+    this.hostEntryFile = options.entryFile;
     this.session = options.session ?? new EditorSessionHandle();
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
@@ -146,16 +174,60 @@ export class ProjectSession {
    * the single call site all of them share, and reported through
    * {@link ProjectSessionOptions.onProjectConfigError} instead of
    * rethrowing.
+   *
+   * Also owns `[project] entry` precedence (issue #2331, ruled 2026-08-07
+   * "`[project] entry` beats `mountStudio`'s `entryFile`"): a discovered
+   * `brink.toml` naming an `entry` that resolves to a real file in this
+   * session supersedes {@link hostEntryFile} — the host's constructor-time
+   * `entryFile` argument is only the fallback for a configless project (no
+   * `brink.toml`, or one that doesn't set `entry`). {@link configuredEntry}
+   * is wholesale-replaced (not merged) on every call, so a `brink.toml` edit
+   * that removes `entry` genuinely clears the supersession. This is the one
+   * place that reconciles the two, so every caller of `getEntryFile()`/
+   * `compileProject()` — and `mountStudio`'s initial-tab open, which reads
+   * `getEntryFile()` after `initialize()` — automatically sees whichever
+   * one wins. A config-named entry that does NOT resolve to a real project
+   * file never supersedes anything ({@link configuredEntry} is cleared to
+   * `null`) and is reported through the same
+   * {@link ProjectSessionOptions.onProjectConfigWarnings} channel as every
+   * other `brink.toml` misconfiguration — no new warning channel for this
+   * one case.
    */
   private applyProjectConfig(): void {
     let warnings: string[];
     try {
-      warnings = this.session.discoverProjectConfig(this.entryFile);
+      warnings = this.session.discoverProjectConfig(this.hostEntryFile);
     } catch (err) {
       this.onProjectConfigError?.(err instanceof Error ? err.message : String(err));
       return;
     }
+    const configuredEntry = this.sessionConfiguredEntry();
+    if (configuredEntry !== null && this.session.getFileSource(configuredEntry) !== null) {
+      this.configuredEntry = configuredEntry;
+    } else {
+      if (configuredEntry !== null) {
+        warnings = [
+          ...warnings,
+          `project.entry \`${configuredEntry}\` in brink.toml does not resolve to a project file (ignored)`,
+        ];
+      }
+      this.configuredEntry = null;
+    }
     this.onProjectConfigWarnings?.(warnings);
+  }
+
+  /**
+   * Feature-detected wrapper around `session.getConfiguredEntry()` (issue
+   * #2331 review finding): `session` is a public injection seam
+   * (`ProjectSessionOptions.session`), and a pre-#2331 stub/handle has no
+   * such method — calling it unguarded would throw out of `initialize()`
+   * for any host stub that predates this feature. Same pattern as
+   * {@link sessionIsReadOnly}.
+   */
+  private sessionConfiguredEntry(): string | null {
+    return typeof this.session.getConfiguredEntry === "function"
+      ? this.session.getConfiguredEntry()
+      : null;
   }
 
   /** Load all files from provider and resolve INCLUDEs. */
@@ -218,9 +290,17 @@ export class ProjectSession {
     return this.session;
   }
 
-  /** The entry file for compilation. */
+  /**
+   * The project's entry file — for compilation, and (via `mountStudio`,
+   * read after `initialize()`) the initial tab. This is the constructor's
+   * `entryFile` option ({@link hostEntryFile}) UNLESS `applyProjectConfig`
+   * found a `brink.toml` naming a valid `[project] entry` (issue #2331,
+   * ruled 2026-08-07), which supersedes it; see that method's doc for the
+   * full precedence rule. Never sticky past the config that set it — see
+   * {@link configuredEntry}.
+   */
   getEntryFile(): string {
-    return this.entryFile;
+    return this.configuredEntry ?? this.hostEntryFile;
   }
 
   /** Create a new file and add it to the session (`file.new`). Recorded as
@@ -346,7 +426,7 @@ export class ProjectSession {
     if (this.lastCompile !== null && this.lastCompile.generation === generation) {
       return this.lastCompile.result;
     }
-    const result = this.session.compileProject(this.entryFile);
+    const result = this.session.compileProject(this.getEntryFile());
     this.lastCompile = { generation, result };
     return result;
   }

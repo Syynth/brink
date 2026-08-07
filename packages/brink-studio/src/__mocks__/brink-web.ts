@@ -493,6 +493,16 @@ export class EditorSession {
   }
 
   /**
+   * `[project] entry` from the most recently parsed `brink.toml` (issue
+   * #2331) — set wholesale by {@link readProjectConfigWarnings} on every
+   * `apply_project_config`/`discover_project_config` call, mirroring the
+   * real `EditorSession`'s `configured_entry` field: `undefined` when the
+   * parsed file didn't set `entry` (or no file was parsed yet), never
+   * "sticky" across a call whose file removed the key.
+   */
+  private configuredEntry: string | undefined;
+
+  /**
    * Mock of `apply_project_config` (#1005) — applies TOML text handed to it
    * directly, without any discovery.
    */
@@ -521,22 +531,34 @@ export class EditorSession {
       const idx = dir.lastIndexOf("/");
       dir = idx >= 0 ? dir.slice(0, idx) : "";
     }
+    // No brink.toml found anywhere in the walk-up: mirrors the real
+    // discovery's "missing config = unchanged defaults" contract — a
+    // previously configured entry must not stick around either.
+    this.configuredEntry = undefined;
     return "[]";
+  }
+
+  /**
+   * Mock of `configured_entry` (issue #2331): the `[project] entry` value
+   * from the most recently parsed `brink.toml`, or `undefined` if unset.
+   */
+  configured_entry(): string | undefined {
+    return this.configuredEntry;
   }
 
   /**
    * Minimal `[project]`/`[lints]` reader backing both config ops above —
    * mirrors just enough of `brink_project_config::parse_str_at`'s
-   * known-key set (#1005/#1397/#1417/#1880) to drive studio tests:
+   * known-key set (#1005/#1397/#1417/#1880/#2331) to drive studio tests:
    * `dialect`/`types`/`conventions`/`unprune-dirs`/the deprecated
-   * `elements` alias are recognized (accepted silently; nothing else in
-   * this mock reads them back, so there is no session-state effect to
-   * simulate). Every other `[project]` key — including `entry`, which has
-   * no real schema slot either (issue #2324's finding) — is reported as an
-   * unrecognized-key warning, and every `[lints]` key is accepted without
-   * validation (this mock has no diagnostic-code registry to check
-   * against). Deliberately line-oriented, not a real TOML parser — enough
-   * for the flat tables `brink.toml` actually uses in tests/fixtures.
+   * `elements` alias/`entry` are recognized. `entry`'s parsed value is
+   * stashed into {@link configuredEntry} (read back by
+   * {@link configured_entry}) — every other recognized key is accepted
+   * silently, with no session-state effect to simulate. Every unrecognized
+   * `[project]` key is reported as a warning, and every `[lints]` key is
+   * accepted without validation (this mock has no diagnostic-code registry
+   * to check against). Deliberately line-oriented, not a real TOML parser —
+   * enough for the flat tables `brink.toml` actually uses in tests/fixtures.
    */
   private readProjectConfigWarnings(toml: string): string[] {
     const KNOWN_PROJECT_KEYS = new Set([
@@ -545,9 +567,14 @@ export class EditorSession {
       "conventions",
       "elements",
       "unprune-dirs",
+      "entry",
     ]);
     const warnings: string[] = [];
     let section: "project" | "lints" | null = null;
+    // Wholesale replace (#2331, mirroring `conventions`'s own no-precedence
+    // contract): reset before scanning, so a file that dropped `entry`
+    // since the last call actually clears it.
+    this.configuredEntry = undefined;
     for (const raw of toml.split("\n")) {
       const line = raw.trim();
       if (line === "" || line.startsWith("#")) continue;
@@ -557,11 +584,15 @@ export class EditorSession {
         section = name === "project" ? "project" : name === "lints" ? "lints" : null;
         continue;
       }
-      const kv = /^([^=]+)=/.exec(line);
+      const kv = /^([^=]+)=\s*(.*)$/.exec(line);
       if (!kv) continue;
       const key = kv[1]!.trim();
       if (section === "project" && !KNOWN_PROJECT_KEYS.has(key)) {
         warnings.push(`unknown key \`project.${key}\` in brink.toml (ignored)`);
+      }
+      if (section === "project" && key === "entry") {
+        const valueMatch = /^"([^"]*)"$/.exec(kv[2]!.trim());
+        if (valueMatch && valueMatch[1] !== "") this.configuredEntry = valueMatch[1];
       }
     }
     return warnings;

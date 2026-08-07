@@ -108,7 +108,20 @@ import { installAdoptedStyleSheetsShim } from "./adopted-style-sheets.js";
 export interface MountStudioOptions {
   /** Project files (path → ink source). */
   files: Record<string, string>;
-  /** The project's entry file (must be a key of `files`). */
+  /**
+   * The project's entry file (must be a key of `files`) — used to seed
+   * `brink.toml` discovery and, absent a config override, as the
+   * compile/initial-tab entry. A discovered `brink.toml` naming a valid
+   * `[project] entry` SUPERSEDES this argument (issue #2331, ruled
+   * 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`") — see
+   * `ProjectSession.getEntryFile`'s doc
+   * (`packages/ink-editor/src/project-session.ts`) for the full precedence
+   * rule. This argument is therefore only the fallback for a configless
+   * project (no `brink.toml`, or one that doesn't set `entry`); a host
+   * whose project always carries a `brink.toml` with `entry` set can pass
+   * any file that exists in `files` here — its value never surfaces once
+   * discovery supersedes it.
+   */
   entryFile: string;
   /**
    * Host-provided surfaces (spec §8.1), registered once at mount. A factory
@@ -916,7 +929,13 @@ export async function mountStudio(
     store.getState().setFormGlyph(editor.formGlyph);
     store.getState().setAutoOpenForm(editor.autoOpenForm);
   }
-  store.getState().openTarget({ kind: "file", path: entryFile }, true);
+  // `project.getEntryFile()`, not the raw `entryFile` option (issue #2331,
+  // ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"):
+  // `project.initialize()` above already ran `brink.toml` discovery, so by
+  // this point `ProjectSession` may have superseded the constructor
+  // argument with a config-named entry — reading it back here is how the
+  // ruling actually reaches the initial tab.
+  store.getState().openTarget({ kind: "file", path: project.getEntryFile() }, true);
 
   // Default layout (spec §4): the Inky two-up — entry file left, player in a
   // right split, focus back on the editor. Group layout is not persisted, so

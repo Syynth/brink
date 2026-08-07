@@ -35,19 +35,20 @@ let current: StudioHandle | null = null;
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Resolve the tab to open first. `ProjectSession` discovers `brink.toml`
- * itself (#2324) — dialect, conventions, lints all flow from discovery —
- * but `mountStudio` needs an `entryFile` for the initial tab before any
- * discovery has run, so the shell peeks at `[project] entry` with a
- * deliberately dumb regex (full TOML fidelity lives in Rust; a miss here
- * costs only which tab opens first).
+ * Resolve the tab to open first, for a configless project (no `brink.toml`,
+ * or one that doesn't set `[project] entry`). `ProjectSession` now owns
+ * `[project] entry` precedence itself (issue #2331, ruled 2026-08-07
+ * "`[project] entry` beats `mountStudio`'s `entryFile`") — it discovers
+ * `brink.toml` and supersedes whatever `entryFile` `mountStudio` was given
+ * the moment a valid `entry` is found, so this shell no longer needs to
+ * peek at the TOML itself to guess which tab wins: it just picks a
+ * reasonable fallback and lets `ProjectSession` override it. The regex peek
+ * this function used to do that job is DELETED, not merely unused — the
+ * schema slot `brink-project-config` now carries makes it redundant, and a
+ * dumb regex duplicating real TOML parsing was always the second-best way
+ * to answer this question.
  */
 function resolveEntryFile(files: Record<string, string>): string {
-  const toml = files["brink.toml"];
-  if (toml) {
-    const m = toml.match(/^\s*entry\s*=\s*"([^"]+)"\s*$/m);
-    if (m && files[m[1]] !== undefined) return m[1];
-  }
   for (const candidate of ENTRY_FALLBACKS) {
     if (files[candidate] !== undefined) return candidate;
   }

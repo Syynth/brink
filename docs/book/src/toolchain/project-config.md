@@ -21,6 +21,13 @@ config every mount reads.
 dialect = "brink"      # "brink" | "strict-ink" (default: "strict-ink")
 types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
                        # strict for "brink", gradual for "strict-ink")
+entry = "story.ink"    # a project-relative path to the project's entry
+                       # file, superseding the embedder's own
+                       # constructor-time entry-file argument (issue
+                       # #2331, ruled 2026-08-07). Honored only by the
+                       # wasm editor session (`ProjectSession`) today — see
+                       # "Per mount" below; every other mount parses the
+                       # key but does not act on it.
 unprune-dirs = ["node_modules"]  # directory names a native (.brink) compile
                                  # must not prune from discovery, on top of
                                  # the default target/.git/node_modules list
@@ -230,6 +237,14 @@ supplies the *default* for a project; an author who reaches for
 `setLanguageDialect`/`setTypePolicy` explicitly, is making a deliberate
 one-off choice that the file must not silently overrule.
 
+`[project] entry` (issue #2331, ruled 2026-08-07 "`[project] entry` beats
+`mountStudio`'s `entryFile`") is the one key that **inverts** this rule, on
+the one mount that honors it: a `brink.toml` naming a valid `entry` wins
+over the wasm editor session's/`ProjectSession`'s own constructor-time
+entry-file argument, not the other way around. The argument is only the
+fallback for a configless project (no `brink.toml`, or one that doesn't set
+`entry`) — see "Per mount" below.
+
 | Source | Wins over |
 |--------|-----------|
 | `--dialect brink` / `--types strict` (CLI flag actually passed) | `brink.toml`, defaults |
@@ -240,6 +255,7 @@ one-off choice that the file must not silently overrule.
 | `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set — reaches `InkLoader` and `compile_story_inline`) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
 | `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a CLI/API override above) | defaults only |
+| `brink.toml`'s `[project] entry`, when it resolves to a real project file (wasm editor session / `ProjectSession` only — the one row in this table that inverts the rule above it) | the embedder's constructor-time entry-file argument |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
 
 ## Per mount
@@ -289,6 +305,16 @@ one-off choice that the file must not silently overrule.
   own document tree, not a real filesystem (issue #1414). Serve `brink.toml`
   as an ordinary document — `updateFile("brink.toml", text)`, at the entry's
   directory or any ancestor of it — and call `discoverProjectConfig(entry)`.
+  **`[project] entry` is honored only here** (issue #2331, ruled
+  2026-08-07): a valid, resolvable `entry` supersedes the argument
+  `ProjectSession`/`mountStudio` were constructed with — see "Precedence"
+  above. `EditorSessionHandle.getConfiguredEntry()` returns the discovered
+  value (`null` if unset or unresolved); `ProjectSession` is the layer that
+  validates it against the session's actual file set and applies it to
+  `getEntryFile()`/`compileProject()`. Every other mount in this section —
+  `brink compile`, `brink ide`, `brink-lsp`, `bevy-brink` — parses `entry`
+  as a recognized key (no "unknown key" warning) but does not act on it; it
+  is inert there today.
   **It applies `[project] dialect`/`types` *and* `[lints]`/`deny-warnings`**
   (issue #1366) — diagnostic severity rendered through this surface now
   reflects the file the same way `brink compile`, `brink ide`, and
