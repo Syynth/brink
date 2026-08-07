@@ -57,20 +57,25 @@
 //!   claim admitted there would validate and then silently never
 //!   dispatch to anything.
 //! - Only a **wholly literal** prose line is a candidate — one with no
-//!   interpolation, glue, markup, tags, label or embedded divert. A line
-//!   carrying dynamic parts has no fixed text for a pattern to match, and
-//!   capture spans over it would not point at anything real. This
-//!   restriction applies identically to a `CUE`'s name and a
-//!   `PARENTHETICAL`'s delivery text (issue #1720 widens [`candidate`] to
-//!   these two shapes, alongside `CONTENT_LINE`/`SCENE_HEADING`) — a cue
-//!   or parenthetical carrying a trailing tag extension still declines.
-//!   **A `SCENE_HEADING` is the one exception** (issue #2077,
-//!   `docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
-//!   structure, then match"): its optional `[slug]` and trailing `#tag`s
-//!   are structure, not payload, so they are stripped before matching
-//!   rather than causing a decline — see [`candidate`]'s own "Issue
-//!   #2077" comment and [`try_claim`]'s for what happens to the stripped
-//!   pieces.
+//!   interpolation, glue, markup, label or embedded divert. A line carrying
+//!   dynamic parts has no fixed text for a pattern to match, and capture
+//!   spans over it would not point at anything real. This restriction
+//!   applies identically to a `CUE`'s name and a `PARENTHETICAL`'s delivery
+//!   text (issue #1720 widens [`candidate`] to these two shapes, alongside
+//!   `CONTENT_LINE`/`SCENE_HEADING`).
+//!
+//!   A trailing `#tag` run is the one exception to "wholly literal", and it
+//!   now applies uniformly across every claimed shape but `CONTENT_LINE`
+//!   (issue #2077, `docs/decision-log.md` 2026-08-06 "Slug-bearing
+//!   headings: strip structure, then match", widened by issue #2350's
+//!   2026-08-07 "Cue/parenthetical tag extensions: strip-then-match,
+//!   uniformly"): a `SCENE_HEADING`'s optional `[slug]`/trailing `#tag`s,
+//!   and a `CUE`/`PARENTHETICAL`'s trailing tag extension (§8d.4, `@VENDOR
+//!   #(v.o.)`), are all structure, not payload, so they are stripped
+//!   before matching rather than causing a decline — see [`candidate`]'s
+//!   own doc and [`try_claim`]'s "Issues #2077/#2350" comment for what
+//!   happens to the stripped tags. A `CONTENT_LINE` carrying a tag still
+//!   declines outright — neither issue widened that arm.
 //! - A claiming handler's **own body is not claimable** (the staging rule
 //!   §3.5 states for the conventions module: it cannot use the conventions
 //!   it defines). Without this, a handler whose body repeats the shape it
@@ -890,16 +895,15 @@ pub(super) fn try_claim(
         });
     }
 
-    // Issue #2077: recover the two pieces `candidate` stripped from a
-    // `SCENE_HEADING`'s title text before this point — see
-    // `heading_extras`'s own doc for what each one is and why. `None`/empty
-    // for every other node kind, since `CUE`/`PARENTHETICAL`/`CONTENT_LINE`
-    // still decline outright on a slug or tag (candidate would already have
-    // returned `None` for those).
+    // Issues #2077/#2350: recover the pieces `candidate` stripped from
+    // `node`'s literal text before this point — see `element_extras`'s own
+    // doc for what each one is and why. `None`/empty for `CONTENT_LINE`,
+    // the one candidate kind neither issue widened (candidate would already
+    // have returned `None` for a tag-carrying one).
     //
     // Deliberately called here — below both the handler lookup (`?` above)
     // and the per-param capture loop (`?` inside it), not up where
-    // `candidate` first returns — because `heading_extras` is not
+    // `candidate` first returns — because `element_extras` is not
     // side-effect-free: it runs `body::lower_tag` on every trailing tag,
     // which can itself push a diagnostic (`E172`, for an `@`-leading tag).
     // Calling it any earlier would run that speculatively for a claim this
@@ -907,7 +911,7 @@ pub(super) fn try_claim(
     // branch left a param's capture group unpopulated), reporting a
     // diagnostic against a line that never actually lowered through this
     // handler at all.
-    let (slug, heading_tags) = heading_extras(node, file_id, diags);
+    let (slug, extra_tags) = element_extras(node, file_id, diags);
 
     // Every field taken from `handler` past this point is copied/cloned out
     // — `handler` (and so the borrow of `elements.handlers` it holds) is
@@ -923,18 +927,20 @@ pub(super) fn try_claim(
     let is_attach = handler.attach.is_some();
     // Attach-mode never emits a `Stmt::Content` at all — ruling item 6,
     // "AN EVENT EXISTS IFF A LINE EXISTS" (`docs/decision-log.md`
-    // 2026-08-03) — so there is no line left for a tag-bearing heading's
-    // `heading_tags` to ride on if this claim went through
+    // 2026-08-03) — so there is no line left for a tag-bearing claim's
+    // `extra_tags` to ride on if this claim went through
     // (`build_attach_stmts` only ever emits `Stmt::AttachElement`/
     // `Stmt::EndElementRun`, neither of which carries tags). Declining the
     // claim here — rather than silently discarding the tags, the gap
-    // review caught in this PR — falls through to the same loud `E129`
-    // `body::lower_one_item`'s `SCENE_STITCH` arm already reports for any
-    // other unclaimed heading (house rule 9: never a silent drop). Scoped
-    // to attach handlers with a nonempty `heading_tags` only: block-mode
-    // and ordinary Call-mode handlers both still deliver a tag-bearing
-    // heading's tags through the existing `Content.tags` channel below.
-    if is_attach && !heading_tags.is_empty() {
+    // review caught for headings (#2344) and #2350 confirms applies
+    // identically to a `CUE`/`PARENTHETICAL` — falls through to the same
+    // loud `E129` `body::lower_one_item`'s default arm already reports for
+    // any other unclaimed element (house rule 9: never a silent drop).
+    // Scoped to attach handlers with a nonempty `extra_tags` only:
+    // block-mode and ordinary Call-mode handlers both still deliver a
+    // tag-bearing claim's tags through the existing `Content.tags` channel
+    // below, regardless of element kind.
+    if is_attach && !extra_tags.is_empty() {
         return None;
     }
     // Issue #2289: `decl.is_none()` is exactly "this handler was injected
@@ -1092,28 +1098,29 @@ pub(super) fn try_claim(
         Stmt::Content(Content {
             ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
             parts: vec![ContentPart::Interpolation(call)],
-            // Empty for every non-heading match (a tag-carrying `CUE`/
-            // `PARENTHETICAL`/`CONTENT_LINE` never reaches here — see
-            // this function's own "Issue #2077" comment above); a
-            // claimed heading's own trailing tags ride this same field,
-            // the existing ordinary per-line tag channel.
+            // Empty for `CONTENT_LINE` (a tag-carrying one never reaches
+            // here — see this function's own "Issues #2077/#2350" comment
+            // above); a claimed heading/cue/parenthetical's own trailing
+            // tags ride this same field, the existing ordinary per-line
+            // tag channel.
             //
-            // This is a deliberate INTERIM carrier, not a ruled
-            // semantic: `docs/prose-dialect-spec.md` §8b.4 rules a
-            // header line's trailing `#tag`s **container-level
-            // per-flow tags** — the authoring surface issue #474 (the
-            // per-flow tag API) is iceboxed waiting for — and the
-            // 2026-08-06 "Slug-bearing headings: strip structure, then
-            // match" ruling this function implements says only that
-            // tags are stripped before matching, nothing about which
-            // channel delivers them. Routing them here, onto the
-            // heading's own output `Stmt::Content`, is the closest
-            // existing mechanism and better than the silent drop this
-            // PR would otherwise have reintroduced, but it is ordinary
-            // per-line runtime tag delivery, not §8b.4's per-flow
-            // tags. Re-route (or remove, if #474 supersedes this
-            // entirely) once #474 lands.
-            tags: heading_tags,
+            // This is a deliberate INTERIM carrier, not a ruled semantic:
+            // `docs/prose-dialect-spec.md` §8b.4 rules a *header* line's
+            // trailing `#tag`s **container-level per-flow tags** — the
+            // authoring surface issue #474 (the per-flow tag API) is
+            // iceboxed waiting for — and the 2026-08-06/2026-08-07 rulings
+            // this function implements say only that tags are stripped
+            // before matching, nothing about which channel delivers them.
+            // Routing them here, onto the claimed line's own output
+            // `Stmt::Content`, is the closest existing mechanism and
+            // better than the silent drop these rulings would otherwise
+            // have reintroduced, but it is ordinary per-line runtime tag
+            // delivery, not §8b.4's per-flow tags (which apply to headings
+            // only anyway — a cue/parenthetical tag extension, §8d.4, was
+            // never claimed to be a per-flow tag in the first place).
+            // Re-route (or remove, if #474 supersedes this entirely) once
+            // #474 lands.
+            tags: extra_tags,
         }),
         Stmt::EndOfLine,
     ];
@@ -1171,13 +1178,14 @@ fn build_attach_stmts(
     stmts
 }
 
-/// [`try_claim`]'s issue #2077 seam: recover the two pieces `candidate`
-/// stripped from a `SCENE_HEADING`'s title text before matching
-/// (`docs/decision-log.md` 2026-08-06, "Slug-bearing headings: strip
-/// structure, then match"). `(None, Vec::new())` for every non-heading
-/// `node` — `CUE`, `PARENTHETICAL` and `CONTENT_LINE` still decline
-/// outright on a slug or tag (this issue is scoped to headings only), so
-/// `try_claim` never reaches this call for those at all.
+/// [`try_claim`]'s issue #2077/#2350 seam: recover the pieces `candidate`
+/// stripped from `node`'s literal text before matching
+/// (`docs/decision-log.md` 2026-08-06 "Slug-bearing headings: strip
+/// structure, then match", generalized by 2026-08-07 "Cue/parenthetical tag
+/// extensions: strip-then-match, uniformly"). `(None, Vec::new())` for
+/// every other `node` kind — `CONTENT_LINE` still declines outright on a
+/// tag, since #1720/#2350 never widened `candidate`'s `CONTENT_LINE` arm
+/// the way they did `SCENE_HEADING`/`CUE`/`PARENTHETICAL`.
 ///
 /// - The slug: the *address capture* role `docs/prose-dialect-spec.md`
 ///   §8b.5 reserves, returned as a reserved `ElementCapture` for the caller
@@ -1191,36 +1199,55 @@ fn build_attach_stmts(
 ///   the slug into structure/`DefinitionId` (what would make it
 ///   load-bearing rather than descriptive) is heading→stitch promotion,
 ///   issue #2078 — deliberately untouched here; a caller reads a real
-///   source span and nothing more.
+///   source span and nothing more. `CUE`/`PARENTHETICAL` have no address
+///   capture of their own, so this is always `None` for them.
 /// - The tags: the EXISTING tag channel (`Content.tags`, via the same
 ///   `lower_tag` every other tagged line already goes through) — not a
-///   second delivery mechanism invented for headings. This is a
-///   deliberate INTERIM carrier pending issue #474 (the per-flow tag
-///   API), not a ruled semantic — see `try_claim`'s own call site for
-///   why. `docs/prose-dialect-spec.md` §8b.4 names a header line's
-///   trailing `#tag`s **container-level per-flow tags**, a different
-///   concept from an ordinary per-line runtime tag.
-fn heading_extras(
+///   second delivery mechanism invented for headings, and not a new one
+///   invented for cues/parentheticals either. This is a deliberate INTERIM
+///   carrier pending issue #474 (the per-flow tag API), not a ruled
+///   semantic — see `try_claim`'s own call site for why. That interim
+///   posture is what #2350's ruling explicitly carries over unchanged
+///   ("the heading-tags delivery caveat from #2344 … applies identically
+///   here"): `docs/prose-dialect-spec.md` §8b.4 names a *heading's*
+///   trailing `#tag`s container-level per-flow tags, a concept a cue or
+///   parenthetical tag extension (§8d.4) never claimed to be — both still
+///   ride the same ordinary per-line `Content.tags` field regardless.
+fn element_extras(
     node: &SyntaxNode,
     file_id: FileId,
     diags: &mut Vec<Diagnostic>,
 ) -> (Option<ElementCapture>, Vec<Tag>) {
-    let Some(heading) = ast::SceneHeading::cast(node.clone()) else {
-        return (None, Vec::new());
-    };
-    let slug = heading
-        .slug()
-        .and_then(|s| s.name_token())
-        .map(|tok| ElementCapture {
-            name: "slug".to_string(),
-            text: tok.text().to_string(),
-            range: tok.text_range(),
-        });
-    let tags = heading
-        .tags()
-        .map(|t| super::body::lower_tag(file_id, &t, diags))
-        .collect();
-    (slug, tags)
+    if let Some(heading) = ast::SceneHeading::cast(node.clone()) {
+        let slug = heading
+            .slug()
+            .and_then(|s| s.name_token())
+            .map(|tok| ElementCapture {
+                name: "slug".to_string(),
+                text: tok.text().to_string(),
+                range: tok.text_range(),
+            });
+        let tags = heading
+            .tags()
+            .map(|t| super::body::lower_tag(file_id, &t, diags))
+            .collect();
+        return (slug, tags);
+    }
+    if let Some(cue) = ast::Cue::cast(node.clone()) {
+        let tags = cue
+            .tags()
+            .map(|t| super::body::lower_tag(file_id, &t, diags))
+            .collect();
+        return (None, tags);
+    }
+    if let Some(parenthetical) = ast::Parenthetical::cast(node.clone()) {
+        let tags = parenthetical
+            .tags()
+            .map(|t| super::body::lower_tag(file_id, &t, diags))
+            .collect();
+        return (None, tags);
+    }
+    (None, Vec::new())
 }
 
 /// The block-capture terminator search (issue #1839, ruled 2026-07-31):
@@ -1592,14 +1619,20 @@ pub(super) fn try_dispatch(
 /// `claims`/`args` dispatch and always fall to `body::lower_one_item`'s
 /// loud `E129`, no matter what a project or preset declares):
 ///
-/// - A `CUE`'s `CUE_NAME` run qualifies the same way — exactly that one
-///   child, nothing else. A cue carrying a trailing tag extension (§8d.4,
-///   `@VENDOR #(v.o.)`) is declined — unlike `SCENE_HEADING` (above), a
-///   `CUE`'s tags are not stripped-and-recovered by issue #2077, which is
-///   scoped to headings only.
+/// - A `CUE`'s `CUE_NAME` run qualifies the same way `SCENE_TITLE` does —
+///   selecting the `CUE_NAME` child without requiring it be the only one.
+///   **Issue #2350** (`docs/decision-log.md` 2026-08-07 "Cue/parenthetical
+///   tag extensions: strip-then-match, uniformly") extends the #2077
+///   heading rule here: a `CUE`'s trailing tag extension (§8d.4, `@VENDOR
+///   #(v.o.)`) is structure the pattern is never shown, exactly like a
+///   heading's `[slug]`/`#tag`s, so any run of trailing `TAG` children
+///   after `CUE_NAME` no longer causes a decline. `try_claim` recovers
+///   those tags the same way it recovers a heading's — see
+///   [`element_extras`]'s own doc.
 /// - A `PARENTHETICAL`'s `TEXT` run (the text strictly between the
 ///   parens — `(`/`)` are tokens, not part of the child) qualifies the
-///   same way; a parenthetical carrying trailing tags is declined too.
+///   same way, with the identical #2350 widening: trailing `TAG` children
+///   after `TEXT` no longer cause a decline.
 ///
 /// **Issue #2079** (RULED 2026-08-06, "Compact cue desugars to cue +
 /// content line") adds a third arm: `COMPACT_CUE` (`@NAME: text`)
@@ -1652,10 +1685,17 @@ pub(crate) fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> 
             .children()
             .find(|c| c.kind() == N::SCENE_TITLE)
             .map(|title| (ElementKind::SceneHeading, title)),
+        // Issue #2350: unlike the pre-fix "exactly one child" rule, a
+        // trailing run of `TAG` children (the cue's tag extension, §8d.4)
+        // no longer disqualifies the node — only a non-`TAG` sibling after
+        // `CUE_NAME` still declines (e.g. a `COMPACT_CUE`'s fused dialogue,
+        // which is a different node kind entirely and never reaches this
+        // arm anyway). `Iterator::all` on the now-empty remainder is
+        // vacuously `true`, so an untagged cue is unaffected.
         N::CUE => {
             let mut children = node.children();
             let first = children.next()?;
-            (first.kind() == N::CUE_NAME && children.next().is_none())
+            (first.kind() == N::CUE_NAME && children.all(|c| c.kind() == N::TAG))
                 .then_some((ElementKind::Cue, first))
         }
         // A compact cue (`@NAME: dialogue`, §8b.9) — issue #2079, RULED
@@ -1678,10 +1718,13 @@ pub(crate) fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> 
             let first = children.next()?;
             (first.kind() == N::CUE_NAME).then_some((ElementKind::Cue, first))
         }
+        // Issue #2350: same widening as the `CUE` arm above — a trailing
+        // run of `TAG` children on a parenthetical's delivery no longer
+        // disqualifies it.
         N::PARENTHETICAL => {
             let mut children = node.children();
             let first = children.next()?;
-            (first.kind() == N::TEXT && children.next().is_none())
+            (first.kind() == N::TEXT && children.all(|c| c.kind() == N::TAG))
                 .then_some((ElementKind::Parenthetical, first))
         }
         _ => None,

@@ -907,6 +907,35 @@ fn divert_target_args_reach_the_target_knots_params() {
     assert_case("divert-target-args");
 }
 
+/// Issue #2350 (`docs/decision-log.md` 2026-08-07, "Cue/parenthetical tag
+/// extensions: strip-then-match, uniformly"): a `CUE` and a `PARENTHETICAL`
+/// each carrying a trailing tag extension (§8d.4, `@VENDOR #(v.o.)`,
+/// `(hushed) #whisper`) now claim end to end against plain `claims`
+/// handlers, the same way a slug/tag-carrying `SCENE_HEADING` already does
+/// (issue #2077). Before this issue, `hir::lower_native::element::
+/// candidate`'s literalness rule declined either shape outright on a
+/// trailing tag — this fixture would have failed to *compile*, with one
+/// `E129` per claimed line, not merely rendered a wrong transcript.
+///
+/// Deliberately plain (non-`attach`) handlers, unlike
+/// `conventions-screenplay-preset`'s `cue`/`parenthetical`: an attach-mode
+/// claim still declines a tag-bearing line under the separate "attach mode
+/// has nowhere to carry a claim's tags" rule (pinned at the HIR level by
+/// `an_attach_mode_cue_with_a_tag_extension_still_declines` and its
+/// parenthetical sibling in `brink-ir`'s `hir::lower_native::tests`) — this
+/// fixture's own two handlers prove the OTHER half: a `claims`-only
+/// handler with no `attach` clause claims a tag-bearing line and delivers
+/// the tag through the existing `Content.tags` channel, invisible to this
+/// text-only transcript (`run_native_transcript`'s `Step::Line` arm drops
+/// `tags`, the same limitation `inline_tag_embedded_brace`'s own doc
+/// names) but asserted directly by `brink-ir`'s
+/// `a_cue_with_a_tag_extension_is_now_claimable` and
+/// `a_parenthetical_with_a_tag_extension_is_now_claimable`.
+#[test]
+fn cue_parenthetical_tag_extension() {
+    assert_case("cue-parenthetical-tag-extension");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -923,6 +952,7 @@ fn every_case_directory_has_a_test() {
         "conventions-attach-schema",
         "conventions-cross-file",
         "conventions-screenplay-preset",
+        "cue-parenthetical-tag-extension",
         "directive-like-tag",
         "divert-target-args",
         "fn-value-bare-name",

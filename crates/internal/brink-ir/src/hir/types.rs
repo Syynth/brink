@@ -411,16 +411,17 @@ pub enum ElementKind {
     /// A cue — either a block cue (`CUE`, `docs/prose-dialect-spec.md`
     /// §8b.9/§8d.4), a bare `@NAME` speaker line, or a compact cue
     /// (`COMPACT_CUE`, §8b.9, issue #2079) — `@NAME: text` — matched the
-    /// same way against its name segment alone. Either shape is declined
-    /// when it carries a tag extension (e.g. `@VENDOR #(v.o.)`), the same
-    /// way a slug/tag-carrying [`Self::SceneHeading`] is (see
-    /// [`crate::hir::lower_native::element::candidate`]'s own doc) — unlike
-    /// [`Self::SceneHeading`], a `CUE`'s slug/tag structure is not
-    /// stripped-and-recovered by issue #2077, which is scoped to headings
-    /// only. A compact cue's fused dialogue is also declined — the whole
-    /// claim, not just the dialogue — when the dialogue itself is not a
-    /// plain content line (carries a `LABEL` or a fused divert/choice);
-    /// see `element::try_claim`'s own note.
+    /// same way against its name segment alone. A block `CUE` carrying a
+    /// tag extension (e.g. `@VENDOR #(v.o.)`) is claimable too, the same
+    /// way a slug/tag-carrying [`Self::SceneHeading`] is (issue #2350,
+    /// `docs/decision-log.md` 2026-08-07 "Cue/parenthetical tag extensions:
+    /// strip-then-match, uniformly" — extending #2077's heading-only
+    /// stripping to `CUE`/`PARENTHETICAL` too; see
+    /// [`crate::hir::lower_native::element::candidate`]'s own doc). A
+    /// compact cue's fused dialogue is also declined — the whole claim, not
+    /// just the dialogue — when the dialogue itself is not a plain content
+    /// line (carries a `LABEL` or a fused divert/choice); see
+    /// `element::try_claim`'s own note.
     /// Issue #1720: the built-in screenplay preset's `cue` handler is the
     /// first consumer.
     Cue,
