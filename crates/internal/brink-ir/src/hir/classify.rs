@@ -495,7 +495,12 @@ mod tests {
     /// every caller here): `ConventionsProjection::from_decls` sets
     /// `attach` to `Some(..)` either way (`Resolved` or `Unresolved`), and
     /// the gate only ever checks `.is_some()`.
-    fn decl_attach(name_text: &str, order: i64, pattern: &str, attach_struct: &str) -> ClaimHandlerDecl {
+    fn decl_attach(
+        name_text: &str,
+        order: i64,
+        pattern: &str,
+        attach_struct: &str,
+    ) -> ClaimHandlerDecl {
         ClaimHandlerDecl {
             attach: Some(attach_struct.to_string()),
             ..decl(name_text, order, pattern)
