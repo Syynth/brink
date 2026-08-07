@@ -157,3 +157,21 @@ export class TauriFileProvider implements FileProvider {
 export async function pickProjectFolder(): Promise<string | null> {
   return invoke<string | null>("pick_project_folder");
 }
+
+/**
+ * Export Story (.inkb) (D3 slice 1, #2391): write already-compiled bytes
+ * through a native save dialog. Returns the chosen path, or null if the
+ * user cancelled. `bytes` crosses the IPC boundary as a plain number array
+ * — the same encoding `CompileResult.story_bytes` already uses coming the
+ * other way out of wasm, so no new (de)serialization convention is
+ * introduced.
+ */
+export async function saveBytesDialog(
+  defaultName: string,
+  bytes: Uint8Array,
+): Promise<string | null> {
+  return invoke<string | null>("save_bytes_dialog", {
+    defaultName,
+    bytes: Array.from(bytes),
+  });
+}

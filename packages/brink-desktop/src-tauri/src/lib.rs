@@ -326,6 +326,44 @@ async fn append_backups(
     Ok(())
 }
 
+/// Export a compiled story to a user-chosen file (D3 slice 1, #2391): a
+/// native save-file dialog defaulting to `default_name`, then a direct
+/// `fs::write` of the already-compiled bytes. Returns the chosen path, or
+/// `None` if the user cancelled.
+///
+/// ⚠ This command (like every command here) MUST be `async` — see
+/// `pick_project_folder` below for why a blocking dialog call on a sync
+/// command deadlocks the main thread.
+///
+/// ⚠ The picked path is deliberately NOT passed through `resolve()`. That
+/// guard exists to keep webview-supplied *project-relative* keys from
+/// escaping the trusted project root; here there is no root to stay inside
+/// of — the user just chose an arbitrary destination via the native dialog,
+/// which is exactly the point of an export. Routing this through `resolve()`
+/// would incorrectly reject every destination outside the open project,
+/// i.e. every normal use of this command.
+#[tauri::command]
+async fn save_bytes_dialog(
+    app: tauri::AppHandle,
+    default_name: String,
+    bytes: Vec<u8>,
+) -> Result<Option<String>, ShellError> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .blocking_save_file()
+    else {
+        return Ok(None); // user cancelled
+    };
+    let path = picked.into_path().map_err(|e| ShellError::Io {
+        path: default_name,
+        source: std::io::Error::other(e),
+    })?;
+    std::fs::write(&path, &bytes).map_err(|e| io_err(&path, e))?;
+    Ok(Some(path.display().to_string()))
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
@@ -395,6 +433,17 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+Shift+W"),
     )?;
+    // D3 slice 1 (#2391): compile the open project and write the bytes
+    // through a native save dialog. Unmodified-key-free (no obvious
+    // platform-conventional accelerator for "export"); reachable from the
+    // menu and the command palette isn't in scope for this shell-owned item.
+    let export_inkb = MenuItem::with_id(
+        handle,
+        "export-inkb",
+        "Export Story (.inkb)…",
+        true,
+        None::<&str>,
+    )?;
     let file_menu = Submenu::with_items(
         handle,
         "File",
@@ -402,6 +451,8 @@ fn build_menu(
         &[
             &open,
             &close,
+            &PredefinedMenuItem::separator(handle)?,
+            &export_inkb,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::close_window(handle, None)?,
         ],
@@ -440,6 +491,7 @@ pub fn run() {
                 let forwarded = match event.id().as_ref() {
                     "open-project" => Some("menu:open-project"),
                     "close-project" => Some("menu:close-project"),
+                    "export-inkb" => Some("menu:export-inkb"),
                     "quit" => Some("menu:quit"),
                     _ => None,
                 };
@@ -459,6 +511,7 @@ pub fn run() {
             start_watch,
             stop_watch,
             pick_project_folder,
+            save_bytes_dialog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running brink-desktop");

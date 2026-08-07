@@ -23,14 +23,18 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
-import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
+import { TauriFileProvider, pickProjectFolder, saveBytesDialog } from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
+import { exportStoryToInkb } from "./export.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
+/** The open project's folder path — the default Export filename derives
+ *  from its final component. Cleared on close, alongside `current`. */
+let currentRoot: string | null = null;
 /** The autosave ticker for the open project; cleared on close. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -86,6 +90,7 @@ async function openProject(root: string): Promise<void> {
   // Tear down any previous project only after the new one's files loaded,
   // so a cancelled or failed open never leaves a blank window.
   closeProject();
+  currentRoot = root;
 
   const el = appRoot();
   el.replaceChildren();
@@ -168,8 +173,20 @@ function closeProject(): void {
   }
   current.unmount();
   current = null;
+  currentRoot = null;
   document.title = "Brink Studio";
   renderLanding();
+}
+
+/**
+ * Export Story (.inkb) (D3 slice 1, #2391). The actual compile-then-save
+ * logic lives in `export.ts` (extracted for testability, like `quit.ts`);
+ * this wrapper just supplies the live `StudioApi`, the open project's root,
+ * and the real save dialog.
+ */
+async function handleExportInkb(): Promise<void> {
+  if (current === null || currentRoot === null) return;
+  await exportStoryToInkb(current.api, currentRoot, saveBytesDialog);
 }
 
 /**
@@ -190,6 +207,7 @@ async function handleQuitRequested(): Promise<void> {
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+void listen("menu:export-inkb", () => void handleExportInkb());
 // The app-menu Quit item (⌘Q) is routed here as a plain shell event — like
 // open/close-project — instead of `PredefinedMenuItem::quit`, specifically
 // so it funnels through the same guarded path as the window close below
