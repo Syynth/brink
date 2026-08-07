@@ -55,6 +55,16 @@ export interface ProjectSessionOptions {
   /** Trailing debounce for `onFilesChanged` batches (default 500 ms). */
   changeDebounceMs?: number;
   /**
+   * Whether `onFilesChanged` delivery counts as persistence (default
+   * `true`, the write-through contract). Overlay hosts — whose egress
+   * handler feeds a **backup ring** rather than canonical storage (the
+   * celeris file model; brink-desktop D2) — set `false`: batches still
+   * deliver, but dirty means "diverges from the last canonical save" and
+   * only `markFilesSaved`/`markAllSaved` clears it. See
+   * {@link FileChangeHubOptions.deliveryPersists}.
+   */
+  egressPersists?: boolean;
+  /**
    * Unrecognized-key/lint-code warnings from the most recent `brink.toml`
    * discovery/apply (issue #2324) — forwarded verbatim from
    * `EditorSessionHandle.discoverProjectConfig`'s return value. Fires once
@@ -107,6 +117,7 @@ export class ProjectSession {
       onFlush: options.onFilesChanged,
       onFileConflict: options.onFileConflict,
       debounceMs: options.changeDebounceMs,
+      deliveryPersists: options.egressPersists,
     });
   }
 
@@ -487,9 +498,20 @@ export class ProjectSession {
     await this.resolveIncludes();
   }
 
-  /** Request save via provider. */
-  async save(): Promise<void> {
-    await this.provider.requestSave?.();
+  /** Request a canonical save via the provider (optionally narrowed to
+   *  `paths` — see {@link FileProvider.requestSave}). Rejections propagate:
+   *  the save commands rely on that to keep files dirty when the host's
+   *  write fails. */
+  async save(paths?: string[]): Promise<void> {
+    await this.provider.requestSave?.(paths);
+  }
+
+  /** Whether the provider implements a host-side canonical save. The save
+   *  commands branch on this: with a host save they await it and only
+   *  re-baseline on success; without one (the standalone playground) the
+   *  flush-and-re-baseline path runs synchronously as it always has. */
+  hasHostSave(): boolean {
+    return this.provider.requestSave !== undefined;
   }
 
   /** Ask the provider for a file not yet in the session; loads it if found. */
