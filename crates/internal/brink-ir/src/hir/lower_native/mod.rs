@@ -162,6 +162,14 @@ mod import;
 // (`pub(crate)`): no external consumer of `brink-ir` selects a claim
 // candidate itself.
 pub(crate) use element::candidate;
+// Issue #2351 review finding: `classify_node_compiled` needs the same
+// "does this node carry a trailing tag extension" answer `try_claim`'s own
+// attach-mode decline (`element.rs`'s `is_attach && !extra_tags.is_empty()`
+// gate) is built on, without re-deriving `element_extras`'s per-kind child
+// selection (and without triggering its diagnostic side effects — see
+// `has_trailing_tags`'s own doc). `pub(crate)` for the same reason
+// `candidate` is: crate-internal only.
+pub(crate) use element::has_trailing_tags;
 
 /// Lower a complete native source file to HIR.
 ///

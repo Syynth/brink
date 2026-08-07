@@ -659,13 +659,20 @@ impl Project {
     /// `opts.conventions` — see the field doc on `brink-ide/src/session.rs`'s
     /// `IdeSnapshot`). Leaving this unset here would misfire `E169` on every
     /// `@[convention]` handler on both surfaces, for any `ide_session()`
-    /// consumer that reads either. Mirrors the other three setters exactly.
+    /// consumer that reads either.
     ///
-    /// Each setter re-analyzes, so they're called after every source is
-    /// loaded — calling them first would reanalyze against an empty file
-    /// set, then leave that stale (empty) result in place once sources are
-    /// added via `update_source` (which does not itself trigger
-    /// re-analysis).
+    /// Forwards `dialect`/`types`/`lints`/`conventions` in one call via
+    /// [`IdeSession::apply_analysis_options`] (issue #2334) rather than the
+    /// four hand-copied setter calls this used before — the shared seam
+    /// every `IdeSession` producer now goes through, so a future
+    /// `AnalysisOptions` field only needs a forwarding decision made once,
+    /// at that seam, instead of at every producer. This also collapses what
+    /// was up to four full re-analyses (one per setter) into at most one.
+    ///
+    /// Called after every source is loaded — calling it first would
+    /// reanalyze against an empty file set, then leave that stale (empty)
+    /// result in place once sources are added via `update_source` (which
+    /// does not itself trigger re-analysis).
     pub(super) fn ide_session(&self) -> IdeSession {
         let db = self.driver.db();
         let mut session = IdeSession::new();
@@ -675,13 +682,7 @@ impl Project {
                 session.update_source(path, src.to_string());
             }
         }
-        let options = db.analysis_options();
-        session.set_language_dialect(options.dialect);
-        if let Some(types) = options.types {
-            session.set_type_policy(types);
-        }
-        session.set_lint_policy(options.lints.clone());
-        session.set_conventions(options.conventions.clone());
+        session.apply_analysis_options(db.analysis_options());
         session
     }
 
@@ -1656,6 +1657,18 @@ mod ide_session_project_config_tests {
         let project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
         let session = project.ide_session();
 
+        // The four forwarded fields all equal `IdeSession::new()`'s own
+        // defaults here, so `apply_analysis_options`'s `changed` guard
+        // never trips — this must still trigger a `reanalyze()` (via the
+        // `self.analysis.is_none()` half of that guard), or every
+        // `structural_result::gate*` helper silently treats this session
+        // as having nothing to check (#2334 review: the exact #1393
+        // regression, reopened by a `changed`-only guard).
+        assert!(
+            session.analysis().is_some(),
+            "ide_session() must still analyze even when the resolved options match \
+             IdeSession::new()'s own defaults byte-for-byte"
+        );
         assert_eq!(
             session.language_dialect(),
             brink_analyzer::Dialect::default()

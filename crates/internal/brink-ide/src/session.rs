@@ -368,6 +368,102 @@ impl IdeSession {
         self.conventions.as_deref()
     }
 
+    /// The raw registered `[project] types` override, if any — `None` means
+    /// "never explicitly set", distinct from [`Self::type_policy`] (the
+    /// *effective* value, which resolves `None` to the dialect-keyed
+    /// default via [`brink_analyzer::resolve_type_policy`]). A producer that
+    /// needs to round-trip [`AnalysisOptions::types`] without collapsing an
+    /// unset override into an explicitly-chosen one (issue #2334's
+    /// `apply_analysis_options` seam — a caller re-deriving a full
+    /// `AnalysisOptions` to hand it back must not accidentally freeze
+    /// today's dialect-keyed default into a permanent explicit choice) reads
+    /// this, never [`Self::type_policy`].
+    #[must_use]
+    pub fn type_policy_override(&self) -> Option<TypePolicy> {
+        self.type_policy
+    }
+
+    /// Apply the `[project]`/`[lints]`-derived subset of `options` —
+    /// [`AnalysisOptions::dialect`]/`.types`/`.lints`/`.conventions` — onto
+    /// this session in one call, then re-analyze at most once (issue #2334).
+    ///
+    /// This is the **one seam** every `IdeSession` producer that already has
+    /// a fully-resolved `AnalysisOptions` in hand (`brink-cli`'s
+    /// `Project::ide_session`, `brink-web`'s `EditorSession::
+    /// apply_parsed_config`) should call instead of hand-copying individual
+    /// `set_language_dialect`/`set_type_policy`/`set_lint_policy`/
+    /// `set_conventions` calls. The same field (`conventions`) was dropped
+    /// from that hand-written forwarding three times in a row across three
+    /// separate producers (#1880 → #2316 fixed two of them, #2317 → #2325
+    /// fixed the third) — routing every producer through this one function
+    /// means a future field only needs a forwarding decision made *here*,
+    /// once, rather than copy-pasted into every call site.
+    ///
+    /// `host_manifest`/`external_check`/`semantic_type_check` are
+    /// deliberately **not** forwarded: those three are tooling-level
+    /// concerns with their own dedicated setters
+    /// ([`Self::set_host_manifest`]/[`Self::set_external_check`]/
+    /// [`Self::set_semantic_type_check`]), sourced independently of
+    /// `brink.toml`/`[project]` (no `ProjectConfig` field maps to any of
+    /// them) — a producer that owns one of those calls its own setter
+    /// directly, exactly as today. Spelled out explicitly below (the same
+    /// "not `..Default::default()`" pattern [`IdeSnapshot::analyze`] and
+    /// [`Self::analysis_options`] already use) so that a *new*
+    /// `AnalysisOptions` field breaks this function's compilation the
+    /// moment it's added — forcing an explicit forward-or-exclude decision
+    /// here rather than a silent, field-shaped hole a producer might never
+    /// notice.
+    ///
+    /// Change-guarded as a whole (mirrors [`Self::sync_db_options`]'s own
+    /// guard): re-analyzes once, only if at least one of the four fields
+    /// actually differs from what this session already has registered —
+    /// never the up-to-four redundant re-analyses a producer hand-calling
+    /// each setter separately would trigger (the "related, same root cause"
+    /// half of issue #2334: `Project::ide_session()` previously ran a full
+    /// re-analysis once per setter call to build a single session).
+    pub fn apply_analysis_options(&mut self, options: &AnalysisOptions) {
+        let AnalysisOptions {
+            host_manifest: _,
+            external_check: _,
+            semantic_type_check: _,
+            dialect,
+            types,
+            lints,
+            conventions,
+        } = options.clone();
+        let mut changed = false;
+        if self.language_dialect != dialect {
+            self.language_dialect = dialect;
+            changed = true;
+        }
+        if self.type_policy != types {
+            self.type_policy = types;
+            changed = true;
+        }
+        if self.lints != lints {
+            self.lints = lints;
+            changed = true;
+        }
+        if self.conventions != conventions {
+            self.conventions = conventions;
+            changed = true;
+        }
+        // A session with no analysis yet (fresh `IdeSession::new()`, no
+        // `update_and_analyze` call) must still reanalyze even when the
+        // four fields already match `options` byte-for-byte — otherwise a
+        // caller like `Project::ide_session()`, which loads every source
+        // via `update_source` (which does not itself analyze) and then
+        // calls this seam exactly once with options that happen to equal
+        // the session's own defaults, leaves `self.analysis` at `None`
+        // forever. Every `structural_result::gate*` helper treats `None`
+        // as "nothing to check", so that produced a silent, always-empty
+        // breakage report — the exact regression issue #1393 fixed, and
+        // this `changed`-only guard reopened it (#2334 review).
+        if changed || self.analysis.is_none() {
+            self.reanalyze();
+        }
+    }
+
     /// Set the severity policy for manifest-driven external checks, then
     /// re-analyze.
     pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
@@ -1445,6 +1541,155 @@ EXTERNAL add_state(who)
         assert!(
             p3.spans.iter().any(|sp| sp.def_id.is_some()),
             "identity-joined flavor cached when analysis exists"
+        );
+    }
+
+    // ── apply_analysis_options (issue #2334's shared seam) ──────────
+
+    /// The one seam every `IdeSession` producer forwards a resolved
+    /// `[project]`/`[lints]` policy through must actually forward all four
+    /// of the fields it claims to — the completeness the issue's own
+    /// "spelled-out-not-Default" fix asks for. Every value here is
+    /// deliberately non-default (a session default could never produce any
+    /// of them), so this only stays green if `apply_analysis_options`
+    /// really writes each field, not merely if some already sat at the
+    /// asserted value.
+    #[test]
+    fn apply_analysis_options_forwards_dialect_types_lints_and_conventions_in_one_call() {
+        let mut session = IdeSession::new();
+        let lints = brink_analyzer::LintPolicy {
+            deny_warnings: true,
+            ..brink_analyzer::LintPolicy::default()
+        };
+        let options = AnalysisOptions {
+            host_manifest: None,
+            external_check: ExternalCheckSeverity::default(),
+            semantic_type_check: SemanticTypeDiagnosticSeverity::default(),
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Gradual),
+            lints,
+            conventions: Some("conventions.brink".to_owned()),
+        };
+
+        session.apply_analysis_options(&options);
+
+        assert_eq!(
+            session.language_dialect(),
+            Dialect::Brink,
+            "apply_analysis_options must forward dialect"
+        );
+        assert_eq!(
+            session.type_policy_override(),
+            Some(TypePolicy::Gradual),
+            "apply_analysis_options must forward types"
+        );
+        assert!(
+            session.lint_policy().deny_warnings,
+            "apply_analysis_options must forward lints"
+        );
+        assert_eq!(
+            session.conventions(),
+            Some("conventions.brink"),
+            "apply_analysis_options must forward conventions"
+        );
+    }
+
+    /// `apply_analysis_options` must leave `host_manifest`/`external_check`/
+    /// `semantic_type_check` alone — those three are deliberately out of
+    /// scope for this seam (see its own doc comment): a producer manages
+    /// them through their own dedicated setters, so a call built from an
+    /// options value with defaults in those three slots must not clobber a
+    /// manifest/severity a caller registered separately through
+    /// `set_host_manifest`/`set_external_check`/`set_semantic_type_check`.
+    #[test]
+    fn apply_analysis_options_does_not_touch_host_manifest_or_check_severities() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.ink", SRC.to_string());
+        session.set_host_manifest(color_manifest());
+        session.set_semantic_type_check(SemanticTypeDiagnosticSeverity::Error);
+
+        // Must differ from the session's already-registered
+        // `dialect`/`types`/`lints`/`conventions` (all still at their
+        // `IdeSession::new()` defaults here) so `apply_analysis_options`'s
+        // `changed` guard actually trips and the seam runs its body,
+        // instead of the whole call short-circuiting before touching
+        // anything — which is exactly how this test stayed green with
+        // `apply_analysis_options` doing nothing at all (#2334 review).
+        session.apply_analysis_options(&AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+
+        // Confirms the seam actually ran (not merely that the `changed`
+        // guard happened to short-circuit before doing any damage).
+        assert_eq!(
+            session.language_dialect(),
+            Dialect::Brink,
+            "sanity: apply_analysis_options must have forwarded the changed dialect"
+        );
+
+        let analysis = session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E042),
+            "apply_analysis_options must not clear the registered host manifest: {:?}",
+            analysis.diagnostics
+        );
+        assert_eq!(
+            session.analysis_options().semantic_type_check,
+            SemanticTypeDiagnosticSeverity::Error,
+            "apply_analysis_options must not reset the registered semantic-type-check severity"
+        );
+    }
+
+    /// Regression for the actual bug pattern (#1880/#2317): a producer that
+    /// resolves `AnalysisOptions` from `brink.toml` and forwards it through
+    /// this one seam reaches the `E169` confinement check exactly like the
+    /// db-direct path does — proving the seam's `conventions` forwarding is
+    /// live end to end, not merely a field assignment nobody reads.
+    #[test]
+    fn apply_analysis_options_conventions_reaches_the_confinement_check() {
+        // Mirrors `brink-web`'s
+        // `compile_project_does_not_misfire_e169_once_conventions_reaches_the_editor_session`
+        // fixture exactly (a claim handler and the flow it claims into, in
+        // one file) — proven end to end there through `EditorSession`; here
+        // through `IdeSession::apply_analysis_options` directly.
+        const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", \
+             order = 10)]\nfn interior(place: content) {\n  return place;\n}\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "conventions.brink",
+            format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+        );
+
+        // No `conventions` pointer registered yet: the handler above is
+        // unconfined, so `E169` fires — sanity that the fixture actually
+        // reaches the check before asserting the fix clears it.
+        let unconfined = session.analysis().expect("analysis");
+        assert!(
+            unconfined
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E169),
+            "sanity: an unconfigured conventions pointer must misfire E169: {:?}",
+            unconfined.diagnostics
+        );
+
+        // Registering the pointer through the seam must clear it.
+        session.apply_analysis_options(&AnalysisOptions {
+            conventions: Some("conventions.brink".to_owned()),
+            ..AnalysisOptions::default()
+        });
+        let confined = session.analysis().expect("analysis");
+        assert!(
+            !confined
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E169),
+            "apply_analysis_options's conventions forwarding must reach the confinement check: {:?}",
+            confined.diagnostics
         );
     }
 }
