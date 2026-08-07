@@ -339,7 +339,27 @@ export class ProjectSession {
    * through {@link applyEdit}. No-op changes (content equal to the host
    * baseline) are dropped by the hub.
    */
+  /** See the feature-detection note at the first call site. */
+  private sessionIsReadOnly(path: string): boolean {
+    return typeof this.session.isReadOnly === "function" && this.session.isReadOnly(path);
+  }
+
   notifyFileChanged(path: string): void {
+    // Session-level read-only enforcement (issue #2306, ruled 2026-08-06
+    // "Mounted stdlib presents as a read-only library node"): a still-
+    // mounted path has no host baseline to diff against, so egressing it
+    // here would persist the library's content into the host provider
+    // (`InMemoryFileProvider.onFileChanged`) and record a false "modified"
+    // change — forking the mount into the user's project with no actual
+    // edit having been legitimately applied. The legitimate shadow path
+    // (a real file replacing a mount) calls `session.updateFile` first,
+    // which un-mounts the id before this method is ever reached for it.
+    //
+    // Feature-detected: `session` is a public injection seam
+    // (`ProjectSessionOptions.session`) and pre-#2306 stubs/handles have
+    // no `isReadOnly` — absent means "nothing is read-only", which is
+    // exactly their world (only the real wasm handle mounts a stdlib).
+    if (this.sessionIsReadOnly(path)) return;
     const source = this.session.getFileSource(path);
     if (source !== null) {
       this.provider.onFileChanged?.(path, source);
@@ -357,10 +377,29 @@ export class ProjectSession {
    * content AND report it. Bulk edit paths (binder structural ops, search
    * replace, binder undo) MUST use this instead of raw `updateFile` so the
    * provider write-back and the host egress callback always see them.
+   *
+   * Session-level read-only enforcement (issue #2306, ruled 2026-08-06
+   * "Mounted stdlib presents as a read-only library node"): refuses (no
+   * write, no notify) when `path` currently resolves to a mounted stdlib
+   * copy — the by-id route named in that ruling (project-wide search/
+   * replace, or any future bulk caller not gated by `listFiles`) must not
+   * be able to silently fork the library into the project. Returns whether
+   * the edit actually applied, so a caller can surface the refusal instead
+   * of assuming success.
+   *
+   * Deliberately NOT applied to `initialize()`/`addFile()`/the external-
+   * change handler above, which call `session.updateFile` directly: those
+   * are the host seeding real project content, including the legal case of
+   * a real file deliberately shadowing a mounted stdlib key (see
+   * `EditorSession::new`'s doc in `crates/brink-web/src/editor/mod.rs`) —
+   * that must keep winning by construction-time ordering, not be rejected
+   * because the id is still (momentarily) mounted at call time.
    */
-  applyEdit(path: string, newSource: string): void {
+  applyEdit(path: string, newSource: string): boolean {
+    if (this.sessionIsReadOnly(path)) return false;
     this.session.updateFile(path, newSource);
     this.notifyFileChanged(path);
+    return true;
   }
 
   // ── Host egress (issue #154) ─────────────────────────────────────

@@ -7,7 +7,28 @@ unscheduled), `docs/hir-admission-contract.md` (batch-4 delegated ruling,
 entry ("HIR span overlay in editor + source-compatible debugger
 direction"), and the current code chain. B0.1 (`auto/b0-provenance`
 worktree) had **zero commits** at evaluation time — every accommodation
-below can still shape it.
+below can still shape it. **Update 2026-07-19 (evening walkthrough): the
+§7 questions Q-R1–Q-R4 are RULED — see the addendum immediately below;
+the memo body is otherwise unmodified.**
+
+---
+
+## RULINGS addendum (2026-07-19, evening walkthrough)
+
+- **Q-R1 — RULED (a):** a new **optional, strippable
+  `SectionKind::DebugInfo`** (tag **0x11**, omit-when-empty) is the
+  instruction-map carrier; the dormant `Opcode::SourceLocation` is
+  **retired**.
+- **Q-R2 — RULED: adopt.** Accommodations A1–A3 (with free riders A4/A5)
+  as B0.1 scope constraints — already landed in B0.1.
+- **Q-R3 — RULED: the epic IS scheduled now — this OVERRIDES the memo's
+  recommendation** ("stay unscheduled; revisit after B0.4"). The epic
+  enters the active queue rather than waiting for B0.4. §5's "the epic
+  remains unscheduled" line reads accordingly.
+- **Q-R4 — RULED as stated:** the debug section is **section-locally
+  versioned**, with a **NodeId column reserved as the anticipated v2
+  extension** (when Q2's endgame lands); the concrete v1 entry encoding
+  stays with the epic's own design round.
 
 **One-line verdict:** the ruled contract does most of the epic's hardest
 upstream work for free, three cheap constraints on B0.1 keep it that way,

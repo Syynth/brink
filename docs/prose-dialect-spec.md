@@ -1533,7 +1533,14 @@ unless marked:
 4. **Tags on declarations**: trailing `#tag`s on header lines — both
    the heading spelling and `flow x #tag { }` — captured as
    **container-level per-flow tags**. This is the authoring surface
-   #474 (per-flow tag APIs) was iceboxed waiting for.
+   #474 (per-flow tag APIs) was iceboxed waiting for. **Interim
+   carrier (#2077, pending #474):** until the per-flow tag API exists,
+   a claimed scene heading's stripped trailing tags are delivered
+   through the ordinary per-line `Content.tags` channel
+   (`hir::lower_native::element::try_claim`) rather than left
+   undelivered — this is explicitly NOT the container-level semantic
+   ruled above, only the closest existing mechanism. Re-route once
+   #474 lands.
 5. **The conventions schema gains an *address capture* role** — the
    slug capture feeds structure/`DefinitionId`, unlike ordinary
    payload captures.
@@ -1555,9 +1562,15 @@ unless marked:
    superseded by §9.1 without delivering it) and not planted by pure
    codegen — it is an ordinary logic-line statement the handler's
    author wrote, riding the same extern/`ExternalFnHandler` call path
-   any other call would. `slug` is currently always the empty string
-   (no slug-bearing heading is claimable by this handler yet,
-   #2077/#2078). **Written transitions** (`SMASH CUT TO:`)
+   any other call would. `slug` is currently always the empty string —
+   not because a slug-bearing heading declines the claim (#2077 ruled
+   and landed "Slug-bearing headings: strip structure, then match": a
+   heading's `[slug]`/`#tag`s are stripped before pattern matching, not
+   a decline reason, and the slug is captured and delivered to
+   `HirFile::element_matches` as a reserved capture), but because
+   wiring that captured slug into this call is heading→stitch
+   promotion, #2078, still open and deliberately untouched.
+   **Written transitions** (`SMASH CUT TO:`)
    = a departure-site style call; the bare-scene-divert default cut
    needs no authored transition (the slugline implies the cut, as in
    real screenwriting). **Diverts remain absolutely invisible** — no
@@ -1609,7 +1622,7 @@ The *grammar* half of §8b/§8d is built, in `brink-syntax-native`
   content-line spelling is untouched outside dialogue;
 - trailing `#tag`s on a `flow` header line (§8b.4).
 
-**Three shapes lower; the rest deliberately do not.** Issue #1838 landed
+**Four shapes lower; the rest deliberately do not.** Issue #1838 landed
 natural-notation dispatch, so a **scene heading** whose text an
 `@[convention(claims = "…", order = N)]` handler matches lowers to exactly one call on
 that handler (`brink_ir::hir::lower_native::element`) — the first time any
@@ -1621,12 +1634,28 @@ same way (only a wholly literal run, no tag extension) — so `@NAME` and
 `(delivery)` lines now reach output through the same mechanism once a
 preset or project declares a matching handler; `std/conventions/
 screenplay.brink` is the shipped built-in one. `COMPACT_CUE` (`@NAME:
-text`) stays unclaimed (its fused name+text shape doesn't fit
-`try_claim`'s single-text-node contract), as does any cue/heading
+text`) is claimable too, as of issue #2079 (RULED 2026-08-06, "Compact cue
+desugars to cue + content line"): it matches the SAME pattern a block
+cue's `@NAME` line would, against the name segment only — the fused
+dialogue is never shown to the pattern and keeps its interpolation rights,
+since it lowers separately as an ordinary content line inside the
+handler's attached run (or, for a `block`/plain handler, inside its
+captured fragment/appended statements respectively). The fused dialogue
+does **not** keep full markup rights, though: unlike a claimed `CUE`'s or
+`PARENTHETICAL`'s own text (which the pattern never inspects but which also
+never needs to be re-lowered as a body item), the dialogue is folded into
+the claim's own captured run — so it is held to the same "plain content
+line" requirement a block-capture's ordinary siblings are (no fused
+`LABEL`, `DIVERT_STMT`, `TUNNEL_CALL`, or `CHOICE_POINT`); a compact cue
+whose dialogue carries any of those declines the whole claim (loud `E129`)
+rather than silently corrupting the captured run (review finding, #2079's
+PR). A cue/heading
 carrying a tag extension, and a heading carrying an explicit `[slug]`
-(every worked-page heading in §8/§8c/§8d does) — `candidate`'s literalness
-rule declines all three the same way it declines a `CONTENT_LINE` with
-interpolation. Promoting a slug-bearing heading to a genuine HIR stitch (a
+(every worked-page heading in §8/§8c/§8d does), still decline —
+`candidate`'s literalness rule declines both the same way it declines a
+`CONTENT_LINE` with interpolation (literalness on a compact cue applies
+only to its name segment, never its dialogue). Promoting a slug-bearing
+heading to a genuine HIR stitch (a
 real divert target, §3.2/§3.3) is not built anywhere — issue #1717, which
 would have owned that, was closed as superseded by the §9.1 ruling without
 delivering it — so a heading-declared divert target, as §8c/§8d's worked

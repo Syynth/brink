@@ -233,6 +233,183 @@ flow main() {
     );
 }
 
+/// Issue #2079, RULED 2026-08-06 "Compact cue desugars to cue + content
+/// line": a compact cue (`@NAME: dialogue`) claims and attaches exactly
+/// like the block form does — matching the pattern against the name
+/// segment only — while the fused dialogue keeps full interpolation
+/// rights, since it lowers as an ordinary content line *inside* `cue`'s
+/// attached run rather than being flattened into the matched text.
+///
+/// Confirmed to fail without the fix (rule 20a): reverting the
+/// `N::COMPACT_CUE` arm in `hir::lower_native::element::candidate` (and
+/// its `try_claim` desugar) reproduces the pre-#2079 state — this exact
+/// source fails to *compile* at all (`E169`/`E129`: `COMPACT_CUE` is
+/// invisible to `candidate()`, so nothing claims `@KID: …` and it falls to
+/// the loud "parses but has no HIR lowering yet" default) — never a wrong
+/// transcript, always a hard compile failure, which is itself the
+/// regression this test guards against reintroducing.
+#[test]
+fn compact_cue_fused_dialogue_attaches_and_keeps_interpolation() {
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+var count = 3
+
+flow main() {
+  @KID: I have {count} coins.
+  -> END
+}
+"#;
+    let mut story = story_from_native_source(src);
+    let steps = story.continue_maximally().expect("drive to END");
+
+    let lines: Vec<_> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+
+    let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec!["I have 3 coins.\n"],
+        "cue's own claimed line must consume itself and produce no event; \
+         the fused dialogue must interpolate `count` exactly like ordinary \
+         prose: {steps:?}"
+    );
+
+    let dialogue_line = lines[0];
+    assert_eq!(
+        dialogue_line
+            .element
+            .data
+            .get("speaker")
+            .map(String::as_str),
+        Some("KID"),
+        "the fused dialogue must land INSIDE cue's attached run, carrying \
+         its speaker data, not just render as plain unattached text: \
+         {dialogue_line:?}"
+    );
+}
+
+/// Review finding on issue #2079's PR: a compact cue's fused dialogue that
+/// carries a fused divert must not be silently folded into the claim's
+/// attached run — the divert would transfer control before that run's own
+/// `EndElementRun`/`EndFragment` closes it, corrupting the runtime's
+/// attachment bookkeeping (`speaker: KID` would otherwise leak onto every
+/// line at the divert target). The claim declines instead (loud `E129`, the
+/// same posture `try_dispatch` already takes when a `!name` dispatch's own
+/// fused remainder isn't itself claimable), so this fixture must fail to
+/// *compile*, not silently produce a corrupted transcript.
+///
+/// Confirmed to fail without the fix (rule 20a): before the
+/// `is_plain_content_line` guard on `compact_dialogue` in `try_claim`, this
+/// exact source compiled cleanly and merged `-> outside`'s divert into
+/// `cue`'s captured attach run.
+#[test]
+fn compact_cue_dialogue_with_fused_divert_declines_the_claim() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+flow main() {
+  @KID: Goodbye. -> outside
+}
+
+flow outside() {
+  You are outside.
+  -> END
+}
+"#;
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brink_element_compact_cue_divert_{}_{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("main.brink");
+    std::fs::write(&path, src).expect("write fixture");
+    let options = brink_analyzer::AnalysisOptions {
+        conventions: Some("main.brink".to_owned()),
+        ..brink_analyzer::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&path, options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_err(),
+        "a compact cue whose fused dialogue carries a divert must decline \
+         the claim and fail to compile (E129), not silently corrupt the \
+         attached run: {result:?}"
+    );
+}
+
+/// [`compact_cue_dialogue_with_fused_divert_declines_the_claim`]'s twin for
+/// a fused `LABEL` (`(beat)`) instead of a divert — G-1's `(label)` syntax
+/// parses right after a compact cue's `@NAME:` prefix exactly as it would
+/// at the start of any other content line, and absorbing it unconditionally
+/// into the claim's captured fragment would fold it into a
+/// `Stmt::LabeledBlock` instead of the plain dialogue statement it should
+/// be. Declines the same way, for the same reason.
+#[test]
+fn compact_cue_dialogue_with_fused_label_declines_the_claim() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    let src = r#"
+struct Cue {
+  speaker: string,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+flow main() {
+  @KID: (beat) I have an idea.
+  -> END
+}
+"#;
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brink_element_compact_cue_label_{}_{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("main.brink");
+    std::fs::write(&path, src).expect("write fixture");
+    let options = brink_analyzer::AnalysisOptions {
+        conventions: Some("main.brink".to_owned()),
+        ..brink_analyzer::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&path, options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_err(),
+        "a compact cue whose fused dialogue carries a label must decline \
+         the claim and fail to compile (E129), not silently absorb it into \
+         a labeled block: {result:?}"
+    );
+}
+
 /// Review finding on issue #2108's PR: `OutputBuffer::flush_lines` seeded
 /// `resolve_lines_annotated` with `pending_element` but never wrote the
 /// end-of-slice state back (unlike `take_first_line`, which does) — so an
@@ -296,4 +473,51 @@ flow main() {
              VENDOR's already-closed attach run: {after_steps:?}"
         );
     }
+}
+
+/// Issue #2077, the tag half's end-to-end proof: a claimed scene heading's
+/// own trailing `#tag`s reach `OutputLine.tags` on the CLAIMED line's
+/// output — not just the HIR `Content.tags` field a unit test can see, but
+/// the real runtime output a host actually reads.
+///
+/// A `heading` handler here is Call-mode (no `attach`), same shape as
+/// `tests/tier1-native/conventions-screenplay-preset/story.brink`'s own —
+/// that fixture's own transcript is text-only (`brink_test_harness::
+/// corpus::drive_native_transcript` appends only `line.text`, never
+/// `line.tags`) and so, before this test, the tag half of issue #2077 had
+/// zero coverage past the claimed line's own HIR statement.
+#[test]
+fn a_claimed_headings_own_tags_reach_the_output_line() {
+    let src = r#"
+@[convention(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$", order = 10)]
+fn heading(kind: string, title: string) {
+  return "-- {kind}. {title} --";
+}
+
+flow main() {
+  INT. MARKET SQUARE - NIGHT [market] #act1
+  The square is empty.
+  -> END
+}
+"#;
+    let mut story = story_from_native_source(src);
+    let steps = story.continue_maximally().expect("drive to END");
+
+    let lines: Vec<_> = steps
+        .iter()
+        .filter_map(|s| match s {
+            Step::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+
+    let heading_line = lines
+        .iter()
+        .find(|l| l.text.contains("MARKET SQUARE"))
+        .expect("expected the claimed heading's own line");
+    assert_eq!(
+        heading_line.tags,
+        vec!["act1".to_string()],
+        "the heading's own trailing tag must reach OutputLine.tags: {heading_line:?}"
+    );
 }

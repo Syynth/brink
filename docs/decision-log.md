@@ -1777,6 +1777,33 @@
   - **Process**: `Test (all features)` stays non-required for now; the local gate template gains the feature-gated suites (finding 6 remedy (a)). The #1101 spurious-wake fix direction is (a) **row-directed wake dirtying** (re-evaluate only policies whose condition's inferred read row intersects the changed cells) — design/implementation as its own wave, issue to follow.
 - **WHY / CAVEAT (load-bearing for future readers):** These are REAL rulings for build purposes — waves may proceed against them — but they are **delegated and provisionally held**: the maintainer accepted the coordinator's recommendations sight-unseen and may reopen any of them on first close read. Agents encountering a surprise, contradiction, or awkwardness downstream of any decision in this entry must flag it LOUDLY to the maintainer rather than assume it was deliberately examined — the usual "the ruling was considered and is settled" presumption does NOT apply at full strength here. Each affected document carries a "ruled by delegation 2026-07-19, not fully reviewed" marker pointing back to this entry.
 
+## 2026-07-19 — evening walkthrough: batch 7 (NF-1..6 incl. B0.8b converter slice), F34/F35/F17, Q-R1..4 (sourcemap epic scheduled), BW-1..5, #1146 quarantine
+- **WHEN:** 2026-07-19 (evening)
+- **PROJECT:** brink
+- **SYSTEM:** language design + program process (interactive walkthrough of the complete pending queue)
+- **SCOPE:** architectural (multiple; two rulings explicitly OVERRIDE standing doc recommendations — NF-4, Q-R3)
+- **WHAT:** The maintainer ruled the complete pending queue in an interactive walkthrough; every ruling is stamped (dated, 2026-07-19) into its governing doc. One line each:
+  - **NF-1 (a)**: the native lexer/CST is a new peer crate `crates/internal/brink-syntax-native`.
+  - **NF-2 (b)**: writer-sufficient subset — prose dialect complete, code dialect minimal (existing-HIR constructs only); deferred constructs parse-but-reject loudly ("ruled but not yet lowered"); gap list published at writer onboarding.
+  - **NF-3 (b)**: declared source root in brink.toml; module path = relative path; INCLUDE never consumed for `.brink`; RIDER: cross-dialect INCLUDE (`.ink`↔`.brink`, either direction) is a hard error, never a silent skip.
+  - **NF-4 (a) — OVERRIDES the doc's recommendation (b)**: writer onboarding gates on ALL of B0 (incl. B0.8/B0.9/B0.10), not first light; NS-T timing pressure correspondingly relaxed but not void.
+  - **NF-5 (c+)**: snapshots + hand-curated respelled differentials as B0.7/B0.8 exit gates, PLUS new slice **B0.8b** — HIR→brink emitter + mechanical corpus converter (parallel lane, entry B0.8 merged); full-corpus episode-identity differential = the B0 ratification exit gate; emitter deliberately shared with the future `.brink` formatter and printer-based IDE rewrites (the ruling's rationale); crate suggestion `brink-respell` — NEVER `brink-converter` (#544's retired crate).
+  - **NF-6 (a)**: admission validator always-on; measured perf budget in B0.3's exit criteria; per-check dev-demotion only by individual maintainer ruling.
+  - **F34**: comparator write-guard = runtime check keyed on ExecMode — Dev faults (new tracked fault `ComparatorWroteState`) on any world-write mid-comparator; Prod skips the check (the write executes; defined + deterministic since the comparison sequence is fixed) — §4b's placement-never-fabrication pattern applied to effects.
+  - **F35 (b)**: bevy-brink's default ExecMode keys off `debug_assertions` (dev builds → Dev, release → Prod); hosts can still set explicitly; the core runtime default stays Dev.
+  - **F17 — CONFIRMED as landed**: Weighted[T] multiset equality (the A7 extension via content-over-form) ratified; explicit RULED stamp added to §8 (closes the thin-ruling flag); internal sorted-canonicalization considered and REJECTED (requires a total order on T; Weighted of non-orderable T is legal).
+  - **Q-R1 (a)**: new optional strippable `SectionKind::DebugInfo` (tag 0x11, omit-when-empty); dormant `Opcode::SourceLocation` retired.
+  - **Q-R2**: adopt accommodations A1–A3 (+ free riders A4/A5) — already landed in B0.1.
+  - **Q-R3 — OVERRIDES the memo's recommendation**: the source-map epic IS scheduled now — it enters the active queue rather than waiting for B0.4.
+  - **Q-R4**: the debug section is section-locally versioned; a NodeId column is reserved as the v2 extension; v1 entry encoding stays with the epic's design round.
+  - **BW-1**: book file paths stay.
+  - **BW-2**: error fences carry ` ```ink,error(Exxx) ` info-strings; the fence walker asserts the named code.
+  - **BW-3**: the Option annotation asymmetry is intended-until-B1.
+  - **BW-4**: `insert` = compat-with-expiry.
+  - **BW-5**: the fence walker is commissioned now.
+  - **#1146 quarantine authorized** (recorded in this log only, per the ruling).
+- **WHY:** Clearing the whole pending queue in one interactive sitting (in contrast to the delegated batch of the same date, these were walked through with the maintainer) unblocks every waiting lane at once: B0 loses its last ruling gates, the stdlib's ExecMode seam is closed for A4/bevy-brink, the source-map epic gets its perishable format decisions plus a schedule, and the book's writing waves get their conventions. Stamps live in: b0-findings.md + b0-sequencing.md (batch 7), stdlib-spec.md §4b/§8 (F34/F35/F17), sourcemap-epic-evaluation.md addendum (Q-R1..4), ns-d-book-outline.md §5 (BW-1..5). Where a ruling overrides a doc's recommendation (NF-4, Q-R3), the stamp says so explicitly.
+
 ## Doc comments ruled first-class on the native surface: CST-node attachment + inner `//!` form
 - **WHEN:** 2026-07-20
 - **PROJECT:** brink
