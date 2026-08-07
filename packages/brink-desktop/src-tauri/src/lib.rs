@@ -350,11 +350,26 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
 /// items arrive in D2 through that registry. The Edit submenu's predefined
 /// roles are load-bearing: without them the webview loses ⌘C/⌘V/⌘X on
 /// macOS.
+///
+/// The app-menu Quit item is a plain `MenuItem`, not
+/// `PredefinedMenuItem::quit` (#2370): the predefined item's native
+/// teardown does not reliably reach the webview (`on_menu_event` /
+/// `WindowEvent::CloseRequested`) on every platform, which would bypass the
+/// await-the-final-save quit path entirely. Routing it as `menu:quit`, the
+/// same way Open/Close Project already forward, guarantees ⌘Q funnels
+/// through the identical guarded path as closing the window.
 fn build_menu(
     handle: &tauri::AppHandle,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 
+    let quit = MenuItem::with_id(
+        handle,
+        "quit",
+        "Quit Brink Studio",
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?;
     let app_menu = Submenu::with_items(
         handle,
         "Brink Studio",
@@ -362,7 +377,7 @@ fn build_menu(
         &[
             &PredefinedMenuItem::about(handle, None, None)?,
             &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::quit(handle, None)?,
+            &quit,
         ],
     )?;
     let open = MenuItem::with_id(
@@ -425,6 +440,7 @@ pub fn run() {
                 let forwarded = match event.id().as_ref() {
                     "open-project" => Some("menu:open-project"),
                     "close-project" => Some("menu:close-project"),
+                    "quit" => Some("menu:quit"),
                     _ => None,
                 };
                 if let Some(name) = forwarded {
