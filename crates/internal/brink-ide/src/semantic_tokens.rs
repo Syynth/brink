@@ -140,6 +140,23 @@ fn classify_token(
         return None;
     }
 
+    // A leaf whose direct parent is `TEXT` is literal prose, whatever kind
+    // the shared lexer tagged it as. `text_content` (`parser/content.rs`)
+    // bumps every non-structural token straight into a flat `TEXT` node —
+    // no wrapping `IDENTIFIER`/`PATH`/etc — and `{expr}` interpolation
+    // always breaks the run and lowers as a *sibling* node before
+    // `text_content` starts (`mixed_content`'s `L_BRACE` dispatch), so a
+    // `TEXT` child is never anything else. #275 first carved this out for
+    // keyword lexemes alone (the word "and" in "cats and dogs"); #2293
+    // generalizes it to every kind — a hyphen in "well-known", a stray
+    // quote mark in dialogue, a plain word — none of it is code, so none
+    // of it gets a token. Mirrors the native classifier's
+    // `is_prose_run_container` carve-out below, which the same review
+    // thread (#2280/#2286) already established for `.brink` files.
+    if token.parent().is_some_and(|p| p.kind() == SyntaxKind::TEXT) {
+        return None;
+    }
+
     // Direct mappings by SyntaxKind
     if kind == SyntaxKind::LINE_COMMENT || kind == SyntaxKind::BLOCK_COMMENT {
         return Some(Classification {
@@ -149,14 +166,6 @@ fn classify_token(
     }
 
     if kind.is_keyword() {
-        // A keyword lexeme the parser absorbed into a prose run — e.g. the word
-        // "and" in "cats and dogs" — is just text, not a keyword. The parser's
-        // `text_content` bumps such tokens directly into a `TEXT` node, whereas
-        // real keywords live in expression/logic/declaration/divert nodes and
-        // are never a direct child of `TEXT`. So don't highlight those. (#275)
-        if token.parent().is_some_and(|p| p.kind() == SyntaxKind::TEXT) {
-            return None;
-        }
         return Some(Classification {
             token_type: TT_KEYWORD,
             modifiers: 0,
@@ -562,13 +571,28 @@ fn classify_native_token(
         return classify_native_ident(token, resolution_index);
     }
 
-    // A `-` or digit run inside a raw-bump prose container is literal text
-    // (`INT. HALL - DAY`'s `-`, `@JEAN-LUC`'s `-`), not an operator or a
-    // number — `classify_native_fixed_kind` below has no parent access at
-    // all, so it cannot tell these apart from a real `-`/numeric-literal
-    // token on its own; check parent-awareness here first (review finding
-    // on #2280/#2286, the same hole as the keyword carve-out above).
-    if matches!(kind, NK::MINUS | NK::INTEGER | NK::FLOAT)
+    // Any other punctuation inside a raw-bump prose container is literal
+    // text — never an operator, a divert, or a number.
+    // `classify_native_fixed_kind` below has no parent access at all, so it
+    // cannot tell these apart from a real token of the same kind on its
+    // own; check parent-awareness here first. Originally scoped to just
+    // `MINUS | INTEGER | FLOAT` (`INT. HALL - DAY`'s `-`, `@JEAN-LUC`'s `-`;
+    // review finding on #2280/#2286, the same hole as the keyword
+    // carve-out above). #2293 widens it to every kind reaching this point:
+    // `text_run_until`'s stop set doesn't exclude `!`/`?`/`=`/etc, so
+    // "Wait! Really?" inside `TEXT` still hit the operator arm below, and
+    // `tag()`'s raw-bump loop is even less restrictive — it doesn't stop on
+    // `DIVERT`/`GLUE` either, so a `#tag -> text` tag body could still
+    // paint `->` as an operator.
+    //
+    // `HASH`/`AT_L_BRACKET` are exempted: `tag()` (`content.rs`) makes
+    // `HASH` a *direct child of `TAG`* — the same node this guard treats as
+    // a prose container — so the sigil itself would otherwise be swallowed
+    // as prose and never reach `classify_native_fixed_kind`'s decorator arm
+    // below (review finding on #2293: the widened guard regressed every
+    // tag's own `#`/`@[` sigil colour, which #2280/#2286 had established).
+    // The sigil is structure, not prose — only the *text after* it is.
+    if !matches!(kind, NK::HASH | NK::AT_L_BRACKET)
         && token
             .parent()
             .is_some_and(|p| is_prose_run_container(p.kind()))
@@ -730,8 +754,12 @@ fn classify_native_ident(
         // not a symbol reference; without this arm every word fell through
         // to the resolution fallback below and rendered as a plain
         // `variable` — precisely #2280's own worked example (review finding
-        // on #2280/#2286).
-        NK::SCENE_TITLE => None,
+        // on #2280/#2286). `TEXT`/`TAG` are the same story for plain
+        // dialogue/narration and `#tag` text: #2286 only closed this gap for
+        // `SCENE_TITLE`, so a run-of-the-mill prose word (or a tag's own
+        // text) still fell through to `variable` — the exact remainder
+        // issue #2293 flagged, now folded into the same arm.
+        NK::TEXT | NK::TAG | NK::SCENE_TITLE => None,
         // `PATH`/other contexts — try the resolution index.
         _ => Some(classify_native_ident_by_resolution(token, resolution_index)),
     }
@@ -1146,6 +1174,54 @@ mod tests {
         assert!(
             kw.is_some(),
             "`and` inside inline logic must still be highlighted as a keyword"
+        );
+    }
+
+    #[test]
+    fn prose_words_are_not_classified_as_variables() {
+        // #2293: #275/#2286 only carved the "absorbed into prose" guard out
+        // for keywords. A plain narrative word (`IDENT` with no wrapping
+        // `IDENTIFIER` node — `text_content` bumps `TEXT` children flat) fell
+        // through `classify_ident`'s every declaration-shaped arm to the
+        // resolution fallback, which had nothing to resolve and defaulted to
+        // `GENERIC_VARIABLE` — so ordinary dialogue painted the same colour
+        // as a local variable.
+        let src = "Cats and dogs run.\n";
+        let tokens = parse_and_tokens(src);
+        for word in ["Cats", "dogs", "run"] {
+            assert!(
+                tokens.iter().all(|t| token_text(src, t) != word),
+                "prose word {word:?} must not get its own semantic token: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn prose_punctuation_is_not_classified_as_operator_or_string() {
+        // #2293's named remainder beyond #2280/#2286: a hyphen inside a
+        // hyphenated word, and other punctuation `text_content`'s stop set
+        // doesn't exclude (`!`, `?`), still reached the unconditional
+        // operator arm; a literal quote mark in dialogue (also not a
+        // `text_content` stop character) still reached the unconditional
+        // string arm.
+        //
+        // Review finding on #2293: the quoted line alone does not exercise
+        // `!`/`?` at all — inside `"Wait! Really?"` the lexer emits
+        // QUOTE + STRING_TEXT("Wait! Really?") + QUOTE, all as direct `TEXT`
+        // children, so `!`/`?` never surface as their own BANG/QUESTION
+        // tokens there; only the `-` in "well-known" was actually covered.
+        // An *unquoted* `Wait! Really?` line is required to reach the
+        // BANG/QUESTION operator arm at all (unquoted prose does produce
+        // them: `TEXT > IDENT, BANG, WHITESPACE, IDENT, QUESTION`).
+        let src = "The well-known hero shouted, \"Wait! Really?\"\nWait! Really?\n";
+        let tokens = parse_and_tokens(src);
+        assert!(
+            tokens.iter().all(|t| t.token_type != TT_OPERATOR),
+            "no prose punctuation should classify as an operator: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().all(|t| t.token_type != TT_STRING),
+            "a literal quote mark in dialogue must not read as a string delimiter: {tokens:?}"
         );
     }
 
@@ -1604,6 +1680,60 @@ mod tests {
                 .iter()
                 .all(|t| !(token_text(src, t) == "-" && t.token_type == TT_OPERATOR)),
             "`-` inside a cue name must not read as an operator: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn native_text_and_tag_prose_words_are_not_variable() {
+        // #2293: #2286 closed this exact gap for `SCENE_TITLE` alone
+        // (`native_scene_heading_title_and_slug_are_not_variable`) — an
+        // ordinary word of plain dialogue under `TEXT`, or a tag's own free
+        // text under `TAG`, had no matching arm in `classify_native_ident`
+        // and still fell through to `classify_native_ident_by_resolution`'s
+        // `GENERIC_VARIABLE` default.
+        let src = "The well-known hero shouted.\n#a tag about cats\n";
+        let tokens = analyzed_native_tokens(src);
+
+        for word in [
+            "The", "well", "known", "hero", "shouted", "tag", "about", "cats",
+        ] {
+            assert!(
+                tokens.iter().all(|t| token_text(src, t) != word),
+                "prose/tag word {word:?} must not get its own semantic token: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_prose_operators_beyond_minus_are_not_operator() {
+        // #2293: #2286's parent-aware punctuation guard only widened to
+        // `MINUS | INTEGER | FLOAT`. `text_run_until`'s stop set doesn't
+        // exclude `!`/`?`, so dialogue emphasis still hit the ordinary
+        // operator arm; `tag()`'s raw-bump loop doesn't stop on
+        // `DIVERT`/`GLUE` either, so a tag body containing `->`/`<>` did
+        // too.
+        let src = "Wait! Really?\n#a -> b <> c\n";
+        let tokens = analyzed_native_tokens(src);
+        assert!(
+            tokens.iter().all(|t| t.token_type != TT_OPERATOR),
+            "no prose/tag punctuation should classify as an operator: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn native_tag_hash_is_still_a_decorator() {
+        // Regression for the review finding on #2293's own widened prose
+        // guard: `tag()` (`content.rs`) makes `HASH` a direct child of
+        // `TAG`, which `is_prose_run_container` treats as a prose
+        // container — so the blanket "punctuation inside a prose container
+        // is text" guard swallowed the tag sigil itself along with the tag
+        // body, losing the `decorator` colour every `#tag` line had before
+        // this PR. Mirrors ink's `hash_is_decorator`.
+        let tokens = analyzed_native_tokens("#a tag about cats\n");
+        let dec = tokens.iter().find(|t| t.token_type == TT_DECORATOR);
+        assert!(
+            dec.is_some(),
+            "expected a decorator token for `#`: {tokens:?}"
         );
     }
 
