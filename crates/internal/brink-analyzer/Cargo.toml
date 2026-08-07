@@ -18,6 +18,11 @@ brink-format = { workspace = true }
 brink-syntax = { workspace = true }
 rowan.workspace = true
 serde = { workspace = true }
+# `conventions_confinement_diagnostics`'s "pointer resolves to no real
+# project file" case (issue #2335) warns instead of silently dropping,
+# mirroring `brink-db`'s own "warn, never silently drop" channel for the
+# same case (`conventions_confinement_diagnostics_query`).
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

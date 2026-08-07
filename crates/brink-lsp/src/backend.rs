@@ -130,10 +130,12 @@ pub struct LanguageOptions {
     /// regardless of what `brink.toml` configured, so a native project's
     /// `@[convention]` handlers never claimed prose across files in the
     /// background pass, and unclaimed scene headings hit `lower_native`'s
-    /// `E129` arm and dropped their scene bodies from the LSP's view (the
-    /// confinement gate itself, `E169`, is a `brink-db`-only query this
-    /// loop never calls, so it was never reachable here). Mirrors
-    /// `dialect`/`types`/`lints` exactly.
+    /// `E129` arm and dropped their scene bodies from the LSP's view. Since
+    /// issue #2335, `analyze_with_modules` (which this loop calls directly,
+    /// with no `ProjectDb` in between) also runs the confinement/
+    /// unconfigured `E169` check off this same field — previously that gate
+    /// was reachable only through a `brink-db` query this loop never calls.
+    /// Mirrors `dialect`/`types`/`lints` exactly.
     conventions: Arc<Mutex<Option<String>>>,
 }
 
@@ -2854,9 +2856,9 @@ pub async fn analysis_loop(
             // `@[convention]` handlers claimed nothing outside their own
             // file, so unclaimed scene headings elsewhere fell to
             // `lower_native`'s loud `E129` arm and dropped their scene
-            // bodies from the LSP's view (the confinement gate itself,
-            // `E169`, is a `brink-db`-only query this loop never calls, so
-            // it was never reachable here).
+            // bodies from the LSP's view. `analyze_with_modules` below also
+            // reads this field directly to run the confinement/unconfigured
+            // `E169` check itself now (issue #2335).
             conventions: language
                 .conventions
                 .lock()

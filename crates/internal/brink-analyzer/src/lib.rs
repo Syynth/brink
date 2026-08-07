@@ -63,8 +63,8 @@ pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
 pub use conventions_confinement::{
-    conventions_module_diagnostics, conventions_unconfigured_diagnostics,
-    is_path_shaped_conventions_pointer,
+    conventions_confinement_diagnostics, conventions_module_diagnostics,
+    conventions_unconfigured_diagnostics, is_path_shaped_conventions_pointer,
 };
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
@@ -726,6 +726,15 @@ pub fn analyze_with_options(
 /// own, so its presence is inert to this flag exactly as it is to its
 /// db-layer counterpart, `ProjectDb::is_all_native` (`brink-db`'s
 /// `queries::project_is_all_native`), which this parameter mirrors.
+///
+/// `opts.conventions` (issue #2335): this is also where the conventions-
+/// module confinement/unconfigured `E169` check runs for every caller of
+/// this function — see [`conventions_confinement_diagnostics`]'s own doc.
+/// Before this issue, `opts.conventions` reached every other analyzer pass
+/// but this one: `IdeSession`'s off-db `analyze()`, `brink-lsp`'s
+/// `analysis_loop`, and `Driver::analyze_project` all silently ran with zero
+/// confinement enforcement regardless of what `[project] conventions`
+/// configured, even though the field traveled correctly all the way here.
 pub fn analyze_with_modules(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     modules: &ModuleMap,
@@ -761,6 +770,21 @@ pub fn analyze_with_modules(
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
     }
+
+    // Conventions-module confinement/unconfigured `E169` (issue #2335): the
+    // one place this off-db path actually reads `opts.conventions` — see
+    // `conventions_confinement_diagnostics`'s own doc for why it needs
+    // `modules` (and so cannot live inside `finish_analysis`, which never
+    // receives it) and how it mirrors `brink-db`'s db-direct
+    // `conventions_confinement_diagnostics_query` for every caller of this
+    // function (`IdeSnapshot::analyze`, `brink-lsp`'s `analysis_loop`,
+    // `Driver::analyze_project`).
+    let hir_files: Vec<(FileId, &HirFile)> = files.iter().map(|&(id, hir, _)| (id, hir)).collect();
+    diagnostics.extend(conventions_confinement_diagnostics(
+        &hir_files,
+        modules,
+        opts.conventions.as_deref(),
+    ));
 
     finish_analysis(
         files,
