@@ -171,14 +171,54 @@ impl Default for LineContext {
 /// used for block-comment detection; the projection provides all structural
 /// info.
 pub fn line_contexts(source: &str, root: &SyntaxNode, projection: &Projection) -> Vec<LineContext> {
+    line_contexts_from_trivia(
+        source,
+        &crate::trivia::line_trivia(source, root, line_count_for(source)),
+        projection,
+    )
+}
+
+/// The native (`.brink`) sibling of [`line_contexts`] (issue #2291): every
+/// pass below `line_contexts_from_trivia` composes is already
+/// frontend-agnostic (the HIR projection and source-text scans it reads
+/// don't depend on which CST produced the HIR) — the *only* place
+/// `line_contexts` reads a syntax tree at all is the trivia facet's block-
+/// comment scan, so the native sibling differs only in which `line_trivia`
+/// variant it calls. Never pass a `brink_syntax::SyntaxNode` root parsed
+/// from native source text here (ink's grammar over native text, #2280's
+/// failure mode) — use [`crate::session::IdeSession::syntax_root_native`].
+pub fn line_contexts_native(
+    source: &str,
+    root: &brink_syntax_native::SyntaxNode,
+    projection: &Projection,
+) -> Vec<LineContext> {
+    line_contexts_from_trivia(
+        source,
+        &crate::trivia::line_trivia_native(source, root, line_count_for(source)),
+        projection,
+    )
+}
+
+/// Line count including the trailing synthetic empty line when `source`
+/// ends with `\n` — shared by [`line_contexts`] and [`line_contexts_native`].
+fn line_count_for(source: &str) -> usize {
     let line_count = source.lines().count().max(1);
-    // Handle trailing newline: if source ends with '\n', there's an extra empty line
-    let actual_lines = if source.ends_with('\n') {
+    if source.ends_with('\n') {
         line_count + 1
     } else {
         line_count
-    };
-    let mut ctx = vec![LineContext::default(); actual_lines];
+    }
+}
+
+/// The shared body of [`line_contexts`]/[`line_contexts_native`], taking an
+/// already-computed trivia facet so neither CST type leaks past the first
+/// pass.
+fn line_contexts_from_trivia(
+    source: &str,
+    trivia: &[crate::trivia::LineTrivia],
+    projection: &Projection,
+) -> Vec<LineContext> {
+    let mut ctx = vec![LineContext::default(); trivia.len()];
     let idx = LineIndex::new(source);
 
     // ── Pass 1: apply the trivia facet (comments, block comments, tags) ──
@@ -186,10 +226,7 @@ pub fn line_contexts(source: &str, root: &SyntaxNode, projection: &Projection) -
     // over a tag sigil; the structural passes below never reconsider a
     // comment line (no statement can share it), and only a still-`Blank`
     // line keeps a tag classification.
-    for (i, t) in crate::trivia::line_trivia(source, root, ctx.len())
-        .iter()
-        .enumerate()
-    {
+    for (i, t) in trivia.iter().enumerate() {
         if t.comment {
             ctx[i].element = LineElement::Comment;
         } else if t.tag && ctx[i].element == LineElement::Blank {
@@ -325,6 +362,20 @@ pub fn line_contexts_with_dialect(
     dialect: &ResolvedDialect,
 ) -> Vec<LineContext> {
     let mut ctx = line_contexts(source, root, projection);
+    apply_dialect(source, dialect, &mut ctx);
+    ctx
+}
+
+/// The native (`.brink`) sibling of [`line_contexts_with_dialect`] (issue
+/// #2291) — same dialect post-pass, layered on [`line_contexts_native`]
+/// instead of the ink-rooted base pass.
+pub fn line_contexts_with_dialect_native(
+    source: &str,
+    root: &brink_syntax_native::SyntaxNode,
+    projection: &Projection,
+    dialect: &ResolvedDialect,
+) -> Vec<LineContext> {
+    let mut ctx = line_contexts_native(source, root, projection);
     apply_dialect(source, dialect, &mut ctx);
     ctx
 }
@@ -1026,6 +1077,18 @@ mod tests {
         line_contexts(source, &parse.syntax(), &projection)
     }
 
+    /// The native (`.brink`) sibling of [`make_contexts`] (issue #2291) —
+    /// same HIR-projection pipeline, but parses/lowers with the native
+    /// frontend and calls [`line_contexts_native`].
+    fn make_native_contexts(source: &str) -> Vec<LineContext> {
+        let parse = brink_syntax_native::parse(source);
+        let file_id = FileId(0);
+        let ast = parse.tree();
+        let (hir, _, _) = brink_ir::hir::lower_native::lower(file_id, &ast);
+        let projection = crate::hir_projection::project_hir_structural(&hir, source);
+        line_contexts_native(source, &parse.syntax(), &projection)
+    }
+
     #[test]
     fn knot_and_stitch_headers() {
         let source = "=== my_knot ===\n= my_stitch\nHello\n";
@@ -1075,6 +1138,34 @@ mod tests {
         let ctx = make_contexts(source);
         assert_eq!(ctx[0].element, LineElement::Blank);
         assert_eq!(ctx[1].element, LineElement::Blank);
+    }
+
+    // ── #2291: `line_contexts_native` must read block comments from the
+    // real native CST, not the ink-parse-of-native-text failure mode
+    // #2280/#2286 fixed for semantic tokens. ──────────────────────────────
+
+    #[test]
+    fn native_block_comment_uses_the_native_cst() {
+        // Proves `line_contexts_native`'s block-comment classification is
+        // driven end to end by walking the real native CST's own
+        // `BLOCK_COMMENT` tokens (via `line_trivia_native`), not merely
+        // inherited from `line_contexts`'s shared source-scan pass.
+        let source = "flow main() {\n/* a\nblock */\nHello -> END\n}\n";
+        let ctx = make_native_contexts(source);
+        assert_eq!(ctx[1].element, LineElement::Comment, "{ctx:?}");
+        assert!(ctx[1].block_comment, "{ctx:?}");
+        assert_eq!(ctx[2].element, LineElement::Comment, "{ctx:?}");
+        assert!(ctx[2].block_comment, "{ctx:?}");
+        // The line after the comment is untouched by it.
+        assert!(!ctx[3].block_comment, "{ctx:?}");
+    }
+
+    #[test]
+    fn native_line_comment_and_tag() {
+        let source = "flow main() {\n// a comment\n# a_tag\nHello -> END\n}\n";
+        let ctx = make_native_contexts(source);
+        assert_eq!(ctx[1].element, LineElement::Comment, "{ctx:?}");
+        assert_eq!(ctx[2].element, LineElement::Tag, "{ctx:?}");
     }
 
     #[test]

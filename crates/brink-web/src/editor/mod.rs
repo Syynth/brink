@@ -3041,6 +3041,202 @@ mod tests {
     }
 
     #[test]
+    fn native_folding_ranges_reach_the_native_cst_path() {
+        // #2291: `folding_ranges()` on a native (`.brink`) file must route
+        // the machinery/narrative fold-run pass through
+        // `IdeSession::syntax_root_native` +
+        // `line_context::line_contexts_native`, never `syntax_root`'s
+        // always-ink parse (`IdeSession::syntax_root`'s own doc comment,
+        // #2280's failure mode) — reachability proved by exercising the
+        // real `EditorSession::folding_ranges()` entry point end to end on
+        // a `.brink` file, the same way a host would.
+        //
+        // Note on this assertion's scope: the `LineElement`/nature
+        // classification that decides machinery-vs-narrative comes from
+        // `IdeSession::projection`, which is already dialect-correct
+        // regardless of which CST `line_contexts` reads for its trivia
+        // (block-comment) facet — `session.hir()`/`session.projection()`
+        // dispatch on `is_native` independently (`lowered_query`). So this
+        // fixture's `machinery` fold appears whether or not the trivia
+        // root is native; it is NOT, by itself, proof the routing matters.
+        // The routing's actual regression coverage lives in
+        // `brink-ide`'s `trivia::tests::native_block_comment_spans_lines`
+        // and `line_context::tests::native_block_comment_uses_the_native_cst`
+        // (both red-first-verified against `line_trivia_native`/
+        // `line_contexts_native` in isolation) — this test only pins that
+        // the wasm-facing entry point actually reaches that native path
+        // without erroring, per #2291's reachability requirement.
+        let mut s = EditorSession::new();
+        s.set_fold_runs_enabled(true);
+        s.update_file(
+            "main.brink",
+            "flow main() {\n  \
+               var x = 1;\n  \
+               var y = 2;\n\n  \
+               -> END\n\
+             }\n",
+        );
+        assert!(s.set_active_file("main.brink"));
+
+        let ranges = json(&s.folding_ranges());
+        let array = ranges.as_array().expect("array");
+        assert!(
+            array
+                .iter()
+                .any(|r| r["kind"] == "machinery" && r["start_line"] == 1 && r["end_line"] == 2),
+            "the two `var` decls must fold as a machinery run: {ranges}"
+        );
+    }
+
+    // ── #2291: inlay hints / color hints / argument widgets gate a native
+    // (`.brink`) file to empty rather than computing them from
+    // `syntax_root`'s always-ink parse of the source text. Unlike folding,
+    // these passes classify by casting `root.descendants()` to *ink-only*
+    // typed AST nodes (`ast::FunctionCall`, `ast::DivertTargetWithArgs`) —
+    // there is no native-CST equivalent yet, so the honest fix is "no hints"
+    // rather than hints computed from a mis-cast tree. ─────────────────────
+
+    // Fixture note: ink's grammar mis-parses `fn heal(hp: int): int { ... }`
+    // as opaque prose text (confirmed with a throwaway probe dumping the
+    // ink CST — no `FunctionCall`/`CallExpr` node forms at all there), so a
+    // bare call like `heal(5)` inside prose produces NO ink-side hint
+    // either way and cannot prove this gate matters (rule 12b). But native's
+    // divert-with-args syntax `-> target(args)` is **textually identical**
+    // to ink's own divert-with-args grammar (confirmed by the same probe:
+    // ink forms a real `DIVERT_TARGET_WITH_ARGS`/`ARG_LIST` node for it) —
+    // so when `heal`/`set_tint` also resolves in the correctly-dialected
+    // `analysis()` (which is independent of which CST `root` feeds these
+    // ink-AST-cast functions), ink's mis-parse produces a real, plausible,
+    // WRONG hint. This is #2280's exact "present and wrong" failure mode.
+    const NATIVE_DIVERT_WITH_ARGS_FIXTURE: &str =
+        "fn heal(hp: int): int {\n  return hp;\n}\n\nflow main() {\n  -> heal(5)\n}\n";
+
+    #[test]
+    fn native_inlay_hints_are_gated_to_empty_not_ink_mis_parse_garbage() {
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", NATIVE_DIVERT_WITH_ARGS_FIXTURE);
+        assert!(s.set_active_file("main.brink"));
+        assert_eq!(
+            s.inlay_hints(0, 200),
+            "[]",
+            "a native file must get no inlay hints, not the `\"hp:\"` \
+             parameter hint ink's mis-parse of `-> heal(5)` computes"
+        );
+    }
+
+    #[test]
+    fn native_color_hints_are_gated_to_empty_not_ink_mis_parse_garbage() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, WidgetDecl,
+        };
+        let src =
+            "extern set_tint(color: string);\n\nflow main() {\n  -> set_tint(\"#FF8800\")\n}\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", src);
+        let doc = s.open_document("main.brink");
+        let manifest = HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "set_tint".into(),
+                params: vec![ManifestParam {
+                    name: "color".into(),
+                    ty: TypeRef("hex_color".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "hex_color".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: Some(WidgetDecl {
+                    kind: "color".into(),
+                }),
+            }],
+        };
+        s.set_host_manifest(&serde_json::to_string(&manifest).expect("manifest serializes"))
+            .expect("manifest validates");
+        assert_eq!(
+            s.color_hints_doc(doc, 0, 200),
+            "[]",
+            "a native file must get no color-picker hints, not the \
+             `\"#FF8800\"` hint ink's mis-parse of `-> set_tint(\"#FF8800\")` \
+             computes"
+        );
+    }
+
+    #[test]
+    fn native_argument_widgets_are_gated_to_empty_not_ink_mis_parse_garbage() {
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", NATIVE_DIVERT_WITH_ARGS_FIXTURE);
+        let doc = s.open_document("main.brink");
+        assert_eq!(
+            s.argument_widgets_doc(doc, 0, 200),
+            "[]",
+            "a native file must get no argument-widget sites, not the \
+             `heal` call site ink's mis-parse of `-> heal(5)` computes"
+        );
+    }
+
+    #[test]
+    fn native_convert_element_is_gated_to_null_not_a_corrupting_ink_sigil_edit() {
+        // #2291: `line_convert::convert_element`'s classification of *which*
+        // lines are convertible (`LineElement::Narrative`/`Choice`/`Gather`/
+        // `Blank`) comes from the projection, which is already
+        // dialect-correct (`IdeSession::projection` dispatches on
+        // `is_native` independently of which CST feeds `line_contexts`'s
+        // trivia facet) — so a plain narrative line in a `.brink` file
+        // classifies correctly as `Narrative` even through the buggy
+        // always-ink `syntax_root`. The actual bug is downstream: the
+        // rewrite itself inserts an ink-only `*`/`+`/`-` bare-line sigil,
+        // which is not valid native syntax at all (native choices only
+        // exist inside an explicit `{? ... }` choice point) — a native file
+        // must get no conversion, not one that corrupts it.
+        let mut s = EditorSession::new();
+        let src = "flow main() {\n  Some narrative text.\n  -> END\n}\n";
+        s.update_file("main.brink", src);
+        assert!(s.set_active_file("main.brink"));
+
+        let offset = src.find("Some").expect("fixture contains it") as u32;
+        assert_eq!(
+            s.convert_element(offset, "choice"),
+            "null",
+            "a native file must get no line-conversion edit, not one that \
+             inserts an ink `* ` choice sigil into `.brink` source"
+        );
+    }
+
+    #[test]
+    fn native_format_document_is_gated_to_a_no_op() {
+        // #2291: `sort_knots_in_source` always calls `brink_syntax::parse`
+        // and reorders by ink `Knot` (`=== name ===`) nodes. Realistic
+        // native source has no such header, so this is already a silent
+        // no-op for `.brink` files without any gate — this fixture is the
+        // worst case, not realistic content: text that spells ink's own
+        // `=== ===` header syntax verbatim (confirmed by a throwaway probe
+        // against `brink_ide::sort_knots_in_source` directly: it genuinely
+        // reorders this exact text when parsed as ink). The gate's value is
+        // making that safety explicit rather than relying on native syntax
+        // coincidentally never colliding with ink's header spelling.
+        let mut s = EditorSession::new();
+        let src = "=== zeta ===\nprints stuff\n\n=== alpha ===\nprints other stuff\n";
+        s.update_file("main.brink", src);
+        assert!(s.set_active_file("main.brink"));
+
+        assert_eq!(
+            s.format_document(),
+            serde_json::to_string(src).expect("source serializes"),
+            "a native file's `format_document` must return the source \
+             unchanged, not ink's knot-reordered rewrite of it"
+        );
+    }
+
+    #[test]
     fn clear_dialect_reverts_to_plain_classification() {
         let mut s = EditorSession::new();
         s.update_file("main.ink", "=== start ===\n@Alice:<>\n");

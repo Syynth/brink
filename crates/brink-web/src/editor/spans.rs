@@ -47,24 +47,46 @@ impl EditorSession {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
         };
-        let (Some(source), Some(root)) = (
-            self.session.source(file_id),
-            self.session.syntax_root(file_id),
-        ) else {
+        let Some(source) = self.session.source(file_id) else {
             return "[]".to_owned();
         };
 
         let Some(projection) = self.session.projection(file_id) else {
             return "[]".to_owned();
         };
-        let contexts = match self.session.dialect() {
-            Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
-                source,
-                &root,
-                &projection,
-                dialect,
-            ),
-            None => brink_ide::line_context::line_contexts(source, &root, &projection),
+
+        // A native (`.brink`) file's real CST is `syntax_root_native`, not
+        // `syntax_root` (which always runs the ink parser over the source
+        // text regardless of extension — `IdeSession::syntax_root`'s doc
+        // comment, #2280's failure mode). Mirrors `folding_ranges_impl`'s
+        // `is_native` dispatch (#2291) — `line_contexts_impl` is the same
+        // trivia-only classification the folding fold-run pass reuses.
+        let contexts = if self.session.is_native(file_id) {
+            let Some(root) = self.session.syntax_root_native(file_id) else {
+                return "[]".to_owned();
+            };
+            match self.session.dialect() {
+                Some(dialect) => brink_ide::line_context::line_contexts_with_dialect_native(
+                    source,
+                    &root,
+                    &projection,
+                    dialect,
+                ),
+                None => brink_ide::line_context::line_contexts_native(source, &root, &projection),
+            }
+        } else {
+            let Some(root) = self.session.syntax_root(file_id) else {
+                return "[]".to_owned();
+            };
+            match self.session.dialect() {
+                Some(dialect) => brink_ide::line_context::line_contexts_with_dialect(
+                    source,
+                    &root,
+                    &projection,
+                    dialect,
+                ),
+                None => brink_ide::line_context::line_contexts(source, &root, &projection),
+            }
         };
         if let Some(v) = view {
             let start = v.start_line as usize;
@@ -290,5 +312,53 @@ mod tests {
         );
         assert_ne!(type_at(0, 7), TT_VARIABLE);
         assert_ne!(type_at(1, 4), TT_VARIABLE);
+    }
+
+    /// #2291: `line_contexts()` on a native (`.brink`) file must route
+    /// through `IdeSession::syntax_root_native` +
+    /// `line_context::line_contexts_native`, never `syntax_root`'s
+    /// always-ink parse (`IdeSession::syntax_root`'s own doc comment,
+    /// #2280's failure mode) — mirrors
+    /// `folding::tests::native_folding_ranges_reach_the_native_cst_path`'s
+    /// reachability proof (same fixture shape), exercised through the real
+    /// `EditorSession::line_contexts()` entry point end to end on a
+    /// `.brink` file, the same way a host would.
+    ///
+    /// Note on this assertion's scope, same caveat as the folding test:
+    /// `line_contexts_native`'s block-comment classification is proved
+    /// end to end against the real native CST in brink-ide's own
+    /// `line_context::tests::native_block_comment_uses_the_native_cst`
+    /// (red-first-verified there). This test only pins that the
+    /// wasm-facing entry point actually reaches that native path and
+    /// reports the comment correctly, per #2291's reachability
+    /// requirement.
+    #[test]
+    fn native_line_contexts_reach_the_native_cst_path() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.brink",
+            "flow main() {\n/* a\nblock */\nHello -> END\n}\n",
+        );
+        assert!(s.set_active_file("main.brink"));
+
+        let json = s.line_contexts();
+        let ctx: serde_json::Value =
+            serde_json::from_str(&json).expect("line_contexts returns valid JSON");
+        let array = ctx.as_array().expect("array");
+        assert_eq!(
+            array[1]["block_comment"],
+            serde_json::json!(true),
+            "the block comment's first line must be classified as such: {ctx}"
+        );
+        assert_eq!(
+            array[2]["block_comment"],
+            serde_json::json!(true),
+            "the block comment's second line must be classified as such: {ctx}"
+        );
+        assert_eq!(
+            array[3]["block_comment"],
+            serde_json::json!(false),
+            "the line after the comment must be untouched by it: {ctx}"
+        );
     }
 }
