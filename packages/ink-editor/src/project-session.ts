@@ -35,6 +35,15 @@ function isProjectConfigPath(path: string): boolean {
 
 export interface ProjectSessionOptions {
   provider: FileProvider;
+  /**
+   * The project's entry file, used to seed `brink.toml` discovery (its
+   * walk-up starts at this path's directory) and as the compile/initial-tab
+   * entry UNTIL/UNLESS discovery finds a `brink.toml` naming a valid
+   * `[project] entry` (issue #2331, ruled 2026-08-07 "`[project] entry`
+   * beats `mountStudio`'s `entryFile`") — see {@link ProjectSession.getEntryFile}.
+   * This argument is the fallback for a configless project; it is never
+   * consulted again once a config-named entry supersedes it.
+   */
   entryFile: string;
   /** Re-use an existing session, or a new one is created. */
   session?: EditorSessionHandle;
@@ -146,6 +155,22 @@ export class ProjectSession {
    * the single call site all of them share, and reported through
    * {@link ProjectSessionOptions.onProjectConfigError} instead of
    * rethrowing.
+   *
+   * Also owns `[project] entry` precedence (issue #2331, ruled 2026-08-07
+   * "`[project] entry` beats `mountStudio`'s `entryFile`"): a discovered
+   * `brink.toml` naming an `entry` that resolves to a real file in this
+   * session supersedes `this.entryFile` — the host's constructor-time
+   * `entryFile` argument is only the fallback for a configless project (no
+   * `brink.toml`, or one that doesn't set `entry`). This is the one place
+   * that reconciles the two, so every caller of `getEntryFile()`/
+   * `compileProject()` — and `mountStudio`'s initial-tab open, which reads
+   * `getEntryFile()` after `initialize()` — automatically sees whichever
+   * one wins. A config-named entry that does NOT resolve to a real project
+   * file never supersedes anything (`this.entryFile` stays whatever it
+   * was) and is reported through the same
+   * {@link ProjectSessionOptions.onProjectConfigWarnings} channel as every
+   * other `brink.toml` misconfiguration — no new warning channel for this
+   * one case.
    */
   private applyProjectConfig(): void {
     let warnings: string[];
@@ -154,6 +179,17 @@ export class ProjectSession {
     } catch (err) {
       this.onProjectConfigError?.(err instanceof Error ? err.message : String(err));
       return;
+    }
+    const configuredEntry = this.session.getConfiguredEntry();
+    if (configuredEntry !== null) {
+      if (this.session.getFileSource(configuredEntry) !== null) {
+        this.entryFile = configuredEntry;
+      } else {
+        warnings = [
+          ...warnings,
+          `project.entry \`${configuredEntry}\` in brink.toml does not resolve to a project file (ignored)`,
+        ];
+      }
     }
     this.onProjectConfigWarnings?.(warnings);
   }
@@ -218,7 +254,14 @@ export class ProjectSession {
     return this.session;
   }
 
-  /** The entry file for compilation. */
+  /**
+   * The project's entry file — for compilation, and (via `mountStudio`,
+   * read after `initialize()`) the initial tab. This is the constructor's
+   * `entryFile` option UNLESS `applyProjectConfig` found a `brink.toml`
+   * naming a valid `[project] entry` (issue #2331, ruled 2026-08-07),
+   * which supersedes it; see that method's doc for the full precedence
+   * rule.
+   */
   getEntryFile(): string {
     return this.entryFile;
   }

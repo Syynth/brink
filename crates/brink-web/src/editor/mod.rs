@@ -161,6 +161,21 @@ pub struct EditorSession {
     /// ruled cost compensation (`(line text, projection revision)`
     /// memoization). See `explain_match.rs`'s own doc.
     explain_cache: brink_ir::ExplainMatchCache,
+    /// `[project] entry` from the most recently applied `brink.toml` (issue
+    /// #2331, ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s
+    /// `entryFile`") — set wholesale from `config.entry` on every
+    /// `apply_project_config`/`discover_project_config` call in
+    /// `apply_parsed_config`, mirroring `conventions`' own no-precedence,
+    /// always-replace handling (there is no explicit-API tier to check
+    /// first, unlike `dialect`/`types`). `None` means the file didn't set
+    /// it (or no file was found), in which case [`Self::configured_entry`]
+    /// tells the host nothing and it falls back to its own constructor-time
+    /// entry argument. This crate doesn't validate the path against the
+    /// session's actual file set — that's `ProjectSession`'s job
+    /// (`packages/ink-editor/src/project-session.ts`), which is the one
+    /// place that knows whether the named path resolves to a real project
+    /// file.
+    configured_entry: Option<String>,
 }
 
 impl Default for EditorSession {
@@ -213,6 +228,7 @@ impl EditorSession {
             deny_warnings_override: None,
             mounted_std_ids,
             explain_cache: brink_ir::ExplainMatchCache::new(),
+            configured_entry: None,
         }
     }
 
@@ -565,6 +581,24 @@ impl EditorSession {
         Ok(serde_json::to_string(&all_warnings).unwrap_or_default())
     }
 
+    /// The `[project] entry` value from the most recently applied
+    /// `brink.toml`, if the file set one (issue #2331, ruled 2026-08-07
+    /// "`[project] entry` beats `mountStudio`'s `entryFile`") — `None`
+    /// otherwise (no `brink.toml` found, or one found that doesn't set
+    /// `entry`). Read this after [`Self::discover_project_config`]/
+    /// [`Self::apply_project_config`] to learn whether the file names the
+    /// project's entry file; per the ruling, a host that gets `Some` here
+    /// should use it in place of its own constructor-time entry-file
+    /// argument, which is only the fallback for a configless project. This
+    /// crate doesn't check the named path resolves to a real file in this
+    /// session — that check belongs to the caller (`ProjectSession` in
+    /// `packages/ink-editor/src/project-session.ts`), which already knows
+    /// the project's actual file set.
+    #[must_use]
+    pub fn configured_entry(&self) -> Option<String> {
+        self.configured_entry.clone()
+    }
+
     /// Push the host's current values for `host`-source semantic types (Tier 3,
     /// #174) from a JSON object `{ "<type>": [{ "value", "label", "detail"? }] }`
     /// — a full snapshot that **replaces** the cache. The attached host (e.g.
@@ -838,6 +872,14 @@ impl EditorSession {
         self.dialect = resolved.dialect;
         self.session.apply_analysis_options(&resolved);
 
+        // `[project] entry` (issue #2331): wholesale-replace, same
+        // no-precedence-tier reasoning `apply_analysis_options` uses for
+        // `conventions` — an `entry` key removed from `brink.toml` between
+        // two calls must actually clear `configured_entry`, not stay stuck
+        // at a stale value. `Self::configured_entry` is the read side hosts
+        // poll after discovery to learn whether the file named an entry
+        // file at all.
+        self.configured_entry.clone_from(&config.entry);
         // #1417: the CLI/API tier (`set_lint_overrides`/
         // `set_deny_warnings_override`) always wins over what the file
         // above just resolved — reapplied here so a `brink.toml` reload
@@ -4245,6 +4287,51 @@ mod tests {
             s.dialect,
             brink_analyzer::Dialect::StrictInk,
             "the discovered-but-missed brink.toml's dialect = brink must NOT apply"
+        );
+    }
+
+    // ── Issue #2331: `[project] entry` / `configured_entry` ────────────────
+
+    #[test]
+    fn discover_project_config_populates_configured_entry() {
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\nentry = \"story.ink\"\n");
+        s.update_file("story.ink", "-> END\n");
+        assert_eq!(s.configured_entry(), None, "nothing applied yet");
+        s.discover_project_config("story.ink")
+            .expect("discovers and applies the in-memory brink.toml");
+        assert_eq!(s.configured_entry().as_deref(), Some("story.ink"));
+    }
+
+    #[test]
+    fn discover_project_config_with_no_entry_key_leaves_configured_entry_none() {
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\ndialect = \"brink\"\n");
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.discover_project_config("main.ink")
+            .expect("discovers and applies the in-memory brink.toml");
+        assert_eq!(s.configured_entry(), None);
+    }
+
+    #[test]
+    fn a_later_brink_toml_with_entry_removed_clears_configured_entry() {
+        // Same "wholesale replace, never merge" contract as `conventions`
+        // (issue #1397/#1880): an `entry` key present on one discovery and
+        // gone on the next must actually clear, not stick.
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\nentry = \"story.ink\"\n");
+        s.update_file("story.ink", "-> END\n");
+        s.discover_project_config("story.ink")
+            .expect("first discovery applies entry");
+        assert_eq!(s.configured_entry().as_deref(), Some("story.ink"));
+
+        s.update_file("brink.toml", "[project]\ndialect = \"brink\"\n");
+        s.discover_project_config("story.ink")
+            .expect("second discovery re-applies the now-entry-less file");
+        assert_eq!(
+            s.configured_entry(),
+            None,
+            "a brink.toml that dropped `entry` must clear configured_entry, not keep the stale value"
         );
     }
 

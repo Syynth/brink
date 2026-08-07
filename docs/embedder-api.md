@@ -36,6 +36,15 @@ handle.unmount(); // unmount React, dispose editor views, free the wasm session
 store, registries, navigation wiring, default layout. It is the only way to
 mount the studio — the standalone playground app is itself a caller.
 
+`entryFile` is only the fallback for a **configless** project (issue #2331,
+ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`"): if
+the project's `brink.toml` sets `[project] entry` to a path that exists in
+`files`, that value wins for both compilation and the initial tab, and
+`entryFile` is never consulted again. Pass `entryFile` for the configless
+case (no `brink.toml`, or one that doesn't set `entry`) and whenever
+`brink.toml` might not have loaded yet — it must still name a real key of
+`files`.
+
 `hostManifest` registers the host-capability manifest
 ([host-capability-manifest.md](host-capability-manifest.md)) before the
 first compile, so manifest-driven diagnostics (literal type mismatches,

@@ -95,6 +95,20 @@
 //!                                    # migrate to `conventions`.
 //! ```
 //!
+//! ```toml
+//! [project]
+//! entry = "story.ink"  # the project's entry file, project-relative
+//!                      # (issue #2331, ruled 2026-08-07 "[project] entry
+//!                      # beats mountStudio's entryFile"). When both this
+//!                      # key and a host's own entry-file argument
+//!                      # (`mountStudio`'s `entryFile`, `ProjectSession`'s
+//!                      # constructor option) are present, THIS KEY WINS —
+//!                      # the host argument is only the fallback for a
+//!                      # configless project. Unset means "no opinion": the
+//!                      # host argument decides alone, unchanged from
+//!                      # pre-#2331 behavior.
+//! ```
+//!
 //! (`E014` — a plainly `Warning`-by-default code — is used here rather than
 //! `E063`: `E063`'s own *base* severity is `types`-policy-dependent (`Error`
 //! under `types = strict`, see `brink_analyzer::effective_severity`'s doc
@@ -263,6 +277,25 @@ pub struct ProjectConfig {
     /// parsing uses only this field; there is no separate `elements` field
     /// to keep in sync.
     pub conventions: Option<String>,
+    /// `[project] entry`, if set (issue #2331, ruled 2026-08-07 "`[project]
+    /// entry` beats `mountStudio`'s `entryFile`"): a project-relative path
+    /// naming the project's entry file (e.g. `"story.ink"`,
+    /// `"chapters/main.brink"`). Same shape as [`Self::conventions`] — this
+    /// crate only carries the raw string, without checking the path exists
+    /// or resolving it against a real project tree (kept dependency-free,
+    /// #1234); that is each mount's own job (e.g. `ProjectSession` in
+    /// `packages/ink-editor/src/project-session.ts`, which knows the
+    /// project's actual file set).
+    ///
+    /// The ruling: when both this key and a host's own entry-file argument
+    /// are present, this key WINS — the host argument is only the fallback
+    /// for a configless project (one with no `brink.toml`, or a
+    /// `brink.toml` that doesn't set `entry`). Unlike `dialect`/`types`,
+    /// there is no "explicit API call always wins" precedence tier here:
+    /// the host argument was never an explicit *override* API in the first
+    /// place, just a constructor-time default that had nowhere better to
+    /// come from before this field existed.
+    pub entry: Option<String>,
 }
 
 impl ProjectConfig {
@@ -276,6 +309,7 @@ impl ProjectConfig {
             && self.deny_warnings.is_none()
             && self.unprune_dirs.is_empty()
             && self.conventions.is_none()
+            && self.entry.is_none()
     }
 }
 
@@ -540,7 +574,7 @@ fn parse_project_table(
                 config.unprune_dirs = dirs;
             }
             "conventions" => {
-                let s = parse_conventions(path, pkey, pvalue)?;
+                let s = parse_path_like_string(path, pkey, pvalue)?;
                 if s.is_empty() {
                     warnings.push(ConfigWarning(format!(
                         "`project.conventions` in {CONFIG_FILE_NAME} is an empty string \
@@ -552,7 +586,7 @@ fn parse_project_table(
                 }
             }
             "elements" => {
-                let s = parse_conventions(path, pkey, pvalue)?;
+                let s = parse_path_like_string(path, pkey, pvalue)?;
                 if s.is_empty() {
                     warnings.push(ConfigWarning(format!(
                         "`project.elements` in {CONFIG_FILE_NAME} is an empty string (ignored) \
@@ -561,6 +595,18 @@ fn parse_project_table(
                     )));
                 } else {
                     elements_value = Some(s);
+                }
+            }
+            "entry" => {
+                let s = parse_path_like_string(path, pkey, pvalue)?;
+                if s.is_empty() {
+                    warnings.push(ConfigWarning(format!(
+                        "`project.entry` in {CONFIG_FILE_NAME} is an empty string (ignored) — \
+                         expected a project-relative path to the entry file (e.g. \
+                         \"story.ink\")"
+                    )));
+                } else {
+                    config.entry = Some(s);
                 }
             }
             _ => warnings.push(ConfigWarning(format!(
@@ -630,18 +676,24 @@ fn resolve_conventions_key(
     }
 }
 
-/// Parse `[project] conventions` (§3.4's pointer mechanism; also called for
-/// its deprecated `elements` alias, issue #2180 — the raw string shape is
-/// identical for either key): any non-empty string, since this crate
-/// doesn't know the closed set of built-in preset names and can't check a
-/// project path exists (kept dependency-free, #1234) — [`parse_str_at`]'s
-/// caller flags an empty string as a warning; this only enforces the TOML
-/// shape (a string, full stop). Checking a bare (preset-shaped) value
+/// Parse a `[project]` key whose value is a bare project-relative path (or,
+/// for `conventions`/`elements`, a built-in preset name): `conventions`
+/// (§3.4's pointer mechanism), its deprecated `elements` alias (issue
+/// #2180 — the raw string shape is identical for either key), and `entry`
+/// (issue #2331) all share this exact validation. Accepts any non-empty
+/// string, since this crate doesn't know the closed set of built-in preset
+/// names and can't check a project path exists (kept dependency-free,
+/// #1234) — each caller in [`parse_project_table`] flags an empty string as
+/// a warning itself; this only enforces the TOML shape (a string, full
+/// stop). Checking a bare (preset-shaped) `conventions`/`elements` value
 /// against the real closed preset-name set is
 /// `brink-analyzer::AnalysisOptions::apply_project_config`'s job (issue
 /// #1874), the same "this crate stays dependency-free; the crate that owns
-/// the closed set validates" split `[lints]`'s `validate_lint_code` uses.
-fn parse_conventions(path: &str, key: &str, value: &Value) -> Result<String, ConfigError> {
+/// the closed set validates" split `[lints]`'s `validate_lint_code` uses;
+/// `entry` has no preset-name form to check in the first place —
+/// resolving whether it names a real project file is `ProjectSession`'s job
+/// (`packages/ink-editor/src/project-session.ts`).
+fn parse_path_like_string(path: &str, key: &str, value: &Value) -> Result<String, ConfigError> {
     value
         .as_str()
         .map(str::to_owned)
@@ -1228,6 +1280,60 @@ mod tests {
     fn unset_conventions_leaves_config_empty_by_itself() {
         let (config, _warnings) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
         assert_eq!(config.conventions, None);
+    }
+
+    // ── entry (issue #2331, ruled 2026-08-07) ────────────────────────────
+
+    #[test]
+    fn parses_entry_as_a_project_relative_path() {
+        let (config, warnings) = parse_str(
+            r#"
+            [project]
+            entry = "story.ink"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.entry.as_deref(), Some("story.ink"));
+        assert!(!config.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn parses_entry_nested_under_a_directory() {
+        let (config, _warnings) =
+            parse_str("[project]\nentry = \"chapters/main.brink\"\n").unwrap();
+        assert_eq!(config.entry.as_deref(), Some("chapters/main.brink"));
+    }
+
+    #[test]
+    fn empty_entry_string_warns_and_is_not_set() {
+        let (config, warnings) = parse_str("[project]\nentry = \"\"\n").unwrap();
+        assert_eq!(config.entry, None);
+        assert!(config.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].0.contains("entry"));
+    }
+
+    #[test]
+    fn entry_wrong_type_is_an_error() {
+        let err = parse_str("[project]\nentry = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn unset_entry_leaves_config_empty_by_itself() {
+        let (config, _warnings) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
+        assert_eq!(config.entry, None);
+    }
+
+    #[test]
+    fn entry_and_conventions_coexist_independently() {
+        let (config, warnings) =
+            parse_str("[project]\nentry = \"story.ink\"\nconventions = \"conventions.brink\"\n")
+                .unwrap();
+        assert_eq!(config.entry.as_deref(), Some("story.ink"));
+        assert_eq!(config.conventions.as_deref(), Some("conventions.brink"));
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     // ── `elements` deprecated alias (issue #2180) ────────────────────────

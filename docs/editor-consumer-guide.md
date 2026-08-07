@@ -115,6 +115,14 @@ Two callbacks surface the result:
   feature exists to make effective can't take your mount or your linter down with it. The file's
   previously-applied config (if any) stays in effect until a valid edit re-discovers it.
 
+`[project] entry` (issue #2331, ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s
+`entryFile`") also flows through this discovery: when the discovered `brink.toml` names an `entry`
+that resolves to a real file in the session, it **supersedes** the constructor's `entryFile`
+argument for both `compileProject()` and `getEntryFile()` — the constructor argument is only the
+configless fallback (and the seed path discovery starts its walk-up from). A config-named `entry`
+that doesn't resolve to a real file falls back to the current `entryFile` and is reported through
+`onProjectConfigWarnings`, the same channel as every other `brink.toml` misconfiguration.
+
 ## `DocumentSessions` view-state persistence (#347)
 
 Per-tab cursor + scroll save/restore across app reloads:

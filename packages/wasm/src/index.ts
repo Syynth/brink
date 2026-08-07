@@ -394,6 +394,23 @@ export class EditorSessionHandle {
   }
 
   /**
+   * The `[project] entry` value from the most recently applied
+   * `brink.toml` (issue #2331, ruled 2026-08-07 "`[project] entry` beats
+   * `mountStudio`'s `entryFile`") — `null` when no `brink.toml` was found,
+   * or one was found that doesn't set `entry`. Call this after
+   * {@link discoverProjectConfig}/{@link applyProjectConfig}; per the
+   * ruling, a non-null result should supersede the host's own
+   * constructor-time entry-file argument (`ProjectSession`'s `entryFile`
+   * option, `mountStudio`'s `entryFile`), which is only the fallback for a
+   * configless project. This wrapper doesn't check the path resolves to a
+   * real file in the session — the caller does that (`ProjectSession` in
+   * `packages/ink-editor/src/project-session.ts`).
+   */
+  getConfiguredEntry(): string | null {
+    return this.session.configured_entry() ?? null;
+  }
+
+  /**
    * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
    * wasm/editor counterpart of `brink compile`'s repeatable
    * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
