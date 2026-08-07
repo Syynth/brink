@@ -1218,36 +1218,57 @@ fn element_extras(
     file_id: FileId,
     diags: &mut Vec<Diagnostic>,
 ) -> (Option<ElementCapture>, Vec<Tag>) {
-    if let Some(heading) = ast::SceneHeading::cast(node.clone()) {
-        let slug = heading
+    let slug = ast::SceneHeading::cast(node.clone()).and_then(|heading| {
+        heading
             .slug()
             .and_then(|s| s.name_token())
             .map(|tok| ElementCapture {
                 name: "slug".to_string(),
                 text: tok.text().to_string(),
                 range: tok.text_range(),
-            });
-        let tags = heading
-            .tags()
-            .map(|t| super::body::lower_tag(file_id, &t, diags))
-            .collect();
-        return (slug, tags);
+            })
+    });
+    let tags = raw_element_tags(node)
+        .iter()
+        .map(|t| super::body::lower_tag(file_id, t, diags))
+        .collect();
+    (slug, tags)
+}
+
+/// The trailing `#tag` nodes [`element_extras`] recovers for `node`'s own
+/// kind — empty for anything but `SceneHeading`/`Cue`/`Parenthetical`
+/// (`CONTENT_LINE` never reaches here; see [`element_extras`]'s own doc for
+/// why). Factored out of `element_extras` itself (issue #2351's review
+/// finding) so it and [`has_trailing_tags`] — a pure predicate a caller
+/// outside this module needs — select the exact same set of tag nodes and
+/// can never drift apart the way `candidate`'s selection and a hand-copied
+/// duplicate would.
+fn raw_element_tags(node: &SyntaxNode) -> Vec<ast::Tag> {
+    if let Some(heading) = ast::SceneHeading::cast(node.clone()) {
+        return heading.tags().collect();
     }
     if let Some(cue) = ast::Cue::cast(node.clone()) {
-        let tags = cue
-            .tags()
-            .map(|t| super::body::lower_tag(file_id, &t, diags))
-            .collect();
-        return (None, tags);
+        return cue.tags().collect();
     }
     if let Some(parenthetical) = ast::Parenthetical::cast(node.clone()) {
-        let tags = parenthetical
-            .tags()
-            .map(|t| super::body::lower_tag(file_id, &t, diags))
-            .collect();
-        return (None, tags);
+        return parenthetical.tags().collect();
     }
-    (None, Vec::new())
+    Vec::new()
+}
+
+/// Whether `node` carries at least one trailing tag in the position
+/// [`element_extras`] would recover tags from — issue #2351's review
+/// finding: `hir::classify::classify_node_compiled` needs this exact
+/// answer to mirror [`try_claim`]'s own attach-mode decline (`if is_attach
+/// && !extra_tags.is_empty() { return None; }`, above) for a caller that
+/// never runs `try_claim` itself and must not trigger `element_extras`'s
+/// diagnostic side effects (`lower_tag`'s `E172`) just to ask the
+/// question. Built on the exact same [`raw_element_tags`] selection
+/// `element_extras` itself uses, so the two can never disagree on which
+/// nodes have tags at all.
+#[must_use]
+pub(crate) fn has_trailing_tags(node: &SyntaxNode) -> bool {
+    !raw_element_tags(node).is_empty()
 }
 
 /// The block-capture terminator search (issue #1839, ruled 2026-07-31):
