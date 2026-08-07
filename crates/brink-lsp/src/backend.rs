@@ -155,18 +155,39 @@ impl LanguageOptions {
     /// [`Backend::reload_brink_toml`], both of which compute a fresh
     /// resolution and must publish it identically. Takes `resolved` by value
     /// since neither caller reads it again afterward.
+    ///
+    /// `resolved` is destructured exhaustively (no `..`), the same
+    /// "spelled-out, not `Default`" pattern `IdeSnapshot::analyze`/
+    /// `IdeSession::analysis_options`/`IdeSession::apply_analysis_options`
+    /// use — issue #2334's shared-seam fix applied to this crate's own
+    /// producer, which has no `IdeSession` to route through (`LanguageOptions`
+    /// carries no `host_manifest`/`external_check`/`semantic_type_check`
+    /// fields at all — brink-lsp has no host-manifest/external-check surface
+    /// today). Adding a new `AnalysisOptions` field breaks this match until
+    /// it's given an explicit `_` (deliberately unsupported here) or a real
+    /// field to carry it in, rather than silently vanishing at this exact
+    /// point the way `conventions` did three times running (#1880/#2317).
     fn store(&self, resolved: AnalysisOptions) {
+        let AnalysisOptions {
+            host_manifest: _,
+            external_check: _,
+            semantic_type_check: _,
+            dialect,
+            types,
+            lints,
+            conventions,
+        } = resolved;
         if let Ok(mut guard) = self.dialect.lock() {
-            *guard = resolved.dialect;
+            *guard = dialect;
         }
         if let Ok(mut guard) = self.types.lock() {
-            *guard = resolved.types;
+            *guard = types;
         }
         if let Ok(mut guard) = self.lints.lock() {
-            *guard = resolved.lints;
+            *guard = lints;
         }
         if let Ok(mut guard) = self.conventions.lock() {
-            *guard = resolved.conventions;
+            *guard = conventions;
         }
     }
 }
@@ -2837,7 +2858,24 @@ pub async fn analysis_loop(
         // Re-read the declared dialect + types + lints policy each iteration
         // (poisoned-lock-safe, mirrors `Backend::dialect()`) so a client that
         // changes any of them mid-session is picked up on the next pass.
+        //
+        // Spelled out field-by-field rather than `..AnalysisOptions::
+        // default()` (issue #2334: the same "spelled-out, not `Default`"
+        // completeness guard `IdeSnapshot::analyze`/`IdeSession::
+        // apply_analysis_options` use) — a `..Default::default()` tail lets
+        // a *new* `AnalysisOptions` field silently default here forever,
+        // which is exactly how `conventions` almost stayed unreachable from
+        // this loop (issue #1880) before it was added by hand. `host_manifest`/
+        // `external_check`/`semantic_type_check` genuinely have no
+        // brink-lsp-side source today (no `initializationOptions` surface
+        // for them, mirroring `LanguageOptions`'s own field set above) —
+        // explicit defaults here, not an implicit `..`, so the next field
+        // brink-lsp *does* need to forward breaks this construction until
+        // it's added.
         let opts = AnalysisOptions {
+            host_manifest: None,
+            external_check: brink_analyzer::ExternalCheckSeverity::default(),
+            semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
             dialect: language
                 .dialect
                 .lock()
@@ -2863,7 +2901,6 @@ pub async fn analysis_loop(
                 .conventions
                 .lock()
                 .map_or_else(|_| None, |g| g.clone()),
-            ..AnalysisOptions::default()
         };
 
         // Snapshot inputs under lock, reading the generation in the same locked

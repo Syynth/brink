@@ -11,12 +11,20 @@
  * src-tauri) and from the landing screen's button — both funnel into the
  * same `chooseAndOpen` / `closeProject` pair, which own the single
  * `StudioHandle`.
+ *
+ * App quit (#2370) is separate from Close Project: the window's
+ * `onCloseRequested` hook and the app-menu Quit item (`menu:quit`, routed
+ * the same way as open/close-project rather than through
+ * `PredefinedMenuItem::quit`) both funnel into `handleQuitRequested`, which
+ * awaits the final `saveAll` (capped) before the window is destroyed.
  */
 
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
 import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
+import { awaitSaveAllBeforeQuit } from "./quit.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
@@ -144,7 +152,9 @@ async function chooseAndOpen(): Promise<void> {
  * unmount, a best-effort canonical save of anything dirty (the unmount's
  * own egress flush only feeds the RING under the overlay contract — the
  * ring protects the work, but close should leave canonical files current
- * too). The dirty-state close PROMPT is still queued in the epic.
+ * too). Ruled 2026-08-07 (docs/decision-log.md, "Desktop close: no dirty
+ * prompt; quit awaits the final save"): no dirty-state close confirmation
+ * prompt — dead UI, not implemented.
  */
 function closeProject(): void {
   if (current === null) return;
@@ -161,7 +171,38 @@ function closeProject(): void {
   renderLanding();
 }
 
+/**
+ * App quit (#2370, docs/decision-log.md 2026-08-07 "Desktop close: no dirty
+ * prompt; quit awaits the final save"): NO confirmation prompt — explicitly
+ * ruled out. The one safety piece is that the window must not actually
+ * close until the final `saveAll` has had its chance to land, so quitting
+ * can never race the in-flight canonical write. `awaitSaveAllBeforeQuit` is
+ * capped (~3s) — a hung write cannot make the app unquittable, since the
+ * backup ring (#154) already bounds the loss.
+ */
+async function handleQuitRequested(): Promise<void> {
+  if (current !== null) {
+    await awaitSaveAllBeforeQuit(current.api);
+  }
+  await getCurrentWindow().destroy();
+}
+
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
+// The app-menu Quit item (⌘Q) is routed here as a plain shell event — like
+// open/close-project — instead of `PredefinedMenuItem::quit`, specifically
+// so it funnels through the same guarded path as the window close below
+// rather than the OS quit item's own (unguarded) native teardown.
+void listen("menu:quit", () => void handleQuitRequested());
+
+void getCurrentWindow().onCloseRequested(async (event) => {
+  // Always prevent the native close first. (`@tauri-apps/api`'s own default
+  // — skip `preventDefault()` and it auto-destroys once this handler
+  // resolves — would work identically here, since nothing below ever
+  // rejects; calling it explicitly just keeps "await save, then destroy"
+  // visible in this file instead of resting on that SDK default.)
+  event.preventDefault();
+  await handleQuitRequested();
+});
 
 renderLanding();
