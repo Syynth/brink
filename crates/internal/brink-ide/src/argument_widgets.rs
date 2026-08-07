@@ -146,8 +146,8 @@ pub fn argument_widgets(
                 && let Some(site) = collect(
                     &name,
                     id.syntax().text_range(),
-                    &node,
-                    call.arg_list(),
+                    arg_spans(call.arg_list()),
+                    open_paren_inside(&node),
                     analysis,
                     host_values,
                 )
@@ -161,8 +161,8 @@ pub fn argument_widgets(
             if let Some(site) = collect(
                 &full,
                 path_node.syntax().text_range(),
-                &node,
-                target.arg_list(),
+                arg_spans(target.arg_list()),
+                open_paren_inside(&node),
                 analysis,
                 host_values,
             ) {
@@ -173,11 +173,138 @@ pub fn argument_widgets(
     sites
 }
 
+/// The native (`.brink`) sibling of [`argument_widgets`] (issue #2359) —
+/// same call-site → semantic-type join, over `brink_syntax_native`'s
+/// `CallExpr`/`DivertTarget` instead of ink's typed AST, which has no
+/// native equivalent to cast into (#2291's `syntax_root` failure mode).
+/// Never pass a `brink_syntax::SyntaxNode` root parsed from native source
+/// text here — use [`crate::session::IdeSession::syntax_root_native`].
+#[must_use]
+pub fn argument_widgets_native(
+    root: &brink_syntax_native::SyntaxNode,
+    analysis: &AnalysisResult,
+    range: rowan::TextRange,
+    host_values: Option<&crate::HostValues>,
+) -> Vec<CallWidgetSite> {
+    use brink_syntax_native::ast::AstNode as _;
+    let mut sites = Vec::new();
+    for node in root.descendants() {
+        let node_range = node.text_range();
+        if node_range.end() < range.start() || node_range.start() > range.end() {
+            continue;
+        }
+        if let Some(call) = brink_syntax_native::ast::CallExpr::cast(node.clone()) {
+            if let Some(callee) = call.callee()
+                && let Some(site) = collect(
+                    &crate::color::native_path_name(&callee),
+                    callee.syntax().text_range(),
+                    arg_spans_native(call.arg_list()),
+                    open_paren_inside_native(&node),
+                    analysis,
+                    host_values,
+                )
+            {
+                sites.push(site);
+            }
+        } else if let Some(target) = brink_syntax_native::ast::DivertTarget::cast(node.clone())
+            && let Some(path_node) = target.path()
+        {
+            let full = crate::color::native_path_name(&path_node);
+            if let Some(site) = collect(
+                &full,
+                path_node.syntax().text_range(),
+                arg_spans_native(target.call_args()),
+                open_paren_inside_native(&node),
+                analysis,
+                host_values,
+            ) {
+                sites.push(site);
+            }
+        }
+    }
+    sites
+}
+
+/// One argument's source text and span — the frontend-agnostic shape
+/// [`collect`]/[`build_group`] need, so neither depends on which CST an
+/// argument node came from.
+struct ArgSpan {
+    text: String,
+    start: TextSize,
+    end: TextSize,
+}
+
+/// `()` can yield a single empty/whitespace arg node — drop it so an empty
+/// call reads as zero args (an Empty slot, not a phantom Expr). Returns the
+/// filtered arg spans plus the position just inside `(` (the `ArgList`'s own
+/// `arg_list_inner` — the empty-call fallback insert point when there are no
+/// args yet but the parens themselves parsed as a real node).
+fn arg_spans(arg_list: Option<brink_syntax::ast::ArgList>) -> (Vec<ArgSpan>, Option<TextSize>) {
+    match arg_list {
+        Some(al) => {
+            let inner = al.syntax().text_range().start() + TextSize::from(1);
+            let args = al
+                .args()
+                .filter_map(|a| {
+                    let text = a.syntax().text().to_string();
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    Some(ArgSpan {
+                        text,
+                        start: a.syntax().text_range().start(),
+                        end: a.syntax().text_range().end(),
+                    })
+                })
+                .collect();
+            (args, Some(inner))
+        }
+        None => (Vec::new(), None),
+    }
+}
+
+/// The native (`.brink`) sibling of [`arg_spans`] — native's `ArgList` has
+/// no `.args()` wrapper (its children are bare expression nodes, see
+/// `brink_ir::hir::lower_native::expr::lower_call`), so this reads
+/// `al.syntax().children()` directly.
+fn arg_spans_native(
+    arg_list: Option<brink_syntax_native::ast::ArgList>,
+) -> (Vec<ArgSpan>, Option<TextSize>) {
+    use brink_syntax_native::ast::AstNode as _;
+    match arg_list {
+        Some(al) => {
+            let inner = al.syntax().text_range().start() + TextSize::from(1);
+            let args = al
+                .syntax()
+                .children()
+                .filter_map(|a| {
+                    let text = a.text().to_string();
+                    if text.trim().is_empty() {
+                        return None;
+                    }
+                    Some(ArgSpan {
+                        text,
+                        start: a.text_range().start(),
+                        end: a.text_range().end(),
+                    })
+                })
+                .collect();
+            (args, Some(inner))
+        }
+        None => (Vec::new(), None),
+    }
+}
+
+/// The join point [`argument_widgets`]/[`argument_widgets_native`] share:
+/// resolve `callee_name` to a signature, then build its slots/groups from
+/// the already-CST-agnostic `args`. `open_paren_fallback` is the insert
+/// point for a zero-arg call whose parens produced no `ArgList` node at all
+/// (each frontend's own [`open_paren_inside`]/[`open_paren_inside_native`]).
 fn collect(
     callee_name: &str,
     name_range: rowan::TextRange,
-    node: &SyntaxNode,
-    arg_list: Option<brink_syntax::ast::ArgList>,
+    (args, arg_list_inner): (Vec<ArgSpan>, Option<TextSize>),
+    open_paren_fallback: Option<TextSize>,
     analysis: &AnalysisResult,
     host_values: Option<&crate::HostValues>,
 ) -> Option<CallWidgetSite> {
@@ -201,37 +328,23 @@ fn collect(
     }
     let meta = analysis.symbol_meta.get(&info.id);
 
-    // `()` can yield a single empty/whitespace arg node — drop it so an empty
-    // call reads as zero args (an Empty slot, not a phantom Expr).
-    let (args, arg_list_inner): (Vec<_>, Option<TextSize>) = match arg_list {
-        Some(al) => {
-            let inner = al.syntax().text_range().start() + TextSize::from(1);
-            let args = al
-                .args()
-                .filter(|a| !a.syntax().text().to_string().trim().is_empty())
-                .collect();
-            (args, Some(inner))
-        }
-        None => (Vec::new(), None),
-    };
-
     // The append point for trailing-empty slots: after the last arg, or just
     // inside `(` when the call has no arguments yet. Empty parens produce no
     // `ArgList` node, so fall back to scanning the call node for `(`.
     let append_at = if let Some(last) = args.last() {
-        Some(last.syntax().text_range().end())
+        Some(last.end)
     } else {
-        arg_list_inner.or_else(|| open_paren_inside(node))
+        arg_list_inner.or(open_paren_fallback)
     };
 
     // The authoring state of param `i` (a literal → Filled, no arg → Empty, a
     // non-literal → Expr).
     let state_for = |i: usize| -> SlotState {
         match args.get(i) {
-            Some(arg) => match literal_value(arg) {
+            Some(arg) => match literal_value(&arg.text) {
                 Some(value) => SlotState::Filled {
-                    start: arg.syntax().text_range().start(),
-                    end: arg.syntax().text_range().end(),
+                    start: arg.start,
+                    end: arg.end,
                     value,
                 },
                 None => SlotState::Expr,
@@ -337,7 +450,7 @@ fn declare_group(
 fn build_group(
     gw: &brink_ir::ArgGroupWidget,
     info: &brink_ir::SymbolInfo,
-    args: &[brink_syntax::ast::Expr],
+    args: &[ArgSpan],
     append_at: Option<TextSize>,
     state_for: &impl Fn(usize) -> SlotState,
 ) -> Option<GroupWidgetSite> {
@@ -382,7 +495,7 @@ fn build_group(
     for (key, &arg_idx) in &gw.context {
         context_params.push((key.clone(), arg_idx));
         if let Some(arg) = args.get(arg_idx as usize)
-            && let Some(value) = literal_value(arg)
+            && let Some(value) = literal_value(&arg.text)
         {
             context.push((key.clone(), value));
         }
@@ -408,11 +521,23 @@ fn open_paren_inside(node: &SyntaxNode) -> Option<TextSize> {
         .map(|t| t.text_range().start() + TextSize::from(1))
 }
 
-/// The literal value of an argument (quotes stripped for strings), or `None`
-/// when the argument is a non-literal expression.
-fn literal_value(arg: &brink_syntax::ast::Expr) -> Option<String> {
-    let text = arg.syntax().text().to_string();
-    let t = text.trim();
+/// The native (`.brink`) sibling of [`open_paren_inside`] — identical
+/// token-text scan, over `brink_syntax_native::SyntaxNode`. Never depends on
+/// which CST it's walking beyond the node type itself.
+fn open_paren_inside_native(node: &brink_syntax_native::SyntaxNode) -> Option<TextSize> {
+    node.descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .find(|t| t.text() == "(")
+        .map(|t| t.text_range().start() + TextSize::from(1))
+}
+
+/// The literal value of an argument's trimmed source text (quotes stripped
+/// for strings), or `None` when the argument is a non-literal expression.
+/// Takes the arg's own text rather than a typed AST node — shared by
+/// [`collect`] (ink and native args alike, via [`ArgSpan`]) and
+/// [`build_group`]'s inter-arg context resolution.
+fn literal_value(arg_text: &str) -> Option<String> {
+    let t = arg_text.trim();
     if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
         return Some(t[1..t.len() - 1].to_string());
     }
@@ -844,5 +969,111 @@ mod tests {
         assert_eq!(g.param_indices, vec![1, 2]);
         assert_eq!(g.context, vec![("map".to_string(), "harbor".to_string())]);
         assert_eq!(g.context_params, vec![("map".to_string(), 0)]);
+    }
+
+    // ── #2359: `argument_widgets_native` — the native (`.brink`) sibling ────
+
+    use super::argument_widgets_native;
+
+    fn native_sites(src: &str) -> Vec<super::CallWidgetSite> {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.brink", src.to_string());
+        session.set_host_manifest(manifest());
+        let analysis = session.analysis().expect("analysis");
+        let parsed = brink_syntax_native::parse(src);
+        argument_widgets_native(
+            &parsed.syntax(),
+            analysis,
+            rowan::TextRange::new(0.into(), rowan::TextSize::of(src)),
+            None,
+        )
+    }
+
+    #[test]
+    fn native_filled_color_literal_is_edit() {
+        // A regression test that fails with `argument_widgets_native` deleted
+        // and `argument_widgets_impl` in `crates/brink-web` back on the
+        // pre-#2359 `is_native` early-return: this exact call site would
+        // silently get zero widget sites instead of one Filled color slot.
+        let s =
+            native_sites("extern set_tint(color)\nflow main() {\n  ~ set_tint(\"#FF8800\")\n}\n");
+        let call = s.iter().find(|c| c.callee == "set_tint").expect("call");
+        assert_eq!(call.slots.len(), 1);
+        let slot = &call.slots[0];
+        assert_eq!(slot.widget.as_deref(), Some("color"));
+        assert!(
+            matches!(&slot.state, SlotState::Filled { value, .. } if value == "#FF8800"),
+            "expected Filled #FF8800"
+        );
+    }
+
+    #[test]
+    fn native_empty_call_is_fill_without_comma() {
+        let s = native_sites("extern set_tint(color)\nflow main() {\n  ~ set_tint()\n}\n");
+        let call = s.iter().find(|c| c.callee == "set_tint").expect("call");
+        assert_eq!(call.slots.len(), 1);
+        assert!(
+            matches!(
+                call.slots[0].state,
+                SlotState::Empty {
+                    needs_leading_comma: false,
+                    ..
+                }
+            ),
+            "expected Empty, first slot, no comma"
+        );
+    }
+
+    #[test]
+    fn native_variable_argument_is_expr() {
+        let s = native_sites(
+            "extern set_tint(color)\nflow main() {\n  ~ let c = \"#000000\"\n  ~ set_tint(c)\n}\n",
+        );
+        let call = s.iter().find(|c| c.callee == "set_tint").expect("call");
+        assert!(matches!(call.slots[0].state, SlotState::Expr));
+    }
+
+    #[test]
+    fn native_partial_call_trailing_slot_needs_comma() {
+        let s = native_sites("extern place_object(x, y)\nflow main() {\n  ~ place_object(5)\n}\n");
+        let call = s.iter().find(|c| c.callee == "place_object").expect("call");
+        assert_eq!(call.slots.len(), 2);
+        assert!(matches!(call.slots[0].state, SlotState::Filled { .. }));
+        assert!(
+            matches!(
+                call.slots[1].state,
+                SlotState::Empty {
+                    needs_leading_comma: true,
+                    ..
+                }
+            ),
+            "trailing slot after an arg needs a comma"
+        );
+    }
+
+    #[test]
+    fn native_filled_group_is_edit_over_all_members() {
+        let s =
+            native_sites("extern place_object(x, y)\nflow main() {\n  ~ place_object(3, 5)\n}\n");
+        let call = s.iter().find(|c| c.callee == "place_object").expect("call");
+        assert_eq!(call.groups.len(), 1);
+        let g = &call.groups[0];
+        assert_eq!(g.ty, "map_point");
+        assert_eq!(g.param_indices, vec![0, 1]);
+        assert!(
+            matches!(
+                &g.state,
+                GroupState::Filled { spans, values }
+                    if spans.len() == 2 && values == &vec!["3".to_string(), "5".to_string()]
+            ),
+            "expected Filled group over both members",
+        );
+    }
+
+    #[test]
+    fn native_mixed_group_is_not_emitted() {
+        let s = native_sites("extern place_object(x, y)\nflow main() {\n  ~ place_object(3)\n}\n");
+        let call = s.iter().find(|c| c.callee == "place_object").expect("call");
+        assert_eq!(call.groups.len(), 0);
     }
 }
