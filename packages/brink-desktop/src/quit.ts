@@ -35,17 +35,29 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * If anything is dirty, dispatch `file.saveAll` and poll `getDirtyFiles()`
- * until it empties or `timeoutMs` elapses. Never rejects: a save failure
+ * Dispatch `file.saveAll` unconditionally and poll `getDirtyFiles()` until
+ * it empties or `timeoutMs` elapses. Never rejects: a save failure
  * (surfaced elsewhere via the notification center) or a timeout both just
  * return, and the caller proceeds with quit either way.
+ *
+ * The dispatch is unconditional — not gated on `getDirtyFiles()` being
+ * non-empty — because `getDirtyFiles()` only reflects changes recorded via
+ * `ProjectSession.notifyFileChanged`, which runs off the 500ms trailing
+ * diagnostics debounce. Per-keystroke edits reach the wasm session
+ * immediately but are not staged or marked dirty until that debounce
+ * fires, so a quit within the debounce window would see an empty dirty
+ * set and skip the save entirely, dropping the edit. `file.saveAll`
+ * synchronously flushes pending edits (push + notifyFileChanged -> stage +
+ * dirty) before writing, so dispatching it here always sees the true
+ * state; a genuinely clean project just performs a no-op rewrite of
+ * identical content, which the file provider's self-write suppression
+ * absorbs.
  */
 export async function awaitSaveAllBeforeQuit(
   api: QuitSaveApi,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 ): Promise<void> {
-  if (api.getDirtyFiles().length === 0) return;
   api.dispatch("file.saveAll");
   const deadline = Date.now() + timeoutMs;
   while (api.getDirtyFiles().length > 0 && Date.now() < deadline) {

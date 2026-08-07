@@ -152,7 +152,9 @@ async function chooseAndOpen(): Promise<void> {
  * unmount, a best-effort canonical save of anything dirty (the unmount's
  * own egress flush only feeds the RING under the overlay contract — the
  * ring protects the work, but close should leave canonical files current
- * too). The dirty-state close PROMPT is still queued in the epic.
+ * too). Ruled 2026-08-07 (docs/decision-log.md, "Desktop close: no dirty
+ * prompt; quit awaits the final save"): no dirty-state close confirmation
+ * prompt — dead UI, not implemented.
  */
 function closeProject(): void {
   if (current === null) return;

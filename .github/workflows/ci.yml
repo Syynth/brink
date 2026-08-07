@@ -664,6 +664,8 @@ jobs:
         run: pnpm --filter @brink-lang/studio test
       - name: Unit tests (vitest, @brink-lang/web wrapper)
         run: pnpm --filter @brink-lang/web test
+      - name: Unit tests (vitest, @brink/desktop)
+        run: pnpm --filter @brink/desktop test
 
   # The Playwright suite is the CI wall-clock long pole (#402): ~384 tests at
   # ~5m40s serial. Sharded across independent runners; each shard rebuilds the

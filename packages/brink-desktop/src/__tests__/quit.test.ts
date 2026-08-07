@@ -16,10 +16,15 @@ function stubApi(dirtySequence: string[][]): QuitSaveApi {
 }
 
 describe("awaitSaveAllBeforeQuit", () => {
-  it("resolves immediately without dispatching when nothing is dirty", async () => {
+  it("dispatches file.saveAll even when getDirtyFiles reports empty", async () => {
+    // getDirtyFiles() only reflects the 500ms debounce-recorded dirty set;
+    // a keystroke made just before quit may not show up there yet, so
+    // file.saveAll (which flushes pending edits synchronously) must be
+    // dispatched regardless of what getDirtyFiles() currently reports.
     const api = stubApi([[]]);
     await awaitSaveAllBeforeQuit(api, 3000, 5);
-    expect(api.dispatch).not.toHaveBeenCalled();
+    expect(api.dispatch).toHaveBeenCalledTimes(1);
+    expect(api.dispatch).toHaveBeenCalledWith("file.saveAll");
   });
 
   it("dispatches file.saveAll and waits for dirty files to clear", async () => {
