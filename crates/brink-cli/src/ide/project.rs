@@ -1657,6 +1657,18 @@ mod ide_session_project_config_tests {
         let project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
         let session = project.ide_session();
 
+        // The four forwarded fields all equal `IdeSession::new()`'s own
+        // defaults here, so `apply_analysis_options`'s `changed` guard
+        // never trips — this must still trigger a `reanalyze()` (via the
+        // `self.analysis.is_none()` half of that guard), or every
+        // `structural_result::gate*` helper silently treats this session
+        // as having nothing to check (#2334 review: the exact #1393
+        // regression, reopened by a `changed`-only guard).
+        assert!(
+            session.analysis().is_some(),
+            "ide_session() must still analyze even when the resolved options match \
+             IdeSession::new()'s own defaults byte-for-byte"
+        );
         assert_eq!(
             session.language_dialect(),
             brink_analyzer::Dialect::default()
