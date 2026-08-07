@@ -53,9 +53,9 @@ use brink_ir::{
 use crate::determinism::LookupSet;
 
 use super::{
-    DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, lowered_query,
-    module_map_query, raw_lowered_query, resolution_index_query, resolve_query, symbol_index_query,
-    type_inference_query,
+    DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, is_source_file,
+    lowered_query, module_map_query, raw_lowered_query, resolution_index_query, resolve_query,
+    symbol_index_query, type_inference_query,
 };
 
 /// Index + resolutions, aggregated across every file's [`resolve_query`]
@@ -84,6 +84,11 @@ pub(crate) fn resolutions_index_query(
     let (index, _diags) = symbol_index_query(db, project).clone();
     let mut resolutions = ResolutionMap::new();
     for file in project.files(db) {
+        // Issue #2329: a non-source document never contributes resolutions —
+        // see `is_source_file`'s own doc for the full gated-surface list.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         let (file_map, _file_diags) = resolve_query(db, project, *file);
         resolutions.extend(file_map.iter().cloned());
     }
@@ -123,12 +128,21 @@ pub(crate) fn resolutions_index_query(
 /// exactly the way `native_strict_only_error` above is native-conditional.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+///
+/// Gated on [`is_source_file`] (issue #2329 review finding): this is a
+/// direct per-file entry point (`ProjectDb::per_file_diagnostics`), reachable
+/// without going through [`contributor_diagnostics_query`]'s own gate, so a
+/// non-source document must be excluded here too or its bogus ink-lowered
+/// HIR still reaches `brink_analyzer::per_file_diagnostics`.
 #[salsa::tracked(lru = 4096)]
 pub(crate) fn per_file_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
     file: SourceFile,
 ) -> Arc<Vec<Diagnostic>> {
+    if !is_source_file(file.path(db)) {
+        return Arc::new(Vec::new());
+    }
     let file_id = file.file_id(db);
     let hir = &lowered_query(db, project, file).hir;
     let (file_resolutions, _diags) = resolve_query(db, project, file);
@@ -165,6 +179,12 @@ pub(crate) fn contributor_diagnostics_query(
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for file in project.files(db) {
+        // Issue #2329: a non-source document never runs validate/
+        // dialect_gate/annotation-content checks — its bogus "parse"
+        // diagnostics must never surface.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         out.extend(
             per_file_diagnostics_query(db, project, *file)
                 .iter()
@@ -189,6 +209,7 @@ pub(crate) fn inline_docs_query(
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).manifest))
         .collect();
     Arc::new(brink_analyzer::project_inline_docs(&manifest_inputs))
@@ -919,6 +940,24 @@ pub(crate) struct WholeProjectDiagnostics {
     pub symbol_meta: BTreeMap<DefinitionId, SymbolMeta>,
 }
 
+/// Run `per_file` over every SOURCE file in file order, skipping non-source
+/// documents (issue #2329: brink.toml/.md/.json never contribute analysis).
+/// The shared shape of every per-file pass in
+/// [`whole_project_diagnostics_query`] — the gate lives here once, not
+/// copy-pasted per loop (and clippy's `too_many_lines` on the aggregator is
+/// what finally forced the extraction).
+fn for_each_source_file(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    mut per_file: impl FnMut(SourceFile),
+) {
+    for file in project.files(db) {
+        if is_source_file(file.path(db)) {
+            per_file(*file);
+        }
+    }
+}
+
 #[salsa::tracked(returns(ref))]
 pub(crate) fn whole_project_diagnostics_query(
     db: &dyn salsa::Database,
@@ -929,6 +968,7 @@ pub(crate) fn whole_project_diagnostics_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
@@ -979,65 +1019,69 @@ pub(crate) fn whole_project_diagnostics_query(
     diagnostics.extend(ext.diagnostics.iter().cloned());
     let mut symbol_meta = ext.symbol_meta.clone();
 
-    for file in project.files(db) {
+    // Every per-file pass below runs through `for_each_source_file`
+    // (issue #2329): a non-source document never contributes a value-meta
+    // entry, a call-site check, or any lazy effect/comparator/conventions
+    // pass.
+    for_each_source_file(db, project, |file| {
         symbol_meta.extend(
-            value_meta_query(db, project, *file)
+            value_meta_query(db, project, file)
                 .iter()
                 .map(|(k, v)| (*k, v.clone())),
         );
-    }
-    for file in project.files(db) {
+    });
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            call_site_diagnostics_query(db, project, *file)
+            call_site_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // T2-2 `#@effects(…)` exceedance check (docs/effects-spec.md §10, issue
     // #861) — per-file, lazy (see `effects_assertion_diagnostics_query`'s
     // doc): a project with no `#@effects` directive never triggers effect
     // inference here.
-    for file in project.files(db) {
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            effects_assertion_diagnostics_query(db, project, *file)
+            effects_assertion_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // FS-2 `await`-condition purity gate (E105,
     // docs/flow-suspension-spec.md §3/§5, issue #928) — per-file, lazy (see
     // `await_purity_diagnostics_query`'s doc): an await-free project never
     // triggers effect inference here.
-    for file in project.files(db) {
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            await_purity_diagnostics_query(db, project, *file)
+            await_purity_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b, issue
     // #1110 — extended to the fn-value verb trio `map`/`filter`/`fold` by
     // issue #1679, §4) — per-file, lazy (see
     // `comparator_contract_diagnostics_query`'s doc): a project with no
     // inline-`#fn` comparator/callback site never triggers effect
     // inference here.
-    for file in project.files(db) {
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            comparator_contract_diagnostics_query(db, project, *file)
+            comparator_contract_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // Conventions-module confinement gate (E169, issue #1844) — per-file,
     // lazy (see `conventions_confinement_diagnostics_query`'s doc): a file
     // with no declared claim handler never even reads `module_map_query`.
-    for file in project.files(db) {
+    for_each_source_file(db, project, |file| {
         diagnostics.extend(
-            conventions_confinement_diagnostics_query(db, project, *file)
+            conventions_confinement_diagnostics_query(db, project, file)
                 .iter()
                 .cloned(),
         );
-    }
+    });
     // #2179 the `@[convention]` no-world-reads fence (`E182`,
     // docs/decision-log.md 2026-08-06) — reuses this aggregator's own
     // `hir_refs`/`resolved`/`symbol_meta` (the same whole-project inputs
@@ -1112,6 +1156,7 @@ pub(crate) fn ufcs_resolution_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
@@ -1179,6 +1224,7 @@ pub(crate) fn coalesce_types_query(
     let hir_refs: Vec<(FileId, &HirFile)> = project
         .files(db)
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
 
@@ -1219,6 +1265,11 @@ pub(crate) fn analysis_diagnostics_query(
 ) -> Vec<Diagnostic> {
     let (_index, mut diagnostics) = symbol_index_query(db, project).clone();
     for file in project.files(db) {
+        // Issue #2329: a non-source document's `resolve_query` diagnostics
+        // never join the project-wide diagnostic stream.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         let (_file_map, file_diags) = resolve_query(db, project, *file);
         diagnostics.extend(file_diags.iter().cloned());
     }
@@ -1267,12 +1318,21 @@ pub(crate) fn analysis_query(db: &dyn salsa::Database, project: ProjectInput) ->
 /// memo's dependency fully validated.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+///
+/// Gated on [`is_source_file`] (issue #2329 review finding): this is a
+/// direct per-file entry point (`ProjectDb::diagnostics`), reachable without
+/// going through [`analysis_diagnostics_query`]'s own gate on this same
+/// file's contribution, so a non-source document must be excluded here too
+/// or its bogus ink-lowered `lowered_query` diagnostics still surface.
 #[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
     file: SourceFile,
 ) -> Vec<Diagnostic> {
+    if !is_source_file(file.path(db)) {
+        return Vec::new();
+    }
     let file_id = file.file_id(db);
     let mut out = lowered_query(db, project, file).diagnostics.clone();
     out.extend(
@@ -1314,8 +1374,13 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
         .iter()
         .find(|f| f.file_id(db) == entry)
         .is_some_and(|f| super::suppressions_query(db, *f).disable_all);
+    // `is_source_file` (issue #2329): a non-source document's lowering
+    // (bogus ink-parse) diagnostics never contribute to the error gate —
+    // `lir_query`'s identical `inputs` construction mirrors this exactly, so
+    // the two stay in lockstep (see this function's own doc).
     let inputs: Vec<super::FileDiagnostics<'_>> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| super::FileDiagnostics {
             file: f.file_id(db),
             source: f.text(db),

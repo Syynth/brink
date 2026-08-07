@@ -556,10 +556,18 @@ pub(crate) enum Language {
 /// change, no `HashMap` iteration. Uses `Path::extension` to match the
 /// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
 /// "ink"`).
+///
+/// Compared case-insensitively (issue #2329, the case-handling bug flagged
+/// on #2327's review): a real ink file spelled `story.INK` is reachable on
+/// a case-insensitive filesystem (macOS/Windows default) and must classify
+/// identically to `story.ink`, not fall through to the "everything else is
+/// ink" branch by accident of extension casing — which happens to give the
+/// same answer for `Language::Ink` but would have silently misclassified a
+/// `.BRINK` file as ink.
 pub(crate) fn file_language(path: &str) -> Language {
     if std::path::Path::new(path)
         .extension()
-        .is_some_and(|ext| ext == "brink")
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("brink"))
     {
         Language::Native
     } else {
@@ -610,6 +618,14 @@ pub(crate) fn include_graph_query(db: &dyn salsa::Database, project: ProjectInpu
 
     let mut graph = IncludeGraph::new();
     for file in files {
+        // Issue #2329: a non-source document (`brink.toml`, `.md`, `.json`,
+        // `.ink.json`) never lowers through the ink frontend here — `path_to_id`
+        // above still lists it as a resolution *target* (an ink file could, in
+        // principle, name it in an `INCLUDE`, which is a different diagnostic's
+        // problem), but it never contributes edges of its own.
+        if !is_source_file(file.path(db)) {
+            continue;
+        }
         let hir = &raw_lowered_query(db, *file).hir;
         let include_ids: Vec<FileId> = hir
             .includes
@@ -708,21 +724,71 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
         .is_some_and(|f| file_language(f.path(db)) == Language::Native)
 }
 
-/// Whether `path` names a file this db treats as compiler source at all —
-/// an ink (`.ink`) or native (`.brink`) extension. [`file_language`]
-/// classifies *every* path as one of its two variants (`.brink` → native,
-/// everything else → ink), which is the right call for lowering dispatch —
-/// an unrecognized extension has to lower as *something*. But
-/// [`project_is_all_native`] asks a narrower question ("is every real
-/// source file in this project native"), and something like a project's own
-/// `brink.toml` is neither: a session that loads it as an ordinary document
-/// alongside real source files — `IdeSession`'s wasm/editor callers do
-/// exactly this, so the Binder can list/edit it (issue #2318) — must not
-/// have it counted as "an ink file" by that check.
+/// Whether `path` names a file this db treats as compiler source at all: no
+/// extension at all, or a recognized `.ink`/`.brink` extension (compared
+/// case-insensitively). Everything else — project config (`brink.toml`),
+/// documentation (`.md`), a stray `.txt` note, and the retired converter's/
+/// oracle-regeneration JSON family (`.json`, which also covers `.ink.json` —
+/// `Path::extension` only ever reports the last dotted segment, so
+/// `story.ink.json` already matches on `"json"`) — is not source (issue
+/// #2329).
+///
+/// An **allowlist** of `.ink`/`.brink` plus "no extension", not a blocklist
+/// of known-bad extensions: a blocklist only ever excludes the extensions
+/// it happens to name, so an unlisted one (`.txt`, `.gitignore`, a stray
+/// binary asset) would still lower through the ink frontend — exactly the
+/// bug this issue describes. The "no extension" carve-out matches
+/// [`file_language`]'s own "everything unrecognized is ink" fallback:
+/// `brink_compiler::compile_with_options`'s test/bench callers pass an
+/// in-memory pseudo-path with no extension at all as `entry`, relying on
+/// exactly that fallback, and excluding it here would silently drop those
+/// callers' entry file from parsing/the symbol index.
+///
+/// This is the **one shared predicate** every whole-project query that
+/// iterates `project.files(db)` for parsing/symbol-index/diagnostics
+/// purposes gates on — [`module_map_query`], [`symbol_index_query`],
+/// [`harvest_index_query`], [`include_graph_query`], and the
+/// diagnostics-aggregation family in `queries/analysis.rs`
+/// (`resolutions_index_query`, `contributor_diagnostics_query`,
+/// `inline_docs_query`, `whole_project_diagnostics_query`,
+/// `ufcs_resolution_query`, `coalesce_types_query`,
+/// `analysis_diagnostics_query`, `has_errors_query`,
+/// `per_file_diagnostics_query`, `diagnostics_query`) — rather than each
+/// re-deriving its own ad-hoc extension check (the #2334-family "shared
+/// seam, not N copies" lesson). Queries already scoped to
+/// [`compilation_closure_files`]'s reachable set (e.g.
+/// `struct_shape_data_query`, `lir_lowering_query`,
+/// `has_errors_in_closure_query`) don't need this gate: a non-source
+/// document is never reachable through an `INCLUDE`/native-module edge, so
+/// it can never enter that closure in the first place.
+///
+/// [`project_is_all_native`] deliberately does **not** read this predicate —
+/// see that function's own doc and [`has_recognized_source_extension`] for
+/// why the nativity vote needs a strict allowlist instead.
+pub(crate) fn is_source_file(path: &str) -> bool {
+    match std::path::Path::new(path).extension() {
+        None => true,
+        Some(ext) => ext.eq_ignore_ascii_case("ink") || ext.eq_ignore_ascii_case("brink"),
+    }
+}
+
+/// Whether `path` names a file with a recognized ink (`.ink`) or native
+/// (`.brink`) source extension, compared case-insensitively — used only by
+/// [`project_is_all_native`]'s nativity vote.
+///
+/// Deliberately narrower than [`is_source_file`]: that predicate's "no
+/// extension still counts as source" carve-out exists only to keep
+/// `compile_with_options`'s extension-less in-memory pseudo-path parsing
+/// (a lowering/symbol-index concern), and does not belong in the nativity
+/// vote — an extension-less or otherwise-unrecognized tracked file must be
+/// invisible to "is every source file here native", neither disqualifying
+/// nativity nor counting toward it, exactly as it was before #2329
+/// introduced [`is_source_file`]. The two predicates answer different
+/// questions for the same unrecognized-extension input.
 fn has_recognized_source_extension(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
-        .is_some_and(|ext| ext == "brink" || ext == "ink")
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("brink") || ext.eq_ignore_ascii_case("ink"))
 }
 
 /// Whether every *recognized source file* (ink or native) currently tracked
@@ -731,21 +797,29 @@ fn has_recognized_source_extension(path: &str) -> bool {
 /// files are non-source documents (there is then no native file to be "all"
 /// of).
 ///
-/// A tracked file with neither a `.brink` nor an `.ink` extension is
-/// invisible to this check in both directions: it neither disqualifies
-/// nativity nor counts toward it. Before this fix (issue #2318), a
-/// project's own `brink.toml` sharing a session with its native source
-/// files — exactly how `IdeSession`'s editor callers load it, so the Binder
-/// can show/edit it — silently classified as [`Language::Ink`] via
-/// [`file_language`]'s "everything else is ink" fallback and flipped this to
-/// `false`, disabling M-2d cross-declared-module coexistence for a project
-/// that was, in every sense a compile cares about, fully native. The
-/// visible symptom was a self-contradictory pair of diagnostics for any
-/// name a project's own module shared with the mounted stdlib: reported as
-/// both a duplicate definition (the collision fell through to the
-/// undeclared/legacy "true duplicate" arm) and as undeclared outside
-/// `use std::…` (the project's own declaration had just been dropped as
-/// that "duplicate").
+/// A tracked file with neither a `.brink` nor an `.ink` extension —
+/// [`has_recognized_source_extension`] is `false` — is invisible to this
+/// check in both directions: it neither disqualifies nativity nor counts
+/// toward it. Before this fix (issue #2318), a project's own `brink.toml`
+/// sharing a session with its native source files — exactly how
+/// `IdeSession`'s editor callers load it, so the Binder can show/edit it —
+/// silently classified as [`Language::Ink`] via [`file_language`]'s
+/// "everything else is ink" fallback and flipped this to `false`, disabling
+/// M-2d cross-declared-module coexistence for a project that was, in every
+/// sense a compile cares about, fully native. The visible symptom was a
+/// self-contradictory pair of diagnostics for any name a project's own
+/// module shared with the mounted stdlib: reported as both a duplicate
+/// definition (the collision fell through to the undeclared/legacy "true
+/// duplicate" arm) and as undeclared outside `use std::…` (the project's own
+/// declaration had just been dropped as that "duplicate").
+///
+/// Reads [`has_recognized_source_extension`], not [`is_source_file`]: the
+/// latter's "no extension still counts as source" contract exists for a
+/// different question (see its own doc) and would wrongly disqualify
+/// nativity for an all-native project holding a stray extension-less or
+/// otherwise-unrecognized tracked file — reachable the same way `brink.toml`
+/// was (`IdeSession`'s editor callers load every discovered path into the
+/// session with no source-vs-config distinction).
 ///
 /// [`project_is_native`]'s "entry file decides the frontend" rule is right
 /// for a codegen-shaped question ("which frontend am I compiling"), which
@@ -796,9 +870,16 @@ pub(crate) fn module_map_query(
     // entirely — they have no `#@module` inheritance and no INCLUDE graph, so
     // routing them through the ink resolver would only couple their save-key
     // identity to machinery they never use. Only ink files feed `resolve_modules`.
+    //
+    // `is_source_file`, not just `file_language(..) == Ink` (issue #2329):
+    // `file_language`'s "everything else is ink" fallback previously handed
+    // a project's own `brink.toml`/`.md`/`.json`/`.ink.json` straight into
+    // `resolve_modules` as if it were real ink source, minting it a bogus
+    // stem-derived module entry that could then collide with (or shadow) a
+    // real file's declared module.
     let ink_inputs: Vec<crate::modules::FileModuleInput> = files
         .iter()
-        .filter(|f| file_language(f.path(db)) == Language::Ink)
+        .filter(|f| is_source_file(f.path(db)) && file_language(f.path(db)) == Language::Ink)
         .map(|f| {
             // `raw_lowered_query`, not the project-aware `lowered_query`
             // (issue #2289): `hir.module` is a structural top-of-file
@@ -871,8 +952,12 @@ pub(crate) fn symbol_index_query(
     project: ProjectInput,
 ) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
     let files = project.files(db);
+    // `is_source_file` (issue #2329): a non-source document's manifest never
+    // joins the project symbol index — see that predicate's own doc for the
+    // full list of gated query surfaces.
     let manifest_refs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).manifest))
         .collect();
 
@@ -927,8 +1012,11 @@ pub(crate) fn harvest_index_query(
     project: ProjectInput,
 ) -> Arc<HarvestIndex> {
     let files = project.files(db);
+    // `is_source_file` (issue #2329): a non-source document's HIR never
+    // contributes cues/markup to the harvest index.
     let hir_refs: Vec<(FileId, &HirFile)> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| (f.file_id(db), &lowered_query(db, project, *f).hir))
         .collect();
     let manifest = project.analysis_options(db).host_manifest.as_ref();
@@ -2542,8 +2630,13 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
         .iter()
         .find(|f| f.file_id(db) == entry)
         .is_some_and(|f| suppressions_query(db, *f).disable_all);
+    // `is_source_file` (issue #2329): a non-source document's lowering
+    // (bogus ink-parse) diagnostics never contribute to the build gate — the
+    // exact same filter `has_errors_query` applies to the identical input
+    // shape this query's own doc says it must match.
     let inputs: Vec<FileDiagnostics<'_>> = files
         .iter()
+        .filter(|f| is_source_file(f.path(db)))
         .map(|f| FileDiagnostics {
             file: f.file_id(db),
             source: f.text(db),
