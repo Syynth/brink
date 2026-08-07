@@ -157,3 +157,29 @@ export class TauriFileProvider implements FileProvider {
 export async function pickProjectFolder(): Promise<string | null> {
   return invoke<string | null>("pick_project_folder");
 }
+
+/**
+ * Recent projects (#2394, `docs/desktop-shell-spec.md` D2): a persisted,
+ * most-recent-first, capped, deduplicated-by-path list backed by
+ * `recents.json` in app-data. All three commands return the resulting
+ * list so the caller can re-render without a second round trip; the shell
+ * also keeps the native File → Open Recent submenu in sync with the same
+ * list on every push/prune (see `rebuild_menu` in `src-tauri/src/lib.rs`).
+ */
+export async function readRecents(): Promise<string[]> {
+  return invoke<string[]>("read_recents");
+}
+
+/** Record a successfully-opened project root. Call after every successful open. */
+export async function pushRecent(root: string): Promise<string[]> {
+  return invoke<string[]>("push_recent", { path: root });
+}
+
+/**
+ * Lazily drop one path from the recents list. Call only when opening a
+ * recent entry actually failed (e.g. its folder was deleted or moved) —
+ * never as a proactive existence sweep.
+ */
+export async function pruneRecent(root: string): Promise<string[]> {
+  return invoke<string[]>("prune_recent", { path: root });
+}
