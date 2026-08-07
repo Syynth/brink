@@ -171,6 +171,15 @@ export interface StudioApi {
    * baseline — the per-file detail behind `StudioPublicState.dirtyFiles`.
    */
   getDirtyFiles(): string[];
+  /**
+   * Paths deleted externally while the studio keeps an editor buffer for
+   * them (issue #2371, "External deletion of an open file: keep the view,
+   * mark orphaned") — never auto-closed, always dirty, cleared by a save or
+   * by the file reappearing on disk. A host renders this as a tab badge
+   * ("deleted on disk") or strikethrough; not part of `StudioPublicState`
+   * for the same reason `getDirtyFiles` isn't — pull on demand.
+   */
+  getOrphanedFiles(): string[];
 }
 
 export interface StudioApiDeps {
@@ -227,6 +236,9 @@ export function createStudioApi({ store, commands, notifications }: StudioApiDep
     },
     getDirtyFiles() {
       return store.getState()._project?.dirtyPaths() ?? [];
+    },
+    getOrphanedFiles() {
+      return store.getState()._project?.orphanedPaths() ?? [];
     },
   };
 }

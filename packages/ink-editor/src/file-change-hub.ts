@@ -116,6 +116,16 @@ export class FileChangeHub {
   /** Paths whose dirty buffer collided with an external change and was kept
    *  (issue #320). Cleared when the path is re-baselined or saved. */
   private readonly conflicted = new Set<string>();
+  /**
+   * Paths deleted externally while the studio keeps a buffer for them (issue
+   * #2371, "External deletion of an open file: keep the view, mark
+   * orphaned"). Set by `applyExternal(path, null)`; cleared by a canonical
+   * save (`markSaved`, or a write-through `flush()`) or by the path
+   * reappearing on disk (`applyExternal(path, <content>)`). Independent of
+   * `dirty`/`conflicted` — a path can be orphaned before any edit re-creates
+   * dirty content for it.
+   */
+  private readonly orphaned = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -182,8 +192,17 @@ export class FileChangeHub {
   applyExternal(path: string, content: string | null): void {
     if (content === null) {
       this.baselines.delete(path);
+      // The file is gone from disk (issue #2371): flag it orphaned so a kept
+      // editor buffer can be badged "deleted on disk" and the reason this
+      // path has no baseline traces back to a real deletion, not an
+      // unsaved create.
+      this.orphaned.add(path);
     } else {
       this.baselines.set(path, content);
+      // The path exists on disk again (external re-creation, or
+      // `resolveConflictUseDisk` taking the host's content) — any standing
+      // orphan marker no longer applies.
+      this.orphaned.delete(path);
     }
     this.pending.delete(path);
     // Re-baselining to the host's content resolves any standing conflict.
@@ -252,6 +271,19 @@ export class FileChangeHub {
     return [...this.conflicted].sort();
   }
 
+  // ── Orphaned paths (issue #2371) ──────────────────────────────────
+
+  /** Whether `path` was deleted externally while a kept buffer for it
+   *  survives, not yet recreated by a save or an external re-creation. */
+  isOrphaned(path: string): boolean {
+    return this.orphaned.has(path);
+  }
+
+  /** Sorted paths flagged orphaned (issue #2371) — for tab badging. */
+  orphanedPaths(): string[] {
+    return [...this.orphaned].sort();
+  }
+
   /** Re-baseline `paths` to their current session content (explicit save).
    *  Pending entries for them are dropped — the save already synced. */
   markSaved(paths: Iterable<string>): void {
@@ -265,6 +297,10 @@ export class FileChangeHub {
       this.pending.delete(path);
       // Saving the kept buffer resolves any standing conflict for the path.
       this.conflicted.delete(path);
+      // A canonical save recreates the file on disk (issue #2371) — no
+      // longer orphaned even when the save was writing a kept-but-unedited
+      // buffer back over an external deletion.
+      this.orphaned.delete(path);
       this.updateDirty(path);
     }
   }
@@ -301,7 +337,14 @@ export class FileChangeHub {
         const content = this.getContent(path);
         if (content === null) continue; // vanished between record and flush
         changes.push({ path, type, content });
-        if (this.deliveryPersists) this.baselines.set(path, content);
+        if (this.deliveryPersists) {
+          this.baselines.set(path, content);
+          // Write-through contract (issue #2371): delivery here IS the
+          // host's persistence, so it clears orphaned the same as an
+          // explicit `markSaved` would — no separate save step exists for
+          // this contract to wait for.
+          this.orphaned.delete(path);
+        }
       }
     }
     this.pending.clear();

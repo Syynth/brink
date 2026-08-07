@@ -493,6 +493,41 @@ export class ProjectSession {
     return this.changes.isConflicted(path);
   }
 
+  /** Whether `path` was deleted externally while a kept editor buffer for it
+   *  survives, not yet recreated by a save or an external re-creation (issue
+   *  #2371, "External deletion of an open file: keep the view, mark
+   *  orphaned"). */
+  isOrphaned(path: string): boolean {
+    return this.changes.isOrphaned(path);
+  }
+
+  /** Sorted paths flagged orphaned (issue #2371) — for tab badging. */
+  orphanedPaths(): string[] {
+    return this.changes.orphanedPaths();
+  }
+
+  /**
+   * Recreate `path` in the wasm session from a kept editor buffer after an
+   * external deletion (issue #2371) — `DocumentSessions.markOrphaned`'s only
+   * call site. Unlike {@link applyEdit}, this deliberately does NOT notify
+   * the provider yet: `record()` marks the path dirty (no baseline — the
+   * existing `FileChangeHub` rule) so the dirty indicator and IDE queries
+   * are correct immediately, but `provider.onFileChanged` — the step that
+   * actually stages/persists content, depending on the provider — fires only
+   * from the next real `notifyFileChanged`, which a save always triggers
+   * (`DocumentSessions.flushSlot` calls it unconditionally, whether or not
+   * the buffer was edited since the deletion). That keeps "⌘S recreates the
+   * file" literally true even for a provider whose `onFileChanged` IS its
+   * persistence (`InMemoryFileProvider`'s playground contract) — recreating
+   * eagerly here would resurrect the file the moment the deletion is
+   * detected, before any save.
+   */
+  recreateOrphaned(path: string, content: string): void {
+    if (this.sessionIsReadOnly(path)) return;
+    this.session.updateFile(path, content);
+    this.changes.record(path, "modified");
+  }
+
   /**
    * Resolve an external conflict (issue #320, Track V) by taking the host's
    * on-disk content: overwrite the session buffer with `disk`, re-baseline to
