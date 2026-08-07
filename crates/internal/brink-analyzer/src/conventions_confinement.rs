@@ -252,9 +252,10 @@ pub fn conventions_confinement_diagnostics(
             );
             continue;
         }
-        let is_conventions_module = modules
-            .get(&file_id)
-            .is_some_and(|m| m.name == expected_module);
+        let Some(this_module) = modules.get(&file_id).map(|m| m.name.as_str()) else {
+            continue;
+        };
+        let is_conventions_module = this_module == expected_module;
         out.extend(conventions_module_diagnostics(
             file_id,
             hir,
@@ -607,6 +608,28 @@ mod tests {
         let mut modules = ModuleMap::new();
         modules.insert(FileId(0), resolved_module("std::conventions::screenplay"));
         let diags = conventions_confinement_diagnostics(&files, &modules, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn a_claiming_file_absent_from_modules_stays_silent() {
+        // Parity fix (issue #2335 review finding): `modules` is fed by the
+        // caller and is NOT guaranteed to have an entry for every file in
+        // `files` (`brink_db::queries::analysis::
+        // conventions_confinement_diagnostics_query` skips such a file
+        // outright, `let Some(this_module) = module_map.get(&file_id)...
+        // else { return Arc::new(Vec::new()); }`). The claiming file here
+        // (id 0) has no `modules` entry at all; a second file (id 1)
+        // supplies the expected module so the pointer-resolvability check
+        // still passes. Before the fix, a missing entry was folded into
+        // "not the conventions module" and misfired E169 on a file this
+        // function has no module identity for.
+        let hir = build_native(CLAIMING_SRC);
+        let files = [(FileId(0), &hir)];
+        let mut modules = ModuleMap::new();
+        modules.insert(FileId(1), resolved_module("story::conventions"));
+        let diags =
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
         assert!(diags.is_empty(), "{diags:?}");
     }
 
