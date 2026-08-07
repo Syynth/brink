@@ -70,6 +70,59 @@ pub fn inlay_hints(
     hints
 }
 
+/// The native (`.brink`) sibling of [`inlay_hints`] (issue #2359): the same
+/// three surfaces (call-arg parameter hints, divert-with-args parameter
+/// hints, unannotated-`temp` inferred-type hints), driven off
+/// `brink_syntax_native::SyntaxKind` nodes (`CallExpr`/`DivertTarget`/
+/// `LetStmt`) instead of ink's typed AST, which has no native equivalent to
+/// cast into (#2291's `syntax_root` failure mode). Never pass a
+/// `brink_syntax::SyntaxNode` root parsed from native source text here —
+/// use [`crate::session::IdeSession::syntax_root_native`].
+pub fn inlay_hints_native(
+    root: &brink_syntax_native::SyntaxNode,
+    analysis: &AnalysisResult,
+    db: &ProjectDb,
+    file_id: FileId,
+    range: TextRange,
+    host_values: Option<&crate::HostValues>,
+) -> Vec<InlayHint> {
+    use brink_syntax_native::ast::AstNode as _;
+    let mut hints = Vec::new();
+
+    for node in root.descendants() {
+        let node_range = node.text_range();
+        if node_range.end() < range.start() || node_range.start() > range.end() {
+            continue;
+        }
+
+        if let Some(call) = brink_syntax_native::ast::CallExpr::cast(node.clone()) {
+            if let Some(callee) = call.callee() {
+                collect_param_hints_native(
+                    &crate::color::native_path_name(&callee),
+                    call.arg_list(),
+                    analysis,
+                    host_values,
+                    &mut hints,
+                );
+            }
+        } else if let Some(target) = brink_syntax_native::ast::DivertTarget::cast(node.clone())
+            && let Some(path_node) = target.path()
+        {
+            collect_param_hints_native(
+                &crate::color::native_path_name(&path_node),
+                target.call_args(),
+                analysis,
+                host_values,
+                &mut hints,
+            );
+        } else if let Some(let_stmt) = brink_syntax_native::ast::LetStmt::cast(node.clone()) {
+            collect_inferred_type_hint_native(&let_stmt, analysis, db, file_id, &mut hints);
+        }
+    }
+
+    hints
+}
+
 /// TM-5 (#621): an inferred-type inlay after an *unannotated* `temp`
 /// declaration's name (`~ temp x = …` -> `~ temp x: int = …` as a ghost
 /// label, never inserted into the source). Silently does nothing when the
@@ -118,6 +171,53 @@ fn collect_inferred_type_hint(
     });
 }
 
+/// The native (`.brink`) sibling of [`collect_inferred_type_hint`] (issue
+/// #2359) — same TM-5 join, over a native `~ let name = expr` binding
+/// (`ast::LetStmt`) instead of ink's `ast::TempDecl`. Both lower to the same
+/// `Stmt::TempDecl`/`SymbolKind::Temp` HIR shape
+/// (`brink_ir::hir::lower_native::control_flow::lower_temp_decl`), so the
+/// analysis-side join (`enclosing_callable` → `infer_body`) is identical;
+/// only the syntax accessors differ.
+fn collect_inferred_type_hint_native(
+    let_stmt: &brink_syntax_native::ast::LetStmt,
+    analysis: &AnalysisResult,
+    db: &ProjectDb,
+    file_id: FileId,
+    hints: &mut Vec<InlayHint>,
+) {
+    if let_stmt.type_annotation().is_some() {
+        return;
+    }
+    let Some(name_token) = let_stmt.name_token() else {
+        return;
+    };
+    let name = name_token.text().to_string();
+    let ident_range = name_token.text_range();
+
+    // Resolve to this temp's own declaration-site `SymbolInfo` so its
+    // `Scope` gives us the enclosing knot/stitch to key `infer_body` by.
+    let Some(info) = analysis.index.symbols.values().find(|info| {
+        info.file == file_id && info.kind == brink_ir::SymbolKind::Temp && info.range == ident_range
+    }) else {
+        return;
+    };
+
+    let Some(ty) = enclosing_callable(analysis, info)
+        .and_then(|def| db.infer_body(def))
+        .and_then(|body| body.locals.get(&name).cloned())
+        .filter(|ty| !ty.is_unknown())
+    else {
+        return;
+    };
+
+    hints.push(InlayHint {
+        offset: ident_range.end(),
+        label: format!(": {}", ty.display()),
+        kind: InlayHintKind::InferredType,
+        padding_right: false,
+    });
+}
+
 /// Collect parameter name inlay hints for a call with the given callee name.
 fn collect_param_hints(
     callee_name: &str,
@@ -127,7 +227,61 @@ fn collect_param_hints(
     hints: &mut Vec<InlayHint>,
 ) {
     let Some(arg_list) = arg_list else { return };
-    let args: Vec<_> = arg_list.args().collect();
+    let spans: Vec<ArgSpan> = arg_list
+        .args()
+        .map(|a| ArgSpan {
+            text: a.syntax().text().to_string(),
+            start: a.syntax().text_range().start(),
+            end: a.syntax().text_range().end(),
+        })
+        .collect();
+    build_param_hints(callee_name, &spans, analysis, host_values, hints);
+}
+
+/// The native (`.brink`) sibling of [`collect_param_hints`] — same join,
+/// over `brink_syntax_native::ast::ArgList`'s raw child expression nodes
+/// (native has no `ast::Arg`/`ast::Expr` wrapper to call `.args()` on; an
+/// `ARG_LIST`'s children are bare expression nodes, the same idiom
+/// `brink_ir::hir::lower_native::expr::lower_call` reads them with).
+fn collect_param_hints_native(
+    callee_name: &str,
+    arg_list: Option<brink_syntax_native::ast::ArgList>,
+    analysis: &AnalysisResult,
+    host_values: Option<&crate::HostValues>,
+    hints: &mut Vec<InlayHint>,
+) {
+    use brink_syntax_native::ast::AstNode as _;
+    let Some(arg_list) = arg_list else { return };
+    let spans: Vec<ArgSpan> = arg_list
+        .syntax()
+        .children()
+        .map(|a| ArgSpan {
+            text: a.text().to_string(),
+            start: a.text_range().start(),
+            end: a.text_range().end(),
+        })
+        .collect();
+    build_param_hints(callee_name, &spans, analysis, host_values, hints);
+}
+
+/// One argument's source text and span — the frontend-agnostic shape
+/// [`build_param_hints`] needs, so it never depends on which CST an argument
+/// node came from.
+struct ArgSpan {
+    text: String,
+    start: TextSize,
+    end: TextSize,
+}
+
+/// The shared body of [`collect_param_hints`]/[`collect_param_hints_native`]
+/// — parameter-name + value-label hints for a resolved callee's arguments.
+fn build_param_hints(
+    callee_name: &str,
+    args: &[ArgSpan],
+    analysis: &AnalysisResult,
+    host_values: Option<&crate::HostValues>,
+    hints: &mut Vec<InlayHint>,
+) {
     if args.is_empty() {
         return;
     }
@@ -171,8 +325,7 @@ fn collect_param_hints(
 
     for (i, (arg, param)) in args.iter().zip(&info.params).enumerate() {
         // Skip hint if the argument text already matches the parameter name
-        let arg_text = arg.syntax().text().to_string();
-        let arg_text = arg_text.trim();
+        let arg_text = arg.text.trim();
         if arg_text == param.name {
             continue;
         }
@@ -207,7 +360,7 @@ fn collect_param_hints(
         };
 
         hints.push(InlayHint {
-            offset: arg.syntax().text_range().start(),
+            offset: arg.start,
             label,
             kind: InlayHintKind::Parameter,
             padding_right: true,
@@ -230,7 +383,7 @@ fn collect_param_hints(
             let literal = arg_text.trim_matches('"');
             if let Some(item) = items.iter().find(|it| it.value == literal) {
                 hints.push(InlayHint {
-                    offset: arg.syntax().text_range().end(),
+                    offset: arg.end,
                     // Leading space separates it from the literal (no padding_left).
                     label: format!(" \u{27e8}{}\u{27e9}", item.label),
                     kind: InlayHintKind::Value,
@@ -245,7 +398,7 @@ fn collect_param_hints(
 mod tests {
     use rowan::{TextRange, TextSize};
 
-    use super::{InlayHintKind, inlay_hints};
+    use super::{InlayHintKind, inlay_hints, inlay_hints_native};
     use crate::session::IdeSession;
 
     #[test]
@@ -677,6 +830,153 @@ EXTERNAL set_switch(id, on)
             labels,
             vec![": int"],
             "only `other` resolves, `unused` stays Unknown"
+        );
+    }
+
+    // ── #2359: `inlay_hints_native` — the native (`.brink`) sibling ────────
+
+    #[test]
+    fn native_typed_param_hints_include_type_untyped_keep_colon() {
+        // A regression test that fails with `inlay_hints_native` deleted and
+        // `inlay_hints_impl` in `crates/brink-web` back on the pre-#2359
+        // `is_native` early-return: both call sites below would silently
+        // get zero inlay hints instead of the parameter labels asserted.
+        let src = "\
+/// @param weapon {int}
+fn damage(weapon) {
+  return weapon;
+}
+fn heal(amount) {
+  return amount;
+}
+flow main() {
+  ~ let x = damage(3)
+  ~ let y = heal(4)
+}
+";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax_native::parse(src);
+        let hints = inlay_hints_native(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
+        assert!(labels.contains(&"weapon: int"), "{labels:?}");
+        assert!(labels.contains(&"amount:"), "{labels:?}");
+    }
+
+    #[test]
+    fn native_builtin_widget_param_drops_the_type_label() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, WidgetDecl,
+        };
+
+        let src = "extern set_tint(color)\nflow main() {\n  ~ set_tint(\"#FF8800\")\n}\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "set_tint".into(),
+                params: vec![ManifestParam {
+                    name: "color".into(),
+                    ty: TypeRef("hex_color".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "hex_color".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: None,
+                widget: Some(WidgetDecl {
+                    kind: "color".into(),
+                }),
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax_native::parse(src);
+        let hints = inlay_hints_native(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let labels: Vec<_> = hints.iter().map(|h| h.label.as_str()).collect();
+        assert!(labels.contains(&"color:"), "{labels:?}");
+        assert!(!labels.contains(&"color: hex_color"), "{labels:?}");
+    }
+
+    #[test]
+    fn native_inferred_type_hint_after_unannotated_let_in_a_function_body() {
+        let src = "fn heal(hp) {\n  let bonus = hp + 1;\n  return bonus;\n}\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax_native::parse(src);
+        let hints = inlay_hints_native(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        let inferred: Vec<_> = hints
+            .iter()
+            .filter(|h| matches!(h.kind, InlayHintKind::InferredType))
+            .collect();
+        assert_eq!(
+            inferred.len(),
+            1,
+            "{:?}",
+            hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+        );
+        assert_eq!(inferred[0].label, ": int");
+        let bonus_end = TextSize::try_from(src.find("bonus").expect("present") + "bonus".len())
+            .expect("offset");
+        assert_eq!(inferred[0].offset, bonus_end);
+    }
+
+    #[test]
+    fn native_no_inferred_type_hint_when_let_already_has_an_annotation() {
+        let src = "fn heal(hp) {\n  let bonus: int = hp + 1;\n  return bonus;\n}\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let parsed = brink_syntax_native::parse(src);
+        let hints = inlay_hints_native(
+            &parsed.syntax(),
+            analysis,
+            session.db(),
+            file_id,
+            TextRange::new(TextSize::new(0), TextSize::of(src)),
+            None,
+        );
+        assert!(
+            !hints
+                .iter()
+                .any(|h| matches!(h.kind, InlayHintKind::InferredType)),
+            "an explicit ascription already shows the type in-source: {:?}",
+            hints.iter().map(|h| &h.label).collect::<Vec<_>>()
         );
     }
 }
