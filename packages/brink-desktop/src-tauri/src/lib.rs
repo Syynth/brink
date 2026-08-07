@@ -340,6 +340,16 @@ async fn append_backups(
 /// Cap on the persisted recents list (#2394's "~10").
 const RECENTS_MAX: usize = 10;
 
+/// The menu-id prefix for an Open Recent entry. Shared by `build_menu`
+/// (producer, `format!("{OPEN_RECENT_ID_PREFIX}{path}")`) and
+/// `on_menu_event` (consumer, `id.strip_prefix(OPEN_RECENT_ID_PREFIX)`) so
+/// the two can never drift out of sync — this crate has no CI at all
+/// (`docs/desktop-shell-spec.md`: "CI in v1: none required"), so a typo'd
+/// duplicate literal at either site would ship a silently inert menu behind
+/// a fully green required gate. See `open_recent_id_round_trips_posix_and_windows_paths`
+/// for the round-trip this prefix is expected to survive.
+const OPEN_RECENT_ID_PREFIX: &str = "open-recent:";
+
 /// The app-data path for `recents.json`.
 fn recents_path(app: &tauri::AppHandle) -> Result<PathBuf, ShellError> {
     use tauri::Manager;
@@ -444,6 +454,18 @@ async fn prune_recent(app: tauri::AppHandle, path: String) -> Result<Vec<String>
     Ok(list)
 }
 
+/// Whether a project root still exists as a directory. Used by the frontend
+/// to gate lazy recents pruning (#2394 review finding): `openRecent`'s catch
+/// handler must only prune an entry when the folder itself is actually
+/// gone, not on every failure `openProject` can raise (a transient
+/// `mountStudio` error, a permission error, a file deleted mid-listing) —
+/// those must surface to the user, not silently delete a valid project from
+/// `recents.json` and the native Open Recent submenu.
+#[tauri::command]
+async fn project_root_exists(path: String) -> bool {
+    Path::new(&path).is_dir()
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
@@ -535,7 +557,7 @@ fn build_menu(
             .map(|path| {
                 MenuItem::with_id(
                     handle,
-                    format!("open-recent:{path}"),
+                    format!("{OPEN_RECENT_ID_PREFIX}{path}"),
                     path,
                     true,
                     None::<&str>,
@@ -596,7 +618,7 @@ pub fn run() {
             // StudioHandle). The shell stays policy-free.
             app.on_menu_event(|app, event| {
                 let id = event.id().as_ref();
-                if let Some(path) = id.strip_prefix("open-recent:") {
+                if let Some(path) = id.strip_prefix(OPEN_RECENT_ID_PREFIX) {
                     let _ = app.emit("menu:open-recent", path.to_owned());
                     return;
                 }
@@ -625,6 +647,7 @@ pub fn run() {
             read_recents,
             push_recent,
             prune_recent,
+            project_root_exists,
         ])
         .run(tauri::generate_context!())
         .expect("error while running brink-desktop");
@@ -718,6 +741,21 @@ mod tests {
         let loaded = load_recents(&path).expect("load_recents should succeed right after save");
         let _ = std::fs::remove_file(&path);
         assert_eq!(loaded, list);
+    }
+
+    /// The `open-recent:{path}` menu-id contract (#2394 review): the
+    /// producer (`build_menu`'s `format!`) and consumer
+    /// (`on_menu_event`'s `strip_prefix`) must agree on the exact prefix,
+    /// including for a Windows-drive-letter-shaped path whose own `:`
+    /// could plausibly confuse a naive strip. This crate has zero CI
+    /// (`docs/desktop-shell-spec.md`: "CI in v1: none required"), so this
+    /// is the only thing guarding the two literals from drifting apart.
+    #[test]
+    fn open_recent_id_round_trips_posix_and_windows_paths() {
+        for path in ["/Users/x/proj", r"C:\Users\x\proj"] {
+            let id = format!("{OPEN_RECENT_ID_PREFIX}{path}");
+            assert_eq!(id.strip_prefix(OPEN_RECENT_ID_PREFIX), Some(path));
+        }
     }
 
     #[test]

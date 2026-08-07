@@ -26,6 +26,7 @@ import type { FileChange } from "@brink-lang/editor";
 import {
   TauriFileProvider,
   pickProjectFolder,
+  projectRootExists,
   pruneRecent,
   pushRecent,
   readRecents,
@@ -194,13 +195,26 @@ async function chooseAndOpen(): Promise<void> {
  * prune lazily") — the path came from a persisted list, not a fresh folder
  * pick, so a missing/moved folder is an expected failure mode, not a rare
  * edge case.
+ *
+ * Pruning is gated on {@link projectRootExists} (2026-08 review finding),
+ * not fired on every rejection: `openProject` can also reject from a
+ * permission error, a file deleted mid-listing, or a `mountStudio` failure
+ * — none of which mean the project itself is gone. Only an actually-missing
+ * root gets removed from `recents.json` and the native Open Recent submenu;
+ * every other failure just surfaces to the console and re-shows the
+ * landing screen with the entry intact.
  */
 async function openRecent(path: string): Promise<void> {
   try {
     await openProject(path);
   } catch (e: unknown) {
     console.error("[brink-desktop] failed to open recent project", e);
-    await pruneRecent(path).catch(() => {});
+    // Default to "exists" on a failed check itself, so a transient
+    // check-command error can never masquerade as evidence of deletion.
+    const rootGone = !(await projectRootExists(path).catch(() => true));
+    if (rootGone) {
+      await pruneRecent(path).catch(() => {});
+    }
     if (current === null) void renderLanding();
   }
 }

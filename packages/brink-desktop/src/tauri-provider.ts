@@ -183,3 +183,15 @@ export async function pushRecent(root: string): Promise<string[]> {
 export async function pruneRecent(root: string): Promise<string[]> {
   return invoke<string[]>("prune_recent", { path: root });
 }
+
+/**
+ * Whether a project root still exists as a directory (#2394 review). Gates
+ * lazy pruning: `openProject` failing does not by itself mean the folder is
+ * gone — a transient `mountStudio` failure, a permission error, or a file
+ * deleted mid-listing must never be conflated with a genuinely missing
+ * project root, or a valid entry gets silently deleted from `recents.json`
+ * and the native Open Recent submenu over a recoverable error.
+ */
+export async function projectRootExists(root: string): Promise<boolean> {
+  return invoke<boolean>("project_root_exists", { path: root });
+}
