@@ -49,6 +49,17 @@
 //! different visibility behavior than `std` still needs the policy type;
 //! this module only gives it a name to add to the set.
 
+/// The project's own root — the universe of what the story *author*
+/// provided, as opposed to a mounted library (issue #2274, closing the
+/// naming gap #2245/#2251 left on this side: every reserved peer root has
+/// a named constant in [`RESERVED_ROOTS`], but the root the *rest* of a
+/// project's files fall back to — `brink_db::modules::native_module_path`'s
+/// default branch — stayed a bare `"story"` literal). Deliberately **not**
+/// a member of [`RESERVED_ROOTS`]: that set answers "is this a mounted
+/// library, not project-owned", and `story` is the opposite answer to that
+/// question, not another entry in it.
+pub const STORY_ROOT: &str = "story";
+
 /// The standard library's reserved peer-root name — the one entry in
 /// [`RESERVED_ROOTS`] that exists today (`brink_environment::mount_stdlib`'s
 /// `std/…` source-key convention, turned into a module path by
