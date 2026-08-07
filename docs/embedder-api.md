@@ -108,6 +108,14 @@ type FileChange = {
   `api.getDirtyFiles(): string[]`. File contents deliberately never enter
   `StudioPublicState` (they are big and change per keystroke — the
   reference-stability contract); use the push/pull surfaces above.
+- **Orphaned files (2026-08-07 decision, "keep the view, mark orphaned").**
+  When a file open in the editor is deleted externally, the session drops
+  the file but the open view keeps its buffer — never auto-closed — marked
+  "deleted on disk" and dirty; `file.save`/`file.saveAll` recreates it (on
+  disk for a host-save provider, in the session either way). Per-file
+  detail is `api.getOrphanedFiles(): string[]`, for a host to render a tab
+  badge or strikethrough; cleared by a save or by the file reappearing on
+  disk.
 
 ### Save loop example (host-persisted project, RPG Maker MZ shaped)
 
@@ -212,6 +220,8 @@ interface StudioApi {
   getFiles(): Record<string, string>;
   /** Files diverging from the last-saved/notified baseline (#154). */
   getDirtyFiles(): string[];
+  /** Files deleted externally while a kept editor buffer survives (#2371). */
+  getOrphanedFiles(): string[];
 }
 ```
 

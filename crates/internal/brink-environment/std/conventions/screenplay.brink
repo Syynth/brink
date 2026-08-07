@@ -117,11 +117,19 @@
 //   (ruling item 6, "AN EVENT EXISTS IFF A LINE EXISTS" — an attaching
 //   convention emits no line) — its `Cue` value's fields merge into the
 //   VM's per-block attachment state instead, and the dialogue line(s)
-//   that follow each carry a copy (`OutputLine.element.data`). Only
-//   claims a cue with no trailing tag extension (`@VENDOR #(v.o.)`
-//   declines — the tag is structure the pattern is never shown, and
-//   unlike `heading` above, a `CUE`'s structure is not stripped-and-
-//   recovered by issue #2077, which is scoped to headings only).
+//   that follow each carry a copy (`OutputLine.element.data`). Issue #2350
+//   (`docs/decision-log.md` 2026-08-07 "Cue/parenthetical tag extensions:
+//   strip-then-match, uniformly") extended #2077's heading-only stripping
+//   to `CUE`/`PARENTHETICAL` too, so a tag extension (`@VENDOR #(v.o.)`)
+//   is no longer structure the pattern can't see past — but `cue` here is
+//   ATTACH MODE, and attach mode has nowhere to carry a claimed line's
+//   tags at all (no `Stmt::Content` is ever emitted for it, ruling item 6
+//   below), so `cue` STILL declines a tag-bearing line — same visible
+//   outcome as before #2350, now for the attach-mode reason rather than
+//   the structural one. A `claims`-only, non-`attach` handler (this
+//   preset declares none) WOULD claim it and receive the tags through the
+//   ordinary `Content.tags` channel — see `hir::lower_native::element::
+//   try_claim`'s own "Issues #2077/#2350" comment.
 // - `parenthetical` — a chain-gated `(delivery)` line (parser-enforced:
 //   only recognized directly after a live cue). **Also migrated to
 //   ATTACH MODE by issue #2166**, for the identical reason `cue` was:
@@ -194,12 +202,22 @@
 // attached run `cue`'s `AttachElement` opens, keeping full markup/
 // interpolation rights — `@KID: I have {count} coins.` claims exactly
 // like `@KID` followed by `I have {count} coins.` on its own line would.
-// A `CUE`/`COMPACT_CUE` carrying a tag extension (`@VENDOR #(v.o.)`) is
-// still NOT covered — the tag is structure the pattern is never shown,
-// and unlike a `SCENE_HEADING`, a cue's slug/tag structure is not
-// stripped-and-recovered by issue #2077, which is scoped to headings
-// only. A `SCENE_HEADING` carrying a `[slug]` and/or trailing `#tag`s IS
-// covered, since issue #2077 (above).
+// A block `CUE` carrying a tag extension (`@VENDOR #(v.o.)`) is now
+// structurally coverable too (issue #2350, above): `candidate()` strips
+// the trailing `TAG`s the same way it strips a heading's `[slug]`/`#tag`s,
+// rather than declining the whole line. This preset's own `cue` still
+// does not end up claiming one in practice, because `cue` is declared
+// ATTACH MODE and attach mode has nowhere to carry the recovered tags
+// (see `cue`'s own note above) — a hypothetical `claims`-only `cue`
+// handler with no `attach` clause would claim it and receive the tag
+// through `Content.tags`. `COMPACT_CUE`'s own name segment (before the
+// `:`) has no equivalent widening: `#` unconditionally ends `cue_name`'s
+// scan before the parser ever checks for the `:` that would make it a
+// `COMPACT_CUE` at all (`brink-syntax-native`'s `cue_line`), so `@VENDOR
+// #tag: text` never reaches a `COMPACT_CUE` node in the first place —
+// out of this issue's scope, and not attempted here. A `SCENE_HEADING`
+// carrying a `[slug]` and/or trailing `#tag`s IS covered by `heading`
+// above (a plain `claims` handler, not attach mode), since issue #2077.
 //
 // # `@[style]` — deliberately NOT declared here
 //

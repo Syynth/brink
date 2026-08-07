@@ -95,6 +95,14 @@ File (Open Folder…, Open Recent, Save, Save All, Export `.inkb`…, Close
 Window), Edit (native webview roles), Story (Play/Restart, from the
 existing player commands), View (panel toggles), Help (docs link).
 
+Quit is a plain `MenuItem` (not Tauri's `PredefinedMenuItem::quit`),
+forwarded to the webview as a `menu:quit` shell event — the same pattern
+already used for Open/Close Project. Ruled 2026-08-07 (#2370): the
+predefined Quit item's native teardown is not guaranteed to reach the
+webview (`on_menu_event`/`CloseRequested`) on every platform, which would
+silently bypass the guarded quit path (`awaitSaveAllBeforeQuit`) for ⌘Q,
+the most common real quit action on macOS.
+
 ## Entry flow
 
 1. Open Folder… → folder dialog → instantiate `TauriFileProvider` at that
@@ -114,7 +122,9 @@ existing player commands), View (panel toggles), Help (docs link).
 - **D2 — a real host.** fs watcher → `onExternalChange` (acceptance: edit
   a file in another editor, see the #320 conflict surface), native
   rename, recent projects, registry-driven menus, window title = project
-  name, dirty-state in close-prompt.
+  name, quit awaits the final `saveAll` before the window closes (#2370;
+  ruled 2026-08-07 — no dirty-state close-confirmation prompt, that's dead
+  UI given autosave + save-on-close).
 - **D3 — output.** Export `.inkb` via `compile_project` bytes + save
   dialog; `brink-cli` as a Tauri **sidecar** for batch ops (xliff
   export/locale compile) so both cores ship from one workspace version.

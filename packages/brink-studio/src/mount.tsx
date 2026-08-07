@@ -387,10 +387,14 @@ export async function mountStudio(
     // under an open editor, so re-sync its mounted views — otherwise the
     // stale view's next flush silently reverts the external update (found
     // live by brink-desktop's D2 watcher, this hook's first real producer).
-    // Deletions skip: the session file was removed; open views of it are
-    // the shell's lifecycle concern, not a content re-sync.
+    // Deletions (#2371 ruling, "keep the view, mark orphaned"): never
+    // auto-close the tab or touch its buffer — `markOrphaned` only recreates
+    // the session-side content from the kept buffer so IDE queries and a
+    // later save keep working; the hub already flags the path orphaned
+    // (`FileChangeHub.applyExternal`) for tab badging.
     onExternalFileChange: (path, content) => {
       if (content !== null) documentsRef?.refreshExternal(path);
+      else documentsRef?.markOrphaned(path);
     },
     // Overlay hosts (backup-ring egress) declare that delivery is NOT
     // persistence, so dirty survives until a canonical save (D2 model).

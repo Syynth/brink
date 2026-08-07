@@ -2754,18 +2754,145 @@ fn an_unclaimed_cue_is_still_loudly_unlowered() {
     );
 }
 
+// ─── Tag-bearing `CUE`/`PARENTHETICAL` (issue #2350) ─────────────────
+//
+// `docs/decision-log.md` 2026-08-07, "Cue/parenthetical tag extensions:
+// strip-then-match, uniformly" — the #2077 heading rule (above) applied to
+// `CUE`/`PARENTHETICAL` too. Before this ruling, EITHER shape carrying a
+// trailing `#tag` (§8d.4, `@VENDOR #(v.o.)`) declined outright, per the old
+// `candidate()` "exactly one child" rule — that is exactly the regression
+// `a_cue_with_a_tag_extension_is_now_claimable` and
+// `a_parenthetical_with_a_tag_extension_is_now_claimable` pin: revert the
+// `candidate()` `CUE`/`PARENTHETICAL` arms to their pre-fix "exactly one
+// child" form and both go red (`E129` instead of a clean claim). Verified
+// by hand.
+
 #[test]
-fn a_cue_with_a_tag_extension_is_not_a_claim_candidate() {
-    // §8d.4: cue extensions ride the tag channel, e.g. `@VENDOR #(v.o.)`.
-    // The tag is structure the pattern is never shown — mirroring the
-    // slug/tag-carrying `SCENE_HEADING` case above — so this still falls
-    // to the loud `E129` default even with a matching handler declared.
-    let (_hir, _m, diags) = lower_src(
+fn a_cue_with_a_tag_extension_is_now_claimable() {
+    let (hir, _m, diags) = lower_src(
         "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 40)]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR #(v.o.)\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the tag-carrying cue must lower to one call");
+    assert_eq!(callee, "cue");
+    // The pattern still sees only the name text — the tag is stripped, not
+    // appended or otherwise leaked into the payload capture.
+    assert_eq!(args, vec!["VENDOR".to_string()]);
+    // The tag rides the EXISTING tag channel (`Content.tags`), exactly like
+    // a claimed heading's own trailing tag does — assert the claimed cue's
+    // own `Stmt::Content { tags, .. }` directly.
+    let Stmt::Content(c) = main
+        .body
+        .stmts
+        .iter()
+        .find(|s| matches!(s, Stmt::Content(_)))
+        .expect("the claimed cue must lower to a Content statement")
+    else {
+        unreachable!("just matched Stmt::Content above");
+    };
+    assert_eq!(c.tags.len(), 1, "expected exactly one tag: {:?}", c.tags);
+    assert!(
+        matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "(v.o.)"),
+        "the cue's own trailing tag must reach `Content.tags`: {:?}",
+        c.tags[0].parts
+    );
+}
+
+#[test]
+fn a_parenthetical_with_a_tag_extension_is_now_claimable() {
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 50)]\nfn cue(name) {\n  return name;\n}\n@[convention(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", order = 60)]\nfn parenthetical(delivery) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed) #whisper\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.element_matches.len(),
+        2,
+        "both the cue and the tag-carrying parenthetical must be claimed: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        hir.element_matches[1].kind,
+        crate::ElementKind::Parenthetical
+    );
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let contents: Vec<_> = main
+        .body
+        .stmts
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Content(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        contents.len(),
+        2,
+        "the cue and the parenthetical must each lower to their own Content \
+         statement: {:?}",
+        main.body.stmts
+    );
+    // The pattern still sees only the delivery text, trimmed of its tag.
+    assert!(
+        matches!(&contents[1].parts[0], ContentPart::Interpolation(_)),
+        "the parenthetical's claimed call must be the second Content: {:?}",
+        contents[1].parts
+    );
+    assert_eq!(
+        contents[1].tags.len(),
+        1,
+        "expected exactly one tag on the parenthetical's own Content: {:?}",
+        contents[1].tags
+    );
+    assert!(
+        matches!(&contents[1].tags[0].parts[0], ContentPart::Text(t) if t == "whisper"),
+        "the parenthetical's own trailing tag must reach `Content.tags`: {:?}",
+        contents[1].tags[0].parts
+    );
+}
+
+#[test]
+fn an_attach_mode_cue_with_a_tag_extension_still_declines() {
+    // #2344's review ruled a claimed heading with tags DECLINES under
+    // attach mode — nowhere to carry them, since attach mode never emits a
+    // `Stmt::Content` at all (ruling item 6, "AN EVENT EXISTS IFF A LINE
+    // EXISTS"). #2350 applies the identical rule to an attach-mode `CUE`:
+    // even though the tag is now structurally recoverable (the test above),
+    // an attach handler still has no line for it to ride on, so the claim
+    // must decline outright — falling to the loud `E129` default, never a
+    // silent drop of the tag.
+    let (_hir, _m, diags) = lower_src(
+        "struct Cue {\n  speaker: string\n}\n\n@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", attach = Cue, order = 10)]\nfn cue(name): Cue {\n  return Cue { speaker: name };\n}\n\nflow main() {\n  @VENDOR #(v.o.)\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
-        "a tag-carrying cue must not be silently claimed against a partial line: {diags:?}"
+        "an attach-mode cue with a tag extension must decline, not silently \
+         drop the tag: {diags:?}"
+    );
+}
+
+#[test]
+fn an_attach_mode_parenthetical_with_a_tag_extension_still_declines() {
+    // Mirrors `an_attach_mode_cue_with_a_tag_extension_still_declines` for
+    // `PARENTHETICAL` — the same attach-mode "nowhere to carry it" rule
+    // applies regardless of which of the two claimable shapes carries the
+    // tag.
+    let (_hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10)]\nfn cue(name) {\n  return name;\n}\nstruct Parenthetical {\n  delivery: string\n}\n\n@[convention(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", attach = Parenthetical, order = 20)]\nfn parenthetical(delivery): Parenthetical {\n  return Parenthetical { delivery: delivery };\n}\n\nflow main() {\n  @VENDOR\n  (hushed) #whisper\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an attach-mode parenthetical with a tag extension must decline, \
+         not silently drop the tag: {diags:?}"
     );
 }
 

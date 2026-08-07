@@ -448,7 +448,18 @@ impl IdeSession {
             self.conventions = conventions;
             changed = true;
         }
-        if changed {
+        // A session with no analysis yet (fresh `IdeSession::new()`, no
+        // `update_and_analyze` call) must still reanalyze even when the
+        // four fields already match `options` byte-for-byte — otherwise a
+        // caller like `Project::ide_session()`, which loads every source
+        // via `update_source` (which does not itself analyze) and then
+        // calls this seam exactly once with options that happen to equal
+        // the session's own defaults, leaves `self.analysis` at `None`
+        // forever. Every `structural_result::gate*` helper treats `None`
+        // as "nothing to check", so that produced a silent, always-empty
+        // breakage report — the exact regression issue #1393 fixed, and
+        // this `changed`-only guard reopened it (#2334 review).
+        if changed || self.analysis.is_none() {
             self.reanalyze();
         }
     }
@@ -1597,12 +1608,25 @@ EXTERNAL add_state(who)
         session.set_host_manifest(color_manifest());
         session.set_semantic_type_check(SemanticTypeDiagnosticSeverity::Error);
 
-        // A throwaway options value with every non-conventions/lints/
-        // dialect/types field at its default — if `apply_analysis_options`
-        // wrote `host_manifest`/`external_check`/`semantic_type_check` from
-        // this, the manifest registered above (and the non-default
-        // severity policy) would be silently reset.
-        session.apply_analysis_options(&AnalysisOptions::default());
+        // Must differ from the session's already-registered
+        // `dialect`/`types`/`lints`/`conventions` (all still at their
+        // `IdeSession::new()` defaults here) so `apply_analysis_options`'s
+        // `changed` guard actually trips and the seam runs its body,
+        // instead of the whole call short-circuiting before touching
+        // anything — which is exactly how this test stayed green with
+        // `apply_analysis_options` doing nothing at all (#2334 review).
+        session.apply_analysis_options(&AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+
+        // Confirms the seam actually ran (not merely that the `changed`
+        // guard happened to short-circuit before doing any damage).
+        assert_eq!(
+            session.language_dialect(),
+            Dialect::Brink,
+            "sanity: apply_analysis_options must have forwarded the changed dialect"
+        );
 
         let analysis = session.analysis().expect("analysis");
         assert!(

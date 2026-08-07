@@ -698,6 +698,56 @@ export class DocumentSessions {
   }
 
   /**
+   * A file open in a view was deleted externally (issue #2371, "External
+   * deletion of an open file: keep the view, mark orphaned"): the opposite
+   * of `refreshExternal` — the kept buffer is never touched here, no view is
+   * re-synced or closed. `ProjectSession`'s external-change handler already
+   * dropped the file from the wasm session and flagged the path orphaned
+   * (`FileChangeHub.applyExternal(path, null)`); this repairs the one thing
+   * that skip left broken: with the file gone from the session, every
+   * wasm-backed query against a still-open handle (hover, compile,
+   * semantic tokens) degrades until something re-adds the file, and a save
+   * with an *unedited* buffer would silently write nothing (the mounted
+   * handle's own no-op-push cache — `DocHandle.pushSource`'s `lastPushed`
+   * guard, comparing against text that hasn't changed since deletion —
+   * would skip the very push meant to recreate it).
+   *
+   * Re-adds the file to the session from the *kept* full-file buffer's
+   * current text (through `ProjectSession.recreateOrphaned`) so the buffer
+   * stops being a session-level ghost: IDE queries work again, and the path
+   * — with no baseline (`applyExternal(path, null)` dropped it) — reads
+   * dirty by the existing `FileChangeHub` rule immediately, not only after
+   * the user's next keystroke. The provider itself is not touched yet
+   * (`recreateOrphaned`'s doc explains why) — a later save
+   * (`file.save`/`file.saveAll`) is what actually recreates the file on
+   * disk, through the normal save path.
+   *
+   * Only a full-file view's text is trustworthy here: a symbol (fragment)
+   * view holds just a slice of the file, and the file's *other* content is
+   * gone from the session along with everything else `removeFile` dropped
+   * — there is nothing in the TS layer to reconstruct it from. When only
+   * fragment views of `path` are open, this leaves the session without the
+   * file (queries against those views keep degrading, and a save is a
+   * no-op — no worse than before this method existed); a full-file view
+   * anywhere among the slots is enough to recover.
+   */
+  markOrphaned(path: string): void {
+    let content: string | null = null;
+    for (const slot of this.slots.values()) {
+      if (slot.path !== path || slot.symbol !== null) continue;
+      if (slot.view !== null) {
+        content = slot.view.state.doc.toString();
+        break;
+      }
+      if (slot.state !== null) {
+        content = slot.state.doc.toString();
+        // Keep looking — a mounted full-file view (if any) is preferred.
+      }
+    }
+    if (content !== null) this.project.recreateOrphaned(path, content);
+  }
+
+  /**
    * A knot/stitch was renamed in place (#305): re-key the open fragment slot
    * for `${path}::${oldName}` to `${path}::${newName}` — slot map key, docKey,
    * `slot.symbol`, focused-slot id — dropping the stale symbol hint so the view
