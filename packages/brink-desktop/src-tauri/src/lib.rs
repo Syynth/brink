@@ -326,6 +326,72 @@ async fn append_backups(
     Ok(())
 }
 
+// ── File associations (docs/desktop-shell-spec.md D3; #2393) ───────────
+//
+// `bundle.fileAssociations` (tauri.conf.json) registers `.ink`/`.brink`
+// with the OS — this ONLY bites in the bundled `.app`; a dev run
+// (`pnpm tauri dev`) never gets a file-open launch, so this whole path is
+// simply unreached there. On macOS, double-clicking (or dragging onto the
+// Dock icon) an associated file delivers `RunEvent::Opened` — at COLD
+// launch that fires before the webview has loaded `main.tsx` and attached
+// its listener, so events would otherwise be silently dropped (Tauri's JS
+// event bus has no built-in replay). `PendingOpens` bridges that gap: it
+// buffers paths until the frontend's one-time `take_pending_opens` pull at
+// boot, after which it switches to live `shell:file-open` emits for any
+// later opens delivered to the already-running app (Dock re-open, a second
+// double-click) — never both for the same path, and never unbounded, since
+// nothing is pushed once the buffer has been taken.
+struct PendingOpens(std::sync::Mutex<Option<Vec<String>>>);
+
+/// Drain paths buffered before the frontend was ready to receive them, and
+/// flip the state to "ready" (`None`) so any *subsequent* `Opened` event
+/// goes out as a live `shell:file-open` emit instead of piling up here.
+/// Called exactly once by `src/main.tsx` at startup; safe to call again
+/// (returns empty) but nothing else in the app does.
+#[tauri::command]
+fn take_pending_opens(state: tauri::State<'_, PendingOpens>) -> Vec<String> {
+    state
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .unwrap_or_default()
+}
+
+/// Convert one `Opened` URL to an absolute filesystem path. `file://` is
+/// the only scheme macOS delivers for a file association or Dock drop;
+/// anything else (there shouldn't be anything else here) is dropped rather
+/// than guessed at.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn opened_url_to_path(url: &tauri::Url) -> Option<String> {
+    url.to_file_path().ok().map(|p| p.display().to_string())
+}
+
+/// Route one `RunEvent::Opened` batch: buffer it if the frontend hasn't
+/// taken over yet, otherwise emit it live. See the `PendingOpens` doc
+/// comment for why exactly one of those two happens per path.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+fn handle_opened(app: &tauri::AppHandle, urls: &[tauri::Url]) {
+    use tauri::{Emitter, Manager};
+
+    let paths: Vec<String> = urls.iter().filter_map(opened_url_to_path).collect();
+    if paths.is_empty() {
+        return;
+    }
+    let pending = app.state::<PendingOpens>();
+    let mut guard = pending
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.as_mut() {
+        Some(buffered) => buffered.extend(paths),
+        None => {
+            drop(guard);
+            let _ = app.emit("shell:file-open", paths);
+        }
+    }
+}
+
 /// Native folder picker. ⚠ This command (like every command here) MUST be
 /// `async`: Tauri v2 runs **sync** commands on the **main thread**, and
 /// `blocking_pick_folder` on the main thread deadlocks — the dialog needs
@@ -430,6 +496,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
+        .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
         .setup(|app| {
             let menu = build_menu(app.handle())?;
             app.set_menu(menu)?;
@@ -459,9 +526,21 @@ pub fn run() {
             start_watch,
             stop_watch,
             pick_project_folder,
+            take_pending_opens,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running brink-desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building brink-desktop")
+        .run(move |app_handle, event| {
+            // File associations (#2393) only exist on macOS/iOS/Android —
+            // `RunEvent::Opened` itself is cfg-gated out of the enum on
+            // other platforms, so the arm is compiled out there too rather
+            // than matching a variant that doesn't exist.
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                handle_opened(app_handle, urls);
+            }
+            let _ = (app_handle, &event);
+        });
 }
 
 #[cfg(test)]
@@ -483,5 +562,48 @@ mod tests {
         assert!(is_project_file(Path::new("brink.toml")));
         assert!(!is_project_file(Path::new("a/story.ink.json")));
         assert!(!is_project_file(Path::new("Cargo.toml")));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    #[test]
+    fn opened_url_to_path_decodes_file_urls() {
+        let url = tauri::Url::parse("file:///Users/ben/story/scenes/intro.brink")
+            .expect("valid file URL");
+        assert_eq!(
+            opened_url_to_path(&url).expect("file URL should convert"),
+            "/Users/ben/story/scenes/intro.brink"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    #[test]
+    fn opened_url_to_path_rejects_non_file_schemes() {
+        let url = tauri::Url::parse("https://example.com/story.brink").expect("valid URL");
+        assert!(opened_url_to_path(&url).is_none());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+    #[test]
+    fn take_pending_opens_drains_once_then_switches_to_live() {
+        let state = PendingOpens(std::sync::Mutex::new(Some(vec!["/a/b.ink".to_owned()])));
+        let taken = {
+            state
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .unwrap_or_default()
+        };
+        assert_eq!(taken, vec!["/a/b.ink".to_owned()]);
+        // A second take (mirrors `take_pending_opens` being invoked twice)
+        // must come back empty, never re-deliver — the buffer is `None`
+        // now, which is also the "frontend is ready, emit live" state.
+        let second = state
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .unwrap_or_default();
+        assert!(second.is_empty());
     }
 }

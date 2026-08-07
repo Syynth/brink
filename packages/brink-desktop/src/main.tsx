@@ -17,20 +17,31 @@
  * the same way as open/close-project rather than through
  * `PredefinedMenuItem::quit`) both funnel into `handleQuitRequested`, which
  * awaits the final `saveAll` (capped) before the window is destroyed.
+ *
+ * File associations (D3, #2393) are a third way a project opens, bundled
+ * `.app` only: double-clicking a `.ink`/`.brink` file reaches `handleFileOpen`
+ * via `shell:file-open` events / the `take_pending_opens` boot pull, and
+ * routes through this same `openProject`/`closeProject` pair — see
+ * `file-open.ts` for the (unit-tested) focus-vs-reopen decision.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { mountStudio, type StudioHandle } from "@brink-lang/studio";
 import type { FileChange } from "@brink-lang/editor";
 import { TauriFileProvider, pickProjectFolder } from "./tauri-provider.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
+import { resolveFileOpenAction } from "./file-open.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
+/** The open project's root path (absolute), or null when none is open —
+ * the D3 file-association handler's "is this file inside it?" test. */
+let currentRoot: string | null = null;
 /** The autosave ticker for the open project; cleared on close. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -85,6 +96,7 @@ async function openProject(root: string): Promise<void> {
   // Tear down any previous project only after the new one's files loaded,
   // so a cancelled or failed open never leaves a blank window.
   closeProject();
+  currentRoot = root;
 
   const el = appRoot();
   el.replaceChildren();
@@ -167,6 +179,7 @@ function closeProject(): void {
   }
   current.unmount();
   current = null;
+  currentRoot = null;
   document.title = "Brink Studio";
   renderLanding();
 }
@@ -186,6 +199,63 @@ async function handleQuitRequested(): Promise<void> {
   }
   await getCurrentWindow().destroy();
 }
+
+/**
+ * Focus an already-open project file through the studio's own navigation
+ * protocol (`editor.reveal`, docs/studio-shell-spec.md §6.1) — the same
+ * command Problems/Search/Story Graph dispatch, reused rather than forked
+ * (the span is a no-op placeholder; a source Location just needs a valid
+ * span shape to resolve, and reveal-at-file-open has no meaningful offset).
+ */
+function focusFile(rel: string): void {
+  current?.api.dispatch("editor.reveal", {
+    kind: "source",
+    file: rel,
+    span: { start: 0, end: 0 },
+  });
+}
+
+/**
+ * Handle one OS file-open request (D3, #2393): `resolveFileOpenAction`
+ * (file-open.ts) is the pure decision — focus in place, or open a new
+ * project root. Opening reuses `openProject`, which already close-saves
+ * any previously open project before mounting the new one (the ruled
+ * close flow) — this never forks a second open path.
+ */
+async function handleFileOpen(path: string): Promise<void> {
+  const action = resolveFileOpenAction(path, currentRoot);
+  if (action.kind === "open") {
+    await openProject(action.root);
+  }
+  focusFile(action.rel);
+}
+
+/**
+ * File associations (docs/desktop-shell-spec.md D3; #2393) ONLY bite in the
+ * bundled `.app` — `bundle.fileAssociations` registers `.ink`/`.brink` with
+ * the OS, and a dev run (`pnpm tauri dev`) never receives an OS file-open
+ * launch, so nothing below ever fires there. On a bundled build,
+ * double-clicking (or Dock-dropping) an associated file reaches
+ * `RunEvent::Opened` in src-tauri/src/lib.rs, which forwards paths here as
+ * live `shell:file-open` events. `take_pending_opens` is a one-time pull at
+ * boot for paths that arrived before this listener was attached (a cold
+ * launch — the Rust side buffers until this exact call, then switches to
+ * live emits; see `PendingOpens`'s doc comment there).
+ */
+void listen<string[]>("shell:file-open", (event) => {
+  void (async () => {
+    for (const path of event.payload) {
+      await handleFileOpen(path);
+    }
+  })();
+});
+void invoke<string[]>("take_pending_opens").then((paths) => {
+  void (async () => {
+    for (const path of paths) {
+      await handleFileOpen(path);
+    }
+  })();
+});
 
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => closeProject());
