@@ -45,6 +45,7 @@
 //! same caveat applies to the `explainMatch`/`explainMatchDoc` TS wrappers
 //! in `@brink-lang/web` (`packages/wasm/src/index.ts`).
 
+use brink_syntax_native::SyntaxNode;
 use rowan::{TextRange, TextSize};
 use wasm_bindgen::prelude::*;
 
@@ -129,11 +130,78 @@ impl EditorSession {
         };
 
         let projection = self.session.db().conventions_projection();
-        let explanation =
-            self.explain_cache
-                .explain(&projection, TextSize::new(line_start), &line_text);
+        // Issue #2351: when this exact line CST-parses to one of the five
+        // claim-candidate shapes `hir::lower_native::element::candidate`
+        // recognizes (`CUE`, `COMPACT_CUE`, `PARENTHETICAL`,
+        // `SCENE_HEADING`, a wholly-literal `CONTENT_LINE`), classify that
+        // node instead of the raw line text — the same sub-node text the
+        // compiler's own `try_claim` matches against, so a real `@NAME`
+        // cue or `(delivery)` parenthetical reports the same `matched`
+        // answer the compiler's own claiming pass would. `node` stays
+        // `None` (falling back to the pre-#2351 raw-text walk, unchanged)
+        // for a file with no compiled `FileId` at all, or a line that
+        // structurally is not one of those five shapes (a knot/stitch
+        // header, a logic line, blank text). It is NOT `None` merely
+        // because `path` is an ink-dialect file: `db.parse_native` runs the
+        // native parser regardless of the file's extension and returns
+        // `Some` for any known `FileId` (`brink-db`'s own doc on that
+        // query) — an ink file's `ConventionsProjection` is simply always
+        // empty (documented elsewhere), so the two paths agree trivially,
+        // not because this branch declined.
+        //
+        // #2356 review: probe from the line's own first non-whitespace
+        // byte, never from the caret's own `abs_offset`. `nearest_element_
+        // candidate` walks innermost-ancestor-first, and three of the five
+        // shapes fuse their own trailing content into a child
+        // `CONTENT_LINE` that is ITSELF one of `candidate`'s recognized
+        // shapes (a wholly-literal one): an indented `CUE`'s surrounding
+        // whitespace/newline sit outside the `CUE` node entirely
+        // (`Parser::skip_ws` bumps indentation into the enclosing block,
+        // and the line's terminating newline lands after the node's own
+        // `finish_node`), a `COMPACT_CUE`'s dialogue half is a fused
+        // `CONTENT_LINE` child, and a `BANG_DISPATCH`'s remainder is too —
+        // so a caret sitting in the indentation, at EOL, in a compact
+        // cue's dialogue, or in a bang-dispatch's arguments would resolve
+        // to the wrong node (or none at all) purely because of which
+        // column it happened to land on. Every one of the five shapes
+        // starts at the line's own first non-whitespace byte, so probing
+        // there instead makes the answer caret-column-independent, as
+        // `explainMatch`'s own contract ("the line containing offset")
+        // requires.
+        let indent = u32::try_from(line_text.len() - line_text.trim_start().len()).unwrap_or(0);
+        let probe_offset = line_start + indent;
+        let node = self.claim_candidate_node_at(path, probe_offset);
+        let base = node
+            .as_ref()
+            .map_or_else(|| TextSize::new(line_start), |n| n.text_range().start());
+        let explanation = self
+            .explain_cache
+            .explain(&projection, base, &line_text, node.as_ref());
         let kind = self.matched_element_kind(path, line_start, &line_text, &explanation);
         serde_json::to_string(&explain_match_to_js(explanation, kind)).unwrap_or_default()
+    }
+
+    /// The claim-candidate CST node covering `probe_offset` in `path`'s
+    /// current parse, if any — issue #2351, probe-offset fix per #2356
+    /// review (see `explain_match_impl`'s own comment on why `probe_offset`
+    /// must be the line's first non-whitespace byte, never the caret's raw
+    /// offset). `None` whenever there is nothing to hand
+    /// `ExplainMatchCache::explain`'s node-aware path: an unknown path, or
+    /// an offset that lands on a line outside the five shapes
+    /// [`brink_ir::nearest_element_candidate`] recognizes. `db.parse_native`
+    /// runs the native parser regardless of `path`'s own extension and
+    /// returns `Some` for any known `FileId`, so an ink-dialect file does
+    /// not itself cause a `None` here.
+    fn claim_candidate_node_at(&self, path: &str, probe_offset: u32) -> Option<SyntaxNode> {
+        let db = self.session.db();
+        let file_id = db.file_id(path)?;
+        let parse = db.parse_native(file_id)?;
+        let root = parse.syntax();
+        let token = root
+            .token_at_offset(TextSize::from(probe_offset))
+            .right_biased()?;
+        let start_node = token.parent()?;
+        brink_ir::nearest_element_candidate(&start_node)
     }
 
     /// The compile-time [`brink_ir::ElementKind`] ("matched kind") for the
@@ -327,18 +395,20 @@ flow main() {
         );
     }
 
-    /// Issue #2310 review (finding 2): `kind` can never report `"cue"`
-    /// today, even for a real `@NAME` cue line. `candidate` hands
-    /// `try_claim` only the `CUE_NAME` run (excluding the leading `@`), so
-    /// the *compiled* record does claim a bare `@VENDOR` line as a Cue —
-    /// but the *live* raw-line walk this endpoint's `matched` answer comes
-    /// from sees the whole `"@VENDOR"` text, which the `cue` handler's own
-    /// `^[A-Z][A-Z ]*$` pattern (no `@` in its character class) can never
-    /// match. The live walk misses entirely, so the whole answer is
-    /// `matched: false` and `winner`/`kind` are both absent — never a
-    /// guess, per this module's own decline discipline.
+    /// Issue #2351 (fixing the gap issue #2310's own review finding 2
+    /// named): `explain_match_impl` now classifies the CUE's `CUE_NAME`
+    /// sub-node — the exact text `candidate`/`try_claim` match against —
+    /// instead of the whole raw `"@VENDOR"` line, so the live walk agrees
+    /// with the compiler: a real `@NAME` cue line reports a genuine hit,
+    /// `winner.handler == "cue"`, `captures[0].text == "VENDOR"`, and (via
+    /// #2310's existing `matched_element_kind` composition, now finally
+    /// reachable for this shape) `kind == "cue"`. Before this fix, the
+    /// live walk saw the whole `"@VENDOR"` text, which the `cue` handler's
+    /// own `^[A-Z][A-Z ]*$` pattern (no `@` in its character class) could
+    /// never match — a false, whole-answer `matched: false` even though
+    /// the compiler's own compiled record claimed the exact same line.
     #[test]
-    fn explain_match_never_reports_a_cue_kind_for_a_real_at_cue_line() {
+    fn explain_match_reports_a_real_cue_kind_for_a_real_at_cue_line() {
         let mut s = session_with_conventions();
         let offset =
             u32::try_from(CONVENTIONS.find("@VENDOR").expect("@VENDOR cue line")).expect("offset");
@@ -347,15 +417,188 @@ flow main() {
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(
             v["matched"],
-            serde_json::json!(false),
-            "a real @VENDOR cue line's raw text can never match the cue \
-             handler's own pattern (the '@' isn't in its character \
-             class), so the live walk misses even though the compiled \
-             record claims it — got {v}"
+            serde_json::json!(true),
+            "a real @VENDOR cue line must agree with the compiler's own claim — got {v}"
         );
-        assert!(
-            v.get("winner").is_none(),
-            "a miss must never carry a winner or a kind — got {v}"
+        assert_eq!(
+            v["winner"]["handler"]["name"],
+            serde_json::json!("cue"),
+            "got {v}"
+        );
+        assert_eq!(
+            v["winner"]["captures"][0]["text"],
+            serde_json::json!("VENDOR"),
+            "the cue's own pattern must see only the name segment, without the leading \
+             '@' — got {v}"
+        );
+        assert_eq!(
+            v["winner"]["kind"],
+            serde_json::json!("cue"),
+            "a real @NAME cue's compile-time shape is Cue, and #2310's kind composition \
+             can finally reach it now that `matched` agrees — got {v}"
+        );
+    }
+
+    /// #2356 review, BLOCKING sub-case (a): the caret sitting in an
+    /// indented `CUE` line's own leading indentation, or at its own EOL,
+    /// used to fall back to the pre-#2351 raw-text walk (`matched: false`)
+    /// even though the exact same line one column over (on the `@` itself)
+    /// already agreed with the compiler — `Parser::skip_ws` bumps the
+    /// indentation into the enclosing block, and the line's terminating
+    /// newline lands after the `CUE` node's own `finish_node()`, so neither
+    /// byte's own token has the `CUE` node anywhere in its ancestor chain.
+    /// Every screenplay element line lives inside `flow main() { … }`, so
+    /// this indentation is the common case, not an edge case.
+    #[test]
+    fn explain_match_agrees_regardless_of_caret_column_within_an_indented_cue_line() {
+        let mut s = session_with_conventions();
+        let cue_at = CONVENTIONS.find("@VENDOR").expect("@VENDOR cue line");
+        let indent_offset = u32::try_from(cue_at - 1).expect("offset"); // inside the leading indentation
+        let eol_offset = u32::try_from(cue_at + "@VENDOR".len()).expect("offset"); // just before the newline
+
+        for (label, offset) in [("indentation", indent_offset), ("EOL", eol_offset)] {
+            let json = s.explain_match(offset);
+            let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+            assert_eq!(
+                v["matched"],
+                serde_json::json!(true),
+                "a caret at the {label} of an indented @VENDOR cue line must still agree \
+                 with the compiler's own claim — got {v}"
+            );
+            assert_eq!(
+                v["winner"]["handler"]["name"],
+                serde_json::json!("cue"),
+                "at {label} — got {v}"
+            );
+        }
+    }
+
+    /// Fixture for the #2356 review's sub-case (b) test — a compact cue
+    /// whose dialogue half is wholly literal (`@KID: Says who?`, unlike
+    /// #2351's own agreement fixture's interpolated `@KID: I have {count}
+    /// coins.`), the one compact-cue shape the review names as
+    /// "structurally immune" to #2351's own test: a wholly-literal
+    /// `CONTENT_LINE` is itself one of `candidate`'s five recognized
+    /// shapes, so only this shape can expose the innermost-ancestor-first
+    /// walk picking the fused dialogue child over its own `COMPACT_CUE`
+    /// parent.
+    const COMPACT_CUE_LITERAL_DIALOGUE: &str = "\
+@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10)]
+fn cue(name: string) {
+  return name;
+}
+
+flow main() {
+  @KID: Says who?
+}
+";
+
+    fn session_with_compact_cue_literal_dialogue() -> EditorSession {
+        let mut s = EditorSession::new();
+        s.update_file("conventions.brink", COMPACT_CUE_LITERAL_DIALOGUE);
+        s.apply_project_config("[project]\nconventions = \"conventions.brink\"\n")
+            .expect("valid conventions pointer");
+        assert!(s.set_active_file("conventions.brink"));
+        s
+    }
+
+    /// #2356 review, BLOCKING sub-case (b): the caret sitting in a compact
+    /// cue's DIALOGUE half (not its `CUE_NAME` segment) used to resolve to
+    /// the fused `CONTENT_LINE` child instead of the enclosing
+    /// `COMPACT_CUE`, reporting a `content_line` handler binding no preset
+    /// declares — disagreeing with the compiler's own `cue` claim on the
+    /// exact same line depending purely on caret column. Probing from the
+    /// line's first non-whitespace byte (the `@`) resolves to `COMPACT_CUE`
+    /// directly, agreeing with the compiler regardless of where in the
+    /// dialogue the caret sits.
+    #[test]
+    fn explain_match_agrees_with_the_compiler_for_a_literal_compact_cue_dialogue_caret() {
+        let mut s = session_with_compact_cue_literal_dialogue();
+        let offset = u32::try_from(
+            COMPACT_CUE_LITERAL_DIALOGUE
+                .find("Says who?")
+                .expect("dialogue text"),
+        )
+        .expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            v["matched"],
+            serde_json::json!(true),
+            "a caret in a literal compact cue's dialogue must still resolve to the cue, \
+             agreeing with the compiler's own claim — got {v}"
+        );
+        assert_eq!(
+            v["winner"]["handler"]["name"],
+            serde_json::json!("cue"),
+            "must NOT report a content_line handler for the fused dialogue child — got {v}"
+        );
+        assert_eq!(
+            v["winner"]["captures"][0]["text"],
+            serde_json::json!("KID"),
+            "got {v}"
+        );
+    }
+
+    /// Fixture for the #2356 review's sub-case (c) test — a `!name`
+    /// bang-dispatch line, indented like every other screenplay element.
+    /// The dispatch remainder (`HELLO`) is deliberately spelled to match the
+    /// `cue` preset's own `^[A-Z][A-Z ]*$` pattern by itself — so a buggy
+    /// walk that wrongly selects the fused `CONTENT_LINE` child (instead of
+    /// declining outright) reports a false positive (`matched: true`,
+    /// `winner.handler == "cue"`) rather than a false negative that would
+    /// happen to look identical to the correct decline either way.
+    const BANG_DISPATCH_FIXTURE: &str = "\
+@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 10)]
+fn cue(name: string) {
+  return name;
+}
+
+flow main() {
+  !shout HELLO
+}
+";
+
+    fn session_with_bang_dispatch() -> EditorSession {
+        let mut s = EditorSession::new();
+        s.update_file("conventions.brink", BANG_DISPATCH_FIXTURE);
+        s.apply_project_config("[project]\nconventions = \"conventions.brink\"\n")
+            .expect("valid conventions pointer");
+        assert!(s.set_active_file("conventions.brink"));
+        s
+    }
+
+    /// #2356 review, BLOCKING sub-case (c): a caret in a `BANG_DISPATCH`
+    /// line's own remainder (fused via the same `content_line` technique a
+    /// compact cue's dialogue uses) used to resolve to that fused
+    /// `CONTENT_LINE` child instead of declining outright — `candidate()`
+    /// explicitly refuses a `BANG_DISPATCH` node itself, but the old
+    /// caret-column probe never reached it, landing inside the
+    /// already-a-candidate `CONTENT_LINE` child first. Probing from the
+    /// line's first non-whitespace byte (the `!`) starts inside
+    /// `BANG_DISPATCH` itself, so the ancestor walk correctly finds no
+    /// candidate at all, and `explainMatch` falls back to the raw-text walk
+    /// instead of reporting a claim the compiler's own `try_claim` never
+    /// makes for this line (dispatch handlers claim through a wholly
+    /// separate path, `try_dispatch` — #2352).
+    #[test]
+    fn explain_match_declines_the_node_path_for_a_bang_dispatch_remainder() {
+        let mut s = session_with_bang_dispatch();
+        let offset = u32::try_from(
+            BANG_DISPATCH_FIXTURE
+                .find("HELLO")
+                .expect("dispatch remainder"),
+        )
+        .expect("offset");
+
+        let json = s.explain_match(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(
+            v["matched"],
+            serde_json::json!(false),
+            "a bang-dispatch line's remainder must never report a claim the compiler's \
+             own try_claim never makes — got {v}"
         );
     }
 

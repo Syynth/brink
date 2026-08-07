@@ -83,9 +83,18 @@ export class DocHandle {
     // — the same source re-queried by several extensions in one keystroke, or
     // mirrored content — short-circuit here for free.
     if (this.lastPushed === source) return;
-    this.lastPushed = source;
     const spec = this.session.updateDocument(this.id, source);
-    if (spec !== null) this.pendingSpec = spec;
+    // `spec === null` means either an unknown handle OR a refused write
+    // (issue #2306: this handle's file currently resolves to a mounted
+    // stdlib copy). Only on a genuinely applied push do we cache
+    // `lastPushed` and rebase the TS-side range — otherwise the wasm-side
+    // ViewContext never moved, so caching here would desync a later
+    // hover/completion/semanticTokens query against a stale offset, and
+    // would suppress a legitimate later push of byte-identical text once
+    // the file is shadowed (un-mounted) by a real project file.
+    if (spec === null) return;
+    this.lastPushed = source;
+    this.pendingSpec = spec;
     if (this.range !== null) {
       // The wasm side rebased this handle's view range during the splice;
       // mirror that here (the view always spans exactly the pushed text).

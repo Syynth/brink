@@ -21,10 +21,13 @@ mod stamp;
 mod types;
 pub mod visit;
 
-pub use classify::{ClassifiedCapture, ClassifiedMatch, LineClassification, classify_line};
+pub use classify::{
+    ClassifiedCapture, ClassifiedMatch, LineClassification, classify_line,
+    nearest_element_candidate,
+};
 pub use construct::{ConstructForm, ConstructTarget};
 pub use diagnostics::*;
-pub use explain::{ExplainMatchCache, LineExplanation, explain_match};
+pub use explain::{ExplainMatchCache, LineExplanation, explain_match, explain_match_node};
 pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
 pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};

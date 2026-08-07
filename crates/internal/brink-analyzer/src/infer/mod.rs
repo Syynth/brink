@@ -573,7 +573,7 @@ pub struct Def<'a> {
 
 /// Per-file resolution lookup: a `Path`'s range is only unique within its
 /// own file, so resolutions must never be merged across files.
-fn index_resolutions_by_file(
+pub(crate) fn index_resolutions_by_file(
     resolutions: &ResolutionMap,
 ) -> BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>> {
     let mut by_file: BTreeMap<FileId, BTreeMap<(u32, u32), DefinitionId>> = BTreeMap::new();
@@ -824,7 +824,10 @@ fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDe
 /// with a knot prefix (there is no enclosing knot). So the symbol-kind used
 /// for the `def_of` lookup must track `knot.ptr`, not assume every
 /// `hir.knots` entry is a real `SymbolKind::Knot` (#626).
-fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec<Def<'a>> {
+pub(crate) fn collect_defs<'a>(
+    files: &[(FileId, &'a HirFile)],
+    index: &SymbolIndex,
+) -> Vec<Def<'a>> {
     let mut def_of: BTreeMap<(FileId, SymbolKind, String), DefinitionId> = BTreeMap::new();
     for (&id, info) in &index.symbols {
         def_of.insert((info.file, info.kind, info.name.clone()), id);

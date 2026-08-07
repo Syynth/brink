@@ -27,6 +27,7 @@ mod markup_check;
 mod modules;
 mod native_admission;
 mod native_choice_dead_end;
+mod no_world_reads;
 mod option_conditions;
 mod option_rules;
 mod protocols;
@@ -88,6 +89,7 @@ pub use infer::{
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
 pub use native_choice_dead_end::check as check_native_choice_dead_end;
+pub use no_world_reads::check as no_world_reads_diagnostics;
 pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
@@ -1311,6 +1313,27 @@ pub fn whole_project_diagnostics(
                 &rows,
             ));
         }
+    }
+
+    // #2179 the `@[convention]` no-world-reads fence (`E182`,
+    // docs/decision-log.md 2026-08-06 "No-world-reads fence: analyzer
+    // effect-row check; unclassified externals are diagnosed"). Lazy on
+    // the same shape every other pass here uses: a file with no declared
+    // claim handler (`hir.claim_handlers.is_empty()`) is skipped inside
+    // `no_world_reads::check` itself, so a project with no `@[convention]`
+    // handler anywhere pays nothing. `symbol_meta` is already the fully
+    // merged externals table by this point (value metas merged above, but
+    // `no_world_reads` only reads externals' `kind`, which
+    // `external_meta_diagnostics` alone already populated).
+    for &(file_id, hir, _) in files {
+        diagnostics.extend(no_world_reads::check(
+            file_id,
+            hir,
+            &hir_inputs,
+            index,
+            resolutions,
+            &symbol_meta,
+        ));
     }
 
     // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26). Only the

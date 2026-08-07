@@ -524,15 +524,16 @@ export interface ExplainCapture {
  * only the actual winning claim has a compiled record to read it from (see
  * `crates/brink-web/src/editor/explain_match.rs`'s own module doc).
  *
- * All five `ElementKind` variants are declared for completeness, but only
- * `"content_line"` and `"scene_heading"` are reachable today: the native
- * frontend hands a claiming handler's pattern only the inner `CUE_NAME`/
- * `TEXT` run (excluding the `@`/parens), which the built-in screenplay
- * preset's own `cue`/`parenthetical` patterns require and so never match
- * against the live raw-line walk this field is checked against, and
- * `!name` dispatch handlers are registered on a path that live walk never
- * consults at all — so `"cue"`, `"parenthetical"`, and `"bang_dispatch"`
- * cannot surface through this field yet.
+ * All five `ElementKind` variants are declared, and issue #2351 fixed
+ * `"cue"` and `"parenthetical"` to be reachable: the live walk now
+ * classifies the same claim-candidate sub-node the compiler's own
+ * `try_claim` matches against (a `CUE`/`COMPACT_CUE`'s `CUE_NAME`, a
+ * `PARENTHETICAL`'s inner `TEXT`), not the whole raw line, so a real
+ * `@NAME` cue or `(delivery)` parenthetical now agrees with the compiler.
+ * `"bang_dispatch"` still cannot surface through this field (issue #2352):
+ * `!name` dispatch handlers are registered on a path (`try_dispatch`) the
+ * live walk never consults at all, and `candidate()` explicitly declines a
+ * `BANG_DISPATCH` node rather than offering it a sub-node to classify.
  */
 export interface ExplainClassifiedMatch {
   handler: ExplainHandler;
