@@ -549,7 +549,27 @@ describe("StudioApi egress surface", () => {
 class HostSaveProvider extends InMemoryFileProvider {
   saves: Array<string[] | undefined> = [];
   failNext = false;
+  /** Set by `holdNextSave()`; `requestSave` awaits it before resolving, so a
+   *  test can stage an edit while the write is still "in flight" (#2426). */
+  private gate: Promise<void> | null = null;
+  private releaseGate: (() => void) | null = null;
+
+  /** The next `requestSave` call blocks until `releaseSave()` is called. */
+  holdNextSave(): void {
+    this.gate = new Promise((resolve) => {
+      this.releaseGate = resolve;
+    });
+  }
+
+  /** Unblock a `requestSave` call parked by `holdNextSave()`. */
+  releaseSave(): void {
+    this.releaseGate?.();
+    this.gate = null;
+    this.releaseGate = null;
+  }
+
   async requestSave(paths?: string[]): Promise<void> {
+    if (this.gate) await this.gate;
     if (this.failNext) {
       this.failNext = false;
       throw new Error("disk full");
@@ -656,6 +676,68 @@ describe("host-save (overlay contract)", () => {
     await microtasks();
     expect(egress.host.saves).toEqual([undefined]); // unnarrowed = everything
     expect(egress.project.dirtyPaths()).toEqual([]);
+
+    h.dispose();
+    h.container.remove();
+  });
+
+  // ── #2426: an edit landing while the host write is still in flight
+  // must not be retired against the content that was actually written ──
+
+  it("file.save: an edit landing mid-write is NOT marked clean against the old content", async () => {
+    const egress = await makeOverlayProject();
+    const h = commandHarness(egress);
+
+    h.view.dispatch({ changes: { from: 0, to: 0, insert: "// v1\n" } }); // stage v1
+    egress.host.holdNextSave();
+    h.commands.dispatch("file.save"); // starts the write; parked on the gate
+    await microtasks();
+    expect(egress.host.saves).toEqual([]); // write has not resolved yet
+
+    // Stage v2 directly into the session while the v1 write is still open —
+    // mirrors an edit landing mid-flight without going through another
+    // save command.
+    h.view.dispatch({ changes: { from: 0, to: 0, insert: "// v2\n" } });
+    h.documents.flushFocused();
+
+    egress.host.releaseSave(); // the v1 write completes now
+    await microtasks();
+
+    expect(egress.host.saves).toEqual([["main.ink"]]); // v1 WAS written
+    // v2 must still be dirty: the write persisted v1, not v2.
+    expect(egress.project.dirtyPaths()).toEqual(["main.ink"]);
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(true);
+
+    h.dispose();
+    h.container.remove();
+  });
+
+  it("file.saveAll: an edit landing mid-write is NOT re-baselined by markAllSaved", async () => {
+    const egress = await makeOverlayProject();
+    const h = commandHarness(egress);
+
+    egress.project.applyEdit("side.ink", "bulk v1"); // dirty without a view
+    h.view.dispatch({ changes: { from: 0, to: 0, insert: "// v1\n" } });
+    egress.host.holdNextSave();
+    h.commands.dispatch("file.saveAll"); // starts the whole-project write
+    await microtasks();
+    expect(egress.host.saves).toEqual([]); // write has not resolved yet
+
+    // "side.ink" moves on while the batch write is still open.
+    egress.project.applyEdit("side.ink", "bulk v2");
+
+    egress.host.releaseSave();
+    await microtasks();
+
+    expect(egress.host.saves).toEqual([undefined]); // one whole-project write
+    // side.ink moved on after being captured — it stays dirty.
+    expect(egress.project.dirtyPaths()).toEqual(["side.ink"]);
+    expect(egress.project.getSession().getFileSource("side.ink")).toBe("bulk v2");
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(true);
 
     h.dispose();
     h.container.remove();
