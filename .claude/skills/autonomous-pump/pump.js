@@ -81,7 +81,7 @@ Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine �
       issueList: (extra) => `\`mcp__github__list_issues\`${extra ? ` (${extra})` : ""}`,
       // Cloud permission layer can PARK a subagent's privileged call with no
       // human watching. Parked is recoverable state — but only if it is durable.
-      parkNote: `⚠ PERMISSION PARKING: this session is approval-gated. If a merge/push-adjacent call is refused or parked, do NOT retry it in a loop and do NOT silently drop the work. Record the exact intended action in your returned \`detail\`/\`summary\` AND (if you can comment at all) on the PR, then return with merged:false. The coordinator lands parked merges. A parked action that was never written down is the only unrecoverable kind.`,
+      parkNote: `⚠ PERMISSION PARKING: this session is approval-gated. If a merge/push-adjacent call is refused or parked, do NOT retry it in a loop and do NOT silently drop the work. Record the exact intended action in your returned \`detail\`/\`summary\` AND (if you can comment at all) on the PR, then return with landedState:"parked". The coordinator lands parked merges. A parked action that was never written down is the only unrecoverable kind.`,
     }
   : {
       pre: `GITHUB ACCESS: the \`gh\` CLI is available and authenticated.`,
@@ -117,7 +117,7 @@ const DISK = `PRE-FLIGHT: run \`df -h /\` FIRST — if free space is under 15GiB
 // reuse — it never required cross-wave sharing.
 const TRAIN_WT = "/tmp/pump-merge-train-FILL-UNIQUE-SUFFIX";
 const TRAIN_SETUP = `TRAIN WORKTREE — MANDATORY STEP 0, before ANY other git command: your shell starts in the USER'S ACTIVE worktree; running checkout/reset/merge there DESTROYS their in-progress work (this has happened MORE THAN ONCE — cd alone has proven insufficient because shell state resets between Bash calls). RULES: (1) \`cd ${TRAIN_WT}\` first (if absent, create it with \`git worktree add ${TRAIN_WT} --detach origin/main\` from the primary checkout, then cd); (2) EVERY git command you run for the rest of this task MUST be spelled \`git -C ${TRAIN_WT} …\` — the -C flag is not optional, even right after a cd, even for status/log; a bare \`git checkout\` in the wrong cwd is how user work gets destroyed; (3) non-git commands (pnpm, gh) must be prefixed with \`cd ${TRAIN_WT} && \` in the same Bash invocation. Start clean: \`git -C ${TRAIN_WT} fetch origin --quiet && git -C ${TRAIN_WT} checkout --detach origin/main && git -C ${TRAIN_WT} reset --hard && git -C ${TRAIN_WT} clean -fd\`. node_modules persists across train stops — that's the point.
-⚠ ${TRAIN_WT} is the ONLY worktree you may use. NEVER use, cd into, or run git against ANY path under .claude/worktrees/ or any other "already provisioned" worktree you discover — those are the USER'S live sessions (an agent that migrated to one hijacked a dev server mid-drive and left it detached). If ${TRAIN_WT} looks contended or its state looks wrong (unexpected branch tip, files missing after a merge), do NOT relocate: re-verify against the PR head SHA via gh, recreate ${TRAIN_WT} from scratch, or return merged:false with the reason. After ANY merge, verify the PR's changed files are all present in the tree (git -C ${TRAIN_WT} diff --stat origin/main) before gating — a raced checkout can drop files with no conflict marker.`;
+⚠ ${TRAIN_WT} is the ONLY worktree you may use. NEVER use, cd into, or run git against ANY path under .claude/worktrees/ or any other "already provisioned" worktree you discover — those are the USER'S live sessions (an agent that migrated to one hijacked a dev server mid-drive and left it detached). If ${TRAIN_WT} looks contended or its state looks wrong (unexpected branch tip, files missing after a merge), do NOT relocate: re-verify against the PR head SHA via gh, recreate ${TRAIN_WT} from scratch, or return landedState:"parked" with the reason. After ANY merge, verify the PR's changed files are all present in the tree (git -C ${TRAIN_WT} diff --stat origin/main) before gating — a raced checkout can drop files with no conflict marker.`;
 
 // LANDING POLICY (ruled 2026-08-13, after w148) — folded into every train
 // prompt because prompts are the only part agents obey.
@@ -155,7 +155,7 @@ const TRAIN_SETUP = `TRAIN WORKTREE — MANDATORY STEP 0, before ANY other git c
 const LANDING_POLICY = `LANDING POLICY — THREE CASES. Decide by READING the PR's check runs, never by assuming:
 1. CHECKS STILL PENDING/RUNNING (any required check queued, in_progress, or not yet reported) → ARM AUTO-MERGE (\`mcp__github__enable_pr_auto_merge\`, mergeMethod "MERGE"). Do NOT merge directly. Your local gate is NOT the repository's required checks — a fix agent merged PR #2412 mid-CI and landed green by luck, not design.
 2. CHECKS ALL COMPLETED AND GREEN (every required check concluded success or skipped, none failing, none pending) AND the adversarial review verdict for this PR was \`approve\`, or was \`changes\` with every finding applied and the gate re-run → MERGE DIRECTLY (\`mcp__github__merge_pull_request\`, merge_method "merge"). Arming is IMPOSSIBLE in this state — GitHub rejects it with "already in clean status (all checks passed)" — so parking here strands finished work rather than protecting anything. This case is explicitly user-authorized (2026-08-13): CI has completed, and the work is reviewed, which is exactly the sign-off whose absence blocked an earlier direct merge.
-3. ANYTHING ELSE — a required check FAILED, the review verdict was \`reject\`, unresolved conflicts, or arming fails for a reason other than "already clean" (e.g. auto-merge disabled on the repo) → PARK IT. Leave the PR open and untouched, return merged:false, and say exactly why in \`detail\`. Never merge to clear a red check or an unresolved review.
+3. ANYTHING ELSE — a required check FAILED, the review verdict was \`reject\`, unresolved conflicts, or arming fails for a reason other than "already clean" (e.g. auto-merge disabled on the repo) → PARK IT. Leave the PR open and untouched, return landedState:"parked", and say exactly why in \`detail\`. Never merge to clear a red check or an unresolved review.
 ⚠ REPORT HONESTLY: \`merged: true\` means "auto-merge ARMED (case 1) or actually LANDED (case 2)" — armed does NOT mean the commit is in main. State WHICH case you took in \`detail\`, and for case 2 name the checks you read. Never claim a PR landed on the strength of having armed it: this repo has LOST two PRs (#1659, #1666) to auto-merge that armed, later conflicted, and left work looking landed while its issue stayed open.`;
 
 const gateFor = (b) => `${CACHE} && ${b.gate ?? GATE}`;
@@ -205,14 +205,25 @@ const SCOPE = {
     proposal: { type: "string", description: "concrete proposal for the HUMAN to approve: which issues to file + which milestone to expand or add, with rationale" },
   },
 };
+// ⚠ THREE-STATE, NOT A BOOLEAN (2026-08-13, w149 post-mortem). This field was
+// `merged: boolean` meaning "armed OR landed", with the disambiguation only in
+// prose in `detail`. That is exactly how PR #2422 was reported as landed when
+// it was merely armed: the train agent was scrupulously honest ("Auto-merge
+// ARMED (not yet landed)") and the retro caught the discrepancy, but every
+// downstream summary read the boolean and printed "MERGED". The PR then went
+// behind main, auto-merge could never fire, and #2415's work sat unlanded while
+// three separate reports called it done. A boolean that needs a sentence to
+// interpret is a boolean that will be misread; the enum cannot be.
 const MERGE = {
-  type: "object", additionalProperties: false, required: ["pr", "merged", "detail"],
+  type: "object", additionalProperties: false, required: ["pr", "landedState", "detail"],
   properties: {
     pr: { type: "string" },
-    // ⚠ "armed or landed", NOT "in main" — see LANDING_POLICY. The retro
-    // verifies the real state; never treat this as proof the commit landed.
-    merged: { type: "boolean" },
-    detail: { type: "string", description: "must state explicitly whether auto-merge was ARMED or the PR is already LANDED, plus conflicts/gate counts, or the park reason" },
+    landedState: {
+      type: "string",
+      enum: ["landed", "armed", "parked"],
+      description: "landed = VERIFIED in main (you read merged:true from the API, not a cached label); armed = auto-merge enabled, NOT yet in main; parked = left open for a human",
+    },
+    detail: { type: "string", description: "for landed: the checks you read and the merge sha. for armed: why it is not landed yet. for parked: the exact blocker. plus conflicts/gate counts either way" },
   },
 };
 const LESSONS = {
@@ -285,8 +296,8 @@ ${TRAIN_SETUP}${CLOUD_DISK}
 ${GH.pre}
 ${LANDING_POLICY}
 ${GH.parkNote}
-STEPS: 1. Resolve the PR's head branch: ${GH.prView(base.build.pr)}. In the train worktree: \`git fetch origin --quiet && git checkout -B train-pr origin/<headRef>\`. 2. \`git merge origin/main\` — combine ADDITIVE conflicts (registry/index appends: keep ALL entries; keep both wirings). ⚠ diff3/union conflict styles can duplicate or drop closing braces and adjacent lines when combining — after resolving, recheck brace balance and that BOTH sides' entries survived; the gate is the arbiter. If untangleable, \`git merge --abort\` + merged:false. 3. Run the GATE to GREEN: \`${gateFor(b)}\`. Fix semantic conflicts. 4. ${GH.prDiff(base.build.pr)} sanity-check. 5. If green + MERGEABLE: \`git push origin train-pr:<headRef>\`, \`git checkout --detach origin/main\`, then ${GH.prMerge(base.build.pr)}. Else leave open + comment + merged:false. NOTEWORTHY-ONLY comment rule (durable-by-default, decision 2026-07-18): if the landing involved anything a future bisect would want — conflict resolutions, semantic fixes, files verified after a raced checkout — post ONE PR comment describing it; routine clean merges stay SILENT (no noise).
-Return {pr, merged, detail (conflicts + gate counts + result, or park reason)}.`,
+STEPS: 1. Resolve the PR's head branch: ${GH.prView(base.build.pr)}. In the train worktree: \`git fetch origin --quiet && git checkout -B train-pr origin/<headRef>\`. 2. \`git merge origin/main\` — combine ADDITIVE conflicts (registry/index appends: keep ALL entries; keep both wirings). ⚠ diff3/union conflict styles can duplicate or drop closing braces and adjacent lines when combining — after resolving, recheck brace balance and that BOTH sides' entries survived; the gate is the arbiter. If untangleable, \`git merge --abort\` + landedState:"parked". 3. Run the GATE to GREEN: \`${gateFor(b)}\`. Fix semantic conflicts. 4. ${GH.prDiff(base.build.pr)} sanity-check. 5. If green + MERGEABLE: \`git push origin train-pr:<headRef>\`, \`git checkout --detach origin/main\`, then ${GH.prMerge(base.build.pr)}. Else leave open + comment + landedState:"parked". NOTEWORTHY-ONLY comment rule (durable-by-default, decision 2026-07-18): if the landing involved anything a future bisect would want — conflict resolutions, semantic fixes, files verified after a raced checkout — post ONE PR comment describing it; routine clean merges stay SILENT (no noise).
+Return {pr, landedState, detail (conflicts + gate counts + result, or park reason)}.`,
           { label: `merge#${b.n}`, phase: "Merge train", effort: effortFor(b), model: TRAIN_MODEL, schema: MERGE })
       : () => agent(`Fix the review-blocking issues in PR ${base.build.pr} (${closesLine(b)}) of ${REPO}, then land it. The PR is otherwise good; apply the reviewer's SPECIFIC fixes only. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 ${TRAIN_SETUP}${CLOUD_DISK}
@@ -294,13 +305,15 @@ ${GH.pre}
 ${LANDING_POLICY}
 ${GH.parkNote}
 REVIEWER FINDINGS — these ARE the adversarial review's verdict. They ride this workflow and are NOT posted on GitHub, so an empty \`gh api .../reviews\` or \`.../comments\` result means NOTHING — never treat it as evidence the findings aren't real (this dismissal has let a real stack-corruption bug merge). Treat each finding as authoritative and apply it. Skip an INDIVIDUAL finding only if it references files/lines absent from this PR's diff (a misattributed finding), and list every skipped finding with its reason in your report:\n- ${(base.verdict.findings ?? []).join("\n- ")}
-STEPS: resolve the head branch (${GH.prView(base.build.pr)}); in the train worktree, \`git checkout -B train-fix origin/<headRef>\`; merge origin/main (combine; recheck brace balance per the diff3 caveat); apply ONLY the findings' fixes + tests that guard them; GATE to GREEN: \`${gateFor(b)}\`; commit (end with "${TRAILER}") + push back to the PR branch; THEN ${GH.prComment(base.build.pr, "ONE disposition comment")} tying commits to findings — which findings you applied and which you skipped with the misattribution reason (durable-by-default rule); if MERGEABLE, detach then ${GH.prMerge(base.build.pr)}. If a finding needs a human decision (scope split, design call), DON'T guess — leave the PR open, comment, and report merged:false with what's needed.
-Return {pr, merged, detail}.`,
+STEPS: resolve the head branch (${GH.prView(base.build.pr)}); in the train worktree, \`git checkout -B train-fix origin/<headRef>\`; merge origin/main (combine; recheck brace balance per the diff3 caveat); apply ONLY the findings' fixes + tests that guard them; GATE to GREEN: \`${gateFor(b)}\`; commit (end with "${TRAILER}") + push back to the PR branch; THEN ${GH.prComment(base.build.pr, "ONE disposition comment")} tying commits to findings — which findings you applied and which you skipped with the misattribution reason (durable-by-default rule); if MERGEABLE, detach then ${GH.prMerge(base.build.pr)}. If a finding needs a human decision (scope split, design call), DON'T guess — leave the PR open, comment, and report landedState:"parked" with what's needed.
+Return {pr, landedState, detail}.`,
           { label: `fix#${b.n}`, phase: "Fix loop", effort: effortFor(b), model: TRAIN_MODEL, schema: MERGE });
     return enqueueTrain(job).then((m) => {
-      const land = { kind: decision === "approve" ? "merge" : "fix", ...(m ?? { merged: false, detail: "no result" }) };
-      if (land.merged) landedCount += 1;
-      log(`train: #${b.n} ${land.merged ? "LANDED" : "PARKED"} via ${land.kind} (${landedCount} landed so far)`);
+      const land = { kind: decision === "approve" ? "merge" : "fix", ...(m ?? { landedState: "parked", detail: "no result" }) };
+      // Only "landed" counts. "armed" is NOT in main and must never inflate
+      // this tally — that conflation is what let #2422 read as done.
+      if (land.landedState === "landed") landedCount += 1;
+      log(`train: #${b.n} ${land.landedState.toUpperCase()} via ${land.kind} (${landedCount} verified in main so far)`);
       return { ...base, land };
     });
   },
@@ -343,7 +356,14 @@ const trackerFacts = BATCH.map((b) => {
   const r = results.find((x) => x && x.issue === b.n);
   const cl = closesList(b).map((x) => "#" + x).join(",");
   if (!r) return `#${b.n} -> NEVER RAN (agent died or was skipped — no build result at all; NOT evidence the issue is fine)`;
-  const state = r.land?.merged ? "MERGED" : (r.build?.pr ? "NOT MERGED" : "no PR opened");
+  // ⚠ NEVER collapse "armed" into "MERGED" here. This line used to read
+  // `r.land?.merged ? "MERGED"`, which handed the retro a table claiming
+  // PR #2422 was merged when it was only armed — it then went behind main and
+  // never landed. The retro caught it that time; do not rely on that.
+  const ls = r.land?.landedState;
+  const state = ls === "landed" ? "MERGED (train claims verified in main — RE-VERIFY)"
+    : ls === "armed" ? "ARMED ONLY — NOT in main, auto-merge may never fire"
+    : (r.build?.pr ? "NOT MERGED" : "no PR opened");
   return `#${b.n} -> ${r.build?.pr ?? "(no PR)"} | ${state} | verdict ${r.verdict?.decision ?? "-"} | claims: ${cl}`;
 }).join("\n");
 
@@ -370,6 +390,7 @@ You MAY act on all of the above — it is truing up the record of work that alre
 Finally judge the batch as a whole: did its scope HOLD, UNDER-capture, or OVER-capture? Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone, with a crisp \`proposal\` the human can act on.${LEDGER ? `
 ⚠ FIRST, BEFORE writing this wave's ledger: TRUE UP THE PREVIOUS WAVE'S LEDGER. Read the most recent wave-ledger comment on #${LEDGER} and re-check the CURRENT state of every PR it recorded as parked/open/armed. Since agents ARM auto-merge rather than merging (ruled 2026-08-13), landings are ASYNCHRONOUS — GitHub lands a PR whenever its required checks go green, which is routinely AFTER the wave that built it has ended. So the previous ledger's landed/parked split is provisional by construction, and w148's ledger was already wrong within 18 minutes of being written (it recorded #2402 as parked; PR #2413 merged at 17:48). If anything moved, post a short correction comment naming the wave and what changed — do NOT edit the old comment; the timing gap should stay visible. If nothing moved, say nothing about it.
 ⚠ Also distinguish these in YOUR ledger, they are not the same thing and only the first is a backlog item: PARKED (review blocked it — needs work) vs OPEN-PENDING-CHECKS (armed, just waiting on CI — needs nothing). Never write a bare "parked" for a PR that is merely waiting on green.
+⚠ AND: for every item the table above marks MERGED, RE-VERIFY it yourself against the API — read the PR's real \`merged\` field, do not trust the table, a cached MERGED label, or the train agent's own word. In w149 the table said PR #2422 was merged; it was only ARMED, then fell behind main, and #2415's work sat unlanded while three separate reports called it done. If an "armed" PR has gone \`behind\`, UPDATE ITS BRANCH so auto-merge can fire again, and say you did.
 Then (durable-by-default rule) ${GH.issueComment(LEDGER, "ONE compact wave-ledger comment")}: wave id ${WAVE_ID}; the batch; landed/parked/open-pending-checks; the lessons harvested this wave (passed below if any); your true-up actions and scope assessment. Issues filed here carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
 Return {assessment, trackerActions, discoveredWork:[{title,why,suggestedMilestone}], recommendation, proposal}.`,
   { label: "retro", phase: "Retro / scope reconciliation", effort: "high", model: "sonnet", schema: SCOPE });
@@ -377,11 +398,18 @@ Return {assessment, trackerActions, discoveredWork:[{title,why,suggestedMileston
 // Reconciliation: every built+ok PR must be accounted for — merged, or parked
 // WITH a reason. No silent drops. (v3: verdict + landing ride each item, so
 // this is a straight per-item read — no cross-phase matching.)
+// ⚠ "landed" ONLY. An "armed" PR is NOT landed and belongs in `awaitingChecks`
+// below, never in `landed` — see the #2422 post-mortem in the MERGE schema.
 const landedList = results
-  .filter((r) => r.land?.merged)
+  .filter((r) => r.land?.landedState === "landed")
   .map((r) => ({ issue: r.issue, pr: r.land.pr ?? r.build?.pr, via: r.land.kind, detail: r.land.detail }));
+// Armed-but-not-landed: needs no work, but MUST be reported separately so it is
+// never mistaken for either landed work or a backlog item.
+const awaitingChecks = results
+  .filter((r) => r.land?.landedState === "armed")
+  .map((r) => ({ issue: r.issue, pr: r.land.pr ?? r.build?.pr, detail: r.land.detail }));
 const parked = results
-  .filter((r) => r.build && r.build.ok && r.build.pr && !r.land?.merged)
+  .filter((r) => r.build && r.build.ok && r.build.pr && r.land?.landedState !== "landed" && r.land?.landedState !== "armed")
   .map((r) => ({
     issue: r.issue, pr: r.build.pr, decision: r.verdict?.decision ?? "(no verdict)",
     reason: r.land?.detail
@@ -393,10 +421,13 @@ const buildFailed = results
   .map((r) => ({ issue: r.issue, summary: r.build?.summary ?? "(no build result)" }));
 
 return {
-  landed: landedList,
+  landed: landedList,   // VERIFIED in main. Nothing merely armed belongs here.
+  awaitingChecks,       // armed, NOT in main yet — no action needed, but NOT landed either.
+                        // ⚠ Anyone summarising this wave must not fold these into `landed`:
+                        // that conflation left #2415 unlanded while three reports called it done.
   parked,        // open PRs needing attention (with reasons / findings) — review these
   buildFailed,   // never reached a PR
   lessons: lessons?.lessons ?? [],  // paste-ready house-rule candidates for the next wave's RULES
   scopeReconciliation, // PROPOSAL for the human: did scope hold? new issues / milestone to add or expand?
-  counts: { batch: BATCH.length, landed: landedList.length, parked: parked.length, buildFailed: buildFailed.length, lessons: (lessons?.lessons ?? []).length, scopeDiscovered: scopeReconciliation?.discoveredWork?.length ?? 0 },
+  counts: { batch: BATCH.length, landed: landedList.length, awaitingChecks: awaitingChecks.length, parked: parked.length, buildFailed: buildFailed.length, lessons: (lessons?.lessons ?? []).length, scopeDiscovered: scopeReconciliation?.discoveredWork?.length ?? 0 },
 };
