@@ -213,7 +213,10 @@ async fn start_watch(
 
     // Replacing any previous watcher stops its delivery; its debounce
     // thread exits when the dropped watcher's channel disconnects.
-    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
+    *state
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
 
     let root_path = PathBuf::from(root);
     std::thread::spawn(move || {
@@ -232,10 +235,10 @@ async fn start_watch(
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                             Err(_) => continue, // transient; a later event retries
                         };
-                        let _ = app.emit("fs:external-change", ExternalChangeOut {
-                            path: key,
-                            content,
-                        });
+                        let _ = app.emit(
+                            "fs:external-change",
+                            ExternalChangeOut { path: key, content },
+                        );
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -247,7 +250,10 @@ async fn start_watch(
 
 #[tauri::command]
 async fn stop_watch(state: tauri::State<'_, WatchState>) -> Result<(), ShellError> {
-    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    *state
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     Ok(())
 }
 
@@ -272,7 +278,13 @@ const RING_MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// The full sanitized path (not a hash): stable forever, debuggable by eye.
 fn project_ring_key(root: &str) -> String {
     root.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

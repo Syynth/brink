@@ -1,0 +1,146 @@
+name: Desktop smoke
+
+# NON-REQUIRED by design (#2402, docs/desktop-shell-spec.md "Workspace
+# placement"): "CI in v1: none required. A non-required smoke job (`cargo
+# check` the shell crate + `pnpm build` the package) may be added if drift
+# appears. The required lanes must not grow a Tauri build." #2346's ruled
+# fence is the same: no REQUIRED CI lane grows a Tauri build. This job must
+# never be added to branch protection's required-checks list — that would
+# contradict both rulings. It exists purely so `packages/brink-desktop`
+# (including `src-tauri`, excluded from the root cargo workspace) stops
+# drifting invisibly, the way its rustfmt config did until #2402 found it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "packages/brink-desktop/**"
+      - "packages/ink-editor/**"
+      - "packages/brink-studio/**"
+      - "packages/wasm/**"
+      - "packages/wasm-types/**"
+      - "packages/ink-operations/**"
+      - "packages/studio-shell/**"
+      - "packages/studio-store/**"
+      - "packages/studio-ui/**"
+      - "crates/brink-web/**"
+      - "crates/brink-cli/**"
+      - ".github/workflows/desktop-smoke.yml"
+
+permissions: {}
+
+concurrency:
+  group: desktop-smoke-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same rationale as ci.yml: every job here starts from a cold checkout, so
+  # incremental compilation is pure write overhead, never read back.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  desktop-smoke:
+    name: Desktop smoke (check, clippy, tsc, build)
+    runs-on: ubuntu-latest
+    # Three heavy builds (wasm-pack, a brink-cli release build for the sidecar,
+    # and the Tauri graph) in a lane branch protection does NOT watch — a hang
+    # would burn the 6h default unnoticed. ci.yml sets the same kind of backstop
+    # on its long poles (fuzz: 30, determinism-law: 10).
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # src-tauri links webkit2gtk/gdk/appindicator on Linux; without these
+      # dev packages, even `cargo check` fails in gdk-sys's build script
+      # before a single line of the crate itself is checked.
+      - name: Install Linux dependencies (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev patchelf
+
+      # Caches BOTH the root workspace (brink-cli, below) and src-tauri's own
+      # excluded workspace — rust-cache keys per Cargo.lock location, so one
+      # action instance covers both without stepping on each other.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            .
+            packages/brink-desktop/src-tauri
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: v0.14.0
+
+      # The @brink-lang/web package is a file: dependency on this output
+      # (mirrors the `frontend` job in ci.yml), and src-tauri's own build
+      # never touches it — but `pnpm build` below resolves the desktop
+      # package's "brink-web" alias straight to this path.
+      - name: Build brink-web wasm package
+        run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 10
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Stages the brink-cli sidecar (root-workspace build) that src-tauri's
+      # build.rs requires to exist on disk before it will even `cargo
+      # check` — externalBin resource resolution runs unconditionally, not
+      # only on `tauri build` (packages/brink-desktop/scripts/ensure-cli-sidecar.mjs).
+      - name: Stage brink-cli sidecar
+        run: node scripts/ensure-cli-sidecar.mjs
+        working-directory: packages/brink-desktop
+
+      # src-tauri is its OWN cargo workspace (excluded from root, per
+      # docs/desktop-shell-spec.md "Workspace placement") — every cargo
+      # command below runs with cwd inside it, never from the repo root.
+      #
+      # ⚠ `--locked` on every cargo command below is load-bearing, not style:
+      # packages/brink-desktop/src-tauri/Cargo.lock is committed but has no
+      # staleness gate anywhere in CI. Without --locked, cargo silently
+      # refreshes a stale lock in-job and the run still exits 0 — the exact
+      # drift class this whole workflow exists to close. ci.yml already gates
+      # this for the repo's other workspace-excluded crates with committed
+      # lockfiles ("Verify fuzz crate lockfiles are not stale", #1396 gap 2 /
+      # #1386), and the JS half of this same job already uses
+      # `pnpm install --frozen-lockfile`. If --locked turns this lane red, that
+      # failure IS the drift: commit the refreshed lock.
+      - name: Format check (src-tauri)
+        run: cargo fmt --all -- --check
+        working-directory: packages/brink-desktop/src-tauri
+
+      - name: cargo check (src-tauri)
+        if: '!cancelled()'
+        run: cargo check --locked --all-targets
+        working-directory: packages/brink-desktop/src-tauri
+
+      - name: Clippy (src-tauri)
+        if: '!cancelled()'
+        run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: packages/brink-desktop/src-tauri
+
+      - name: cargo test (src-tauri)
+        if: '!cancelled()'
+        run: cargo test --locked
+        working-directory: packages/brink-desktop/src-tauri
+
+      - name: Typecheck (tsc --noEmit)
+        if: '!cancelled()'
+        run: pnpm --filter @brink/desktop typecheck
+
+      - name: pnpm build
+        if: '!cancelled()'
+        run: pnpm --filter @brink/desktop build

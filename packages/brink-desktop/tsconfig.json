@@ -9,7 +9,18 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
-    "types": ["vite/client", "node"]
+    "types": ["vite/client", "node"],
+    "paths": {
+      "brink-web": ["../../crates/brink-web/www/pkg"],
+      "@brink-lang/web": ["../wasm/src/index.ts"],
+      "@brink-lang/studio": ["../brink-studio/src/index.ts"],
+      "@brink/wasm-types": ["../wasm-types/src/index.ts"],
+      "@brink/ink-operations": ["../ink-operations/src/index.ts"],
+      "@brink-lang/editor": ["../ink-editor/src/index.ts"],
+      "@brink/studio-shell": ["../studio-shell/src/index.ts"],
+      "@brink/studio-store": ["../studio-store/src/index.ts"],
+      "@brink/studio-ui": ["../studio-ui/src/index.ts"]
+    }
   },
   "include": ["src"]
 }
