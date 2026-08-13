@@ -13,7 +13,7 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - CACHE prefix: `export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink` — ⚠ this cache reached 53GiB and caused two ENOSPC incidents (see #533): bound it, sweep it between waves, and have the pre-flight measure it explicitly.
 
 ## House rules (RULES seed — earned, don't drop)
-- Oracle ratchet is sacred on any crates PR: run oracle_snapshots, report CASES/EPISODES verbatim; 5,598 episodes must not move.
+- Oracle ratchet is sacred on any crates PR: run oracle_snapshots, report CASES/EPISODES verbatim; 5,608 episodes must not move. (⚠ This number is `RATCHET_EPISODE_COUNT` in `crates/internal/brink-test-harness/tests/oracle_snapshots.rs` — read it there, don't trust this line. It sat stale at 5,598 from ~w110 to w147.)
 - Any PR changing behavior observable through @brink-lang/web needs a @brink-lang/web patch changeset (even crates-only PRs). Changesets name ONLY real public packages; never name external consumer projects.
 - When adding a method to a raw wasm/native session type, add the parallel public wrapper method (incl. cache-invalidation calls) — internal-only levers are dead code for consumers.
 - Run ALL gates as FOREGROUND blocking commands; never park the task waiting on a backgrounded run (four separate agents stalled on this).
@@ -23,6 +23,9 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - A ruling lands in a SPEC, not only in docs/decision-log.md. The log is HISTORY (what was decided, when, why); a spec is the CURRENT normative statement. A decision-log PR that amends no spec leaves the ruling invisible to every future reader — that is how five rulings got re-derived from scratch in one week, and how the ledger audit (2026-07-27, 296 rulings) found 29 ORPHANED / 15 CONTRADICTED. Reviewers check for this explicitly; name the spec file+section.
 
 ## Merge trains
+- **Landing policy (RULED 2026-08-13, after w148): agents ARM AUTO-MERGE; they never merge directly.** Two failures in one wave forced this. A fix agent called `merge_pull_request` on #2412 while the full CI run (Static checks, Test, E2E) was still IN PROGRESS — it landed green by luck, since a local gate is not the repo's required checks. Its sibling was then BLOCKED outright by the safety classifier, which read an agent self-merging its own review fixes as lacking sign-off, stranding finished work. Arming auto-merge fixes both at once: GitHub lands only on green required checks, and no agent issues a merge.
+  - ⚠ **This re-introduces a known loss mode.** "Armed" is NOT "landed" — #1659 and #1666 were both lost to auto-merge that armed, later conflicted, and left work *looking* landed while its issue stayed open. So a train agent's `merged: true` now means "armed or landed", and **the retro MUST verify each PR's real state** rather than trusting the wave's own table. That verification is the only thing holding the hole shut.
+  - If arming fails (auto-merge disabled, or PR already clean), do NOT fall back to a direct merge — park it for a human.
 - Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
 - npm "Version Packages" bot PR merges LAST — but do not starve it: if a consumer is waiting on a released fix, merge it immediately (the 0.9.1 lesson). Bot force-pushes don't trigger CI — close/reopen to kick, or admin-merge version-only PRs.
 
@@ -160,11 +163,24 @@ the config above as follows:
   it whenever snapshot failures appear only in shared-cache runs.
 
 ### Gates
-- `wasm-pack build/test` FAIL in the sandbox at the wasm-opt/binaryen
-  download (no proxy route to GitHub release assets). Cloud wasm gate =
-  `cargo check -p brink-web --target wasm32-unknown-unknown`; the full
-  wasm-pack legs are CI-only — say so in the PR body rather than skipping
-  silently.
+- ⚠ **CORRECTED 2026-08-13.** The previous rule here said `wasm-pack
+  build/test` FAIL in the sandbox because there is "no proxy route to GitHub
+  release assets", and degraded the cloud wasm gate to `cargo check -p
+  brink-web --target wasm32-unknown-unknown`. **The diagnosis was wrong.**
+  There IS a proxy route — `curl` fetches the 91MB binaryen asset fine. The
+  actual cause is narrower: wasm-pack's *internal* downloader honors neither
+  `HTTPS_PROXY` nor the custom CA bundle, and binaryen/wasm-opt is the ONLY
+  thing it fetches that way (crates.io and wasm-bindgen-cli both succeed).
+  Pre-seed `wasm-opt` on PATH — `scripts/setup-dev.sh` now does — and
+  wasm-pack logs `found wasm-opt at …`, skips its own download, and the FULL
+  gate passes (verified end-to-end: `wasm-pack build crates/brink-web
+  --target web --out-dir www/pkg` → "Done in 3m 19s").
+- So the cloud wasm gate is the REAL one, not a degraded check. Run
+  `scripts/setup-dev.sh` first; don't claim the wasm legs are CI-only.
+- ⚠ `cargo nextest` is NOT preinstalled in a cloud container and
+  `setup-dev.sh` did not install it until 2026-08-13. The pump's GATE is
+  `cargo nextest run --workspace`; run `scripts/setup-dev.sh` before the
+  first wave or every agent's gate command is missing.
 - Oracle/corpus gates run fine; expect the first cold build to take minutes.
 
 ### Liveness & events
