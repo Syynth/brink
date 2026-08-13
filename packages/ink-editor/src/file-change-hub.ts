@@ -24,10 +24,14 @@
  *   `markSaved` re-baselines without requiring a host callback, so
  *   `file.save` works in the standalone playground too.
  *
- * "deleted" is part of the contract by design (so host-side mirrors of
- * renames/deletes are additive later) but is currently unreachable — the
- * studio has no delete UI and `ProjectSession.closeFile` only evicts from
- * the wasm session without deleting anything.
+ * "deleted" is part of the contract and reachable in production: the
+ * binder's Delete action (`BinderContextMenu`, gated on
+ * `ProjectSession.canDeleteFiles`) calls `ProjectSession.deleteFile`, which
+ * records it here, and `ProjectSession.renameFile` records one for the old
+ * path of every rename/move alongside a "created" for the new path.
+ * `ProjectSession.closeFile` is the one path that stays session-only — it
+ * evicts from the wasm session without deleting anything, so it never
+ * reaches this hub.
  */
 
 // ── Public types ───────────────────────────────────────────────────

@@ -87,8 +87,11 @@ type FileChange = {
   mutation path reports: editor typing, binder structural ops
   (move/reorder/promote/demote and undo), search replace (per-match and
   replace-all), and `file.new` (as `"created"`). `"deleted"` is part of the
-  contract by design — so host-side mirrors of deletes are additive later —
-  but is currently unreachable: the studio has no delete UI yet.
+  contract and reachable in production: the binder's Delete action
+  (`BinderContextMenu`, gated on `ProjectSession.canDeleteFiles`) calls
+  `ProjectSession.deleteFile`, and `ProjectSession.renameFile` reports one
+  for the old path of every rename/move alongside a `"created"` for the
+  new path.
 - **Pull — `api.getFiles(): Record<string, string>`.** A snapshot of every
   session file's current content, sorted by path.
 - **Save commands.** `file.save` (default keybinding Mod-S; palette "File:
