@@ -18,6 +18,10 @@ test-results/
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+# Versioned so cloud/approval-gated sessions carry a permission allowlist and
+# pump agents don't park on the classifier. Consistent with the existing
+# deny-by-default posture (one more explicit carve-out); does NOT settle #1803.
+!.claude/settings.json
 packages/wasm/dist/
 packages/ink-editor/dist/
 

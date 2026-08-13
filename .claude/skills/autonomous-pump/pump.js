@@ -29,6 +29,13 @@ export const meta = {
 
 // ── CONFIG (fill per run — literals only) ────────────────────────────────────
 const REPO = "OWNER/REPO";
+// CLOUD: true in a Claude-Code-on-the-web session, false for a local run.
+// This is not cosmetic — a cloud session has NO `gh` CLI, so every prompt below
+// that shells out to `gh` dies on its first command. It also has a fixed disk
+// allowance and an approval-gated permission layer. The project config
+// documented all of this and the PROMPTS still said `gh`; the doc is not the
+// part agents obey. Setting this flag rewrites the prompts.
+const CLOUD = true;
 // Gate: build shared deps -> test -> typecheck. CACHE is prepended to every
 // gate invocation so all agents share one build cache (turbo/nx: unchanged
 // packages become cache hits — this is the pump's single biggest speed lever).
@@ -53,6 +60,52 @@ const RULES = "";
 //    (via gate override) a cheaper gate, e.g. typecheck-only. Default lane: full.
 const BATCH = [];
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── GitHub access layer (cloud has no `gh` CLI) ──────────────────────────────
+// Every GitHub interaction in every prompt below routes through this object, so
+// the cloud/local difference is expressed ONCE instead of being sprinkled across
+// ten prompt strings that silently rot.
+const GH = CLOUD
+  ? {
+      pre: `GITHUB ACCESS — ⚠ THERE IS NO \`gh\` CLI IN THIS ENVIRONMENT. Any \`gh …\` command fails with "command not found"; there is also no direct GitHub API access and no \`hub\`. Use the GitHub MCP tools (\`mcp__github__*\`) for ALL GitHub work.
+⚠ Those tools are DEFERRED: their schemas are not loaded, so calling one directly fails with InputValidationError. Load what you need FIRST, in one call, e.g.:
+\`ToolSearch({query: "select:mcp__github__issue_read,mcp__github__issue_write,mcp__github__create_pull_request,mcp__github__add_issue_comment,mcp__github__pull_request_read,mcp__github__list_issues", max_results: 10})\`
+Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine — it uses a separate credential path — so keep using plain git for code movement and MCP only for issues/PRs/comments/merges.`,
+      issueView: (n) => `read issue #${n} with \`mcp__github__issue_read\` (method "get"; owner/repo from ${REPO})`,
+      issueComment: (n, what) => `post ${what} with \`mcp__github__add_issue_comment\` on issue #${n}`,
+      prCreate: `open the PR with \`mcp__github__create_pull_request\` (base "main", head your branch, draft false)`,
+      prDiff: (pr) => `\`mcp__github__pull_request_read\` (method "get_diff") on PR ${pr}`,
+      prView: (pr) => `\`mcp__github__pull_request_read\` (method "get") on PR ${pr} — the head branch is \`head.ref\``,
+      prComment: (pr, what) => `post ${what} with \`mcp__github__add_issue_comment\` on PR ${pr} (PRs accept issue comments)`,
+      prMerge: (pr) => `\`mcp__github__merge_pull_request\` on PR ${pr} (merge_method "merge")`,
+      issueList: (extra) => `\`mcp__github__list_issues\`${extra ? ` (${extra})` : ""}`,
+      // Cloud permission layer can PARK a subagent's privileged call with no
+      // human watching. Parked is recoverable state — but only if it is durable.
+      parkNote: `⚠ PERMISSION PARKING: this session is approval-gated. If a merge/push-adjacent call is refused or parked, do NOT retry it in a loop and do NOT silently drop the work. Record the exact intended action in your returned \`detail\`/\`summary\` AND (if you can comment at all) on the PR, then return with merged:false. The coordinator lands parked merges. A parked action that was never written down is the only unrecoverable kind.`,
+    }
+  : {
+      pre: `GITHUB ACCESS: the \`gh\` CLI is available and authenticated.`,
+      issueView: (n) => `\`gh issue view ${n} --repo ${REPO}\``,
+      issueComment: (n, what) => `post ${what}: \`gh issue comment ${n} --repo ${REPO} --body "…"\``,
+      prCreate: `\`gh pr create --repo ${REPO} --base main --head <branch> --title "<concise>" --body "…"\``,
+      prDiff: (pr) => `\`gh pr diff ${pr} --repo ${REPO}\``,
+      prView: (pr) => `\`gh pr view ${pr} --repo ${REPO} --json headRefName -q .headRefName\``,
+      prComment: (pr, what) => `post ${what}: \`gh pr comment ${pr} --repo ${REPO} --body "…"\``,
+      prMerge: (pr) => `\`gh pr merge ${pr} --repo ${REPO} --merge --delete-branch\` (detach first so local branch deletion can't fail)`,
+      issueList: (extra) => `\`gh issue list --repo ${REPO}${extra ? ` ${extra}` : ""}\``,
+      parkNote: ``,
+    };
+
+// Cloud disk + durability deltas, folded into every agent prompt that builds.
+// Earned across three ENOSPC incidents and one container snapshot revert that
+// destroyed a finished, unpushed wave.
+const CLOUD_DISK = CLOUD
+  ? `
+CLOUD DISK — MANDATORY ON EVERY CARGO INVOCATION: prefix with \`CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0\` and pass \`-j 4\`. Full debuginfo caused two same-day ENOSPC crashes here. The disk is a FIXED PER-SESSION ALLOWANCE, so \`df\` "Avail" misleads: Avail at 0 with low Used means the allowance is spent, not that the machine is broken. On ENOSPC, deletes still succeed — STOP and report; never self-clean shared state.
+⚠ ONE full workspace gate at a time across ALL agents. Two parallel gates exceeded the allowance twice. If the coordinator gave you a GO token, hold it for the duration of your gate and report the moment you release it.
+CLOUD DURABILITY — THE CONTAINER IS NOT STORAGE: it can be reverted to an older snapshot without warning, taking .git, every worktree and the object store with it (a complete READY-FOR-GATE three-commit wave was lost exactly this way). PUSH IMMEDIATELY AFTER YOUR FIRST COMMIT and after every subsequent commit: \`git push -u origin HEAD:refs/heads/<branch>\`. Remote refs are the only durable store. A "ready" report on an unpushed branch is an emergency, not a normal state.
+⚠ Always \`git fetch origin\` immediately before branching from origin/main — cloud sessions are long-lived while main moves under them, and branching off a stale ref silently resurrects old file states.`
+  : "";
 
 const DISK = `PRE-FLIGHT: run \`df -h /\` FIRST — if free space is under 15GiB, STOP and return ok:false with reason "ENOSPC risk" instead of building (a full wave of worktrees on a near-full disk killed every agent at once; other repos' sessions share this disk, so never assume yesterday's free space). WORKTREE ECONOMY: don't cold-install. If the primary checkout's node_modules matches your lockfile, clone it into the worktree first (macOS/APFS: \`cp -c -R <primary>/node_modules ./node_modules\`; Linux: \`cp --reflink=auto -R\` or \`cp -al\`), then let the install command true it up (near-instant). Always run gates with the shared cache prefix so sibling agents' builds become cache hits.
 ⚠ NEVER \`git stash\` — all worktrees share ONE stash stack, so a sibling agent can pop YOUR work-in-progress (this has happened). To set WIP aside, commit it to your own branch and amend/reset later.`;
@@ -146,17 +199,19 @@ const results = (await pipeline(
   // BUILD (parallel across items, worktree-isolated).
   (b) =>
     agent(`You are an autonomous build agent in a FRESH GIT WORKTREE. Implement GitHub issue #${b.n} of ${REPO} (${b.hint}) and open ONE PR${closesList(b).length > 1 ? ` that honestly closes ALL of: ${closesList(b).map((x) => "#" + x).join(", ")} (clustered because they share files)` : ""}. ${CONV}${RULES ? `\nHOUSE RULES (learned from prior reviews — obey):\n${RULES}\n` : ""}
-${DISK}
+${DISK}${CLOUD_DISK}
+${GH.pre}
 STEPS (Bash):
-1. ${closesList(b).map((x) => `\`gh issue view ${x} --repo ${REPO}\``).join(" + ")} — read full scope + acceptance.
+1. ${closesList(b).map((x) => GH.issueView(x)).join(" + ")} — read full scope + acceptance.
+1b. PREMISE CHECK: before building, confirm the issue's premise is still true — six issues in one month had tracker state that lied about the code (already implemented, or already settled by a later ruling). If the premise is already false, do NOT build: return ok:false with the delivering PR/ruling named in \`summary\`, and say so. That is a successful outcome, not a failure.
 2. \`git fetch origin --quiet && git checkout -B auto/issue-${b.n} origin/main\`. Clone node_modules per WORKTREE ECONOMY, then install + build shared/workspace deps FIRST (consumers resolve built deps from dist).
 3. Implement TDD. SCOPE DISCIPLINE: your own new files + minimal wiring; avoid shared hot files unless the hint names them; if you must touch one, make a minimal additive change so sibling PRs merge cleanly.
 4. PROVE REACHABILITY: confirm the change is actually reached by a user (wired into the UI / called), not just covered by a unit test. State the exact user path in \`reachability\`. Dead/unwired code is a FAIL.
 5. CONVENTIONS LINT: no invented identifiers/tokens — grep new design tokens etc. against the real source of truth; honor house rules.
 6. Run the GATE to GREEN: \`${gateFor(b)}\`. Capture counts.
 7. VERIFY THE DIFF IS REAL: \`git diff origin/main --stat\` must be NON-EMPTY and match what you believe you built — an empty diff means your edits didn't land (wrong cwd/worktree); STOP and fix rather than opening a hollow PR (one shipped with a fully fabricated body and was caught by review — an instant reject and a wasted cycle). Then stage explicit paths (NOT git add -A), commit (end the message with "${TRAILER}"), \`git push -u origin auto/issue-${b.n}\`.
-8. \`gh pr create --repo ${REPO} --base main --head auto/issue-${b.n} --title "<concise>" --body "${closesLine(b)}\\n\\n<what + how + gate counts + reachability>"\` — only an HONEST closes list (if you delivered N of M deliverables, drop the unearned Closes and say so).
-9. SCOPE OVERFLOW: if the work revealed anything BEYOND ${closesList(b).map((x) => "#" + x).join("/")} (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), record it in \`scopeNotes\` AND post it as ONE comment on issue #${b.n} (\`gh issue comment ${b.n} --repo ${REPO} --body "Scope discovered beyond this fence: …"\`) so the record survives the session (durable-by-default rule, decision 2026-07-18). Do NOT grow this PR to cover it.
+8. ${GH.prCreate} — title "<concise>", body starting "${closesLine(b)}" then what + how + gate counts + reachability. Only an HONEST closes list (if you delivered N of M deliverables, drop the unearned Closes and say so).
+9. SCOPE OVERFLOW: if the work revealed anything BEYOND ${closesList(b).map((x) => "#" + x).join("/")} (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), record it in \`scopeNotes\` AND ${GH.issueComment(b.n, 'ONE comment ("Scope discovered beyond this fence: …")')} so the record survives the session (durable-by-default rule, decision 2026-07-18). Do NOT grow this PR to cover it.
 Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, reachability, summary, scopeNotes.`,
       { label: `build#${b.n}`, phase: "Build", effort: effortFor(b), model: buildModelFor(b), isolation: "worktree", schema: BUILD }),
   // REVIEW — starts the moment THIS item's build returns; siblings unaffected.
@@ -164,10 +219,11 @@ Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed),
     if (!build || !build.ok || !build.pr) return { build: build ?? null, verdict: null };
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
-READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`gh pr checkout\`, \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via \`gh pr diff\`/\`gh api\`/\`gh pr view\` and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
-DO: \`gh pr diff ${build.pr} --repo ${REPO}\` + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? **SPEC DRIFT** — does this PR leave a SPEC disagreeing with reality? Two shapes: (a) a decision-log PR that rules something but amends NO spec, so the ruling's only home is history nobody reads; (b) an implementation PR whose behavior contradicts, or is absent from, the spec that owns that territory. A 2026-07-27 ledger audit of 296 rulings found 29 ORPHANED and 15 CONTRADICTED precisely here — including a same-day ruling PR that touched only the decision log while the spec kept carrying the spelling that ruling rejected. Name the spec file+section in your findings. Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
+${GH.pre}
+READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via the GitHub read tools and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
+DO: ${GH.prDiff(build.pr)} + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? **SPEC DRIFT** — does this PR leave a SPEC disagreeing with reality? Two shapes: (a) a decision-log PR that rules something but amends NO spec, so the ruling's only home is history nobody reads; (b) an implementation PR whose behavior contradicts, or is absent from, the spec that owns that territory. A 2026-07-27 ledger audit of 296 rulings found 29 ORPHANED and 15 CONTRADICTED precisely here — including a same-day ruling PR that touched only the decision log while the spec kept carrying the spelling that ruling rejected. Name the spec file+section in your findings. Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
 DISCIPLINE: every \`findings\` entry must be a REAL, actionable fix to THIS PR's diff — never placeholders. If your only material notes are follow-up scope (work outside this PR's fence), the decision is "approve" and those notes go in \`scopeGaps\`; "changes" with an empty/junk findings list wastes a fix-agent run.
-ALWAYS post your verdict as ONE comment on the PR (\`gh pr comment ${build.pr} --repo ${REPO} --body "…"\`) — decision, findings, and scope gaps, INCLUDING approvals (durable-by-default rule, decision 2026-07-18: an approval's scope gaps are exactly the context that evaporates otherwise). Commenting is allowed under the read-only mandate; git state mutation is not. ALSO: note in \`scopeGaps\` anything the issue (or its milestone) UNDER-captured — work that clearly belongs but no issue covers. Return {pr, decision, findings, scopeGaps}.`,
+ALWAYS ${GH.prComment(build.pr, "your verdict as ONE comment")} — decision, findings, and scope gaps, INCLUDING approvals (durable-by-default rule, decision 2026-07-18: an approval's scope gaps are exactly the context that evaporates otherwise). Commenting is allowed under the read-only mandate; git state mutation is not. ALSO: note in \`scopeGaps\` anything the issue (or its milestone) UNDER-captured — work that clearly belongs but no issue covers. Return {pr, decision, findings, scopeGaps}.`,
       { label: `review#${b.n}`, phase: "Review", effort: effortFor(b), model: REVIEW_MODEL, schema: VERDICT })
       .then((verdict) => ({ build, verdict: verdict ?? null }));
   },
@@ -180,14 +236,18 @@ ALWAYS post your verdict as ONE comment on the PR (\`gh pr comment ${build.pr} -
     if (decision === "reject") return { ...base, land: null };
     const job = decision === "approve"
       ? () => agent(`Land PR ${base.build.pr} (${closesLine(b)}) onto main of ${REPO}. Built off main in parallel; main has since advanced. ${CONV}
-${TRAIN_SETUP}
-STEPS: 1. In the train worktree: \`git fetch origin --quiet && git checkout -B train-pr origin/$(gh pr view ${base.build.pr} --repo ${REPO} --json headRefName -q .headRefName)\`. 2. \`git merge origin/main\` — combine ADDITIVE conflicts (registry/index appends: keep ALL entries; keep both wirings). ⚠ diff3/union conflict styles can duplicate or drop closing braces and adjacent lines when combining — after resolving, recheck brace balance and that BOTH sides' entries survived; the gate is the arbiter. If untangleable, \`git merge --abort\` + merged:false. 3. Run the GATE to GREEN: \`${gateFor(b)}\`. Fix semantic conflicts. 4. \`gh pr diff ${base.build.pr} --repo ${REPO}\` sanity-check. 5. If green + MERGEABLE: \`git push origin train-pr:$(gh pr view ${base.build.pr} --repo ${REPO} --json headRefName -q .headRefName)\`, \`git checkout --detach origin/main\`, then \`gh pr merge ${base.build.pr} --repo ${REPO} --merge --delete-branch\` (detached first so the local-branch deletion can't fail). Else leave open + comment + merged:false. NOTEWORTHY-ONLY comment rule (durable-by-default, decision 2026-07-18): if the landing involved anything a future bisect would want — conflict resolutions, semantic fixes, files verified after a raced checkout — post ONE PR comment describing it; routine clean merges stay SILENT (no noise).
+${TRAIN_SETUP}${CLOUD_DISK}
+${GH.pre}
+${GH.parkNote}
+STEPS: 1. Resolve the PR's head branch: ${GH.prView(base.build.pr)}. In the train worktree: \`git fetch origin --quiet && git checkout -B train-pr origin/<headRef>\`. 2. \`git merge origin/main\` — combine ADDITIVE conflicts (registry/index appends: keep ALL entries; keep both wirings). ⚠ diff3/union conflict styles can duplicate or drop closing braces and adjacent lines when combining — after resolving, recheck brace balance and that BOTH sides' entries survived; the gate is the arbiter. If untangleable, \`git merge --abort\` + merged:false. 3. Run the GATE to GREEN: \`${gateFor(b)}\`. Fix semantic conflicts. 4. ${GH.prDiff(base.build.pr)} sanity-check. 5. If green + MERGEABLE: \`git push origin train-pr:<headRef>\`, \`git checkout --detach origin/main\`, then ${GH.prMerge(base.build.pr)}. Else leave open + comment + merged:false. NOTEWORTHY-ONLY comment rule (durable-by-default, decision 2026-07-18): if the landing involved anything a future bisect would want — conflict resolutions, semantic fixes, files verified after a raced checkout — post ONE PR comment describing it; routine clean merges stay SILENT (no noise).
 Return {pr, merged, detail (conflicts + gate counts + result, or park reason)}.`,
           { label: `merge#${b.n}`, phase: "Merge train", effort: effortFor(b), model: TRAIN_MODEL, schema: MERGE })
       : () => agent(`Fix the review-blocking issues in PR ${base.build.pr} (${closesLine(b)}) of ${REPO}, then land it. The PR is otherwise good; apply the reviewer's SPECIFIC fixes only. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
-${TRAIN_SETUP}
+${TRAIN_SETUP}${CLOUD_DISK}
+${GH.pre}
+${GH.parkNote}
 REVIEWER FINDINGS — these ARE the adversarial review's verdict. They ride this workflow and are NOT posted on GitHub, so an empty \`gh api .../reviews\` or \`.../comments\` result means NOTHING — never treat it as evidence the findings aren't real (this dismissal has let a real stack-corruption bug merge). Treat each finding as authoritative and apply it. Skip an INDIVIDUAL finding only if it references files/lines absent from this PR's diff (a misattributed finding), and list every skipped finding with its reason in your report:\n- ${(base.verdict.findings ?? []).join("\n- ")}
-STEPS: in the train worktree, \`git checkout -B train-fix origin/$(gh pr view ${base.build.pr} --repo ${REPO} --json headRefName -q .headRefName)\`; merge origin/main (combine; recheck brace balance per the diff3 caveat); apply ONLY the findings' fixes + tests that guard them; GATE to GREEN: \`${gateFor(b)}\`; commit (end with "${TRAILER}") + push back to the PR branch; THEN post ONE disposition comment on the PR (\`gh pr comment\`) tying commits to findings — which findings you applied and which you skipped with the misattribution reason (durable-by-default rule); if MERGEABLE, detach then \`gh pr merge ${base.build.pr} --repo ${REPO} --merge --delete-branch\`. If a finding needs a human decision (scope split, design call), DON'T guess — leave the PR open, comment, and report merged:false with what's needed.
+STEPS: resolve the head branch (${GH.prView(base.build.pr)}); in the train worktree, \`git checkout -B train-fix origin/<headRef>\`; merge origin/main (combine; recheck brace balance per the diff3 caveat); apply ONLY the findings' fixes + tests that guard them; GATE to GREEN: \`${gateFor(b)}\`; commit (end with "${TRAILER}") + push back to the PR branch; THEN ${GH.prComment(base.build.pr, "ONE disposition comment")} tying commits to findings — which findings you applied and which you skipped with the misattribution reason (durable-by-default rule); if MERGEABLE, detach then ${GH.prMerge(base.build.pr)}. If a finding needs a human decision (scope split, design call), DON'T guess — leave the PR open, comment, and report merged:false with what's needed.
 Return {pr, merged, detail}.`,
           { label: `fix#${b.n}`, phase: "Fix loop", effort: effortFor(b), model: TRAIN_MODEL, schema: MERGE });
     return enqueueTrain(job).then((m) => {
@@ -213,6 +273,7 @@ Return {lessons}.
 
 ⚠ THEN PERSIST THEM — this is the whole point, and it has historically been the broken link. Measured across 671 agents: **fix cycles are 18.3% of all token spend, and ~80% of reviewed PRs need one** (133 fix agents against 165 reviews). Those fixes are triggered by findings that RECUR wave after wave. Returning lessons as text that a human must remember to copy forward is why the same mistakes kept costing full re-read/re-gate/re-push cycles.
 
+${GH.pre}
 So: open a PR adding each GRADUATED lesson to the "Recurring build-quality rules" section of .claude/skills/autonomous-pump/BRINK-CONFIG.md, in a fresh worktree off origin/main (never the user's live checkout), and enable auto-merge. Rules:
 - Append only; do NOT rewrite or reorder existing rules.
 - MERGE with an existing rule when it is the same lesson said differently — a list of 40 near-duplicates is worse than 15 sharp ones, because nobody reads it.
@@ -239,7 +300,8 @@ const trackerFacts = BATCH.map((b) => {
   return `#${b.n} -> ${r.build?.pr ?? "(no PR)"} | ${state} | verdict ${r.verdict?.decision ?? "-"} | claims: ${cl}`;
 }).join("\n");
 
-const scopeReconciliation = await agent(`You are running this wave's RETRO for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}. An agent landed a deliverable for each item below. Your job is to TRUE UP what was actually built against what was actually requested, item by item, and leave both the tracker and the plan honest.
+const scopeReconciliation = await agent(`You are running this wave's RETRO for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}.
+${GH.pre} An agent landed a deliverable for each item below. Your job is to TRUE UP what was actually built against what was actually requested, item by item, and leave both the tracker and the plan honest.
 
 THIS WAVE'S ITEMS (issue -> PR -> merge state -> what the PR claims to close):
 ${trackerFacts || "(none)"}
@@ -253,12 +315,12 @@ For EACH item, compare DELIVERED against REQUESTED and land the difference somew
 - **PR did not merge** — say why in one line: conflict, auto-merge armed but never completed, or review parked it. An auto-merge that arms and then conflicts leaves work LOOKING landed while its issue stays open; that has silently lost two PRs here.
 - **The build found the premise already false** (already implemented, already ruled) — verify the delivering PR, comment naming it, and close the issue if nothing remains. Reporting it only to the pump means the next wave rediscovers it at the cost of another build agent.
 - **Something this wave ruled or shipped supersedes a DIFFERENT open issue's premise** — update that issue too. A ruling that lands only in a doc leaves the tracker lying.
-- **The item NEVER RAN** (agent died mid-flight) — say so plainly and recommend a re-queue. Do NOT report the wave as scope-held on the strength of items that never executed; absence of a result is absence of evidence, not evidence of health.\n- **Genuinely new work no existing issue covers** — file it, after deduping against the board (\`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\`; read the roadmap/plan doc if the repo has one).
+- **The item NEVER RAN** (agent died mid-flight) — say so plainly and recommend a re-queue. Do NOT report the wave as scope-held on the strength of items that never executed; absence of a result is absence of evidence, not evidence of health.\n- **Genuinely new work no existing issue covers** — file it, after deduping against the board (${GH.issueList(MILESTONE ? `milestone "${MILESTONE}", state all` : "")}; read the roadmap/plan doc if the repo has one).
 
 You MAY act on all of the above — it is truing up the record of work that already happened, not rewriting the plan. The one thing you may NOT do unilaterally is restructure MILESTONES (add or expand one): propose that with rationale and let the human decide.
 
 Finally judge the batch as a whole: did its scope HOLD, UNDER-capture, or OVER-capture? Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone, with a crisp \`proposal\` the human can act on.${LEDGER ? `
-Then (durable-by-default rule) append ONE compact wave-ledger comment to issue #${LEDGER} (\`gh issue comment ${LEDGER} --repo ${REPO}\`): wave id ${WAVE_ID}; the batch; landed/parked; the lessons harvested this wave (passed below if any); your true-up actions and scope assessment. Issues filed here carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
+Then (durable-by-default rule) ${GH.issueComment(LEDGER, "ONE compact wave-ledger comment")}: wave id ${WAVE_ID}; the batch; landed/parked; the lessons harvested this wave (passed below if any); your true-up actions and scope assessment. Issues filed here carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
 Return {assessment, trackerActions, discoveredWork:[{title,why,suggestedMilestone}], recommendation, proposal}.`,
   { label: "retro", phase: "Retro / scope reconciliation", effort: "high", model: "sonnet", schema: SCOPE });
 
