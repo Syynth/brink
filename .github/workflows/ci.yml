@@ -47,10 +47,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
       - run: cargo check --workspace
       # The wasm-side test modules (`wasm_bindgen_test`) were compiled by no
       # CI job — only the lib was ever checked for wasm32 — so they bitrotted
@@ -73,10 +73,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         # Pin the version (matching the `frontend` job below): the default
@@ -92,7 +92,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # No "Install Linux dependencies (bevy)" step here: this job excludes
@@ -103,7 +103,7 @@ jobs:
       # genuinely need these system libs — because they build or test
       # bevy-brink directly — are `test-bench-counters`, `determinism-law`,
       # and `book`; each installs them itself.
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
       # bevy-brink is EXCLUDED from THIS job: the bevy dependency graph is
       # the dominant build cost and `cargo test` LINKS the examples — a
       # 300+ rlib binary that intermittently crashed the runner's linker
@@ -183,7 +183,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Same bevy-brink dev-dependency system libs as the `test` job above.
@@ -192,7 +192,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           shared-key: bench-counters
       # Cheapest first: brink-runtime's bench-counters coverage is bevy-free.
@@ -235,13 +235,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # No "Install Linux dependencies (bevy)" step here either, for the same
       # reason as the `test` job above: this job also excludes bevy-brink
       # (below), so nothing it builds touches bevy's system libs.
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           shared-key: all-features
       # Same bevy-brink exclusion as the `test` job (build cost + the example
@@ -267,7 +267,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # `--all-targets` compiles the bevy examples, which need bevy's Linux
@@ -277,7 +277,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           shared-key: static-checks
 
@@ -394,11 +394,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Supply-chain gate: advisories, licenses, banned crates, source allowlist.
-      - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check
   # Bounded fuzz smoke runs (#672 workstream C) — not continuous fuzzing
@@ -424,10 +424,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           shared-key: fuzz
       - name: Install nightly + cargo-fuzz
@@ -540,7 +540,7 @@ jobs:
       BRINK_DETERMINISM_LAW_SEED: ${{ matrix.seed }}
       BRINK_DETERMINISM_LAW_ITERATIONS: ${{ matrix.iterations }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # This job runs `cargo test -p bevy-brink` directly (below), so unlike
@@ -551,7 +551,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           shared-key: determinism-law-${{ matrix.seed }}
       - name: Determinism law (pinned seed ${{ matrix.seed }}, ${{ matrix.iterations }} iterations)
@@ -563,7 +563,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # bevy-brink (built below for the Bevy doctests' -L path) transitively
@@ -620,7 +620,7 @@ jobs:
           CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/bevy-brink
       # Type-check the book's TypeScript examples against the published
       # @brink-lang packages (the TS counterpart of `mdbook test`).
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
@@ -634,10 +634,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         # Pin the version (matching npm-release.yml): the default `latest`
@@ -649,10 +649,10 @@ jobs:
       # so the bundle must be built BEFORE `pnpm install` can link it.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -681,20 +681,20 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with:
           version: v0.14.0
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 10
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm

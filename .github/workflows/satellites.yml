@@ -60,7 +60,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # demos/compound depends on bevy 0.19 directly, so even `cargo check`
@@ -71,7 +71,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
         with:
           workspaces: |
             demos/compound
