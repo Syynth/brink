@@ -155,10 +155,10 @@ export interface MountStudioOptions {
    * binder structural ops, search replacements, `file.new`. Debounced
    * (~500 ms trailing); pending changes flush immediately on `file.save` /
    * `file.saveAll` and on `unmount()`. Each change names the file, its kind
-   * ("modified" | "created" | "deleted" — the latter designed-in but
-   * currently unreachable: the studio has no delete UI yet), and the full
-   * content. A host that persists files writes these back (e.g. RPG Maker
-   * MZ writing `data/brink/**`; see docs/embedder-api.md "File egress").
+   * ("modified" | "created" | "deleted" — the binder's Delete action and
+   * renames/moves both report it), and the full content. A host that
+   * persists files writes these back (e.g. RPG Maker MZ writing
+   * `data/brink/**`; see docs/embedder-api.md "File egress").
    */
   onFilesChanged?: (changes: FileChange[]) => void;
   /**

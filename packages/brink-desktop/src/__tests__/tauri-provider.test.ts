@@ -290,3 +290,218 @@ describe("TauriFileProvider watcher self-delete suppression (#2404)", () => {
     expect(seen).toEqual([{ path: "scene.brink", content: "hello" }]);
   });
 });
+
+describe("TauriFileProvider watcher self-rename suppression (#2416)", () => {
+  it("does not drop the pending 'deleted'/'created' egress records when the rename's own echoes come back", async () => {
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const files = new Map<string, string>([["old.brink", "content"]]);
+    const delivered: FileChange[][] = [];
+
+    // FileChangeHub is the real pending-egress queue `ProjectSession` owns
+    // (`packages/ink-editor/src/project-session.ts`) — `onFlush` here is
+    // exactly the host mirror consumer the issue describes.
+    const hub = new FileChangeHub({
+      getContent: (path) => files.get(path) ?? null,
+      onFlush: (changes) => delivered.push(changes),
+      deliveryPersists: false, // the desktop overlay contract (D2)
+    });
+    hub.setBaseline("old.brink", "content");
+
+    provider.onExternalChange((path, content) => {
+      if (content === null) files.delete(path);
+      else files.set(path, content);
+      hub.applyExternal(path, content);
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The studio renames the file (`ProjectSession.renameFile`'s real call
+    // sequence): provider write-through, then record deleted/created for the
+    // host egress queue.
+    files.delete("old.brink");
+    files.set("new.brink", "content");
+    await provider.renameFile("old.brink", "new.brink");
+    hub.record("new.brink", "created");
+    hub.record("old.brink", "deleted");
+
+    // The shell's fs watcher observes our own native `rename_file` call and —
+    // after its debounce — echoes it back as a deletion of the old path plus
+    // a creation of the new path, exactly like a real `notify` watcher would.
+    watcher.get()({ payload: { path: "old.brink", content: null } });
+    watcher.get()({ payload: { path: "new.brink", content: "content" } });
+
+    // The host mirror must still learn about the studio-initiated rename once
+    // the debounced flush lands — without suppression on either side, both
+    // echoes would have called `applyExternal` and wiped the pending
+    // records before flush ever ran.
+    const flushed = hub.flush();
+    expect(flushed).toEqual([
+      { path: "new.brink", type: "created", content: "content" },
+      { path: "old.brink", type: "deleted" },
+    ]);
+    expect(delivered).toEqual([flushed]);
+  });
+
+  it("still forwards a genuinely external creation at the rename's destination path (no matching self-create marker)", async () => {
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Nobody called provider.renameFile(..., "other.brink") — this is a real
+    // out-of-band creation, not our own rename echo.
+    watcher.get()({ payload: { path: "other.brink", content: "hi" } });
+
+    expect(seen).toEqual([{ path: "other.brink", content: "hi" }]);
+  });
+
+  it("the self-create marker is consumed once — a later genuine external creation of the same path still forwards", async () => {
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink");
+    watcher.get()({ payload: { path: "old.brink", content: null } }); // suppressed (our own)
+    watcher.get()({ payload: { path: "new.brink", content: "content" } }); // suppressed (our own)
+    // The renamed file is deleted, then someone else recreates it entirely
+    // independently — the earlier self-create marker must not still be armed.
+    watcher.get()({ payload: { path: "new.brink", content: null } });
+    watcher.get()({ payload: { path: "new.brink", content: "someone else's content" } });
+
+    expect(seen).toEqual([
+      { path: "new.brink", content: null },
+      { path: "new.brink", content: "someone else's content" },
+    ]);
+  });
+
+  it("disarms both markers when rename_file rejects (review discipline, mirrors #2412)", async () => {
+    const watcher = captureWatcherCallback();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "rename_file") return Promise.reject(new Error("destination exists"));
+      return Promise.resolve(undefined);
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(provider.renameFile("old.brink", "new.brink")).rejects.toThrow(
+      "destination exists",
+    );
+
+    // Later, genuine external changes to either path must still forward —
+    // neither marker stayed armed after the failed rename.
+    watcher.get()({ payload: { path: "old.brink", content: null } });
+    watcher.get()({ payload: { path: "new.brink", content: "unrelated" } });
+    expect(seen).toEqual([
+      { path: "old.brink", content: null },
+      { path: "new.brink", content: "unrelated" },
+    ]);
+  });
+
+  it("clears a stale self-delete marker on the destination path so the rename's creation echo is not mistaken for a deletion suppression", async () => {
+    // A path that was deleted (armed selfDeletes) and then becomes the
+    // destination of a rename before its deletion ever echoed back must not
+    // have the stale `selfDeletes` entry linger and interfere.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.deleteFile("new.brink"); // arms selfDeletes.add("new.brink")
+    await provider.renameFile("old.brink", "new.brink"); // must clear that stale marker
+
+    // The rename's own echoes are still suppressed as usual.
+    watcher.get()({ payload: { path: "old.brink", content: null } });
+    watcher.get()({ payload: { path: "new.brink", content: "content" } });
+    expect(seen).toEqual([]);
+
+    // A later, genuinely external deletion of the renamed-to path forwards —
+    // proving the stale `selfDeletes("new.brink")` marker from the earlier
+    // `deleteFile` call did not silently survive to swallow it.
+    watcher.get()({ payload: { path: "new.brink", content: null } });
+    expect(seen).toEqual([{ path: "new.brink", content: null }]);
+  });
+
+  it("does not leave a stale self-create marker armed when a save at the rename destination coalesces with the rename echo (review)", async () => {
+    // #2421 review: `start_watch` accumulates paths in a `BTreeSet` and
+    // flushes after 300ms of quiet, reading content once at flush time — at
+    // most ONE event per path per window. A rename A→B (arms selfDeletes(A),
+    // selfCreates(B)) followed by a requestSave(B) (arms selfWrites(B))
+    // inside the same quiet window produces a single B event carrying the
+    // saved content. Before the fix, the self-write branch consumed only
+    // `selfWrites`, leaving `selfCreates(B)` permanently armed to silently
+    // swallow the NEXT genuinely external change at B.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink"); // arms selfDeletes(old), selfCreates(new)
+    provider.onFileChanged("new.brink", "v2");
+    await provider.requestSave(); // arms selfWrites(new) = "v2"
+
+    // Only ONE coalesced event for "new.brink" arrives — the save's content —
+    // matching the shell's per-path, once-per-window flush.
+    watcher.get()({ payload: { path: "new.brink", content: "v2" } });
+    expect(seen).toEqual([]); // suppressed as our own save echo
+
+    // A later, genuinely external change at the same path must still
+    // forward — proving the coalesced-away `selfCreates("new.brink")`
+    // marker did not silently survive to swallow it.
+    watcher.get()({ payload: { path: "new.brink", content: "someone else's edit" } });
+    expect(seen).toEqual([{ path: "new.brink", content: "someone else's edit" }]);
+  });
+
+  it("does not leave a stale self-create marker armed when a delete at the rename destination coalesces with the rename echo (review)", async () => {
+    // #2421 review, second window: rename A→B (arms selfDeletes(A),
+    // selfCreates(B)) followed by deleteFile(B) inside the same quiet window
+    // (arms selfDeletes(B)) produces a single B(null) event. Before the fix,
+    // the self-delete branch consumed only `selfDeletes`, leaving
+    // `selfCreates(B)` permanently armed to silently swallow the next
+    // genuinely external re-creation at B.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink"); // arms selfDeletes(old), selfCreates(new)
+    await provider.deleteFile("new.brink"); // arms selfDeletes(new)
+
+    // Only ONE coalesced event for "new.brink" arrives — the deletion.
+    watcher.get()({ payload: { path: "new.brink", content: null } });
+    expect(seen).toEqual([]); // suppressed as our own delete echo
+
+    // A later, genuinely external re-creation at the same path must still
+    // forward — proving the coalesced-away `selfCreates("new.brink")`
+    // marker did not silently survive to swallow it.
+    watcher.get()({ payload: { path: "new.brink", content: "someone else's content" } });
+    expect(seen).toEqual([{ path: "new.brink", content: "someone else's content" }]);
+  });
+});

@@ -77,7 +77,7 @@ Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine �
       prDiff: (pr) => `\`mcp__github__pull_request_read\` (method "get_diff") on PR ${pr}`,
       prView: (pr) => `\`mcp__github__pull_request_read\` (method "get") on PR ${pr} — the head branch is \`head.ref\``,
       prComment: (pr, what) => `post ${what} with \`mcp__github__add_issue_comment\` on PR ${pr} (PRs accept issue comments)`,
-      prMerge: (pr) => `ARM AUTO-MERGE with \`mcp__github__enable_pr_auto_merge\` on PR ${pr} (mergeMethod "MERGE"). ⚠ Do NOT call \`mcp__github__merge_pull_request\` — see LANDING POLICY below`,
+      prMerge: (pr) => `LAND PR ${pr} per the three-case LANDING POLICY below: read its check runs first — checks still pending → \`mcp__github__enable_pr_auto_merge\` (mergeMethod "MERGE"); checks all completed green AND review approved/fixed → \`mcp__github__merge_pull_request\` (merge_method "merge"); anything else → park it`,
       issueList: (extra) => `\`mcp__github__list_issues\`${extra ? ` (${extra})` : ""}`,
       // Cloud permission layer can PARK a subagent's privileged call with no
       // human watching. Parked is recoverable state — but only if it is durable.
@@ -91,7 +91,7 @@ Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine �
       prDiff: (pr) => `\`gh pr diff ${pr} --repo ${REPO}\``,
       prView: (pr) => `\`gh pr view ${pr} --repo ${REPO} --json headRefName -q .headRefName\``,
       prComment: (pr, what) => `post ${what}: \`gh pr comment ${pr} --repo ${REPO} --body "…"\``,
-      prMerge: (pr) => `ARM AUTO-MERGE: \`gh pr merge ${pr} --repo ${REPO} --merge --auto --delete-branch\` (detach first so local branch deletion can't fail). ⚠ Never the non---auto form — see LANDING POLICY below`,
+      prMerge: (pr) => `LAND PR ${pr} per the three-case LANDING POLICY below (detach first so local branch deletion can't fail): checks still pending → \`gh pr merge ${pr} --repo ${REPO} --merge --auto --delete-branch\`; checks all completed green AND review approved/fixed → the same command WITHOUT \`--auto\`; anything else → park it`,
       issueList: (extra) => `\`gh issue list --repo ${REPO}${extra ? ` ${extra}` : ""}\``,
       parkNote: ``,
     };
@@ -133,16 +133,30 @@ const TRAIN_SETUP = `TRAIN WORKTREE — MANDATORY STEP 0, before ANY other git c
 // Arming auto-merge fixes both: GitHub lands the PR only once required checks
 // pass, and no agent issues a merge.
 //
-// ⚠ THE COST, and it is a KNOWN one: "auto-merge armed" is NOT "landed". The
-// repo has already lost two PRs (#1659, #1666) to exactly this — auto-merge
-// armed on a PR that later conflicted, leaving the work LOOKING landed while
-// its issue stayed open, surfaced only by an audit. So `merged: true` from a
-// train agent now means "armed or already merged", NOT "in main". The retro is
-// what closes this hole: it must verify each PR's ACTUAL state and report an
-// armed-but-unlanded PR as NOT merged.
-const LANDING_POLICY = `LANDING POLICY — ARM AUTO-MERGE, NEVER MERGE DIRECTLY. Do not call \`mcp__github__merge_pull_request\` / \`gh pr merge\` without \`--auto\` under any circumstances, even if the PR looks green and even if your local gate passed. Your local gate is NOT the repository's required checks: a fix agent merged PR #2412 while its full CI run was still in progress and got away with it only by luck, and the safety classifier blocked a sibling agent's direct merge outright, stranding finished work. Arm auto-merge and let GitHub land it when required checks pass.
-⚠ REPORT HONESTLY: \`merged: true\` means "auto-merge ARMED or already landed" — it does NOT mean the commit is in main. Say WHICH in \`detail\`. Never claim a PR landed on the strength of having armed it: this repo has already LOST two PRs (#1659, #1666) to auto-merge that armed, later conflicted, and left work looking landed while its issue stayed open.
-If arming fails because the PR is already mergeable-and-clean, or the repo has auto-merge disabled, do NOT fall back to a direct merge — leave the PR open, say so in \`detail\`, and return merged:false so a human lands it.`;
+// ⚠ COST 1, a KNOWN one: "auto-merge armed" is NOT "landed". The repo has
+// already lost two PRs (#1659, #1666) to exactly this — auto-merge armed on a
+// PR that later conflicted, leaving the work LOOKING landed while its issue
+// stayed open, surfaced only by an audit. So `merged: true` from a train agent
+// means "armed or already merged", NOT "in main". The retro closes this hole:
+// it must verify each PR's ACTUAL state and report armed-but-unlanded as NOT
+// merged.
+//
+// ⚠ COST 2, found in w149 and CORRECTED 2026-08-13 (user-ruled, same day):
+// the first draft of this policy said "never merge directly, park if arming
+// fails". GitHub REFUSES to arm auto-merge on a PR whose checks have already
+// completed green ("Auto-merge only applies when checks are pending"). So the
+// better-behaved a PR was — green gate, review approved with zero findings —
+// the more likely it stranded itself. PR #2420 parked exactly that way with an
+// approving review and 957 passing tests. That is backwards: the policy existed
+// to stop merges that outran CI, and it was instead blocking merges that had
+// WAITED for CI. Landing is now THREE cases, not two — see below. The two
+// things the policy actually protects are preserved: never merge while checks
+// are pending, never merge unreviewed work.
+const LANDING_POLICY = `LANDING POLICY — THREE CASES. Decide by READING the PR's check runs, never by assuming:
+1. CHECKS STILL PENDING/RUNNING (any required check queued, in_progress, or not yet reported) → ARM AUTO-MERGE (\`mcp__github__enable_pr_auto_merge\`, mergeMethod "MERGE"). Do NOT merge directly. Your local gate is NOT the repository's required checks — a fix agent merged PR #2412 mid-CI and landed green by luck, not design.
+2. CHECKS ALL COMPLETED AND GREEN (every required check concluded success or skipped, none failing, none pending) AND the adversarial review verdict for this PR was \`approve\`, or was \`changes\` with every finding applied and the gate re-run → MERGE DIRECTLY (\`mcp__github__merge_pull_request\`, merge_method "merge"). Arming is IMPOSSIBLE in this state — GitHub rejects it with "already in clean status (all checks passed)" — so parking here strands finished work rather than protecting anything. This case is explicitly user-authorized (2026-08-13): CI has completed, and the work is reviewed, which is exactly the sign-off whose absence blocked an earlier direct merge.
+3. ANYTHING ELSE — a required check FAILED, the review verdict was \`reject\`, unresolved conflicts, or arming fails for a reason other than "already clean" (e.g. auto-merge disabled on the repo) → PARK IT. Leave the PR open and untouched, return merged:false, and say exactly why in \`detail\`. Never merge to clear a red check or an unresolved review.
+⚠ REPORT HONESTLY: \`merged: true\` means "auto-merge ARMED (case 1) or actually LANDED (case 2)" — armed does NOT mean the commit is in main. State WHICH case you took in \`detail\`, and for case 2 name the checks you read. Never claim a PR landed on the strength of having armed it: this repo has LOST two PRs (#1659, #1666) to auto-merge that armed, later conflicted, and left work looking landed while its issue stayed open.`;
 
 const gateFor = (b) => `${CACHE} && ${b.gate ?? GATE}`;
 const effortFor = (b) => (b.lane === "light" ? "medium" : "high");
