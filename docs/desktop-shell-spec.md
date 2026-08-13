@@ -84,6 +84,26 @@ CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
 
+Drift appeared (#2402: `src-tauri`'s `Cargo.toml` declares `edition =
+"2021"`, but nothing pinned `rustfmt` to match, so it silently inherited the
+root `rustfmt.toml`'s `edition = "2024"` and drifted uncaught). The
+non-required smoke job now exists: `.github/workflows/desktop-smoke.yml`,
+covering `cargo check`/`clippy` and `cargo test` in `src-tauri/` (still its
+own excluded workspace — the job's cargo commands run with cwd inside it,
+never from the repo root), `tsc --noEmit`, and `pnpm build` for the desktop
+package. It is deliberately **not** in branch protection's required-checks
+list, per the ruling above.
+
+This is the desktop package's first *cargo/`tsc`/`pnpm build`* coverage, not
+its first CI coverage of any kind: `.github/workflows/ci.yml`'s `frontend` job
+already runs the desktop vitest suite on every PR (step "Unit tests (vitest,
+`@brink/desktop`)" → `pnpm --filter @brink/desktop test`, ci.yml:667-668). That
+step builds no Tauri graph, so it never violated the "required lanes must not
+grow a Tauri build" fence, and the smoke lane deliberately does not duplicate
+it. ⚠ The desktop unit suite's only home is that one step inside another job —
+renaming or deleting it silently drops the suite entirely, and nothing asserts
+that dependency.
+
 ## Menus
 
 Generated from the studio's **command registry**, per
