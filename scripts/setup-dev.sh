@@ -82,6 +82,48 @@ else
   rm -rf "${WP_TMP}"
 fi
 
+# --- binaryen / wasm-opt -----------------------------------------------------
+# wasm-pack's FINAL step shells out to wasm-opt, and it downloads binaryen
+# itself using an internal HTTP client that honors neither HTTPS_PROXY nor a
+# custom CA bundle. Behind a proxying sandbox that download is the ONLY part of
+# `wasm-pack build` that fails — everything else (crates.io, wasm-bindgen-cli)
+# succeeds. Fetching the same asset with curl works, so pre-seeding wasm-opt on
+# PATH makes the full wasm gate pass: wasm-pack logs `found wasm-opt at …` and
+# skips its own download entirely.
+#
+# The released wasm-opt is self-contained (no libbinaryen dependency), so a
+# single binary dropped in CARGO_BIN is sufficient.
+
+BINARYEN_VERSION="version_117" # the version wasm-pack ${WASM_PACK_VERSION} fetches
+
+if command -v wasm-opt >/dev/null 2>&1; then
+  echo "==> wasm-opt already installed ($(wasm-opt --version 2>/dev/null | head -n1))"
+else
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64)  BINARYEN_ASSET="x86_64-linux" ;;
+    Linux/aarch64) BINARYEN_ASSET="aarch64-linux" ;;
+    Darwin/arm64)  BINARYEN_ASSET="arm64-macos" ;;
+    Darwin/x86_64) BINARYEN_ASSET="x86_64-macos" ;;
+    *)             BINARYEN_ASSET="" ;;
+  esac
+
+  if [ -z "${BINARYEN_ASSET}" ]; then
+    echo "==> No binaryen asset for $(uname -s)/$(uname -m); skipping (wasm-pack will try its own download)"
+  else
+    echo "==> Installing wasm-opt (binaryen ${BINARYEN_VERSION}, ${BINARYEN_ASSET})"
+    mkdir -p "${CARGO_BIN}"
+    BN_TMP="$(mktemp -d)"
+    BN_URL="https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-${BINARYEN_ASSET}.tar.gz"
+    if curl --proto '=https' --tlsv1.2 -sSfL "${BN_URL}" | tar zxf - -C "${BN_TMP}" --strip-components=1 &&
+       install -m 0755 "${BN_TMP}/bin/wasm-opt" "${CARGO_BIN}/wasm-opt"; then
+      echo "==> Installed $(wasm-opt --version 2>/dev/null | head -n1)"
+    else
+      echo "==> wasm-opt install failed; wasm-pack will attempt its own download (expected to fail behind a proxy)"
+    fi
+    rm -rf "${BN_TMP}"
+  fi
+fi
+
 # --- cargo-nextest -----------------------------------------------------------
 # The pump's GATE depends on this; `cargo test` is ~5x slower for identical
 # results (35s vs 2m52s, issue #1695) because it runs the 183 test binaries
@@ -138,7 +180,7 @@ echo "==> pnpm ready ($(pnpm --version))"
 
 echo "==> Verifying toolchain"
 missing=0
-for tool in rustc cargo rustfmt wasm-pack cargo-nextest pnpm node; do
+for tool in rustc cargo rustfmt wasm-pack wasm-opt cargo-nextest pnpm node; do
   if command -v "$tool" >/dev/null 2>&1; then
     printf '    %-16s OK\n' "$tool"
   else

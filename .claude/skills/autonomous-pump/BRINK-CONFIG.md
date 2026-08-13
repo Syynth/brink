@@ -156,11 +156,24 @@ the config above as follows:
   it whenever snapshot failures appear only in shared-cache runs.
 
 ### Gates
-- `wasm-pack build/test` FAIL in the sandbox at the wasm-opt/binaryen
-  download (no proxy route to GitHub release assets). Cloud wasm gate =
-  `cargo check -p brink-web --target wasm32-unknown-unknown`; the full
-  wasm-pack legs are CI-only — say so in the PR body rather than skipping
-  silently.
+- ⚠ **CORRECTED 2026-08-13.** The previous rule here said `wasm-pack
+  build/test` FAIL in the sandbox because there is "no proxy route to GitHub
+  release assets", and degraded the cloud wasm gate to `cargo check -p
+  brink-web --target wasm32-unknown-unknown`. **The diagnosis was wrong.**
+  There IS a proxy route — `curl` fetches the 91MB binaryen asset fine. The
+  actual cause is narrower: wasm-pack's *internal* downloader honors neither
+  `HTTPS_PROXY` nor the custom CA bundle, and binaryen/wasm-opt is the ONLY
+  thing it fetches that way (crates.io and wasm-bindgen-cli both succeed).
+  Pre-seed `wasm-opt` on PATH — `scripts/setup-dev.sh` now does — and
+  wasm-pack logs `found wasm-opt at …`, skips its own download, and the FULL
+  gate passes (verified end-to-end: `wasm-pack build crates/brink-web
+  --target web --out-dir www/pkg` → "Done in 3m 19s").
+- So the cloud wasm gate is the REAL one, not a degraded check. Run
+  `scripts/setup-dev.sh` first; don't claim the wasm legs are CI-only.
+- ⚠ `cargo nextest` is NOT preinstalled in a cloud container and
+  `setup-dev.sh` did not install it until 2026-08-13. The pump's GATE is
+  `cargo nextest run --workspace`; run `scripts/setup-dev.sh` before the
+  first wave or every agent's gate command is missing.
 - Oracle/corpus gates run fine; expect the first cold build to take minutes.
 
 ### Liveness & events
