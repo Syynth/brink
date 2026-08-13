@@ -46,22 +46,40 @@ rustup show
 
 # --- wasm-pack ---------------------------------------------------------------
 
-WASM_PACK_VERSION="v0.14.0" # keep in sync with .github/workflows/ci.yml
+# The wasm-pack version CI installs — the `version:` input to
+# jetli/wasm-pack-action in .github/workflows/ci.yml (the action itself is
+# pinned at v0.4.0; don't confuse the two). Keep in sync.
+WASM_PACK_VERSION="v0.14.0"
 
 CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
 
-if command -v wasm-pack >/dev/null 2>&1; then
+# ⚠ Fetch the PINNED release tarball, never the upstream `init.sh` installer:
+# init.sh serves whatever it considers latest (observed: 0.13.1), which would
+# silently leave local wasm-pack on a different version than CI builds with.
+wasm_pack_ok() {
+  command -v wasm-pack >/dev/null 2>&1 &&
+    [ "$(wasm-pack --version 2>/dev/null | awk '{print $2}')" = "${WASM_PACK_VERSION#v}" ]
+}
+
+if wasm_pack_ok; then
   echo "==> wasm-pack already installed ($(wasm-pack --version))"
 else
-  echo "==> Installing wasm-pack ${WASM_PACK_VERSION}"
-  # Prefer the upstream prebuilt-binary installer; fall back to building from
-  # source if it can't be reached (sandboxed networks sometimes block the
-  # GitHub release assets it fetches).
-  if ! curl --proto '=https' --tlsv1.2 -sSf \
-      https://rustwasm.github.io/wasm-pack/installer/init.sh | sh; then
-    echo "==> Prebuilt wasm-pack unavailable; building from source"
-    cargo install wasm-pack --version "${WASM_PACK_VERSION#v}" --locked
+  if command -v wasm-pack >/dev/null 2>&1; then
+    echo "==> wasm-pack present but not ${WASM_PACK_VERSION} ($(wasm-pack --version)) — replacing"
   fi
+  echo "==> Installing wasm-pack ${WASM_PACK_VERSION}"
+  mkdir -p "${CARGO_BIN}"
+  WP_TARBALL="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+  WP_URL="https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/${WP_TARBALL}.tar.gz"
+  WP_TMP="$(mktemp -d)"
+  if curl --proto '=https' --tlsv1.2 -sSfL "${WP_URL}" | tar zxf - -C "${WP_TMP}" 2>/dev/null &&
+     install -m 0755 "${WP_TMP}/${WP_TARBALL}/wasm-pack" "${CARGO_BIN}/wasm-pack"; then
+    echo "==> Installed prebuilt $(wasm-pack --version)"
+  else
+    echo "==> Prebuilt wasm-pack unavailable; building ${WASM_PACK_VERSION} from source"
+    cargo install wasm-pack --version "${WASM_PACK_VERSION#v}" --locked --force
+  fi
+  rm -rf "${WP_TMP}"
 fi
 
 # --- cargo-nextest -----------------------------------------------------------
@@ -81,15 +99,21 @@ else
   fi
 fi
 
-# --- cargo-deny --------------------------------------------------------------
+# --- cargo-deny (opt-in) -----------------------------------------------------
 # Mirrors the cargo-deny CI job so advisory/license breaks surface locally.
-# Non-fatal: a dev environment is still usable without it.
+# OPT-IN because it has no prebuilt binary and compiles from source in ~2m —
+# real latency when this script runs at every cloud-session start, for a gate
+# CI already enforces on every PR. Set BRINK_SETUP_FULL=1 to include it.
 
-if command -v cargo-deny >/dev/null 2>&1; then
-  echo "==> cargo-deny already installed ($(cargo deny --version 2>/dev/null | head -n1))"
+if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
+  if command -v cargo-deny >/dev/null 2>&1; then
+    echo "==> cargo-deny already installed ($(cargo deny --version 2>/dev/null | head -n1))"
+  else
+    echo "==> Installing cargo-deny (BRINK_SETUP_FULL=1; ~2m from source)"
+    cargo install cargo-deny --locked || echo "==> cargo-deny install failed; skipping"
+  fi
 else
-  echo "==> Installing cargo-deny (non-fatal if it fails)"
-  cargo install cargo-deny --locked || echo "==> cargo-deny install failed; skipping"
+  echo "==> Skipping cargo-deny (set BRINK_SETUP_FULL=1 to install; CI gates it anyway)"
 fi
 
 # --- pnpm (via corepack) -----------------------------------------------------
