@@ -163,6 +163,16 @@ export class OverlayPersistence {
    *
    * A path whose write REJECTS is not re-baselined — it stays dirty, the
    * error routes to `onError("canonical")`, and the next save retries it.
+   *
+   * A path whose buffer changed AFTER its content was snapshotted for
+   * writing — the write is awaited per path, so a later edit (to this path
+   * or while a later path in the same batch is still being written) can
+   * land before `markFilesSaved` runs — is also not re-baselined: `saveDirty`
+   * re-reads the session immediately before that call and only carries
+   * forward paths whose current content still matches what was actually
+   * written (issue #2417; same discipline as the `writeStaged` fix in
+   * PR #2412). Otherwise the path would be marked clean against content
+   * that was never persisted to disk.
    */
   saveAll(): Promise<string[]> {
     return this.enqueue(() => this.saveDirty(this.session.dirtyPaths()));
@@ -193,17 +203,23 @@ export class OverlayPersistence {
   private async saveDirty(paths: string[]): Promise<string[]> {
     if (this.disposed || paths.length === 0) return [];
     const files = this.session.getFiles();
-    const saved: string[] = [];
+    const written = new Map<string, string>();
     for (const path of paths) {
       const content = files[path];
       if (content === undefined) continue; // vanished; nothing to write
       try {
         await this.canonical.write(path, content);
-        saved.push(path);
+        written.set(path, content);
       } catch (e: unknown) {
         this.onError?.(e, "canonical");
       }
     }
+    // Re-check immediately before re-baselining: a path whose buffer moved
+    // on since its content was written (an edit landed mid-write, or while
+    // a later path in this same batch was still being awaited) must stay
+    // dirty — its new content was never persisted (#2417).
+    const current = this.session.getFiles();
+    const saved = [...written.keys()].filter((path) => current[path] === written.get(path));
     if (saved.length > 0) this.session.markFilesSaved(saved);
     this.arm(); // restart the autosave countdown after any save
     return saved;

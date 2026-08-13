@@ -272,6 +272,54 @@ describe("OverlayPersistence", () => {
     p.dispose();
   });
 
+  it("does not falsely mark a path clean when an edit lands mid-write (review, #2417)", async () => {
+    // #2412 review, "Scope gaps": saveDirty snapshots session.getFiles() up
+    // front, but markFilesSaved re-baselines each path to whatever content
+    // is CURRENT at completion time — not to the content that was actually
+    // written. An edit landing mid-write must not be baselined away.
+    const session = fakeSession({ "a.ink": "v0" });
+    session.edit("a.ink", "v1");
+    const writes: string[] = [];
+    let releaseWrite: (() => void) | undefined;
+    let wroteFirst = false;
+    const p = new OverlayPersistence({
+      session,
+      canonical: {
+        write: (_path, content) => {
+          writes.push(content);
+          if (!wroteFirst) {
+            wroteFirst = true;
+            return new Promise<void>((resolve) => {
+              releaseWrite = resolve;
+            });
+          }
+          return Promise.resolve();
+        },
+      },
+    });
+
+    const firstSave = p.saveAll();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A new edit arrives while the v1 write is still in flight.
+    session.edit("a.ink", "v2");
+
+    releaseWrite?.();
+    const saved = await firstSave;
+
+    // v1 was written to disk; v2 is what the buffer actually holds now.
+    // The path must stay dirty — v2 was never persisted.
+    expect(saved).toEqual([]);
+    expect(session.dirtyPaths()).toEqual(["a.ink"]);
+
+    // A later save must still pick up and write v2.
+    expect(await p.saveAll()).toEqual(["a.ink"]);
+    expect(writes).toEqual(["v1", "v2"]);
+    expect(session.dirtyPaths()).toEqual([]);
+    p.dispose();
+  });
+
   it("a failed ring append routes onError('backup') and never throws", () => {
     const session = fakeSession({});
     const errors: string[] = [];
