@@ -25,10 +25,11 @@
  *   of racing writes to the same file.
  * - **`onExternalChange` is a real fs watcher** (shell `start_watch`,
  *   debounced + filtered): events forward into `ProjectSession`'s #320
- *   never-clobber machinery, with self-write AND self-delete suppression
- *   (#2404) so our own canonical writes and deletions never masquerade as
- *   external changes (which, for a deletion, would also wrongly drop the
- *   pending "deleted" egress record a host mirror relies on).
+ *   never-clobber machinery, with self-write, self-delete (#2404), and
+ *   self-rename (#2416) suppression so our own canonical writes, deletions,
+ *   and renames never masquerade as external changes (which, for a deletion
+ *   or a rename's old-path echo, would also wrongly drop the pending
+ *   "deleted"/"created" egress record a host mirror relies on).
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -58,6 +59,18 @@ export class TauriFileProvider implements FileProvider {
    * stale marker.
    */
   private selfDeletes = new Set<string>();
+  /**
+   * Paths this provider itself just created as the destination of a
+   * `renameFile` (#2416): the native `rename_file` command is atomic and
+   * carries no content, so unlike `selfWrites` there is nothing to compare
+   * against — a path is enough. The rename's watcher echo shows up as a
+   * creation event for `newPath` (mirroring `selfDeletes`'s reasoning for
+   * `oldPath`'s deletion echo), and without this marker `onExternalChange`
+   * would call `applyExternal(newPath, content)`, wiping the pending
+   * "created" egress record `renameFile`'s own `changes.record` just staged.
+   * Consumed the moment its echo is swallowed, exactly like `selfDeletes`.
+   */
+  private selfCreates = new Set<string>();
   /**
    * Serializes `requestSave` (#2403): without this, the 2-minute autosave
    * ticker and a `saveAll` (including the quit-time call) can overlap on
@@ -126,7 +139,27 @@ export class TauriFileProvider implements FileProvider {
       this.staged.delete(oldPath);
       this.staged.set(newPath, stagedContent);
     }
-    await invoke("rename_file", { root: this.root, from: oldPath, to: newPath });
+    // Arm markers for BOTH sides before the invoke (#2416, the same
+    // disarm-on-rejection discipline PR #2412 added for `deleteFile`): the
+    // native rename is atomic and produces two watcher echoes — a deletion
+    // for `oldPath` and a creation for `newPath` — either of which would
+    // otherwise reach `onExternalChange` and wipe the "deleted"/"created"
+    // egress records `ProjectSession.renameFile` is about to record.
+    this.selfWrites.delete(oldPath);
+    this.selfDeletes.add(oldPath);
+    // A stale delete marker for `newPath` (e.g. this exact path was deleted
+    // and never echoed back) must not swallow the rename's creation echo.
+    this.selfDeletes.delete(newPath);
+    this.selfCreates.add(newPath);
+    try {
+      await invoke("rename_file", { root: this.root, from: oldPath, to: newPath });
+    } catch (e) {
+      // A failed rename must not leave either marker permanently armed,
+      // silently swallowing the next genuine external change to either path.
+      this.selfDeletes.delete(oldPath);
+      this.selfCreates.delete(newPath);
+      throw e;
+    }
   }
 
   /**
@@ -197,11 +230,13 @@ export class TauriFileProvider implements FileProvider {
         const { path, content } = event.payload;
         if (content === null) {
           if (this.selfDeletes.delete(path)) {
-            return; // our own deleteFile() echoing back (#2404)
+            return; // our own deleteFile() or renameFile()'s old-path echoing back (#2404/#2416)
           }
         } else if (this.selfWrites.get(path) === content) {
           this.selfWrites.delete(path);
           return; // our own canonical write echoing back
+        } else if (this.selfCreates.delete(path)) {
+          return; // our own renameFile()'s new-path creation echoing back (#2416)
         }
         callback(path, content);
       },
