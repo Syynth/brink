@@ -58,8 +58,24 @@ export function registerFileCommands(
         // a host save (the standalone playground) the synchronous
         // flush-and-re-baseline path is byte-identical to before.
         if (project.hasHostSave()) {
+          const before = project.getFiles()[path];
           void project.save([path]).then(
             () => {
+              // Re-check immediately before re-baselining: an edit landing
+              // on `path` while the host write was in flight persisted
+              // `before`, not whatever is current now — marking it clean
+              // here would retire a stage the write never wrote (issue
+              // #2426; same discipline as `OverlayPersistence.saveDirty`,
+              // PR #2420). Leave it dirty for the next save instead.
+              const current = project.getFiles()[path];
+              if (current !== before) {
+                notify({
+                  severity: "warning",
+                  source: "file",
+                  message: `${path} changed while saving — still unsaved`,
+                });
+                return;
+              }
               project.markFilesSaved([path]);
               notify({ severity: "info", source: "file", message: `Saved ${path}` });
             },
@@ -87,19 +103,40 @@ export function registerFileCommands(
         documents.flushAll();
         const dirty = project.dirtyPaths();
         project.flushFileChanges();
-        const done = (): void =>
+        const report = (savedCount: number): void =>
           notify({
             severity: "info",
             source: "file",
             message:
-              dirty.length === 0 ? "No unsaved changes" : `Saved ${plural(dirty.length, "file")}`,
+              savedCount === 0 ? "No unsaved changes" : `Saved ${plural(savedCount, "file")}`,
           });
-        // Same host-save branch as `file.save` — see the comment there.
+        // Same host-save branch as `file.save` — see the comment there. The
+        // write covers the whole batch at once, so re-baselining must
+        // re-check EACH path individually immediately before
+        // `markFilesSaved`: a path that moved on while the write was in
+        // flight was never persisted with its new content and must stay
+        // dirty — `markAllSaved` would retire it against unwritten content
+        // (issue #2426; same discipline as `OverlayPersistence.saveDirty`,
+        // PR #2420). `markAllSaved` itself is only safe on the no-host-save
+        // (synchronous) path below, where nothing could have moved on.
         if (project.hasHostSave()) {
+          const before = project.getFiles();
           void project.save().then(
             () => {
-              project.markAllSaved();
-              done();
+              const current = project.getFiles();
+              const saved = dirty.filter((path) => current[path] === before[path]);
+              const stale = dirty.length - saved.length;
+              if (saved.length > 0) project.markFilesSaved(saved);
+              if (stale > 0) {
+                notify({
+                  severity: "warning",
+                  source: "file",
+                  message: `${plural(stale, "file")} changed while saving — still unsaved`,
+                });
+              }
+              // Skip the redundant "No unsaved changes" notice when the
+              // warning above already explains why nothing was saved.
+              if (saved.length > 0 || stale === 0) report(saved.length);
             },
             (e: unknown) => {
               notify({
@@ -111,7 +148,7 @@ export function registerFileCommands(
           );
         } else {
           project.markAllSaved();
-          done();
+          report(dirty.length);
         }
       },
     }),
