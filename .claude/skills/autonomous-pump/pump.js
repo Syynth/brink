@@ -77,7 +77,7 @@ Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine �
       prDiff: (pr) => `\`mcp__github__pull_request_read\` (method "get_diff") on PR ${pr}`,
       prView: (pr) => `\`mcp__github__pull_request_read\` (method "get") on PR ${pr} — the head branch is \`head.ref\``,
       prComment: (pr, what) => `post ${what} with \`mcp__github__add_issue_comment\` on PR ${pr} (PRs accept issue comments)`,
-      prMerge: (pr) => `\`mcp__github__merge_pull_request\` on PR ${pr} (merge_method "merge")`,
+      prMerge: (pr) => `ARM AUTO-MERGE with \`mcp__github__enable_pr_auto_merge\` on PR ${pr} (mergeMethod "MERGE"). ⚠ Do NOT call \`mcp__github__merge_pull_request\` — see LANDING POLICY below`,
       issueList: (extra) => `\`mcp__github__list_issues\`${extra ? ` (${extra})` : ""}`,
       // Cloud permission layer can PARK a subagent's privileged call with no
       // human watching. Parked is recoverable state — but only if it is durable.
@@ -91,7 +91,7 @@ Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine �
       prDiff: (pr) => `\`gh pr diff ${pr} --repo ${REPO}\``,
       prView: (pr) => `\`gh pr view ${pr} --repo ${REPO} --json headRefName -q .headRefName\``,
       prComment: (pr, what) => `post ${what}: \`gh pr comment ${pr} --repo ${REPO} --body "…"\``,
-      prMerge: (pr) => `\`gh pr merge ${pr} --repo ${REPO} --merge --delete-branch\` (detach first so local branch deletion can't fail)`,
+      prMerge: (pr) => `ARM AUTO-MERGE: \`gh pr merge ${pr} --repo ${REPO} --merge --auto --delete-branch\` (detach first so local branch deletion can't fail). ⚠ Never the non---auto form — see LANDING POLICY below`,
       issueList: (extra) => `\`gh issue list --repo ${REPO}${extra ? ` ${extra}` : ""}\``,
       parkNote: ``,
     };
@@ -118,6 +118,31 @@ const DISK = `PRE-FLIGHT: run \`df -h /\` FIRST — if free space is under 15GiB
 const TRAIN_WT = "/tmp/pump-merge-train-FILL-UNIQUE-SUFFIX";
 const TRAIN_SETUP = `TRAIN WORKTREE — MANDATORY STEP 0, before ANY other git command: your shell starts in the USER'S ACTIVE worktree; running checkout/reset/merge there DESTROYS their in-progress work (this has happened MORE THAN ONCE — cd alone has proven insufficient because shell state resets between Bash calls). RULES: (1) \`cd ${TRAIN_WT}\` first (if absent, create it with \`git worktree add ${TRAIN_WT} --detach origin/main\` from the primary checkout, then cd); (2) EVERY git command you run for the rest of this task MUST be spelled \`git -C ${TRAIN_WT} …\` — the -C flag is not optional, even right after a cd, even for status/log; a bare \`git checkout\` in the wrong cwd is how user work gets destroyed; (3) non-git commands (pnpm, gh) must be prefixed with \`cd ${TRAIN_WT} && \` in the same Bash invocation. Start clean: \`git -C ${TRAIN_WT} fetch origin --quiet && git -C ${TRAIN_WT} checkout --detach origin/main && git -C ${TRAIN_WT} reset --hard && git -C ${TRAIN_WT} clean -fd\`. node_modules persists across train stops — that's the point.
 ⚠ ${TRAIN_WT} is the ONLY worktree you may use. NEVER use, cd into, or run git against ANY path under .claude/worktrees/ or any other "already provisioned" worktree you discover — those are the USER'S live sessions (an agent that migrated to one hijacked a dev server mid-drive and left it detached). If ${TRAIN_WT} looks contended or its state looks wrong (unexpected branch tip, files missing after a merge), do NOT relocate: re-verify against the PR head SHA via gh, recreate ${TRAIN_WT} from scratch, or return merged:false with the reason. After ANY merge, verify the PR's changed files are all present in the tree (git -C ${TRAIN_WT} diff --stat origin/main) before gating — a raced checkout can drop files with no conflict marker.`;
+
+// LANDING POLICY (ruled 2026-08-13, after w148) — folded into every train
+// prompt because prompts are the only part agents obey.
+//
+// Agents ARM AUTO-MERGE; they never merge directly. Two failures forced this,
+// both in w148's single wave:
+//   1. A fix agent called merge_pull_request on PR #2412 while the full CI run
+//      (Static checks, Test, E2E) was still IN PROGRESS. It landed green by
+//      luck, not by design — the local gate is not the required checks.
+//   2. The safety classifier BLOCKED the sibling fix agent from merging #2413
+//      at all, reading an agent self-merge of its own review fixes as lacking
+//      the required sign-off. A blocked landing strands finished work.
+// Arming auto-merge fixes both: GitHub lands the PR only once required checks
+// pass, and no agent issues a merge.
+//
+// ⚠ THE COST, and it is a KNOWN one: "auto-merge armed" is NOT "landed". The
+// repo has already lost two PRs (#1659, #1666) to exactly this — auto-merge
+// armed on a PR that later conflicted, leaving the work LOOKING landed while
+// its issue stayed open, surfaced only by an audit. So `merged: true` from a
+// train agent now means "armed or already merged", NOT "in main". The retro is
+// what closes this hole: it must verify each PR's ACTUAL state and report an
+// armed-but-unlanded PR as NOT merged.
+const LANDING_POLICY = `LANDING POLICY — ARM AUTO-MERGE, NEVER MERGE DIRECTLY. Do not call \`mcp__github__merge_pull_request\` / \`gh pr merge\` without \`--auto\` under any circumstances, even if the PR looks green and even if your local gate passed. Your local gate is NOT the repository's required checks: a fix agent merged PR #2412 while its full CI run was still in progress and got away with it only by luck, and the safety classifier blocked a sibling agent's direct merge outright, stranding finished work. Arm auto-merge and let GitHub land it when required checks pass.
+⚠ REPORT HONESTLY: \`merged: true\` means "auto-merge ARMED or already landed" — it does NOT mean the commit is in main. Say WHICH in \`detail\`. Never claim a PR landed on the strength of having armed it: this repo has already LOST two PRs (#1659, #1666) to auto-merge that armed, later conflicted, and left work looking landed while its issue stayed open.
+If arming fails because the PR is already mergeable-and-clean, or the repo has auto-merge disabled, do NOT fall back to a direct merge — leave the PR open, say so in \`detail\`, and return merged:false so a human lands it.`;
 
 const gateFor = (b) => `${CACHE} && ${b.gate ?? GATE}`;
 const effortFor = (b) => (b.lane === "light" ? "medium" : "high");
@@ -168,7 +193,13 @@ const SCOPE = {
 };
 const MERGE = {
   type: "object", additionalProperties: false, required: ["pr", "merged", "detail"],
-  properties: { pr: { type: "string" }, merged: { type: "boolean" }, detail: { type: "string" } },
+  properties: {
+    pr: { type: "string" },
+    // ⚠ "armed or landed", NOT "in main" — see LANDING_POLICY. The retro
+    // verifies the real state; never treat this as proof the commit landed.
+    merged: { type: "boolean" },
+    detail: { type: "string", description: "must state explicitly whether auto-merge was ARMED or the PR is already LANDED, plus conflicts/gate counts, or the park reason" },
+  },
 };
 const LESSONS = {
   type: "object", additionalProperties: false, required: ["lessons"],
@@ -238,6 +269,7 @@ ALWAYS ${GH.prComment(build.pr, "your verdict as ONE comment")} — decision, fi
       ? () => agent(`Land PR ${base.build.pr} (${closesLine(b)}) onto main of ${REPO}. Built off main in parallel; main has since advanced. ${CONV}
 ${TRAIN_SETUP}${CLOUD_DISK}
 ${GH.pre}
+${LANDING_POLICY}
 ${GH.parkNote}
 STEPS: 1. Resolve the PR's head branch: ${GH.prView(base.build.pr)}. In the train worktree: \`git fetch origin --quiet && git checkout -B train-pr origin/<headRef>\`. 2. \`git merge origin/main\` — combine ADDITIVE conflicts (registry/index appends: keep ALL entries; keep both wirings). ⚠ diff3/union conflict styles can duplicate or drop closing braces and adjacent lines when combining — after resolving, recheck brace balance and that BOTH sides' entries survived; the gate is the arbiter. If untangleable, \`git merge --abort\` + merged:false. 3. Run the GATE to GREEN: \`${gateFor(b)}\`. Fix semantic conflicts. 4. ${GH.prDiff(base.build.pr)} sanity-check. 5. If green + MERGEABLE: \`git push origin train-pr:<headRef>\`, \`git checkout --detach origin/main\`, then ${GH.prMerge(base.build.pr)}. Else leave open + comment + merged:false. NOTEWORTHY-ONLY comment rule (durable-by-default, decision 2026-07-18): if the landing involved anything a future bisect would want — conflict resolutions, semantic fixes, files verified after a raced checkout — post ONE PR comment describing it; routine clean merges stay SILENT (no noise).
 Return {pr, merged, detail (conflicts + gate counts + result, or park reason)}.`,
@@ -245,6 +277,7 @@ Return {pr, merged, detail (conflicts + gate counts + result, or park reason)}.`
       : () => agent(`Fix the review-blocking issues in PR ${base.build.pr} (${closesLine(b)}) of ${REPO}, then land it. The PR is otherwise good; apply the reviewer's SPECIFIC fixes only. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 ${TRAIN_SETUP}${CLOUD_DISK}
 ${GH.pre}
+${LANDING_POLICY}
 ${GH.parkNote}
 REVIEWER FINDINGS — these ARE the adversarial review's verdict. They ride this workflow and are NOT posted on GitHub, so an empty \`gh api .../reviews\` or \`.../comments\` result means NOTHING — never treat it as evidence the findings aren't real (this dismissal has let a real stack-corruption bug merge). Treat each finding as authoritative and apply it. Skip an INDIVIDUAL finding only if it references files/lines absent from this PR's diff (a misattributed finding), and list every skipped finding with its reason in your report:\n- ${(base.verdict.findings ?? []).join("\n- ")}
 STEPS: resolve the head branch (${GH.prView(base.build.pr)}); in the train worktree, \`git checkout -B train-fix origin/<headRef>\`; merge origin/main (combine; recheck brace balance per the diff3 caveat); apply ONLY the findings' fixes + tests that guard them; GATE to GREEN: \`${gateFor(b)}\`; commit (end with "${TRAILER}") + push back to the PR branch; THEN ${GH.prComment(base.build.pr, "ONE disposition comment")} tying commits to findings — which findings you applied and which you skipped with the misattribution reason (durable-by-default rule); if MERGEABLE, detach then ${GH.prMerge(base.build.pr)}. If a finding needs a human decision (scope split, design call), DON'T guess — leave the PR open, comment, and report merged:false with what's needed.
@@ -312,7 +345,8 @@ ${scopeSignals.length ? scopeSignals.map((s) => "- " + s).join("\n") : "(none re
 For EACH item, compare DELIVERED against REQUESTED and land the difference somewhere real:
 - **Delivered the whole fence and the PR merged** — close the issue if it is still open.
 - **Delivered less than the fence** (the PR says "Part of", or the review/scope notes name a missing piece) — the remainder is INVISIBLE unless you record it. Comment on the issue with what shipped, what is left, and what blocks it, and file the follow-on issue (or name the existing one that covers it). A "Part of" with an untracked remainder reads exactly like "not started" — that is how six issues in one month ended up with state that lied about the code.
-- **PR did not merge** — say why in one line: conflict, auto-merge armed but never completed, or review parked it. An auto-merge that arms and then conflicts leaves work LOOKING landed while its issue stays open; that has silently lost two PRs here.
+- **PR did not merge** — say why in one line: conflict, auto-merge armed but never completed, or review parked it. An auto-merge that arms and then conflicts leaves work LOOKING landed while its issue stays open; that has silently lost two PRs here (#1659, #1666).
+- ⚠ **VERIFY EVERY LANDING YOURSELF — do not trust the table above.** Since 2026-08-13 train agents ARM auto-merge rather than merging, so a \`MERGED\` row means "armed or landed", NOT "in main". For EVERY item, read the PR's real state now (${GH.prView("<pr>")}: \`merged\`/\`state\`) and report what you actually read. An armed-but-unlanded PR is NOT merged: leave its issue OPEN, say it is waiting on required checks, and flag it for the next wave to re-check. This verification is the ONLY thing standing between the arm-auto-merge policy and the exact #1659/#1666 loss it re-introduces.
 - **The build found the premise already false** (already implemented, already ruled) — verify the delivering PR, comment naming it, and close the issue if nothing remains. Reporting it only to the pump means the next wave rediscovers it at the cost of another build agent.
 - **Something this wave ruled or shipped supersedes a DIFFERENT open issue's premise** — update that issue too. A ruling that lands only in a doc leaves the tracker lying.
 - **The item NEVER RAN** (agent died mid-flight) — say so plainly and recommend a re-queue. Do NOT report the wave as scope-held on the strength of items that never executed; absence of a result is absence of evidence, not evidence of health.\n- **Genuinely new work no existing issue covers** — file it, after deduping against the board (${GH.issueList(MILESTONE ? `milestone "${MILESTONE}", state all` : "")}; read the roadmap/plan doc if the repo has one).
