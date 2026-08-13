@@ -84,6 +84,16 @@ CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
 
+Drift appeared (#2402: `src-tauri`'s `Cargo.toml` declares `edition =
+"2021"`, but nothing pinned `rustfmt` to match, so it silently inherited the
+root `rustfmt.toml`'s `edition = "2024"` and drifted uncaught). The
+non-required smoke job now exists: `.github/workflows/desktop-smoke.yml`,
+covering `cargo check`/`clippy` and `cargo test` in `src-tauri/` (still its
+own excluded workspace — the job's cargo commands run with cwd inside it,
+never from the repo root), `tsc --noEmit`, and `pnpm build` for the desktop
+package. It is deliberately **not** in branch protection's required-checks
+list, per the ruling above.
+
 ## Menus
 
 Generated from the studio's **command registry**, per

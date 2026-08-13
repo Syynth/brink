@@ -1,0 +1,14 @@
+# src-tauri is its OWN cargo workspace, excluded from the root one
+# (docs/desktop-shell-spec.md "Workspace placement") — so it does not
+# inherit the root rustfmt.toml's `edition = "2024"` by intent, only by
+# rustfmt's upward directory search finding no closer config. That silent
+# inheritance is exactly the drift #2402 found: this crate's own
+# Cargo.toml declares `edition = "2021"`, but nothing pinned rustfmt to
+# match it, so `cargo fmt --all -- --check` here quietly used 2024-edition
+# formatting rules against 2021-edition code.
+#
+# Pinning 2021 here (matching Cargo.toml) is a formatting-only fix. Bumping
+# this crate to edition 2024 to match root is a compiler-semantics change
+# outside a CI-coverage issue's fence and is not needed to stop the drift
+# (#2402).
+edition = "2021"
