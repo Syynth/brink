@@ -103,8 +103,21 @@ export class TauriFileProvider implements FileProvider {
 
   async deleteFile(path: string): Promise<void> {
     this.staged.delete(path);
+    // A save immediately followed by a delete coalesces shell-side into one
+    // `deleted` event — the write marker would never otherwise be consumed,
+    // wrongly suppressing a later external re-creation with identical
+    // content (#2404 review).
+    this.selfWrites.delete(path);
     this.selfDeletes.add(path);
-    await invoke("delete_file", { root: this.root, rel: path });
+    try {
+      await invoke("delete_file", { root: this.root, rel: path });
+    } catch (e) {
+      // A failed delete must not leave a permanently armed marker that
+      // silently swallows the next genuine external deletion of this path
+      // (#2404 review).
+      this.selfDeletes.delete(path);
+      throw e;
+    }
   }
 
   async renameFile(oldPath: string, newPath: string): Promise<void> {
@@ -144,7 +157,12 @@ export class TauriFileProvider implements FileProvider {
     for (const [rel, content] of pending) {
       this.selfWrites.set(rel, content);
       await invoke("write_file", { root: this.root, rel, content });
-      this.staged.delete(rel);
+      // Only drop the staged entry if it still matches what we just wrote —
+      // an edit staged while this write was in flight must survive so the
+      // next requestSave() picks it up (#2403 review).
+      if (this.staged.get(rel) === content) {
+        this.staged.delete(rel);
+      }
     }
   }
 

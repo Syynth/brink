@@ -78,6 +78,45 @@ describe("TauriFileProvider.requestSave serialization (#2403)", () => {
     // one write for the file happened, not a duplicate racing write.
     expect(invokeCalls.filter((c) => c.cmd === "write_file")).toHaveLength(1);
   });
+
+  it("does not discard an edit staged while its own write was in flight (review)", async () => {
+    // #2412 review: writeStaged() unconditionally deleted the staged entry
+    // after its await, so an edit staged DURING the in-flight write (e.g.
+    // onFileChanged racing the write's resolution) was discarded even though
+    // it was never actually persisted — the file goes clean on disk with
+    // stale content while the buffer that superseded it is silently lost.
+    let releaseFirstWrite: (() => void) | undefined;
+    let firstWriteStarted = false;
+    const writes: unknown[] = [];
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "write_file") {
+        writes.push(args?.["content"]);
+        if (!firstWriteStarted) {
+          firstWriteStarted = true;
+          return new Promise<void>((resolve) => {
+            releaseFirstWrite = resolve;
+          });
+        }
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    provider.onFileChanged("scene.brink", "v1");
+    const firstSave = provider.requestSave();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A new edit arrives while the v1 write is still in flight.
+    provider.onFileChanged("scene.brink", "v2");
+
+    releaseFirstWrite?.();
+    await firstSave;
+
+    // v2 must still be staged — a later requestSave() must write it.
+    await provider.requestSave();
+    expect(writes).toEqual(["v1", "v2"]);
+  });
 });
 
 describe("TauriFileProvider watcher self-delete suppression (#2404)", () => {
@@ -192,5 +231,62 @@ describe("TauriFileProvider watcher self-delete suppression (#2404)", () => {
     watcher.get()({ payload: { path: "scene.brink", content: "someone else's edit" } });
 
     expect(seen).toEqual([{ path: "scene.brink", content: "someone else's edit" }]);
+  });
+
+  it("disarms the self-delete marker when delete_file rejects (review)", async () => {
+    // #2412 review: deleteFile() armed selfDeletes BEFORE the await and
+    // never disarmed it on rejection — a failed delete left a permanently
+    // armed marker that would silently swallow the NEXT genuine external
+    // deletion of that path.
+    const watcher = captureWatcherCallback();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "delete_file") return Promise.reject(new Error("permission denied"));
+      return Promise.resolve(undefined);
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(provider.deleteFile("scene.brink")).rejects.toThrow("permission denied");
+
+    // A later, genuine external deletion of the same path must still forward
+    // — the marker must not have stayed armed after the failed delete.
+    watcher.get()({ payload: { path: "scene.brink", content: null } });
+    expect(seen).toEqual([{ path: "scene.brink", content: null }]);
+  });
+
+  it("clears a stale self-write marker on delete so a later re-creation with identical content is not suppressed (review)", async () => {
+    // #2412 review: a save immediately followed by a delete coalesces
+    // shell-side into one `deleted` event, so the write marker set by the
+    // save is never consumed by its own echo — it lingers and wrongly
+    // suppresses a later, genuinely external re-creation with identical
+    // content.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    provider.onFileChanged("scene.brink", "hello");
+    await provider.requestSave();
+    await provider.deleteFile("scene.brink");
+
+    // The coalesced shell event for save+delete arrives as a single
+    // deletion, consumed by the self-delete marker (not the stale
+    // self-write marker).
+    watcher.get()({ payload: { path: "scene.brink", content: null } });
+    expect(seen).toEqual([]);
+
+    // Someone else recreates the file with the exact same content the
+    // provider last wrote — this must forward as genuinely external, not be
+    // swallowed by a leftover self-write marker.
+    watcher.get()({ payload: { path: "scene.brink", content: "hello" } });
+    expect(seen).toEqual([{ path: "scene.brink", content: "hello" }]);
   });
 });
