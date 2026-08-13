@@ -43,6 +43,11 @@ jobs:
   desktop-smoke:
     name: Desktop smoke (check, clippy, tsc, build)
     runs-on: ubuntu-latest
+    # Three heavy builds (wasm-pack, a brink-cli release build for the sidecar,
+    # and the Tauri graph) in a lane branch protection does NOT watch — a hang
+    # would burn the 6h default unnoticed. ci.yml sets the same kind of backstop
+    # on its long poles (fuzz: 30, determinism-law: 10).
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -102,23 +107,34 @@ jobs:
       # src-tauri is its OWN cargo workspace (excluded from root, per
       # docs/desktop-shell-spec.md "Workspace placement") — every cargo
       # command below runs with cwd inside it, never from the repo root.
+      #
+      # ⚠ `--locked` on every cargo command below is load-bearing, not style:
+      # packages/brink-desktop/src-tauri/Cargo.lock is committed but has no
+      # staleness gate anywhere in CI. Without --locked, cargo silently
+      # refreshes a stale lock in-job and the run still exits 0 — the exact
+      # drift class this whole workflow exists to close. ci.yml already gates
+      # this for the repo's other workspace-excluded crates with committed
+      # lockfiles ("Verify fuzz crate lockfiles are not stale", #1396 gap 2 /
+      # #1386), and the JS half of this same job already uses
+      # `pnpm install --frozen-lockfile`. If --locked turns this lane red, that
+      # failure IS the drift: commit the refreshed lock.
       - name: Format check (src-tauri)
         run: cargo fmt --all -- --check
         working-directory: packages/brink-desktop/src-tauri
 
       - name: cargo check (src-tauri)
         if: '!cancelled()'
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
         working-directory: packages/brink-desktop/src-tauri
 
       - name: Clippy (src-tauri)
         if: '!cancelled()'
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: packages/brink-desktop/src-tauri
 
       - name: cargo test (src-tauri)
         if: '!cancelled()'
-        run: cargo test
+        run: cargo test --locked
         working-directory: packages/brink-desktop/src-tauri
 
       - name: Typecheck (tsc --noEmit)
