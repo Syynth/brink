@@ -168,7 +168,7 @@ struct ExternalChangeOut {
 }
 
 /// Project-relative key for an absolute path inside `root`, applying the
-/// same skip rules as `list_files` (dotdirs, node_modules, target, dist)
+/// same skip rules as `list_files` (dotdirs, `node_modules`, target, dist)
 /// and the same file filter. None ⇒ not a project file, ignore.
 fn watch_key(root: &Path, abs: &Path) -> Option<String> {
     let rel = abs.strip_prefix(root).ok()?;
@@ -269,7 +269,7 @@ struct BackupEntryIn {
 }
 
 /// Ring bounds — enforced HERE, next to the storage (the sink owns its
-/// bounds per the OverlayPersistence contract). Working defaults from the
+/// bounds per the `OverlayPersistence` contract). Working defaults from the
 /// 2026-08-07 ruling; a Settings surface can adjust later.
 const RING_MAX_ENTRIES: usize = 25;
 const RING_MAX_BYTES: u64 = 10 * 1024 * 1024;
@@ -328,7 +328,7 @@ async fn append_backups(
     // Prune: oldest first (lexicographic == chronological by construction).
     let mut files: Vec<(PathBuf, u64)> = std::fs::read_dir(&base)
         .map_err(|e| io_err(&base, e))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|e| {
             let meta = e.metadata().ok()?;
             meta.is_file().then(|| (e.path(), meta.len()))
@@ -551,6 +551,12 @@ struct PendingOpens(std::sync::Mutex<Option<Vec<String>>>);
 /// Called exactly once by `src/main.tsx` at startup; safe to call again
 /// (returns empty) but nothing else in the app does.
 #[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` only for `State<'_, T>` taken by value \
+              (tauri::state), so a command cannot declare `&State` — the by-value \
+              parameter is the command ABI, not an avoidable move."
+)]
 fn take_pending_opens(state: tauri::State<'_, PendingOpens>) -> Vec<String> {
     state
         .0
@@ -611,10 +617,11 @@ const RECENTS_MAX: usize = 10;
 /// The menu-id prefix for an Open Recent entry. Shared by `build_menu`
 /// (producer, `format!("{OPEN_RECENT_ID_PREFIX}{path}")`) and
 /// `on_menu_event` (consumer, `id.strip_prefix(OPEN_RECENT_ID_PREFIX)`) so
-/// the two can never drift out of sync — this crate has no CI at all
-/// (`docs/desktop-shell-spec.md`: "CI in v1: none required"), so a typo'd
-/// duplicate literal at either site would ship a silently inert menu behind
-/// a fully green required gate. See `open_recent_id_round_trips_posix_and_windows_paths`
+/// the two can never drift out of sync — this crate's only cargo coverage
+/// is the deliberately NON-required `.github/workflows/desktop-smoke.yml`
+/// lane (`docs/desktop-shell-spec.md` "Workspace placement"), so a typo'd
+/// duplicate literal at either site would still ship a silently inert menu
+/// behind a fully green *required* gate. See `open_recent_id_round_trips_posix_and_windows_paths`
 /// for the round-trip this prefix is expected to survive.
 const OPEN_RECENT_ID_PREFIX: &str = "open-recent:";
 
@@ -740,7 +747,7 @@ async fn project_root_exists(path: String) -> bool {
 /// the main thread free to pump its own events. (Observed live: the first
 /// D1 run hung inside the native dialog.) `async` commands run on the
 /// runtime's worker pool, where blocking on the dialog is the documented
-/// pattern; the plugin dispatches the actual NSOpenPanel to the main
+/// pattern; the plugin dispatches the actual `NSOpenPanel` to the main
 /// thread itself.
 #[tauri::command]
 async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
@@ -849,9 +856,11 @@ fn build_menu(
             })
             .collect::<tauri::Result<Vec<_>>>()?
     };
+    // Unsized coercion via the closure's return type rather than an `as`
+    // cast: `trivial_casts` (deny, repo-wide) rejects the cast spelling.
     let recent_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = recent_items
         .iter()
-        .map(|item| item as &dyn IsMenuItem<tauri::Wry>)
+        .map(|item| -> &dyn IsMenuItem<tauri::Wry> { item })
         .collect();
     let open_recent = Submenu::with_items(handle, "Open Recent", true, &recent_refs)?;
     let file_menu = Submenu::with_items(
@@ -886,8 +895,25 @@ fn build_menu(
     Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu])
 }
 
+/// Build and run the shell. Returns the builder's error rather than
+/// panicking on it (#2415): a failure here means the app cannot start at
+/// all, and `main` propagating it exits non-zero with the error printed by
+/// the standard `Termination` impl — strictly more useful than an
+/// `.expect()` abort, and it is the shape the repo-wide `expect_used` deny
+/// asks for now that this crate is finally covered by it.
+///
+/// (Under `mobile` the generated entry point calls this through
+/// `stop_unwind`, which is generic over the return type and discards it.)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+#[expect(
+    clippy::exit,
+    reason = "the flagged `process::exit(101)` is inside `tauri::generate_context!`'s \
+              own expansion — tauri-codegen's `inner()` fallback for a panicking \
+              context-creation thread — not code this crate writes. Unlike \
+              `expect_used`, `clippy::exit` does not suppress itself inside an \
+              external macro's expansion, so the site has to be silenced here."
+)]
+pub fn run() -> tauri::Result<()> {
     use tauri::Emitter;
 
     tauri::Builder::default()
@@ -943,8 +969,7 @@ pub fn run() {
             prune_recent,
             project_root_exists,
         ])
-        .build(tauri::generate_context!())
-        .expect("error while building brink-desktop")
+        .build(tauri::generate_context!())?
         .run(move |app_handle, event| {
             // File associations (#2393) only exist on macOS/iOS/Android —
             // `RunEvent::Opened` itself is cfg-gated out of the enum on
@@ -956,11 +981,106 @@ pub fn run() {
             }
             let _ = (app_handle, &event);
         });
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The repo root, three levels up from `src-tauri`
+    /// (`packages/brink-desktop/src-tauri`).
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+    }
+
+    /// The significant (non-comment, non-blank) lines of every table in
+    /// `manifest` whose header starts with `prefix`, with the prefix
+    /// normalized away so a `[workspace.lints.clippy]` block and a
+    /// `[lints.clippy]` block compare equal.
+    fn lint_table(manifest: &str, prefix: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                inside = line.starts_with(prefix);
+                if inside {
+                    out.push(format!("[{}", &line[prefix.len()..]));
+                }
+            } else if inside && !line.is_empty() && !line.starts_with('#') {
+                out.push(line.to_owned());
+            }
+        }
+        out
+    }
+
+    fn significant_lines(text: &str) -> Vec<String> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// This crate is its own cargo workspace (docs/desktop-shell-spec.md
+    /// "Workspace placement"), so `[lints] workspace = true` is unavailable
+    /// and its `[lints]` table is a hand-maintained COPY of root
+    /// `Cargo.toml`'s `[workspace.lints]` (#2415). A copy drifts silently —
+    /// this test is the only thing that notices when the root policy gains
+    /// or loses a lint and this crate's copy does not follow. Before #2415
+    /// there was no `[lints]` table here at all, so this test fails on that
+    /// state too.
+    #[test]
+    fn lint_policy_matches_the_root_workspace() {
+        let root_manifest = repo_root().join("Cargo.toml");
+        assert!(
+            root_manifest.is_file(),
+            "root manifest should exist at {root_manifest:?}"
+        );
+        let root = std::fs::read_to_string(&root_manifest)
+            .expect("just asserted the root manifest exists");
+        let mine =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+                .expect("this crate's own manifest is always readable from its own test");
+
+        let root_lints = lint_table(&root, "[workspace.lints");
+        let my_lints = lint_table(&mine, "[lints");
+        assert!(
+            !root_lints.is_empty(),
+            "root Cargo.toml should still declare [workspace.lints]"
+        );
+        assert_eq!(
+            my_lints, root_lints,
+            "src-tauri's [lints] table has drifted from root's [workspace.lints]"
+        );
+    }
+
+    /// Same drift class for the lint *configuration*: clippy searches for
+    /// `clippy.toml` no further up than the workspace root, and this crate
+    /// IS its own workspace root, so the repo root's test carve-outs
+    /// (`allow-unwrap-in-tests` and friends) never reach it either.
+    #[test]
+    fn clippy_config_matches_the_root_workspace() {
+        let root_config = repo_root().join("clippy.toml");
+        assert!(
+            root_config.is_file(),
+            "root clippy.toml should exist at {root_config:?}"
+        );
+        let root =
+            std::fs::read_to_string(&root_config).expect("just asserted the root config exists");
+        let my_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("clippy.toml");
+        assert!(
+            my_config.is_file(),
+            "src-tauri needs its own clippy.toml at {my_config:?} — the root one does not reach it"
+        );
+        let mine = std::fs::read_to_string(&my_config).expect("just asserted this config exists");
+        assert_eq!(
+            significant_lines(&mine),
+            significant_lines(&root),
+            "src-tauri's clippy.toml has drifted from the root one"
+        );
+    }
 
     #[test]
     fn resolve_rejects_escapes() {
@@ -1181,9 +1301,10 @@ mod tests {
     /// producer (`build_menu`'s `format!`) and consumer
     /// (`on_menu_event`'s `strip_prefix`) must agree on the exact prefix,
     /// including for a Windows-drive-letter-shaped path whose own `:`
-    /// could plausibly confuse a naive strip. This crate has zero CI
-    /// (`docs/desktop-shell-spec.md`: "CI in v1: none required"), so this
-    /// is the only thing guarding the two literals from drifting apart.
+    /// could plausibly confuse a naive strip. This crate's cargo gates run
+    /// only in the non-required `desktop-smoke.yml` lane
+    /// (`docs/desktop-shell-spec.md` "Workspace placement"), so this test is
+    /// the only thing guarding the two literals from drifting apart.
     #[test]
     fn open_recent_id_round_trips_posix_and_windows_paths() {
         for path in ["/Users/x/proj", r"C:\Users\x\proj"] {

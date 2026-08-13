@@ -1,0 +1,14 @@
+# Companion to this crate's `[lints]` table in Cargo.toml (#2415).
+#
+# clippy resolves `clippy.toml` from the package directory upwards only as
+# far as the workspace root — and this crate IS its own workspace root
+# (docs/desktop-shell-spec.md "Workspace placement"), so the repo root's
+# `clippy.toml` never applies here either. Duplicated to match it exactly.
+#
+# ⚠ Note what is NOT here: `panic` has no test carve-out anywhere in this
+# repo, by design. In tests, assert first and then `.expect("just asserted
+# above")` — never `unwrap_or_else(|| panic!(…))`.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
