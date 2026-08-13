@@ -80,6 +80,21 @@ required lanes for zero coverage benefit (the shell has almost no logic).
 Cost of exclusion: its dep versions are managed in its own `Cargo.toml`
 rather than the workspace table — acceptable for a leaf artifact.
 
+**Second cost, named late (#2415): lint policy does not cross the fence
+either.** A crate inherits `[workspace.lints]` only as a workspace *member*,
+and clippy stops searching for `clippy.toml` at the workspace root — which
+this crate is. So the repo-wide `unwrap_used`/`expect_used`/`panic`/`todo`/
+`print_stdout`/`print_stderr` denies and clippy pedantic had never once been
+applied here, and `desktop-smoke.yml`'s `cargo clippy -- -D warnings` was
+plain default clippy, not the repo's policy. The fix is duplication, since
+`[lints] workspace = true` needs a parent to inherit from: `src-tauri`
+carries its own `[lints]` table and its own `clippy.toml`, both byte-for-byte
+copies of the root ones. **Keep all four files in sync** — the two
+`*_matches_the_root_workspace` tests in `src/lib.rs` fail when either copy
+drifts, and are the only thing that notices. If a shared lint-defaults file
+is ever extracted, both sides should point at it and those tests should
+follow.
+
 CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
