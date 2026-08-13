@@ -60,8 +60,8 @@ anticipated implementation); every method maps directly:
 | `readFile` / `requestFile` | `fs.readTextFile` | `requestFile` returns null for paths outside the project root — never escape the opened folder |
 | `onFileChanged` | **buffer, don't write** | v1 keeps the studio's explicit-save model: dirty state lives in the editor; disk writes happen on `file.save`/`saveAll` via `requestSave`. Autosave is a later option, not a default |
 | `createFile` / `deleteFile` / `renameFile` | `fs.writeTextFile` / `remove` / `rename` | implement `renameFile` natively (atomic; the fallback create+delete loses nothing today but real fs deserves real rename) |
-| `onExternalChange` | fs watcher on the project root | debounce; deliver `null` on delete; unsubscribe on teardown per the contract. This lights up the #320 conflict → kept-buffer → merge surface with a *real* watcher for the first time |
-| `requestSave` | write all dirty buffers | the egress batch (`onFilesChanged`, #154) is the source of what to write |
+| `onExternalChange` | fs watcher on the project root | debounce; deliver `null` on delete; unsubscribe on teardown per the contract. This lights up the #320 conflict → kept-buffer → merge surface with a *real* watcher for the first time. A `null` payload is **not always external**: `deleteFile`'s own write-through echoes back through the watcher too, so self-write suppression (content match) and self-delete suppression (a consumed-once `selfDeletes` marker keyed by path, #2404) both run before a payload reaches the callback — only what survives both is forwarded as genuinely external |
+| `requestSave` | write staged content | the `staged` map fed by `onFileChanged` (D2 overlay model) is the source of what to write — the #154 egress batch feeds the backup ring instead, orthogonal to dirty. Calls are serialized (#2403): an overlapping caller (the autosave ticker, a quit-time `saveAll`) queues behind whatever write is already in flight rather than racing it against the same `staged` snapshot |
 
 Path discipline: provider keys are project-relative with `/` separators
 (the studio's convention); the provider owns the mapping to absolute OS

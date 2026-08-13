@@ -20,11 +20,15 @@
  * - **`requestSave` is THE canonical write**: the save commands await it
  *   (⌘S narrowed to the focused path, saveAll/autosave unnarrowed) and
  *   only re-baseline on success — a rejected write stays staged and dirty
- *   for retry.
+ *   for retry. Calls are serialized (#2403) so an autosave tick and a
+ *   saveAll (including the quit-time call) queue behind each other instead
+ *   of racing writes to the same file.
  * - **`onExternalChange` is a real fs watcher** (shell `start_watch`,
  *   debounced + filtered): events forward into `ProjectSession`'s #320
- *   never-clobber machinery, with self-write suppression so our own
- *   canonical writes never masquerade as conflicts.
+ *   never-clobber machinery, with self-write AND self-delete suppression
+ *   (#2404) so our own canonical writes and deletions never masquerade as
+ *   external changes (which, for a deletion, would also wrongly drop the
+ *   pending "deleted" egress record a host mirror relies on).
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -43,6 +47,32 @@ export class TauriFileProvider implements FileProvider {
    * swallowed; anything else is genuinely external.
    */
   private selfWrites = new Map<string, string>();
+  /**
+   * Paths this provider itself just deleted, for watcher self-delete
+   * suppression (#2404): `deleteFile` writes through to disk, which triggers
+   * an fs event for the same deletion. Unlike a self-write there is no
+   * content to compare, so a path is enough — the first echoed deletion for
+   * a path we just deleted is ours; anything else is genuinely external. A
+   * path is consumed (removed) the moment its echo is swallowed, so a later,
+   * independent external deletion of the same path is not mistaken for a
+   * stale marker.
+   */
+  private selfDeletes = new Set<string>();
+  /**
+   * Serializes `requestSave` (#2403): without this, the 2-minute autosave
+   * ticker and a `saveAll` (including the quit-time call) can overlap on
+   * `staged` and race each other's writes to the same file — one call's
+   * snapshot-then-clear of `staged` interleaving with another's. Mirrors
+   * `OverlayPersistence`'s `enqueue` (`packages/ink-editor/src/persistence.ts`):
+   * each call chains behind the last so overlapping callers queue instead of
+   * racing. Desktop doesn't route through `OverlayPersistence` itself — saves
+   * are driven by the studio's `file.save`/`file.saveAll` commands calling
+   * `provider.requestSave` directly (see `main.tsx`), so the minimal fix is
+   * the same serialization primitive applied at this provider's own save
+   * entry point, rather than restructuring desktop's save wiring around a
+   * coordinator it doesn't otherwise use.
+   */
+  private saving: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly root: string) {}
 
@@ -73,7 +103,21 @@ export class TauriFileProvider implements FileProvider {
 
   async deleteFile(path: string): Promise<void> {
     this.staged.delete(path);
-    await invoke("delete_file", { root: this.root, rel: path });
+    // A save immediately followed by a delete coalesces shell-side into one
+    // `deleted` event — the write marker would never otherwise be consumed,
+    // wrongly suppressing a later external re-creation with identical
+    // content (#2404 review).
+    this.selfWrites.delete(path);
+    this.selfDeletes.add(path);
+    try {
+      await invoke("delete_file", { root: this.root, rel: path });
+    } catch (e) {
+      // A failed delete must not leave a permanently armed marker that
+      // silently swallows the next genuine external deletion of this path
+      // (#2404 review).
+      this.selfDeletes.delete(path);
+      throw e;
+    }
   }
 
   async renameFile(oldPath: string, newPath: string): Promise<void> {
@@ -92,8 +136,20 @@ export class TauriFileProvider implements FileProvider {
    * A staged entry is only dropped once its write succeeded — a rejected
    * write stays staged, the command reports the error, and the file stays
    * dirty for retry.
+   *
+   * Serialized (#2403): the 2-minute autosave ticker and a `saveAll`
+   * (including the quit-time call, PR #2382) both call this, and without
+   * serialization their snapshot-then-clear of `staged` can interleave and
+   * race each other's writes to the same file. Each call is queued behind
+   * the previous one via {@link enqueueSave}, exactly like
+   * `OverlayPersistence.enqueue` — so overlapping callers run one after the
+   * other against a consistent `staged` snapshot instead of racing.
    */
   async requestSave(paths?: string[]): Promise<void> {
+    return this.enqueueSave(() => this.writeStaged(paths));
+  }
+
+  private async writeStaged(paths?: string[]): Promise<void> {
     const wanted = paths === undefined ? null : new Set(paths);
     const pending = [...this.staged.entries()].filter(
       ([rel]) => wanted === null || wanted.has(rel),
@@ -101,8 +157,27 @@ export class TauriFileProvider implements FileProvider {
     for (const [rel, content] of pending) {
       this.selfWrites.set(rel, content);
       await invoke("write_file", { root: this.root, rel, content });
-      this.staged.delete(rel);
+      // Only drop the staged entry if it still matches what we just wrote —
+      // an edit staged while this write was in flight must survive so the
+      // next requestSave() picks it up (#2403 review).
+      if (this.staged.get(rel) === content) {
+        this.staged.delete(rel);
+      }
     }
+  }
+
+  /**
+   * Chain `work` behind whatever `requestSave` call (if any) is already in
+   * flight, so overlapping callers queue rather than race. Mirrors
+   * `OverlayPersistence.enqueue` (`packages/ink-editor/src/persistence.ts`):
+   * a rejected save must not wedge the queue for the next caller, so the
+   * chain link swallows its own rejection while still propagating it to the
+   * caller that issued it.
+   */
+  private enqueueSave<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.saving.then(work, work);
+    this.saving = next.catch(() => undefined);
+    return next;
   }
 
   /**
@@ -120,7 +195,11 @@ export class TauriFileProvider implements FileProvider {
       (event) => {
         if (!live) return;
         const { path, content } = event.payload;
-        if (content !== null && this.selfWrites.get(path) === content) {
+        if (content === null) {
+          if (this.selfDeletes.delete(path)) {
+            return; // our own deleteFile() echoing back (#2404)
+          }
+        } else if (this.selfWrites.get(path) === content) {
           this.selfWrites.delete(path);
           return; // our own canonical write echoing back
         }
