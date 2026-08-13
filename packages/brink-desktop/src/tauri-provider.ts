@@ -121,6 +121,12 @@ export class TauriFileProvider implements FileProvider {
     // wrongly suppressing a later external re-creation with identical
     // content (#2404 review).
     this.selfWrites.delete(path);
+    // A stale self-create marker for this exact path (e.g. it was the
+    // destination of a rename whose creation echo never arrived before this
+    // delete) must not linger armed once this delete's own echo consumes a
+    // *different* marker — at most one marker stays armed per path (#2421
+    // review).
+    this.selfCreates.delete(path);
     this.selfDeletes.add(path);
     try {
       await invoke("delete_file", { root: this.root, rel: path });
@@ -146,10 +152,21 @@ export class TauriFileProvider implements FileProvider {
     // otherwise reach `onExternalChange` and wipe the "deleted"/"created"
     // egress records `ProjectSession.renameFile` is about to record.
     this.selfWrites.delete(oldPath);
+    // A stale self-create marker for `oldPath` (e.g. it was itself a rename
+    // destination whose creation echo never arrived before becoming the
+    // source of this rename) must not linger armed alongside the marker
+    // this rename is about to set — at most one marker stays armed per path
+    // (#2421 review).
+    this.selfCreates.delete(oldPath);
     this.selfDeletes.add(oldPath);
     // A stale delete marker for `newPath` (e.g. this exact path was deleted
     // and never echoed back) must not swallow the rename's creation echo.
     this.selfDeletes.delete(newPath);
+    // Likewise a stale self-write marker for `newPath` (e.g. an earlier save
+    // to this path whose echo never arrived) must not linger armed
+    // alongside the self-create marker below — same one-marker-per-path
+    // discipline (#2421 review).
+    this.selfWrites.delete(newPath);
     this.selfCreates.add(newPath);
     try {
       await invoke("rename_file", { root: this.root, from: oldPath, to: newPath });
@@ -228,15 +245,32 @@ export class TauriFileProvider implements FileProvider {
       (event) => {
         if (!live) return;
         const { path, content } = event.payload;
+        let suppressed = false;
         if (content === null) {
           if (this.selfDeletes.delete(path)) {
-            return; // our own deleteFile() or renameFile()'s old-path echoing back (#2404/#2416)
+            suppressed = true; // our own deleteFile() or renameFile()'s old-path echoing back (#2404/#2416)
           }
         } else if (this.selfWrites.get(path) === content) {
           this.selfWrites.delete(path);
-          return; // our own canonical write echoing back
+          suppressed = true; // our own canonical write echoing back
         } else if (this.selfCreates.delete(path)) {
-          return; // our own renameFile()'s new-path creation echoing back (#2416)
+          suppressed = true; // our own renameFile()'s new-path creation echoing back (#2416)
+        }
+        if (suppressed) {
+          // The shell coalesces multiple events for the same path within one
+          // debounce window into a single flushed event, so a path can pick
+          // up a second marker before the first echoes back (e.g. rename A→B
+          // then requestSave(B) inside the same window arms both selfCreates
+          // and selfWrites for B, but only one B event ever arrives). Clear
+          // all three markers for this path once any one of them consumes
+          // the event, so a now-stale leftover marker can't later swallow a
+          // genuinely external change at this path (#2421 review; a no-op
+          // for the common, non-coalesced case since the other markers are
+          // already unset).
+          this.selfWrites.delete(path);
+          this.selfDeletes.delete(path);
+          this.selfCreates.delete(path);
+          return;
         }
         callback(path, content);
       },

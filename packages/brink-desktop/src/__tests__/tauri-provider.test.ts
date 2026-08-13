@@ -440,4 +440,68 @@ describe("TauriFileProvider watcher self-rename suppression (#2416)", () => {
     watcher.get()({ payload: { path: "new.brink", content: null } });
     expect(seen).toEqual([{ path: "new.brink", content: null }]);
   });
+
+  it("does not leave a stale self-create marker armed when a save at the rename destination coalesces with the rename echo (review)", async () => {
+    // #2421 review: `start_watch` accumulates paths in a `BTreeSet` and
+    // flushes after 300ms of quiet, reading content once at flush time — at
+    // most ONE event per path per window. A rename A→B (arms selfDeletes(A),
+    // selfCreates(B)) followed by a requestSave(B) (arms selfWrites(B))
+    // inside the same quiet window produces a single B event carrying the
+    // saved content. Before the fix, the self-write branch consumed only
+    // `selfWrites`, leaving `selfCreates(B)` permanently armed to silently
+    // swallow the NEXT genuinely external change at B.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink"); // arms selfDeletes(old), selfCreates(new)
+    provider.onFileChanged("new.brink", "v2");
+    await provider.requestSave(); // arms selfWrites(new) = "v2"
+
+    // Only ONE coalesced event for "new.brink" arrives — the save's content —
+    // matching the shell's per-path, once-per-window flush.
+    watcher.get()({ payload: { path: "new.brink", content: "v2" } });
+    expect(seen).toEqual([]); // suppressed as our own save echo
+
+    // A later, genuinely external change at the same path must still
+    // forward — proving the coalesced-away `selfCreates("new.brink")`
+    // marker did not silently survive to swallow it.
+    watcher.get()({ payload: { path: "new.brink", content: "someone else's edit" } });
+    expect(seen).toEqual([{ path: "new.brink", content: "someone else's edit" }]);
+  });
+
+  it("does not leave a stale self-create marker armed when a delete at the rename destination coalesces with the rename echo (review)", async () => {
+    // #2421 review, second window: rename A→B (arms selfDeletes(A),
+    // selfCreates(B)) followed by deleteFile(B) inside the same quiet window
+    // (arms selfDeletes(B)) produces a single B(null) event. Before the fix,
+    // the self-delete branch consumed only `selfDeletes`, leaving
+    // `selfCreates(B)` permanently armed to silently swallow the next
+    // genuinely external re-creation at B.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink"); // arms selfDeletes(old), selfCreates(new)
+    await provider.deleteFile("new.brink"); // arms selfDeletes(new)
+
+    // Only ONE coalesced event for "new.brink" arrives — the deletion.
+    watcher.get()({ payload: { path: "new.brink", content: null } });
+    expect(seen).toEqual([]); // suppressed as our own delete echo
+
+    // A later, genuinely external re-creation at the same path must still
+    // forward — proving the coalesced-away `selfCreates("new.brink")`
+    // marker did not silently survive to swallow it.
+    watcher.get()({ payload: { path: "new.brink", content: "someone else's content" } });
+    expect(seen).toEqual([{ path: "new.brink", content: "someone else's content" }]);
+  });
 });
