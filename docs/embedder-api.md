@@ -100,14 +100,23 @@ type FileChange = {
   immediately; `file.saveAll` ("File: Save All") does it for every dirty
   file. Without an `onFilesChanged` hook both still flush internally,
   clear dirty state, and raise an info notification ("Saved main.ink") —
-  they never error in the standalone playground. Dispatchable as
+  they never error in the standalone playground. With a host save in
+  flight (the overlay contract, `requestSave`; docs/desktop-shell-spec.md
+  line 64), a path edited while its write is still in flight stays dirty
+  instead of being re-baselined against the old content the write
+  actually persisted (issue #2426) — the command raises a "…changed while
+  saving — still unsaved" warning notification for it, and `file.saveAll`'s
+  "Saved N files" count reflects only the verified subset. Dispatchable as
   `api.dispatch("file.save")` (ids exported as `FILE_SAVE_COMMAND_ID` /
   `FILE_SAVE_ALL_COMMAND_ID`).
 - **Dirty state.** `StudioPublicState.dirtyFiles` is the count of files
   whose session content diverges from the *baseline* — the content last
-  loaded from the host (mount `files`, external changes) or last
-  synced to it (an `onFilesChanged` delivery, or an explicit save). Use it
-  to warn before `unmount()`/reload would discard edits. Per-file detail is
+  loaded from the host (mount `files`, external changes) or last synced to
+  it. A path only re-baselines when a save's write is confirmed to have
+  persisted that path's current content; a path that changed while its
+  host write was still in flight is not synced by that save and keeps
+  contributing to the count (issue #2426). Use it to warn before
+  `unmount()`/reload would discard edits. Per-file detail is
   `api.getDirtyFiles(): string[]`. File contents deliberately never enter
   `StudioPublicState` (they are big and change per keystroke — the
   reference-stability contract); use the push/pull surfaces above.

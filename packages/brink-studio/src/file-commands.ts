@@ -5,7 +5,11 @@
  * session immediately — bypassing both the editor's compile debounce and
  * the egress debounce — and delivers every pending change notification to
  * the host (`onFilesChanged`) right away. `file.saveAll` does the same for
- * every mounted view and re-baselines the whole project.
+ * every mounted view. With a host save in flight (the overlay contract),
+ * both commands re-baseline only the paths whose content still matches
+ * what was actually written — a path that moved on mid-write stays dirty
+ * (issue #2426) — so `file.saveAll` re-baselines the verified subset of
+ * the pre-save dirty set, not unconditionally every non-mounted file.
  *
  * Both commands work without a host hook (the standalone playground):
  * the internal flush still happens, dirty state clears, and an info
