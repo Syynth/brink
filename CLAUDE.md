@@ -2,7 +2,12 @@
 
 ## What we're building
 
-A custom Ink language compiler, runtime, and studio in Rust. The compiler pipeline: `.ink` source → parse (`brink-syntax`) → HIR lower (`brink-ir::hir`) → analyze (`brink-analyzer`) → LIR lower (`brink-ir::lir`) → bytecode codegen (`brink-codegen-inkb`) → `StoryData` (`brink-format`) → link + execute (`brink-runtime`).
+A narrative language, compiler, runtime, and studio in Rust — with **two source surfaces sharing one pipeline**:
+
+- **`.brink` — the native surface** (`brink-syntax-native`): the language the project is actually building. Modules, typed mode, conventions/prose-dialect, structs, lambdas.
+- **`.ink` — the compatibility surface** (`brink-syntax`): Inkle's ink, maintained so existing stories keep working.
+
+Both parse to their own CST, then converge: → HIR lower (`brink-ir::hir`) → analyze (`brink-analyzer`) → LIR lower (`brink-ir::lir`) → bytecode codegen (`brink-codegen-inkb`) → `StoryData` (`brink-format`) → link + execute (`brink-runtime`). Above that sits the **authoring stack**: `brink-ide`/`brink-db` (queries), `brink-web` (wasm), the TypeScript editor packages, and **brink-desktop** (Tauri).
 
 A parallel **converter** pipeline (`.ink.json` → `brink-json` → `brink-converter` → `StoryData`) served as the known-good reference until it was retired (2026-07-11 ruling, #544). Correctness is anchored by the C# ink oracle; `.ink.json` files stay on disk only as inklecate output for oracle regeneration — nothing in-tree consumes them.
 
@@ -43,9 +48,20 @@ These are standing values, not situational rules. They apply to all work on this
 - **Guard against unbounded growth.** Any loop that accumulates data must have a limit. The VM has a step limit. `continue_maximally` has a line limit. If a new accumulation pattern appears, add a cap.
 - **Correctness above all.** The goal is not to make numbers go up. A fix that makes the ratchet go down because it removes a hack that was accidentally passing tests is better than a hack that inflates the count. A correct fix to the wrong layer is worse than no fix.
 
-## Compiler conformance workflow
+## Workflows
 
-When working on compiler bugs (making failing episodes pass), follow this process:
+### Native surface + authoring (the primary track)
+
+Most work lands here. The discipline that matters:
+
+1. **Rulings before implementation.** Language/UX semantics are the maintainer's call — check `docs/decision-log.md` for an existing ruling before designing; if the issue body asks a design question, decline and surface it rather than deciding.
+2. **Both roads.** Editor behavior has two analysis paths — the db-direct road (`ProjectDb`, what the studio's Problems panel renders) and the off-db snapshot road (`IdeSnapshot::analyze`). A change can be correct on one and wrong on the other; exercise both, and remember a green `brink compile` is NOT evidence the editor agrees.
+3. **The editor acceptance gate is the invariant** (`crates/brink-web/src/editor/acceptance_gate.rs`) — extend it when new behavior is ruled; never weaken it.
+4. **Verify through a real consumer.** Rust-level tests over a real `EditorSession`, not a browser screenshot: the playground has silently lied before (it once never applied `brink.toml` at all, #2324).
+
+### Ink-compat conformance (secondary — see "Current state")
+
+When working an oracle mismatch (making failing episodes pass):
 
 1. **Run the corpus report** to identify highest-impact categories.
 2. **Sample 3–5 failing cases**, study the diagnostic dumps (`.ink` source, compiler `.inkt`, oracle episodes).
@@ -160,6 +176,29 @@ INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
 cargo test -p brink-test-harness --test t2_ground_truth_effects --features effect-trace -- --nocapture
 ```
 
+Native surface + authoring:
+
+```sh
+# Editor acceptance gate — ratchet-equivalent standing for the editor path
+cargo test -p brink-web --lib acceptance_gate::
+
+# Native goldens (self-referential; NOT part of the oracle ratchet)
+cargo test -p brink-test-harness --test tier1_native
+cargo test -p brink-test-harness --test tier1_native_strict   # strict-findings baseline
+
+# Compile-road divergence guard (compile_path vs brink_environment::compile)
+cargo test -p brink-test-harness --test environment_parallel_gate
+
+# Frontend
+pnpm --filter @brink-lang/studio test          # vitest (the largest suite)
+pnpm --filter @brink/desktop test              # desktop shell (needs the wasm pkg built)
+wasm-pack build crates/brink-web --target web --out-dir www/pkg   # rebuild wasm the frontend serves
+
+# Desktop (packages/brink-desktop — src-tauri is workspace-EXCLUDED, run its gates directly)
+pnpm --filter @brink/desktop dev                # preflights wasm freshness, then vite
+cd packages/brink-desktop/src-tauri && cargo test
+```
+
 ## Crate layout
 
 | Crate | Path | Purpose |
@@ -175,6 +214,36 @@ cargo test -p brink-test-harness --test t2_ground_truth_effects --features effec
 | `bevy-brink` | `crates/bevy-brink/` | Bevy 0.19 integration: plugin, assets, components, external-function bindings |
 | `bevy-brink-derive` | `crates/internal/bevy-brink-derive/` | `#[derive(BrinkCommand)]` proc-macro for ink→engine command events |
 
+**Native surface + authoring** (the crates the current work lives in):
+
+| Crate | Path | Purpose |
+|-------|------|---------|
+| `brink-syntax-native` | `crates/internal/brink-syntax-native/` | **The `.brink` lexer/parser/CST** — the native surface |
+| `brink-db` | `crates/internal/brink-db/` | Salsa query graph: the db-direct analysis road |
+| `brink-ide` | `crates/internal/brink-ide/` | IDE queries (hover, completion, symbols, folding, semantic tokens, explain-match) |
+| `brink-web` | `crates/brink-web/` | wasm bindings — `EditorSession`; hosts the **editor acceptance gate** |
+| `brink-lsp` | `crates/brink-lsp/` | Language server |
+| `brink-cli` | `crates/brink-cli/` | `brink` binary: compile, play, ide, fmt, xliff/locale |
+| `brink-driver` | `crates/internal/brink-driver/` | Pipeline orchestration |
+| `brink-environment` | `crates/internal/brink-environment/` | The determinism boundary; `Project::load`, the mounted `std/` |
+| `brink-project-config` | `crates/internal/brink-project-config/` | `brink.toml` schema (`[project] entry`/`conventions`, `[lints]`) |
+| `brink-source-tree` | `crates/internal/brink-source-tree/` | Source-tree abstraction |
+| `brink-fmt` | `crates/internal/brink-fmt/` | Formatter |
+| `brink-respell` | `crates/internal/brink-respell/` | ink → `.brink` re-emitter |
+| `brink-intl` / `xliff2` | `crates/internal/` | Localization: line tables, XLIFF |
+
+**TypeScript packages** (`packages/`, pnpm workspace):
+
+| Package | Published as | Purpose |
+|---------|--------------|---------|
+| `ink-editor` | `@brink-lang/editor` | CM6 editor, `ProjectSession`, `FileProvider`, `OverlayPersistence` |
+| `brink-studio` | `@brink-lang/studio` | `mountStudio` — the embeddable studio + playground (`?fixture=native`) |
+| `wasm` | `@brink-lang/web` | TS wrapper over the wasm bindings |
+| `wasm-types` | *(private)* | Hand-maintained TS mirrors of Rust wire shapes |
+| `studio-shell` / `studio-ui` / `studio-store` | *(private)* | Shell regions + commands, components, state |
+| `ink-operations` | *(private)* | Structural editing ops |
+| `brink-desktop` | *(private)* | **Tauri desktop studio** — `src-tauri` is its OWN cargo workspace, deliberately excluded from the root one (`docs/desktop-shell-spec.md`) |
+
 Per-area specs live in `docs/` (`compiler-spec.md`, `runtime-spec.md`, `format-spec.md`, `bevy-brink.md`, `intl-spec.md`, …).
 
 ## Rules
@@ -182,7 +251,7 @@ Per-area specs live in `docs/` (`compiler-spec.md`, `runtime-spec.md`, `format-s
 - **Flag silent data drops.** If a lowering pass silently drops data without a diagnostic, flag it immediately. Silent drops are always bugs until proven otherwise.
 - **VM tests must not hang.** The runtime VM can infinite-loop on malformed bytecode. All VM tests and episode exploration use step limits. If a test hangs, it's a bug — do not increase timeouts, fix the root cause.
 - **Dependencies** use `dep.workspace = true`. Versions in root `Cargo.toml`.
-- **Lints:** `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are denied. Clippy pedantic is on. Tests are exempt via `clippy.toml`.
+- **Lints:** `unsafe_code`, `unwrap_used`, `expect_used`, `panic`, `todo`, `print_stdout`, `print_stderr` are denied. Clippy pedantic is on. `clippy.toml` exempts tests for `unwrap_used`/`expect_used`/`dbg_macro`/`print_*` — but **`panic` has NO test carve-out**. A `panic!` or `unwrap_or_else(|| panic!(…))` in a test *helper* fails the required Static-checks gate (it cost two CI failures on 2026-08-07 alone). Use `assert!(cond, "msg {var:?}")` then `.expect("just asserted above")`.
 - **Determinism matters.** Never iterate `HashMap` keys/values where order affects output. Sort or use `BTreeMap`. We've been burned by this — see analyzer label lookup, db file ordering, the retired converter's list items.
 - **Commit after every fix.** Do not accumulate changes. Each fix is one commit. This makes bisecting easy and keeps the history clean.
 - **Wasm-observable behavior needs a changeset.** Any PR (crates-only included) changing behavior observable through `@brink-lang/web` carries a `@brink-lang/web` patch changeset (decision 2026-07-11).
