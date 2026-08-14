@@ -358,7 +358,10 @@ fn gate_project_wide_symbols_reach_completions() {
 /// `line_context::tests::native_block_comment_uses_the_native_cst`), which
 /// discriminate the CST arm in isolation; this test and its `mod.rs` sibling
 /// (`native_folding_ranges_reach_the_native_cst_path`) only pin that the
-/// wasm-facing entry point reaches the native path without erroring.
+/// wasm-facing entry point reaches the native path without erroring. A third
+/// near-duplicate of this caveat guards line-context routing rather than
+/// folding: `spans.rs`'s `native_line_contexts_reach_the_native_cst_path`
+/// (#2471) — keep all three in sync if the reasoning changes.
 #[test]
 fn gate_folding_decodes_onto_real_native_line_numbers() {
     let mut s = gate_session();

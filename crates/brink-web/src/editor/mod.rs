@@ -3254,6 +3254,14 @@ mod tests {
         assert!(has_narrative_run, "{ranges}");
     }
 
+    // #2471: this is the CANONICAL statement of the reachability caveat
+    // referenced from `acceptance_gate.rs`'s
+    // `gate_folding_decodes_onto_real_native_line_numbers` and from
+    // `spans.rs`'s `native_line_contexts_reach_the_native_cst_path` — this
+    // test lives in `crate::editor::tests` (this `mod tests` block, in this
+    // file), NOT in the sibling `folding` submodule (`editor/folding.rs`,
+    // declared at the top of this file); update all three pointers together
+    // if this test moves or its scope note changes.
     #[test]
     fn native_folding_ranges_reach_the_native_cst_path() {
         // #2291: `folding_ranges()` on a native (`.brink`) file must route
