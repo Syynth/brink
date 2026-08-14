@@ -438,7 +438,7 @@ pub struct WorkspaceSymbol {
 
 ### Line context
 
-Per-line structural context for the editor's screenplay mode. Produced by `line_contexts()`, this replaces the regex-based `classifyLine` in TypeScript with authoritative data from the HIR and parse tree.
+Per-line structural context for the editor's screenplay mode. Produced by `line_contexts()`, this replaces the regex-based `classifyLine` in TypeScript with authoritative data from the HIR and parse tree. For native `.brink` files, line context (including block-comment spans) is computed from the native CST (`syntax_root_native`) rather than the ink-only `syntax_root`.
 
 ```rust
 /// Per-line context combining syntactic classification, structural position,
@@ -510,6 +510,8 @@ pub enum WeaveElement {
 `LineElement` and `WeavePosition` are orthogonal. A line classified as `LineElement::Narrative` can have `WeaveElement::TopLevel` (plain narrative in a knot body), `WeaveElement::ChoiceBody` (narrative after a choice), or `WeaveElement::GatherContinuation` (narrative after a gather). The editor uses `LineElement` for visual styling (font, sigil treatment) and `WeavePosition` for structural operations (depth indentation, transition table, status bar display).
 
 ### Folding
+
+Fold ranges and machinery/narrative fold-run classification for code-folding UI. For native `.brink` files, folding (including block-comment region detection) is computed from the native CST (`syntax_root_native`) rather than the ink-only `syntax_root`.
 
 ```rust
 pub enum FoldKind {
