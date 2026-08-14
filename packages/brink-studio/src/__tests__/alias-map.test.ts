@@ -23,7 +23,9 @@
  *
  * This does NOT replace the cross-package guard: that one pins the
  * relationship between the desktop shell's map and these copies, which is a
- * different invariant (`docs/desktop-shell-spec.md` § "Alias-map parity").
+ * different invariant (`docs/desktop-shell-spec.md` § "Alias map parity with
+ * the playground" (#2450)). This file's own invariant is recorded in
+ * `docs/brink-studio-spec.md` § "One alias map, owned by this package".
  *
  * A missing alias is silent rather than red — the specifier falls back to the
  * workspace symlink and a `dist/` that `pnpm install` does not build — so an
@@ -35,7 +37,6 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   BRINK_WEB_TEST_MOCK,
-  DTS_ROLLUP_EXCLUDES,
   DTS_ROLLUP_TSCONFIG,
   STUDIO_PACKAGE_ALIASES,
   STUDIO_WASM_ALIASES,
@@ -59,6 +60,7 @@ type AliasMap = Record<string, string>;
 /** The subset of a vite/vitest config this guard reads. */
 interface AliasConfig {
   readonly resolve?: { readonly alias?: unknown };
+  readonly build?: { readonly rollupOptions?: { readonly external?: unknown } };
 }
 
 /**
@@ -125,12 +127,19 @@ describe("studio alias map", () => {
 
   it("keeps the wasm pair off the library build, which externalizes @brink-lang/web", () => {
     // An unconditional wasm alias here would inline the @brink-lang/web
-    // wrapper into the published bundle despite rollupOptions.external.
+    // wrapper into the published bundle despite rollupOptions.external — so
+    // this checks both sides of that claim, not just the alias absence:
+    // removing "@brink-lang/web" from rollupOptions.external would leave the
+    // alias assertions below green while the published bundle started
+    // inlining the wrapper.
     const lib = aliasesOf(studioVite, "build");
     expect(lib).toEqual(studioPackageAliases(packageRoot));
     for (const specifier of Object.keys(STUDIO_WASM_ALIASES)) {
       expect(Object.keys(lib), specifier).not.toContain(specifier);
     }
+    const external = configOf(studioVite, "build").build?.rollupOptions?.external;
+    expect(external, "build.rollupOptions.external must be present").toBeDefined();
+    expect(external).toContain("@brink-lang/web");
   });
 
   it("applies the wasm pair unconditionally in the embed app build", () => {
@@ -163,12 +172,14 @@ describe("studio alias map", () => {
   });
 
   it("tsconfig.build.json drops exactly the wasm pair from the d.ts rollup", () => {
+    // A second assertion re-deriving the dropped set from DTS_ROLLUP_EXCLUDES
+    // would be vacuous: that constant is Object.keys(STUDIO_WASM_ALIASES) by
+    // construction, and studioBuildTsconfigPaths() is built from the
+    // disjoint STUDIO_PACKAGE_ALIASES — the two partition the specifier set
+    // by definition, so no mutation of the committed JSON could fail it
+    // without first failing the toEqual below.
     const paths = readTsconfigPaths(DTS_ROLLUP_TSCONFIG);
     expect(paths).toEqual(studioBuildTsconfigPaths());
-    const dropped = Object.keys(studioTsconfigPaths()).filter(
-      (specifier) => !(specifier in paths),
-    );
-    expect(dropped.sort()).toEqual([...DTS_ROLLUP_EXCLUDES].sort());
   });
 
   it("keeps tsup pointed at the rollup tsconfig that drops the wasm pair", () => {

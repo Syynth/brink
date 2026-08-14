@@ -38,8 +38,10 @@
 // (`packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts`),
 // which still compares these copies against the desktop shell's own map.
 // That guard pins the RELATIONSHIP between two packages; this one gives the
-// studio ownership of its own five copies. The invariant is recorded in
-// `docs/desktop-shell-spec.md` § "Alias-map parity".
+// studio ownership of its own five copies. This invariant is recorded in
+// `docs/brink-studio-spec.md` § "One alias map, owned by this package"; the
+// cross-package one is `docs/desktop-shell-spec.md` § "Alias map parity with
+// the playground" (#2450).
 
 import { resolve } from "path";
 

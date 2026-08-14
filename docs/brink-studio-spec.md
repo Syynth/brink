@@ -157,6 +157,17 @@ covers them, and `pnpm --filter @brink-lang/studio typecheck` runs both. Its
 against the directory listing, so a config module added later cannot quietly
 go unchecked.
 
+`src/__tests__/alias-map.test.ts`'s "resolves every alias to a target that
+exists on disk" case runs `existsSync` over `studioWasmAliases()` and
+`studioTsconfigPaths()`, which include `crates/brink-web/www/pkg` — the
+gitignored `wasm-pack` output. This package's unit suite therefore now needs
+that build present (`wasm-pack build crates/brink-web --target web --out-dir
+www/pkg`, see "Cloud / fresh-environment sessions" in `CLAUDE.md`) even
+though `brink-web` is mocked under vitest and `@brink-lang/web` resolves to
+source — the alias-map guard checks the target paths the map declares, not
+just the paths the test run itself resolves through. CI is unaffected: the
+frontend job builds wasm before running any package's tests.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:
