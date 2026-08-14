@@ -153,10 +153,19 @@ export class TauriFileProvider implements FileProvider {
    * land. Staging alone would not do: under the D2 contract structural ops
    * are disk-immediate, and until some later edit dirtied the file a
    * `brink compile`/CLI reader going straight to disk would compile the
-   * pre-rewrite `INCLUDE` paths. The write goes through the same staged-write
-   * path as a save, so it queues behind any in-flight `requestSave` rather
-   * than racing it (#2403) and, if it fails, the content stays staged and
-   * dirty for the next save to retry.
+   * moved file's own pre-rewrite `INCLUDE` paths. This write closes that gap
+   * only for the moved file's own content — disk at `newPath` now agrees
+   * with the session. A referrer's rewritten `INCLUDE` (a file that pointed
+   * at `oldPath`) is a separate, ordinary edit that goes through
+   * `ProjectSession.applyEdit` → `onFileChanged` → {@link staged} and lands
+   * on disk only at the next `requestSave`, same as any other edit — so disk
+   * can still disagree with the session for those referrer files in the
+   * meantime. The write goes through the same staged-write path as a save,
+   * so it queues behind any in-flight `requestSave` rather than racing it
+   * (#2403) and, if it fails, the content stays in {@link staged} for the
+   * next save to retry (see that catch block below for what it does NOT
+   * change: this failure has no effect on studio dirty state, which was
+   * already true the moment `ProjectSession.renameFile` recorded the move).
    *
    * `newContent` is optional purely for signature compatibility with the
    * `FileProvider` contract; `ProjectSession` always supplies it.
@@ -198,8 +207,26 @@ export class TauriFileProvider implements FileProvider {
       // The move itself succeeded and the session already reflects it, so
       // rejecting here would leave `ProjectSession.renameFile` throwing past
       // its own "created"/"deleted" egress records for a rename that really
-      // did happen. The content stays staged instead — dirty, and retried by
-      // the next `requestSave`, exactly as a rejected save is.
+      // did happen. The content stays in `staged` instead, retried by the
+      // next `requestSave`, exactly as a rejected save is — this failure
+      // does not itself make the file "dirty": `ProjectSession.renameFile`'s
+      // `record(newPath, "created")` already set studio dirty state the
+      // moment the session updated, independent of whether this follow-up
+      // write ever lands. And "the next `requestSave`" means the next
+      // UNNARROWED one (the autosave ticker, `saveAll`) — a `file.save`
+      // narrowed to a different, currently-focused path leaves this entry
+      // in `staged` untouched, since `writeStaged` only writes the paths
+      // it's given.
+      //
+      // `writeStaged`'s own failure path already disarmed the self-write
+      // marker it armed (`disarmSelfWrite`), but the native rename already
+      // landed and its creation echo for `newPath` is still outstanding —
+      // carrying the pre-rewrite bytes the move put on disk, since this
+      // write never reached it. Re-arm the self-create marker so that echo
+      // is still suppressed instead of reaching `onExternalChange` and
+      // wiping the pending "created" egress record for a rename that really
+      // did happen (#2438 review).
+      this.armSelfCreate(newPath);
       console.error("[brink-desktop] rename content write failed", e);
     }
   }

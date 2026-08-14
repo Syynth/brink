@@ -616,3 +616,57 @@ describe("TauriFileProvider self-echo marker arming reconciliation (#2424)", () 
     expect(seen).toEqual([{ path: "scene.brink", content: "fresh" }]);
   });
 });
+
+describe("TauriFileProvider.renameFile's follow-up content write (#2425 3-argument form)", () => {
+  it("suppresses both the old-path deletion echo and the new-path creation echo once the content write succeeds", async () => {
+    // None of the existing rename tests pass a third `newContent` argument
+    // (#2438 review) — they all take the `newContent === undefined` early
+    // exit, so this is the first coverage of the watcher markers once the
+    // follow-up write actually runs.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink", "rewritten content");
+
+    watcher.get()({ payload: { path: "old.brink", content: null } });
+    watcher.get()({ payload: { path: "new.brink", content: "rewritten content" } });
+
+    expect(seen).toEqual([]);
+  });
+
+  it("re-arms the self-create marker for the destination path when the follow-up write rejects, so the still-outstanding rename creation echo is not mistaken for external (#2438 review)", async () => {
+    // The native rename itself succeeds — only the follow-up write of the
+    // rewritten content at `newPath` fails. `renameFile` swallows that
+    // rejection (the move already happened; see its own catch), but the
+    // rename's own creation echo for `newPath` is still outstanding and now
+    // carries the PRE-rewrite bytes the move put on disk, since the write
+    // that would have overwritten them never landed. Before the fix,
+    // `writeStaged`'s failure path disarmed the self-write marker it had
+    // armed (which had already cleared `selfCreates` on arming) and left
+    // NOTHING armed for `newPath`, so that still-pending echo reached
+    // `onExternalChange` unsuppressed.
+    const watcher = captureWatcherCallback();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "write_file") return Promise.reject(new Error("disk full"));
+      return Promise.resolve(undefined);
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.renameFile("old.brink", "new.brink", "rewritten content");
+
+    watcher.get()({ payload: { path: "new.brink", content: "pre-rewrite bytes" } });
+
+    expect(seen).toEqual([]);
+  });
+});
