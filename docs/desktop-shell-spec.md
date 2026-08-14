@@ -208,23 +208,50 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   `if:` text and that every prerequisite id it names still names a real
   step, since a stale id (e.g. from a renamed or `id:`-stripped setup step)
   reads as `steps.<id>.outcome == ''` and the guard is simply always false.
-- **The sidecar is staged, not shipped, in this lane.** `cargo build -p
-  brink-cli --release` runs only so `tauri-build`'s externalBin resolution
-  finds a file on disk; nothing here executes it, so the lane flattens the
-  release profile through `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` /
-  `_CODEGEN_UNITS` environment variables instead of paying for an optimized
-  binary. `ensure-cli-sidecar.mjs` carries no profile option of its own, so
-  every other caller still builds a real release sidecar.
-  (`desktop_smoke_flattens_the_sidecar_release_profile`)
+- **The sidecar is staged, not shipped, in this lane — and since #2469 not
+  even built.** A file has to exist on disk before `tauri-build`'s externalBin
+  resolution will let `cargo check` run, but nothing in this lane executes it
+  (`run_cli` is the sidecar's only caller and it needs a running app, not a
+  `cargo test`). The lane therefore sets `BRINK_SIDECAR_STUB: "1"`, which
+  makes `ensureCliSidecar` write a loudly-failing placeholder under the real
+  triple-suffixed name and skip `cargo build -p brink-cli --release`
+  altogether. It is an `env:` var rather than a step flag because the lane
+  runs the script twice — its own "Stage brink-cli sidecar" step and, nested,
+  `pnpm build`. This **replaces** PR #2446's
+  `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` / `_CODEGEN_UNITS` stopgap,
+  which only made the wasted build cheaper; the guard asserts the stub is
+  wired **and** that the three stopgap vars are gone, so the lane cannot
+  drift back or carry both. Every other caller — `pnpm --filter
+  @brink/desktop build` on a developer machine, where the sidecar really is
+  shipped and run — still builds a real release binary, since the option
+  defaults to off.
+  (`desktop_smoke_stubs_the_staged_sidecar`)
 
-  The script does now export its logic — `ensureCliSidecar`, `hostTriple`,
-  `sidecarPaths` — behind an `import.meta.url === pathToFileURL(argv[1])`
-  main-guard, so `node scripts/ensure-cli-sidecar.mjs` (this lane's "Stage
-  brink-cli sidecar" step, and the `dev`/`build` package scripts) still does
-  the whole job while a test can call the pieces directly (#2452,
-  `src/__tests__/ensure-cli-sidecar.test.ts`). That seam is the prerequisite
-  the profile/stub-binary option would need; adding the option itself is
-  still open.
+### The `dev` preflight pair (#2452, #2468)
+
+`pnpm --filter @brink/desktop dev` runs `scripts/ensure-wasm.mjs` and then
+`scripts/ensure-cli-sidecar.mjs`. Both export their logic — `ensureWasm` /
+`newestSource`, and `ensureCliSidecar` / `hostTriple` / `sidecarPaths` /
+`STUB_SIDECAR` — behind an `import.meta.url === pathToFileURL(argv[1])`
+main-guard, take every input as an option defaulting to the real one, and
+route external commands (`wasm-pack`, `rustc`, `cargo`) through a single
+injectable `runCommand`. Running either script standalone still does the
+whole job; importing it does nothing but hand over the functions, so
+`src/__tests__/ensure-wasm.test.ts` and
+`src/__tests__/ensure-cli-sidecar.test.ts` drive the real decisions without
+a toolchain.
+
+Treat this as an invariant of the pair, not of one script: without the
+guard, an unguarded module runs its build as a side effect of being
+imported. `ensure-cli-sidecar.mjs`'s own red-first took 178s because the
+import ran `cargo build --release`; `ensure-wasm.mjs`'s failed outright,
+because its already-fresh path called `process.exit(0)` and killed the
+importing process. Each script's `describe("the main-guard")` block holds
+the two tests that pin it (inert on import; still acts when run
+standalone). A third preflight script gets the same treatment.
+
+The sidecar seam is also what made the stub option above testable — it was
+added (#2452) as a prerequisite and spent by #2469.
 
 ### CI coverage blind spots
 
