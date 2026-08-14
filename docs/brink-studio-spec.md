@@ -108,6 +108,55 @@ brink-studio imports the wasm module built from `crates/brink-web/`. The build p
 
 The wasm module is the single integration point between the TypeScript editor and the Rust backend. All IDE intelligence flows through wasm-bindgen function calls.
 
+### One alias map, owned by this package (#2464)
+
+`packages/brink-studio/alias-map.ts` is the single source of truth for this
+package's module resolution. `vite.config.ts`, `vite.config.embed.ts` and
+`vitest.config.ts` all compose their `resolve.alias` from its exported
+factories; `tsconfig.json`'s and `tsconfig.build.json`'s `paths` are JSON and
+cannot import, so they stay copies that `src/__tests__/alias-map.test.ts`
+compares against `studioTsconfigPaths()` and `studioBuildTsconfigPaths()`.
+
+The map is deliberately not one flat record — the differences between the
+five copies are decisions, and each is a separate export so it stays legible:
+
+- **`STUDIO_PACKAGE_ALIASES`** — the private workspace packages the studio
+  bundles, resolved to source. Applied unconditionally by every config.
+- **`STUDIO_WASM_ALIASES`** — `brink-web` and `@brink-lang/web`, applied only
+  where the wasm is actually loaded: the dev server (`vite.config.ts` under
+  `command === "serve"`) and the embed app build. The library build applies
+  neither, because it externalizes `@brink-lang/web`
+  (`rollupOptions.external`) and an unconditional alias would inline the
+  wrapper into the published npm bundle.
+- **`studioTestWasmAliases()`** — the unit suite's variant, which repoints
+  `brink-web` at `src/__mocks__/brink-web.ts`; vitest runs under jsdom and
+  must not load real wasm.
+- **`brink-web`'s two targets** — bundlers resolve the ESM glue file, `tsc`
+  needs the package directory whose `package.json` names `brink_web.d.ts`.
+  The entry carries both rather than leaving the divergence implicit.
+- **`DTS_ROLLUP_EXCLUDES`** — the wasm pair, dropped from
+  `tsconfig.build.json` (the `tsconfig` tsup runs the published `d.ts` rollup
+  against). `@brink-lang/web` is left to resolve through `node_modules` so
+  the rollup keeps it external; `brink-web` needs no mapping because
+  `src/index.ts` never imports that specifier — only `packages/wasm/src`
+  does, and that source is outside the rollup's program as a consequence of
+  the first exclusion. Verified empirically in #2465: mapping it back emits a
+  byte-identical `dist/index.d.ts`.
+
+This invariant is this package's own, and it does not replace the
+cross-package one recorded in `docs/desktop-shell-spec.md` § "Alias map
+parity with the playground" (#2450): that guard, which lives in
+`packages/brink-desktop`, pins the RELATIONSHIP between the desktop shell's
+map and these copies, which a studio-side test cannot see. Both run, and
+neither is redundant.
+
+`tsconfig.json`'s `include` is `["src"]`, so the package's root-level config
+modules are not in that program. `tsconfig.node.json` is the program that
+covers them, and `pnpm --filter @brink-lang/studio typecheck` runs both. Its
+`include` must list every root-level `.ts` module — the guard asserts that
+against the directory listing, so a config module added later cannot quietly
+go unchecked.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:
