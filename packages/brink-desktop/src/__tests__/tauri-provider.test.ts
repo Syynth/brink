@@ -505,3 +505,114 @@ describe("TauriFileProvider watcher self-rename suppression (#2416)", () => {
     expect(seen).toEqual([{ path: "new.brink", content: "someone else's content" }]);
   });
 });
+
+describe("TauriFileProvider self-echo marker arming reconciliation (#2424)", () => {
+  // The general case of the invariant #2421 closed one-directionally: when a
+  // path picks up a marker of a NEW kind, any still-armed marker of a
+  // DIFFERENT kind for that path must be reconciled at ARMING time, rather
+  // than left to whichever branch of `onExternalChange` happens to check
+  // first. `deleteFile` and `renameFile` already did this; the two
+  // self-write arming sites — `createFile` and `requestSave`'s `writeStaged`
+  // — did not, so a `selfDeletes` marker armed by an earlier `deleteFile`
+  // survived them and went on to swallow a later genuine external deletion.
+
+  it("clears a still-armed self-delete marker when createFile arms a self-write for the same path", async () => {
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.deleteFile("scene.brink"); // arms selfDeletes(scene)
+    await provider.createFile("scene.brink", "recreated"); // arms selfWrites(scene)
+
+    // The shell flushes at most ONE event per path per quiet window, so the
+    // delete and the re-creation coalesce into a single event — and an
+    // external tool's edit landing in the same window makes its content
+    // neither of ours. It forwards as genuinely external (correct) while
+    // consuming NO marker, so nothing sweeps the leftovers.
+    watcher.get()({ payload: { path: "scene.brink", content: "someone else's edit" } });
+    expect(seen).toEqual([{ path: "scene.brink", content: "someone else's edit" }]);
+
+    // The delete marker armed before the re-creation must NOT still be
+    // armed: a later, genuinely external deletion has to reach the callback.
+    watcher.get()({ payload: { path: "scene.brink", content: null } });
+    expect(seen).toEqual([
+      { path: "scene.brink", content: "someone else's edit" },
+      { path: "scene.brink", content: null },
+    ]);
+  });
+
+  it("clears a still-armed self-delete marker when requestSave arms a self-write for the same path", async () => {
+    // The structurally parallel sibling of the test above: `writeStaged` is
+    // the provider's other `selfWrites` arming site, reached whenever the
+    // file is re-staged after a delete whose echo has not come back yet.
+    invoke.mockResolvedValue(undefined);
+    const watcher = captureWatcherCallback();
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await provider.deleteFile("scene.brink"); // arms selfDeletes(scene)
+    provider.onFileChanged("scene.brink", "v2");
+    await provider.requestSave(); // arms selfWrites(scene) = "v2"
+
+    watcher.get()({ payload: { path: "scene.brink", content: "someone else's edit" } });
+    expect(seen).toEqual([{ path: "scene.brink", content: "someone else's edit" }]);
+
+    watcher.get()({ payload: { path: "scene.brink", content: null } });
+    expect(seen).toEqual([
+      { path: "scene.brink", content: "someone else's edit" },
+      { path: "scene.brink", content: null },
+    ]);
+  });
+
+  it("disarms the self-write marker when write_file rejects (both sides of the await)", async () => {
+    // Same hygiene `deleteFile` got in #2412: a marker armed before an await
+    // that then rejects is never consumed by an echo (there is none — the
+    // write did not happen), so it lingers and swallows the next genuinely
+    // external change carrying that exact content.
+    const watcher = captureWatcherCallback();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "write_file") return Promise.reject(new Error("disk full"));
+      return Promise.resolve(undefined);
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    provider.onFileChanged("scene.brink", "v2");
+    await expect(provider.requestSave()).rejects.toThrow("disk full");
+
+    watcher.get()({ payload: { path: "scene.brink", content: "v2" } });
+    expect(seen).toEqual([{ path: "scene.brink", content: "v2" }]);
+  });
+
+  it("disarms the self-write marker when createFile's write_file rejects", async () => {
+    const watcher = captureWatcherCallback();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "write_file") return Promise.reject(new Error("disk full"));
+      return Promise.resolve(undefined);
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    const seen: Array<{ path: string; content: string | null }> = [];
+    provider.onExternalChange((path, content) => seen.push({ path, content }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(provider.createFile("scene.brink", "fresh")).rejects.toThrow("disk full");
+
+    watcher.get()({ payload: { path: "scene.brink", content: "fresh" } });
+    expect(seen).toEqual([{ path: "scene.brink", content: "fresh" }]);
+  });
+});

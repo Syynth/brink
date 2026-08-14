@@ -13,7 +13,11 @@
  *
  * - **Structural ops are disk-immediate**: `createFile` / `deleteFile` /
  *   `renameFile` are called directly by `ProjectSession` on binder
- *   operations and write through to disk at once.
+ *   operations and write through to disk at once. For `renameFile` that
+ *   means two steps, not one: the native atomic move, then a write of the
+ *   moved file's own `INCLUDE`-rewritten source at its new path (#2425) —
+ *   the move carries bytes that a cross-directory rename has already made
+ *   stale.
  * - **Content edits stage** (`onFileChanged` → `staged`); the #154 egress
  *   feeds the bounded **backup ring** (`ringBackups` → `append_backups`),
  *   which is crash protection, orthogonal to dirty.
@@ -29,7 +33,11 @@
  *   self-rename (#2416) suppression so our own canonical writes, deletions,
  *   and renames never masquerade as external changes (which, for a deletion
  *   or a rename's old-path echo, would also wrongly drop the pending
- *   "deleted"/"created" egress record a host mirror relies on).
+ *   "deleted"/"created" egress record a host mirror relies on). At most one
+ *   of the three markers is armed per path: every arming site reconciles the
+ *   other two kinds (#2424, see {@link TauriFileProvider.armSelfWrite}), so a
+ *   marker the watcher's coalescing left unconsumed can never survive to
+ *   swallow a genuinely external change.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -110,24 +118,18 @@ export class TauriFileProvider implements FileProvider {
   }
 
   async createFile(path: string, content: string): Promise<void> {
-    this.selfWrites.set(path, content);
-    await invoke("write_file", { root: this.root, rel: path, content });
+    this.armSelfWrite(path, content);
+    try {
+      await invoke("write_file", { root: this.root, rel: path, content });
+    } catch (e) {
+      this.disarmSelfWrite(path, content);
+      throw e;
+    }
   }
 
   async deleteFile(path: string): Promise<void> {
     this.staged.delete(path);
-    // A save immediately followed by a delete coalesces shell-side into one
-    // `deleted` event — the write marker would never otherwise be consumed,
-    // wrongly suppressing a later external re-creation with identical
-    // content (#2404 review).
-    this.selfWrites.delete(path);
-    // A stale self-create marker for this exact path (e.g. it was the
-    // destination of a rename whose creation echo never arrived before this
-    // delete) must not linger armed once this delete's own echo consumes a
-    // *different* marker — at most one marker stays armed per path (#2421
-    // review).
-    this.selfCreates.delete(path);
-    this.selfDeletes.add(path);
+    this.armSelfDelete(path);
     try {
       await invoke("delete_file", { root: this.root, rel: path });
     } catch (e) {
@@ -139,7 +141,27 @@ export class TauriFileProvider implements FileProvider {
     }
   }
 
-  async renameFile(oldPath: string, newPath: string): Promise<void> {
+  /**
+   * Move `oldPath` to `newPath` through the native (atomic) `rename_file`,
+   * then persist `newContent` there.
+   *
+   * The second half is not redundant (#2425): `rename_file` moves BYTES, but
+   * `ProjectSession.renameFile`'s op folds the moved file's own outbound
+   * `INCLUDE` rewrites into the source it hands over here (`new_source`,
+   * `crates/brink-web/src/editor/refactor.rs`), so for any move that changes
+   * the file's directory the moved bytes are already stale the moment they
+   * land. Staging alone would not do: under the D2 contract structural ops
+   * are disk-immediate, and until some later edit dirtied the file a
+   * `brink compile`/CLI reader going straight to disk would compile the
+   * pre-rewrite `INCLUDE` paths. The write goes through the same staged-write
+   * path as a save, so it queues behind any in-flight `requestSave` rather
+   * than racing it (#2403) and, if it fails, the content stays staged and
+   * dirty for the next save to retry.
+   *
+   * `newContent` is optional purely for signature compatibility with the
+   * `FileProvider` contract; `ProjectSession` always supplies it.
+   */
+  async renameFile(oldPath: string, newPath: string, newContent?: string): Promise<void> {
     const stagedContent = this.staged.get(oldPath);
     if (stagedContent !== undefined) {
       this.staged.delete(oldPath);
@@ -151,23 +173,8 @@ export class TauriFileProvider implements FileProvider {
     // for `oldPath` and a creation for `newPath` — either of which would
     // otherwise reach `onExternalChange` and wipe the "deleted"/"created"
     // egress records `ProjectSession.renameFile` is about to record.
-    this.selfWrites.delete(oldPath);
-    // A stale self-create marker for `oldPath` (e.g. it was itself a rename
-    // destination whose creation echo never arrived before becoming the
-    // source of this rename) must not linger armed alongside the marker
-    // this rename is about to set — at most one marker stays armed per path
-    // (#2421 review).
-    this.selfCreates.delete(oldPath);
-    this.selfDeletes.add(oldPath);
-    // A stale delete marker for `newPath` (e.g. this exact path was deleted
-    // and never echoed back) must not swallow the rename's creation echo.
-    this.selfDeletes.delete(newPath);
-    // Likewise a stale self-write marker for `newPath` (e.g. an earlier save
-    // to this path whose echo never arrived) must not linger armed
-    // alongside the self-create marker below — same one-marker-per-path
-    // discipline (#2421 review).
-    this.selfWrites.delete(newPath);
-    this.selfCreates.add(newPath);
+    this.armSelfDelete(oldPath);
+    this.armSelfCreate(newPath);
     try {
       await invoke("rename_file", { root: this.root, from: oldPath, to: newPath });
     } catch (e) {
@@ -177,6 +184,72 @@ export class TauriFileProvider implements FileProvider {
       this.selfCreates.delete(newPath);
       throw e;
     }
+    if (newContent === undefined) return;
+    // Written unconditionally rather than only when the source actually
+    // changed: the provider cannot tell a rewritten source from an unchanged
+    // one without re-reading the moved bytes, and "after a rename, disk at
+    // the new path matches the session" is the simpler invariant to keep.
+    // The re-keyed staged entry above is pre-rewrite text, so this overwrite
+    // is also what stops a later save from putting it back.
+    this.staged.set(newPath, newContent);
+    try {
+      await this.enqueueSave(() => this.writeStaged([newPath]));
+    } catch (e) {
+      // The move itself succeeded and the session already reflects it, so
+      // rejecting here would leave `ProjectSession.renameFile` throwing past
+      // its own "created"/"deleted" egress records for a rename that really
+      // did happen. The content stays staged instead — dirty, and retried by
+      // the next `requestSave`, exactly as a rejected save is.
+      console.error("[brink-desktop] rename content write failed", e);
+    }
+  }
+
+  /**
+   * Arm the self-write marker for `path`, clearing any still-armed marker of
+   * a DIFFERENT kind for the same path first (#2424).
+   *
+   * At most ONE self-echo marker stays armed per path. The shell's watcher
+   * accumulates paths and flushes after a quiet window, reading content once
+   * at flush time — at most one event per path per window — so a second
+   * marker armed before the first echoed back can never be consumed. An
+   * unconsumed marker is not inert: a leftover `selfDeletes` goes on to
+   * swallow a genuinely external deletion of that path. Reconciling here, at
+   * ARMING time, means the outcome no longer depends on which branch of
+   * {@link onExternalChange} happens to check first.
+   */
+  private armSelfWrite(path: string, content: string): void {
+    this.selfDeletes.delete(path);
+    this.selfCreates.delete(path);
+    this.selfWrites.set(path, content);
+  }
+
+  /**
+   * Drop a self-write marker whose write never happened, so it cannot
+   * swallow a later external change carrying that exact content (the
+   * discipline #2412 gave `deleteFile`). Only clears the marker if it is
+   * still the one this call armed — an operation that ran during the failed
+   * write's flight may have armed a newer one for the same path.
+   */
+  private disarmSelfWrite(path: string, content: string): void {
+    if (this.selfWrites.get(path) === content) {
+      this.selfWrites.delete(path);
+    }
+  }
+
+  /** Arm the self-delete marker for `path`. See {@link armSelfWrite} for why
+   *  the other two kinds are cleared rather than left to check order. */
+  private armSelfDelete(path: string): void {
+    this.selfWrites.delete(path);
+    this.selfCreates.delete(path);
+    this.selfDeletes.add(path);
+  }
+
+  /** Arm the self-create marker for `path`. See {@link armSelfWrite} for why
+   *  the other two kinds are cleared rather than left to check order. */
+  private armSelfCreate(path: string): void {
+    this.selfWrites.delete(path);
+    this.selfDeletes.delete(path);
+    this.selfCreates.add(path);
   }
 
   /**
@@ -205,8 +278,13 @@ export class TauriFileProvider implements FileProvider {
       ([rel]) => wanted === null || wanted.has(rel),
     );
     for (const [rel, content] of pending) {
-      this.selfWrites.set(rel, content);
-      await invoke("write_file", { root: this.root, rel, content });
+      this.armSelfWrite(rel, content);
+      try {
+        await invoke("write_file", { root: this.root, rel, content });
+      } catch (e) {
+        this.disarmSelfWrite(rel, content);
+        throw e;
+      }
       // Only drop the staged entry if it still matches what we just wrote —
       // an edit staged while this write was in flight must survive so the
       // next requestSave() picks it up (#2403 review).
