@@ -59,6 +59,16 @@ impl From<TypesArg> for brink_compiler::TypePolicy {
     }
 }
 
+// ⚠ `packages/brink-desktop/src-tauri`'s `run_cli` sidecar command hardcodes
+// a subset of these subcommand names in its own `ALLOWED_CLI_SUBCOMMANDS`
+// allowlist (`src-tauri` cannot depend on this crate — it is deliberately
+// excluded from the root cargo workspace, docs/desktop-shell-spec.md
+// "Workspace placement"). Renaming or removing a variant here is checked by
+// `packages/brink-desktop/src-tauri/src/lib.rs`'s
+// `cli_allowlist_subcommands_exist_in_brink_cli_surface` test, which parses
+// this enum as text and applies clap's default kebab-case renaming — keep
+// every variant on that default (no `#[command(name = ...)]`/`rename_all`
+// override) or update that test's parsing to match (#2507).
 #[derive(Subcommand)]
 enum Commands {
     /// Compile an .ink story (native pipeline)

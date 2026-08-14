@@ -417,6 +417,13 @@ async fn save_bytes_dialog(
 // ⚠ House rule: the intl pipeline never consumes `.ink.json` — every
 // allowed subcommand here (mirroring `brink-cli`'s own surface) operates
 // on `.ink`/`.brink`/`.inkb`/`.inkt` inputs only.
+//
+// This list is a hand-maintained SUBSET of `brink-cli`'s real `clap`
+// subcommand surface (`crates/brink-cli/src/main.rs`'s `enum Commands`) —
+// `tests::cli_allowlist_subcommands_exist_in_brink_cli_surface` below is the
+// cross-workspace guard that fails if an entry here is renamed or removed
+// on the `brink-cli` side (docs/desktop-shell-spec.md "Workspace
+// placement", #2507).
 const ALLOWED_CLI_SUBCOMMANDS: &[&str] = &[
     "export-xliff",
     "compile-locale",
@@ -2285,6 +2292,115 @@ mod tests {
                 "/abs/out.xlf".to_owned(),
             ]
         );
+    }
+
+    /// `crates/brink-cli/src/main.rs`'s `enum Commands` body, as plain text.
+    /// Read across the workspace fence the same way
+    /// `lint_policy_matches_the_root_workspace`/
+    /// `dependency_versions_track_the_root_workspace` above do — `src-tauri`
+    /// cannot take a dev-dependency on `brink-cli` to introspect its `clap`
+    /// surface without pulling the excluded crate back across the fence it
+    /// was deliberately pushed out of (`docs/desktop-shell-spec.md`
+    /// "Workspace placement"; #2402/#2346 rule out growing a required
+    /// lane's Tauri build) — so this reads the source file as text instead.
+    fn brink_cli_commands_enum_body() -> String {
+        let main_rs = repo_root().join("crates/brink-cli/src/main.rs");
+        assert!(
+            main_rs.is_file(),
+            "crates/brink-cli/src/main.rs should exist at {main_rs:?}"
+        );
+        let source = std::fs::read_to_string(&main_rs)
+            .expect("just asserted crates/brink-cli/src/main.rs exists");
+        source
+            .split_once("enum Commands {")
+            .map(|(_, body)| body.to_owned())
+            .expect("crates/brink-cli/src/main.rs should still declare `enum Commands { ... }`")
+    }
+
+    /// clap derive's default `#[derive(Subcommand)]` rename rule:
+    /// `PascalCase` variant name -> kebab-case subcommand. `enum Commands` in
+    /// `crates/brink-cli/src/main.rs` carries no `#[command(name = ...)]` or
+    /// `rename_all` override on any variant (checked by the caller below),
+    /// so this default is the real rule in effect.
+    fn to_kebab_case(pascal: &str) -> String {
+        let mut out = String::with_capacity(pascal.len() + 4);
+        for (i, c) in pascal.chars().enumerate() {
+            if c.is_ascii_uppercase() {
+                if i > 0 {
+                    out.push('-');
+                }
+                out.push(c.to_ascii_lowercase());
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Every top-level `Commands` variant name, converted to the kebab-case
+    /// subcommand string `brink-cli`'s real `clap` surface accepts.
+    /// Top-level variants sit at exactly 4-space indentation inside the
+    /// enum body; struct-variant fields sit at 8, and the `Ide` variant's
+    /// `#[command(long_about = "...")]` string continuations sit at column
+    /// 0 — neither is mistaken for a variant name here.
+    fn brink_cli_subcommand_surface() -> Vec<String> {
+        let source = brink_cli_commands_enum_body();
+        assert!(
+            !source.contains("rename_all") && !source.contains("#[command(name"),
+            "enum Commands now overrides clap's default kebab-case renaming; \
+             brink_cli_subcommand_surface's parsing no longer matches the real rule"
+        );
+        let names: Vec<String> = source
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("    ")?;
+                if rest.starts_with(|c: char| c.is_whitespace()) {
+                    return None; // nested field/attribute, indented further
+                }
+                let name: String = rest
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect();
+                let after = rest[name.len()..].trim_start();
+                let is_variant_head = name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && (after.starts_with('{') || after.starts_with(','));
+                is_variant_head.then(|| to_kebab_case(&name))
+            })
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "should have parsed at least one Commands variant out of \
+             crates/brink-cli/src/main.rs's `enum Commands` body"
+        );
+        names
+    }
+
+    /// Fourth cost of the workspace fence (`docs/desktop-shell-spec.md`
+    /// "Workspace placement", #2507): `ALLOWED_CLI_SUBCOMMANDS` hand-mirrors
+    /// a subset of `brink-cli`'s real subcommand surface, and nothing tied
+    /// the two together until this test — a subcommand rename or removal in
+    /// `crates/brink-cli/src/main.rs` was invisible here until `run_cli`
+    /// broke at runtime (issue #2507, follow-up from PR #2502's review).
+    ///
+    /// Deliberately a subset check, not an equality one: `brink-cli` has
+    /// subcommands the sidecar never exposes (`play`, `fmt`, `convert`,
+    /// `migrate-xliff`, `replay`, `ide` — see
+    /// `cli_allowlist_rejects_arbitrary_passthrough` above), and `brink-cli`
+    /// growing one of those is not drift this guard should fail on. A
+    /// rename or removal of a subcommand `ALLOWED_CLI_SUBCOMMANDS` actually
+    /// depends on is.
+    #[test]
+    fn cli_allowlist_subcommands_exist_in_brink_cli_surface() {
+        let real = brink_cli_subcommand_surface();
+        for sub in ALLOWED_CLI_SUBCOMMANDS {
+            assert!(
+                real.iter().any(|r| r == sub),
+                "ALLOWED_CLI_SUBCOMMANDS contains {sub:?}, which crates/brink-cli/src/main.rs's \
+                 `enum Commands` no longer declares (real surface: {real:?}) — a rename or \
+                 removal on the brink-cli side has to be reflected in run_cli's allowlist here \
+                 too (docs/desktop-shell-spec.md \"Workspace placement\", #2507)"
+            );
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
