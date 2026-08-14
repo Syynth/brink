@@ -299,6 +299,51 @@ describe("the stub option", () => {
     }
   });
 
+  it("refuses to stage a stub for a Windows triple rather than write a broken .exe (#2481)", () => {
+    // The smoke lane is ubuntu-only (#2428), so this drives the branch with
+    // a synthetic triple the way the real lane never does — that is the
+    // whole point of the guard: nothing else in this suite (or in CI) would
+    // ever exercise a Windows triple otherwise.
+    const repoRoot = scratch();
+    const srcTauriDir = scratch();
+
+    expect(() =>
+      ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        triple: "x86_64-pc-windows-msvc",
+        stub: true,
+        runCommand: () => "",
+        log: () => {},
+      }),
+    ).toThrow(/BRINK_SIDECAR_STUB has no Windows-compatible payload/);
+
+    // Nothing gets written — a thrown error, not a `.exe`-suffixed file
+    // holding a POSIX shell script Windows cannot start.
+    expect(
+      existsSync(join(srcTauriDir, "binaries", "brink-cli-x86_64-pc-windows-msvc.exe")),
+    ).toBe(false);
+  });
+
+  it("still stages the ordinary POSIX stub for a non-Windows triple (regression guard)", () => {
+    // Confirms the new check in the previous test is triple-specific, not a
+    // blanket refusal that would also break the Linux/macOS stub path this
+    // option exists for.
+    const repoRoot = scratch();
+    const srcTauriDir = scratch();
+
+    const destBin = ensureCliSidecar({
+      repoRoot,
+      srcTauriDir,
+      triple: "aarch64-apple-darwin",
+      stub: true,
+      runCommand: () => "",
+      log: () => {},
+    });
+
+    expect(readFileSync(destBin, "utf8")).toBe(STUB_SIDECAR);
+  });
+
   it("builds for real when BRINK_SIDECAR_STUB is set to anything else", () => {
     // Only the exact string "1" opts in — a leftover `BRINK_SIDECAR_STUB=0`
     // in a developer's shell must not silently turn `pnpm --filter
