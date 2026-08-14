@@ -103,7 +103,7 @@ vi.mock("../tauri-provider.js", () => ({
   saveBytesDialog: vi.fn(() => Promise.resolve(null)),
 }));
 
-describe("desktop autosave ticker survives a project reopen (#2486)", () => {
+describe("desktop autosave ticker is replaced, not duplicated, on project reopen (#2486)", () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="app"></div>';
     mountedApis.length = 0;
@@ -156,5 +156,39 @@ describe("desktop autosave ticker survives a project reopen (#2486)", () => {
     // legitimate close-time flush above.
     expect(apiA?.dispatch.mock.calls.length).toBe(apiACallsAtReopen);
     expect(apiB?.dispatch).toHaveBeenCalledWith("file.saveAll");
+  });
+
+  // The reopen case above passes even if the clear is moved OUT of
+  // `closeProject` and into `openProject` just before the `setInterval` arm
+  // — the review of PR #2512 proved that empirically. That relocation would
+  // still leave an EXPLICIT close (the `menu:close-project` event, which
+  // calls `closeProject()` with no reopen behind it) with project A's ticker
+  // alive, dispatching `file.saveAll` through an unmounted `StudioHandle`.
+  // So the spec row's "cleared on project close OR reopen" needs both halves
+  // pinned; this is the close half.
+  it("clears the interval on an explicit close with no reopen behind it", async () => {
+    const { openProject, closeProject } = await import("../main.js");
+
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    await openProject("/projects/a");
+    expect(mountedApis).toHaveLength(1);
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+    await closeProject();
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+    // Nothing is re-armed by a bare close — unlike the reopen path.
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+    const [apiA] = mountedApis;
+    expect(apiA).toBeDefined();
+    // Same one-time close-flush snapshot as above, for the same reason.
+    const apiACallsAtClose = apiA?.dispatch.mock.calls.length ?? -1;
+    expect(apiACallsAtClose).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_MS * 3);
+
+    expect(apiA?.dispatch.mock.calls.length).toBe(apiACallsAtClose);
   });
 });

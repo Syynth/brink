@@ -1,11 +1,21 @@
 import { defineConfig } from "vitest/config";
 import { desktopAliases } from "./alias-map";
 
-// Node environment — no DOM needed. The Tauri IPC surfaces themselves
-// (menu/window events, `invoke`) are not run headlessly here; only the
-// awaitable-save seam (`quit.ts`) is unit-tested. See docs/decision-log.md
-// "Desktop close: no dirty prompt; quit awaits the final save" (#2370) for
-// why the actual quit path gets a manual-verification note instead.
+// Node environment BY DEFAULT — most of this suite needs no DOM. See
+// docs/decision-log.md "Desktop close: no dirty prompt; quit awaits the
+// final save" (#2370) for why the actual quit path gets a
+// manual-verification note instead of a headless one.
+//
+// The default is `node` rather than `jsdom` because only a minority of
+// files need a DOM, and jsdom costs startup time on every other file. A
+// file that does need one opts in per-file with a
+// `// @vitest-environment jsdom` pragma rather than flipping the package
+// default — `autosave-reopen.test.ts` (#2486) is the first, because it
+// drives `main.tsx`'s real `openProject`/`closeProject` (Tauri IPC,
+// `mountStudio` and the file provider all mocked) and those read
+// `document`. So the Tauri IPC surfaces ARE now exercised headlessly under
+// mocks in that one file; `quit.ts`'s awaitable-save seam is no longer the
+// only thing unit-tested here.
 //
 // The alias map is imported from `./alias-map.ts`, which this config shares
 // with `vite.config.ts` (#2418). It used to be a hand-copied SUBSET of the
