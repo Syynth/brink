@@ -133,6 +133,42 @@ directory — and the entry carries both rather than leaving the divergence
 implicit. Three hand-maintained copies of this map are what let most of the
 unit suite stop running behind a green step (#2409).
 
+### Alias map parity with the playground (#2450)
+
+The invariant above is intra-package. A second invariant of the same
+standing spans packages: `DESKTOP_ALIASES` is meant to mirror
+`packages/brink-studio`'s own alias map — the "playground" — and until
+#2450 that mirroring was an honour-system claim in a comment, checked by
+nothing. `src/__tests__/playground-alias-parity.test.ts` now compares this
+package's map against the playground's four hand-maintained copies —
+`vite.config.ts` (both `serve` and `build`), `vite.config.embed.ts`,
+`vitest.config.ts` and `tsconfig.json`'s `paths` — and fails on divergence.
+It loads the playground's config modules by calling their exported
+factories rather than scraping their text, so it compares what vite would
+actually resolve.
+
+The two maps are not required to be identical, and the guard names each
+exception rather than treating a mismatch as automatic drift:
+
+- **`DESKTOP_ONLY = ["@brink-lang/studio"]`** — the desktop shell aliases
+  the studio package to workspace source; the studio cannot alias itself,
+  so this one specifier is expected on the desktop side only.
+- **The wasm pair is serve-only in the playground.** `brink-web` and
+  `@brink-lang/web` are aliased under `command === "serve"` in
+  `vite.config.ts` but dropped from the library build, which externalizes
+  `@brink-lang/web` instead (`rollupOptions.external`) so the published
+  npm bundle does not inline the wasm wrapper.
+- **`vitest.config.ts` mocks `brink-web`.** The playground's unit suite
+  runs under jsdom and must not touch real wasm-bindgen glue; the desktop
+  suite resolves the real glue on purpose (`vitest.config.ts`'s own
+  comment records why — the mock would make `export-artifact.test.ts`
+  prove nothing about a compiled artifact).
+
+Because the guard runs inside `pnpm --filter @brink/desktop test` — the
+step `.github/workflows/ci.yml:668` runs as this package's required CI
+gate — an alias edit that breaks the relationship reddens that step even
+when the edit itself lives entirely in `packages/brink-studio`.
+
 ### Smoke-lane inputs and step gating (#2418)
 
 Four properties of `desktop-smoke.yml` are asserted by tests in

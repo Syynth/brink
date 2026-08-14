@@ -1,9 +1,13 @@
 {
   // Used by vite-plugin-dts (vite.config.ts) for the published d.ts rollup.
-  // Identical to tsconfig.json EXCEPT: no path mapping for @brink-lang/web,
-  // so it resolves through node_modules to packages/wasm/dist/index.d.ts and
-  // the rollup keeps it as an external import (inlining it would duplicate
-  // its classes, which are nominally typed via private fields). Requires
+  // Identical to tsconfig.json EXCEPT: no path mapping for @brink-lang/web
+  // or brink-web (packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts's
+  // DTS_ROLLUP_EXCLUDES). @brink-lang/web resolves through node_modules to
+  // packages/wasm/dist/index.d.ts instead, and the rollup keeps it as an
+  // external import (inlining it would duplicate its classes, which are
+  // nominally typed via private fields). brink-web has no mapping because
+  // src/index.ts — the entry this rollup type-checks — never imports that
+  // specifier directly; only @brink-lang/web's wrapper does. Requires
   // `pnpm --filter @brink-lang/web build` to have run first.
   "extends": "./tsconfig.json",
   "compilerOptions": {

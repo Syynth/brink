@@ -31,6 +31,10 @@ const wasmPkgPath = resolve(__dirname, "../../crates/brink-web/www/pkg");
 export default defineConfig(({ command }) => ({
   plugins: [react()],
   resolve: {
+    // Guarded against packages/brink-desktop/alias-map.ts by
+    // packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts
+    // (#2450) — an alias added, removed, or repointed here without a
+    // matching update there turns that suite red.
     alias: {
       // The lib build externalizes @brink-lang/web (so the brink-web glue
       // is never reached there); the dev server resolves both to source.

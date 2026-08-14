@@ -5,9 +5,14 @@
  * `packages/brink-studio/vite.config.ts`'s dev-mode resolution, and asks that
  * the two be kept in sync "when packages move". Nothing compared them, so the
  * playground's copies (`vite.config.ts`, `vite.config.embed.ts`,
- * `vitest.config.ts` and `tsconfig.json`'s `paths`) carried exactly the
- * unguarded-copy risk #2418 removed inside this package — and one of them had
- * already drifted: the embed config was missing `@brink/studio-shell`.
+ * `vitest.config.ts`, `tsconfig.json`'s `paths` and `tsconfig.build.json`'s
+ * `paths`) carried exactly the unguarded-copy risk #2418 removed inside this
+ * package — and one of them had already drifted: the embed config was
+ * missing `@brink/studio-shell`.
+ *
+ * `tsconfig.build.json` is guarded against a narrower expectation than the
+ * other four, not the full `sharedSpecifiers` set — see
+ * `DTS_ROLLUP_EXCLUDES` below.
  *
  * The two packages' maps are NOT one map, and folding them into a single
  * shared module would erase differences that are load-bearing:
@@ -50,6 +55,18 @@ const playgroundRoot = resolve(packageRoot, "../brink-studio");
  * rather than a subset check.
  */
 const DESKTOP_ONLY = ["@brink-lang/studio"];
+
+/**
+ * `tsconfig.build.json` feeds vite-plugin-dts's published `d.ts` rollup for
+ * `src/index.ts`, the public entry point. It omits both wasm specifiers, for
+ * different reasons: `@brink-lang/web` resolves through `node_modules` on
+ * purpose so the rollup keeps it as an external import instead of inlining
+ * its (privately typed) classes, and `brink-web` has no mapping at all
+ * because `src/index.ts` never imports that raw specifier — only
+ * `@brink-lang/web`'s wrapper does, so `tsc` never needs to resolve it for
+ * this entry point.
+ */
+const DTS_ROLLUP_EXCLUDES = ["@brink-lang/web", "brink-web"];
 
 /** Specifier → absolute target path, the shape both bundler configs produce. */
 type AliasMap = Record<string, string>;
@@ -120,6 +137,20 @@ function playgroundTsconfigPaths(): Record<string, string[]> {
   return parsed.compilerOptions.paths;
 }
 
+/**
+ * `tsconfig.build.json` extends `tsconfig.json` but replaces `paths`
+ * wholesale (TypeScript does not merge `paths` across `extends`), so this
+ * reads the file's own `paths` rather than the base config's.
+ */
+function playgroundTsconfigBuildPaths(): Record<string, string[]> {
+  const text = readFileSync(resolve(playgroundRoot, "tsconfig.build.json"), "utf8")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  const parsed: { compilerOptions: { paths: Record<string, string[]> } } = JSON.parse(text);
+  return parsed.compilerOptions.paths;
+}
+
 describe("desktop ↔ playground alias parity", () => {
   it("aliases the same specifiers as the playground dev server, bar the self-alias", () => {
     expect(specifiers(aliasesOf(playgroundVite, "serve"))).toEqual(sharedSpecifiers);
@@ -169,6 +200,20 @@ describe("desktop ↔ playground alias parity", () => {
   it("agrees with the playground's tsconfig paths, brink-web's tsc-only target included", () => {
     const paths = playgroundTsconfigPaths();
     expect(specifiers(paths)).toEqual(sharedSpecifiers);
+    for (const [specifier, targets] of Object.entries(paths)) {
+      expect(targets, specifier).toHaveLength(1);
+      expect(resolve(playgroundRoot, targets[0]), specifier).toBe(
+        resolve(packageRoot, DESKTOP_ALIASES[specifier].types),
+      );
+    }
+  });
+
+  it("agrees with the playground's d.ts-rollup tsconfig, the wasm pair excluded by design", () => {
+    const paths = playgroundTsconfigBuildPaths();
+    const expected = sharedSpecifiers.filter(
+      (specifier) => !DTS_ROLLUP_EXCLUDES.includes(specifier),
+    );
+    expect(specifiers(paths)).toEqual(expected);
     for (const [specifier, targets] of Object.entries(paths)) {
       expect(targets, specifier).toHaveLength(1);
       expect(resolve(playgroundRoot, targets[0]), specifier).toBe(
