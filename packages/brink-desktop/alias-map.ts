@@ -46,7 +46,14 @@ function same(path: string): AliasEntry {
  * studio and every internal package resolve to workspace SOURCE, and the
  * wasm glue resolves to the built pkg — so `tauri dev` and the unit suite
  * both run against the live tree without requiring `pnpm build` in five
- * packages first. Keep in sync with the playground's map when packages move.
+ * packages first.
+ *
+ * That mirroring is no longer an honour-system claim (#2450):
+ * `src/__tests__/playground-alias-parity.test.ts` compares this map against
+ * the playground's four copies and fails when they diverge. The two packages
+ * keep separate maps on purpose — the studio has no self-alias, applies the
+ * wasm pair only on its dev server, and mocks `brink-web` under vitest — so
+ * that guard pins the relationship rather than pretending one map would do.
  */
 export const DESKTOP_ALIASES: Readonly<Record<string, AliasEntry>> = {
   // The one alias whose two consumers genuinely need different targets: a
