@@ -26,6 +26,22 @@ on:
       - "crates/brink-web/**"
       - "crates/brink-cli/**"
       - ".github/workflows/desktop-smoke.yml"
+      # Inputs outside those trees that still break this job (#2418 gap 2).
+      # Without them a breaking change runs this lane only on the post-merge
+      # push to `main`, after the break has landed: the lockfile feeds
+      # `pnpm install --frozen-lockfile`; the root manifest, lockfile and
+      # toolchain pin feed the cross-workspace `brink-cli` sidecar build;
+      # root `Cargo.toml`/`clippy.toml` are what src-tauri's two
+      # `*_matches_the_root_workspace` tests compare its copies against
+      # (#2415/#2422), which otherwise cannot fail the PR that causes the
+      # drift; and `ci.yml` is the desktop unit suite's only home, asserted
+      # by `ci_workflow_still_runs_the_desktop_vitest_suite` below.
+      - "pnpm-lock.yaml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "clippy.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci.yml"
 
 permissions: {}
 
@@ -38,6 +54,17 @@ env:
   # Same rationale as ci.yml: every job here starts from a cold checkout, so
   # incremental compilation is pure write overhead, never read back.
   CARGO_INCREMENTAL: 0
+  # The `brink-cli` sidecar is built here only so `tauri-build`'s externalBin
+  # resolution finds a file on disk (see "Stage brink-cli sidecar" below);
+  # nothing in this check-only lane ever EXECUTES it, so paying for an
+  # optimized build is pure waste (#2418 gap 4). Flattening the release
+  # profile through the environment keeps the change scoped to this lane —
+  # `ensure-cli-sidecar.mjs` still builds a real release binary everywhere
+  # else, including `pnpm --filter @brink/desktop build` on a developer
+  # machine, where the sidecar does get shipped and run.
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: 0
+  CARGO_PROFILE_RELEASE_DEBUG: 0
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 256
 
 jobs:
   desktop-smoke:
@@ -52,6 +79,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        id: checkout
         with:
           persist-credentials: false
 
@@ -59,6 +87,7 @@ jobs:
       # dev packages, even `cargo check` fails in gdk-sys's build script
       # before a single line of the crate itself is checked.
       - name: Install Linux dependencies (Tauri)
+        id: linux_deps
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
@@ -84,6 +113,7 @@ jobs:
       # never touches it — but `pnpm build` below resolves the desktop
       # package's "brink-web" alias straight to this path.
       - name: Build brink-web wasm package
+        id: wasm_build
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -94,6 +124,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Install dependencies
+        id: pnpm_install
         run: pnpm install --frozen-lockfile
 
       # Stages the brink-cli sidecar (root-workspace build) that src-tauri's
@@ -101,6 +132,7 @@ jobs:
       # check` — externalBin resource resolution runs unconditionally, not
       # only on `tauri build` (packages/brink-desktop/scripts/ensure-cli-sidecar.mjs).
       - name: Stage brink-cli sidecar
+        id: sidecar
         run: node scripts/ensure-cli-sidecar.mjs
         working-directory: packages/brink-desktop
 
@@ -118,29 +150,52 @@ jobs:
       # #1386), and the JS half of this same job already uses
       # `pnpm install --frozen-lockfile`. If --locked turns this lane red, that
       # failure IS the drift: commit the refreshed lock.
+      # ⚠ Every check below is deliberately non-blocking for its SIBLINGS —
+      # a clippy failure must not hide a failing test — but each one is
+      # gated on the SETUP steps it actually needs (2026-08-13 finding, in
+      # neither issue body). A bare `!cancelled()` overrides the implicit
+      # `success()` for a failed prerequisite too, so a dying
+      # `pnpm/action-setup` used to let four dependent steps run and fail
+      # for the same reason, burying the root cause under cascade noise.
+      # `outcome` (not `conclusion`) is the right field: a prerequisite that
+      # was itself SKIPPED because something before it failed reports
+      # `skipped`, and its dependants must skip too.
+      #
+      # Format check needs nothing but the toolchain the runner ships and
+      # the checkout — but it does need the checkout: `actions/checkout`
+      # has no `id` on the other steps to gate on, yet without a working
+      # tree "Format check"'s `working-directory` does not exist either, so
+      # a failed checkout used to still fire this step and die on a
+      # working-directory error stacked on top of the real failure — the
+      # last residue of the cascade class this file otherwise closes.
       - name: Format check (src-tauri)
+        if: "!cancelled() && steps.checkout.outcome == 'success'"
         run: cargo fmt --all -- --check
         working-directory: packages/brink-desktop/src-tauri
 
       - name: cargo check (src-tauri)
-        if: '!cancelled()'
+        if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"
         run: cargo check --locked --all-targets
         working-directory: packages/brink-desktop/src-tauri
 
       - name: Clippy (src-tauri)
-        if: '!cancelled()'
+        if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"
         run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: packages/brink-desktop/src-tauri
 
       - name: cargo test (src-tauri)
-        if: '!cancelled()'
+        if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"
         run: cargo test --locked
         working-directory: packages/brink-desktop/src-tauri
 
+      # `tsc` resolves the "brink-web" alias into the wasm-pack output, so
+      # this needs the wasm build as well as node_modules.
       - name: Typecheck (tsc --noEmit)
-        if: '!cancelled()'
+        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.pnpm_install.outcome == 'success'"
         run: pnpm --filter @brink/desktop typecheck
 
+      # `pnpm build` re-runs ensure-cli-sidecar.mjs, so it inherits the
+      # sidecar step's prerequisites on top of the frontend ones.
       - name: pnpm build
-        if: '!cancelled()'
+        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.pnpm_install.outcome == 'success' && steps.sidecar.outcome == 'success'"
         run: pnpm --filter @brink/desktop build

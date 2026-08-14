@@ -566,6 +566,27 @@ fn take_pending_opens(state: tauri::State<'_, PendingOpens>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// ⚠ CI BLIND SPOT (#2428). Everything behind this cfg — `opened_url_to_path`,
+// `handle_opened`, the `RunEvent::Opened` arm in `run()`, and the three tests
+// at the bottom of this file that cover them — is compiled by NO CI lane:
+// `.github/workflows/desktop-smoke.yml` runs `ubuntu-latest` only, so
+// `cargo check`/`clippy`/`test` there all take the `#[cfg]`-out path. This is
+// the file-association surface D3 keeps growing, and it is reviewed by eye
+// until a macOS runner is ruled in — a cost question that is NOT settled
+// here (docs/desktop-shell-spec.md, "CI coverage blind spots").
+//
+// The first mobile target additionally owes an `#[expect]` OUTSIDE this
+// block: `tauri-macros`' `mobile_entry_point` expansion (2.6.3,
+// src/mobile.rs) calls `stop_unwind(run)` in statement position, discarding
+// `run()`'s `tauri::Result<()>` (`unused_must_use`, fatal under this lane's
+// `-D warnings`), and its panic arm uses `eprintln!` — which #2415's deny
+// set turns into `clippy::print_stderr`, since a proc macro's output carries
+// call-site spans and so is not treated as an external-macro expansion (the
+// same reason `run()` already carries an `#[expect(clippy::exit)]` for
+// `generate_context!`). Its `std::process::abort()` is not caught by the
+// current deny set. None of this is reachable today: nothing in this repo
+// builds a mobile target.
+
 /// Convert one `Opened` URL to an absolute filesystem path. `file://` is
 /// the only scheme macOS delivers for a file association or Dock drop;
 /// anything else (there shouldn't be anything else here) is dropped rather
@@ -903,7 +924,9 @@ fn build_menu(
 /// asks for now that this crate is finally covered by it.
 ///
 /// (Under `mobile` the generated entry point calls this through
-/// `stop_unwind`, which is generic over the return type and discards it.)
+/// `stop_unwind`, which is generic over the return type and discards it —
+/// an `unused_must_use` this crate's deny set will reject on the first
+/// mobile build; see the ⚠ marker above `opened_url_to_path`, #2428.)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[expect(
     clippy::exit,
@@ -1080,6 +1103,219 @@ mod tests {
             significant_lines(&root),
             "src-tauri's clippy.toml has drifted from the root one"
         );
+    }
+
+    /// Read one workflow out of `.github/workflows`.
+    fn workflow(file: &str) -> String {
+        let path = repo_root().join(".github/workflows").join(file);
+        assert!(path.is_file(), "workflow should exist at {path:?}");
+        std::fs::read_to_string(&path).expect("just asserted the workflow exists")
+    }
+
+    /// Strip one matching pair of surrounding quotes. Only a pair: a
+    /// double-quoted `if:` expression keeps the single quotes inside it
+    /// (`steps.x.outcome == 'success'`), which a blanket trim would eat.
+    fn unquote(value: &str) -> &str {
+        for quote in ['"', '\''] {
+            if let Some(inner) = value
+                .strip_prefix(quote)
+                .and_then(|v| v.strip_suffix(quote))
+            {
+                return inner;
+            }
+        }
+        value
+    }
+
+    /// The entries of a workflow's single `paths:` filter, unquoted.
+    /// `desktop-smoke.yml` has exactly one (under `pull_request`).
+    fn path_filter(workflow: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in workflow.lines() {
+            let line = line.trim();
+            if line == "paths:" {
+                inside = true;
+            } else if inside {
+                if let Some(entry) = line.strip_prefix("- ") {
+                    out.push(unquote(entry).to_owned());
+                } else if !line.is_empty() && !line.starts_with('#') {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Every step of a workflow paired with its `id:` and `if:` (each empty
+    /// when the step declares none). A `- uses:` step pushes an unnamed
+    /// entry so its own `id:`/`if:` are never misattributed to the step
+    /// above it. Carrying `id` alongside `condition` lets a test check a
+    /// prerequisite named in a dependant's `if:` actually names a step that
+    /// still exists — not just that the `if:` text is well-formed.
+    fn steps_with_conditions(workflow: &str) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        for line in workflow.lines() {
+            let line = line.trim();
+            if let Some(name) = line.strip_prefix("- name: ") {
+                out.push((name.to_owned(), String::new(), String::new()));
+            } else if line.starts_with("- uses: ") {
+                out.push((String::new(), String::new(), String::new()));
+            } else if let Some(id) = line.strip_prefix("id: ") {
+                if let Some(step) = out.last_mut() {
+                    step.1 = id.to_owned();
+                }
+            } else if let Some(condition) = line.strip_prefix("if: ") {
+                if let Some(step) = out.last_mut() {
+                    step.2 = unquote(condition).to_owned();
+                }
+            }
+        }
+        out
+    }
+
+    /// The desktop unit suite (`vitest`) has exactly one home: a step in
+    /// `ci.yml`'s `frontend` job. The smoke lane deliberately does not
+    /// duplicate it (docs/desktop-shell-spec.md "Workspace placement" — it
+    /// builds no Tauri graph there, so it never violated the "required
+    /// lanes must not grow a Tauri build" fence), which leaves deleting
+    /// that one step free to drop the whole suite in silence. This test is
+    /// what notices — and it lives on the cargo side deliberately, because
+    /// a test inside the vitest suite could not fail for its own removal.
+    /// `desktop-smoke.yml`'s path filter now includes `ci.yml`, so the PR
+    /// that removes the step is the PR this fails on (#2418 gap 3).
+    #[test]
+    fn ci_workflow_still_runs_the_desktop_vitest_suite() {
+        let ci = workflow("ci.yml");
+        assert!(
+            ci.lines()
+                .any(|line| line.trim() == "run: pnpm --filter @brink/desktop test"),
+            "ci.yml no longer runs the desktop vitest suite — restore the step, or \
+             give the suite another home and update this test plus \
+             docs/desktop-shell-spec.md \"Workspace placement\""
+        );
+    }
+
+    /// The smoke lane's `pull_request` filter has to list every input that
+    /// can break it, not just the trees it checks (#2418 gap 2): otherwise
+    /// a lockfile, root-manifest or toolchain change runs this lane only on
+    /// the post-merge push to `main`, after the break has landed — and the
+    /// two `*_matches_the_root_workspace` tests above, whose entire purpose
+    /// is catching root-policy drift, cannot fail the PR that causes it.
+    #[test]
+    fn desktop_smoke_path_filter_covers_its_shared_inputs() {
+        let entries = path_filter(&workflow("desktop-smoke.yml"));
+        for required in [
+            "packages/brink-desktop/**",
+            "crates/brink-cli/**",
+            "pnpm-lock.yaml",
+            "Cargo.toml",
+            "Cargo.lock",
+            "clippy.toml",
+            "rust-toolchain.toml",
+            ".github/workflows/ci.yml",
+            ".github/workflows/desktop-smoke.yml",
+        ] {
+            assert!(
+                entries.iter().any(|entry| entry == required),
+                "desktop-smoke.yml's pull_request path filter should list {required:?}; \
+                 it lists {entries:?}"
+            );
+        }
+    }
+
+    /// Each check in the smoke lane must stay non-blocking for its SIBLINGS
+    /// (`!cancelled()`, so a clippy failure cannot hide a failing test)
+    /// while still being gated on the SETUP steps it depends on. A bare
+    /// `!cancelled()` overrides the implicit `success()` for a failed
+    /// prerequisite too, which let a dying `pnpm/action-setup` take four
+    /// dependent steps down with it and bury the root cause in cascade
+    /// noise (2026-08-13 finding).
+    ///
+    /// A condition can quote a prerequisite id that no longer names any
+    /// step (e.g. a renamed or `id:`-stripped setup step): `steps.<id>`
+    /// then resolves to null at runtime, `.outcome` reads as the empty
+    /// string, and the guard is simply always false — the step silently
+    /// never runs while the lane stays green, the exact "ran nothing but
+    /// reported success" class this PR closes for the cascade case. So
+    /// beyond checking the `if:` text, this also checks every prerequisite
+    /// named above still occurs as some step's real `id:` in the workflow.
+    #[test]
+    fn desktop_smoke_gates_dependent_steps_on_setup_success() {
+        let steps = steps_with_conditions(&workflow("desktop-smoke.yml"));
+        let known_ids: std::collections::BTreeSet<&str> = steps
+            .iter()
+            .map(|(_, id, _)| id.as_str())
+            .filter(|id| !id.is_empty())
+            .collect();
+        let dependants: [(&str, &[&str]); 6] = [
+            ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
+            ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
+            ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
+            ("Typecheck (tsc --noEmit)", &["wasm_build", "pnpm_install"]),
+            ("pnpm build", &["wasm_build", "pnpm_install", "sidecar"]),
+            // Format check needs nothing but the runner's toolchain and the
+            // checkout: `actions/checkout` has no `id` to gate the other
+            // steps on, but Format check's own `working-directory` does not
+            // exist without it, so it stays gated on the checkout alone.
+            ("Format check (src-tauri)", &["checkout"]),
+        ];
+        for (name, prerequisites) in dependants {
+            let step = steps.iter().find(|(step_name, _, _)| step_name == name);
+            assert!(
+                step.is_some(),
+                "desktop-smoke.yml should still have a step named {name:?}"
+            );
+            let (_, _, condition) = step.expect("just asserted the step exists");
+            assert!(
+                condition.contains("!cancelled()"),
+                "{name:?} should stay non-blocking for its sibling checks"
+            );
+            for prerequisite in prerequisites {
+                let guard = format!("steps.{prerequisite}.outcome == 'success'");
+                assert!(
+                    condition.contains(&guard),
+                    "{name:?} depends on the {prerequisite:?} setup step, so its `if` \
+                     should contain {guard:?}; it is {condition:?}"
+                );
+                assert!(
+                    known_ids.contains(prerequisite),
+                    "{name:?}'s `if` names {prerequisite:?} as a prerequisite, but no step \
+                     in desktop-smoke.yml declares `id: {prerequisite}` — the guard would \
+                     always read as false at runtime"
+                );
+            }
+        }
+    }
+
+    /// Gap 4 (#2418): the sidecar staged in this check-only lane is only
+    /// there so `tauri-build`'s externalBin resolution finds a file on
+    /// disk — nothing here executes it — so the release profile is
+    /// deliberately flattened via these three `env:` overrides rather than
+    /// paying for an optimized build. Nothing else in this file would
+    /// notice the three lines vanishing from desktop-smoke.yml; this is
+    /// that guard, and it is the fourth of the "Four properties of
+    /// `desktop-smoke.yml` ... asserted by tests" that
+    /// docs/desktop-shell-spec.md's "Smoke-lane inputs and step gating"
+    /// section now claims.
+    #[test]
+    fn desktop_smoke_flattens_the_sidecar_release_profile() {
+        let workflow = workflow("desktop-smoke.yml");
+        for key in [
+            "CARGO_PROFILE_RELEASE_OPT_LEVEL",
+            "CARGO_PROFILE_RELEASE_DEBUG",
+            "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+        ] {
+            let needle = format!("{key}:");
+            assert!(
+                workflow
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(needle.as_str())),
+                "desktop-smoke.yml's env: block should set {key} to flatten the staged \
+                 sidecar's release profile; without it this check-only lane pays for a \
+                 fully optimized brink-cli build it never runs"
+            );
+        }
     }
 
     #[test]
