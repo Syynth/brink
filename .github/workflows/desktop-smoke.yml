@@ -34,8 +34,11 @@ on:
       # root `Cargo.toml`/`clippy.toml` are what src-tauri's two
       # `*_matches_the_root_workspace` tests compare its copies against
       # (#2415/#2422), which otherwise cannot fail the PR that causes the
-      # drift; and `ci.yml` is the desktop unit suite's only home, asserted
-      # by `ci_workflow_still_runs_the_desktop_vitest_suite` below.
+      # drift; root `Cargo.lock` is also a test input in its own right —
+      # `dependency_versions_track_the_root_workspace` (#2451) compares it
+      # against src-tauri's own lock; and `ci.yml` is the desktop unit
+      # suite's only home, asserted by
+      # `ci_workflow_still_runs_the_desktop_vitest_suite` below.
       - "pnpm-lock.yaml"
       - "Cargo.toml"
       - "Cargo.lock"
