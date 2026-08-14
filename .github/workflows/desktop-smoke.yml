@@ -79,6 +79,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        id: checkout
         with:
           persist-credentials: false
 
@@ -160,10 +161,15 @@ jobs:
       # was itself SKIPPED because something before it failed reports
       # `skipped`, and its dependants must skip too.
       #
-      # Format check needs nothing but the toolchain the runner ships, so
-      # it carries no prerequisite of its own.
+      # Format check needs nothing but the toolchain the runner ships and
+      # the checkout — but it does need the checkout: `actions/checkout`
+      # has no `id` on the other steps to gate on, yet without a working
+      # tree "Format check"'s `working-directory` does not exist either, so
+      # a failed checkout used to still fire this step and die on a
+      # working-directory error stacked on top of the real failure — the
+      # last residue of the cascade class this file otherwise closes.
       - name: Format check (src-tauri)
-        if: '!cancelled()'
+        if: "!cancelled() && steps.checkout.outcome == 'success'"
         run: cargo fmt --all -- --check
         working-directory: packages/brink-desktop/src-tauri
 

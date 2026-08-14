@@ -1147,20 +1147,27 @@ mod tests {
         out
     }
 
-    /// Every step of a workflow paired with its `if:` expression (empty
-    /// when it declares none). A `- uses:` step pushes an unnamed entry so
-    /// its own `if:` is never misattributed to the step above it.
-    fn steps_with_conditions(workflow: &str) -> Vec<(String, String)> {
-        let mut out: Vec<(String, String)> = Vec::new();
+    /// Every step of a workflow paired with its `id:` and `if:` (each empty
+    /// when the step declares none). A `- uses:` step pushes an unnamed
+    /// entry so its own `id:`/`if:` are never misattributed to the step
+    /// above it. Carrying `id` alongside `condition` lets a test check a
+    /// prerequisite named in a dependant's `if:` actually names a step that
+    /// still exists — not just that the `if:` text is well-formed.
+    fn steps_with_conditions(workflow: &str) -> Vec<(String, String, String)> {
+        let mut out: Vec<(String, String, String)> = Vec::new();
         for line in workflow.lines() {
             let line = line.trim();
             if let Some(name) = line.strip_prefix("- name: ") {
-                out.push((name.to_owned(), String::new()));
+                out.push((name.to_owned(), String::new(), String::new()));
             } else if line.starts_with("- uses: ") {
-                out.push((String::new(), String::new()));
+                out.push((String::new(), String::new(), String::new()));
+            } else if let Some(id) = line.strip_prefix("id: ") {
+                if let Some(step) = out.last_mut() {
+                    step.1 = id.to_owned();
+                }
             } else if let Some(condition) = line.strip_prefix("if: ") {
                 if let Some(step) = out.last_mut() {
-                    step.1 = unquote(condition).to_owned();
+                    step.2 = unquote(condition).to_owned();
                 }
             }
         }
@@ -1224,26 +1231,42 @@ mod tests {
     /// prerequisite too, which let a dying `pnpm/action-setup` take four
     /// dependent steps down with it and bury the root cause in cascade
     /// noise (2026-08-13 finding).
+    ///
+    /// A condition can quote a prerequisite id that no longer names any
+    /// step (e.g. a renamed or `id:`-stripped setup step): `steps.<id>`
+    /// then resolves to null at runtime, `.outcome` reads as the empty
+    /// string, and the guard is simply always false — the step silently
+    /// never runs while the lane stays green, the exact "ran nothing but
+    /// reported success" class this PR closes for the cascade case. So
+    /// beyond checking the `if:` text, this also checks every prerequisite
+    /// named above still occurs as some step's real `id:` in the workflow.
     #[test]
     fn desktop_smoke_gates_dependent_steps_on_setup_success() {
         let steps = steps_with_conditions(&workflow("desktop-smoke.yml"));
+        let known_ids: std::collections::BTreeSet<&str> = steps
+            .iter()
+            .map(|(_, id, _)| id.as_str())
+            .filter(|id| !id.is_empty())
+            .collect();
         let dependants: [(&str, &[&str]); 6] = [
             ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
             ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
             ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
             ("Typecheck (tsc --noEmit)", &["wasm_build", "pnpm_install"]),
             ("pnpm build", &["wasm_build", "pnpm_install", "sidecar"]),
-            // Format check needs nothing but the runner's toolchain, so it
-            // is the one check that stays unconditional.
-            ("Format check (src-tauri)", &[]),
+            // Format check needs nothing but the runner's toolchain and the
+            // checkout: `actions/checkout` has no `id` to gate the other
+            // steps on, but Format check's own `working-directory` does not
+            // exist without it, so it stays gated on the checkout alone.
+            ("Format check (src-tauri)", &["checkout"]),
         ];
         for (name, prerequisites) in dependants {
-            let step = steps.iter().find(|(step_name, _)| step_name == name);
+            let step = steps.iter().find(|(step_name, _, _)| step_name == name);
             assert!(
                 step.is_some(),
                 "desktop-smoke.yml should still have a step named {name:?}"
             );
-            let (_, condition) = step.expect("just asserted the step exists");
+            let (_, _, condition) = step.expect("just asserted the step exists");
             assert!(
                 condition.contains("!cancelled()"),
                 "{name:?} should stay non-blocking for its sibling checks"
@@ -1255,7 +1278,43 @@ mod tests {
                     "{name:?} depends on the {prerequisite:?} setup step, so its `if` \
                      should contain {guard:?}; it is {condition:?}"
                 );
+                assert!(
+                    known_ids.contains(prerequisite),
+                    "{name:?}'s `if` names {prerequisite:?} as a prerequisite, but no step \
+                     in desktop-smoke.yml declares `id: {prerequisite}` — the guard would \
+                     always read as false at runtime"
+                );
             }
+        }
+    }
+
+    /// Gap 4 (#2418): the sidecar staged in this check-only lane is only
+    /// there so `tauri-build`'s externalBin resolution finds a file on
+    /// disk — nothing here executes it — so the release profile is
+    /// deliberately flattened via these three `env:` overrides rather than
+    /// paying for an optimized build. Nothing else in this file would
+    /// notice the three lines vanishing from desktop-smoke.yml; this is
+    /// that guard, and it is the fourth of the "Four properties of
+    /// `desktop-smoke.yml` ... asserted by tests" that
+    /// docs/desktop-shell-spec.md's "Smoke-lane inputs and step gating"
+    /// section now claims.
+    #[test]
+    fn desktop_smoke_flattens_the_sidecar_release_profile() {
+        let workflow = workflow("desktop-smoke.yml");
+        for key in [
+            "CARGO_PROFILE_RELEASE_OPT_LEVEL",
+            "CARGO_PROFILE_RELEASE_DEBUG",
+            "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+        ] {
+            let needle = format!("{key}:");
+            assert!(
+                workflow
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(needle.as_str())),
+                "desktop-smoke.yml's env: block should set {key} to flatten the staged \
+                 sidecar's release profile; without it this check-only lane pays for a \
+                 fully optimized brink-cli build it never runs"
+            );
         }
     }
 

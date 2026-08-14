@@ -135,7 +135,7 @@ unit suite stop running behind a green step (#2409).
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Three properties of `desktop-smoke.yml` are asserted by tests in
+Four properties of `desktop-smoke.yml` are asserted by tests in
 `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
@@ -151,15 +151,22 @@ Three properties of `desktop-smoke.yml` are asserted by tests in
   `success()` on a failed *prerequisite*, so a dying setup step let the
   dependent steps run and fail too, burying the root cause. Each check now
   reads `!cancelled() && steps.<setup>.outcome == 'success'` for the setup
-  steps it needs (`linux_deps`, `wasm_build`, `pnpm_install`, `sidecar`);
-  the format check, which needs only the runner's toolchain, stays
-  unconditional. (`desktop_smoke_gates_dependent_steps_on_setup_success`)
+  steps it needs (`checkout`, `linux_deps`, `wasm_build`, `pnpm_install`,
+  `sidecar`); the format check needs only the runner's toolchain and the
+  checkout, so it is gated on `checkout` alone — `actions/checkout` carries
+  no `id` by default, so this lane gives its checkout step one.
+  `desktop_smoke_gates_dependent_steps_on_setup_success` checks both the
+  `if:` text and that every prerequisite id it names still names a real
+  step, since a stale id (e.g. from a renamed or `id:`-stripped setup step)
+  reads as `steps.<id>.outcome == ''` and the guard is simply always false.
 - **The sidecar is staged, not shipped, in this lane.** `cargo build -p
   brink-cli --release` runs only so `tauri-build`'s externalBin resolution
   finds a file on disk; nothing here executes it, so the lane flattens the
-  release profile through `CARGO_PROFILE_RELEASE_*` environment variables
-  instead of paying for an optimized binary. `ensure-cli-sidecar.mjs` is
-  unchanged, so every other caller still builds a real release sidecar.
+  release profile through `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` /
+  `_CODEGEN_UNITS` environment variables instead of paying for an optimized
+  binary. `ensure-cli-sidecar.mjs` is unchanged, so every other caller
+  still builds a real release sidecar.
+  (`desktop_smoke_flattens_the_sidecar_release_profile`)
 
 ### CI coverage blind spots
 
