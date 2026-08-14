@@ -2,6 +2,10 @@
 // into dist/ next to the compiled wrapper, which imports "./brink_web.js".
 // Runs AFTER tsup — tsup's DTS writer races with copies made in onSuccess
 // and can clobber freshly copied .d.ts files.
+//
+// `files` below is mirrored by scripts/check-wasm-pkg.mjs's REQUIRED_FILES
+// (repo root) — that script's preflight check reads this same set, and
+// scripts/check-wasm-pkg.test.mjs asserts the two lists stay in sync.
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

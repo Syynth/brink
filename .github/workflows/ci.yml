@@ -665,6 +665,13 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Needs only Node — no install, no wasm build — so it runs before
+      # either. The structurally parallel sibling gate for
+      # packages/brink-desktop's own preflight pair is
+      # packages/brink-desktop/src/__tests__/ensure-wasm.test.ts, run below
+      # via `pnpm --filter @brink/desktop test`.
+      - name: Unit tests (node --test, scripts)
+        run: pnpm run test:scripts
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Typecheck
