@@ -1538,8 +1538,10 @@ mod tests {
     /// can break it, not just the trees it checks (#2418 gap 2): otherwise
     /// a lockfile, root-manifest or toolchain change runs this lane only on
     /// the post-merge push to `main`, after the break has landed — and the
-    /// two `*_matches_the_root_workspace` tests above, whose entire purpose
-    /// is catching root-policy drift, cannot fail the PR that causes it.
+    /// two `*_matches_the_root_workspace` tests above, plus
+    /// `dependency_versions_track_the_root_workspace` (#2451, which also
+    /// compares root's `Cargo.lock`), whose entire purpose is catching
+    /// root-policy drift, cannot fail the PR that causes it.
     #[test]
     fn desktop_smoke_path_filter_covers_its_shared_inputs() {
         let entries = path_filter(&workflow("desktop-smoke.yml"));
