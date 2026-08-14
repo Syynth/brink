@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -14,7 +15,12 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureCliSidecar, hostTriple, sidecarPaths } from "../../scripts/ensure-cli-sidecar.mjs";
+import {
+  ensureCliSidecar,
+  hostTriple,
+  sidecarPaths,
+  STUB_SIDECAR,
+} from "../../scripts/ensure-cli-sidecar.mjs";
 
 // `ensure-cli-sidecar.mjs` was top-level imperative script code until #2452.
 // Nothing could call it, so nothing could test it — which is why #2418's
@@ -192,6 +198,135 @@ describe("ensureCliSidecar", () => {
         delete process.env.CARGO_TARGET_DIR;
       } else {
         process.env.CARGO_TARGET_DIR = originalTargetDir;
+      }
+    }
+  });
+});
+
+describe("the stub option", () => {
+  // #2469: `desktop-smoke.yml` stages the sidecar only so `tauri-build`'s
+  // externalBin resolution finds a file on disk — nothing in that check-only
+  // lane executes it — so it now asks for a stub instead of the three
+  // `CARGO_PROFILE_RELEASE_*` env vars PR #2446 added as a stopgap. Those
+  // only made the wasted build cheaper; this skips it.
+
+  it("stages a stub without building anything", () => {
+    // `scratch()`, not `stagedRepoRoot()`: there is no `target/release/brink`
+    // anywhere in this tree, so the non-stub path could not possibly have
+    // produced the staged file — it would have thrown.
+    const repoRoot = scratch();
+    const srcTauriDir = scratch();
+    const commands: string[] = [];
+
+    const destBin = ensureCliSidecar({
+      repoRoot,
+      srcTauriDir,
+      triple: "x86_64-unknown-linux-gnu",
+      stub: true,
+      runCommand: (command: string) => {
+        commands.push(command);
+        return "";
+      },
+      log: () => {},
+    });
+
+    expect(commands).toEqual([]);
+    // Same triple-suffixed name as a real sidecar: tauri.conf.json's
+    // `binaries/brink-cli` resolution is what has to be satisfied.
+    expect(destBin).toBe(
+      join(srcTauriDir, "binaries", "brink-cli-x86_64-unknown-linux-gnu"),
+    );
+    expect(existsSync(destBin)).toBe(true);
+    expect(statSync(destBin).mode & 0o111).not.toBe(0);
+    expect(readFileSync(destBin, "utf8")).toBe(STUB_SIDECAR);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "stages a stub that fails loudly rather than impersonating brink-cli",
+    () => {
+      const repoRoot = scratch();
+      const srcTauriDir = scratch();
+      const destBin = ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        stub: true,
+        runCommand: () => "",
+        log: () => {},
+      });
+
+      // If a lane ever DOES execute the staged sidecar, it must break there
+      // and say why, not exit 0 and let a stubbed lane look like it ran the
+      // real CLI.
+      let status: number | undefined;
+      let stderr = "";
+      try {
+        execFileSync(destBin, ["export-xliff"], { encoding: "utf8", stdio: "pipe" });
+      } catch (error) {
+        const failure = error as { status?: number; stderr?: string };
+        status = failure.status;
+        stderr = failure.stderr ?? "";
+      }
+      expect(status).toBe(127);
+      expect(stderr).toContain("sidecar stub");
+    },
+  );
+
+  it("reads BRINK_SIDECAR_STUB from the environment when the caller names no stub", () => {
+    // The smoke lane reaches this script twice — its own "Stage brink-cli
+    // sidecar" step and `pnpm build`, which re-runs it — and only the first
+    // could carry a command-line flag. The workflow therefore sets the env
+    // var, so this default is the wiring the lane actually depends on.
+    const repoRoot = scratch();
+    const srcTauriDir = scratch();
+    const original = process.env.BRINK_SIDECAR_STUB;
+    process.env.BRINK_SIDECAR_STUB = "1";
+    try {
+      const destBin = ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        runCommand: () => "",
+        log: () => {},
+      });
+      expect(readFileSync(destBin, "utf8")).toBe(STUB_SIDECAR);
+    } finally {
+      if (original === undefined) {
+        delete process.env.BRINK_SIDECAR_STUB;
+      } else {
+        process.env.BRINK_SIDECAR_STUB = original;
+      }
+    }
+  });
+
+  it("builds for real when BRINK_SIDECAR_STUB is set to anything else", () => {
+    // Only the exact string "1" opts in — a leftover `BRINK_SIDECAR_STUB=0`
+    // in a developer's shell must not silently turn `pnpm --filter
+    // @brink/desktop build` into a shell that ships a stub for a sidecar it
+    // really does run.
+    const repoRoot = stagedRepoRoot();
+    const srcTauriDir = scratch();
+    const commands: string[] = [];
+    const original = process.env.BRINK_SIDECAR_STUB;
+    process.env.BRINK_SIDECAR_STUB = "0";
+    try {
+      const destBin = ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        runCommand: (command: string) => {
+          commands.push(command);
+          return "";
+        },
+        log: () => {},
+      });
+      expect(commands).toEqual(["cargo build -p brink-cli --release"]);
+      expect(readFileSync(destBin, "utf8")).not.toBe(STUB_SIDECAR);
+    } finally {
+      if (original === undefined) {
+        delete process.env.BRINK_SIDECAR_STUB;
+      } else {
+        process.env.BRINK_SIDECAR_STUB = original;
       }
     }
   });

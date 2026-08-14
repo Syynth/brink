@@ -57,26 +57,37 @@ env:
   # Same rationale as ci.yml: every job here starts from a cold checkout, so
   # incremental compilation is pure write overhead, never read back.
   CARGO_INCREMENTAL: 0
-  # The `brink-cli` sidecar is built here only so `tauri-build`'s externalBin
+  # The `brink-cli` sidecar is staged here only so `tauri-build`'s externalBin
   # resolution finds a file on disk (see "Stage brink-cli sidecar" below);
-  # nothing in this check-only lane ever EXECUTES it, so paying for an
-  # optimized build is pure waste (#2418 gap 4). Flattening the release
-  # profile through the environment keeps the change scoped to this lane —
-  # `ensure-cli-sidecar.mjs` still builds a real release binary everywhere
-  # else, including `pnpm --filter @brink/desktop build` on a developer
-  # machine, where the sidecar does get shipped and run.
-  CARGO_PROFILE_RELEASE_OPT_LEVEL: 0
-  CARGO_PROFILE_RELEASE_DEBUG: 0
-  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 256
+  # nothing in this check-only lane ever EXECUTES it — `run_cli` in
+  # src-tauri/src/lib.rs is the only caller and it needs a running app, not a
+  # `cargo test` — so building it at all is pure waste (#2418 gap 4). This
+  # asks `ensure-cli-sidecar.mjs` for a stub instead (#2469): it writes a
+  # loudly-failing placeholder under the same triple-suffixed name and skips
+  # `cargo build -p brink-cli --release` entirely. It replaces the
+  # `CARGO_PROFILE_RELEASE_OPT_LEVEL`/`_DEBUG`/`_CODEGEN_UNITS` stopgap PR
+  # #2446 added, which only made the wasted build cheaper.
+  #
+  # An `env:` var rather than a flag on the step below, because the lane runs
+  # the script TWICE: its own "Stage brink-cli sidecar" step, and `pnpm build`,
+  # which re-runs it. Only the environment reaches the nested invocation.
+  # Scoped to this workflow, so `ensure-cli-sidecar.mjs` still builds a real
+  # release binary everywhere else, including `pnpm --filter @brink/desktop
+  # build` on a developer machine, where the sidecar does get shipped and run.
+  #
+  # ⚠ `desktop_smoke_stubs_the_staged_sidecar` (src-tauri/src/lib.rs) asserts
+  # both halves: this var present, and the #2446 stopgap vars absent.
+  BRINK_SIDECAR_STUB: "1"
 
 jobs:
   desktop-smoke:
     name: Desktop smoke (check, clippy, tsc, build)
     runs-on: ubuntu-latest
-    # Three heavy builds (wasm-pack, a brink-cli release build for the sidecar,
-    # and the Tauri graph) in a lane branch protection does NOT watch — a hang
-    # would burn the 6h default unnoticed. ci.yml sets the same kind of backstop
-    # on its long poles (fuzz: 30, determinism-law: 10).
+    # Two heavy builds (wasm-pack and the Tauri graph — the brink-cli release
+    # build is stubbed out by BRINK_SIDECAR_STUB above) in a lane branch
+    # protection does NOT watch — a hang would burn the 6h default unnoticed.
+    # ci.yml sets the same kind of backstop on its long poles (fuzz: 30,
+    # determinism-law: 10).
     timeout-minutes: 45
     permissions:
       contents: read
@@ -130,10 +141,12 @@ jobs:
         id: pnpm_install
         run: pnpm install --frozen-lockfile
 
-      # Stages the brink-cli sidecar (root-workspace build) that src-tauri's
-      # build.rs requires to exist on disk before it will even `cargo
-      # check` — externalBin resource resolution runs unconditionally, not
-      # only on `tauri build` (packages/brink-desktop/scripts/ensure-cli-sidecar.mjs).
+      # Stages the brink-cli sidecar that src-tauri's build.rs requires to
+      # exist on disk before it will even `cargo check` — externalBin resource
+      # resolution runs unconditionally, not only on `tauri build`
+      # (packages/brink-desktop/scripts/ensure-cli-sidecar.mjs). `BRINK_SIDECAR_STUB`
+      # in this workflow's `env:` block makes that a placeholder rather than a
+      # root-workspace release build (#2469).
       - name: Stage brink-cli sidecar
         id: sidecar
         run: node scripts/ensure-cli-sidecar.mjs

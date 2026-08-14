@@ -1630,30 +1630,44 @@ mod tests {
 
     /// Gap 4 (#2418): the sidecar staged in this check-only lane is only
     /// there so `tauri-build`'s externalBin resolution finds a file on
-    /// disk — nothing here executes it — so the release profile is
-    /// deliberately flattened via these three `env:` overrides rather than
-    /// paying for an optimized build. Nothing else in this file would
-    /// notice the three lines vanishing from desktop-smoke.yml; this is
-    /// that guard, and it is the fourth of the "Four properties of
-    /// `desktop-smoke.yml` ... asserted by tests" that
+    /// disk — nothing here executes it ([`run_cli`] is the only caller and
+    /// it needs a running app, not a `cargo test`) — so the lane asks
+    /// `ensure-cli-sidecar.mjs` for a stub and skips the build entirely
+    /// (#2469). PR #2446's `CARGO_PROFILE_RELEASE_*` stopgap only made the
+    /// wasted build cheaper; both halves are asserted here so the stub
+    /// cannot quietly revert to the stopgap, or accumulate both. Nothing
+    /// else in this file would notice the wiring vanishing from
+    /// desktop-smoke.yml; this is that guard, and it is the fourth of the
+    /// "Four properties of `desktop-smoke.yml` ... asserted by tests" that
     /// docs/desktop-shell-spec.md's "Smoke-lane inputs and step gating"
-    /// section now claims.
+    /// section claims.
     #[test]
-    fn desktop_smoke_flattens_the_sidecar_release_profile() {
+    fn desktop_smoke_stubs_the_staged_sidecar() {
         let workflow = workflow("desktop-smoke.yml");
+        let sets_key = |key: &str| {
+            let needle = format!("{key}:");
+            workflow
+                .lines()
+                .any(|line| line.trim_start().starts_with(needle.as_str()))
+        };
+
+        assert!(
+            sets_key("BRINK_SIDECAR_STUB"),
+            "desktop-smoke.yml's env: block should set BRINK_SIDECAR_STUB so \
+             ensure-cli-sidecar.mjs stages a placeholder instead of building a \
+             brink-cli release binary this check-only lane never runs; an env var \
+             rather than a step flag because `pnpm build` re-runs that script"
+        );
         for key in [
             "CARGO_PROFILE_RELEASE_OPT_LEVEL",
             "CARGO_PROFILE_RELEASE_DEBUG",
             "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
         ] {
-            let needle = format!("{key}:");
             assert!(
-                workflow
-                    .lines()
-                    .any(|line| line.trim_start().starts_with(needle.as_str())),
-                "desktop-smoke.yml's env: block should set {key} to flatten the staged \
-                 sidecar's release profile; without it this check-only lane pays for a \
-                 fully optimized brink-cli build it never runs"
+                !sets_key(key),
+                "desktop-smoke.yml still sets {key}, PR #2446's stopgap for the same \
+                 waste: with BRINK_SIDECAR_STUB there is no release build left in this \
+                 lane for it to flatten, so it is dead configuration"
             );
         }
     }
