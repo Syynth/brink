@@ -57,14 +57,20 @@ const playgroundRoot = resolve(packageRoot, "../brink-studio");
 const DESKTOP_ONLY = ["@brink-lang/studio"];
 
 /**
- * `tsconfig.build.json` feeds vite-plugin-dts's published `d.ts` rollup for
- * `src/index.ts`, the public entry point. It omits both wasm specifiers, for
- * different reasons: `@brink-lang/web` resolves through `node_modules` on
- * purpose so the rollup keeps it as an external import instead of inlining
- * its (privately typed) classes, and `brink-web` has no mapping at all
- * because `src/index.ts` never imports that raw specifier — only
- * `@brink-lang/web`'s wrapper does, so `tsc` never needs to resolve it for
- * this entry point.
+ * `tsconfig.build.json` feeds TSUP's published `d.ts` rollup for
+ * `src/index.ts`, the public entry point (`tsup.config.ts`'s `tsconfig`
+ * field — not vite-plugin-dts, which this repo does not use; corrected in
+ * #2465). It omits both wasm specifiers, for different reasons:
+ * `@brink-lang/web` resolves through `node_modules` on purpose so the rollup
+ * keeps it as an external import instead of inlining its (privately typed)
+ * classes, and `brink-web` has no mapping at all because `src/index.ts`
+ * never imports that raw specifier — only `@brink-lang/web`'s wrapper does,
+ * so `tsc` never needs to resolve it for this entry point.
+ *
+ * The studio now owns the same expectation from its own side, against its
+ * own `alias-map.ts` (`packages/brink-studio/src/__tests__/alias-map.test.ts`,
+ * #2464). This guard is not replaced by it: this one pins the RELATIONSHIP
+ * between two packages' maps, which that one cannot see.
  */
 const DTS_ROLLUP_EXCLUDES = ["@brink-lang/web", "brink-web"];
 

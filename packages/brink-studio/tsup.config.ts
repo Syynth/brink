@@ -7,6 +7,9 @@
 // package types (packages/wasm/dist/index.d.ts) instead of source, so the
 // rollup never duplicates its class declarations — run
 // `pnpm --filter @brink-lang/web build` first (the workspace `build` does).
+//
+// `tsconfig` and `external` are guarded from inside this package by
+// src/__tests__/alias-map.test.ts (#2464).
 import { defineConfig } from "tsup";
 
 export default defineConfig({
