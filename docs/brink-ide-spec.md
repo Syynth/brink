@@ -511,7 +511,7 @@ pub enum WeaveElement {
 
 ### Folding
 
-Fold ranges and machinery/narrative fold-run classification for code-folding UI. Structural folds (`brink_ide::folding::folding_ranges`) and block folds (`brink_ide::folding::block_folds`) read `hir`/`source`/`projection` and touch neither CST. For native `.brink` files, when a host opts in via `set_fold_runs_enabled`, the machinery/narrative fold-run pass is computed from the native CST (`syntax_root_native`) rather than the ink-only `syntax_root`.
+Fold ranges and machinery/narrative fold-run classification for code-folding UI. Structural folds (`brink_ide::folding::folding_ranges`) and block folds (`brink_ide::folding::block_folds`) are **always-on and read only `hir`/`source`/`projection`, never touching the CST**. The machinery/narrative fold-run pass is **opt-in via `set_fold_runs_enabled`**: it reads the per-line classification (nature facet) from `line_contexts`, which depends on the file's CST (routing to `syntax_root_native` for native `.brink` files, `syntax_root` for ink). For native files, the opt-in pass uses `syntax_root_native` rather than the ink-only `syntax_root`.
 
 ```rust
 pub enum FoldKind {
@@ -523,8 +523,13 @@ pub enum FoldKind {
 pub struct FoldRange {
     pub start_line: u32,
     pub end_line: u32,
-    pub kind: FoldKind,
     pub collapsed_text: Option<String>,
+    /// Fold from the *start* of `start_line` (hiding the whole line) rather
+    /// than from its end. Used for declaration folds that include the doc
+    /// block and header; the editor renders the hidden header as the
+    /// collapsed placeholder.
+    pub from_line_start: bool,
+    pub kind: FoldKind,
 }
 ```
 
