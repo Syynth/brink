@@ -318,15 +318,18 @@ mod tests {
     /// through `IdeSession::syntax_root_native` +
     /// `line_context::line_contexts_native`, never `syntax_root`'s
     /// always-ink parse (`IdeSession::syntax_root`'s own doc comment,
-    /// #2280's failure mode) — mirrors
-    /// `folding::tests::native_folding_ranges_reach_the_native_cst_path`'s
-    /// reachability proof (same fixture shape), exercised through the real
-    /// `EditorSession::line_contexts()` entry point end to end on a
-    /// `.brink` file, the same way a host would.
+    /// #2280's failure mode) — mirrors the reachability proof of
+    /// `native_folding_ranges_reach_the_native_cst_path` in
+    /// `crate::editor::tests` (`crates/brink-web/src/editor/mod.rs`, NOT
+    /// the sibling `folding` submodule), same fixture shape, exercised
+    /// through the real `EditorSession::line_contexts()` entry point end to
+    /// end on a `.brink` file, the same way a host would.
     ///
-    /// Note on this assertion's scope, same caveat as the folding test:
-    /// `line_contexts_native`'s block-comment classification is proved
-    /// end to end against the real native CST in brink-ide's own
+    /// Note on this assertion's scope: see the canonical caveat (#2471) on
+    /// that `mod.rs` test for the full reasoning; it applies here
+    /// unchanged, substituting `line_contexts_native`'s block-comment
+    /// classification for the fold-run classification. That classification
+    /// is proved end to end against the real native CST in brink-ide's own
     /// `line_context::tests::native_block_comment_uses_the_native_cst`
     /// (red-first-verified there). This test only pins that the
     /// wasm-facing entry point actually reaches that native path and
