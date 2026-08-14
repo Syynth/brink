@@ -95,6 +95,19 @@ drifts, and are the only thing that notices. If a shared lint-defaults file
 is ever extracted, both sides should point at it and those tests should
 follow.
 
+**Third cost, named later (#2451): the lockfile does not cross the fence
+either.** `src-tauri` has its own `Cargo.lock`, and `cargo test --locked` in
+the smoke lane only proves that lock is internally consistent with the
+`Cargo.toml` beside it — never that it still tracks the root workspace's
+resolved versions. `dependency_versions_track_the_root_workspace` in
+`src/lib.rs` closes that: for every crate BOTH manifests declare (today
+`serde`, `serde_json`, `thiserror`), it fails when this lock is behind the
+root's resolved version, and when a root major bump has no compatible copy
+here at all. Scope is deliberately the declared overlap, not the whole
+graph — the two dependency graphs resolve transitive crates differently for
+legitimate reasons, and `src-tauri` depends on no first-party crate at all
+(it reaches the compiler only through the `brink-cli` sidecar binary).
+
 CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
@@ -200,9 +213,18 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   finds a file on disk; nothing here executes it, so the lane flattens the
   release profile through `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` /
   `_CODEGEN_UNITS` environment variables instead of paying for an optimized
-  binary. `ensure-cli-sidecar.mjs` is unchanged, so every other caller
-  still builds a real release sidecar.
+  binary. `ensure-cli-sidecar.mjs` carries no profile option of its own, so
+  every other caller still builds a real release sidecar.
   (`desktop_smoke_flattens_the_sidecar_release_profile`)
+
+  The script does now export its logic — `ensureCliSidecar`, `hostTriple`,
+  `sidecarPaths` — behind an `import.meta.url === pathToFileURL(argv[1])`
+  main-guard, so `node scripts/ensure-cli-sidecar.mjs` (this lane's "Stage
+  brink-cli sidecar" step, and the `dev`/`build` package scripts) still does
+  the whole job while a test can call the pieces directly (#2452,
+  `src/__tests__/ensure-cli-sidecar.test.ts`). That seam is the prerequisite
+  the profile/stub-binary option would need; adding the option itself is
+  still open.
 
 ### CI coverage blind spots
 

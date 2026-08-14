@@ -9,6 +9,11 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    // `scripts/*.mjs` are plain ESM with JSDoc, not TypeScript. `allowJs`
+    // (without `checkJs`) is what lets a test `import` one and get inferred
+    // types rather than TS7016 — needed since #2452 gave
+    // `ensure-cli-sidecar.mjs` an export seam its test calls directly.
+    "allowJs": true,
     "types": ["vite/client", "node"],
     "paths": {
       "brink-web": ["../../crates/brink-web/www/pkg"],
