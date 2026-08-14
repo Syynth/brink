@@ -655,7 +655,10 @@ jobs:
         with:
           version: v0.14.0
       # The @brink-lang/web package is a file: dependency on the wasm-pack output,
-      # so the bundle must be built BEFORE `pnpm install` can link it.
+      # so the bundle must be built BEFORE `pnpm install` can link it (#2479).
+      # This ordering is CI-self-enforcing: `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) fails if this
+      # step ever moves after "Install dependencies" below.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -674,6 +677,15 @@ jobs:
         run: pnpm run test:scripts
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # `pnpm install --frozen-lockfile` exits 0 even when the file: link
+      # above silently failed to resolve (#2479), so this checks the
+      # runtime result immediately rather than let a failed link surface
+      # several confusing steps later (e.g. "vitest: not found"). #2504's
+      # first bullet: this is the runtime counterpart to
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`, which
+      # only checks the workflow's step ORDER, not that the install
+      # actually linked correctly at that order.
+      - run: pnpm run check:wasm-pkg
       - name: Typecheck
         run: pnpm --filter @brink-lang/studio typecheck
       - name: Unit tests (vitest)
@@ -705,6 +717,9 @@ jobs:
         uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with:
           version: v0.14.0
+      # Same file: dependency ordering as the `frontend` job above (#2479);
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) covers this job too.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -716,6 +731,9 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # See the `frontend` job's identical step above (#2504's first
+      # bullet, #2479).
+      - run: pnpm run check:wasm-pkg
       - name: Install Playwright browser
         run: pnpm --filter @brink-lang/studio exec playwright install --with-deps chromium
       - name: E2E tests (Playwright, shard ${{ matrix.shard }}/4)
