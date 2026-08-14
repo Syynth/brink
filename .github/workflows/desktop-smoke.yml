@@ -43,13 +43,23 @@ on:
       # `dependency_versions_track_the_root_workspace` (#2451) compares it
       # against src-tauri's own lock; and `ci.yml` is the desktop unit
       # suite's only home, asserted by
-      # `ci_workflow_still_runs_the_desktop_vitest_suite` below.
+      # `ci_workflow_still_runs_the_desktop_vitest_suite` below. `ci.yml`
+      # and this file are also named individually below because the two
+      # tests above check for those exact literal path entries; the glob
+      # is additional (#2504): naming only `ci.yml` and this file left
+      # `npm-release.yml`, and any brand-new workflow file, free to reorder
+      # or add a `pnpm install --frozen-lockfile` lane without ever
+      # triggering this lane on the PR that did it —
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (src-tauri/src/lib.rs) would still catch the regression on the
+      # next push to `main`, but only after it had already merged.
       - "pnpm-lock.yaml"
       - "Cargo.toml"
       - "Cargo.lock"
       - "clippy.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/ci.yml"
+      - ".github/workflows/**"
 
 permissions: {}
 
@@ -139,7 +149,10 @@ jobs:
       # The @brink-lang/web package is a file: dependency on this output
       # (mirrors the `frontend` job in ci.yml), and src-tauri's own build
       # never touches it — but `pnpm build` below resolves the desktop
-      # package's "brink-web" alias straight to this path.
+      # package's "brink-web" alias straight to this path. It must precede
+      # "Install dependencies" below (#2479);
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) enforces that ordering.
       - name: Build brink-web wasm package
         id: wasm_build
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg

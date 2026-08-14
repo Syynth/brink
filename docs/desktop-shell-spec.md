@@ -58,7 +58,7 @@ anticipated implementation); every method maps directly:
 |---|---|---|
 | `listFiles()` | recursive dir walk | include `*.brink`, `*.ink`, `brink.toml`; skip dotfiles, `target/`, `node_modules/` |
 | `readFile` / `requestFile` | `fs.readTextFile` | `requestFile` returns null for paths outside the project root — never escape the opened folder |
-| `onFileChanged` | **buffer, don't write** | v1 keeps the studio's explicit-save model: dirty state lives in the editor; disk writes happen on `file.save`/`saveAll` via `requestSave`. Autosave ships unconditionally: a 2-minute ticker (120 s) dispatches `file.saveAll` whenever dirty files exist, queuing behind any write already in flight (#2403). The ticker is armed when a project opens and cleared on project close or reopen (not app lifetime; see `autosaveTimer` in `packages/brink-desktop/src/main.tsx`). A Settings surface can configure the interval in future versions; this is the intended extensibility point already noted in the code comment. This ticker is the production caller both #2435 and #2434's fixes exist to serve correctly |
+| `onFileChanged` | **buffer, don't write** | v1 keeps the studio's explicit-save model: dirty state lives in the editor; disk writes happen on `file.save`/`saveAll` via `requestSave`. Autosave ships unconditionally: a 2-minute ticker (120 s) dispatches `file.saveAll` whenever dirty files exist, queuing behind any write already in flight (#2403). The ticker is armed when a project opens and cleared on project close or reopen (not app lifetime; see `autosaveTimer` in `packages/brink-desktop/src/main.tsx`) — pinned by `packages/brink-desktop/src/__tests__/autosave-reopen.test.ts` (#2486), which drives a real reopen without an intervening explicit close and asserts the previous project's ticker never fires against the new one. A Settings surface can configure the interval in future versions; this is the intended extensibility point already noted in the code comment. This ticker is the production caller both #2435 and #2434's fixes exist to serve correctly |
 | `createFile` / `deleteFile` / `renameFile` | `fs.writeTextFile` / `remove` / `rename` | `renameFile` is implemented natively (atomic) — `ProjectSession.renameFile`'s create+delete fallback for a provider lacking `renameFile` is dead code on this provider, since it always implements it. The native move is **not the whole op**: it carries the file's bytes, but the rename computed the moved file's own outbound `INCLUDE` rewrites into the `newContent` the contract hands over, so the provider writes that content at the new path straight after the move (#2425). Without it, a cross-directory rename leaves disk holding the moved file's own pre-rewrite `INCLUDE` paths at the new location until some unrelated edit dirties it — invisible in the studio (the session is correct) and wrong for anything reading disk directly, e.g. `brink compile`. This write closes that gap only for the moved file's own content, so disk at the new path agrees with the session; a referrer's rewritten `INCLUDE` (a file that pointed at the old path) is an ordinary edit that goes through `applyEdit` → `onFileChanged` and stays staged under D2, landing on disk only at the next `requestSave` — until then, disk can still disagree with the session for those referrer files. The follow-up write goes through the same serialized staged-write path as a save; see the `requestSave` row below for what a rejection does and does not do |
 | `onExternalChange` | fs watcher on the project root | debounce; deliver `null` on delete; unsubscribe on teardown per the contract. This lights up the #320 conflict → kept-buffer → merge surface with a *real* watcher for the first time. A payload is **not always external**: `deleteFile`'s and `renameFile`'s own write-throughs echo back through the watcher too — a rename produces both a deletion echo (its old path) and a creation echo (its new path) — so self-write suppression (content match), self-delete suppression (a consumed-once `selfDeletes` marker keyed by path, #2404), and self-create suppression (a consumed-once `selfCreates` marker keyed by path, #2416) all run before a payload reaches the callback — only what survives all three is forwarded as genuinely external. **At most one marker is armed per path** (#2424): the watcher flushes at most one event per path per quiet window, so a marker armed while another is still outstanding could never be consumed — and an unconsumed `selfDeletes` goes on to swallow a genuinely external deletion. Every arming site therefore clears the other two kinds for that path, rather than leaving the outcome to whichever branch of `onExternalChange` checks first; a marker whose operation then rejects is disarmed too, since no echo will ever come for a write or delete that did not happen. `renameFile`'s follow-up content write is no exception: a rejection re-arms `selfCreates` for the destination path so the rename's own still-outstanding creation echo stays suppressed rather than reaching this callback with pre-rewrite bytes (#2438 review) |
 | `requestSave` | write staged content | the `staged` map fed by `onFileChanged` (D2 overlay model) is the source of what to write — the #154 egress batch feeds the backup ring instead, orthogonal to dirty. `staged` is a provider-internal write queue, distinct from studio dirty state (`StudioPublicState.dirtyFiles`, computed by `FileChangeHub` from session content vs. baseline): a rename's own `record(newPath, "created")` already marks the moved file dirty the moment the session updates, independent of whether the provider's own follow-up content write (#2425) later succeeds or is rejected. Calls are serialized (#2403): an overlapping caller (the autosave ticker, a quit-time `saveAll`) queues behind whatever write is already in flight rather than racing it against the same `staged` snapshot — as does `renameFile`'s own follow-up content write, which is a staged write like any other. Quit-time `saveAll` is not always a single overlapping call: `awaitSaveAllBeforeQuit` re-dispatches it on an interval while the dirty set persists (#2434), so a hung write can see several of its own redispatches queue up behind it one after another — this same serialization is what keeps each one from racing the write ahead of it. A rejected write of this kind is retried only by the next UNNARROWED `requestSave` (the autosave ticker, `saveAll`) — a `file.save` narrowed to a different, currently-focused path does not touch it, since a narrowed `writeStaged` only writes the paths it is given |
@@ -191,16 +191,19 @@ when the edit itself lives entirely in `packages/brink-studio`.
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Four properties of `desktop-smoke.yml` are asserted by tests in
+Five properties of `desktop-smoke.yml` are asserted by tests in
 `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
   job**, not just the trees it checks: `pnpm-lock.yaml`, root `Cargo.toml`/
-  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml` and `ci.yml` on top of
-  the package/crate globs. Without them a lockfile, sidecar-dependency or
-  root-lint-policy change ran this lane only on the post-merge push to
-  `main` — including the two `*_matches_the_root_workspace` drift tests,
-  which could not fail the PR that caused the drift.
+  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml`, `ci.yml` and (#2504)
+  the `.github/workflows/**` glob on top of the package/crate globs — the
+  individual `ci.yml` entry alone left a reordered `npm-release.yml`, or a
+  brand-new workflow file, free to skip this lane on the PR that broke it.
+  Without these a lockfile, sidecar-dependency or root-lint-policy change
+  ran this lane only on the post-merge push to `main` — including the two
+  `*_matches_the_root_workspace` drift tests, which could not fail the PR
+  that caused the drift.
   (`desktop_smoke_path_filter_covers_its_shared_inputs`)
 - **Checks are non-blocking for their siblings but gated on their setup
   steps.** A bare `if: '!cancelled()'` also overrides the implicit
@@ -281,6 +284,27 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   the claim that stays true; a wall-clock figure would also have to count
   the advisory-DB fetch and the entrypoint's own `rustup show`/toolchain
   step, which the ~2s metadata-resolution number does not.
+- **Every `pnpm install --frozen-lockfile` step, in every job in every
+  `.github/workflows/*.yml` file, is preceded by a `wasm-pack build
+  crates/brink-web` step in the same job** (#2504, follow-up to
+  #2479/#2492). `pnpm install --frozen-lockfile` exits 0 even when the
+  `file:` link from `@brink-lang/web` to `crates/brink-web/www/pkg`
+  silently failed to resolve, so a future reorder — or a new lane adding
+  the install step without the wasm build first — would otherwise re-open
+  #2479 with nothing catching it. The walk enumerates every job in every
+  workflow file from disk, not a hard-coded list of the four known lanes,
+  and separately pins the exact set of `pnpm install`-prefixed lanes found
+  today (`ci.yml`'s `frontend` and `e2e`, `desktop-smoke.yml`'s own job,
+  `npm-release.yml`'s `release`), so a fifth lane — correctly ordered or
+  not — has to be added to that list on purpose. `ci.yml`'s `book` job's
+  plain `npm install --no-audit --no-fund` is this guard's one declared,
+  pinned exemption (a different command, against its own lockfile, with no
+  `file:` dependency on the wasm-pack output); `benchmarks-inkjs.yml`'s
+  `inkjs-gate` job's `npm ci` is out of scope for the same reason but is
+  not separately pinned — the guard's own exact-list assertion already
+  rejects a silent rename there too.
+  (`every_pnpm_install_lane_builds_wasm_first_in_the_same_job`,
+  `book_job_install_is_a_plain_npm_install_not_a_pnpm_lane`)
 
 ### The `dev` preflight pair (#2452, #2468)
 
