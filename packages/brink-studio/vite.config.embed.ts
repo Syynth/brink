@@ -15,9 +15,7 @@
 //
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve } from "path";
-
-const wasmPkgPath = resolve(__dirname, "../../crates/brink-web/www/pkg");
+import { studioPackageAliases, studioWasmAliases } from "./alias-map";
 
 export default defineConfig({
   base: "./",
@@ -27,18 +25,13 @@ export default defineConfig({
     // server, with the wasm pair unconditional because this build bundles
     // everything. `@brink/studio-shell` was missing here until #2450 — it
     // still resolved, through the workspace symlink rather than this map,
-    // which is the sort of silent near-miss
-    // `packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts`
-    // now catches.
+    // which is the sort of silent near-miss the two guards now catch:
+    // src/__tests__/alias-map.test.ts inside this package (#2464) and
+    // packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts
+    // across the two (#2450).
     alias: {
-      "brink-web": resolve(wasmPkgPath, "brink_web.js"),
-      "@brink/wasm-types": resolve(__dirname, "../wasm-types/src/index.ts"),
-      "@brink-lang/web": resolve(__dirname, "../wasm/src/index.ts"),
-      "@brink/ink-operations": resolve(__dirname, "../ink-operations/src/index.ts"),
-      "@brink-lang/editor": resolve(__dirname, "../ink-editor/src/index.ts"),
-      "@brink/studio-shell": resolve(__dirname, "../studio-shell/src/index.ts"),
-      "@brink/studio-store": resolve(__dirname, "../studio-store/src/index.ts"),
-      "@brink/studio-ui": resolve(__dirname, "../studio-ui/src/index.ts"),
+      ...studioWasmAliases(__dirname),
+      ...studioPackageAliases(__dirname),
     },
   },
   build: {
