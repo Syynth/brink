@@ -3313,6 +3313,38 @@ mod tests {
         );
     }
 
+    /// The nested `.brink` fold fixture shared by every folding test below
+    /// (#2500): a `flow` nested inside a `flow` (the native charter's stitch
+    /// equivalent, `FLOW_DECL`'s doc comment, §4), mixing machinery (`var`
+    /// decls) and narrative (dialogue) runs at two nesting depths plus a
+    /// block comment inside the nested flow.
+    ///
+    /// Factored out of `native_folding_ranges_with_nested_structure` and
+    /// `native_folding_ranges_doc_entry_point`, which carried it verbatim
+    /// twice (#2489's review finding): the fold line numbers all three tests
+    /// assert are positional facts about *this* text, so two copies could
+    /// drift apart silently and leave one test asserting line numbers that
+    /// no longer describe its own fixture.
+    ///
+    /// Line numbers referenced by those tests (0-based): 1-2 the `var`
+    /// decls, 3-4 the outer flow's dialogue, 5 `flow tally() {`, 6-7 the
+    /// nested block comment, 8-9 the nested flow's dialogue, 11 the nested
+    /// flow's closing brace.
+    const NATIVE_NESTED_FOLD_FIXTURE: &str = "flow main() {\n  \
+             var mood = 0\n  \
+             var gold = 7\n  \
+             Hello there, friend.\n  \
+             Nice weather today.\n  \
+             flow tally() {\n    \
+             /* the tally\n       \
+             flow's own note */\n    \
+             Mood is {mood}, gold is {gold}.\n    \
+             Thanks for playing.\n    \
+             -> END\n  \
+             }\n  \
+             -> tally\n\
+             }\n";
+
     #[test]
     fn native_folding_ranges_with_nested_structure() {
         // #2436: extends `native_folding_ranges_reach_the_native_cst_path`
@@ -3349,20 +3381,7 @@ mod tests {
         // source lines instead of merely asserted non-empty.
         let mut s = EditorSession::new();
         s.set_fold_runs_enabled(true);
-        let source = "flow main() {\n  \
-             var mood = 0\n  \
-             var gold = 7\n  \
-             Hello there, friend.\n  \
-             Nice weather today.\n  \
-             flow tally() {\n    \
-             /* the tally\n       \
-             flow's own note */\n    \
-             Mood is {mood}, gold is {gold}.\n    \
-             Thanks for playing.\n    \
-             -> END\n  \
-             }\n  \
-             -> tally\n\
-             }\n";
+        let source = NATIVE_NESTED_FOLD_FIXTURE;
         s.update_file("main.brink", source);
         assert!(s.set_active_file("main.brink"));
         let src_lines: Vec<&str> = source.split('\n').collect();
@@ -3422,20 +3441,7 @@ mod tests {
         // `brink-ide` can); it proves reachability only.
         let mut s = EditorSession::new();
         s.set_fold_runs_enabled(true);
-        let source = "flow main() {\n  \
-             var mood = 0\n  \
-             var gold = 7\n  \
-             Hello there, friend.\n  \
-             Nice weather today.\n  \
-             flow tally() {\n    \
-             /* the tally\n       \
-             flow's own note */\n    \
-             Mood is {mood}, gold is {gold}.\n    \
-             Thanks for playing.\n    \
-             -> END\n  \
-             }\n  \
-             -> tally\n\
-             }\n";
+        let source = NATIVE_NESTED_FOLD_FIXTURE;
         s.update_file("main.brink", source);
         let doc = s.open_document("main.brink");
         assert_ne!(doc, 0, "open_document must succeed");
@@ -3473,6 +3479,128 @@ mod tests {
         );
         assert_eq!(src_lines[8].trim(), "Mood is {mood}, gold is {gold}.");
         assert_eq!(src_lines[9].trim(), "Thanks for playing.");
+    }
+
+    #[test]
+    fn native_folding_ranges_doc_uses_the_handles_own_fragment_view() {
+        // #2500: `folding_ranges_doc`'s second distinguishing input, after
+        // the handle lookup #2458/PR #2489 covered, is the handle's own
+        // `view` (`d.view`), which drives `Self::to_relative_line`. Every
+        // folding test before this one used `open_document`, whose view is
+        // `None` — the arm where `to_relative_line` is the identity, so no
+        // existing test could tell a per-handle view from its absence.
+        //
+        // `open_fragment` gives the handle a `view: Some(..)`, and
+        // `to_relative_line` then does two things a `None` view cannot: it
+        // **rebases** every surviving fold by `view.start_line`, and it
+        // **drops** (returns `None`, so `filter_map` discards) any fold whose
+        // start or end line precedes the view. This test pins both, on one
+        // session holding both handle kinds over the same file so the only
+        // difference between the two results is the view itself.
+        let mut s = EditorSession::new();
+        s.set_fold_runs_enabled(true);
+        let source = NATIVE_NESTED_FOLD_FIXTURE;
+        s.update_file("main.brink", source);
+
+        let whole = s.open_document("main.brink");
+        assert_ne!(whole, 0, "open_document must succeed");
+
+        // Scope the fragment to the nested `flow tally() { … }` block: from
+        // its own `flow` line (0-based line 5) up to the outer flow's
+        // `-> tally` divert, so the fragment ends after the nested flow's
+        // closing brace.
+        let frag_start = source
+            .find("  flow tally()")
+            .expect("fixture contains the nested flow") as u32;
+        let frag_end = source
+            .find("  -> tally")
+            .expect("fixture contains the outer divert") as u32;
+        let frag = s.open_fragment("main.brink", frag_start, frag_end);
+        assert_ne!(frag, 0, "open_fragment must succeed");
+
+        let whole_ranges = json(&s.folding_ranges_doc(whole));
+        let whole_array = whole_ranges.as_array().expect("array");
+        let frag_ranges = json(&s.folding_ranges_doc(frag));
+        let frag_array = frag_ranges.as_array().expect("array");
+
+        // ── The view drops folds that start before it ────────────────────
+        //
+        // The whole-file handle sees five folds; the fragment sees only the
+        // two that lie wholly at or after line 5. Asserting the *count* (not
+        // just membership) is what makes the pair discriminating: the outer
+        // flow's structural fold, its machinery run and its narrative run all
+        // begin before the view and are gone.
+        assert_eq!(
+            whole_array.len(),
+            5,
+            "the whole-file handle sees every fold: {whole_ranges}"
+        );
+        assert_eq!(
+            frag_array.len(),
+            2,
+            "only the nested flow's own folds survive the fragment view: {frag_ranges}"
+        );
+        assert!(
+            whole_array
+                .iter()
+                .any(|r| r["kind"] == "machinery" && r["start_line"] == 1 && r["end_line"] == 2),
+            "the whole-file handle keeps the outer `var` machinery run: {whole_ranges}"
+        );
+        assert!(
+            !frag_array.iter().any(|r| r["kind"] == "machinery"),
+            "the outer `var` machinery run starts before the view and must be \
+             dropped, not rebased into the fragment: {frag_ranges}"
+        );
+
+        // ── The view rebases the folds that survive ──────────────────────
+        //
+        // The nested flow's structural fold spans absolute lines 5-11; under
+        // the view it must be reported as 0-6. That number is the assertion
+        // that cannot be produced by the `view: None` road, whose same fold
+        // is 5-11 and whose outermost structural fold is 0-13.
+        assert!(
+            whole_array
+                .iter()
+                .any(|r| r["kind"] == "structural" && r["start_line"] == 5 && r["end_line"] == 11),
+            "the nested flow folds at absolute lines 5-11 without a view: {whole_ranges}"
+        );
+        assert!(
+            frag_array
+                .iter()
+                .any(|r| r["kind"] == "structural" && r["start_line"] == 0 && r["end_line"] == 6),
+            "the nested flow's structural fold must be rebased by the view's \
+             start line (absolute 5-11 -> relative 0-6): {frag_ranges}"
+        );
+        assert!(
+            !frag_array
+                .iter()
+                .any(|r| r["kind"] == "structural" && r["end_line"] == 13),
+            "the outer flow's 0-13 structural fold must not survive the view: {frag_ranges}"
+        );
+
+        // The nested flow's dialogue: absolute lines 8-9, rebased to 3-4.
+        // (The whole-file road also reports a narrative fold at 3-4 — the
+        // *outer* flow's dialogue — so this range alone would be ambiguous;
+        // the count and structural assertions above are what separate the
+        // two roads. Decoded here against the fixture's own text so the
+        // rebased numbers stay honest if the fixture ever moves.)
+        let src_lines: Vec<&str> = source.split('\n').collect();
+        assert_eq!(src_lines[8].trim(), "Mood is {mood}, gold is {gold}.");
+        assert_eq!(src_lines[9].trim(), "Thanks for playing.");
+        assert!(
+            frag_array
+                .iter()
+                .any(|r| r["kind"] == "narrative" && r["start_line"] == 3 && r["end_line"] == 4),
+            "the nested flow's dialogue must be rebased from absolute 8-9 to \
+             relative 3-4: {frag_ranges}"
+        );
+
+        // Belt and braces: the two roads must not agree at all here.
+        assert_ne!(
+            whole_ranges, frag_ranges,
+            "a per-handle view that changed nothing would make this whole test \
+             vacuous"
+        );
     }
 
     // ── #2291/#2359: inlay hints / color hints / argument widgets now route
@@ -3570,6 +3698,212 @@ mod tests {
             "[{\"callee\":\"heal\",\"name_start\":59,\"name_end\":63,\"slots\":[{\"param_name\":\"hp\",\"state\":{\"kind\":\"filled\",\"start\":64,\"end\":65,\"value\":\"5\"}}],\"groups\":[]}]",
             "a native file's `-> heal(5)` call site must get the `heal` \
              argument-widget site computed from the native CST"
+        );
+    }
+
+    // ── #2501: document-handle-vs-session-level native routing for the
+    // remaining `*_doc` entry-point families. #2458/PR #2489 established the
+    // shape for `folding_ranges_doc`; this block audits the rest of
+    // `crates/brink-web/src/editor/` and closes the families that were
+    // genuinely uncovered.
+    //
+    // The audit, enumerated against every `*_doc` entry point in the hints,
+    // outline and navigation modules rather than the plausible subset:
+    //
+    // | `*_doc` entry point     | session sibling  | editor-level `is_native` | handle-level native test |
+    // |-------------------------|------------------|--------------------------|--------------------------|
+    // | `inlay_hints_doc`       | `inlay_hints`    | yes (`hints.rs`)         | added below              |
+    // | `color_hints_doc`       | none             | yes (`hints.rs`)         | already covered¹         |
+    // | `argument_widgets_doc`  | none             | yes (`hints.rs`)         | already covered¹         |
+    // | `signature_help_doc`    | `signature_help` | **no** — see ² below     | not applicable           |
+    // | `document_symbols_doc`  | `document_symbols` | **no** — see ³        | added below              |
+    // | `goto_definition_doc`   | `goto_definition`  | **no** — see ³        | added below              |
+    // | `find_references_doc`   | `find_references`  | **no** — see ³        | added below              |
+    // | `prepare_rename_doc`    | `prepare_rename`   | **no** — see ³        | added below              |
+    //
+    // ¹ `native_color_hints_reach_the_native_cst_path` and
+    //   `native_argument_widgets_reach_the_native_cst_path` (above) already
+    //   query through an `open_document` handle, so the hints family was
+    //   two-thirds covered before this issue — correcting #2501's premise,
+    //   which assumed the whole family was untested. Neither has a
+    //   session-level sibling at all (`_doc` is their only form), so for
+    //   those two the "document-handle vs session-level" symmetry question
+    //   has no second side to ask about.
+    //
+    // ² `signature_help_impl` reads `analysis` + the raw `source` text plus
+    //   `self.dialect`; it never touches a CST, so there is no
+    //   `syntax_root`/`syntax_root_native` arm for a handle to route wrongly
+    //   into. Recorded here rather than tested, per #2501's own allowance.
+    //
+    // ³ Outline and navigation have no `is_native` branch in the brink-web
+    //   layer at all: they read `hir`/`manifest`/`analysis`, whose native
+    //   dispatch happens one layer down in `brink_db::queries`'
+    //   `raw_lowered_query` (`file_language(..)` selecting
+    //   `lower_native_file` over `lower_file`). The handle-level risk #2501
+    //   names — a `.brink` file opened through a document handle silently
+    //   falling back to ink-only parsing — is therefore real but not
+    //   locally branchable, so the test below pins the observable
+    //   consequence instead of the branch.
+
+    /// Fixture for the `inlay_hints_doc` routing test below: a native `fn`
+    /// declaration plus a **plain call expression** (`heal(5)` on the
+    /// right-hand side of a `var`), deliberately *not* the divert-with-args
+    /// form `NATIVE_DIVERT_WITH_ARGS_FIXTURE` uses.
+    ///
+    /// That distinction is the whole point. `-> heal(5)` is textually valid
+    /// in ink's grammar too, so both arms of `inlay_hints_impl`'s
+    /// `is_native` branch produce the identical hint for it — verified by
+    /// experiment, not assumed: forcing that branch to the ink arm and
+    /// rerunning `native_inlay_hints_reach_the_native_cst_path` left its
+    /// output byte-identical, exactly the dead end #2436 hit for folding.
+    /// A bare `heal(5)` call inside a `var` initialiser has no ink
+    /// counterpart, so the ink arm forms no call node and emits no hint at
+    /// all — which is what makes the test below able to fail.
+    const NATIVE_PLAIN_CALL_FIXTURE: &str = "fn heal(hp: int): int {\n  return hp;\n}\n\nflow main() {\n  var n = heal(5)\n  -> END\n}\n";
+
+    #[test]
+    fn native_inlay_hints_doc_reaches_the_native_cst_path() {
+        // #2501, hints family. Unlike the folding and colour-hint siblings,
+        // this one discriminates: with `inlay_hints_impl`'s `is_native`
+        // branch forced to the ink arm this assertion fails with
+        //
+        //   assertion `left == right` failed: a native file's `heal(5)` call
+        //   must get the `"hp:"` parameter hint through the document-handle
+        //   entry point, computed from the native CST
+        //     left: `[]`
+        //    right: `[{"offset":69,"label":"hp:","kind":"parameter",...}]`
+        //
+        // and the same red appears when the routing is broken a layer down
+        // instead (forcing `raw_lowered_query`'s `Language::Native` arm onto
+        // `lower_file`). Both were run and reverted.
+        //
+        // The `_doc` half is not incidental: `inlay_hints_doc` returns the
+        // empty sentinel `"[]"` for an unresolved handle, so a non-empty
+        // result is itself proof the handle path resolved rather than the
+        // session-level `active_path` road.
+        let mut s = EditorSession::new();
+        s.update_file("main.brink", NATIVE_PLAIN_CALL_FIXTURE);
+        let doc = s.open_document("main.brink");
+        assert_ne!(doc, 0, "open_document must succeed");
+        assert_eq!(
+            s.inlay_hints_doc(doc, 0, 300),
+            "[{\"offset\":69,\"label\":\"hp:\",\"kind\":\"parameter\",\"padding_right\":true}]",
+            "a native file's `heal(5)` call must get the `\"hp:\"` parameter \
+             hint through the document-handle entry point, computed from the \
+             native CST"
+        );
+    }
+
+    /// Fixture for the outline/navigation handle tests below: two native
+    /// `flow` declarations and a divert from one to the other. Written so
+    /// that **the very same bytes** are also offered to an `.ink` file in
+    /// each test, as the control — ink's grammar sees `flow tally() { … }`
+    /// as prose, declares no knot, and so yields the empty sentinel from
+    /// every query below. Any non-empty result therefore came from native
+    /// lowering, not from something the ink road could equally have
+    /// produced.
+    const NATIVE_TWO_FLOWS_FIXTURE: &str =
+        "flow main() {\n  Hi.\n  -> tally\n}\n\nflow tally() {\n  Bye.\n  -> END\n}\n";
+
+    #[test]
+    fn native_outline_and_navigation_doc_entry_points_reach_native_lowering() {
+        // #2501, outline + navigation families (see the audit table above
+        // for why these four share one test: none of them has a brink-web
+        // `is_native` branch, so they all stand or fall on the same
+        // one-layer-down dispatch).
+        //
+        // Red proof, run and reverted: rewriting `raw_lowered_query`'s
+        // `Language::Native => lower_native_file(..)` arm to `lower_file(..)`
+        // — i.e. making a `.brink` file lower through the ink frontend,
+        // precisely #2501's "silently falling back to ink-only parsing"
+        // failure mode — turns every native assertion below red, the first
+        // being
+        //
+        //   assertion `left == right` failed: `document_symbols_doc` must
+        //   report both native flows through the handle
+        //     left: 0
+        //    right: 2
+        //
+        // Forcing `ProjectDb::is_native` to `false` instead leaves all four
+        // green, which is itself worth recording: these families do not read
+        // that flag, so it is the lowering dispatch and not `is_native` that
+        // their correctness rests on.
+        let src = NATIVE_TWO_FLOWS_FIXTURE;
+        let mut native = EditorSession::new();
+        native.update_file("main.brink", src);
+        let nat_doc = native.open_document("main.brink");
+        assert_ne!(nat_doc, 0, "open_document must succeed for the native file");
+
+        let mut ink = EditorSession::new();
+        ink.update_file("main.ink", src);
+        let ink_doc = ink.open_document("main.ink");
+        assert_ne!(ink_doc, 0, "open_document must succeed for the ink control");
+
+        // Offset of the `tally` name inside `-> tally`, and of the `tally`
+        // name in its own declaration — identical in both files, since both
+        // hold identical bytes.
+        let divert_name = src.find("-> tally").expect("fixture contains the divert") as u32 + 3;
+        let decl_name = src.find("flow tally()").expect("fixture contains the decl") as u32 + 5;
+
+        // ── Outline: `document_symbols_doc` ──────────────────────────────
+        let syms = json(&native.document_symbols_doc(nat_doc));
+        let syms = syms.as_array().expect("array");
+        assert_eq!(
+            syms.len(),
+            2,
+            "`document_symbols_doc` must report both native flows through the handle"
+        );
+        assert_eq!(syms[0]["name"], "main");
+        assert_eq!(syms[1]["name"], "tally");
+        assert_eq!(
+            ink.document_symbols_doc(ink_doc),
+            "[]",
+            "the ink control must report no symbols for the same bytes — \
+             otherwise the native assertion above proves nothing"
+        );
+
+        // ── Navigation: `goto_definition_doc` ────────────────────────────
+        let def = json(&native.goto_definition_doc(nat_doc, divert_name));
+        assert_eq!(def["file"], "main.brink");
+        assert_eq!(
+            def["start"], decl_name,
+            "`goto_definition_doc` must land on the `tally` declaration name"
+        );
+        assert_eq!(
+            ink.goto_definition_doc(ink_doc, divert_name),
+            "null",
+            "the ink control must resolve nothing for the same bytes"
+        );
+
+        // ── Navigation: `find_references_doc` ────────────────────────────
+        let refs = json(&native.find_references_doc(nat_doc, divert_name));
+        let refs = refs.as_array().expect("array");
+        assert_eq!(
+            refs.len(),
+            2,
+            "`find_references_doc` must find the declaration and the divert: {refs:?}"
+        );
+        assert!(
+            refs.iter().all(|r| r["file"] == "main.brink"),
+            "every reference is in the native file: {refs:?}"
+        );
+        assert_eq!(
+            ink.find_references_doc(ink_doc, divert_name),
+            "[]",
+            "the ink control must find no references for the same bytes"
+        );
+
+        // ── Navigation: `prepare_rename_doc` ─────────────────────────────
+        let rename = json(&native.prepare_rename_doc(nat_doc, decl_name));
+        assert_eq!(
+            rename["start"], decl_name,
+            "`prepare_rename_doc` must offer the `tally` declaration name as \
+             the renameable range"
+        );
+        assert_eq!(
+            ink.prepare_rename_doc(ink_doc, decl_name),
+            "null",
+            "the ink control must offer no rename for the same bytes"
         );
     }
 
