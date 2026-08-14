@@ -112,12 +112,73 @@ list, per the ruling above.
 This is the desktop package's first *cargo/`tsc`/`pnpm build`* coverage, not
 its first CI coverage of any kind: `.github/workflows/ci.yml`'s `frontend` job
 already runs the desktop vitest suite on every PR (step "Unit tests (vitest,
-`@brink/desktop`)" → `pnpm --filter @brink/desktop test`, ci.yml:667-668). That
-step builds no Tauri graph, so it never violated the "required lanes must not
-grow a Tauri build" fence, and the smoke lane deliberately does not duplicate
-it. ⚠ The desktop unit suite's only home is that one step inside another job —
-renaming or deleting it silently drops the suite entirely, and nothing asserts
-that dependency.
+`@brink/desktop`)" → `pnpm --filter @brink/desktop test`). That step builds no
+Tauri graph, so it never violated the "required lanes must not grow a Tauri
+build" fence, and the smoke lane deliberately does not duplicate it. The
+desktop unit suite's only home is therefore that one step inside another job —
+deleting it would drop the suite entirely, so `src-tauri`'s
+`ci_workflow_still_runs_the_desktop_vitest_suite` test asserts the step is
+still there (#2418). That assertion lives on the *cargo* side deliberately: a
+test inside the vitest suite could not fail for its own removal.
+
+### One alias map (#2418)
+
+`packages/brink-desktop/alias-map.ts` is the single source of truth for the
+package's module resolution. `vite.config.ts` and `vitest.config.ts` both
+call `desktopAliases(__dirname)`; `tsconfig.json`'s `paths` is JSON and
+cannot import, so it stays a copy that `src/__tests__/alias-map.test.ts`
+compares against `desktopTsconfigPaths()`. Only `brink-web` differs between
+consumers — bundlers resolve the ESM glue file, `tsc` needs the package
+directory — and the entry carries both rather than leaving the divergence
+implicit. Three hand-maintained copies of this map are what let most of the
+unit suite stop running behind a green step (#2409).
+
+### Smoke-lane inputs and step gating (#2418)
+
+Three properties of `desktop-smoke.yml` are asserted by tests in
+`src-tauri/src/lib.rs` rather than left to review:
+
+- **The `pull_request` path filter lists every input that can break the
+  job**, not just the trees it checks: `pnpm-lock.yaml`, root `Cargo.toml`/
+  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml` and `ci.yml` on top of
+  the package/crate globs. Without them a lockfile, sidecar-dependency or
+  root-lint-policy change ran this lane only on the post-merge push to
+  `main` — including the two `*_matches_the_root_workspace` drift tests,
+  which could not fail the PR that caused the drift.
+  (`desktop_smoke_path_filter_covers_its_shared_inputs`)
+- **Checks are non-blocking for their siblings but gated on their setup
+  steps.** A bare `if: '!cancelled()'` also overrides the implicit
+  `success()` on a failed *prerequisite*, so a dying setup step let the
+  dependent steps run and fail too, burying the root cause. Each check now
+  reads `!cancelled() && steps.<setup>.outcome == 'success'` for the setup
+  steps it needs (`linux_deps`, `wasm_build`, `pnpm_install`, `sidecar`);
+  the format check, which needs only the runner's toolchain, stays
+  unconditional. (`desktop_smoke_gates_dependent_steps_on_setup_success`)
+- **The sidecar is staged, not shipped, in this lane.** `cargo build -p
+  brink-cli --release` runs only so `tauri-build`'s externalBin resolution
+  finds a file on disk; nothing here executes it, so the lane flattens the
+  release profile through `CARGO_PROFILE_RELEASE_*` environment variables
+  instead of paying for an optimized binary. `ensure-cli-sidecar.mjs` is
+  unchanged, so every other caller still builds a real release sidecar.
+
+### CI coverage blind spots
+
+⚠ The smoke lane is `ubuntu-latest` only, so the `#[cfg(any(target_os =
+"macos", target_os = "ios", target_os = "android"))]` file-association
+surface — `opened_url_to_path`, `handle_opened`, the `RunEvent::Opened` arm
+and their three tests — is compiled, linted and run by **no** lane (#2428).
+That is the surface D3 keeps growing, and it is currently reviewed by eye.
+Whether to buy a macOS runner (or a `--target`-only check job) is a cost
+question and is **NOT settled here** — this section records the gap, it does
+not rule on it.
+
+The same Linux-only lane hides a cost of the #2415 lint policy: on the first
+mobile target, `tauri-macros`' `mobile_entry_point` expansion discards
+`run()`'s `tauri::Result<()>` (`unused_must_use`) and uses `eprintln!`
+(`clippy::print_stderr`), both fatal under `-D warnings`, and will need a
+per-site `#[expect]`. A ⚠ marker above `opened_url_to_path` in
+`src-tauri/src/lib.rs` carries the detail next to the cfg gate that will
+first switch on.
 
 ## Menus
 
