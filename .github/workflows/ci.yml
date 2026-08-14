@@ -677,6 +677,15 @@ jobs:
         run: pnpm run test:scripts
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # `pnpm install --frozen-lockfile` exits 0 even when the file: link
+      # above silently failed to resolve (#2479), so this checks the
+      # runtime result immediately rather than let a failed link surface
+      # several confusing steps later (e.g. "vitest: not found"). #2504's
+      # first bullet: this is the runtime counterpart to
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`, which
+      # only checks the workflow's step ORDER, not that the install
+      # actually linked correctly at that order.
+      - run: pnpm run check:wasm-pkg
       - name: Typecheck
         run: pnpm --filter @brink-lang/studio typecheck
       - name: Unit tests (vitest)
@@ -722,6 +731,9 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # See the `frontend` job's identical step above (#2504's first
+      # bullet, #2479).
+      - run: pnpm run check:wasm-pkg
       - name: Install Playwright browser
         run: pnpm --filter @brink-lang/studio exec playwright install --with-deps chromium
       - name: E2E tests (Playwright, shard ${{ matrix.shard }}/4)
