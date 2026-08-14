@@ -91,8 +91,10 @@ Data-loss prevention lives in `ProjectSession` + `FileChangeHub`, not in any UI:
 ## `ProjectSession` — the reusable surface (selected)
 
 `addFile` · `closeFile` · `deleteFile` · `renameFile` · `getFiles` · `requestFile` ·
-`applyEdit(path, newSource)` (the canonical cross-file edit seam — everything routes through it) ·
-`compileProject` · `dirtyPaths` / `markAllSaved` / `save` · the conflict methods above ·
+`readProviderFile` (reads straight from the `FileProvider`, bypassing session state — the
+disk-confirmation check a host-save `file.save`/`file.saveAll` uses to tell "saved" from "stale",
+issue #2435) · `applyEdit(path, newSource)` (the canonical cross-file edit seam — everything routes
+through it) · `compileProject` · `dirtyPaths` / `markAllSaved` / `save` · the conflict methods above ·
 `refreshIncludes` · `initialize` / `destroy`.
 
 ## `brink.toml` project-config discovery (#2324)
