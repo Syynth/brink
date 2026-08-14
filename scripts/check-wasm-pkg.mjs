@@ -6,7 +6,8 @@
 // `wasm-pack build crates/brink-web --target web --out-dir www/pkg` has run,
 // which is why every CI lane that runs `pnpm install --frozen-lockfile`
 // builds it first (.github/workflows/ci.yml's `frontend` and `e2e` jobs,
-// .github/workflows/desktop-smoke.yml) — see CLAUDE.md's "Key commands".
+// .github/workflows/desktop-smoke.yml, .github/workflows/npm-release.yml) —
+// see CLAUDE.md's "Cloud / fresh-environment sessions".
 //
 // ⚠ `pnpm install --frozen-lockfile` does NOT fail loudly when that
 // ordering is skipped. Confirmed by direct reproduction (worktree with the
@@ -90,8 +91,9 @@ export function checkWasmPkg({
       "[check-wasm-pkg] crates/brink-web/www/pkg is missing or incomplete " +
         `(missing: ${missing.join(", ")}).`,
       "",
-      "@brink-lang/web (packages/wasm) has a `file:` dependency on that",
-      "directory. `pnpm install --frozen-lockfile` can report success even",
+      "packages/wasm (published as @brink-lang/web) declares a `file:`",
+      "devDependency named `brink-web` (see packages/wasm/package.json) on",
+      "that directory. `pnpm install --frozen-lockfile` can report success even",
       "when this link silently failed to resolve (#2479) — the real symptom",
       "shows up later and confusingly, e.g. as \"vitest: not found\" in an",
       "unrelated `pnpm --filter ... test` step.",

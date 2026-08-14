@@ -200,9 +200,11 @@ echo "    cargo check --workspace"
 # `pnpm install --frozen-lockfile` does NOT reliably fail loudly when it's
 # skipped (confirmed: it can exit 0 with the link silently unresolved,
 # surfacing later and confusingly as e.g. "vitest: not found" in a
-# downstream `pnpm --filter ... test` step; #2479). `check:wasm-pkg` is a
-# fast belt-and-suspenders check for the same thing, not a substitute for
-# this ordering.
+# downstream `pnpm --filter ... test` step; #2479). `check:wasm-pkg` runs
+# BEFORE `pnpm install` (not after) so a skipped build fails fast, before
+# any half-linked node_modules gets written — running it after install
+# would be green by construction on this printed sequence and would only
+# report the problem once the broken tree already existed.
 echo "    wasm-pack build crates/brink-web --target web --out-dir www/pkg"
-echo "    pnpm install --frozen-lockfile && pnpm check:wasm-pkg"
+echo "    pnpm check:wasm-pkg && pnpm install --frozen-lockfile"
 echo "    cargo nextest run --workspace     # the pump's per-round gate"
