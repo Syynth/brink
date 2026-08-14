@@ -1688,6 +1688,219 @@ mod tests {
         }
     }
 
+    /// Every `.github/workflows/*.yml` file, sorted by name so the test's
+    /// output order is stable. Enumerated from disk, not a hard-coded file
+    /// list, so a brand-new workflow file is automatically in scope for
+    /// `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` below
+    /// (#2504) — the same "don't hard-code the lane list" requirement its
+    /// job enumeration meets too.
+    fn workflow_files() -> Vec<String> {
+        let dir = repo_root().join(".github/workflows");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("workflows dir should exist")
+            .filter_map(std::result::Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            // Every workflow file in this repo uses `.yml`, not `.yaml`
+            // (confirmed by directory listing) — one extension checked,
+            // case-insensitively per clippy's
+            // `case_sensitive_file_extension_comparisons`.
+            .filter(|name| {
+                Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("yml"))
+            })
+            .collect();
+        names.sort();
+        assert!(
+            !names.is_empty(),
+            "expected at least one workflow file in {dir:?}"
+        );
+        names
+    }
+
+    /// Split a workflow's `jobs:` block into `(job_id, body)` pairs, in
+    /// declaration order. Manual line-based parsing, not a real YAML parser
+    /// — same approach as `path_filter`/`steps_with_conditions` above.
+    /// Every workflow in this repo formats a job id at exactly two spaces
+    /// of indent directly under the top-level `jobs:` key, with the job's
+    /// own body (permissions, steps, …) indented four spaces or deeper —
+    /// so "a line with exactly two leading spaces, no third, ending in
+    /// `:`" unambiguously marks a new job while `jobs:` itself (zero
+    /// indent) and everything inside a job body (four-plus indent) both
+    /// fail to match.
+    fn jobs(workflow: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut in_jobs = false;
+        for line in workflow.lines() {
+            if line == "jobs:" {
+                in_jobs = true;
+                continue;
+            }
+            if !in_jobs {
+                continue;
+            }
+            let is_job_header = line.starts_with("  ")
+                && !line.starts_with("   ")
+                && line.trim_end().ends_with(':');
+            if is_job_header {
+                let id = line.trim().trim_end_matches(':').to_owned();
+                out.push((id, String::new()));
+                continue;
+            }
+            if let Some((_, body)) = out.last_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        out
+    }
+
+    /// The `run:` command of every step in a job body, in order. Matches
+    /// both the compact `- run: <cmd>` form (a step with no `name:`/`id:`)
+    /// and the `run: <cmd>` form on its own line under a preceding
+    /// `- name: ...`/`- uses: ...` — single-line steps only, in either
+    /// form. Every step this file's workflow-ordering tests care about is
+    /// single-line in every workflow today; a multi-line `run: |` block's
+    /// first line strips down to a bare `|`, which never matches any exact
+    /// command this file checks for and is otherwise harmless to include.
+    fn run_commands(job_body: &str) -> Vec<String> {
+        job_body
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                trimmed
+                    .strip_prefix("- run: ")
+                    .or_else(|| trimmed.strip_prefix("run: "))
+            })
+            .map(|cmd| unquote(cmd.trim()).to_owned())
+            .collect()
+    }
+
+    /// #2504 (follow-up to #2479/#2492): nothing made the
+    /// wasm-build-before-install ordering self-enforcing. All four `pnpm
+    /// install --frozen-lockfile` lanes (`ci.yml`'s `frontend` and `e2e`
+    /// jobs, `desktop-smoke.yml`, `npm-release.yml`) are correctly ordered
+    /// today, but `pnpm install --frozen-lockfile` exits 0 even when the
+    /// `file:` link from `@brink-lang/web` to `crates/brink-web/www/pkg`
+    /// silently failed to resolve (confirmed by direct reproduction —
+    /// scripts/check-wasm-pkg.mjs's header comment) — so a future reorder,
+    /// or a new lane that adds the install step without the wasm build
+    /// first, would re-open #2479 with no lane catching it.
+    ///
+    /// Enumerated from the workflow files themselves — every `.yml` under
+    /// `.github/workflows` via `workflow_files()`, every job in each via
+    /// `jobs()` above — not a hard-coded list of the four known lanes, so a
+    /// NEW workflow file or job cannot opt out of this guard just by not
+    /// being named here. The ordering check below runs against every job
+    /// this walk finds, with no per-lane allowlist.
+    ///
+    /// Exactly one `install`-shaped step exists outside these four lanes:
+    /// `ci.yml`'s `book` job runs a plain `npm install --no-audit
+    /// --no-fund` (a different command, against `docs/book/ts-check`'s own
+    /// lockfile, with no `file:` dependency on the wasm-pack output) — a
+    /// declared exemption, pinned by
+    /// `book_job_install_is_a_plain_npm_install_not_a_pnpm_lane` below so a
+    /// rename to `pnpm install --frozen-lockfile` cannot silently escape
+    /// this guard.
+    #[test]
+    fn every_pnpm_install_lane_builds_wasm_first_in_the_same_job() {
+        const PNPM_INSTALL: &str = "pnpm install --frozen-lockfile";
+        const WASM_BUILD_PREFIX: &str = "wasm-pack build crates/brink-web";
+
+        let mut checked_jobs: Vec<String> = Vec::new();
+        let mut pnpm_install_lanes: Vec<String> = Vec::new();
+
+        for file in workflow_files() {
+            let contents = workflow(&file);
+            for (job_id, body) in jobs(&contents) {
+                let lane = format!("{file}:{job_id}");
+                checked_jobs.push(lane.clone());
+
+                let commands = run_commands(&body);
+                let Some(install_pos) = commands.iter().position(|c| c == PNPM_INSTALL) else {
+                    continue;
+                };
+                pnpm_install_lanes.push(lane.clone());
+
+                let wasm_pos = commands
+                    .iter()
+                    .position(|c| c.starts_with(WASM_BUILD_PREFIX));
+                assert!(
+                    wasm_pos.is_some_and(|w| w < install_pos),
+                    "{lane}'s job runs `{PNPM_INSTALL}` without a preceding `{WASM_BUILD_PREFIX}` \
+                     step in the SAME job — this re-opens #2479 (`pnpm install --frozen-lockfile` \
+                     exits 0 even when the file: link to crates/brink-web/www/pkg silently failed \
+                     to resolve); commands seen in order: {commands:?}"
+                );
+            }
+        }
+
+        // Enumeration transparency (#2504's own instruction: "state exactly
+        // which workflow files and jobs you checked"): this must have
+        // walked more than just the four pnpm-install lanes (proof the walk
+        // covers every job in every workflow file, not only the ones that
+        // happen to install), and the pnpm-install lanes found must be
+        // exactly today's known four — so a fifth lane, correctly ordered
+        // or not, cannot join silently: it has to be added here on purpose.
+        assert!(
+            checked_jobs.len() > pnpm_install_lanes.len(),
+            "expected to see jobs beyond just the pnpm-install lanes, proving this walked \
+             every job in every workflow file rather than only the ones with an install \
+             step; jobs seen: {checked_jobs:?}"
+        );
+        assert_eq!(
+            pnpm_install_lanes,
+            vec![
+                "ci.yml:frontend".to_owned(),
+                "ci.yml:e2e".to_owned(),
+                "desktop-smoke.yml:desktop-smoke".to_owned(),
+                "npm-release.yml:release".to_owned(),
+            ],
+            "expected exactly these four jobs to run `{PNPM_INSTALL}`; a new pnpm-install \
+             lane must both pass the ordering assertion above AND be added to this list on \
+             purpose — that is what keeps a new lane from opting out of this guard by \
+             simply existing"
+        );
+    }
+
+    /// The exemption `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`'s
+    /// doc comment names: `ci.yml`'s `book` job's `npm install --no-audit
+    /// --no-fund` is a different command, against a different lockfile
+    /// (`docs/book/ts-check`, no `file:` dependency on the wasm-pack
+    /// output), so it is correctly out of scope for the pnpm guard above.
+    /// Nothing else pins that fact, so a rename of that step to `pnpm
+    /// install --frozen-lockfile` (which WOULD need a `wasm-pack build`
+    /// step first) could drift silently past the guard above, whose exact
+    /// string match would simply stop finding it. Pin the exact command so
+    /// this test fails the moment that happens.
+    #[test]
+    fn book_job_install_is_a_plain_npm_install_not_a_pnpm_lane() {
+        let ci = workflow("ci.yml");
+        let (_, body) = jobs(&ci)
+            .into_iter()
+            .find(|(id, _)| id == "book")
+            .expect("ci.yml should still have a `book` job");
+        let commands = run_commands(&body);
+
+        assert!(
+            commands
+                .iter()
+                .any(|c| c == "npm install --no-audit --no-fund"),
+            "expected ci.yml's book job to run `npm install --no-audit --no-fund`; if this \
+             changed to `pnpm install --frozen-lockfile` it now needs a `wasm-pack build \
+             crates/brink-web` step before it and is no longer this guard's declared \
+             exemption; commands seen: {commands:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c == "pnpm install --frozen-lockfile"),
+            "ci.yml's book job now ALSO runs `pnpm install --frozen-lockfile` — it needs a \
+             `wasm-pack build crates/brink-web` step before it like the other four lanes; \
+             commands seen: {commands:?}"
+        );
+    }
+
     #[test]
     fn resolve_rejects_escapes() {
         assert!(resolve("/tmp/proj", "../outside.ink").is_err());

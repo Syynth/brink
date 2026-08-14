@@ -7,7 +7,14 @@
 // which is why every CI lane that runs `pnpm install --frozen-lockfile`
 // builds it first (.github/workflows/ci.yml's `frontend` and `e2e` jobs,
 // .github/workflows/desktop-smoke.yml, .github/workflows/npm-release.yml) —
-// see CLAUDE.md's "Cloud / fresh-environment sessions".
+// see CLAUDE.md's "Cloud / fresh-environment sessions". That ordering is
+// itself CI-self-enforcing (#2504): every workflow job's
+// `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+// (packages/brink-desktop/src-tauri/src/lib.rs) fails if any of the four
+// lanes above (or a new one) runs `pnpm install --frozen-lockfile` without
+// this build preceding it in the same job — this script is the runtime
+// check for the failure mode, that test is the CI-time guard against the
+// ordering regressing in the first place.
 //
 // ⚠ `pnpm install --frozen-lockfile` does NOT fail loudly when that
 // ordering is skipped. Confirmed by direct reproduction (worktree with the

@@ -139,7 +139,10 @@ jobs:
       # The @brink-lang/web package is a file: dependency on this output
       # (mirrors the `frontend` job in ci.yml), and src-tauri's own build
       # never touches it — but `pnpm build` below resolves the desktop
-      # package's "brink-web" alias straight to this path.
+      # package's "brink-web" alias straight to this path. It must precede
+      # "Install dependencies" below (#2479);
+      # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) enforces that ordering.
       - name: Build brink-web wasm package
         id: wasm_build
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
