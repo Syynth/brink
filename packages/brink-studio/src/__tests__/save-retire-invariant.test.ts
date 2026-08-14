@@ -52,6 +52,7 @@ import {
   FILE_SAVE_COMMAND_ID,
   FILE_SAVE_ALL_COMMAND_ID,
 } from "../file-commands.js";
+import { SAVE_PATH_IDS, type SavePathId } from "./save-paths.js";
 
 const TARGET = "a.ink";
 const OTHER = "b.ink";
@@ -273,7 +274,12 @@ function dispatchCommand(world: SaveWorld, id: string, focused: string | null): 
  * retires `retires` — the sweep then attacks that run read by read.
  */
 interface SavePath {
-  id: string;
+  /**
+   * Typed against `save-paths.ts` rather than `string`, so a driver naming an
+   * id the enrolment guard's registry doesn't have is a typecheck failure
+   * before it is a test failure (#2480).
+   */
+  id: SavePathId;
   files: Record<string, string>;
   scenario: (world: SaveWorld) => void;
   run: (world: SaveWorld) => Promise<void>;
@@ -376,6 +382,31 @@ const SAVE_PATHS: SavePath[] = [
 ];
 
 describe("confirm→retire is one synchronous step (#2455)", () => {
+  it("SAVE_PATHS drives exactly the ids in save-paths.ts (#2480)", () => {
+    // The enrolment guard cross-checks every production call site's
+    // `SAVE-PATH` marker against `SAVE_PATH_IDS`, so that registry is only
+    // meaningful while it names the paths this suite actually drives. The
+    // `SavePathId` type already rejects a driver naming an id the registry
+    // lacks; this catches the other direction — a registry id with no driver
+    // behind it, which would let a marker "enrol" a path nothing sweeps.
+    const driven = SAVE_PATHS.map((path) => path.id);
+    const registered = [...SAVE_PATH_IDS];
+    expect(
+      registered.filter((id) => !driven.includes(id)),
+      "save-paths.ts lists these ids AHEAD of save-retire-invariant.test.ts: the registry " +
+        "names them but no SAVE_PATHS driver sweeps them, so a SAVE-PATH marker naming one " +
+        "would pass the enrolment guard while nothing tests the path. Add the driver, or " +
+        "drop the id from save-paths.ts",
+    ).toEqual([]);
+    expect(
+      driven.filter((id) => !registered.includes(id)),
+      "save-retire-invariant.test.ts is AHEAD of save-paths.ts: these driven ids are missing " +
+        "from the registry, so save-path-enrolment.test.ts would reject a marker naming them. " +
+        "Add them to SAVE_PATH_IDS",
+    ).toEqual([]);
+    expect(driven).toEqual(registered); // ordering + duplicates
+  });
+
   for (const path of SAVE_PATHS) {
     it(`${path.id} never retires an edit that lands between its confirming read and markFilesSaved`, async () => {
       // ── Calibrate: an undisturbed run, to count the windows and prove

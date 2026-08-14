@@ -145,7 +145,18 @@ type FileChange = {
   drives each one with an edit injected after every session read and fails
   if any path retires content the provider never persisted — extend that
   suite's `SAVE_PATHS` when adding a save path rather than writing another
-  race test for one window.
+  race test for one window. Enrolment is itself enforced, not merely
+  instructed (issue #2480): every production `markFilesSaved`/`markAllSaved`
+  call site must carry a `// SAVE-PATH …` (or `SAVE-PATH-EXEMPT …`) marker
+  comment naming the save-path id(s) that sweep it, and
+  `packages/brink-studio/src/__tests__/save-path-enrolment.test.ts` scans
+  `packages/*/src` for every real call site, failing on one with no marker,
+  a marker naming an id no driver sweeps, or a file the scan finds that its
+  `SCANNED_FILES` list does not know about. The ids live in
+  `packages/brink-studio/src/__tests__/save-paths.ts`, which types
+  `SAVE_PATHS` and is asserted to match it entry for entry — so adding a save
+  path means three edits that fail loudly until all three are made: the id,
+  the `SAVE_PATHS` driver, and the marker above the call.
 - **Orphaned files (2026-08-07 decision, "keep the view, mark orphaned").**
   When a file open in the editor is deleted externally, the session drops
   the file but the open view keeps its buffer — never auto-closed — marked

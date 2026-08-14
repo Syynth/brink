@@ -226,6 +226,10 @@ export class OverlayPersistence {
     // packages/brink-studio/src/__tests__/save-retire-invariant.test.ts).
     const current = this.session.getFiles();
     const saved = [...written.keys()].filter((path) => current[path] === written.get(path));
+    // SAVE-PATH markFilesSaved: OverlayPersistence.saveAll, OverlayPersistence.save
+    // (packages/brink-studio/src/__tests__/save-path-enrolment.test.ts checks
+    // this marker's ids against save-paths.ts; issue #2480 — do not remove it
+    // or let it go stale: it is what notices a forgotten save path.)
     if (saved.length > 0) this.session.markFilesSaved(saved);
     this.arm(); // restart the autosave countdown after any save
     return saved;
