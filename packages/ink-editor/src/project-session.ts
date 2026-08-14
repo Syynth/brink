@@ -527,7 +527,14 @@ export class ProjectSession {
     return this.changes.flush();
   }
 
-  /** Re-baseline `paths` to their current content (explicit save). */
+  /** Re-baseline `paths` to their current content (explicit save).
+   *
+   *  ⚠ Callers must read the content that CONFIRMS what the write persisted
+   *  and call this in ONE synchronous step — no `await` between them, or an
+   *  edit landing in that window is retired without ever having been
+   *  written (docs/embedder-api.md "Dirty state", "Confirm and retire in
+   *  ONE synchronous step"; pinned for every save path by
+   *  packages/brink-studio/src/__tests__/save-retire-invariant.test.ts). */
   markFilesSaved(paths: Iterable<string>): void {
     this.changes.markSaved(paths);
   }

@@ -128,6 +128,24 @@ type FileChange = {
   `api.getDirtyFiles(): string[]`. File contents deliberately never enter
   `StudioPublicState` (they are big and change per keystroke — the
   reference-stability contract); use the push/pull surfaces above.
+- **Confirm and retire in ONE synchronous step (issue #2455).** Any save
+  path that re-baselines must perform the read that CONFIRMS what the write
+  persisted and the `markFilesSaved` call that RETIRES those paths with no
+  `await` between them: re-read the session content immediately before
+  marking, never carry a snapshot taken before an `await` across it. A
+  snapshot is stale the moment the path yields — an edit landing in that
+  window was never written, so retiring it drops the author's work with no
+  warning at all, which is strictly worse than the false-positive "changed
+  while saving" warning the disk-confirmation check exists to avoid. The
+  rule was learned three times over (`OverlayPersistence.saveDirty` #2417,
+  `file.save`/`file.saveAll` #2426, and again inside PR #2447, where a
+  pre-`await` snapshot reused after the `readProviderFile` round trip was
+  caught only in review). It is pinned for every save path by
+  `packages/brink-studio/src/__tests__/save-retire-invariant.test.ts`, which
+  drives each one with an edit injected after every session read and fails
+  if any path retires content the provider never persisted — extend that
+  suite's `SAVE_PATHS` when adding a save path rather than writing another
+  race test for one window.
 - **Orphaned files (2026-08-07 decision, "keep the view, mark orphaned").**
   When a file open in the editor is deleted externally, the session drops
   the file but the open view keeps its buffer — never auto-closed — marked

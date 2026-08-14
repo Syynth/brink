@@ -109,6 +109,12 @@ export function registerFileCommands(
               // confirmed. `onDisk !== undefined` additionally guards a
               // rejected read (e.g. a vanished path) from vacuously
               // matching a path also absent from the session snapshot.
+              //
+              // ⚠ This read and the `markFilesSaved` it gates are ONE
+              // synchronous step — no `await` may be introduced between
+              // them (docs/embedder-api.md "Dirty state", "Confirm and
+              // retire in ONE synchronous step"; pinned for every save path
+              // by src/__tests__/save-retire-invariant.test.ts).
               if (onDisk !== undefined && onDisk === project.getFiles()[path]) {
                 markSavedAndNotify();
                 return;
@@ -193,6 +199,12 @@ export function registerFileCommands(
               // more time, immediately before `markFilesSaved`, catches
               // that window the same way the single-file `file.save` guard
               // does.
+              //
+              // ⚠ This read and the `markFilesSaved` below are ONE
+              // synchronous step — no `await` may be introduced between
+              // them (docs/embedder-api.md "Dirty state", "Confirm and
+              // retire in ONE synchronous step"; pinned for every save path
+              // by src/__tests__/save-retire-invariant.test.ts).
               const atMark = project.getFiles();
               const saved = [
                 ...settled,
