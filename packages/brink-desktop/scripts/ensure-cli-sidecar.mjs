@@ -89,6 +89,10 @@ export function sidecarPaths({
   srcTauriDir,
   targetDir = join(repoRoot, "target"),
 }) {
+  // The `.exe` suffix below is a hard Tauri `externalBin` requirement on
+  // Windows triples, not a filename decoration — `ensureCliSidecar`'s `stub`
+  // option has to respect that when deciding what it is safe to stage under
+  // this name (see the guard next to `STUB_SIDECAR`, #2481).
   const exeSuffix = triple.includes("windows") ? ".exe" : "";
   const binariesDir = join(srcTauriDir, "binaries");
   return {
@@ -103,6 +107,18 @@ export function sidecarPaths({
  * loudly-failing shell script rather than an empty file: a stub lane is one
  * where nothing executes the sidecar, and if something ever starts to, it
  * must say so rather than look like a working `brink-cli`.
+ *
+ * POSIX-only, deliberately: `sidecarPaths` stages this under a
+ * `.exe`-suffixed name on Windows triples (a hard Tauri `externalBin`
+ * requirement, not a choice this script makes), and Windows loads a
+ * `.exe`-named file through its PE loader regardless of the bytes inside
+ * it — a `#!/bin/sh` script staged there is not "wrong content" that a
+ * `.bat`/PowerShell rewrite would fix, it is a file the OS cannot start
+ * running at all, so no text payload at that path can "fail loudly" the
+ * way this stub does on POSIX. `ensureCliSidecar` below refuses to stage
+ * this file for a Windows triple rather than ship one that silently cannot
+ * do its one job (#2481; no non-Linux smoke lane exists yet to catch it —
+ * see `docs/desktop-shell-spec.md` "CI coverage blind spots").
  */
 export const STUB_SIDECAR = `#!/bin/sh
 echo "brink-cli sidecar stub: staged by ensure-cli-sidecar.mjs (stub/BRINK_SIDECAR_STUB) so tauri-build's externalBin resolution finds a file; this is not the CLI" >&2
@@ -124,6 +140,14 @@ exit 127
  * flag, because the smoke lane reaches this script two ways — its own
  * "Stage brink-cli sidecar" step and, indirectly, `pnpm build` — and only
  * an env var covers the nested one.
+ *
+ * `stub` throws for a Windows `triple` instead of staging anything (#2481):
+ * `STUB_SIDECAR` is a POSIX `#!/bin/sh` script, and `sidecarPaths` stages it
+ * under a `.exe`-suffixed name there, which Windows would load through its
+ * PE loader and refuse to start — a broken file staged silently, not a
+ * loudly-failing one. No lane requests a Windows stub today (the smoke lane
+ * is `ubuntu-latest` only, #2428), so this only guards a host that could be
+ * added later.
  */
 export function ensureCliSidecar({
   repoRoot = defaultRepoRoot,
@@ -140,6 +164,17 @@ export function ensureCliSidecar({
     srcTauriDir,
     targetDir,
   });
+
+  if (stub && triple.includes("windows")) {
+    throw new Error(
+      `[ensure-cli-sidecar] BRINK_SIDECAR_STUB has no Windows-compatible payload yet (#2481): ` +
+        `${triple} stages under a \`.exe\`-suffixed name (see sidecarPaths), and Windows loads ` +
+        `that file through its PE loader regardless of the bytes inside it, so STUB_SIDECAR's ` +
+        `POSIX \`#!/bin/sh\` script — or any other text payload staged at a \`.exe\` path — could ` +
+        `not run there. Build the real sidecar on this host instead of requesting a stub, or add ` +
+        `a Windows-compatible stub before enabling BRINK_SIDECAR_STUB on a Windows lane.`,
+    );
+  }
 
   mkdirSync(binariesDir, { recursive: true });
 

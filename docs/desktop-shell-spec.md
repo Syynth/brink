@@ -319,6 +319,20 @@ Whether to buy a macOS runner (or a `--target`-only check job) is a cost
 question and is **NOT settled here** — this section records the gap, it does
 not rule on it.
 
+The same blind spot let `STUB_SIDECAR` (above) ship as a POSIX `#!/bin/sh`
+script with no host awareness: `sidecarPaths` stages it under a
+`.exe`-suffixed name on Windows triples, same as it would a real binary, and
+Windows loads `.exe`-named files through its PE loader regardless of the
+bytes inside them — a shell script staged there could not run if anything
+ever executed it. `ensureCliSidecar` now throws rather than stage that file
+for a Windows `triple` when `stub` is requested, since no text payload
+staged at a `.exe` path can be made to "fail loudly" the way the POSIX stub
+does; a real Windows-compatible stub is future work if a non-Linux smoke
+lane is ever added (#2481, follow-up from #2474's review of #2469). The
+guard is pinned by a synthetic-triple test in
+`src/__tests__/ensure-cli-sidecar.test.ts` (`describe("the stub option")`),
+since the ubuntu-only lane itself cannot exercise it.
+
 The same Linux-only lane hides a cost of the #2415 lint policy: on the first
 mobile target, `tauri-macros`' `mobile_entry_point` expansion discards
 `run()`'s `tauri::Result<()>` (`unused_must_use`) and uses `eprintln!`
