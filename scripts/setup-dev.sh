@@ -195,5 +195,14 @@ fi
 
 echo "==> Done. Next steps:"
 echo "    cargo check --workspace"
-echo "    pnpm install --frozen-lockfile"
+# @brink-lang/web (packages/wasm) has a file: dependency on this build
+# output. Build it BEFORE `pnpm install` — ordering that matters because
+# `pnpm install --frozen-lockfile` does NOT reliably fail loudly when it's
+# skipped (confirmed: it can exit 0 with the link silently unresolved,
+# surfacing later and confusingly as e.g. "vitest: not found" in a
+# downstream `pnpm --filter ... test` step; #2479). `check:wasm-pkg` is a
+# fast belt-and-suspenders check for the same thing, not a substitute for
+# this ordering.
+echo "    wasm-pack build crates/brink-web --target web --out-dir www/pkg"
+echo "    pnpm install --frozen-lockfile && pnpm check:wasm-pkg"
 echo "    cargo nextest run --workspace     # the pump's per-round gate"
