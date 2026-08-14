@@ -1542,12 +1542,22 @@ mod tests {
     /// `dependency_versions_track_the_root_workspace` (#2451, which also
     /// compares root's `Cargo.lock`), whose entire purpose is catching
     /// root-policy drift, cannot fail the PR that causes it.
+    ///
+    /// `crates/brink-cli/**` is deliberately NOT in this list (#2477):
+    /// `BRINK_SIDECAR_STUB: "1"` is unconditional in this workflow's `env:`
+    /// block, so `ensure-cli-sidecar.mjs` never runs `cargo build -p
+    /// brink-cli --release` in this lane — see `STUB_SIDECAR` in
+    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs`, which stages
+    /// a placeholder without reading any `brink-cli` source. `src-tauri` is
+    /// its own excluded workspace and does not depend on the `brink-cli`
+    /// crate either, so nothing left in this lane can notice a
+    /// `crates/brink-cli/**` change; watching that tree here would only
+    /// trigger the job for a change it can no longer detect.
     #[test]
     fn desktop_smoke_path_filter_covers_its_shared_inputs() {
         let entries = path_filter(&workflow("desktop-smoke.yml"));
         for required in [
             "packages/brink-desktop/**",
-            "crates/brink-cli/**",
             "pnpm-lock.yaml",
             "Cargo.toml",
             "Cargo.lock",
@@ -1562,6 +1572,15 @@ mod tests {
                  it lists {entries:?}"
             );
         }
+        assert!(
+            !entries.iter().any(|entry| entry == "crates/brink-cli/**"),
+            "desktop-smoke.yml's pull_request path filter should NOT list \
+             \"crates/brink-cli/**\" (#2477): BRINK_SIDECAR_STUB is unconditional in this \
+             workflow, so nothing left in this lane can notice a brink-cli source change \
+             — re-adding the entry without also restoring something that reads brink-cli \
+             sources would just resurrect the dead-weight trigger this test now guards \
+             against"
+        );
     }
 
     /// Each check in the smoke lane must stay non-blocking for its SIBLINGS

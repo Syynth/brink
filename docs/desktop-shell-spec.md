@@ -194,7 +194,11 @@ Three properties of `desktop-smoke.yml` are asserted by tests in
   root-lint-policy change ran this lane only on the post-merge push to
   `main` — including the two `*_matches_the_root_workspace` drift tests,
   which could not fail the PR that caused the drift.
-  (`desktop_smoke_path_filter_covers_its_shared_inputs`)
+  (`desktop_smoke_path_filter_covers_its_shared_inputs`) `crates/brink-cli/**`
+  was one of those crate globs until #2477: once `BRINK_SIDECAR_STUB` (below)
+  made the sidecar step a placeholder, nothing left in the lane read
+  `brink-cli` source, so the same test now asserts the entry stays **absent**
+  rather than present.
 - **Checks are non-blocking for their siblings but gated on their setup
   steps.** A bare `if: '!cancelled()'` also overrides the implicit
   `success()` on a failed *prerequisite*, so a dying setup step let the

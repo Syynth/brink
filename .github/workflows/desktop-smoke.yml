@@ -24,8 +24,19 @@ on:
       - "packages/studio-store/**"
       - "packages/studio-ui/**"
       - "crates/brink-web/**"
-      - "crates/brink-cli/**"
       - ".github/workflows/desktop-smoke.yml"
+      # `crates/brink-cli/**` deliberately does NOT appear above (#2477).
+      # It used to belong here because this lane once built the sidecar from
+      # source; since #2469's `BRINK_SIDECAR_STUB` (below), the "Stage
+      # brink-cli sidecar" step and its nested re-run from `pnpm build` both
+      # write a placeholder without ever reading brink-cli source, and
+      # src-tauri (its own excluded workspace) never depended on the crate
+      # either — so nothing left in this lane can notice a brink-cli source
+      # change. Watching the tree here would only trigger the job for a
+      # change it can no longer detect.
+      # `desktop_smoke_path_filter_covers_its_shared_inputs` in
+      # src-tauri/src/lib.rs asserts the entry stays gone.
+      #
       # Inputs outside those trees that still break this job (#2418 gap 2).
       # Without them a breaking change runs this lane only on the post-merge
       # push to `main`, after the break has landed: the lockfile feeds
@@ -81,6 +92,18 @@ env:
   # fully-optimised `wasm-pack build`, rather than keep vars around that
   # would be dead configuration for the sidecar build they were written for
   # once that build is gone, while still quietly de-optimising the wasm one.
+  #
+  # ⚠ #2482 proposed treating that wasm-pack build the same way as the
+  # sidecar above ("still pays for a build it never executes"). That is NOT
+  # the same shape: the sidecar's staged file only had to EXIST (its content
+  # is never read — a placeholder satisfies `externalBin` resolution just as
+  # well as a real binary), whereas the "Build brink-web wasm package" step's
+  # output is genuinely consumed below — "Typecheck (tsc --noEmit)" resolves
+  # the `brink-web` alias into it, and `pnpm build` bundles it — so a stub
+  # cannot stand in for it. #2482 was closed on that basis; if a future PR
+  # wants to explore trimming JUST the release-vs-dev optimisation level
+  # (not skipping the build outright), that is new work, not a re-filing of
+  # #2482.
   #
   # An `env:` var rather than a flag on the step below, because the lane runs
   # the script TWICE: its own "Stage brink-cli sidecar" step, and `pnpm build`,
