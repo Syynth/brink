@@ -3397,6 +3397,76 @@ mod tests {
         assert_eq!(src_lines[9].trim(), "Thanks for playing.");
     }
 
+    #[test]
+    fn native_folding_ranges_doc_entry_point() {
+        // #2458: `folding_ranges_doc`, the per-document-handle entry point,
+        // shares `folding_ranges_impl` with the session-level `folding_ranges()`
+        // (#2436/PR #2448). This test confirms the document-handle entry point
+        // reaches the same native routing, end-to-end over a native `.brink`
+        // file with nested structure and machinery/narrative folds.
+        //
+        // The test value is end-to-end reachability proof: the wasm-facing
+        // document-handle entry point executes the same native-CST-aware code
+        // path as the session-level query, not an alternative path or empty
+        // fallback. Like the sibling test above, the byte-identical output
+        // to forcing ink's `syntax_root` arm means this cannot prove
+        // routing discrimination (only the layer's own unit tests in
+        // `brink-ide` can); it proves reachability only.
+        let mut s = EditorSession::new();
+        s.set_fold_runs_enabled(true);
+        let source = "flow main() {\n  \
+             var mood = 0\n  \
+             var gold = 7\n  \
+             Hello there, friend.\n  \
+             Nice weather today.\n  \
+             flow tally() {\n    \
+             /* the tally\n       \
+             flow's own note */\n    \
+             Mood is {mood}, gold is {gold}.\n    \
+             Thanks for playing.\n    \
+             -> END\n  \
+             }\n  \
+             -> tally\n\
+             }\n";
+        s.update_file("main.brink", source);
+        let doc = s.open_document("main.brink");
+        assert_ne!(doc, 0, "open_document must succeed");
+        let src_lines: Vec<&str> = source.split('\n').collect();
+
+        let ranges = json(&s.folding_ranges_doc(doc));
+        let array = ranges.as_array().expect("array");
+
+        // Machinery fold: top-level `var` decls at lines 1-2.
+        assert!(
+            array
+                .iter()
+                .any(|r| r["kind"] == "machinery" && r["start_line"] == 1 && r["end_line"] == 2),
+            "expected a machinery fold at lines 1-2 from document-handle path: {ranges}"
+        );
+        assert_eq!(src_lines[1].trim(), "var mood = 0");
+        assert_eq!(src_lines[2].trim(), "var gold = 7");
+
+        // Narrative fold: outer flow's dialogue at lines 3-4.
+        assert!(
+            array
+                .iter()
+                .any(|r| r["kind"] == "narrative" && r["start_line"] == 3 && r["end_line"] == 4),
+            "expected a narrative fold at lines 3-4 from document-handle path: {ranges}"
+        );
+        assert_eq!(src_lines[3].trim(), "Hello there, friend.");
+        assert_eq!(src_lines[4].trim(), "Nice weather today.");
+
+        // Narrative fold: nested flow's dialogue at lines 8-9, past the block comment.
+        assert!(
+            array
+                .iter()
+                .any(|r| r["kind"] == "narrative" && r["start_line"] == 8 && r["end_line"] == 9),
+            "expected a narrative fold at lines 8-9 from document-handle path: {ranges}"
+        );
+        assert_eq!(src_lines[8].trim(), "Mood is {mood}, gold is {gold}.");
+        assert_eq!(src_lines[9].trim(), "Thanks for playing.");
+    }
+
     // ── #2291/#2359: inlay hints / color hints / argument widgets now route
     // through the native-CST-aware path (`IdeSession::syntax_root_native` +
     // native-typed AST casts) rather than gating a `.brink` file to empty
