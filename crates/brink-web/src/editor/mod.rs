@@ -3273,9 +3273,12 @@ mod tests {
         // dispatch on `is_native` independently (`lowered_query`). So this
         // fixture's `machinery` fold appears whether or not the trivia
         // root is native; it is NOT, by itself, proof the routing matters.
-        // The routing's actual regression coverage lives in
-        // `brink-ide`'s `trivia::tests::native_block_comment_spans_lines`
-        // and `line_context::tests::native_block_comment_uses_the_native_cst`
+        // PR #2448 added a nested-structure test at this layer but found that
+        // layer's fold-run output is byte-identical whichever CST arm runs, so
+        // it does not discriminate routing either. The routing's actual
+        // regression coverage lives in `brink-ide`'s
+        // `trivia::tests::native_block_comment_spans_lines` and
+        // `line_context::tests::native_block_comment_uses_the_native_cst`
         // (both red-first-verified against `line_trivia_native`/
         // `line_contexts_native` in isolation) — this test only pins that
         // the wasm-facing entry point actually reaches that native path

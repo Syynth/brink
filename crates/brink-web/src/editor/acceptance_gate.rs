@@ -352,9 +352,13 @@ fn gate_project_wide_symbols_reach_completions() {
 /// test (`crates/brink-web/src/editor/mod.rs`), which enables
 /// `set_fold_runs_enabled` and documents the same honest caveat: this
 /// fixture's fold-run classification comes from the projection, not the
-/// trivia root, so even that test cannot prove the routing changes output —
-/// only that the wasm-facing entry point reaches the native path without
-/// erroring.
+/// trivia root, so even that test cannot prove the routing changes output.
+/// The genuine routing coverage remains the two `brink-ide` block-comment
+/// tests (`trivia::tests::native_block_comment_spans_lines`,
+/// `line_context::tests::native_block_comment_uses_the_native_cst`), which
+/// discriminate the CST arm in isolation; this test and its `mod.rs` sibling
+/// (`native_folding_ranges_reach_the_native_cst_path`) only pin that the
+/// wasm-facing entry point reaches the native path without erroring.
 #[test]
 fn gate_folding_decodes_onto_real_native_line_numbers() {
     let mut s = gate_session();
