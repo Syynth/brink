@@ -699,6 +699,12 @@ export class ProjectSession {
    * without weakening that guard: a divergence still fails this check,
    * since disk keeps the pre-race content the write actually persisted.
    * Rejects like {@link FileProvider.readFile} itself (e.g. a vanished path).
+   *
+   * This confirmation is only meaningful if the underlying
+   * {@link FileProvider.readFile} reports PERSISTED content, never content a
+   * `requestSave` merely staged — a provider whose `readFile` mirrors
+   * in-flight edits (see that method's doc) makes every call here vacuously
+   * match, silently turning the #2426 guard into a no-op.
    */
   async readProviderFile(path: string): Promise<string> {
     return this.provider.readFile(path);

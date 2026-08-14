@@ -564,6 +564,11 @@ class HostSaveProvider extends InMemoryFileProvider {
    *  test can stage an edit while the write is still "in flight" (#2426). */
   private gate: Promise<void> | null = null;
   private releaseGate: (() => void) | null = null;
+  /** Set by `holdNextRead()`; `readFile` awaits it before resolving, so a
+   *  test can land an edit while a disk-confirmation read (#2435) is itself
+   *  still in flight. */
+  private readGate: Promise<void> | null = null;
+  private releaseReadGate: (() => void) | null = null;
 
   onFileChanged(path: string, content: string): void {
     this.hostStaged.set(path, content);
@@ -581,6 +586,26 @@ class HostSaveProvider extends InMemoryFileProvider {
     this.releaseGate?.();
     this.gate = null;
     this.releaseGate = null;
+  }
+
+  /** The next `readFile` call (the disk-confirmation read `readProviderFile`
+   *  drives, issue #2435) blocks until `releaseRead()` is called. */
+  holdNextRead(): void {
+    this.readGate = new Promise((resolve) => {
+      this.releaseReadGate = resolve;
+    });
+  }
+
+  /** Unblock a `readFile` call parked by `holdNextRead()`. */
+  releaseRead(): void {
+    this.releaseReadGate?.();
+    this.readGate = null;
+    this.releaseReadGate = null;
+  }
+
+  async readFile(path: string): Promise<string> {
+    if (this.readGate) await this.readGate;
+    return super.readFile(path);
   }
 
   async requestSave(paths?: string[]): Promise<void> {
@@ -782,6 +807,59 @@ describe("host-save (overlay contract)", () => {
     h.dispose();
     h.container.remove();
   });
+
+  // ── #2435 review finding: the disk-confirmation re-check itself has a
+  // TOCTOU window — an edit landing on ANY saved path (settled or moved)
+  // while the batch's confirmation reads are still in flight must not be
+  // silently retired against content that was never actually confirmed ──
+
+  it("file.saveAll: an edit landing on an already-settled path during the batch's disk-confirmation read is not silently marked saved", async () => {
+    const egress = await makeOverlayProject();
+    const h = commandHarness(egress);
+
+    // main.ink will end up in the `moved` bucket (a genuine #2426 mid-write
+    // divergence) purely to force a real disk-confirmation read for the
+    // batch to await; side.ink is the settled file this test cares about.
+    egress.project.applyEdit("main.ink", "main v1");
+    egress.project.applyEdit("side.ink", "side v1");
+    egress.host.holdNextSave();
+    h.commands.dispatch("file.saveAll");
+    await microtasks();
+    expect(egress.host.saves).toEqual([]); // write has not resolved yet
+
+    // main.ink moves on while the batch write is still open.
+    egress.project.applyEdit("main.ink", "main v2");
+
+    // Gate the disk-confirmation read before releasing the write, so the
+    // batch's Promise.all over `moved` paths is genuinely in flight when
+    // the next edit lands.
+    egress.host.holdNextRead();
+    egress.host.releaseSave(); // the batch write completes, persisting v1 for both files
+    await microtasks();
+    await microtasks(); // reach the parked disk-confirmation read for main.ink
+
+    // side.ink — already computed as "settled" (its content still matched
+    // the pre-save snapshot when the batch write resolved) — moves on RIGHT
+    // NOW, while that confirmation read is still parked. Disk only ever
+    // received "side v1" for side.ink.
+    egress.project.applyEdit("side.ink", "side v2");
+
+    egress.host.releaseRead(); // main.ink's confirmation read resolves
+    await microtasks();
+    await microtasks();
+
+    // side.ink's "side v2" was never written or confirmed — it must stay
+    // dirty, not be silently retired as saved because `saved` was computed
+    // before this edit landed.
+    expect(egress.project.dirtyPaths()).toEqual(["main.ink", "side.ink"]);
+    expect(egress.project.getSession().getFileSource("side.ink")).toBe("side v2");
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(true);
+
+    h.dispose();
+    h.container.remove();
+  });
 });
 
 // ── #2435: a `requestSave` QUEUED behind another in-flight write must not
@@ -812,6 +890,11 @@ class QueuedHostSaveProvider extends InMemoryFileProvider {
   private hostStaged = new Map<string, string>();
   private saving: Promise<unknown> = Promise.resolve();
   private gates: Array<() => void> = [];
+  /** Set by `holdNextRead()`; `readFile` awaits it before resolving, so a
+   *  test can land an edit while a disk-confirmation read (#2435) is itself
+   *  still in flight. */
+  private readGate: Promise<void> | null = null;
+  private releaseReadGate: (() => void) | null = null;
 
   onFileChanged(path: string, content: string): void {
     this.hostStaged.set(path, content);
@@ -822,6 +905,26 @@ class QueuedHostSaveProvider extends InMemoryFileProvider {
     const release = this.gates.shift();
     if (release === undefined) throw new Error("no write is currently held open");
     release();
+  }
+
+  /** The next `readFile` call (the disk-confirmation read `readProviderFile`
+   *  drives, issue #2435) blocks until `releaseRead()` is called. */
+  holdNextRead(): void {
+    this.readGate = new Promise((resolve) => {
+      this.releaseReadGate = resolve;
+    });
+  }
+
+  /** Unblock a `readFile` call parked by `holdNextRead()`. */
+  releaseRead(): void {
+    this.releaseReadGate?.();
+    this.readGate = null;
+    this.releaseReadGate = null;
+  }
+
+  async readFile(path: string): Promise<string> {
+    if (this.readGate) await this.readGate;
+    return super.readFile(path);
   }
 
   async requestSave(paths?: string[]): Promise<void> {
@@ -862,6 +965,19 @@ function noViewDocuments(): DocumentSessions {
   } as unknown as DocumentSessions;
 }
 
+/** `registerFileCommands`' `documents` dependency for `file.save` tests that
+ *  drive edits through `project.applyEdit` directly (no mounted CM6 view) —
+ *  `flushFocused` reports `path` as the always-focused document, the way a
+ *  real `DocumentSessions` would with one mounted, focused view. Without
+ *  this, `file.save` can never be reached from a headless harness — see the
+ *  #2435 review finding on `noViewDocuments` above. */
+function focusedDocuments(path: string): DocumentSessions {
+  return {
+    flushFocused: () => path,
+    flushAll: () => [],
+  } as unknown as DocumentSessions;
+}
+
 async function makeQueuedOverlayProject(): Promise<Egress & { host: QueuedHostSaveProvider }> {
   await initWasm();
   const host = new QueuedHostSaveProvider({ "main.ink": MAIN_INK, "side.ink": SIDE_INK });
@@ -883,6 +999,19 @@ describe("host-save queued writes (#2435)", () => {
     registerFileCommands(commands, {
       project: egress.project,
       documents: noViewDocuments(),
+      notify: (n) => void notifications.notify(n),
+    });
+    return { commands, notifications };
+  }
+
+  /** Same as `harness`, but with `path` reported as the focused document so
+   *  `file.save` (not just `file.saveAll`) is reachable. */
+  function focusedHarness(egress: Egress, path: string) {
+    const commands = new CommandRegistry();
+    const notifications = new NotificationCenter();
+    registerFileCommands(commands, {
+      project: egress.project,
+      documents: focusedDocuments(path),
       notify: (n) => void notifications.notify(n),
     });
     return { commands, notifications };
@@ -948,6 +1077,101 @@ describe("host-save queued writes (#2435)", () => {
 
     expect(await egress.host.readFile("main.ink")).toBe("v1"); // disk still holds the old content
     expect(egress.project.dirtyPaths()).toEqual(["main.ink"]); // stays dirty
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(true);
+  });
+
+  // `file.save`'s confirmed arm (`onDisk === current` → `markSavedAndNotify`)
+  // had no test at all before this: both tests above dispatch
+  // `file.saveAll`, and `noViewDocuments()` hard-codes `flushFocused: () =>
+  // null`, so `file.save` always took the "no editor focused" early return
+  // and could never reach it (#2435 review finding).
+
+  it("file.save: a write queued behind another in-flight write persists the later edit it legitimately caught up to — no false warning", async () => {
+    const egress = await makeQueuedOverlayProject();
+    const h = focusedHarness(egress, "main.ink");
+
+    egress.project.applyEdit("main.ink", "v1");
+    h.commands.dispatch("file.save"); // call A: starts writing "v1" immediately
+    await microtasks();
+
+    h.commands.dispatch("file.save"); // call B: queues behind call A's still-open write
+    await microtasks();
+
+    // The later edit lands while call B is queued (not yet reading
+    // `hostStaged`) — a queued write, not a live one, is what will pick
+    // this up.
+    egress.project.applyEdit("main.ink", "v2");
+
+    egress.host.releaseWrite(); // call A's write completes, persisting "v1"
+    await microtasks();
+    await microtasks(); // generous margin: call A's own confirmation read + notify
+    // Call A's own write genuinely diverged — it correctly warns for its
+    // own save, same as the #2426 tests above. Clear that before asserting
+    // on call B.
+    h.notifications.getState().visible.forEach((n) => h.notifications.dismiss(n.id));
+
+    egress.host.releaseWrite(); // call B's write completes, persisting "v2"
+    await microtasks();
+    await microtasks(); // generous margin: call B's own confirmation read + notify
+
+    expect(await egress.host.readFile("main.ink")).toBe("v2");
+    expect(egress.project.dirtyPaths()).toEqual([]);
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(false);
+    expect(
+      h.notifications.getState().visible.some((n) => n.message === "Saved main.ink"),
+    ).toBe(true);
+  });
+
+  // ── #2435 review finding: `file.save`'s own confirmation re-check has a
+  // TOCTOU window too — an edit landing while the `readProviderFile` await
+  // is itself in flight must not be confirmed against a stale pre-await
+  // snapshot ──
+
+  it("file.save: an edit landing during the disk-confirmation read is not marked saved against stale content (TOCTOU)", async () => {
+    const egress = await makeQueuedOverlayProject();
+    const h = focusedHarness(egress, "main.ink");
+
+    egress.project.applyEdit("main.ink", "v1");
+    h.commands.dispatch("file.save"); // call A: starts writing "v1" immediately
+    await microtasks();
+
+    h.commands.dispatch("file.save"); // call B: queues behind call A's still-open write
+    await microtasks();
+
+    // main.ink moves on while call B is queued — call B will legitimately
+    // pick this up when its turn in the write queue arrives.
+    egress.project.applyEdit("main.ink", "v2");
+
+    egress.host.releaseWrite(); // call A's write completes, persisting "v1"
+    await microtasks();
+    await microtasks();
+    h.notifications.getState().visible.forEach((n) => h.notifications.dismiss(n.id));
+
+    // Gate call B's disk-confirmation read before releasing its write, so
+    // that read is genuinely in flight when the next edit lands.
+    egress.host.holdNextRead();
+    egress.host.releaseWrite(); // call B's write completes, persisting "v2"
+    await microtasks(); // call B reaches its confirmation read and parks on the gate
+
+    // A THIRD edit lands while call B's `readProviderFile` is still
+    // resolving — disk holds "v2" (what call B is confirming against), but
+    // the session has already moved on to "v3", which was never written or
+    // confirmed.
+    egress.project.applyEdit("main.ink", "v3");
+
+    egress.host.releaseRead(); // call B's confirmation read resolves: onDisk === "v2"
+    await microtasks();
+    await microtasks();
+
+    // Disk only ever received "v2" — "v3" was never written or confirmed,
+    // so it must still be reported dirty, not silently retired against a
+    // disk read that only ever verified the older "v2".
+    expect(await egress.host.readFile("main.ink")).toBe("v2");
+    expect(egress.project.dirtyPaths()).toEqual(["main.ink"]);
     expect(
       h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
     ).toBe(true);

@@ -9,7 +9,20 @@ export interface FileProvider {
   /** List all files known to the provider. */
   listFiles(): Promise<string[]>;
 
-  /** Read a file's content by path. Throws if the file does not exist. */
+  /** Read a file's content by path. Throws if the file does not exist.
+   *
+   *  MUST report PERSISTED content — never staged, mirrored, or otherwise
+   *  in-memory-only content a `requestSave` hasn't actually written yet.
+   *  `ProjectSession.readProviderFile` (issue #2435) exposes this straight
+   *  through to the save commands' disk-confirmation check: if `readFile`
+   *  answers with the same content a `requestSave` merely staged (as an
+   *  implementation whose `onFileChanged` writes straight into the store
+   *  `readFile` reads from would), that check is vacuously true for every
+   *  path and the #2426 mid-write guard it backs becomes a permanent
+   *  no-op. See `InMemoryFileProvider` below for the playground's
+   *  intentionally-exempt case (there is no real "disk" to lag behind) and
+   *  `TauriFileProvider`/`HostSaveProvider` (the test double) for providers
+   *  that must stage edits separately from what this method answers. */
   readFile(path: string): Promise<string>;
 
   /** Request a file that is not yet loaded (e.g. discovered via INCLUDE).

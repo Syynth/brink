@@ -119,8 +119,12 @@ type FileChange = {
   the provider's own written content, not just a pre-save snapshot — to
   have persisted that path's current content; a path with a genuine
   mid-write divergence is not synced by that save and keeps contributing to
-  the count (issues #2426/#2435). Use it to warn before `unmount()`/reload
-  would discard edits. Per-file detail is
+  the count (issues #2426/#2435). This requires `FileProvider.readFile` to
+  report PERSISTED content — never content a `requestSave` merely staged: an
+  implementation that mirrors edits straight into the store `readFile`
+  answers from makes the disk-confirmation check vacuously pass every time,
+  turning the #2426 guard into a permanent no-op. Use it to warn before
+  `unmount()`/reload would discard edits. Per-file detail is
   `api.getDirtyFiles(): string[]`. File contents deliberately never enter
   `StudioPublicState` (they are big and change per keystroke — the
   reference-stability contract); use the push/pull surfaces above.

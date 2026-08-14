@@ -100,7 +100,16 @@ export function registerFileCommands(
               // fails this check, since disk then holds the OLD content
               // the write persisted, not `current`.
               const onDisk = await project.readProviderFile(path).catch(() => undefined);
-              if (onDisk === current) {
+              // Re-read the session one more time, right here, rather than
+              // reusing the `current` snapshot taken before this await: an
+              // edit landing while `readProviderFile` was itself in flight
+              // (a real Tauri IPC + disk round trip) would otherwise be
+              // confirmed against a disk read that verified an OLDER
+              // version, silently re-baselining to content nothing ever
+              // confirmed. `onDisk !== undefined` additionally guards a
+              // rejected read (e.g. a vanished path) from vacuously
+              // matching a path also absent from the session snapshot.
+              if (onDisk !== undefined && onDisk === project.getFiles()[path]) {
                 markSavedAndNotify();
                 return;
               }
@@ -167,13 +176,28 @@ export function registerFileCommands(
               // pre-save snapshot — a path with a genuine mid-write
               // divergence still fails this check, since disk then holds
               // the OLD content the write persisted, not `current`.
+              // `current[path] !== undefined` additionally guards a
+              // rejected read from vacuously matching a path also absent
+              // from the pre-read snapshot.
               const confirmed = await Promise.all(
                 moved.map(async (path) => {
                   const onDisk = await project.readProviderFile(path).catch(() => undefined);
-                  return onDisk === current[path] ? path : null;
+                  return current[path] !== undefined && onDisk === current[path] ? path : null;
                 }),
               );
-              const saved = [...settled, ...confirmed.filter((p): p is string => p !== null)];
+              // Synchronous mark-time filter: `current` (captured before the
+              // disk-confirmation reads above) is only trustworthy for a
+              // path that hasn't moved on AGAIN while those reads were in
+              // flight — a settled path can drift during that same await
+              // just as easily as a moved one. Re-reading right here, one
+              // more time, immediately before `markFilesSaved`, catches
+              // that window the same way the single-file `file.save` guard
+              // does.
+              const atMark = project.getFiles();
+              const saved = [
+                ...settled,
+                ...confirmed.filter((p): p is string => p !== null),
+              ].filter((path) => atMark[path] === current[path]);
               const stale = dirty.length - saved.length;
               if (saved.length > 0) project.markFilesSaved(saved);
               if (stale > 0) {
