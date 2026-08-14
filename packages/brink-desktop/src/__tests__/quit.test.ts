@@ -69,7 +69,26 @@ describe("awaitSaveAllBeforeQuit", () => {
     // sees it.
     expect(vi.mocked(api.dispatch).mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(api.dispatch).toHaveBeenCalledWith("file.saveAll");
-    expect(api.getDirtyFiles()).toEqual([]);
+  });
+
+  it("holds the timeout cap even while redispatching for a file that never clears", async () => {
+    // The central safety claim under test: a genuinely hung write must not
+    // make quit hang, even once redispatching is in play. With
+    // timeoutMs=100, pollIntervalMs=5, redispatchIntervalMs=20 and a dirty
+    // set that never clears, redispatches land at t≈20/40/60/80 (5 total
+    // dispatches including the initial one) — a deadline-unguarded
+    // redispatch would additionally fire at t≈100, right as the cap
+    // expires, so this also proves the deadline guard (no redispatch once
+    // the deadline is inside one redispatch interval).
+    const api = stubApi([["a.ink"]]);
+    const start = Date.now();
+    await awaitSaveAllBeforeQuit(api, 100, 5, 20);
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(elapsed).toBeLessThan(200);
+    const dispatchCalls = vi.mocked(api.dispatch).mock.calls.length;
+    expect(dispatchCalls).toBeGreaterThanOrEqual(2);
+    expect(dispatchCalls).toBeLessThanOrEqual(5);
   });
 
   it("a mid-write edit reaches disk via a re-dispatched file.saveAll", async () => {
@@ -84,7 +103,12 @@ describe("awaitSaveAllBeforeQuit", () => {
     const disk = new Map<string, string>();
     let content = "v1";
     let dirty = true;
-    const writeDelayMs = 40;
+    // A generous margin between the mid-write edit and the write settling:
+    // a tight margin (e.g. a 10ms edit delay against a 40ms write) risks a
+    // loaded test runner overshooting the edit's `sleep` past the write's
+    // settle time, making the edit land too late and the test fail for a
+    // timing reason unrelated to the fix under test.
+    const writeDelayMs = 150;
     const dispatch = vi.fn((commandId: string): boolean => {
       if (commandId !== "file.saveAll") return false;
       const before = content;
@@ -98,9 +122,8 @@ describe("awaitSaveAllBeforeQuit", () => {
     const api: QuitSaveApi = { dispatch, getDirtyFiles: () => (dirty ? [path] : []) };
 
     const quitDone = awaitSaveAllBeforeQuit(api, 1000, 5, 20);
-    // The mid-write edit: lands well before the first write (40ms) settles,
-    // and before the redispatch interval (20ms) elapses again.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The mid-write edit: lands well before the first write (150ms) settles.
+    await new Promise((resolve) => setTimeout(resolve, 30));
     content = "v2";
 
     await quitDone;

@@ -94,7 +94,11 @@ export async function awaitSaveAllBeforeQuit(
   let lastDispatch = Date.now();
   while (api.getDirtyFiles().length > 0 && Date.now() < deadline) {
     await sleep(pollIntervalMs);
-    if (Date.now() - lastDispatch >= redispatchIntervalMs && api.getDirtyFiles().length > 0) {
+    if (
+      Date.now() - lastDispatch >= redispatchIntervalMs &&
+      deadline - Date.now() >= redispatchIntervalMs &&
+      api.getDirtyFiles().length > 0
+    ) {
       api.dispatch("file.saveAll");
       lastDispatch = Date.now();
     }
