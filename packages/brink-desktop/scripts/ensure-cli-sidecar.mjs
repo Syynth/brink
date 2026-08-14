@@ -74,13 +74,17 @@ export function hostTriple(runCommand = defaultRunCommand) {
  * the `.sidecar("brink-cli")` call in `lib.rs`); a sidecar's staged name is
  * independent of its source binary's name.
  */
-export function sidecarPaths({ triple, repoRoot, srcTauriDir, targetDir }) {
+export function sidecarPaths({
+  triple,
+  repoRoot,
+  srcTauriDir,
+  targetDir = join(repoRoot, "target"),
+}) {
   const exeSuffix = triple.includes("windows") ? ".exe" : "";
-  const resolvedTargetDir = targetDir ?? join(repoRoot, "target");
   const binariesDir = join(srcTauriDir, "binaries");
   return {
     binariesDir,
-    builtBin: join(resolvedTargetDir, "release", `brink${exeSuffix}`),
+    builtBin: join(targetDir, "release", `brink${exeSuffix}`),
     destBin: join(binariesDir, `brink-cli-${triple}${exeSuffix}`),
   };
 }

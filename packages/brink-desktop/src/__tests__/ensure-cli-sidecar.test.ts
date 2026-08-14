@@ -206,7 +206,7 @@ describe("the main-guard", () => {
       writeFileSync(join(shims, "cargo"), "#!/bin/sh\nexit 0\n");
       chmodSync(join(shims, "cargo"), 0o755);
 
-      const env = { ...process.env, PATH: shims };
+      const env: NodeJS.ProcessEnv = { ...process.env, PATH: shims };
       // The default target dir is `<repoRoot>/target`, which is what this
       // throwaway tree provides; an inherited CARGO_TARGET_DIR would point
       // the script at the session's shared one instead.
