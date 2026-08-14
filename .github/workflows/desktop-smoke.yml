@@ -94,16 +94,19 @@ env:
   # once that build is gone, while still quietly de-optimising the wasm one.
   #
   # ⚠ #2482 proposed treating that wasm-pack build the same way as the
-  # sidecar above ("still pays for a build it never executes"). That is NOT
-  # the same shape: the sidecar's staged file only had to EXIST (its content
-  # is never read — a placeholder satisfies `externalBin` resolution just as
-  # well as a real binary), whereas the "Build brink-web wasm package" step's
-  # output is genuinely consumed below — "Typecheck (tsc --noEmit)" resolves
-  # the `brink-web` alias into it, and `pnpm build` bundles it — so a stub
-  # cannot stand in for it. #2482 was closed on that basis; if a future PR
-  # wants to explore trimming JUST the release-vs-dev optimisation level
-  # (not skipping the build outright), that is new work, not a re-filing of
-  # #2482.
+  # sidecar above ("still pays for a wasm-pack --release build it never
+  # executes"). That is NOT the same shape: the sidecar's staged file only
+  # had to EXIST (its content is never read — a placeholder satisfies
+  # `externalBin` resolution just as well as a real binary), whereas the
+  # "Build brink-web wasm package" step's output is genuinely consumed
+  # below — "Typecheck (tsc --noEmit)" resolves the `brink-web` alias into
+  # it, and `pnpm build` bundles it — so a stub cannot stand in for it.
+  # That leaves #2482's other candidate open: reusing `ci.yml`'s own wasm
+  # artefact instead of rebuilding it here. This trace does not answer that
+  # one — `ci.yml` has no `upload-artifact`/`download-artifact` step
+  # anywhere, so reuse would mean adding one, not something "the content is
+  # consumed" settles. See #2482 for the still-open optimisation-level and
+  # artefact-reuse questions.
   #
   # An `env:` var rather than a flag on the step below, because the lane runs
   # the script TWICE: its own "Stage brink-cli sidecar" step, and `pnpm build`,

@@ -1665,6 +1665,14 @@ mod tests {
     /// the "Three properties of `desktop-smoke.yml` ... asserted by tests"
     /// that docs/desktop-shell-spec.md's "Smoke-lane inputs and step
     /// gating" section claims.
+    ///
+    /// Restoring a real (non-stubbed) sidecar build here also means
+    /// re-adding `crates/brink-cli/**` to the `pull_request` path filter —
+    /// `desktop_smoke_path_filter_covers_its_shared_inputs` now asserts
+    /// that entry stays **absent** (#2477), on the premise that this guard
+    /// keeps `BRINK_SIDECAR_STUB` unconditional. Un-stub the sidecar
+    /// without also touching that test and the filter goes back to
+    /// watching a tree the lane silently ignores.
     #[test]
     fn desktop_smoke_stubs_the_staged_sidecar() {
         let workflow = workflow("desktop-smoke.yml");
@@ -1689,7 +1697,11 @@ mod tests {
              exact string ensureCliSidecar's `stub` option opts in on) so \
              ensure-cli-sidecar.mjs stages a placeholder instead of building a \
              brink-cli release binary this check-only lane never runs; an env var \
-             rather than a step flag because `pnpm build` re-runs that script"
+             rather than a step flag because `pnpm build` re-runs that script — if you \
+             are restoring a real sidecar build, also re-add \"crates/brink-cli/**\" to \
+             desktop-smoke.yml's pull_request path filter, which \
+             desktop_smoke_path_filter_covers_its_shared_inputs (#2477) currently \
+             forbids"
         );
         for key in [
             "CARGO_PROFILE_RELEASE_OPT_LEVEL",
