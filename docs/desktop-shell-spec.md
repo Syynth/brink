@@ -240,29 +240,40 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   all. #2451's `dependency_versions_track_the_root_workspace` closes a
   *different* hole across the same workspace fence — version drift, not
   audit coverage — and stayed green throughout. The step reuses the root
-  `deny.toml` (`--config ./deny.toml`), so one policy file governs both
-  workspaces and an accepted advisory is recorded in exactly one place.
+  `deny.toml` via cargo-deny's own `<cwd>/deny.toml` fallback (no explicit
+  `--config`: the pinned action's cargo-deny 0.19.8 treats `--config` as a
+  `check` subcommand flag, not a top-level one, and `action.yml` places
+  `arguments` before `command` on the assembled line, so passing it there
+  is a clap parse failure), so one policy file governs both workspaces and
+  an accepted advisory is recorded in exactly one place.
   (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
 
   **PROVISIONAL, pending a maintainer ruling — it reports, it does not
-  block.** The first audit surfaces 21 errors: 16 unmaintained-crate
+  block.** The first audit surfaces 22 errors: 16 unmaintained-crate
   advisories inherent to Tauri v2 on Linux (`RUSTSEC-2024-0411`..`0420`
   gtk-rs GTK3 bindings, `RUSTSEC-2024-0370` `proc-macro-error`,
   `RUSTSEC-2025-0075`/`0080`/`0081`/`0098`/`0100` for the five `unic-*`
   crates reached via `urlpattern` → `tauri-utils`; every one of them
-  "no safe upgrade available"), plus 5 MPL-2.0 crates (`cssparser`,
+  "no safe upgrade available"), 5 MPL-2.0 crates (`cssparser`,
   `cssparser-macros`, `dtoa-short`, `option-ext`, `selectors`) against a
   licence allowlist whose stated policy is "100% permissive, no copyleft
-  obligations". Accepting either class is a policy call, so the step
-  carries `continue-on-error: true` rather than a blanket `ignore`, and it
-  lives in this non-required lane: a non-blocking step inside `ci.yml`'s
-  required `cargo-deny` job would raise the "the required lanes must not
-  grow a Tauri build" question (#2402/#2346) for exactly zero blocking
-  power. Once the findings are ruled on, promote the step to `ci.yml` and
-  drop the `continue-on-error` assertion from the guard. Note the audit
-  builds nothing — it resolves metadata only (~2s) and needs none of the
+  obligations", and one `error[unlicensed]: brink-desktop = 0.1.0 is
+  unlicensed` — our own `publish = false` crate; `[licenses]
+  private.ignore` is the documented cargo-deny knob for it, but that edits
+  the shared root policy, so it is left for the same ruling as the other
+  21. Accepting any of these classes is a policy call, so the step carries
+  `continue-on-error: true` rather than a blanket `ignore`, and it lives in
+  this non-required lane: a non-blocking step inside `ci.yml`'s required
+  `cargo-deny` job would raise the "the required lanes must not grow a
+  Tauri build" question (#2402/#2346) for exactly zero blocking power.
+  Once the findings are ruled on, promote the step to `ci.yml` and drop the
+  `continue-on-error` assertion from the guard. Note the audit builds
+  nothing — it resolves metadata only, no compilation and none of the
   webkit2gtk system deps — so the fence question, when it is asked, is
-  about graph *resolution*, not a Tauri build.
+  about graph *resolution*, not a Tauri build; "seconds, not a build" is
+  the claim that stays true; a wall-clock figure would also have to count
+  the advisory-DB fetch and the entrypoint's own `rustup show`/toolchain
+  step, which the ~2s metadata-resolution number does not.
 
 ### The `dev` preflight pair (#2452, #2468)
 

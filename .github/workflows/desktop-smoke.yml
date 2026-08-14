@@ -198,6 +198,11 @@ jobs:
       # a failed checkout used to still fire this step and die on a
       # working-directory error stacked on top of the real failure — the
       # last residue of the cascade class this file otherwise closes.
+      - name: Format check (src-tauri)
+        if: "!cancelled() && steps.checkout.outcome == 'success'"
+        run: cargo fmt --all -- --check
+        working-directory: packages/brink-desktop/src-tauri
+
       # Supply-chain gate for THIS workspace's graph (#2470). ci.yml's
       # `cargo-deny` job runs `check` exactly once, at the repo root, and the
       # root `Cargo.lock` shares no resolution with this one — so until this
@@ -226,7 +231,7 @@ jobs:
       #
       # It resolves the Tauri graph's METADATA only (~2s locally) — no
       # compilation, no webkit2gtk system deps — so it is deliberately gated
-      # on the checkout alone, like the format check below.
+      # on the checkout alone, like the format check above.
       - name: cargo-deny (src-tauri)
         if: "!cancelled() && steps.checkout.outcome == 'success'"
         continue-on-error: true
@@ -235,19 +240,22 @@ jobs:
           command: check
           manifest-path: ./packages/brink-desktop/src-tauri/Cargo.toml
           # `arguments` replaces the action's own `--all-features` default
-          # wholesale, so it has to carry that back. `--config` names the
-          # root policy explicitly instead of leaning on cargo-deny's
-          # `<cwd>/deny.toml` fallback happening to match the repo root:
-          # ONE deny.toml governs both workspaces, so an accepted advisory
-          # is recorded in exactly one place. `--locked` is this lane's
-          # standing convention for every command reading the committed
-          # lock (see the block above the cargo steps below).
-          arguments: --all-features --locked --config ./deny.toml
-
-      - name: Format check (src-tauri)
-        if: "!cancelled() && steps.checkout.outcome == 'success'"
-        run: cargo fmt --all -- --check
-        working-directory: packages/brink-desktop/src-tauri
+          # wholesale, so it has to carry that back; `--locked` is this
+          # lane's standing convention for every command reading the
+          # committed lock (see the block above the cargo steps below).
+          # No `--config`: the pinned action's image ships cargo-deny
+          # 0.19.8, where `--config` is a `check` SUBCOMMAND flag, not a
+          # top-level one — and `action.yml` places `arguments` BEFORE
+          # `command` on the assembled command line, so passing it here is
+          # a clap parse failure (`error: unexpected argument '--config'
+          # found`, exit 2) that `continue-on-error` silently swallows.
+          # cargo-deny's own `<cwd>/deny.toml` fallback already resolves to
+          # the root policy without the flag, because the entrypoint's only
+          # `cd` is subshelled and leaves cwd at the workspace root. Which
+          # flags are legal in `arguments` vs `command-arguments` is a
+          # function of the cargo-deny version baked into the pinned image
+          # — re-check this comment on the next SHA bump.
+          arguments: --all-features --locked
 
       - name: cargo check (src-tauri)
         if: "!cancelled() && steps.linux_deps.outcome == 'success' && steps.sidecar.outcome == 'success'"

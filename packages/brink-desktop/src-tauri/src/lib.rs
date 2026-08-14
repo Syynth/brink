@@ -1711,16 +1711,28 @@ mod tests {
         );
 
         // `arguments` overrides the action's own `--all-features` default
-        // wholesale, so the value has to carry it back; `--config` names
-        // the root policy explicitly rather than leaning on cargo-deny's
-        // `<cwd>/deny.toml` fallback happening to match the repo root, and
-        // `--locked` is this lane's standing convention for every command
-        // that reads src-tauri's committed lock.
+        // wholesale, so the value has to carry it back, and `--locked` is
+        // this lane's standing convention for every command that reads
+        // src-tauri's committed lock. No `--config`: the pinned action's
+        // image ships cargo-deny 0.19.8, where `--config` is a `check`
+        // SUBCOMMAND flag, not a top-level one, and `action.yml` places
+        // `arguments` BEFORE `command` on the assembled command line — so a
+        // `--config` here is a clap parse failure (`error: unexpected
+        // argument '--config' found`, exit 2) that `continue-on-error`
+        // silently swallows, not the "explicit rather than relying on the
+        // fallback" hardening it looks like. cargo-deny's own
+        // `<cwd>/deny.toml` fallback already resolves to the root policy
+        // without the flag, because the entrypoint's only `cd` is
+        // subshelled and leaves cwd at the workspace root. Which flags are
+        // legal in `arguments` vs `command-arguments` is a function of the
+        // cargo-deny version baked into the pinned image (0.19.8 today) —
+        // this assertion is the one place a future SHA bumper will read
+        // that fact, so re-check it on every pin bump.
         assert!(
             step.iter()
-                .any(|line| line == "arguments: --all-features --locked --config ./deny.toml"),
+                .any(|line| line == "arguments: --all-features --locked"),
             "the cargo-deny (src-tauri) step should pass \
-             `arguments: --all-features --locked --config ./deny.toml`; it reads {step:?}"
+             `arguments: --all-features --locked`; it reads {step:?}"
         );
 
         // Reporting, not blocking — see the doc comment. Removing this
