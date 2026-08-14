@@ -398,6 +398,15 @@ jobs:
         with:
           persist-credentials: false
       # Supply-chain gate: advisories, licenses, banned crates, source allowlist.
+      #
+      # ⚠ This covers the ROOT workspace's graph only.
+      # `packages/brink-desktop/src-tauri` is its own excluded workspace with
+      # its own `Cargo.lock`, audited by a companion step in the
+      # (non-required) `desktop-smoke.yml` — #2470, and see
+      # docs/desktop-shell-spec.md "Smoke-lane inputs and step gating" for why
+      # it reports rather than blocks. Both steps share the root `deny.toml`
+      # and this SHA pin; `desktop_smoke_audits_the_src_tauri_dependency_graph`
+      # (src-tauri/src/lib.rs) fails if the two pins drift apart.
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           command: check

@@ -184,7 +184,7 @@ when the edit itself lives entirely in `packages/brink-studio`.
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Three properties of `desktop-smoke.yml` are asserted by tests in
+Four properties of `desktop-smoke.yml` are asserted by tests in
 `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
@@ -232,6 +232,37 @@ Three properties of `desktop-smoke.yml` are asserted by tests in
   machine, where the sidecar really is shipped and run — still builds a
   real release binary, since the option defaults to off.
   (`desktop_smoke_stubs_the_staged_sidecar`)
+- **This workspace's dependency graph is audited here, and nowhere else**
+  (#2470). `ci.yml`'s `cargo-deny` job runs `check` exactly once, at the
+  repo root, and the root `Cargo.lock` shares no resolution with this
+  crate's — so `src-tauri`'s own lock (451 `[[package]]` entries via the
+  Tauri graph) received no RUSTSEC advisory check and no licence check at
+  all. #2451's `dependency_versions_track_the_root_workspace` closes a
+  *different* hole across the same workspace fence — version drift, not
+  audit coverage — and stayed green throughout. The step reuses the root
+  `deny.toml` (`--config ./deny.toml`), so one policy file governs both
+  workspaces and an accepted advisory is recorded in exactly one place.
+  (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
+
+  **PROVISIONAL, pending a maintainer ruling — it reports, it does not
+  block.** The first audit surfaces 21 errors: 16 unmaintained-crate
+  advisories inherent to Tauri v2 on Linux (`RUSTSEC-2024-0411`..`0420`
+  gtk-rs GTK3 bindings, `RUSTSEC-2024-0370` `proc-macro-error`,
+  `RUSTSEC-2025-0075`/`0080`/`0081`/`0098`/`0100` for the five `unic-*`
+  crates reached via `urlpattern` → `tauri-utils`; every one of them
+  "no safe upgrade available"), plus 5 MPL-2.0 crates (`cssparser`,
+  `cssparser-macros`, `dtoa-short`, `option-ext`, `selectors`) against a
+  licence allowlist whose stated policy is "100% permissive, no copyleft
+  obligations". Accepting either class is a policy call, so the step
+  carries `continue-on-error: true` rather than a blanket `ignore`, and it
+  lives in this non-required lane: a non-blocking step inside `ci.yml`'s
+  required `cargo-deny` job would raise the "the required lanes must not
+  grow a Tauri build" question (#2402/#2346) for exactly zero blocking
+  power. Once the findings are ruled on, promote the step to `ci.yml` and
+  drop the `continue-on-error` assertion from the guard. Note the audit
+  builds nothing — it resolves metadata only (~2s) and needs none of the
+  webkit2gtk system deps — so the fence question, when it is asked, is
+  about graph *resolution*, not a Tauri build.
 
 ### The `dev` preflight pair (#2452, #2468)
 

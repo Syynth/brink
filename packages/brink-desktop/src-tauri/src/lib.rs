@@ -1588,7 +1588,7 @@ mod tests {
             .map(|(_, id, _)| id.as_str())
             .filter(|id| !id.is_empty())
             .collect();
-        let dependants: [(&str, &[&str]); 6] = [
+        let dependants: [(&str, &[&str]); 7] = [
             ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
             ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
             ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
@@ -1599,6 +1599,10 @@ mod tests {
             // steps on, but Format check's own `working-directory` does not
             // exist without it, so it stays gated on the checkout alone.
             ("Format check (src-tauri)", &["checkout"]),
+            // Same shape (#2470): the audit reads manifests and lockfiles
+            // out of the working tree and resolves metadata only, so it too
+            // needs the checkout and nothing else.
+            ("cargo-deny (src-tauri)", &["checkout"]),
         ];
         for (name, prerequisites) in dependants {
             let step = steps.iter().find(|(step_name, _, _)| step_name == name);
@@ -1626,6 +1630,126 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The trimmed lines of one named step, from its `- name:` header up to
+    /// the next step, so a `with:` value can be checked against the step it
+    /// actually belongs to rather than merely "occurs somewhere in the
+    /// file".
+    fn step_block(workflow: &str, name: &str) -> Vec<String> {
+        let header = format!("- name: {name}");
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in workflow.lines() {
+            let trimmed = line.trim();
+            if trimmed == header {
+                inside = true;
+            } else if inside {
+                if trimmed.starts_with("- name: ") || trimmed.starts_with("- uses: ") {
+                    break;
+                }
+                out.push(trimmed.to_owned());
+            }
+        }
+        out
+    }
+
+    /// The commit SHA an `EmbarkStudios/cargo-deny-action` pin names, from
+    /// whichever workflow line pins it.
+    fn cargo_deny_action_pin(workflow: &str) -> Option<String> {
+        workflow.lines().find_map(|line| {
+            line.trim()
+                .split_once("EmbarkStudios/cargo-deny-action@")
+                .map(|(_, rest)| {
+                    rest.split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+        })
+    }
+
+    /// #2470: `ci.yml`'s `cargo-deny` job runs `check` exactly ONCE, at the
+    /// repo root. This crate is its own cargo workspace with its own
+    /// `Cargo.lock` (451 `[[package]]` entries — the Tauri graph, which
+    /// shares no resolution with the root lock), so until this step existed
+    /// that whole graph received no RUSTSEC advisory check and no licence
+    /// check at all. #2451's `dependency_versions_track_the_root_workspace`
+    /// above closes a DIFFERENT hole across the same workspace fence
+    /// (version drift, not audit coverage) and would stay green throughout.
+    ///
+    /// The step lives in this deliberately NON-required lane rather than in
+    /// `ci.yml`'s required `cargo-deny` job because it cannot be a blocking
+    /// gate yet: the first audit surfaced 21 real errors (16 unmaintained
+    /// RUSTSEC advisories inherent to Tauri v2 on Linux, and 5 MPL-2.0
+    /// crates against a licence allowlist whose stated policy is "100%
+    /// permissive, no copyleft obligations"). Accepting either class is a
+    /// maintainer policy call, so the step reports rather than blocks —
+    /// see docs/desktop-shell-spec.md "Smoke-lane inputs and step gating".
+    #[test]
+    fn desktop_smoke_audits_the_src_tauri_dependency_graph() {
+        let smoke = workflow("desktop-smoke.yml");
+        let step = step_block(&smoke, "cargo-deny (src-tauri)");
+        assert!(
+            !step.is_empty(),
+            "desktop-smoke.yml should have a \"cargo-deny (src-tauri)\" step — ci.yml's \
+             cargo-deny job runs `check` only at the repo root, so without this step \
+             packages/brink-desktop/src-tauri/Cargo.lock gets no advisory or licence \
+             audit anywhere in CI (#2470)"
+        );
+
+        // Pinned to the exact manifest, not merely "a manifest-path is
+        // set": the action defaults this to `./Cargo.toml`, so a step that
+        // dropped or mistyped the value would re-audit the ROOT graph that
+        // ci.yml already covers and report a cheerful pass while this
+        // crate's graph stayed unaudited.
+        assert!(
+            step.iter()
+                .any(|line| line == "manifest-path: ./packages/brink-desktop/src-tauri/Cargo.toml"),
+            "the cargo-deny (src-tauri) step should scope itself with \
+             `manifest-path: ./packages/brink-desktop/src-tauri/Cargo.toml`; it reads {step:?}"
+        );
+
+        // `arguments` overrides the action's own `--all-features` default
+        // wholesale, so the value has to carry it back; `--config` names
+        // the root policy explicitly rather than leaning on cargo-deny's
+        // `<cwd>/deny.toml` fallback happening to match the repo root, and
+        // `--locked` is this lane's standing convention for every command
+        // that reads src-tauri's committed lock.
+        assert!(
+            step.iter()
+                .any(|line| line == "arguments: --all-features --locked --config ./deny.toml"),
+            "the cargo-deny (src-tauri) step should pass \
+             `arguments: --all-features --locked --config ./deny.toml`; it reads {step:?}"
+        );
+
+        // Reporting, not blocking — see the doc comment. Removing this
+        // while the 21 findings stand turns the whole smoke lane
+        // permanently red, which trains everyone to ignore the checks
+        // beside it that DO pass today. Delete this assertion (and the
+        // spec bullet) only together with a ruling on those findings.
+        assert!(
+            step.iter().any(|line| line == "continue-on-error: true"),
+            "the cargo-deny (src-tauri) step should stay `continue-on-error: true` until \
+             the MPL-2.0 and unmaintained-advisory findings are ruled on, otherwise this \
+             lane is permanently red; it reads {step:?}"
+        );
+
+        // One pin for both invocations. `desktop_smoke_path_filter_covers_\
+        // its_shared_inputs` already puts ci.yml in this lane's path filter,
+        // so the PR that bumps one pin is the PR this fails on.
+        let smoke_pin = cargo_deny_action_pin(&smoke);
+        let ci_pin = cargo_deny_action_pin(&workflow("ci.yml"));
+        assert!(
+            ci_pin.is_some(),
+            "ci.yml should still pin EmbarkStudios/cargo-deny-action by SHA"
+        );
+        assert_eq!(
+            smoke_pin, ci_pin,
+            "both cargo-deny invocations should pin the same SHA-pinned action revision \
+             (supply-chain hardening, docs/decision-log.md 2026-06-04), so the two audits \
+             cannot drift onto different cargo-deny versions"
+        );
     }
 
     /// Gap 4 (#2418): the sidecar staged in this check-only lane is only
