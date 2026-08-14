@@ -22,35 +22,31 @@
 // unpublished, and nothing in the bundle leaks across the React boundary.
 //
 // The self-contained playground APP build lives in vite.config.embed.ts.
+//
+// The alias map itself lives in ./alias-map.ts — the single source of truth
+// this config, vite.config.embed.ts, vitest.config.ts and both tsconfigs'
+// `paths` all answer to (#2464). Do not re-inline a map here.
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
+import { studioPackageAliases, studioWasmAliases, WASM_PKG_DIR } from "./alias-map";
 
-const wasmPkgPath = resolve(__dirname, "../../crates/brink-web/www/pkg");
+const wasmPkgPath = resolve(__dirname, WASM_PKG_DIR);
 
 export default defineConfig(({ command }) => ({
   plugins: [react()],
   resolve: {
-    // Guarded against packages/brink-desktop/alias-map.ts by
+    // Guarded from inside this package by src/__tests__/alias-map.test.ts
+    // (#2464), and against packages/brink-desktop/alias-map.ts by
     // packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts
-    // (#2450) — an alias added, removed, or repointed here without a
-    // matching update there turns that suite red.
+    // (#2450) — an alias added, removed, or repointed without a matching
+    // update on the other side turns both suites red.
     alias: {
       // The lib build externalizes @brink-lang/web (so the brink-web glue
       // is never reached there); the dev server resolves both to source.
-      ...(command === "serve"
-        ? {
-            "brink-web": resolve(wasmPkgPath, "brink_web.js"),
-            "@brink-lang/web": resolve(__dirname, "../wasm/src/index.ts"),
-          }
-        : {}),
+      ...(command === "serve" ? studioWasmAliases(__dirname) : {}),
       // Internal (private, bundled) packages, resolved to source.
-      "@brink/wasm-types": resolve(__dirname, "../wasm-types/src/index.ts"),
-      "@brink/ink-operations": resolve(__dirname, "../ink-operations/src/index.ts"),
-      "@brink-lang/editor": resolve(__dirname, "../ink-editor/src/index.ts"),
-      "@brink/studio-shell": resolve(__dirname, "../studio-shell/src/index.ts"),
-      "@brink/studio-store": resolve(__dirname, "../studio-store/src/index.ts"),
-      "@brink/studio-ui": resolve(__dirname, "../studio-ui/src/index.ts"),
+      ...studioPackageAliases(__dirname),
     },
   },
   server: {
