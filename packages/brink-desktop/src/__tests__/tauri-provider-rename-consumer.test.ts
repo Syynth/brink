@@ -127,3 +127,69 @@ describe("ProjectSession over TauriFileProvider: self-rename suppression (#2416)
     expect(session.getFileSource("scene.ink")).toBeNull();
   });
 });
+
+describe("ProjectSession over TauriFileProvider: atomic rename persists the rewritten source (#2425)", () => {
+  it("leaves the moved file's INCLUDE-rewritten content ON DISK at the new path, with no further edit", async () => {
+    // `EditorSession::rename_file` folds the moved file's OUTBOUND include
+    // rewrites into `new_source` (`crates/brink-web/src/editor/refactor.rs`
+    // lines 57-63; `crates/internal/brink-ide/src/file_rename.rs`'s module
+    // doc). The native `rename_file` command moves BYTES only, so without
+    // the fix disk keeps the pre-rewrite text — a `brink compile`/CLI user
+    // reading straight off disk between the rename and the next edit sees
+    // stale INCLUDE paths, even though the session looks correct.
+    captureWatcherCallback();
+
+    // `a/scene.ink` includes `../lib/util.ink`, which resolves from `a/` to
+    // `lib/util.ink`. Moving it to `b/deep/` changes what that relative path
+    // resolves to, so the moved file's own source MUST be rewritten.
+    const files = new Map<string, string>([
+      ["main.ink", "INCLUDE a/scene.ink\n\n-> scene\n"],
+      ["a/scene.ink", "INCLUDE ../lib/util.ink\n\n== scene\nHello.\n-> END\n"],
+      ["lib/util.ink", "== util\n-> END\n"],
+    ]);
+    invoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      switch (cmd) {
+        case "list_files":
+          return Promise.resolve([...files.keys()]);
+        case "read_file": {
+          const content = files.get(args?.["rel"] as string);
+          return content === undefined
+            ? Promise.reject(new Error("not found"))
+            : Promise.resolve(content);
+        }
+        case "write_file": {
+          files.set(args?.["rel"] as string, args?.["content"] as string);
+          return Promise.resolve(undefined);
+        }
+        case "rename_file": {
+          // Byte-for-byte move, exactly like the native command: the file's
+          // content crosses unchanged.
+          const from = args?.["from"] as string;
+          const to = args?.["to"] as string;
+          const content = files.get(from);
+          files.delete(from);
+          if (content !== undefined) files.set(to, content);
+          return Promise.resolve(undefined);
+        }
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+
+    const provider = new TauriFileProvider("/proj");
+    const project = new ProjectSession({ provider, entryFile: "main.ink" });
+    await project.initialize();
+
+    const referrers = await project.renameFile("a/scene.ink", "b/deep/scene.ink");
+    expect(referrers).toEqual(["main.ink"]);
+
+    // THE assertion this issue exists for: what is on DISK at the new path,
+    // with no edit having dirtied the file since the rename.
+    const onDisk = files.get("b/deep/scene.ink");
+    expect(onDisk).toContain("INCLUDE ../../lib/util.ink");
+    expect(onDisk).not.toContain("INCLUDE ../lib/util.ink");
+    // ...and it agrees with the session, so the two can't drift.
+    expect(onDisk).toBe(project.getSession().getFileSource("b/deep/scene.ink"));
+    expect(files.has("a/scene.ink")).toBe(false);
+  });
+});

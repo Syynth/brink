@@ -394,9 +394,14 @@ export class ProjectSession {
       referrers.push(edit.path);
     }
 
-    // Provider: atomic rename, or create-new + delete-old fallback.
+    // Provider: atomic rename, or create-new + delete-old fallback. Both
+    // branches hand over `newSource` — an atomic rename moves the file's
+    // PRE-rewrite bytes, so a host that persisted only those would keep
+    // stale outbound `INCLUDE` paths for any move that crossed a directory
+    // boundary (#2425), while the fallback branch already wrote the
+    // rewritten source through `createFile`.
     if (this.provider.renameFile) {
-      await this.provider.renameFile(oldPath, newPath);
+      await this.provider.renameFile(oldPath, newPath, newSource);
     } else {
       await this.provider.createFile(newPath, newSource);
       await this.provider.deleteFile?.(oldPath);
