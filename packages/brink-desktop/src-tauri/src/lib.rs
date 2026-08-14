@@ -1105,6 +1105,190 @@ mod tests {
         );
     }
 
+    /// The `name = value` entries of the first table headed exactly
+    /// `header`, as `(name, value)` pairs with the raw TOML value text.
+    /// Deliberately naive: both manifests this reads are plain one-entry-
+    /// per-line dependency tables with no nested sub-tables.
+    fn manifest_table(manifest: &str, header: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                inside = line == header;
+            } else if inside && !line.is_empty() && !line.starts_with('#') {
+                if let Some((name, value)) = line.split_once('=') {
+                    out.push((name.trim().to_owned(), value.trim().to_owned()));
+                }
+            }
+        }
+        out
+    }
+
+    /// The version requirement out of a dependency table's value, for both
+    /// spellings the two manifests use: a bare `"1"` and an inline table
+    /// `{ version = "1", features = [...] }`. `None` for anything else
+    /// (a path/git dependency, `workspace = true`), which the caller skips.
+    fn version_requirement(value: &str) -> Option<&str> {
+        let rest = if value.starts_with('"') {
+            value
+        } else {
+            let at = value.find("version")?;
+            value[at..].split_once('=')?.1.trim_start()
+        };
+        rest.strip_prefix('"')?.split('"').next()
+    }
+
+    /// A version's numeric `(major, minor, patch)`, ignoring any
+    /// pre-release or build metadata (`1.1.4+spec-1.1.0` -> `(1, 1, 4)`).
+    /// Missing components read as zero, so a requirement of `"2"` parses.
+    fn numeric_version(version: &str) -> Option<(u64, u64, u64)> {
+        let core = version.split(['-', '+']).next().unwrap_or(version);
+        let mut parts = core.split('.');
+        let major: u64 = parts.next()?.parse().ok()?;
+        let minor: u64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+        let patch: u64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+        Some((major, minor, patch))
+    }
+
+    /// Cargo's semver-compatibility unit: the major for `1.x` and above,
+    /// the minor for a `0.x` release. Two versions sharing a unit are
+    /// interchangeable to cargo, so they are the ones worth comparing —
+    /// `0.39.4` and `0.41.0` are simply different dependencies.
+    fn compatibility_unit(version: &str) -> Option<(u64, u64)> {
+        let (major, minor, _) = numeric_version(version)?;
+        Some(if major > 0 { (major, 0) } else { (0, minor) })
+    }
+
+    /// Every `name = version` pair in a `Cargo.lock`. A name can repeat —
+    /// both lockfiles carry several crates at two incompatible versions.
+    fn lock_versions(lock: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut name = String::new();
+        for line in lock.lines() {
+            let line = line.trim();
+            if let Some(value) = line.strip_prefix("name = ") {
+                name = unquote(value).to_owned();
+            } else if let Some(value) = line.strip_prefix("version = ") {
+                if !name.is_empty() {
+                    out.push((std::mem::take(&mut name), unquote(value).to_owned()));
+                }
+            }
+        }
+        out
+    }
+
+    /// The highest version of `name` in `lock` that is semver-compatible
+    /// with `unit`, or `None` when the lock carries no such version.
+    fn resolved_in_unit(lock: &[(String, String)], name: &str, unit: (u64, u64)) -> Option<String> {
+        lock.iter()
+            .filter(|(crate_name, version)| {
+                crate_name == name && compatibility_unit(version) == Some(unit)
+            })
+            .map(|(_, version)| version.clone())
+            .max_by_key(|version| numeric_version(version))
+    }
+
+    /// This crate's own workspace means its own `Cargo.lock` (#2451), and
+    /// `cargo test --locked` in the smoke lane only proves that lock is
+    /// internally consistent with the `Cargo.toml` NEXT TO IT — never that
+    /// it still tracks the root workspace's versions. PR #2446 widened
+    /// `desktop-smoke.yml`'s path filter so a root `Cargo.toml`/`Cargo.lock`
+    /// bump at least RUNS this lane; this is the assertion inside it that
+    /// the widened filter had nothing to trigger.
+    ///
+    /// Scope is the crates BOTH manifests declare — the deliberate overlap,
+    /// where a root bump is meant to propagate. (Not first-party crates:
+    /// #2451's body names `brink-runtime`/`brink-format`, but `src-tauri`
+    /// depends on no workspace crate at all — it reaches the compiler only
+    /// through the `brink-cli` sidecar binary. Its lock holds exactly one
+    /// `brink-*` package, itself.) Transitive crates are out of scope
+    /// because the two graphs legitimately resolve differently; see the
+    /// `toml` divergence recorded on #2451.
+    ///
+    /// Two ways to fail, both real drift: root moves to a version this lock
+    /// is BEHIND (fix: `cargo update -p <crate>` here), or root moves to a
+    /// new major this lock has no copy of at all (fix: bump the requirement
+    /// in this crate's `Cargo.toml` too).
+    #[test]
+    fn dependency_versions_track_the_root_workspace() {
+        let root_manifest = repo_root().join("Cargo.toml");
+        let root_lockfile = repo_root().join("Cargo.lock");
+        assert!(
+            root_lockfile.is_file(),
+            "root Cargo.lock should exist at {root_lockfile:?}"
+        );
+        let root = std::fs::read_to_string(&root_manifest)
+            .expect("the root manifest is read by lint_policy_matches_the_root_workspace too");
+        let root_lock = lock_versions(
+            &std::fs::read_to_string(&root_lockfile).expect("just asserted the root lock exists"),
+        );
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mine = std::fs::read_to_string(manifest_dir.join("Cargo.toml"))
+            .expect("this crate's own manifest is always readable from its own test");
+        let my_lock = lock_versions(
+            &std::fs::read_to_string(manifest_dir.join("Cargo.lock"))
+                .expect("this crate's own lock is always readable from its own test"),
+        );
+
+        let root_deps = manifest_table(&root, "[workspace.dependencies]");
+        let mut my_deps = manifest_table(&mine, "[dependencies]");
+        my_deps.extend(manifest_table(&mine, "[build-dependencies]"));
+
+        let mut checked = Vec::new();
+        for (name, my_value) in &my_deps {
+            let Some((_, root_value)) = root_deps.iter().find(|(dep, _)| dep == name) else {
+                continue;
+            };
+            let Some(root_requirement) = version_requirement(root_value) else {
+                continue;
+            };
+            assert!(
+                version_requirement(my_value).is_some(),
+                "{name} is declared in both manifests, so this one should name a version \
+                 requirement; it reads {my_value:?}"
+            );
+            let Some(unit) = compatibility_unit(root_requirement) else {
+                continue;
+            };
+
+            let root_resolved = resolved_in_unit(&root_lock, name, unit);
+            assert!(
+                root_resolved.is_some(),
+                "root Cargo.lock has no {name} compatible with the {root_requirement:?} it \
+                 declares — the root lock is itself stale"
+            );
+            let root_resolved = root_resolved.expect("just asserted the root lock resolves it");
+
+            let my_resolved = resolved_in_unit(&my_lock, name, unit);
+            assert!(
+                my_resolved.is_some(),
+                "the root workspace declares {name} {root_requirement:?} and resolves it to \
+                 {root_resolved}, but src-tauri's Cargo.lock carries no compatible version — \
+                 the root's major bump never propagated across the workspace fence. Bump \
+                 {name} in src-tauri/Cargo.toml as well."
+            );
+            let my_resolved = my_resolved.expect("just asserted this lock resolves it");
+
+            assert!(
+                numeric_version(&my_resolved) >= numeric_version(&root_resolved),
+                "src-tauri's Cargo.lock pins {name} {my_resolved}, behind the root \
+                 workspace's {root_resolved}. Its excluded workspace does not follow root \
+                 bumps on its own — run `cargo update -p {name}` in src-tauri."
+            );
+            checked.push(name.clone());
+        }
+
+        assert!(
+            !checked.is_empty(),
+            "no dependency is declared by both root Cargo.toml's \
+             [workspace.dependencies] and src-tauri's — either the overlap really is empty \
+             (then this test is dead and should say so) or one of the two tables stopped \
+             parsing"
+        );
+    }
+
     /// Read one workflow out of `.github/workflows`.
     fn workflow(file: &str) -> String {
         let path = repo_root().join(".github/workflows").join(file);

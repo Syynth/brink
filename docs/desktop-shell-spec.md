@@ -95,6 +95,19 @@ drifts, and are the only thing that notices. If a shared lint-defaults file
 is ever extracted, both sides should point at it and those tests should
 follow.
 
+**Third cost, named later (#2451): the lockfile does not cross the fence
+either.** `src-tauri` has its own `Cargo.lock`, and `cargo test --locked` in
+the smoke lane only proves that lock is internally consistent with the
+`Cargo.toml` beside it — never that it still tracks the root workspace's
+resolved versions. `dependency_versions_track_the_root_workspace` in
+`src/lib.rs` closes that: for every crate BOTH manifests declare (today
+`serde`, `serde_json`, `thiserror`), it fails when this lock is behind the
+root's resolved version, and when a root major bump has no compatible copy
+here at all. Scope is deliberately the declared overlap, not the whole
+graph — the two dependency graphs resolve transitive crates differently for
+legitimate reasons, and `src-tauri` depends on no first-party crate at all
+(it reaches the compiler only through the `brink-cli` sidecar binary).
+
 CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
