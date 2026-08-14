@@ -6,10 +6,18 @@
  * the egress debounce — and delivers every pending change notification to
  * the host (`onFilesChanged`) right away. `file.saveAll` does the same for
  * every mounted view. With a host save in flight (the overlay contract),
- * both commands re-baseline only the paths whose content still matches
- * what was actually written — a path that moved on mid-write stays dirty
- * (issue #2426) — so `file.saveAll` re-baselines the verified subset of
- * the pre-save dirty set, not unconditionally every non-mounted file.
+ * both commands re-baseline only the paths confirmed to have actually
+ * persisted their current content — a path whose write genuinely diverged
+ * mid-flight stays dirty (issue #2426) — so `file.saveAll` re-baselines the
+ * verified subset of the pre-save dirty set, not unconditionally every
+ * non-mounted file. "Confirmed" is two-tier: a path whose content still
+ * matches its pre-save snapshot is trivially fine, and one that doesn't is
+ * re-checked against the provider's own disk content (`readProviderFile`)
+ * before being called stale — a write queued behind another in-flight one
+ * can legitimately pick up a later edit and persist content newer than the
+ * pre-save snapshot, and treating that as unsaved was a false-positive
+ * "changed while saving" warning on ordinary overlapping autosaves (issue
+ * #2435), not a real divergence.
  *
  * Both commands work without a host hook (the standalone playground):
  * the internal flush still happens, dirty state clears, and an info
@@ -61,27 +69,46 @@ export function registerFileCommands(
         // dirty for retry instead of silently pretending it saved. Without
         // a host save (the standalone playground) the synchronous
         // flush-and-re-baseline path is byte-identical to before.
+        const markSavedAndNotify = (): void => {
+          project.markFilesSaved([path]);
+          notify({ severity: "info", source: "file", message: `Saved ${path}` });
+        };
         if (project.hasHostSave()) {
           const before = project.getFiles()[path];
           void project.save([path]).then(
-            () => {
+            async () => {
               // Re-check immediately before re-baselining: an edit landing
               // on `path` while the host write was in flight persisted
-              // `before`, not whatever is current now — marking it clean
-              // here would retire a stage the write never wrote (issue
-              // #2426; same discipline as `OverlayPersistence.saveDirty`,
-              // PR #2420). Leave it dirty for the next save instead.
+              // something other than `before` — marking it clean here
+              // would retire a stage the write never wrote (issue #2426;
+              // same discipline as `OverlayPersistence.saveDirty`, PR
+              // #2420).
               const current = project.getFiles()[path];
-              if (current !== before) {
-                notify({
-                  severity: "warning",
-                  source: "file",
-                  message: `${path} changed while saving — still unsaved`,
-                });
+              if (current === before) {
+                markSavedAndNotify();
                 return;
               }
-              project.markFilesSaved([path]);
-              notify({ severity: "info", source: "file", message: `Saved ${path}` });
+              // `current` diverging from the pre-save snapshot doesn't by
+              // itself mean the write raced a genuine mid-flight edit
+              // (issue #2435): `requestSave` calls are serialized
+              // (`TauriFileProvider`, #2403), so a write queued behind
+              // another in-flight one can legitimately pick up this same
+              // later edit by the time it actually runs, and persist
+              // `current` rather than `before`. Confirm against what the
+              // provider actually has on disk now rather than trusting the
+              // pre-save snapshot — a genuine mid-write divergence still
+              // fails this check, since disk then holds the OLD content
+              // the write persisted, not `current`.
+              const onDisk = await project.readProviderFile(path).catch(() => undefined);
+              if (onDisk === current) {
+                markSavedAndNotify();
+                return;
+              }
+              notify({
+                severity: "warning",
+                source: "file",
+                message: `${path} changed while saving — still unsaved`,
+              });
             },
             (e: unknown) => {
               notify({
@@ -92,8 +119,7 @@ export function registerFileCommands(
             },
           );
         } else {
-          project.markFilesSaved([path]);
-          notify({ severity: "info", source: "file", message: `Saved ${path}` });
+          markSavedAndNotify();
         }
       },
     }),
@@ -117,18 +143,37 @@ export function registerFileCommands(
         // Same host-save branch as `file.save` — see the comment there. The
         // write covers the whole batch at once, so re-baselining must
         // re-check EACH path individually immediately before
-        // `markFilesSaved`: a path that moved on while the write was in
-        // flight was never persisted with its new content and must stay
-        // dirty — `markAllSaved` would retire it against unwritten content
-        // (issue #2426; same discipline as `OverlayPersistence.saveDirty`,
-        // PR #2420). `markAllSaved` itself is only safe on the no-host-save
-        // (synchronous) path below, where nothing could have moved on.
+        // `markFilesSaved`: a path that genuinely moved on while the write
+        // was in flight was never persisted with its new content and must
+        // stay dirty — `markAllSaved` would retire it against unwritten
+        // content (issue #2426; same discipline as
+        // `OverlayPersistence.saveDirty`, PR #2420). `markAllSaved` itself
+        // is only safe on the no-host-save (synchronous) path below, where
+        // nothing could have moved on.
         if (project.hasHostSave()) {
           const before = project.getFiles();
           void project.save().then(
-            () => {
+            async () => {
               const current = project.getFiles();
-              const saved = dirty.filter((path) => current[path] === before[path]);
+              const settled = dirty.filter((path) => current[path] === before[path]);
+              const moved = dirty.filter((path) => current[path] !== before[path]);
+              // `moved` diverging from its pre-save snapshot doesn't by
+              // itself mean each of those writes raced a genuine mid-flight
+              // edit (issue #2435): `requestSave` calls are serialized
+              // (`TauriFileProvider`, #2403), so a write queued behind
+              // another in-flight one can legitimately pick up a later edit
+              // and persist `current`, not `before`. Confirm each against
+              // the provider's own disk content rather than trusting the
+              // pre-save snapshot — a path with a genuine mid-write
+              // divergence still fails this check, since disk then holds
+              // the OLD content the write persisted, not `current`.
+              const confirmed = await Promise.all(
+                moved.map(async (path) => {
+                  const onDisk = await project.readProviderFile(path).catch(() => undefined);
+                  return onDisk === current[path] ? path : null;
+                }),
+              );
+              const saved = [...settled, ...confirmed.filter((p): p is string => p !== null)];
               const stale = dirty.length - saved.length;
               if (saved.length > 0) project.markFilesSaved(saved);
               if (stale > 0) {

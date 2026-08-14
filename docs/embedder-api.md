@@ -102,21 +102,25 @@ type FileChange = {
   clear dirty state, and raise an info notification ("Saved main.ink") —
   they never error in the standalone playground. With a host save in
   flight (the overlay contract, `requestSave`; docs/desktop-shell-spec.md
-  line 64), a path edited while its write is still in flight stays dirty
-  instead of being re-baselined against the old content the write
-  actually persisted (issue #2426) — the command raises a "…changed while
-  saving — still unsaved" warning notification for it, and `file.saveAll`'s
-  "Saved N files" count reflects only the verified subset. Dispatchable as
-  `api.dispatch("file.save")` (ids exported as `FILE_SAVE_COMMAND_ID` /
-  `FILE_SAVE_ALL_COMMAND_ID`).
+  line 64), a path whose content no longer matches the snapshot taken
+  before the save started is re-checked against what the provider actually
+  wrote (`ProjectSession.readProviderFile`) rather than trusting that
+  snapshot: a genuine mid-write divergence stays dirty and raises a
+  "…changed while saving — still unsaved" warning notification (issue
+  #2426), while a write that was merely queued behind another in-flight one
+  and legitimately caught up to a later edit is NOT warned about (issue
+  #2435) — `file.saveAll`'s "Saved N files" count reflects only the
+  confirmed subset. Dispatchable as `api.dispatch("file.save")` (ids
+  exported as `FILE_SAVE_COMMAND_ID` / `FILE_SAVE_ALL_COMMAND_ID`).
 - **Dirty state.** `StudioPublicState.dirtyFiles` is the count of files
   whose session content diverges from the *baseline* — the content last
   loaded from the host (mount `files`, external changes) or last synced to
-  it. A path only re-baselines when a save's write is confirmed to have
-  persisted that path's current content; a path that changed while its
-  host write was still in flight is not synced by that save and keeps
-  contributing to the count (issue #2426). Use it to warn before
-  `unmount()`/reload would discard edits. Per-file detail is
+  it. A path only re-baselines when a save's write is confirmed — against
+  the provider's own written content, not just a pre-save snapshot — to
+  have persisted that path's current content; a path with a genuine
+  mid-write divergence is not synced by that save and keeps contributing to
+  the count (issues #2426/#2435). Use it to warn before `unmount()`/reload
+  would discard edits. Per-file detail is
   `api.getDirtyFiles(): string[]`. File contents deliberately never enter
   `StudioPublicState` (they are big and change per keystroke — the
   reference-stability contract); use the push/pull surfaces above.

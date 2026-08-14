@@ -549,10 +549,25 @@ describe("StudioApi egress surface", () => {
 class HostSaveProvider extends InMemoryFileProvider {
   saves: Array<string[] | undefined> = [];
   failNext = false;
+  /**
+   * Edits STAGE here rather than committing straight to `files` (the
+   * `InMemoryFileProvider` backing store `readFile` answers from) — mirrors
+   * the real `TauriFileProvider`'s `staged` map (D2 overlay contract): only
+   * `requestSave`'s own write commits to "disk". Without this separation,
+   * `readFile` would always answer with the latest edit rather than "what a
+   * write actually persisted", and the #2426 mid-write tests below (which
+   * rely on that gap to prove a stale write doesn't get confirmed) would be
+   * proving nothing.
+   */
+  private hostStaged = new Map<string, string>();
   /** Set by `holdNextSave()`; `requestSave` awaits it before resolving, so a
    *  test can stage an edit while the write is still "in flight" (#2426). */
   private gate: Promise<void> | null = null;
   private releaseGate: (() => void) | null = null;
+
+  onFileChanged(path: string, content: string): void {
+    this.hostStaged.set(path, content);
+  }
 
   /** The next `requestSave` call blocks until `releaseSave()` is called. */
   holdNextSave(): void {
@@ -569,12 +584,31 @@ class HostSaveProvider extends InMemoryFileProvider {
   }
 
   async requestSave(paths?: string[]): Promise<void> {
+    // The content to write is captured at CALL time — before the gate, like
+    // `TauriFileProvider.writeStaged`'s own `pending` snapshot happens
+    // before its `invoke("write_file")` — so an edit landing while this
+    // call is held open does not retroactively change what this write
+    // persists.
+    const wanted = paths === undefined ? null : new Set(paths);
+    const pending = [...this.hostStaged.entries()].filter(
+      ([rel]) => wanted === null || wanted.has(rel),
+    );
     if (this.gate) await this.gate;
     if (this.failNext) {
       this.failNext = false;
       throw new Error("disk full");
     }
     this.saves.push(paths);
+    for (const [rel, content] of pending) {
+      await super.createFile(rel, content); // commits to `files` — this class's "disk"
+      // Only drop the staged entry if it still matches what was just
+      // written — an edit staged while this write was held open must
+      // survive for the next `requestSave` to pick up (mirrors
+      // `writeStaged`'s own #2403-review discipline).
+      if (this.hostStaged.get(rel) === content) {
+        this.hostStaged.delete(rel);
+      }
+    }
   }
 }
 
@@ -702,6 +736,9 @@ describe("host-save (overlay contract)", () => {
 
     egress.host.releaseSave(); // the v1 write completes now
     await microtasks();
+    // A second flush: the mid-write guard's re-check now awaits an extra
+    // hop (`readProviderFile`, issue #2435) after the write settles.
+    await microtasks();
 
     expect(egress.host.saves).toEqual([["main.ink"]]); // v1 WAS written
     // v2 must still be dirty: the write persisted v1, not v2.
@@ -730,6 +767,9 @@ describe("host-save (overlay contract)", () => {
 
     egress.host.releaseSave();
     await microtasks();
+    // A second flush: the mid-write guard's re-check now awaits an extra
+    // hop (`readProviderFile`, issue #2435) after the write settles.
+    await microtasks();
 
     expect(egress.host.saves).toEqual([undefined]); // one whole-project write
     // side.ink moved on after being captured — it stays dirty.
@@ -741,5 +781,175 @@ describe("host-save (overlay contract)", () => {
 
     h.dispose();
     h.container.remove();
+  });
+});
+
+// ── #2435: a `requestSave` QUEUED behind another in-flight write must not
+// be false-flagged just because content moved on since the pre-save
+// snapshot — with writes serialized (`TauriFileProvider`, #2403), the
+// queued write can legitimately pick up the later edit and persist it
+// before the guard even checks. `HostSaveProvider` above can't reproduce
+// this: its `onFileChanged` (inherited from `InMemoryFileProvider`) commits
+// straight to `files`, so its `readFile` always answers with the latest
+// edit rather than "what a write actually persisted" — there is no lag for
+// a queued write to legitimately close. `QueuedHostSaveProvider` restores
+// that lag by mirroring `TauriFileProvider`'s own staged-map + serialized-
+// queue algorithm (`writeStaged`/`enqueueSave`) closely enough to exercise
+// the real race. ──
+
+/**
+ * Mirrors `TauriFileProvider`'s staged-write + write-serialization
+ * semantics (`packages/brink-desktop/src/tauri-provider.ts`): edits STAGE
+ * into `hostStaged`, decoupled from `files` (the `InMemoryFileProvider`
+ * backing store `readFile` answers from — this class's stand-in for
+ * "disk"), and `requestSave` only reads `hostStaged` once its own turn in
+ * the write queue arrives, not at call time. Each staged write is held open
+ * on a gate until `releaseWrite()` — the write serialization itself is real
+ * (`enqueueSave`'s chain), so only one gate is ever open at a time; the
+ * test drives the queue by releasing gates in order.
+ */
+class QueuedHostSaveProvider extends InMemoryFileProvider {
+  private hostStaged = new Map<string, string>();
+  private saving: Promise<unknown> = Promise.resolve();
+  private gates: Array<() => void> = [];
+
+  onFileChanged(path: string, content: string): void {
+    this.hostStaged.set(path, content);
+  }
+
+  /** Unblock the oldest still-held write. */
+  releaseWrite(): void {
+    const release = this.gates.shift();
+    if (release === undefined) throw new Error("no write is currently held open");
+    release();
+  }
+
+  async requestSave(paths?: string[]): Promise<void> {
+    const next = this.saving.then(
+      () => this.writeStaged(paths),
+      () => this.writeStaged(paths),
+    );
+    this.saving = next.catch(() => undefined);
+    return next;
+  }
+
+  private async writeStaged(paths?: string[]): Promise<void> {
+    const wanted = paths === undefined ? null : new Set(paths);
+    const pending = [...this.hostStaged.entries()].filter(
+      ([rel]) => wanted === null || wanted.has(rel),
+    );
+    for (const [rel, content] of pending) {
+      await new Promise<void>((resolve) => this.gates.push(resolve));
+      await super.createFile(rel, content); // commits to `files` — this class's "disk"
+      // Only drop the staged entry if it still matches what was just
+      // written — mirrors `writeStaged`'s own #2403-review discipline: an
+      // edit staged while this write was in flight must survive for the
+      // next `requestSave` to pick up.
+      if (this.hostStaged.get(rel) === content) {
+        this.hostStaged.delete(rel);
+      }
+    }
+  }
+}
+
+/** `registerFileCommands`' `documents` dependency, stubbed for tests that
+ *  drive edits through `project.applyEdit` directly (no mounted CM6 view;
+ *  `file.saveAll` still needs `flushAll`/`flushFocused` to exist). */
+function noViewDocuments(): DocumentSessions {
+  return {
+    flushFocused: () => null,
+    flushAll: () => [],
+  } as unknown as DocumentSessions;
+}
+
+async function makeQueuedOverlayProject(): Promise<Egress & { host: QueuedHostSaveProvider }> {
+  await initWasm();
+  const host = new QueuedHostSaveProvider({ "main.ink": MAIN_INK, "side.ink": SIDE_INK });
+  const batches: FileChange[][] = [];
+  const project = new ProjectSession({
+    provider: host,
+    entryFile: "main.ink",
+    egressPersists: false,
+    onFilesChanged: (changes) => batches.push(changes),
+  });
+  await project.initialize();
+  return { provider: host, host, project, batches };
+}
+
+describe("host-save queued writes (#2435)", () => {
+  function harness(egress: Egress) {
+    const commands = new CommandRegistry();
+    const notifications = new NotificationCenter();
+    registerFileCommands(commands, {
+      project: egress.project,
+      documents: noViewDocuments(),
+      notify: (n) => void notifications.notify(n),
+    });
+    return { commands, notifications };
+  }
+
+  it("a write queued behind another in-flight write persists the later edit it legitimately caught up to — no false warning", async () => {
+    const egress = await makeQueuedOverlayProject();
+    const h = harness(egress);
+
+    egress.project.applyEdit("main.ink", "v1");
+    h.commands.dispatch("file.saveAll"); // call A: starts writing "v1" immediately
+    await microtasks();
+
+    h.commands.dispatch("file.saveAll"); // call B: queues behind call A's still-open write
+    await microtasks();
+
+    // The later edit lands while call B is queued (not yet reading
+    // `hostStaged`) — a queued write, not a live one, is what will pick
+    // this up.
+    egress.project.applyEdit("main.ink", "v2");
+
+    egress.host.releaseWrite(); // call A's write completes, persisting "v1"
+    await microtasks();
+    await microtasks(); // generous margin: call A's own confirmation read + notify
+    // Call A's own write genuinely diverged (it persisted "v1" while the
+    // session had already moved to "v2") — it correctly warns for its own
+    // save, same as the #2426 tests above. That's not this test's claim;
+    // clear the notifications call A raised before asserting on call B.
+    h.notifications.getState().visible.forEach((n) => h.notifications.dismiss(n.id));
+
+    egress.host.releaseWrite(); // call B's write completes, persisting "v2"
+    await microtasks();
+    await microtasks(); // generous margin: call B's own confirmation read + notify
+
+    // Call B's write wrote exactly the content the session ends up
+    // holding — confirmed via the provider's actual disk content, not the
+    // pre-save snapshot — so it must be treated as saved.
+    expect(await egress.host.readFile("main.ink")).toBe("v2");
+    expect(egress.project.dirtyPaths()).toEqual([]);
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(false);
+    expect(
+      h.notifications.getState().visible.some((n) => n.message === "Saved 1 file"),
+    ).toBe(true);
+  });
+
+  it("an edit landing mid-write (during the write's own flight, not merely queued) still raises the warning and stays dirty", async () => {
+    const egress = await makeQueuedOverlayProject();
+    const h = harness(egress);
+
+    egress.project.applyEdit("main.ink", "v1");
+    h.commands.dispatch("file.saveAll"); // starts writing "v1" immediately
+    await microtasks();
+
+    // The edit lands DURING this save's own write, not while a second call
+    // is queued behind it — the genuine #2426 divergence.
+    egress.project.applyEdit("main.ink", "v2");
+
+    egress.host.releaseWrite(); // the write completes, persisting "v1"
+    await microtasks();
+    await microtasks(); // generous margin: the confirmation read + notify
+
+    expect(await egress.host.readFile("main.ink")).toBe("v1"); // disk still holds the old content
+    expect(egress.project.dirtyPaths()).toEqual(["main.ink"]); // stays dirty
+    expect(
+      h.notifications.getState().visible.some((n) => n.message.includes("still unsaved")),
+    ).toBe(true);
   });
 });

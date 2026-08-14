@@ -683,6 +683,27 @@ export class ProjectSession {
     return this.provider.requestSave !== undefined;
   }
 
+  /**
+   * Read `path` straight from the provider, bypassing session state
+   * entirely — the provider's own account of what is actually persisted
+   * (disk, for a host-save provider). Existing {@link FileProvider.readFile}
+   * plumbing; this just exposes it past `ProjectSession`.
+   *
+   * The save commands use this to confirm what a host write actually wrote
+   * when a path's content no longer matches the snapshot taken before the
+   * save started (issue #2435): with `requestSave` calls serialized
+   * (`TauriFileProvider`, #2403), a write queued behind another in-flight
+   * one can legitimately pick up a later edit by the time it actually runs
+   * and persist content newer than that snapshot — a case this lets the
+   * caller tell apart from a genuine mid-write divergence (issue #2426)
+   * without weakening that guard: a divergence still fails this check,
+   * since disk keeps the pre-race content the write actually persisted.
+   * Rejects like {@link FileProvider.readFile} itself (e.g. a vanished path).
+   */
+  async readProviderFile(path: string): Promise<string> {
+    return this.provider.readFile(path);
+  }
+
   /** Ask the provider for a file not yet in the session; loads it if found. */
   async requestFile(path: string): Promise<string | null> {
     const existing = this.session.getFileSource(path);
