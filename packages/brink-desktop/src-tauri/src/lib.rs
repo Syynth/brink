@@ -1633,14 +1633,19 @@ mod tests {
     /// disk — nothing here executes it ([`run_cli`] is the only caller and
     /// it needs a running app, not a `cargo test`) — so the lane asks
     /// `ensure-cli-sidecar.mjs` for a stub and skips the build entirely
-    /// (#2469). PR #2446's `CARGO_PROFILE_RELEASE_*` stopgap only made the
-    /// wasted build cheaper; both halves are asserted here so the stub
-    /// cannot quietly revert to the stopgap, or accumulate both. Nothing
-    /// else in this file would notice the wiring vanishing from
-    /// desktop-smoke.yml; this is that guard, and it is the fourth of the
-    /// "Four properties of `desktop-smoke.yml` ... asserted by tests" that
-    /// docs/desktop-shell-spec.md's "Smoke-lane inputs and step gating"
-    /// section claims.
+    /// (#2469). PR #2446's `CARGO_PROFILE_RELEASE_*` stopgap was set
+    /// job-wide, so it was also flattening the "Build brink-web wasm
+    /// package" step's `wasm-pack build` (release by default) — not only
+    /// the sidecar build it was written to excuse. Removing it un-flattens
+    /// that wasm build too: the lane now deliberately accepts a
+    /// fully-optimised one, rather than keep the vars as dead configuration
+    /// for a sidecar build that no longer happens. Both halves are asserted
+    /// here so the stub cannot quietly revert to the stopgap, or accumulate
+    /// both. Nothing else in this file would notice the wiring vanishing
+    /// from desktop-smoke.yml; this is that guard, and it is the third of
+    /// the "Three properties of `desktop-smoke.yml` ... asserted by tests"
+    /// that docs/desktop-shell-spec.md's "Smoke-lane inputs and step
+    /// gating" section claims.
     #[test]
     fn desktop_smoke_stubs_the_staged_sidecar() {
         let workflow = workflow("desktop-smoke.yml");
@@ -1652,8 +1657,17 @@ mod tests {
         };
 
         assert!(
-            sets_key("BRINK_SIDECAR_STUB"),
-            "desktop-smoke.yml's env: block should set BRINK_SIDECAR_STUB so \
+            // Pinned to the exact value, not merely "the key is set": only
+            // the literal string "1" makes `ensureCliSidecar`'s `stub`
+            // default opt in (scripts/ensure-cli-sidecar.mjs), so e.g.
+            // `BRINK_SIDECAR_STUB: "0"` would satisfy a presence-only check
+            // while silently restoring the full release build this guard
+            // exists to keep out.
+            workflow
+                .lines()
+                .any(|line| line.trim() == "BRINK_SIDECAR_STUB: \"1\""),
+            "desktop-smoke.yml's env: block should set BRINK_SIDECAR_STUB: \"1\" (the \
+             exact string ensureCliSidecar's `stub` option opts in on) so \
              ensure-cli-sidecar.mjs stages a placeholder instead of building a \
              brink-cli release binary this check-only lane never runs; an env var \
              rather than a step flag because `pnpm build` re-runs that script"
@@ -1665,9 +1679,11 @@ mod tests {
         ] {
             assert!(
                 !sets_key(key),
-                "desktop-smoke.yml still sets {key}, PR #2446's stopgap for the same \
-                 waste: with BRINK_SIDECAR_STUB there is no release build left in this \
-                 lane for it to flatten, so it is dead configuration"
+                "desktop-smoke.yml still sets {key}: PR #2446's stopgap targeted the \
+                 sidecar build, which BRINK_SIDECAR_STUB now removes, but the var was \
+                 job-wide and was also flattening the wasm-pack release build this lane \
+                 still runs — keeping it would silently leave that build de-optimised, \
+                 not just the (already-gone) sidecar one"
             );
         }
     }

@@ -184,7 +184,7 @@ when the edit itself lives entirely in `packages/brink-studio`.
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Four properties of `desktop-smoke.yml` are asserted by tests in
+Three properties of `desktop-smoke.yml` are asserted by tests in
 `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
@@ -218,13 +218,19 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   altogether. It is an `env:` var rather than a step flag because the lane
   runs the script twice — its own "Stage brink-cli sidecar" step and, nested,
   `pnpm build`. This **replaces** PR #2446's
-  `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` / `_CODEGEN_UNITS` stopgap,
-  which only made the wasted build cheaper; the guard asserts the stub is
-  wired **and** that the three stopgap vars are gone, so the lane cannot
-  drift back or carry both. Every other caller — `pnpm --filter
-  @brink/desktop build` on a developer machine, where the sidecar really is
-  shipped and run — still builds a real release binary, since the option
-  defaults to off.
+  `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` / `_CODEGEN_UNITS` stopgap —
+  but that stopgap was job-wide, not scoped to the sidecar build, so it was
+  also flattening the "Build brink-web wasm package" step's `wasm-pack
+  build` (release by default, and this lane's largest build), not only the
+  sidecar build it was written to excuse. Removing the vars un-flattens
+  that wasm build too: the lane now deliberately runs a fully-optimised
+  `wasm-pack build`, rather than keep vars that would be dead configuration
+  for the (now-gone) sidecar build while still quietly de-optimising the
+  wasm one. The guard asserts the stub is wired **and** that the three
+  stopgap vars are gone, so the lane cannot drift back or carry both. Every
+  other caller — `pnpm --filter @brink/desktop build` on a developer
+  machine, where the sidecar really is shipped and run — still builds a
+  real release binary, since the option defaults to off.
   (`desktop_smoke_stubs_the_staged_sidecar`)
 
 ### The `dev` preflight pair (#2452, #2468)

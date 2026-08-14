@@ -32,11 +32,14 @@ on:
       # `pnpm install --frozen-lockfile`; the toolchain pin still selects the
       # rustc this lane's `cargo check`/`clippy`/`test` run under (it used to
       # also feed the cross-workspace `brink-cli` sidecar build, which
-      # `BRINK_SIDECAR_STUB` removed — #2469);
-      # root `Cargo.toml`/`clippy.toml` are what src-tauri's two
-      # `*_matches_the_root_workspace` tests compare its copies against
+      # `BRINK_SIDECAR_STUB` removed — #2469); root `Cargo.toml`/`Cargo.lock`
+      # also feed the root-workspace `cargo build` behind `wasm-pack build
+      # crates/brink-web` in "Build brink-web wasm package" below — that
+      # step is not covered just because src-tauri's own comparison tests
+      # are. `Cargo.toml`/`clippy.toml` are additionally what src-tauri's
+      # two `*_matches_the_root_workspace` tests compare its copies against
       # (#2415/#2422), which otherwise cannot fail the PR that causes the
-      # drift; root `Cargo.lock` is also a test input in its own right —
+      # drift; `Cargo.lock` is additionally a test input in its own right —
       # `dependency_versions_track_the_root_workspace` (#2451) compares it
       # against src-tauri's own lock; and `ci.yml` is the desktop unit
       # suite's only home, asserted by
@@ -63,12 +66,21 @@ env:
   # resolution finds a file on disk (see "Stage brink-cli sidecar" below);
   # nothing in this check-only lane ever EXECUTES it — `run_cli` in
   # src-tauri/src/lib.rs is the only caller and it needs a running app, not a
-  # `cargo test` — so building it at all is pure waste (#2418 gap 4). This
+  # `cargo test` — so building it at all was pure waste (#2418 gap 4). This
   # asks `ensure-cli-sidecar.mjs` for a stub instead (#2469): it writes a
   # loudly-failing placeholder under the same triple-suffixed name and skips
-  # `cargo build -p brink-cli --release` entirely. It replaces the
-  # `CARGO_PROFILE_RELEASE_OPT_LEVEL`/`_DEBUG`/`_CODEGEN_UNITS` stopgap PR
-  # #2446 added, which only made the wasted build cheaper.
+  # `cargo build -p brink-cli --release` entirely, removing that waste
+  # outright.
+  #
+  # This replaces PR #2446's `CARGO_PROFILE_RELEASE_OPT_LEVEL`/`_DEBUG`/
+  # `_CODEGEN_UNITS` stopgap — but that stopgap was job-wide, not scoped to
+  # the sidecar build, so it was also flattening the "Build brink-web wasm
+  # package" step's `wasm-pack build` below (release by default with no
+  # `--dev`/`--profiling`, and this lane's largest build). Removing the vars
+  # un-flattens that build too: the lane now deliberately accepts a
+  # fully-optimised `wasm-pack build`, rather than keep vars around that
+  # would be dead configuration for the sidecar build they were written for
+  # once that build is gone, while still quietly de-optimising the wasm one.
   #
   # An `env:` var rather than a flag on the step below, because the lane runs
   # the script TWICE: its own "Stage brink-cli sidecar" step, and `pnpm build`,

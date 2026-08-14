@@ -383,6 +383,11 @@ describe("the main-guard", () => {
       // throwaway tree provides; an inherited CARGO_TARGET_DIR would point
       // the script at the session's shared one instead.
       delete env.CARGO_TARGET_DIR;
+      // An ambient BRINK_SIDECAR_STUB=1 would make the script's default
+      // opt into the stub path, so this assertion would pass without the
+      // invocation ever reaching `cargo build -p brink-cli --release` — the
+      // exact path this test exists to cover.
+      delete env.BRINK_SIDECAR_STUB;
       execFileSync(process.execPath, [join(packageDir, "scripts", "ensure-cli-sidecar.mjs")], {
         encoding: "utf8",
         env,
