@@ -87,7 +87,7 @@ describe("sidecarPaths", () => {
     expect(paths.destBin.endsWith("brink-cli-x86_64-pc-windows-msvc.exe")).toBe(true);
   });
 
-  it("honours CARGO_TARGET_DIR instead of <repoRoot>/target", () => {
+  it("an explicit targetDir overrides <repoRoot>/target", () => {
     const paths = sidecarPaths({
       triple: "x86_64-unknown-linux-gnu",
       repoRoot: "/repo",
@@ -158,6 +158,43 @@ describe("ensureCliSidecar", () => {
     expect(destBin.endsWith("brink-cli-x86_64-unknown-linux-gnu")).toBe(true);
   });
 
+  it("honours a CARGO_TARGET_DIR environment variable when the caller names no targetDir", () => {
+    // `sidecarPaths` never reads `process.env` — only `ensureCliSidecar`'s
+    // `targetDir` default does (env var reading happens in exactly one
+    // place: reading `rustc -vV`'s `host:` line is the other seam that
+    // reaches out to the environment). This drives that default end to
+    // end: the "built" binary sits only under `$CARGO_TARGET_DIR/release`,
+    // not `<repoRoot>/target/release`, so staging can only succeed if the
+    // env var was actually honoured.
+    const repoRoot = scratch();
+    const srcTauriDir = scratch();
+    const sharedTargetDir = scratch();
+    const releaseDir = join(sharedTargetDir, "release");
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(join(releaseDir, "brink"), "#!/bin/sh\nexit 0\n");
+    chmodSync(join(releaseDir, "brink"), 0o644);
+
+    const originalTargetDir = process.env.CARGO_TARGET_DIR;
+    process.env.CARGO_TARGET_DIR = sharedTargetDir;
+    try {
+      const destBin = ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        runCommand: () => "",
+        log: () => {},
+      });
+      expect(destBin).toBe(
+        join(srcTauriDir, "binaries", "brink-cli-x86_64-unknown-linux-gnu"),
+      );
+    } finally {
+      if (originalTargetDir === undefined) {
+        delete process.env.CARGO_TARGET_DIR;
+      } else {
+        process.env.CARGO_TARGET_DIR = originalTargetDir;
+      }
+    }
+  });
 });
 
 describe("the main-guard", () => {
