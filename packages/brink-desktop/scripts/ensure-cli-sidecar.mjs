@@ -27,12 +27,21 @@
 // #2418's gap 4 (this lane pays for an optimized build it never executes)
 // was settled in PR #2446 with lane-scoped `CARGO_PROFILE_RELEASE_*` env
 // vars rather than a profile option here: a branch inside a script with no
-// export seam cannot be given a test that exercises it. The seam is the
-// prerequisite; the profile/stub-binary option it enables is deliberately
-// NOT part of this change.
+// export seam cannot be given a test that exercises it.
+//
+// #2469 spends that seam: the `stub` option below skips the build entirely
+// and stages a placeholder, which is what `desktop-smoke.yml` now sets
+// (`BRINK_SIDECAR_STUB: "1"` in its `env:` block) in place of those three
+// `CARGO_PROFILE_RELEASE_*` vars. The stopgap only made the wasted build
+// cheaper; the stub removes it. `desktop_smoke_stubs_the_staged_sidecar`
+// in src-tauri/src/lib.rs is the guard that keeps that wiring in place.
+//
+// ⚠ The main-guard is an invariant of the `dev` preflight PAIR, not of this
+// script alone — `ensure-wasm.mjs` carries the same one (#2468). See
+// docs/desktop-shell-spec.md "The `dev` preflight pair".
 
 import { execSync } from "node:child_process";
-import { copyFileSync, chmodSync, mkdirSync, existsSync } from "node:fs";
+import { copyFileSync, chmodSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -90,11 +99,31 @@ export function sidecarPaths({
 }
 
 /**
+ * What gets staged instead of a real binary when `stub` is requested. A
+ * loudly-failing shell script rather than an empty file: a stub lane is one
+ * where nothing executes the sidecar, and if something ever starts to, it
+ * must say so rather than look like a working `brink-cli`.
+ */
+export const STUB_SIDECAR = `#!/bin/sh
+echo "brink-cli sidecar stub: staged by ensure-cli-sidecar.mjs (stub/BRINK_SIDECAR_STUB) so tauri-build's externalBin resolution finds a file; this is not the CLI" >&2
+exit 127
+`;
+
+/**
  * Build `brink-cli` out of the ROOT workspace and stage it as the Tauri
  * sidecar. Returns the staged path.
  *
  * Every input defaults to the real one this script has always used, so the
  * standalone invocation below stays a bare `ensureCliSidecar()`.
+ *
+ * `stub` stages [`STUB_SIDECAR`] under the same triple-suffixed name and
+ * skips `cargo build -p brink-cli --release` altogether, for a lane that
+ * needs the file to EXIST (tauri-build resolves `bundle.externalBin`
+ * unconditionally, not only on `tauri build`) but never runs it. It
+ * defaults to the `BRINK_SIDECAR_STUB` environment variable rather than a
+ * flag, because the smoke lane reaches this script two ways — its own
+ * "Stage brink-cli sidecar" step and, indirectly, `pnpm build` — and only
+ * an env var covers the nested one.
  */
 export function ensureCliSidecar({
   repoRoot = defaultRepoRoot,
@@ -103,6 +132,7 @@ export function ensureCliSidecar({
   runCommand = defaultRunCommand,
   triple = hostTriple(runCommand),
   log = console.log,
+  stub = process.env.BRINK_SIDECAR_STUB === "1",
 } = {}) {
   const { binariesDir, builtBin, destBin } = sidecarPaths({
     triple,
@@ -111,25 +141,32 @@ export function ensureCliSidecar({
     targetDir,
   });
 
-  log("[ensure-cli-sidecar] cargo build -p brink-cli --release (root workspace)");
-  runCommand("cargo build -p brink-cli --release", {
-    cwd: repoRoot,
-    stdio: "inherit",
-  });
+  mkdirSync(binariesDir, { recursive: true });
 
-  if (!existsSync(builtBin)) {
-    throw new Error(
-      `[ensure-cli-sidecar] release build did not produce the expected binary at ${builtBin}`,
-    );
+  if (stub) {
+    log("[ensure-cli-sidecar] stub requested — skipping the brink-cli release build");
+    writeFileSync(destBin, STUB_SIDECAR);
+  } else {
+    log("[ensure-cli-sidecar] cargo build -p brink-cli --release (root workspace)");
+    runCommand("cargo build -p brink-cli --release", {
+      cwd: repoRoot,
+      stdio: "inherit",
+    });
+
+    if (!existsSync(builtBin)) {
+      throw new Error(
+        `[ensure-cli-sidecar] release build did not produce the expected binary at ${builtBin}`,
+      );
+    }
+
+    copyFileSync(builtBin, destBin);
   }
 
-  mkdirSync(binariesDir, { recursive: true });
-  copyFileSync(builtBin, destBin);
   // cargo's own output is already executable, but `copyFileSync` on some
   // platforms/filesystems does not reliably preserve the mode bit — set it
   // explicitly rather than trust the copy.
   chmodSync(destBin, 0o755);
-  log(`[ensure-cli-sidecar] staged sidecar at ${destBin}`);
+  log(`[ensure-cli-sidecar] staged ${stub ? "stub " : ""}sidecar at ${destBin}`);
   return destBin;
 }
 

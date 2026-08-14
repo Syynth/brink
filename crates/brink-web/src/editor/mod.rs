@@ -3254,6 +3254,14 @@ mod tests {
         assert!(has_narrative_run, "{ranges}");
     }
 
+    // #2471: this is the CANONICAL statement of the reachability caveat
+    // referenced from `acceptance_gate.rs`'s
+    // `gate_folding_decodes_onto_real_native_line_numbers` and from
+    // `spans.rs`'s `native_line_contexts_reach_the_native_cst_path` — this
+    // test lives in `crate::editor::tests` (this `mod tests` block, in this
+    // file), NOT in the sibling `folding` submodule (`editor/folding.rs`,
+    // declared at the top of this file); update all three pointers together
+    // if this test moves or its scope note changes.
     #[test]
     fn native_folding_ranges_reach_the_native_cst_path() {
         // #2291: `folding_ranges()` on a native (`.brink`) file must route
@@ -3273,9 +3281,12 @@ mod tests {
         // dispatch on `is_native` independently (`lowered_query`). So this
         // fixture's `machinery` fold appears whether or not the trivia
         // root is native; it is NOT, by itself, proof the routing matters.
-        // The routing's actual regression coverage lives in
-        // `brink-ide`'s `trivia::tests::native_block_comment_spans_lines`
-        // and `line_context::tests::native_block_comment_uses_the_native_cst`
+        // PR #2448 added a nested-structure test at this layer but found that
+        // layer's fold-run output is byte-identical whichever CST arm runs, so
+        // it does not discriminate routing either. The routing's actual
+        // regression coverage lives in `brink-ide`'s
+        // `trivia::tests::native_block_comment_spans_lines` and
+        // `line_context::tests::native_block_comment_uses_the_native_cst`
         // (both red-first-verified against `line_trivia_native`/
         // `line_contexts_native` in isolation) — this test only pins that
         // the wasm-facing entry point actually reaches that native path

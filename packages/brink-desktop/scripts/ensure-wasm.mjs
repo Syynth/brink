@@ -13,19 +13,38 @@
 // CARGO_TARGET_DIR is passed through from the environment untouched — the
 // repo's shared-target conventions are a session concern, not this
 // script's.
+//
+// The logic is EXPORTED and the standalone run sits behind a main-guard at
+// the bottom (#2468), matching `ensure-cli-sidecar.mjs` (#2452): the two
+// scripts are the `dev` preflight pair (`dev` runs this one immediately
+// before that one), and #2452 named only the sibling. Until #2468 this
+// module ran its whole job — including a real `wasm-pack build`, and a
+// `process.exit(0)` in the already-fresh case — as a side effect of being
+// imported, so nothing could call it and nothing could test it.
+//
+// ⚠ The guard is an invariant of the PAIR, not of one script: see
+// docs/desktop-shell-spec.md "The `dev` preflight pair", and
+// src/__tests__/ensure-wasm.test.ts's `describe("the main-guard")`.
 
 import { execSync } from "node:child_process";
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = resolve(fileURLToPath(import.meta.url), "..");
-const repoRoot = resolve(here, "../../..");
-const cratesDir = join(repoRoot, "crates");
-const pkgWasm = join(cratesDir, "brink-web/www/pkg/brink_web_bg.wasm");
+const defaultRepoRoot = resolve(here, "../../..");
+
+/**
+ * Run a command and capture its stdout. The single seam through which this
+ * module talks to `wasm-pack`, so a caller can drive the freshness logic
+ * without a toolchain.
+ */
+function defaultRunCommand(command, options = {}) {
+  return execSync(command, { encoding: "utf8", ...options });
+}
 
 /** Newest mtime of any .rs / Cargo.toml under `dir`, skipping build output. */
-function newestSource(dir) {
+export function newestSource(dir) {
   let newest = 0;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
@@ -48,21 +67,48 @@ function newestSource(dir) {
   return newest;
 }
 
-const built = existsSync(pkgWasm) ? statSync(pkgWasm).mtimeMs : 0;
-const sources = newestSource(cratesDir);
+/**
+ * Rebuild the wasm pkg the dev server serves if any Rust source under
+ * `cratesDir` is newer than the built artifact. Returns true when it
+ * rebuilt, false when the pkg was already fresh.
+ *
+ * Every input defaults to the real one this script has always used, so the
+ * standalone invocation below stays a bare `ensureWasm()`.
+ */
+export function ensureWasm({
+  repoRoot = defaultRepoRoot,
+  cratesDir = join(repoRoot, "crates"),
+  pkgWasm = join(cratesDir, "brink-web/www/pkg/brink_web_bg.wasm"),
+  runCommand = defaultRunCommand,
+  log = console.log,
+} = {}) {
+  const built = existsSync(pkgWasm) ? statSync(pkgWasm).mtimeMs : 0;
+  const sources = newestSource(cratesDir);
 
-if (built >= sources) {
-  console.log("[ensure-wasm] pkg is fresh");
-  process.exit(0);
+  if (built >= sources) {
+    log("[ensure-wasm] pkg is fresh");
+    return false;
+  }
+
+  log(
+    built === 0
+      ? "[ensure-wasm] no wasm pkg found — building"
+      : "[ensure-wasm] crates/ sources are newer than the built pkg — rebuilding",
+  );
+  runCommand("wasm-pack build crates/brink-web --target web --out-dir www/pkg", {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+  log("[ensure-wasm] rebuilt");
+  return true;
 }
 
-console.log(
-  built === 0
-    ? "[ensure-wasm] no wasm pkg found — building"
-    : "[ensure-wasm] crates/ sources are newer than the built pkg — rebuilding",
-);
-execSync("wasm-pack build crates/brink-web --target web --out-dir www/pkg", {
-  cwd: repoRoot,
-  stdio: "inherit",
-});
-console.log("[ensure-wasm] rebuilt");
+// Main-guard: `node scripts/ensure-wasm.mjs` (what the `dev` package script
+// runs, immediately before `ensure-cli-sidecar.mjs`) still does the whole
+// job, while `import`ing this module does nothing but hand over the
+// functions. The already-fresh case used to `process.exit(0)` here; falling
+// off the end of the guard exits 0 the same way, and a rebuild failure
+// still throws out of `execSync` and fails `dev`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  ensureWasm();
+}

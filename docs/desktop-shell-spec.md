@@ -58,7 +58,7 @@ anticipated implementation); every method maps directly:
 |---|---|---|
 | `listFiles()` | recursive dir walk | include `*.brink`, `*.ink`, `brink.toml`; skip dotfiles, `target/`, `node_modules/` |
 | `readFile` / `requestFile` | `fs.readTextFile` | `requestFile` returns null for paths outside the project root — never escape the opened folder |
-| `onFileChanged` | **buffer, don't write** | v1 keeps the studio's explicit-save model: dirty state lives in the editor; disk writes happen on `file.save`/`saveAll` via `requestSave`. Autosave is a later option, not a default |
+| `onFileChanged` | **buffer, don't write** | v1 keeps the studio's explicit-save model: dirty state lives in the editor; disk writes happen on `file.save`/`saveAll` via `requestSave`. Autosave ships unconditionally: a 2-minute ticker (120 s) dispatches `file.saveAll` whenever dirty files exist, queuing behind any write already in flight (#2403). The ticker is armed when a project opens and cleared on project close or reopen (not app lifetime; see `autosaveTimer` in `packages/brink-desktop/src/main.tsx`). A Settings surface can configure the interval in future versions; this is the intended extensibility point already noted in the code comment. This ticker is the production caller both #2435 and #2434's fixes exist to serve correctly |
 | `createFile` / `deleteFile` / `renameFile` | `fs.writeTextFile` / `remove` / `rename` | `renameFile` is implemented natively (atomic) — `ProjectSession.renameFile`'s create+delete fallback for a provider lacking `renameFile` is dead code on this provider, since it always implements it. The native move is **not the whole op**: it carries the file's bytes, but the rename computed the moved file's own outbound `INCLUDE` rewrites into the `newContent` the contract hands over, so the provider writes that content at the new path straight after the move (#2425). Without it, a cross-directory rename leaves disk holding the moved file's own pre-rewrite `INCLUDE` paths at the new location until some unrelated edit dirties it — invisible in the studio (the session is correct) and wrong for anything reading disk directly, e.g. `brink compile`. This write closes that gap only for the moved file's own content, so disk at the new path agrees with the session; a referrer's rewritten `INCLUDE` (a file that pointed at the old path) is an ordinary edit that goes through `applyEdit` → `onFileChanged` and stays staged under D2, landing on disk only at the next `requestSave` — until then, disk can still disagree with the session for those referrer files. The follow-up write goes through the same serialized staged-write path as a save; see the `requestSave` row below for what a rejection does and does not do |
 | `onExternalChange` | fs watcher on the project root | debounce; deliver `null` on delete; unsubscribe on teardown per the contract. This lights up the #320 conflict → kept-buffer → merge surface with a *real* watcher for the first time. A payload is **not always external**: `deleteFile`'s and `renameFile`'s own write-throughs echo back through the watcher too — a rename produces both a deletion echo (its old path) and a creation echo (its new path) — so self-write suppression (content match), self-delete suppression (a consumed-once `selfDeletes` marker keyed by path, #2404), and self-create suppression (a consumed-once `selfCreates` marker keyed by path, #2416) all run before a payload reaches the callback — only what survives all three is forwarded as genuinely external. **At most one marker is armed per path** (#2424): the watcher flushes at most one event per path per quiet window, so a marker armed while another is still outstanding could never be consumed — and an unconsumed `selfDeletes` goes on to swallow a genuinely external deletion. Every arming site therefore clears the other two kinds for that path, rather than leaving the outcome to whichever branch of `onExternalChange` checks first; a marker whose operation then rejects is disarmed too, since no echo will ever come for a write or delete that did not happen. `renameFile`'s follow-up content write is no exception: a rejection re-arms `selfCreates` for the destination path so the rename's own still-outstanding creation echo stays suppressed rather than reaching this callback with pre-rewrite bytes (#2438 review) |
 | `requestSave` | write staged content | the `staged` map fed by `onFileChanged` (D2 overlay model) is the source of what to write — the #154 egress batch feeds the backup ring instead, orthogonal to dirty. `staged` is a provider-internal write queue, distinct from studio dirty state (`StudioPublicState.dirtyFiles`, computed by `FileChangeHub` from session content vs. baseline): a rename's own `record(newPath, "created")` already marks the moved file dirty the moment the session updates, independent of whether the provider's own follow-up content write (#2425) later succeeds or is rejected. Calls are serialized (#2403): an overlapping caller (the autosave ticker, a quit-time `saveAll`) queues behind whatever write is already in flight rather than racing it against the same `staged` snapshot — as does `renameFile`'s own follow-up content write, which is a staged write like any other. Quit-time `saveAll` is not always a single overlapping call: `awaitSaveAllBeforeQuit` re-dispatches it on an interval while the dirty set persists (#2434), so a hung write can see several of its own redispatches queue up behind it one after another — this same serialization is what keeps each one from racing the write ahead of it. A rejected write of this kind is retried only by the next UNNARROWED `requestSave` (the autosave ticker, `saveAll`) — a `file.save` narrowed to a different, currently-focused path does not touch it, since a narrowed `writeStaged` only writes the paths it is given |
@@ -184,7 +184,7 @@ when the edit itself lives entirely in `packages/brink-studio`.
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Four properties of `desktop-smoke.yml` are asserted by tests in
+Three properties of `desktop-smoke.yml` are asserted by tests in
 `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
@@ -208,23 +208,56 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   `if:` text and that every prerequisite id it names still names a real
   step, since a stale id (e.g. from a renamed or `id:`-stripped setup step)
   reads as `steps.<id>.outcome == ''` and the guard is simply always false.
-- **The sidecar is staged, not shipped, in this lane.** `cargo build -p
-  brink-cli --release` runs only so `tauri-build`'s externalBin resolution
-  finds a file on disk; nothing here executes it, so the lane flattens the
-  release profile through `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` /
-  `_CODEGEN_UNITS` environment variables instead of paying for an optimized
-  binary. `ensure-cli-sidecar.mjs` carries no profile option of its own, so
-  every other caller still builds a real release sidecar.
-  (`desktop_smoke_flattens_the_sidecar_release_profile`)
+- **The sidecar is staged, not shipped, in this lane — and since #2469 not
+  even built.** A file has to exist on disk before `tauri-build`'s externalBin
+  resolution will let `cargo check` run, but nothing in this lane executes it
+  (`run_cli` is the sidecar's only caller and it needs a running app, not a
+  `cargo test`). The lane therefore sets `BRINK_SIDECAR_STUB: "1"`, which
+  makes `ensureCliSidecar` write a loudly-failing placeholder under the real
+  triple-suffixed name and skip `cargo build -p brink-cli --release`
+  altogether. It is an `env:` var rather than a step flag because the lane
+  runs the script twice — its own "Stage brink-cli sidecar" step and, nested,
+  `pnpm build`. This **replaces** PR #2446's
+  `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` / `_CODEGEN_UNITS` stopgap —
+  but that stopgap was job-wide, not scoped to the sidecar build, so it was
+  also flattening the "Build brink-web wasm package" step's `wasm-pack
+  build` (release by default, and this lane's largest build), not only the
+  sidecar build it was written to excuse. Removing the vars un-flattens
+  that wasm build too: the lane now deliberately runs a fully-optimised
+  `wasm-pack build`, rather than keep vars that would be dead configuration
+  for the (now-gone) sidecar build while still quietly de-optimising the
+  wasm one. The guard asserts the stub is wired **and** that the three
+  stopgap vars are gone, so the lane cannot drift back or carry both. Every
+  other caller — `pnpm --filter @brink/desktop build` on a developer
+  machine, where the sidecar really is shipped and run — still builds a
+  real release binary, since the option defaults to off.
+  (`desktop_smoke_stubs_the_staged_sidecar`)
 
-  The script does now export its logic — `ensureCliSidecar`, `hostTriple`,
-  `sidecarPaths` — behind an `import.meta.url === pathToFileURL(argv[1])`
-  main-guard, so `node scripts/ensure-cli-sidecar.mjs` (this lane's "Stage
-  brink-cli sidecar" step, and the `dev`/`build` package scripts) still does
-  the whole job while a test can call the pieces directly (#2452,
-  `src/__tests__/ensure-cli-sidecar.test.ts`). That seam is the prerequisite
-  the profile/stub-binary option would need; adding the option itself is
-  still open.
+### The `dev` preflight pair (#2452, #2468)
+
+`pnpm --filter @brink/desktop dev` runs `scripts/ensure-wasm.mjs` and then
+`scripts/ensure-cli-sidecar.mjs`. Both export their logic — `ensureWasm` /
+`newestSource`, and `ensureCliSidecar` / `hostTriple` / `sidecarPaths` /
+`STUB_SIDECAR` — behind an `import.meta.url === pathToFileURL(argv[1])`
+main-guard, take every input as an option defaulting to the real one, and
+route external commands (`wasm-pack`, `rustc`, `cargo`) through a single
+injectable `runCommand`. Running either script standalone still does the
+whole job; importing it does nothing but hand over the functions, so
+`src/__tests__/ensure-wasm.test.ts` and
+`src/__tests__/ensure-cli-sidecar.test.ts` drive the real decisions without
+a toolchain.
+
+Treat this as an invariant of the pair, not of one script: without the
+guard, an unguarded module runs its build as a side effect of being
+imported. `ensure-cli-sidecar.mjs`'s own red-first took 178s because the
+import ran `cargo build --release`; `ensure-wasm.mjs`'s failed outright,
+because its already-fresh path called `process.exit(0)` and killed the
+importing process. Each script's `describe("the main-guard")` block holds
+the two tests that pin it (inert on import; still acts when run
+standalone). A third preflight script gets the same treatment.
+
+The sidecar seam is also what made the stub option above testable — it was
+added (#2452) as a prerequisite and spent by #2469.
 
 ### CI coverage blind spots
 
