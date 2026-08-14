@@ -1,5 +1,18 @@
 # cargo-deny — supply-chain policy for the dependency graph.
-# Run locally with `cargo deny check`; CI enforces it (see .github/workflows/ci.yml).
+# Run locally with `cargo deny check`.
+#
+# ⚠ Governs TWO workspaces, not one: the root workspace's `Cargo.lock`
+# (enforced, required — `cargo-deny` job in .github/workflows/ci.yml) and
+# `packages/brink-desktop/src-tauri`'s excluded `Cargo.lock` (reported,
+# non-required — the "cargo-deny (src-tauri)" step in
+# .github/workflows/desktop-smoke.yml, #2470). One file so an accepted
+# advisory is recorded in exactly one place — but that also means an
+# `ignore` entry added for one graph is invisible to the other: it silences
+# nothing there and instead prints `warning[advisory-not-detected]` in that
+# job's run. This already happens today — RUSTSEC-2026-0192/0194/0195 below
+# are root-only ignores, and the src-tauri run reports that warning for all
+# three; the reverse will happen the day a src-tauri-only advisory is
+# ignored here.
 
 [advisories]
 # Fail on any security vulnerability (RUSTSEC). yanked crates are also rejected.
@@ -24,8 +37,14 @@ ignore = [
 ]
 
 [licenses]
-# Allowlist — every crate in the graph resolves to one of these (verified via
-# `cargo metadata`: 100% permissive, no copyleft obligations).
+# Allowlist — every crate in the ROOT workspace's graph resolves to one of
+# these (verified via `cargo metadata`: 100% permissive, no copyleft
+# obligations). NOT true of the src-tauri graph this file also governs: its
+# `cargo-deny (src-tauri)` run rejects 5 MPL-2.0 crates (cssparser,
+# cssparser-macros, dtoa-short, option-ext, selectors) against this same
+# allowlist. That step reports rather than blocks pending a maintainer
+# ruling — see desktop-smoke.yml and docs/desktop-shell-spec.md "Smoke-lane
+# inputs and step gating" — so the allowlist stays unchanged here.
 allow = [
     "MIT",
     "MIT-0",
