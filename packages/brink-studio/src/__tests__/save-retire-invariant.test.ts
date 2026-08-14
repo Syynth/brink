@@ -337,6 +337,25 @@ const SAVE_PATHS: SavePath[] = [
     retires: [TARGET],
   },
   {
+    // packages/brink-studio/src/file-commands.ts — file.save's OTHER retire
+    // door: the trivially-settled branch (`current === before`), taken when
+    // the write persists exactly what was staged with no mid-flight
+    // catch-up. Every other driver forces a divergence so the command falls
+    // through to the disk-confirmation branch instead — this scenario is
+    // the one that actually reaches the settled door, so the sweep covers
+    // both of `file.save`'s retire sites, not just one.
+    id: "file.save (settled)",
+    files: { [TARGET]: "v0" },
+    scenario: (world) => {
+      world.edit(TARGET, "a1");
+    },
+    run: async (world) => {
+      dispatchCommand(world, FILE_SAVE_COMMAND_ID, TARGET);
+      await settle();
+    },
+    retires: [TARGET],
+  },
+  {
     // packages/brink-studio/src/file-commands.ts — file.saveAll (#2426/#2447).
     id: "file.saveAll",
     files: { [TARGET]: "v0", [OTHER]: "v0" },
