@@ -1189,6 +1189,141 @@ mod tests {
             .max_by_key(|version| numeric_version(version))
     }
 
+    /// The highest version of `name` in `lock` whose compatibility unit is
+    /// ABOVE `unit`, or `None` when the lock carries nothing past it.
+    ///
+    /// `resolved_in_unit` returning `None` for the root's unit is ambiguous
+    /// on its own: it means either src-tauri hasn't caught up to a root
+    /// bump yet, or src-tauri already bumped past root's current
+    /// requirement. This distinguishes the two, so the caller can blame
+    /// whichever side actually hasn't moved.
+    fn resolved_above_unit(
+        lock: &[(String, String)],
+        name: &str,
+        unit: (u64, u64),
+    ) -> Option<String> {
+        lock.iter()
+            .filter(|(crate_name, _)| crate_name == name)
+            .filter_map(|(_, version)| {
+                let their_unit = compatibility_unit(version)?;
+                (their_unit > unit).then(|| version.clone())
+            })
+            .max_by_key(|version| numeric_version(version))
+    }
+
+    /// One dependency's drift check, pure and synthetic-data driven so it
+    /// is unit-testable without mutating real manifests/lockfiles.
+    /// `Err(message)` is exactly the panic message
+    /// `dependency_versions_track_the_root_workspace` should fail with;
+    /// `Ok(())` means `name` is in sync.
+    ///
+    /// `my_lock` carrying nothing in `unit` is ambiguous by itself: either
+    /// src-tauri hasn't caught up to a root bump yet, or src-tauri already
+    /// bumped past the version `unit` names and root hasn't caught up. This
+    /// checks `resolved_above_unit` first so the remediation blames
+    /// whichever side actually hasn't moved (PR #2462 review finding).
+    fn dependency_drift(
+        name: &str,
+        root_requirement: &str,
+        root_resolved: &str,
+        unit: (u64, u64),
+        my_lock: &[(String, String)],
+    ) -> Result<(), String> {
+        let Some(my_resolved) = resolved_in_unit(my_lock, name, unit) else {
+            if let Some(ahead) = resolved_above_unit(my_lock, name, unit) {
+                return Err(format!(
+                    "src-tauri's Cargo.lock already pins {name} {ahead}, ahead of the root \
+                     workspace's {root_requirement:?} requirement (resolved to \
+                     {root_resolved}) — src-tauri is ahead here. Bump {name} in the root \
+                     workspace's Cargo.toml instead."
+                ));
+            }
+            return Err(format!(
+                "the root workspace declares {name} {root_requirement:?} and resolves it to \
+                 {root_resolved}, but src-tauri's Cargo.lock carries no compatible version — \
+                 the root's major bump never propagated across the workspace fence. Bump \
+                 {name} in src-tauri/Cargo.toml as well."
+            ));
+        };
+
+        if numeric_version(&my_resolved) < numeric_version(root_resolved) {
+            return Err(format!(
+                "src-tauri's Cargo.lock pins {name} {my_resolved}, behind the root \
+                 workspace's {root_resolved}. Its excluded workspace does not follow root \
+                 bumps on its own — run `cargo update -p {name}` in src-tauri."
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every `[dependencies]`/`[build-dependencies]` entry `my_deps`
+    /// declares that root's `[workspace.dependencies]` also declares — the
+    /// deliberate overlap, where a root bump is meant to propagate. (Not
+    /// first-party crates: #2451's body names `brink-runtime`/
+    /// `brink-format`, but `src-tauri` depends on no workspace crate at
+    /// all — it reaches the compiler only through the `brink-cli` sidecar
+    /// binary. Its lock holds exactly one `brink-*` package, itself.)
+    /// Transitive crates are out of scope because the two graphs
+    /// legitimately resolve differently; see the `toml` divergence
+    /// recorded on #2451.
+    ///
+    /// `Ok(names)` on success; `Err(message)` on the first drift found OR
+    /// when a root value in the overlap could not be parsed as a version
+    /// requirement — the latter used to `continue` past silently, quietly
+    /// shrinking the checked set instead of failing (PR #2462 review
+    /// finding). Pure and synthetic-data driven so both branches are
+    /// unit-testable without mutating real manifests/lockfiles; see
+    /// `dependency_versions_track_the_root_workspace`, which drives this
+    /// over the real root/src-tauri manifests and locks.
+    fn overlap_drift_check(
+        root_deps: &[(String, String)],
+        my_deps: &[(String, String)],
+        root_lock: &[(String, String)],
+        my_lock: &[(String, String)],
+    ) -> Result<Vec<String>, String> {
+        let mut checked = Vec::new();
+        let mut unparsed_root_values = Vec::new();
+
+        for (name, my_value) in my_deps {
+            let Some((_, root_value)) = root_deps.iter().find(|(dep, _)| dep == name) else {
+                continue;
+            };
+            let Some(root_requirement) = version_requirement(root_value) else {
+                unparsed_root_values.push(format!("{name} (root value {root_value:?})"));
+                continue;
+            };
+            if version_requirement(my_value).is_none() {
+                return Err(format!(
+                    "{name} is declared in both manifests, so this one should name a \
+                     version requirement; it reads {my_value:?}"
+                ));
+            }
+            let Some(unit) = compatibility_unit(root_requirement) else {
+                continue;
+            };
+
+            let Some(root_resolved) = resolved_in_unit(root_lock, name, unit) else {
+                return Err(format!(
+                    "root Cargo.lock has no {name} compatible with the {root_requirement:?} \
+                     it declares — the root lock is itself stale"
+                ));
+            };
+
+            dependency_drift(name, root_requirement, &root_resolved, unit, my_lock)?;
+            checked.push(name.clone());
+        }
+
+        if !unparsed_root_values.is_empty() {
+            return Err(format!(
+                "these dependencies are declared by both manifests but this test could not \
+                 parse their root [workspace.dependencies] version requirement, so they \
+                 would have silently skipped the drift check: {unparsed_root_values:?}"
+            ));
+        }
+
+        Ok(checked)
+    }
+
     /// This crate's own workspace means its own `Cargo.lock` (#2451), and
     /// `cargo test --locked` in the smoke lane only proves that lock is
     /// internally consistent with the `Cargo.toml` NEXT TO IT — never that
@@ -1196,20 +1331,6 @@ mod tests {
     /// `desktop-smoke.yml`'s path filter so a root `Cargo.toml`/`Cargo.lock`
     /// bump at least RUNS this lane; this is the assertion inside it that
     /// the widened filter had nothing to trigger.
-    ///
-    /// Scope is the crates BOTH manifests declare — the deliberate overlap,
-    /// where a root bump is meant to propagate. (Not first-party crates:
-    /// #2451's body names `brink-runtime`/`brink-format`, but `src-tauri`
-    /// depends on no workspace crate at all — it reaches the compiler only
-    /// through the `brink-cli` sidecar binary. Its lock holds exactly one
-    /// `brink-*` package, itself.) Transitive crates are out of scope
-    /// because the two graphs legitimately resolve differently; see the
-    /// `toml` divergence recorded on #2451.
-    ///
-    /// Two ways to fail, both real drift: root moves to a version this lock
-    /// is BEHIND (fix: `cargo update -p <crate>` here), or root moves to a
-    /// new major this lock has no copy of at all (fix: bump the requirement
-    /// in this crate's `Cargo.toml` too).
     #[test]
     fn dependency_versions_track_the_root_workspace() {
         let root_manifest = repo_root().join("Cargo.toml");
@@ -1236,49 +1357,13 @@ mod tests {
         let mut my_deps = manifest_table(&mine, "[dependencies]");
         my_deps.extend(manifest_table(&mine, "[build-dependencies]"));
 
-        let mut checked = Vec::new();
-        for (name, my_value) in &my_deps {
-            let Some((_, root_value)) = root_deps.iter().find(|(dep, _)| dep == name) else {
-                continue;
-            };
-            let Some(root_requirement) = version_requirement(root_value) else {
-                continue;
-            };
-            assert!(
-                version_requirement(my_value).is_some(),
-                "{name} is declared in both manifests, so this one should name a version \
-                 requirement; it reads {my_value:?}"
-            );
-            let Some(unit) = compatibility_unit(root_requirement) else {
-                continue;
-            };
-
-            let root_resolved = resolved_in_unit(&root_lock, name, unit);
-            assert!(
-                root_resolved.is_some(),
-                "root Cargo.lock has no {name} compatible with the {root_requirement:?} it \
-                 declares — the root lock is itself stale"
-            );
-            let root_resolved = root_resolved.expect("just asserted the root lock resolves it");
-
-            let my_resolved = resolved_in_unit(&my_lock, name, unit);
-            assert!(
-                my_resolved.is_some(),
-                "the root workspace declares {name} {root_requirement:?} and resolves it to \
-                 {root_resolved}, but src-tauri's Cargo.lock carries no compatible version — \
-                 the root's major bump never propagated across the workspace fence. Bump \
-                 {name} in src-tauri/Cargo.toml as well."
-            );
-            let my_resolved = my_resolved.expect("just asserted this lock resolves it");
-
-            assert!(
-                numeric_version(&my_resolved) >= numeric_version(&root_resolved),
-                "src-tauri's Cargo.lock pins {name} {my_resolved}, behind the root \
-                 workspace's {root_resolved}. Its excluded workspace does not follow root \
-                 bumps on its own — run `cargo update -p {name}` in src-tauri."
-            );
-            checked.push(name.clone());
-        }
+        let result = overlap_drift_check(&root_deps, &my_deps, &root_lock, &my_lock);
+        assert!(
+            result.is_ok(),
+            "{}",
+            result.as_ref().err().cloned().unwrap_or_default()
+        );
+        let checked = result.expect("just asserted the drift check succeeded");
 
         assert!(
             !checked.is_empty(),
@@ -1286,6 +1371,75 @@ mod tests {
              [workspace.dependencies] and src-tauri's — either the overlap really is empty \
              (then this test is dead and should say so) or one of the two tables stopped \
              parsing"
+        );
+    }
+
+    /// Reproduces the PR #2462 review finding directly: with src-tauri at
+    /// `thiserror = "3"` / lock 3.0.0 and root still `"2"` / 2.0.18, the
+    /// old code asserted `resolved_in_unit(&my_lock, "thiserror", (2, 0))`
+    /// was `Some` and always failed with the "root's major bump never
+    /// propagated" message — even though no root bump happened and
+    /// src-tauri is the side that is ahead.
+    #[test]
+    fn dependency_drift_blames_root_when_src_tauri_is_already_ahead() {
+        let my_lock = [("thiserror".to_owned(), "3.0.0".to_owned())];
+        let err = dependency_drift("thiserror", "\"2\"", "2.0.18", (2, 0), &my_lock)
+            .expect_err("src-tauri's lock has no 2.x thiserror to compare against root's unit");
+        assert!(
+            err.contains("src-tauri is ahead here"),
+            "expected the root-side remediation, got: {err}"
+        );
+        assert!(
+            err.contains("Bump thiserror in the root workspace's Cargo.toml instead"),
+            "expected the root-side remediation, got: {err}"
+        );
+    }
+
+    /// The companion case: src-tauri really hasn't caught up to a root
+    /// bump, so the original "bump src-tauri" remediation is the correct
+    /// one and must still fire.
+    #[test]
+    fn dependency_drift_blames_src_tauri_when_it_has_not_caught_up() {
+        let my_lock = [("thiserror".to_owned(), "2.0.18".to_owned())];
+        let err = dependency_drift("thiserror", "\"3\"", "3.0.0", (3, 0), &my_lock)
+            .expect_err("src-tauri's lock has no 3.x thiserror yet");
+        assert!(
+            err.contains("Bump thiserror in src-tauri/Cargo.toml as well"),
+            "expected the src-tauri-side remediation, got: {err}"
+        );
+    }
+
+    /// Reproduces the PR #2462 review finding directly: reformatting a
+    /// root `[workspace.dependencies]` entry so `version_requirement` can't
+    /// parse it (here, a dependency with no `version` key at all) used to
+    /// just `continue` past it, shrinking `checked` with no failure.
+    #[test]
+    fn overlap_drift_check_fails_on_an_unparsed_root_value_instead_of_dropping_it() {
+        let root_deps = [
+            (
+                "serde".to_owned(),
+                "{ git = \"https://example.com/serde\" }".to_owned(),
+            ),
+            ("thiserror".to_owned(), "\"2\"".to_owned()),
+        ];
+        let my_deps = [
+            ("serde".to_owned(), "\"1\"".to_owned()),
+            ("thiserror".to_owned(), "\"2\"".to_owned()),
+        ];
+        let root_lock = [
+            ("serde".to_owned(), "1.0.228".to_owned()),
+            ("thiserror".to_owned(), "2.0.18".to_owned()),
+        ];
+        let my_lock = [
+            ("serde".to_owned(), "1.0.229".to_owned()),
+            ("thiserror".to_owned(), "2.0.19".to_owned()),
+        ];
+
+        let err = overlap_drift_check(&root_deps, &my_deps, &root_lock, &my_lock)
+            .expect_err("serde's root value has no `version` key for version_requirement to find");
+        assert!(
+            err.contains("serde"),
+            "expected the failure to name the dropped dependency, got: {err}"
         );
     }
 
