@@ -3304,64 +3304,94 @@ mod tests {
 
     #[test]
     fn native_folding_ranges_with_nested_structure() {
-        // #2436: Regression coverage for native folding routing when parsing
-        // real nested structures (nested conditionals/choices), not just
-        // block comments. Ink and native grammars diverge on how they parse
-        // nested blocks — this fixture ensures folding ranges are computed
-        // from the native CST and land on the correct structural boundaries.
+        // #2436: extends `native_folding_ranges_reach_the_native_cst_path`
+        // (above) from a block-comment fixture to a genuinely nested `.brink`
+        // structure — a `flow` nested inside a `flow` (the native charter's
+        // stitch equivalent, `FLOW_DECL`'s doc comment, §4), mixing
+        // machinery (`var` decls) and narrative (dialogue) runs at two
+        // nesting depths plus a block comment inside the nested flow. Every
+        // assertion below is on a concrete `kind`/`start_line`/`end_line`,
+        // decoded back onto the fixture's own source text, rather than the
+        // "non-empty, boundaries merely well-formed" shape the prior version
+        // of this test used.
         //
-        // The fixture has a flow with nested conditionals: decoding the
-        // folding ranges back onto source lines and asserting fold boundaries
-        // prove the native parse was used rather than an ink mis-parse.
+        // Honest limitation, checked rather than assumed: this fold-run pass
+        // (`fold_runs_enabled`'s `machinery_and_narrative_folds`) does *not*
+        // itself discriminate `syntax_root_native` vs `syntax_root` for this
+        // fixture (or the block-comment-only fixture the sibling test above
+        // uses) — forcing `folding_ranges_impl`'s `is_native` branch to the
+        // ink `syntax_root` arm and rerunning both tests produced
+        // byte-identical JSON output, then restored. That's expected, not a
+        // gap this test can close: structural/machinery/narrative
+        // classification here is driven by `IdeSession::projection` (already
+        // `is_native`-dispatched independently via `lowered_query`), and
+        // `BLOCK_COMMENT` token ranges are lexer-level facts identical under
+        // either grammar (`crate::trivia::mark_block_comment`'s doc — "no
+        // dependency on which CST the token came from"). The prior adversarial
+        // review on PR #2358 reached the same conclusion for this exact call
+        // site (`gate_folding_decodes_onto_real_native_line_numbers`'s doc
+        // comment, `crates/brink-web/src/editor/acceptance_gate.rs`): "even
+        // that test cannot prove the routing changes output — only that the
+        // wasm-facing entry point reaches the native path without erroring."
+        // This test's value is exactly that: real end-to-end reachability
+        // over a genuinely nested fixture, with boundaries pinned to exact
+        // source lines instead of merely asserted non-empty.
         let mut s = EditorSession::new();
         s.set_fold_runs_enabled(true);
-        s.update_file(
-            "main.brink",
-            "flow main() {\n  \
-             if (true) {\n    \
-             Hello from if.\n  \
+        let source = "flow main() {\n  \
+             var mood = 0\n  \
+             var gold = 7\n  \
+             Hello there, friend.\n  \
+             Nice weather today.\n  \
+             flow tally() {\n    \
+             /* the tally\n       \
+             flow's own note */\n    \
+             Mood is {mood}, gold is {gold}.\n    \
+             Thanks for playing.\n    \
+             -> END\n  \
              }\n  \
-             else {\n    \
-             Hello from else.\n  \
-             }\n  \
-             -> END\n\
-             }\n",
-        );
+             -> tally\n\
+             }\n";
+        s.update_file("main.brink", source);
         assert!(s.set_active_file("main.brink"));
+        let src_lines: Vec<&str> = source.split('\n').collect();
 
         let ranges = json(&s.folding_ranges());
         let array = ranges.as_array().expect("array");
 
-        // Structural folds for the if/else blocks should be present.
-        // The exact boundaries depend on how the native grammar structures
-        // the conditional — verify that we get structural folds on the
-        // native syntax's nesting, not ink's mis-parse of the same text.
-        let structural_folds: Vec<_> = array.iter().filter(|r| r["kind"] == "structural").collect();
-
-        // We expect at least two structural folds: the flow body and
-        // conditional blocks. More importantly, the ranges should map
-        // to the correct lines when decoded back onto the source.
+        // The two top-level `var` decls (lines 1-2) fold as one machinery
+        // run, same as the block-comment-fixture test above but now
+        // alongside real narrative/structural neighbours instead of alone.
         assert!(
-            !structural_folds.is_empty(),
-            "nested structure must produce structural folds: {ranges}"
+            array
+                .iter()
+                .any(|r| r["kind"] == "machinery" && r["start_line"] == 1 && r["end_line"] == 2),
+            "expected a machinery fold at lines 1-2: {ranges}"
         );
+        assert_eq!(src_lines[1].trim(), "var mood = 0");
+        assert_eq!(src_lines[2].trim(), "var gold = 7");
 
-        // Verify ranges are valid by decoding them back onto source lines.
-        // Each range has "start_line" and "end_line" (0-indexed line numbers).
-        // All ranges must have valid, ordered boundaries.
-        for fold in structural_folds {
-            let start = fold["start_line"].as_i64().expect("start_line is a number");
-            let end = fold["end_line"].as_i64().expect("end_line is a number");
-            assert!(
-                start < end,
-                "fold boundaries must be ordered; got start={start}, end={end}: {fold}"
-            );
-            // Source has 9 lines (0-indexed: 0-8), so end must be <= 8.
-            assert!(
-                end <= 8,
-                "end_line {end} exceeds source line count in fold: {fold}"
-            );
-        }
+        // The outer flow's two dialogue lines (3-4) fold as a narrative run.
+        assert!(
+            array
+                .iter()
+                .any(|r| r["kind"] == "narrative" && r["start_line"] == 3 && r["end_line"] == 4),
+            "expected a narrative fold at lines 3-4 for the outer flow's dialogue: {ranges}"
+        );
+        assert_eq!(src_lines[3].trim(), "Hello there, friend.");
+        assert_eq!(src_lines[4].trim(), "Nice weather today.");
+
+        // The nested `flow tally()` (a stitch) has its own dialogue lines,
+        // one nesting level deeper, past its own block comment (lines 6-7)
+        // — a second, independent narrative run at lines 8-9.
+        assert!(
+            array
+                .iter()
+                .any(|r| r["kind"] == "narrative" && r["start_line"] == 8 && r["end_line"] == 9),
+            "expected a narrative fold at lines 8-9 inside the nested flow: {ranges}"
+        );
+        assert_eq!(src_lines[8].trim(), "Mood is {mood}, gold is {gold}.");
+        assert_eq!(src_lines[9].trim(), "Thanks for playing.");
     }
 
     // ── #2291/#2359: inlay hints / color hints / argument widgets now route
