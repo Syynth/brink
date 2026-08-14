@@ -57,7 +57,9 @@ jobs:
           version: v0.14.0
 
       # The @brink-lang/web package is a file: dependency on the wasm-pack
-      # output, so the bundle must be built BEFORE `pnpm install` can link it.
+      # output, so the bundle must be built BEFORE `pnpm install` can link it
+      # (#2479). `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+      # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) enforces that ordering.
       - name: Build brink-web wasm package
         run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
 

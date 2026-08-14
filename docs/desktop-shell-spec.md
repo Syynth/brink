@@ -191,16 +191,19 @@ when the edit itself lives entirely in `packages/brink-studio`.
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Four properties of `desktop-smoke.yml` are asserted by tests in
+Five properties of `desktop-smoke.yml` are asserted by tests in
 `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
   job**, not just the trees it checks: `pnpm-lock.yaml`, root `Cargo.toml`/
-  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml` and `ci.yml` on top of
-  the package/crate globs. Without them a lockfile, sidecar-dependency or
-  root-lint-policy change ran this lane only on the post-merge push to
-  `main` — including the two `*_matches_the_root_workspace` drift tests,
-  which could not fail the PR that caused the drift.
+  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml`, `ci.yml` and (#2504)
+  the `.github/workflows/**` glob on top of the package/crate globs — the
+  individual `ci.yml` entry alone left a reordered `npm-release.yml`, or a
+  brand-new workflow file, free to skip this lane on the PR that broke it.
+  Without these a lockfile, sidecar-dependency or root-lint-policy change
+  ran this lane only on the post-merge push to `main` — including the two
+  `*_matches_the_root_workspace` drift tests, which could not fail the PR
+  that caused the drift.
   (`desktop_smoke_path_filter_covers_its_shared_inputs`) `crates/brink-cli/**`
   was one of those crate globs until #2477: once `BRINK_SIDECAR_STUB` (below)
   made the sidecar step a placeholder, nothing left in the lane read
@@ -291,6 +294,27 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   the claim that stays true; a wall-clock figure would also have to count
   the advisory-DB fetch and the entrypoint's own `rustup show`/toolchain
   step, which the ~2s metadata-resolution number does not.
+- **Every `pnpm install --frozen-lockfile` step, in every job in every
+  `.github/workflows/*.yml` file, is preceded by a `wasm-pack build
+  crates/brink-web` step in the same job** (#2504, follow-up to
+  #2479/#2492). `pnpm install --frozen-lockfile` exits 0 even when the
+  `file:` link from `@brink-lang/web` to `crates/brink-web/www/pkg`
+  silently failed to resolve, so a future reorder — or a new lane adding
+  the install step without the wasm build first — would otherwise re-open
+  #2479 with nothing catching it. The walk enumerates every job in every
+  workflow file from disk, not a hard-coded list of the four known lanes,
+  and separately pins the exact set of `pnpm install`-prefixed lanes found
+  today (`ci.yml`'s `frontend` and `e2e`, `desktop-smoke.yml`'s own job,
+  `npm-release.yml`'s `release`), so a fifth lane — correctly ordered or
+  not — has to be added to that list on purpose. `ci.yml`'s `book` job's
+  plain `npm install --no-audit --no-fund` is this guard's one declared,
+  pinned exemption (a different command, against its own lockfile, with no
+  `file:` dependency on the wasm-pack output); `benchmarks-inkjs.yml`'s
+  `inkjs-gate` job's `npm ci` is out of scope for the same reason but is
+  not separately pinned — the guard's own exact-list assertion already
+  rejects a silent rename there too.
+  (`every_pnpm_install_lane_builds_wasm_first_in_the_same_job`,
+  `book_job_install_is_a_plain_npm_install_not_a_pnpm_lane`)
 
 ### The `dev` preflight pair (#2452, #2468)
 
