@@ -29,8 +29,10 @@ on:
       # Inputs outside those trees that still break this job (#2418 gap 2).
       # Without them a breaking change runs this lane only on the post-merge
       # push to `main`, after the break has landed: the lockfile feeds
-      # `pnpm install --frozen-lockfile`; the root manifest, lockfile and
-      # toolchain pin feed the cross-workspace `brink-cli` sidecar build;
+      # `pnpm install --frozen-lockfile`; the toolchain pin still selects the
+      # rustc this lane's `cargo check`/`clippy`/`test` run under (it used to
+      # also feed the cross-workspace `brink-cli` sidecar build, which
+      # `BRINK_SIDECAR_STUB` removed — #2469);
       # root `Cargo.toml`/`clippy.toml` are what src-tauri's two
       # `*_matches_the_root_workspace` tests compare its copies against
       # (#2415/#2422), which otherwise cannot fail the PR that causes the
