@@ -46,4 +46,63 @@ describe("awaitSaveAllBeforeQuit", () => {
     expect(elapsed).toBeLessThan(1000);
     expect(api.dispatch).toHaveBeenCalledTimes(1);
   });
+
+  // ── #2434: a mid-write edit (#2426/#2431) that correctly stays dirty
+  // after the first `file.saveAll` settles must not just sit there until
+  // the cap burns out — a redispatch has to actually pick it up ──
+
+  it("re-dispatches file.saveAll when the dirty set persists past the redispatch interval", async () => {
+    // Models a path staying dirty for a while after the first `file.saveAll`
+    // settles (the #2426 stale-mid-write-edit case), then clearing once a
+    // second write (the redispatch) picks up the current content.
+    const dirtySequence: string[][] = [];
+    for (let i = 0; i < 10; i += 1) dirtySequence.push(["a.ink"]);
+    dirtySequence.push([]);
+    const api = stubApi(dirtySequence);
+    await awaitSaveAllBeforeQuit(api, 3000, 5, 20);
+    // First dispatch (unconditional) plus at least one redispatch once the
+    // dirty set outlived the redispatch interval.
+    expect(api.dispatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(api.dispatch).toHaveBeenCalledWith("file.saveAll");
+    expect(api.getDirtyFiles()).toEqual([]);
+  });
+
+  it("a mid-write edit reaches disk via a re-dispatched file.saveAll", async () => {
+    // A fuller double modeling the file-commands.ts save discipline
+    // (#2426/#2431): dispatching "file.saveAll" snapshots the current
+    // content and, after `writeDelayMs`, writes that snapshot to `disk` —
+    // clearing dirty only if nothing edited the content in the meantime.
+    // This lets the assertion check the actual "disk" the edit reaches,
+    // not an internal dirty flag (house rule: assert what the consumer
+    // receives).
+    const path = "story.ink";
+    const disk = new Map<string, string>();
+    let content = "v1";
+    let dirty = true;
+    const writeDelayMs = 40;
+    const dispatch = vi.fn((commandId: string): boolean => {
+      if (commandId !== "file.saveAll") return false;
+      const before = content;
+      dirty = true;
+      setTimeout(() => {
+        disk.set(path, before);
+        if (content === before) dirty = false;
+      }, writeDelayMs);
+      return true;
+    });
+    const api: QuitSaveApi = { dispatch, getDirtyFiles: () => (dirty ? [path] : []) };
+
+    const quitDone = awaitSaveAllBeforeQuit(api, 1000, 5, 20);
+    // The mid-write edit: lands well before the first write (40ms) settles,
+    // and before the redispatch interval (20ms) elapses again.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    content = "v2";
+
+    await quitDone;
+
+    // The edit must have actually reached disk, not just have flipped a
+    // flag back to clean.
+    expect(disk.get(path)).toBe("v2");
+    expect(dirty).toBe(false);
+  });
 });
