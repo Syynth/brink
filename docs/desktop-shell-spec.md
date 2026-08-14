@@ -177,9 +177,18 @@ Four properties of `desktop-smoke.yml` are asserted by tests in
   finds a file on disk; nothing here executes it, so the lane flattens the
   release profile through `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` /
   `_CODEGEN_UNITS` environment variables instead of paying for an optimized
-  binary. `ensure-cli-sidecar.mjs` is unchanged, so every other caller
-  still builds a real release sidecar.
+  binary. `ensure-cli-sidecar.mjs` carries no profile option of its own, so
+  every other caller still builds a real release sidecar.
   (`desktop_smoke_flattens_the_sidecar_release_profile`)
+
+  The script does now export its logic — `ensureCliSidecar`, `hostTriple`,
+  `sidecarPaths` — behind an `import.meta.url === pathToFileURL(argv[1])`
+  main-guard, so `node scripts/ensure-cli-sidecar.mjs` (this lane's "Stage
+  brink-cli sidecar" step, and the `dev`/`build` package scripts) still does
+  the whole job while a test can call the pieces directly (#2452,
+  `src/__tests__/ensure-cli-sidecar.test.ts`). That seam is the prerequisite
+  the profile/stub-binary option would need; adding the option itself is
+  still open.
 
 ### CI coverage blind spots
 
