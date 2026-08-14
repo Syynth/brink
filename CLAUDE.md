@@ -191,7 +191,7 @@ cargo test -p brink-test-harness --test tier1_native_strict   # strict-findings 
 cargo test -p brink-test-harness --test environment_parallel_gate
 
 # Frontend
-pnpm --filter @brink-lang/studio test          # vitest (the largest suite)
+pnpm --filter @brink-lang/studio test          # vitest (the largest suite; also needs the wasm pkg built, #2464)
 pnpm --filter @brink/desktop test              # desktop shell (needs the wasm pkg built)
 wasm-pack build crates/brink-web --target web --out-dir www/pkg   # rebuild wasm the frontend serves
 

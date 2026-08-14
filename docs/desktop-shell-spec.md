@@ -153,12 +153,19 @@ standing spans packages: `DESKTOP_ALIASES` is meant to mirror
 `packages/brink-studio`'s own alias map — the "playground" — and until
 #2450 that mirroring was an honour-system claim in a comment, checked by
 nothing. `src/__tests__/playground-alias-parity.test.ts` now compares this
-package's map against the playground's four hand-maintained copies —
+package's map against the playground's five hand-maintained copies —
 `vite.config.ts` (both `serve` and `build`), `vite.config.embed.ts`,
-`vitest.config.ts` and `tsconfig.json`'s `paths` — and fails on divergence.
-It loads the playground's config modules by calling their exported
-factories rather than scraping their text, so it compares what vite would
-actually resolve.
+`vitest.config.ts`, `tsconfig.json`'s `paths` and `tsconfig.build.json`'s
+`paths` (the last against the narrower `DTS_ROLLUP_EXCLUDES` expectation) —
+and fails on divergence. It loads the playground's config modules by calling
+their exported factories rather than scraping their text, so it compares what
+vite would actually resolve.
+
+Since #2464 the playground owns the same copies from its own side, against
+`packages/brink-studio/alias-map.ts` (`docs/brink-studio-spec.md` § "One
+alias map, owned by this package"). That does not make this guard redundant:
+a studio-side test can only see the studio's copies, so the relationship
+between the two packages' maps is still checked only here.
 
 The two maps are not required to be identical, and the guard names each
 exception rather than treating a mismatch as automatic drift:

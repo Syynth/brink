@@ -11,10 +11,13 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
-    // Guarded against packages/brink-desktop/alias-map.ts by
+    // A copy of ./alias-map.ts's studioTsconfigPaths() — JSON cannot import,
+    // so this is the one shape that stays hand-maintained. Guarded from
+    // inside this package by src/__tests__/alias-map.test.ts (#2464), and
+    // against packages/brink-desktop/alias-map.ts by
     // packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts
     // (#2450) — an entry added, removed, or repointed here without a
-    // matching update there turns that suite red.
+    // matching update turns both suites red.
     "paths": {
       "brink-web": ["../../crates/brink-web/www/pkg"],
       "@brink/wasm-types": ["../wasm-types/src/index.ts"],

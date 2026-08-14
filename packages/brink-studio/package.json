@@ -48,7 +48,7 @@
     "build:embed": "vite build --config vite.config.embed.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "prepack": "pnpm run build"
   },
   "dependencies": {
@@ -74,6 +74,7 @@
     "@codemirror/view": "^6.36.5",
     "@lezer/highlight": "^1.2.1",
     "@playwright/test": "^1.58.2",
+    "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
