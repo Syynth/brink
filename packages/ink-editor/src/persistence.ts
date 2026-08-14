@@ -218,6 +218,12 @@ export class OverlayPersistence {
     // on since its content was written (an edit landed mid-write, or while
     // a later path in this same batch was still being awaited) must stay
     // dirty — its new content was never persisted (#2417).
+    //
+    // ⚠ This read and the `markFilesSaved` below are ONE synchronous step —
+    // no `await` may be introduced between them (docs/embedder-api.md
+    // "Dirty state", "Confirm and retire in ONE synchronous step"; pinned
+    // for every save path by
+    // packages/brink-studio/src/__tests__/save-retire-invariant.test.ts).
     const current = this.session.getFiles();
     const saved = [...written.keys()].filter((path) => current[path] === written.get(path));
     if (saved.length > 0) this.session.markFilesSaved(saved);
