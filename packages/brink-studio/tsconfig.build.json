@@ -1,14 +1,31 @@
 {
-  // Used by vite-plugin-dts (vite.config.ts) for the published d.ts rollup.
+  // Used by tsup (tsup.config.ts, `tsconfig: "tsconfig.build.json"`) for the
+  // published d.ts rollup, dist/index.d.ts. The `build` script runs it after
+  // `vite build`; vite emits no declarations and this repo has no
+  // vite-plugin-dts, which an earlier version of this comment claimed
+  // (#2465).
+  //
   // Identical to tsconfig.json EXCEPT: no path mapping for @brink-lang/web
-  // or brink-web (packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts's
-  // DTS_ROLLUP_EXCLUDES). @brink-lang/web resolves through node_modules to
-  // packages/wasm/dist/index.d.ts instead, and the rollup keeps it as an
-  // external import (inlining it would duplicate its classes, which are
-  // nominally typed via private fields). brink-web has no mapping because
-  // src/index.ts — the entry this rollup type-checks — never imports that
-  // specifier directly; only @brink-lang/web's wrapper does. Requires
-  // `pnpm --filter @brink-lang/web build` to have run first.
+  // or brink-web — the pair ./alias-map.ts exports as DTS_ROLLUP_EXCLUDES,
+  // dropped for two different reasons:
+  //
+  //   - @brink-lang/web resolves through node_modules to
+  //     packages/wasm/dist/index.d.ts instead, so the rollup keeps it as an
+  //     external import (inlining it would duplicate its classes, which are
+  //     nominally typed via private fields). Requires
+  //     `pnpm --filter @brink-lang/web build` to have run first.
+  //   - brink-web needs no mapping because src/index.ts — the entry this
+  //     rollup type-checks — never imports that specifier; only
+  //     packages/wasm/src/index.ts does, and that source file is outside the
+  //     rollup's program precisely because of the exclusion above. Verified
+  //     rather than assumed (#2465): adding the mapping back and re-running
+  //     tsup emits a byte-identical dist/index.d.ts, so the omission costs
+  //     the published surface nothing.
+  //
+  // Guarded from inside this package by src/__tests__/alias-map.test.ts
+  // (#2464) and across packages by
+  // packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts
+  // (#2450).
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {

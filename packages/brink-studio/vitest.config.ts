@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import { resolve } from "path";
+import { studioPackageAliases, studioTestWasmAliases } from "./alias-map";
 
 export default defineConfig({
   test: {
@@ -11,22 +11,17 @@ export default defineConfig({
     css: true,
   },
   resolve: {
-    // Guarded against packages/brink-desktop/alias-map.ts by
+    // Guarded from inside this package by src/__tests__/alias-map.test.ts
+    // (#2464), and against packages/brink-desktop/alias-map.ts by
     // packages/brink-desktop/src/__tests__/playground-alias-parity.test.ts
-    // (#2450) — an alias added, removed, or repointed here without a
-    // matching update there turns that suite red. brink-web is the one
-    // named exception: it stays mocked here, unlike the desktop package's
-    // own vitest suite, which resolves the real wasm-bindgen glue on
-    // purpose.
+    // (#2450) — an alias added, removed, or repointed without a matching
+    // update on the other side turns both suites red. brink-web is the one
+    // named exception: `studioTestWasmAliases` repoints it at this package's
+    // jsdom mock, unlike the desktop package's own vitest suite, which
+    // resolves the real wasm-bindgen glue on purpose.
     alias: {
-      "brink-web": resolve(__dirname, "src/__mocks__/brink-web.ts"),
-      "@brink/wasm-types": resolve(__dirname, "../wasm-types/src/index.ts"),
-      "@brink-lang/web": resolve(__dirname, "../wasm/src/index.ts"),
-      "@brink/ink-operations": resolve(__dirname, "../ink-operations/src/index.ts"),
-      "@brink-lang/editor": resolve(__dirname, "../ink-editor/src/index.ts"),
-      "@brink/studio-shell": resolve(__dirname, "../studio-shell/src/index.ts"),
-      "@brink/studio-store": resolve(__dirname, "../studio-store/src/index.ts"),
-      "@brink/studio-ui": resolve(__dirname, "../studio-ui/src/index.ts"),
+      ...studioTestWasmAliases(__dirname),
+      ...studioPackageAliases(__dirname),
     },
   },
 });
