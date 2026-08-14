@@ -25,6 +25,12 @@
 // ⚠ The guard is an invariant of the PAIR, not of one script: see
 // docs/desktop-shell-spec.md "The `dev` preflight pair", and
 // src/__tests__/ensure-wasm.test.ts's `describe("the main-guard")`.
+//
+// It is an invariant of the DIRECTORY too (#2478):
+// src/__tests__/scripts-main-guard.test.ts scans every
+// packages/brink-desktop/scripts/*.mjs rather than naming files, so a third
+// preflight script is checked the moment it lands. Removing the guard line
+// below fails that scan as well as this script's own tests.
 
 import { execSync } from "node:child_process";
 import { readdirSync, statSync, existsSync } from "node:fs";
