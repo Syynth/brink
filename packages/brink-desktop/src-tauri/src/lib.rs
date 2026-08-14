@@ -1555,6 +1555,12 @@ mod tests {
             "rust-toolchain.toml",
             ".github/workflows/ci.yml",
             ".github/workflows/desktop-smoke.yml",
+            // #2504: the individual entries above are not enough — a
+            // reordered npm-release.yml, or a brand-new workflow file
+            // adding a `pnpm install --frozen-lockfile` lane, would
+            // otherwise trigger this lane only on the post-merge push to
+            // `main`. See `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`.
+            ".github/workflows/**",
         ] {
             assert!(
                 entries.iter().any(|entry| entry == required),
@@ -1822,6 +1828,360 @@ mod tests {
                  not just the (already-gone) sidecar one"
             );
         }
+    }
+
+    /// Every `.github/workflows/*.yml`/`*.yaml` file, sorted by name so the
+    /// test's output order is stable. Enumerated from disk, not a
+    /// hard-coded file list, so a brand-new workflow file is automatically
+    /// in scope for `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+    /// below (#2504) — the same "don't hard-code the lane list" requirement
+    /// its job enumeration meets too. Every workflow file in this repo
+    /// uses `.yml` today (confirmed by directory listing), but GitHub
+    /// Actions accepts `.yaml` too, so that extension is matched as well —
+    /// otherwise a new workflow file saved as `.yaml` would enter this
+    /// guard's blind spot by construction, silently, rather than by a
+    /// deliberate exemption. Both compared case-insensitively per clippy's
+    /// `case_sensitive_file_extension_comparisons`.
+    fn workflow_files() -> Vec<String> {
+        let dir = repo_root().join(".github/workflows");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .expect("workflows dir should exist")
+            .filter_map(std::result::Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| {
+                Path::new(name).extension().is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+                })
+            })
+            .collect();
+        names.sort();
+        assert!(
+            !names.is_empty(),
+            "expected at least one workflow file in {dir:?}"
+        );
+        names
+    }
+
+    /// Split a workflow's `jobs:` block into `(job_id, body)` pairs, in
+    /// declaration order. Manual line-based parsing, not a real YAML parser
+    /// — same approach as `path_filter`/`steps_with_conditions` above.
+    /// Every workflow in this repo formats a job id at exactly two spaces
+    /// of indent directly under the top-level `jobs:` key, with the job's
+    /// own body (permissions, steps, …) indented four spaces or deeper —
+    /// so "a line with exactly two leading spaces, no third, ending in
+    /// `:`" unambiguously marks a new job among CODE lines. It is not
+    /// unambiguous against comments, though: a two-space-indented `#`
+    /// comment line that happens to end in a colon (ci.yml:122's
+    /// "# ... dependency-graph build:", ci.yml:138's "#    two steps below
+    /// close it without reversing the ruling:") matches the same shape, so
+    /// comment lines are skipped before the header check runs.
+    fn jobs(workflow: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut in_jobs = false;
+        for line in workflow.lines() {
+            if line == "jobs:" {
+                in_jobs = true;
+                continue;
+            }
+            if !in_jobs {
+                continue;
+            }
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            let is_job_header = line.starts_with("  ")
+                && !line.starts_with("   ")
+                && line.trim_end().ends_with(':');
+            if is_job_header {
+                let id = line.trim().trim_end_matches(':').to_owned();
+                out.push((id, String::new()));
+                continue;
+            }
+            if let Some((_, body)) = out.last_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        out
+    }
+
+    /// `jobs()`'s doc comment claims two leading spaces with no third,
+    /// ending in `:`, "unambiguously marks a new job" — but two real
+    /// comment lines in `ci.yml` match that exact shape today: line 122's
+    /// "  # ... dependency-graph build:" and line 138's "  #    two steps
+    /// below close it without reversing the ruling:". A GitHub Actions job
+    /// id can never contain `#` (`^[a-zA-Z_][a-zA-Z0-9_-]*$`), so any
+    /// parsed id containing one is a phantom job born from a
+    /// misinterpreted comment, not a symptom the enumeration walk should
+    /// tolerate silently — a phantom job sitting between a real wasm build
+    /// step and its `pnpm install` would otherwise split that job in two
+    /// and hand `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
+    /// a wrong diagnosis instead of the real one.
+    #[test]
+    fn jobs_skips_comment_lines_that_look_like_headers() {
+        let ids: Vec<String> = jobs(&workflow("ci.yml"))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !ids.iter().any(|id| id.contains('#')),
+            "jobs() returned a phantom job parsed from a comment line (job ids can never \
+             contain '#'); ids seen: {ids:?}"
+        );
+        assert_eq!(
+            ids,
+            vec![
+                "check".to_owned(),
+                "wasm-test".to_owned(),
+                "test".to_owned(),
+                "test-bench-counters".to_owned(),
+                "test-all-features".to_owned(),
+                "static-checks".to_owned(),
+                "deny".to_owned(),
+                "fuzz".to_owned(),
+                "determinism-law".to_owned(),
+                "book".to_owned(),
+                "frontend".to_owned(),
+                "e2e".to_owned(),
+                "e2e-gate".to_owned(),
+            ],
+            "expected exactly ci.yml's real job ids, in declaration order, with no \
+             comment-derived phantom entries interleaved"
+        );
+    }
+
+    /// The `run:` command(s) of every step in a job body, in order. Matches
+    /// the compact `- run: <cmd>` form (a step with no `name:`/`id:`), the
+    /// `run: <cmd>` form on its own line under a preceding `- name:
+    /// ...`/`- uses: ...`, and — unlike an earlier version of this
+    /// function — a `run: |` block scalar's continuation lines, one
+    /// "command" per line, for as long as those lines stay indented deeper
+    /// than the `run: |` line itself. Without that, a lane written as a
+    /// `run: |` script (several already exist, e.g. the `mdbook test`
+    /// step above) would hide every command it contains from both
+    /// `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`'s
+    /// ordering check and its four-lane pin.
+    ///
+    /// A line whose trimmed form starts with `#` is always skipped —
+    /// inside a block scalar that is a shell comment, not a command, and
+    /// at any other point it is a YAML comment; several of this file's own
+    /// pointer comments contain the literal string `pnpm install
+    /// --frozen-lockfile` in prose (desktop-smoke.yml:32/184), which must
+    /// not be mistaken for an executed step. A blank line is skipped too,
+    /// without ending an in-progress block scalar, since multi-line
+    /// scripts routinely contain blank lines for readability.
+    fn run_commands(job_body: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut block_indent: Option<usize> = None;
+        for line in job_body.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+
+            if let Some(run_indent) = block_indent {
+                if indent > run_indent {
+                    out.push(unquote(trimmed).to_owned());
+                    continue;
+                }
+                block_indent = None;
+            }
+
+            if trimmed == "run: |" || trimmed == "- run: |" {
+                block_indent = Some(indent);
+                continue;
+            }
+
+            if let Some(cmd) = trimmed
+                .strip_prefix("- run: ")
+                .or_else(|| trimmed.strip_prefix("run: "))
+            {
+                out.push(unquote(cmd.trim()).to_owned());
+            }
+        }
+        out
+    }
+
+    /// A `run: |` block scalar is common in this repo's own workflows
+    /// (e.g. the `mdbook test (doctests)` step in `ci.yml`'s `book` job),
+    /// so `run_commands` has to walk its continuation lines the same way
+    /// it walks single-line `run:` steps — including staying inside the
+    /// block across a blank line, and not mistaking a shell comment
+    /// mentioning `pnpm install --frozen-lockfile` in prose for a real
+    /// command.
+    #[test]
+    fn run_commands_reads_block_scalar_continuation_lines() {
+        let job_body = concat!(
+            "    - name: multi-line step\n",
+            "      run: |\n",
+            "        # pnpm install --frozen-lockfile is mentioned here only in prose\n",
+            "        wasm-pack build crates/brink-web --target web --out-dir www/pkg\n",
+            "\n",
+            "        pnpm install --frozen-lockfile\n",
+            "    - name: next step\n",
+            "      run: echo done\n",
+        );
+
+        assert_eq!(
+            run_commands(job_body),
+            vec![
+                "wasm-pack build crates/brink-web --target web --out-dir www/pkg".to_owned(),
+                "pnpm install --frozen-lockfile".to_owned(),
+                "echo done".to_owned(),
+            ],
+            "block-scalar continuation lines should be read as commands, in order, with the \
+             shell comment line and the blank line both skipped without ending the block early"
+        );
+    }
+
+    /// #2504 (follow-up to #2479/#2492): nothing made the
+    /// wasm-build-before-install ordering self-enforcing. All four `pnpm
+    /// install --frozen-lockfile` lanes (`ci.yml`'s `frontend` and `e2e`
+    /// jobs, `desktop-smoke.yml`, `npm-release.yml`) are correctly ordered
+    /// today, but `pnpm install --frozen-lockfile` exits 0 even when the
+    /// `file:` link from `@brink-lang/web` to `crates/brink-web/www/pkg`
+    /// silently failed to resolve (confirmed by direct reproduction —
+    /// scripts/check-wasm-pkg.mjs's header comment) — so a future reorder,
+    /// or a new lane that adds the install step without the wasm build
+    /// first, would re-open #2479 with no lane catching it.
+    ///
+    /// Enumerated from the workflow files themselves — every workflow file
+    /// under `.github/workflows` via `workflow_files()`, every job in each
+    /// via `jobs()` above — not a hard-coded list of the four known lanes,
+    /// so a NEW workflow file or job cannot opt out of this guard just by
+    /// not being named here. The ordering check below runs against every
+    /// job this walk finds, with no per-lane allowlist. Installs are
+    /// matched by `starts_with("pnpm install")`, not exact equality
+    /// against the full `pnpm install --frozen-lockfile` string: the only
+    /// `run:` commands anywhere in this tree that start with that prefix
+    /// are today's four lanes (enumerated by grep across every workflow
+    /// file), so this stays exact in practice while also catching a future
+    /// lane written with extra flags (e.g. `pnpm install --frozen-lockfile
+    /// --filter …`) that an exact match would silently miss.
+    ///
+    /// Two `install`-shaped steps exist outside these four lanes, both out
+    /// of scope because neither carries a `file:` dependency on the
+    /// wasm-pack output:
+    /// - `ci.yml`'s `book` job runs a plain `npm install --no-audit
+    ///   --no-fund` against `docs/book/ts-check`'s own lockfile — a
+    ///   declared exemption, pinned by
+    ///   `book_job_install_is_a_plain_npm_install_not_a_pnpm_lane` below so
+    ///   a rename to `pnpm install --frozen-lockfile` cannot silently
+    ///   escape this guard.
+    /// - `benchmarks-inkjs.yml`'s `inkjs-gate` job runs `npm ci` against
+    ///   its own `benchmarks/drivers/inkjs/package-lock.json`. Only the
+    ///   `book` job gets a dedicated pin test: it lives in `ci.yml`,
+    ///   alongside two of the four guarded lanes, so its exemption is the
+    ///   one most easily mistaken for — or accidentally turned into — one
+    ///   of them during review. `benchmarks-inkjs.yml`'s `npm ci` needs no
+    ///   separate pin to get the same protection: the prefix match above
+    ///   would catch a rename to any `pnpm install`-prefixed command there
+    ///   too, and the exact four-lane list below rejects it just the same
+    ///   as an unpinned fifth lane appearing anywhere else.
+    #[test]
+    fn every_pnpm_install_lane_builds_wasm_first_in_the_same_job() {
+        const PNPM_INSTALL_PREFIX: &str = "pnpm install";
+        const WASM_BUILD_PREFIX: &str = "wasm-pack build crates/brink-web";
+
+        let mut checked_jobs: Vec<String> = Vec::new();
+        let mut pnpm_install_lanes: Vec<String> = Vec::new();
+
+        for file in workflow_files() {
+            let contents = workflow(&file);
+            for (job_id, body) in jobs(&contents) {
+                let lane = format!("{file}:{job_id}");
+                checked_jobs.push(lane.clone());
+
+                let commands = run_commands(&body);
+                let Some(install_pos) = commands
+                    .iter()
+                    .position(|c| c.starts_with(PNPM_INSTALL_PREFIX))
+                else {
+                    continue;
+                };
+                pnpm_install_lanes.push(lane.clone());
+
+                let wasm_pos = commands
+                    .iter()
+                    .position(|c| c.starts_with(WASM_BUILD_PREFIX));
+                assert!(
+                    wasm_pos.is_some_and(|w| w < install_pos),
+                    "{lane}'s job runs a `{PNPM_INSTALL_PREFIX}` command without a preceding \
+                     `{WASM_BUILD_PREFIX}` step in the SAME job — this re-opens #2479 (`pnpm \
+                     install --frozen-lockfile` exits 0 even when the file: link to \
+                     crates/brink-web/www/pkg silently failed to resolve); commands seen in \
+                     order: {commands:?}"
+                );
+            }
+        }
+
+        // Enumeration transparency (house convention: state exactly which
+        // workflow files and jobs were checked, not just the ones known in
+        // advance): this must have walked more than just the four
+        // pnpm-install lanes (proof the walk covers every job in every
+        // workflow file, not only the ones that happen to install), and
+        // the pnpm-install lanes found must be exactly today's known four
+        // — so a fifth lane, correctly ordered or not, cannot join
+        // silently: it has to be added here on purpose.
+        assert!(
+            checked_jobs.len() > pnpm_install_lanes.len(),
+            "expected to see jobs beyond just the pnpm-install lanes, proving this walked \
+             every job in every workflow file rather than only the ones with an install \
+             step; jobs seen: {checked_jobs:?}"
+        );
+        assert_eq!(
+            pnpm_install_lanes,
+            vec![
+                "ci.yml:frontend".to_owned(),
+                "ci.yml:e2e".to_owned(),
+                "desktop-smoke.yml:desktop-smoke".to_owned(),
+                "npm-release.yml:release".to_owned(),
+            ],
+            "expected exactly these four jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
+             pnpm-install lane must both pass the ordering assertion above AND be added to \
+             this list on purpose — that is what keeps a new lane from opting out of this \
+             guard by simply existing"
+        );
+    }
+
+    /// The exemption `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`'s
+    /// doc comment names: `ci.yml`'s `book` job's `npm install --no-audit
+    /// --no-fund` is a different command, against a different lockfile
+    /// (`docs/book/ts-check`, no `file:` dependency on the wasm-pack
+    /// output), so it is correctly out of scope for the pnpm guard above.
+    /// That guard already matches installs by `starts_with("pnpm
+    /// install")`, so a rename of this step to any `pnpm install`-prefixed
+    /// command would be caught there too (as an unpinned fifth lane,
+    /// rejected by the exact four-lane list) — this test pins the fact
+    /// directly anyway, as declared documentation of the exemption rather
+    /// than this guard's only defence against it, matching the same
+    /// prefix-matching strictness on its negative assertion below so
+    /// neither side of the check is more lenient than the other.
+    #[test]
+    fn book_job_install_is_a_plain_npm_install_not_a_pnpm_lane() {
+        let ci = workflow("ci.yml");
+        let (_, body) = jobs(&ci)
+            .into_iter()
+            .find(|(id, _)| id == "book")
+            .expect("ci.yml should still have a `book` job");
+        let commands = run_commands(&body);
+
+        assert!(
+            commands
+                .iter()
+                .any(|c| c == "npm install --no-audit --no-fund"),
+            "expected ci.yml's book job to run `npm install --no-audit --no-fund`; if this \
+             changed to a `pnpm install`-prefixed command it now needs a `wasm-pack build \
+             crates/brink-web` step before it and is no longer this guard's declared \
+             exemption; commands seen: {commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c.starts_with("pnpm install")),
+            "ci.yml's book job now ALSO runs a `pnpm install`-prefixed command — it needs a \
+             `wasm-pack build crates/brink-web` step before it like the other four lanes; \
+             commands seen: {commands:?}"
+        );
     }
 
     #[test]
