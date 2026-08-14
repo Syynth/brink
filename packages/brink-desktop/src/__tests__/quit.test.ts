@@ -62,7 +62,12 @@ describe("awaitSaveAllBeforeQuit", () => {
     await awaitSaveAllBeforeQuit(api, 3000, 5, 20);
     // First dispatch (unconditional) plus at least one redispatch once the
     // dirty set outlived the redispatch interval.
-    expect(api.dispatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // `vi.mocked` re-narrows to the Mock type. `stubApi`'s `: QuitSaveApi`
+    // return annotation widens the `vi.fn()`s back to the plain interface, so
+    // `api.dispatch.mock` exists at runtime but not to `tsc` (TS2339) —
+    // vitest strips types rather than checking them, so only `tsc --noEmit`
+    // sees it.
+    expect(vi.mocked(api.dispatch).mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(api.dispatch).toHaveBeenCalledWith("file.saveAll");
     expect(api.getDirtyFiles()).toEqual([]);
   });
