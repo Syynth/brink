@@ -59,9 +59,9 @@ anticipated implementation); every method maps directly:
 | `listFiles()` | recursive dir walk | include `*.brink`, `*.ink`, `brink.toml`; skip dotfiles, `target/`, `node_modules/` |
 | `readFile` / `requestFile` | `fs.readTextFile` | `requestFile` returns null for paths outside the project root — never escape the opened folder |
 | `onFileChanged` | **buffer, don't write** | v1 keeps the studio's explicit-save model: dirty state lives in the editor; disk writes happen on `file.save`/`saveAll` via `requestSave`. Autosave is a later option, not a default |
-| `createFile` / `deleteFile` / `renameFile` | `fs.writeTextFile` / `remove` / `rename` | `renameFile` is implemented natively (atomic) — `ProjectSession.renameFile`'s create+delete fallback for a provider lacking `renameFile` is dead code on this provider, since it always implements it |
-| `onExternalChange` | fs watcher on the project root | debounce; deliver `null` on delete; unsubscribe on teardown per the contract. This lights up the #320 conflict → kept-buffer → merge surface with a *real* watcher for the first time. A payload is **not always external**: `deleteFile`'s and `renameFile`'s own write-throughs echo back through the watcher too — a rename produces both a deletion echo (its old path) and a creation echo (its new path) — so self-write suppression (content match), self-delete suppression (a consumed-once `selfDeletes` marker keyed by path, #2404), and self-create suppression (a consumed-once `selfCreates` marker keyed by path, #2416) all run before a payload reaches the callback — only what survives all three is forwarded as genuinely external |
-| `requestSave` | write staged content | the `staged` map fed by `onFileChanged` (D2 overlay model) is the source of what to write — the #154 egress batch feeds the backup ring instead, orthogonal to dirty. Calls are serialized (#2403): an overlapping caller (the autosave ticker, a quit-time `saveAll`) queues behind whatever write is already in flight rather than racing it against the same `staged` snapshot |
+| `createFile` / `deleteFile` / `renameFile` | `fs.writeTextFile` / `remove` / `rename` | `renameFile` is implemented natively (atomic) — `ProjectSession.renameFile`'s create+delete fallback for a provider lacking `renameFile` is dead code on this provider, since it always implements it. The native move is **not the whole op**: it carries the file's bytes, but the rename computed the moved file's own outbound `INCLUDE` rewrites into the `newContent` the contract hands over, so the provider writes that content at the new path straight after the move (#2425). Without it, a cross-directory rename leaves disk holding the moved file's own pre-rewrite `INCLUDE` paths at the new location until some unrelated edit dirties it — invisible in the studio (the session is correct) and wrong for anything reading disk directly, e.g. `brink compile`. This write closes that gap only for the moved file's own content, so disk at the new path agrees with the session; a referrer's rewritten `INCLUDE` (a file that pointed at the old path) is an ordinary edit that goes through `applyEdit` → `onFileChanged` and stays staged under D2, landing on disk only at the next `requestSave` — until then, disk can still disagree with the session for those referrer files. The follow-up write goes through the same serialized staged-write path as a save; see the `requestSave` row below for what a rejection does and does not do |
+| `onExternalChange` | fs watcher on the project root | debounce; deliver `null` on delete; unsubscribe on teardown per the contract. This lights up the #320 conflict → kept-buffer → merge surface with a *real* watcher for the first time. A payload is **not always external**: `deleteFile`'s and `renameFile`'s own write-throughs echo back through the watcher too — a rename produces both a deletion echo (its old path) and a creation echo (its new path) — so self-write suppression (content match), self-delete suppression (a consumed-once `selfDeletes` marker keyed by path, #2404), and self-create suppression (a consumed-once `selfCreates` marker keyed by path, #2416) all run before a payload reaches the callback — only what survives all three is forwarded as genuinely external. **At most one marker is armed per path** (#2424): the watcher flushes at most one event per path per quiet window, so a marker armed while another is still outstanding could never be consumed — and an unconsumed `selfDeletes` goes on to swallow a genuinely external deletion. Every arming site therefore clears the other two kinds for that path, rather than leaving the outcome to whichever branch of `onExternalChange` checks first; a marker whose operation then rejects is disarmed too, since no echo will ever come for a write or delete that did not happen. `renameFile`'s follow-up content write is no exception: a rejection re-arms `selfCreates` for the destination path so the rename's own still-outstanding creation echo stays suppressed rather than reaching this callback with pre-rewrite bytes (#2438 review) |
+| `requestSave` | write staged content | the `staged` map fed by `onFileChanged` (D2 overlay model) is the source of what to write — the #154 egress batch feeds the backup ring instead, orthogonal to dirty. `staged` is a provider-internal write queue, distinct from studio dirty state (`StudioPublicState.dirtyFiles`, computed by `FileChangeHub` from session content vs. baseline): a rename's own `record(newPath, "created")` already marks the moved file dirty the moment the session updates, independent of whether the provider's own follow-up content write (#2425) later succeeds or is rejected. Calls are serialized (#2403): an overlapping caller (the autosave ticker, a quit-time `saveAll`) queues behind whatever write is already in flight rather than racing it against the same `staged` snapshot — as does `renameFile`'s own follow-up content write, which is a staged write like any other. Quit-time `saveAll` is not always a single overlapping call: `awaitSaveAllBeforeQuit` re-dispatches it on an interval while the dirty set persists (#2434), so a hung write can see several of its own redispatches queue up behind it one after another — this same serialization is what keeps each one from racing the write ahead of it. A rejected write of this kind is retried only by the next UNNARROWED `requestSave` (the autosave ticker, `saveAll`) — a `file.save` narrowed to a different, currently-focused path does not touch it, since a narrowed `writeStaged` only writes the paths it is given |
 
 Path discipline: provider keys are project-relative with `/` separators
 (the studio's convention); the provider owns the mapping to absolute OS
@@ -80,6 +80,21 @@ required lanes for zero coverage benefit (the shell has almost no logic).
 Cost of exclusion: its dep versions are managed in its own `Cargo.toml`
 rather than the workspace table — acceptable for a leaf artifact.
 
+**Second cost, named late (#2415): lint policy does not cross the fence
+either.** A crate inherits `[workspace.lints]` only as a workspace *member*,
+and clippy stops searching for `clippy.toml` at the workspace root — which
+this crate is. So the repo-wide `unwrap_used`/`expect_used`/`panic`/`todo`/
+`print_stdout`/`print_stderr` denies and clippy pedantic had never once been
+applied here, and `desktop-smoke.yml`'s `cargo clippy -- -D warnings` was
+plain default clippy, not the repo's policy. The fix is duplication, since
+`[lints] workspace = true` needs a parent to inherit from: `src-tauri`
+carries its own `[lints]` table and its own `clippy.toml`, both byte-for-byte
+copies of the root ones. **Keep all four files in sync** — the two
+`*_matches_the_root_workspace` tests in `src/lib.rs` fail when either copy
+drifts, and are the only thing that notices. If a shared lint-defaults file
+is ever extracted, both sides should point at it and those tests should
+follow.
+
 CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
@@ -97,12 +112,80 @@ list, per the ruling above.
 This is the desktop package's first *cargo/`tsc`/`pnpm build`* coverage, not
 its first CI coverage of any kind: `.github/workflows/ci.yml`'s `frontend` job
 already runs the desktop vitest suite on every PR (step "Unit tests (vitest,
-`@brink/desktop`)" → `pnpm --filter @brink/desktop test`, ci.yml:667-668). That
-step builds no Tauri graph, so it never violated the "required lanes must not
-grow a Tauri build" fence, and the smoke lane deliberately does not duplicate
-it. ⚠ The desktop unit suite's only home is that one step inside another job —
-renaming or deleting it silently drops the suite entirely, and nothing asserts
-that dependency.
+`@brink/desktop`)" → `pnpm --filter @brink/desktop test`). That step builds no
+Tauri graph, so it never violated the "required lanes must not grow a Tauri
+build" fence, and the smoke lane deliberately does not duplicate it. The
+desktop unit suite's only home is therefore that one step inside another job —
+deleting it would drop the suite entirely, so `src-tauri`'s
+`ci_workflow_still_runs_the_desktop_vitest_suite` test asserts the step is
+still there (#2418). That assertion lives on the *cargo* side deliberately: a
+test inside the vitest suite could not fail for its own removal.
+
+### One alias map (#2418)
+
+`packages/brink-desktop/alias-map.ts` is the single source of truth for the
+package's module resolution. `vite.config.ts` and `vitest.config.ts` both
+call `desktopAliases(__dirname)`; `tsconfig.json`'s `paths` is JSON and
+cannot import, so it stays a copy that `src/__tests__/alias-map.test.ts`
+compares against `desktopTsconfigPaths()`. Only `brink-web` differs between
+consumers — bundlers resolve the ESM glue file, `tsc` needs the package
+directory — and the entry carries both rather than leaving the divergence
+implicit. Three hand-maintained copies of this map are what let most of the
+unit suite stop running behind a green step (#2409).
+
+### Smoke-lane inputs and step gating (#2418)
+
+Four properties of `desktop-smoke.yml` are asserted by tests in
+`src-tauri/src/lib.rs` rather than left to review:
+
+- **The `pull_request` path filter lists every input that can break the
+  job**, not just the trees it checks: `pnpm-lock.yaml`, root `Cargo.toml`/
+  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml` and `ci.yml` on top of
+  the package/crate globs. Without them a lockfile, sidecar-dependency or
+  root-lint-policy change ran this lane only on the post-merge push to
+  `main` — including the two `*_matches_the_root_workspace` drift tests,
+  which could not fail the PR that caused the drift.
+  (`desktop_smoke_path_filter_covers_its_shared_inputs`)
+- **Checks are non-blocking for their siblings but gated on their setup
+  steps.** A bare `if: '!cancelled()'` also overrides the implicit
+  `success()` on a failed *prerequisite*, so a dying setup step let the
+  dependent steps run and fail too, burying the root cause. Each check now
+  reads `!cancelled() && steps.<setup>.outcome == 'success'` for the setup
+  steps it needs (`checkout`, `linux_deps`, `wasm_build`, `pnpm_install`,
+  `sidecar`); the format check needs only the runner's toolchain and the
+  checkout, so it is gated on `checkout` alone — `actions/checkout` carries
+  no `id` by default, so this lane gives its checkout step one.
+  `desktop_smoke_gates_dependent_steps_on_setup_success` checks both the
+  `if:` text and that every prerequisite id it names still names a real
+  step, since a stale id (e.g. from a renamed or `id:`-stripped setup step)
+  reads as `steps.<id>.outcome == ''` and the guard is simply always false.
+- **The sidecar is staged, not shipped, in this lane.** `cargo build -p
+  brink-cli --release` runs only so `tauri-build`'s externalBin resolution
+  finds a file on disk; nothing here executes it, so the lane flattens the
+  release profile through `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` /
+  `_CODEGEN_UNITS` environment variables instead of paying for an optimized
+  binary. `ensure-cli-sidecar.mjs` is unchanged, so every other caller
+  still builds a real release sidecar.
+  (`desktop_smoke_flattens_the_sidecar_release_profile`)
+
+### CI coverage blind spots
+
+⚠ The smoke lane is `ubuntu-latest` only, so the `#[cfg(any(target_os =
+"macos", target_os = "ios", target_os = "android"))]` file-association
+surface — `opened_url_to_path`, `handle_opened`, the `RunEvent::Opened` arm
+and their three tests — is compiled, linted and run by **no** lane (#2428).
+That is the surface D3 keeps growing, and it is currently reviewed by eye.
+Whether to buy a macOS runner (or a `--target`-only check job) is a cost
+question and is **NOT settled here** — this section records the gap, it does
+not rule on it.
+
+The same Linux-only lane hides a cost of the #2415 lint policy: on the first
+mobile target, `tauri-macros`' `mobile_entry_point` expansion discards
+`run()`'s `tauri::Result<()>` (`unused_must_use`) and uses `eprintln!`
+(`clippy::print_stderr`), both fatal under `-D warnings`, and will need a
+per-site `#[expect]`. A ⚠ marker above `opened_url_to_path` in
+`src-tauri/src/lib.rs` carries the detail next to the cfg gate that will
+first switch on.
 
 ## Menus
 
@@ -121,7 +204,12 @@ already used for Open/Close Project. Ruled 2026-08-07 (#2370): the
 predefined Quit item's native teardown is not guaranteed to reach the
 webview (`on_menu_event`/`CloseRequested`) on every platform, which would
 silently bypass the guarded quit path (`awaitSaveAllBeforeQuit`) for ⌘Q,
-the most common real quit action on macOS.
+the most common real quit action on macOS. That guarded path is not a
+single dispatch-and-poll: it re-dispatches `file.saveAll` on a
+750ms interval for as long as the dirty set persists, still bounded by
+the same overall ~3s cap (#2434, `docs/decision-log.md`) — a path left
+dirty by a mid-write edit (#2426/#2431) is retried rather than left to
+burn the whole cap unsaved.
 
 **Decision: rebuild-on-change menu, not a dynamic submenu (#2394).** The
 File → Open Recent submenu is regenerated in full — the whole native `Menu`
@@ -165,9 +253,11 @@ in `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
 - **D2 — a real host.** fs watcher → `onExternalChange` (acceptance: edit
   a file in another editor, see the #320 conflict surface), native
   rename, recent projects, registry-driven menus, window title = project
-  name, quit awaits the final `saveAll` before the window closes (#2370;
-  ruled 2026-08-07 — no dirty-state close-confirmation prompt, that's dead
-  UI given autosave + save-on-close).
+  name, quit awaits the final `saveAll` — re-dispatching it on an interval
+  while the dirty set persists, capped by the same overall wait — before
+  the window closes (#2370; ruled 2026-08-07 — no dirty-state
+  close-confirmation prompt, that's dead UI given autosave + save-on-close;
+  #2434, 2026-08-14 — the redispatch policy, see `docs/decision-log.md`).
 - **D3 — output.** Export `.inkb` via `compile_project` bytes + save
   dialog; `brink-cli` as a Tauri **sidecar** for batch ops (xliff
   export/locale compile) so both cores ship from one workspace version.

@@ -394,9 +394,14 @@ export class ProjectSession {
       referrers.push(edit.path);
     }
 
-    // Provider: atomic rename, or create-new + delete-old fallback.
+    // Provider: atomic rename, or create-new + delete-old fallback. Both
+    // branches hand over `newSource` — an atomic rename moves the file's
+    // PRE-rewrite bytes, so a host that persisted only those would keep
+    // stale outbound `INCLUDE` paths for any move that crossed a directory
+    // boundary (#2425), while the fallback branch already wrote the
+    // rewritten source through `createFile`.
     if (this.provider.renameFile) {
-      await this.provider.renameFile(oldPath, newPath);
+      await this.provider.renameFile(oldPath, newPath, newSource);
     } else {
       await this.provider.createFile(newPath, newSource);
       await this.provider.deleteFile?.(oldPath);
@@ -676,6 +681,33 @@ export class ProjectSession {
    *  flush-and-re-baseline path runs synchronously as it always has. */
   hasHostSave(): boolean {
     return this.provider.requestSave !== undefined;
+  }
+
+  /**
+   * Read `path` straight from the provider, bypassing session state
+   * entirely — the provider's own account of what is actually persisted
+   * (disk, for a host-save provider). Existing {@link FileProvider.readFile}
+   * plumbing; this just exposes it past `ProjectSession`.
+   *
+   * The save commands use this to confirm what a host write actually wrote
+   * when a path's content no longer matches the snapshot taken before the
+   * save started (issue #2435): with `requestSave` calls serialized
+   * (`TauriFileProvider`, #2403), a write queued behind another in-flight
+   * one can legitimately pick up a later edit by the time it actually runs
+   * and persist content newer than that snapshot — a case this lets the
+   * caller tell apart from a genuine mid-write divergence (issue #2426)
+   * without weakening that guard: a divergence still fails this check,
+   * since disk keeps the pre-race content the write actually persisted.
+   * Rejects like {@link FileProvider.readFile} itself (e.g. a vanished path).
+   *
+   * This confirmation is only meaningful if the underlying
+   * {@link FileProvider.readFile} reports PERSISTED content, never content a
+   * `requestSave` merely staged — a provider whose `readFile` mirrors
+   * in-flight edits (see that method's doc) makes every call here vacuously
+   * match, silently turning the #2426 guard into a no-op.
+   */
+  async readProviderFile(path: string): Promise<string> {
+    return this.provider.readFile(path);
   }
 
   /** Ask the provider for a file not yet in the session; loads it if found. */

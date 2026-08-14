@@ -9,7 +9,20 @@ export interface FileProvider {
   /** List all files known to the provider. */
   listFiles(): Promise<string[]>;
 
-  /** Read a file's content by path. Throws if the file does not exist. */
+  /** Read a file's content by path. Throws if the file does not exist.
+   *
+   *  MUST report PERSISTED content — never staged, mirrored, or otherwise
+   *  in-memory-only content a `requestSave` hasn't actually written yet.
+   *  `ProjectSession.readProviderFile` (issue #2435) exposes this straight
+   *  through to the save commands' disk-confirmation check: if `readFile`
+   *  answers with the same content a `requestSave` merely staged (as an
+   *  implementation whose `onFileChanged` writes straight into the store
+   *  `readFile` reads from would), that check is vacuously true for every
+   *  path and the #2426 mid-write guard it backs becomes a permanent
+   *  no-op. See `InMemoryFileProvider` below for the playground's
+   *  intentionally-exempt case (there is no real "disk" to lag behind) and
+   *  `TauriFileProvider`/`HostSaveProvider` (the test double) for providers
+   *  that must stage edits separately from what this method answers. */
   readFile(path: string): Promise<string>;
 
   /** Request a file that is not yet loaded (e.g. discovered via INCLUDE).
@@ -34,11 +47,20 @@ export interface FileProvider {
    *  provider implementations. */
   deleteFile?(path: string): Promise<void>;
 
-  /** Rename/move a file (its key changes; content is supplied separately via
-   *  the session). Optional — when absent, ProjectSession falls back to
+  /** Rename/move a file. Optional — when absent, ProjectSession falls back to
    *  `createFile(new)` + `deleteFile(old)`. A host with an atomic rename (or
-   *  that must preserve history) implements this instead. */
-  renameFile?(oldPath: string, newPath: string): Promise<void>;
+   *  that must preserve history) implements this instead.
+   *
+   *  `newContent` is the moved file's source AS IT MUST END UP at `newPath`:
+   *  the rename op rewrites the moved file's own outbound `INCLUDE`s for its
+   *  new directory, so for a cross-directory move it differs from the bytes
+   *  the file had at `oldPath` (issue #2425). A host that moves bytes only
+   *  (an atomic fs rename) must persist `newContent` afterwards, or its
+   *  storage keeps pre-rewrite `INCLUDE` paths that the session no longer
+   *  agrees with. Optional for backwards compatibility: an implementation
+   *  taking only two parameters still satisfies this signature, and keeps the
+   *  pre-#2425 behaviour of moving bytes alone. */
+  renameFile?(oldPath: string, newPath: string, newContent?: string): Promise<void>;
 
   /** Request a canonical save of the current project state. When `paths`
    *  is given, the host may narrow the write to those files (the
@@ -89,10 +111,13 @@ export class InMemoryFileProvider implements FileProvider {
     this.files.delete(path);
   }
 
-  async renameFile(oldPath: string, newPath: string): Promise<void> {
+  async renameFile(oldPath: string, newPath: string, newContent?: string): Promise<void> {
     const content = this.files.get(oldPath);
     if (content !== undefined) {
-      this.files.set(newPath, content);
+      // `newContent` wins when supplied: it carries the moved file's rewritten
+      // outbound `INCLUDE`s, which the stored bytes at `oldPath` predate
+      // (#2425).
+      this.files.set(newPath, newContent ?? content);
       this.files.delete(oldPath);
     }
   }
