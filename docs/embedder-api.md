@@ -156,7 +156,16 @@ type FileChange = {
   `packages/brink-studio/src/__tests__/save-paths.ts`, which types
   `SAVE_PATHS` and is asserted to match it entry for entry — so adding a save
   path means three edits that fail loudly until all three are made: the id,
-  the `SAVE_PATHS` driver, and the marker above the call.
+  the `SAVE_PATHS` driver, and the marker above the call. Two gaps flagged
+  by #2510's review are hardened as of #2515: the scan's roots are derived
+  from `pnpm-workspace.yaml`'s `packages:` globs
+  (`packages/brink-studio/src/__tests__/workspace-roots.ts`) rather than a
+  hand-typed `packages/` assumption, and every non-exempt id must name
+  exactly one call site, so a new call site cannot enrol by reusing an id
+  already claimed elsewhere. Neither closes the remaining, harder gap —
+  proving the `SAVE_PATHS` driver behind an id actually exercises that exact
+  call site at runtime — which needs call-site-level instrumentation and is
+  intentionally left open (#2515).
 - **Orphaned files (2026-08-07 decision, "keep the view, mark orphaned").**
   When a file open in the editor is deleted externally, the session drops
   the file but the open view keeps its buffer — never auto-closed — marked

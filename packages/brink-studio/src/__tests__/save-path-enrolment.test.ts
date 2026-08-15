@@ -37,6 +37,24 @@
  * candidate" and "which lines in it are call sites" can never disagree about
  * what counts as a call: an asymmetry there would let a file be discovered
  * and then yield zero sites to check, silently passing.
+ *
+ * Two further checks close gaps flagged by PR #2510's review as uncovered by
+ * this suite's original fence (issue #2515):
+ *
+ *  4. The scan's roots are DERIVED from `pnpm-workspace.yaml`'s `packages:`
+ *     globs ({@link import("./workspace-roots.js")}), not a hand-maintained
+ *     `packages/` assumption — so a workspace-layout change (a new glob, a
+ *     package with sources outside `src/`) either widens the scan to match
+ *     or fails loudly, rather than silently narrowing coverage.
+ *  5. Every non-exempt `SAVE-PATH` id is required to name exactly ONE call
+ *     site across the whole scan. Without this, a brand-new call site could
+ *     satisfy step 3 above by reusing an id already claimed by an unrelated,
+ *     real call site — the marker would name a real registry entry and pass,
+ *     even though nothing enrolled THIS site. This does not prove the
+ *     `SAVE_PATHS` driver behind an id exercises this exact call site at
+ *     runtime (that needs call-site-level instrumentation, out of this
+ *     suite's fence — see #2515) — it closes the narrower, concretely
+ *     described loophole: reusing an existing id to skip enrolment.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -44,10 +62,14 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { SAVE_PATH_IDS } from "./save-paths.js";
+import { deriveScanRoots, parseWorkspacePackageGlobs } from "./workspace-roots.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** `packages/` — this file lives at `packages/brink-studio/src/__tests__/`. */
 const packagesRoot = resolve(here, "../../..");
+/** The repo root — one level above `packages/`. */
+const repoRoot = resolve(packagesRoot, "..");
+const workspaceYamlPath = resolve(repoRoot, "pnpm-workspace.yaml");
 
 /** A CALL of the retire step; the leading `.` excludes declarations. */
 const CALL = /\.(markFilesSaved|markAllSaved)\(/;
@@ -109,12 +131,22 @@ function listSourceFiles(dir: string): string[] {
   return out;
 }
 
+/**
+ * Every package directory the scan should walk, derived from
+ * `pnpm-workspace.yaml`'s `packages:` globs rather than hand-typed — see
+ * this file's header, point 4, and `workspace-roots.ts`.
+ */
+function discoverPackageDirs(): string[] {
+  const globs = parseWorkspacePackageGlobs(readFileSync(workspaceYamlPath, "utf8"));
+  return deriveScanRoots(globs, repoRoot);
+}
+
 /** Every `packages/*\/src` file scanned, and the subset holding a call site. */
 function discoverCallSiteFiles(): { scanned: string[]; withCallSite: string[] } {
   const scanned: string[] = [];
   const withCallSite: string[] = [];
-  for (const pkg of readdirSync(packagesRoot)) {
-    const src = join(packagesRoot, pkg, "src");
+  for (const pkgDir of discoverPackageDirs()) {
+    const src = join(pkgDir, "src");
     try {
       if (!statSync(src).isDirectory()) continue;
     } catch {
@@ -270,4 +302,77 @@ describe("every production save path is enrolled in SAVE_PATHS (#2480)", () => {
       }
     });
   }
+
+  it("every non-exempt SAVE-PATH id names exactly one call site (#2515)", () => {
+    // Closes the concrete loophole hole 1 of #2515 describes: today's
+    // per-marker checks only verify a marker's id EXISTS in the registry —
+    // nothing stops a brand-new call site from reusing an id already
+    // claimed by an unrelated, real call site, which would pass every check
+    // above with "no new driver behind it". Requiring each id to be claimed
+    // by exactly one call site closes that specific reuse: a new call site
+    // must either take a genuinely unclaimed id (which then forces a new
+    // SAVE_PATHS driver via save-retire-invariant.test.ts's bidirectional
+    // check) or be marked SAVE-PATH-EXEMPT instead.
+    //
+    // This is NOT the full correspondence #2515 also describes — it does
+    // not prove the SAVE_PATHS driver behind an id exercises THIS exact
+    // call site at runtime, which needs call-site-level instrumentation
+    // (an intentionally out-of-scope follow-up; see #2515's PR).
+    const idSites = new Map<string, string[]>();
+    for (const site of allSites) {
+      if (site.marker === null || site.marker.exempt) continue;
+      const label = `${relative(packagesRoot, site.file)}:${site.line}`;
+      for (const id of site.marker.ids) {
+        const sites = idSites.get(id) ?? [];
+        sites.push(label);
+        idSites.set(id, sites);
+      }
+    }
+
+    // Non-vacuity: a scan that found zero non-exempt ids would make the
+    // loop below check nothing and report green regardless.
+    expect(idSites.size, "no non-exempt SAVE-PATH ids were found to check").toBeGreaterThan(0);
+
+    const duplicated = [...idSites.entries()].filter(([, sites]) => sites.length > 1);
+    expect(
+      duplicated.map(([id, sites]) => `${id}: ${sites.join(", ")}`),
+      "these SAVE_PATHS ids are named by more than one call site's marker — one of them is " +
+        "reusing an id that is already enrolled elsewhere rather than being genuinely enrolled " +
+        "itself. Give the new call site its own id (add it to save-paths.ts and drive it in " +
+        "save-retire-invariant.test.ts), or mark it SAVE-PATH-EXEMPT if it provably never has " +
+        "an await between its confirming read and the call",
+    ).toEqual([]);
+  });
+});
+
+describe("the scan's roots are derived from pnpm-workspace.yaml, not hand-maintained (#2515)", () => {
+  it("pnpm-workspace.yaml's packages: list is exactly what the scan assumes today", () => {
+    // An exact-string pin, not "contains packages/*": if this ever changes
+    // — a new glob added, packages/* renamed — this must fail and force a
+    // conscious look, per the guard this test itself exists to give teeth
+    // to (workspace-roots.ts's derivation, not a second hand-typed list).
+    const globs = parseWorkspacePackageGlobs(readFileSync(workspaceYamlPath, "utf8"));
+    expect(globs).toEqual(["packages/*"]);
+  });
+
+  it("the derived roots are exactly today's package directories, not zero and not a guess", () => {
+    const roots = discoverPackageDirs();
+    const names = roots.map((root) => relative(repoRoot, root)).sort();
+    // Non-vacuity: pinned as an exact set (not "length > 0") so a
+    // derivation that silently under- or over-matches is caught here,
+    // before it ever reaches discoverCallSiteFiles.
+    expect(names).toEqual(
+      [
+        "brink-desktop",
+        "brink-studio",
+        "ink-editor",
+        "ink-operations",
+        "studio-shell",
+        "studio-store",
+        "studio-ui",
+        "wasm",
+        "wasm-types",
+      ].map((pkg) => join("packages", pkg)),
+    );
+  });
 });
