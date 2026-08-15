@@ -222,8 +222,12 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
 
 - **The `pull_request` path filter lists every input that can break the
   job**, not just the trees it checks: `pnpm-lock.yaml`, root `Cargo.toml`/
-  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml`, `ci.yml` and (#2504)
-  the `.github/workflows/**` glob on top of the package/crate globs — the
+  `Cargo.lock`, `clippy.toml`, `rust-toolchain.toml`, `ci.yml`, (#2504)
+  the `.github/workflows/**` glob, and (#2522) `deny.toml` — which is both
+  the policy the `cargo-deny (src-tauri)` step resolves and the file
+  `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies` parses, so a
+  PR editing only it must still trigger this lane — on top of the
+  package/crate globs — the
   individual `ci.yml` entry alone left a reordered `npm-release.yml`, or a
   brand-new workflow file, free to skip this lane on the PR that broke it.
   Without these a lockfile, sidecar-dependency or root-lint-policy change

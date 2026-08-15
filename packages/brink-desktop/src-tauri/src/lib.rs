@@ -1570,6 +1570,11 @@ mod tests {
             "Cargo.lock",
             "clippy.toml",
             "rust-toolchain.toml",
+            // #2488/#2522: `deny.toml` is the policy the `cargo-deny
+            // (src-tauri)` step resolves AND the file
+            // `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies`
+            // parses, so a PR editing only it must still trigger this lane.
+            "deny.toml",
             ".github/workflows/ci.yml",
             ".github/workflows/desktop-smoke.yml",
             // #2504: the individual entries above are not enough — a
@@ -1901,10 +1906,24 @@ mod tests {
              ruling and needs its own."
         );
 
+        // Precondition, or the assertion below fails OPEN: `licences_array`
+        // only recognises a MULTI-LINE `allow = [` block, so a legal
+        // reformat collapsing that array to one line makes it return an
+        // empty vec and the `!any(...)` check vacuously true — while
+        // cargo-deny happily accepts the reformatted file with MPL-2.0
+        // blanket-allowed and the per-crate exceptions doing nothing. Pin
+        // that the parser actually found the list before trusting its
+        // contents.
+        let blanket = licences_array(&deny, "allow");
         assert!(
-            !licences_array(&deny, "allow")
-                .iter()
-                .any(|entry| unquote(entry) == MPL),
+            blanket.iter().any(|entry| unquote(entry) == "MIT"),
+            "expected to parse deny.toml's multi-line [licenses] allow list (it should \
+             still contain \"MIT\"); an inlined or reformatted array would make the \
+             check below vacuous. It parsed as {blanket:?}"
+        );
+
+        assert!(
+            !blanket.iter().any(|entry| unquote(entry) == MPL),
             "{MPL} should stay OUT of deny.toml's blanket [licenses] allow list — the \
              2026-08-15 ruling admits it per-crate via `exceptions`, which is the \
              narrowest mechanism cargo-deny offers. Allowing it graph-wide would admit \
