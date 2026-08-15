@@ -16,7 +16,10 @@
  * `onCloseRequested` hook and the app-menu Quit item (`menu:quit`, routed
  * the same way as open/close-project rather than through
  * `PredefinedMenuItem::quit`) both funnel into `handleQuitRequested`, which
- * awaits the final `saveAll` (capped) before the window is destroyed.
+ * clears the autosave ticker then awaits the final `saveAll` (capped)
+ * before the window is destroyed — the third teardown path alongside
+ * `closeProject`'s explicit-close and reopen-via-`openProject` clears
+ * (#2517; see `autosaveTimer`'s doc comment).
  *
  * File associations (D3, #2393) are a third way a project opens, bundled
  * `.app` only: double-clicking a `.ink`/`.brink` file reaches `handleFileOpen`
@@ -49,6 +52,18 @@ import { resolveFileOpenAction } from "./file-open.js";
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
 
+/**
+ * Autosave cadence (2026-08-07 ruling, `docs/desktop-shell-spec.md`'s
+ * autosave row): autosave IS `saveAll` (celeris §10.1.1) on a 2-minute
+ * ticker whenever dirty files exist; clean ticks are no-ops inside the
+ * command. Exported (module-level, not a function-local) so
+ * `__tests__/autosave-reopen.test.ts` can import — rather than
+ * restate — the exact value it pins (#2517); a Settings surface can make
+ * this configurable later, but until then this is the single source of
+ * truth `openProject`'s `setInterval` call reads.
+ */
+export const AUTOSAVE_MS = 120_000;
+
 /** The one open project. D1 is single-window, single-project by ruling. */
 let current: StudioHandle | null = null;
 /** The open project's root path (absolute), or null when none is open —
@@ -58,7 +73,10 @@ let current: StudioHandle | null = null;
  * sidecar via the shell's own `resolve()` guard rather than an absolute
  * path built by hand here. Cleared on close, alongside `current`. */
 let currentRoot: string | null = null;
-/** The autosave ticker for the open project; cleared on close. */
+/** The autosave ticker for the open project; cleared on close, on reopen
+ * (via `closeProject`, called at the top of `openProject`), and on quit
+ * (`handleQuitRequested`, #2517) — never left armed past the `StudioHandle`
+ * it closes over. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
 /**
  * The open project's EFFECTIVE entry file — `StudioHandle.entryFile`,
@@ -209,9 +227,8 @@ export async function openProject(root: string): Promise<void> {
   currentEntryFile = current.entryFile;
 
   // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
-  // class. Clean ticks are no-ops inside the command. 2-minute default
-  // (2026-08-07 ruling); a Settings surface can adjust later.
-  const AUTOSAVE_MS = 120_000;
+  // class. Clean ticks are no-ops inside the command. See `AUTOSAVE_MS`'s
+  // doc comment for the ruling and why it's a module-level export.
   const api = current.api;
   autosaveTimer = setInterval(() => {
     if (api.getDirtyFiles().length > 0) api.dispatch("file.saveAll");
@@ -348,9 +365,25 @@ async function handleExportInkb(): Promise<void> {
  * can never race the in-flight canonical write. `awaitSaveAllBeforeQuit` is
  * capped (~3s) — a hung write cannot make the app unquittable, since the
  * backup ring (#154) already bounds the loss.
+ *
+ * `autosaveTimer` is cleared here too, BEFORE the `await` below (#2517):
+ * this is `closeProject`'s structurally parallel sibling for teardown, and
+ * leaving the ticker armed through the (up to ~3s) save-wait means an
+ * autosave tick landing in that window would fire `dispatch("file.saveAll")`
+ * against a project mid-quit — redundant at best alongside
+ * `awaitSaveAllBeforeQuit`'s own dispatch/redispatch, and a needless extra
+ * write path racing the teardown at worst. Disarming it up front removes
+ * that window entirely rather than relying on the 120s cadence being long
+ * enough in practice. Exported (only) so
+ * `__tests__/autosave-quit.test.ts` can drive it directly, same as
+ * `openProject`/`closeProject` for `__tests__/autosave-reopen.test.ts`.
  */
-async function handleQuitRequested(): Promise<void> {
+export async function handleQuitRequested(): Promise<void> {
   if (current !== null) {
+    if (autosaveTimer !== null) {
+      clearInterval(autosaveTimer);
+      autosaveTimer = null;
+    }
     await awaitSaveAllBeforeQuit(current.api);
   }
   await getCurrentWindow().destroy();

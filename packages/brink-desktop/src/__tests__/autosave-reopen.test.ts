@@ -24,6 +24,21 @@
  * this package's `node`-environment suite, see `vitest.config.ts`) because
  * `openProject`/`closeProject`/`renderLanding` all read `document`.
  *
+ * `AUTOSAVE_MS` is imported from `main.tsx` rather than restated here
+ * (#2517) — a prior version of this file redeclared its own `120_000`
+ * local, which meant a change to the production interval couldn't fail
+ * anything in this file; the pinning test below asserts the imported
+ * binding's exact value, the same one `openProject`'s `setInterval` call
+ * reads. It's pulled via the same dynamic `await import("../main.js")`
+ * every other test here already uses, not a static top-level import: a
+ * static import executes before this file's OWN top-level `class
+ * FakeTauriFileProvider` declaration below it (ES import hoisting runs
+ * ahead of other module-body statements regardless of source position),
+ * which would fire the `../tauri-provider.js` mock factory — it references
+ * that class — before the class exists, throwing a TDZ `ReferenceError`.
+ * The third teardown path — app quit — is NOT this file's concern; see
+ * `autosave-quit.test.ts` for that (#2517).
+ *
  * Fake timers only (house rule): a real 120s wait is not an option, and a
  * short-vs-short real-timer race is exactly the kind of CI-jitter-flaky
  * test this project has already been burned by (see `quit.test.ts`'s
@@ -41,8 +56,6 @@
  * unrelated close-time flush.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const AUTOSAVE_MS = 120_000; // 2-minute default, main.tsx's AUTOSAVE_MS (2026-08-07 ruling) — not touched by this test.
 
 // ── Tauri IPC surface: never exercised by this scenario, just needs to
 // resolve without throwing so module import + the menu/window wiring at the
@@ -117,7 +130,7 @@ describe("desktop autosave ticker is replaced, not duplicated, on project reopen
   });
 
   it("clears project A's interval before project B's is armed, so A's tick never fires again", async () => {
-    const { openProject } = await import("../main.js");
+    const { openProject, AUTOSAVE_MS } = await import("../main.js");
 
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
@@ -167,7 +180,7 @@ describe("desktop autosave ticker is replaced, not duplicated, on project reopen
   // So the spec row's "cleared on project close OR reopen" needs both halves
   // pinned; this is the close half.
   it("clears the interval on an explicit close with no reopen behind it", async () => {
-    const { openProject, closeProject } = await import("../main.js");
+    const { openProject, closeProject, AUTOSAVE_MS } = await import("../main.js");
 
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
@@ -190,5 +203,15 @@ describe("desktop autosave ticker is replaced, not duplicated, on project reopen
     await vi.advanceTimersByTimeAsync(AUTOSAVE_MS * 3);
 
     expect(apiA?.dispatch.mock.calls.length).toBe(apiACallsAtClose);
+  });
+
+  // #2517: pins the exact cadence value, not merely that a constant exists.
+  // A test asserting only `typeof AUTOSAVE_MS === "number"`, or one that
+  // redeclares its own `120_000` instead of importing the real binding,
+  // would pass unchanged if the production interval were shortened — this
+  // asserts the literal `setInterval` in `openProject` actually reads.
+  it("pins the autosave cadence at 120000ms (2 minutes, the 2026-08-07 ruling)", async () => {
+    const { AUTOSAVE_MS } = await import("../main.js");
+    expect(AUTOSAVE_MS).toBe(120_000);
   });
 });
