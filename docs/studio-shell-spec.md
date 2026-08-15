@@ -471,6 +471,53 @@ viewport edges, dismiss-on-outside-click/Escape, and focus return. Lands in Phas
 (the palette needs it on day one); existing one-off implementations migrate to it as
 their components are touched, not as a big-bang.
 
+#### 7.7.1 Text-input seeding and selection (invariant)
+
+Every text input in the studio obeys two rules — overlay-hosted ones (command
+palette, quick pick, [NewFilePrompt.tsx](../packages/studio-ui/src/NewFilePrompt.tsx),
+[SymbolRenamePrompt.tsx](../packages/studio-ui/src/SymbolRenamePrompt.tsx)) and
+the inputs that live outside an overlay alike (the binder's in-row rename, the
+query field in [SearchView.tsx](../packages/studio-ui/src/SearchView.tsx), which
+is a tool window rather than an `Overlay`):
+
+1. **Seed synchronously at mount.** An uncontrolled input's initial text is
+   supplied by React while mounting it (`defaultValue`, re-keyed when the
+   prompt is re-pointed at a different target) — never written from a later
+   `requestAnimationFrame` or `setTimeout` callback. A deferred seed leaves a
+   window in which the field is mounted, visible and editable but still blank,
+   and it overwrites anything typed during that window; where the confirm path
+   reads `input.value`, the clobbered edit silently degrades to "no change"
+   (#2511). A *controlled* input satisfies this rule by construction.
+2. **Never `select()` text the user typed.** `select()` does not destroy text
+   itself, but it primes the next keystroke to replace the whole value, which
+   loses the edit just as thoroughly. It may run only when the field still
+   holds what the code put there, or in direct response to a user action that
+   means "replace this value". Deferring `focus()` is harmless — a user who
+   has already typed is already focused — but deferring `select()` is not.
+
+Each call site records which arm it relies on.
+[SearchView.tsx](../packages/studio-ui/src/SearchView.tsx) is the one place
+where an *unguarded* `select()` is correct rather than a defect (#2527): its
+query field is controlled, so rule 1 holds by construction, and the effect that
+selects it runs only on mount or on an explicit `search.focus` (`Mod-Shift-F`,
+palette "Search: Find in Files") — an invocation that means "replace this
+query", following the VS Code precedent the command was modelled on. That
+correctness rests entirely on `searchFocusSeq` being advanced by nothing except
+that command: a focus request raised from a non-user-initiated path (results
+arriving, a project reload, a focus-restore effect) would make the same
+`select()` fire mid-typing and turn it into a live input-loss bug.
+`packages/brink-studio/src/__tests__/search-view-focus.test.tsx` pins both
+halves.
+
+**Known outstanding violator.**
+[inline-name-input.ts:171-175](../packages/ink-editor/src/inline-name-input.ts)
+(`InlineNameInput`, the shared widget behind F2 rename and extract — exported
+at `ink-editor/src/index.ts`, used from `extract-actions.ts`) runs `focus()`
+and an unguarded `select()` inside a `setTimeout(…, 0)`, which rule 2 above
+forbids. It is not fixed here: `@brink-lang/editor` is a published package
+(0.14.0), so the guard and its regression test need their own changeset
+rather than riding in on this docs-only change. Tracked as #2540.
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*
