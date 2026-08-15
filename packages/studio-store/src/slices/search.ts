@@ -40,7 +40,18 @@ export interface SearchSlice {
   searchResults: ProjectSearchResult | null;
   /** Inline regex-validation error (like the Settings JSON error). */
   searchError: string | null;
-  /** Bumped by `search.focus`; the view focuses its query input on change. */
+  /**
+   * Bumped by `search.focus`; the view focuses its query input on change.
+   *
+   * Invariant (docs/studio-shell-spec.md §7.7.1, #2527): this is advanced
+   * *only* in response to a user invoking Find in Files. The view also
+   * `select()`s the query on every change, unguarded, which is correct
+   * precisely because a bump means "the user asked to replace this query" —
+   * bumping it from a path the user did not initiate (results arriving, a
+   * project reload) would select the text mid-typing and lose the next
+   * keystroke. `packages/brink-studio/src/__tests__/search-view-focus.test.tsx`
+   * fails if a new non-user-initiated caller appears.
+   */
   searchFocusSeq: number;
 
   setSearchQuery(query: string): void;

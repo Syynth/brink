@@ -169,6 +169,11 @@ export class InlineNameInput {
     this.badge = badge;
     this.report = report;
     // Focus + select after CM mounts the widget.
+    // KNOWN VIOLATION of docs/studio-shell-spec.md §7.7.1 rule 2: this
+    // select() is unguarded inside a deferred setTimeout, so it can clobber
+    // a user edit typed during the deferred window. Not fixed here because
+    // @brink-lang/editor is published (0.14.0) and needs its own changeset;
+    // tracked as https://github.com/Syynth/brink/issues/2540.
     setTimeout(() => {
       input.focus();
       input.select();
