@@ -104,7 +104,34 @@ function SearchViewInner() {
   }, [query, options, runSearch]);
 
   // search.focus → focus + select the query input (fires on mount too, so
-  // opening the window by strip click or Mod-N also lands in the input).
+  // opening the window by strip click or its Mod-6 toggle also lands in the
+  // input).
+  //
+  // The `select()` is deliberately unguarded, which is the opposite of the
+  // rule for the studio's other text inputs (docs/studio-shell-spec.md
+  // §7.7.1): elsewhere an unguarded `select()` primes the next keystroke to
+  // replace text the user typed, which is how #2511 lost renames. Two
+  // properties make it correct — and safe — here, and only here:
+  //
+  //   1. The query field is *controlled* (`value={query}` from the store, and
+  //      `onChange` writes straight back). Nothing ever assigns `input.value`,
+  //      and this effect is a plain `useEffect` body rather than a deferred
+  //      frame, so there is no window in which the DOM and the store disagree
+  //      and nothing to seed over.
+  //   2. `focusSeq` advances only from `requestSearchFocus()`, whose sole
+  //      caller is the `search.focus` command's `run` above — reachable only
+  //      via Mod-Shift-F or the palette. Re-invoking Find in Files means
+  //      "replace this query", so selecting it is the intent (VS Code
+  //      precedent), not a clobber. A mount cannot clobber either: it builds a
+  //      fresh input, so no keystroke of the user's exists in it yet.
+  //
+  // Property 2 is load-bearing. Raising a focus request from a path the user
+  // did not initiate — results arriving, a project reload, a focus-restore
+  // effect — would fire this `select()` mid-typing and make it a real
+  // input-loss bug. `packages/brink-studio/src/__tests__/search-view-focus.test.tsx`
+  // fails if that property is broken, if the dependency list is widened so
+  // this runs on unrelated re-renders, or if the intended select-on-invoke is
+  // removed.
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
