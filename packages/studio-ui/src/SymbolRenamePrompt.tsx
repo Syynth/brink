@@ -57,7 +57,13 @@ export function SymbolRenamePrompt() {
   // overwritten when the frame ran. Because the field is uncontrolled and
   // `confirmName()` reads `input.value`, a clobbered rename degrades to
   // `name === currentName`, which closes the prompt without renaming
-  // anything. Only focus/select are deferred, as neither can lose input.
+  // anything. `focus()` is harmless to defer — a user who has already typed
+  // is already focused — but `select()` is not: selecting the whole value on
+  // a field the user has already typed into would replace their next
+  // keystroke, the same defect class this fix closes. Only select when the
+  // field still holds the seeded name, i.e. nobody has touched it yet; see
+  // `packages/brink-studio/src/__tests__/symbol-rename-prompt-seed.test.tsx`
+  // for the guard that keeps this branch honest.
   useEffect(() => {
     if (!open) return;
     setReport(null);
@@ -67,7 +73,7 @@ export function SymbolRenamePrompt() {
       const input = inputRef.current;
       if (input) {
         input.focus();
-        input.select();
+        if (input.value === currentName) input.select();
       }
     });
     return () => cancelAnimationFrame(id);

@@ -13,8 +13,13 @@
  * `#brink-rename-input` being hidden succeeds) but the binder never shows the
  * new name.
  *
- * Both tests below fail against the `requestAnimationFrame` seeding and pass
- * once the value is seeded synchronously at mount.
+ * The first two tests below fail against the `requestAnimationFrame` seeding
+ * and pass once the value is seeded synchronously at mount. The third guards
+ * a sibling defect in the same callback: the deferred `focus()`/`select()`
+ * pair used to run unconditionally, so `select()` clobbered the caret of a
+ * field the user had already typed into — the same defect class, one step
+ * later. It fails unless `select()` is skipped once the field no longer
+ * holds the seeded name.
  */
 
 import { describe, expect, it, afterEach } from "vitest";
@@ -121,5 +126,26 @@ describe("SymbolRenamePrompt seeding (#2511)", () => {
     // `confirmName()` reads "barter", sees `name === currentName`, and closes
     // the prompt without performing a rename.
     expect(input().value).toBe("haggle");
+  });
+
+  it("leaves the selection alone on a field the user has already typed into", async () => {
+    renderPrompt("barter");
+
+    // Same window as above, but this time the typist also moves the caret,
+    // as a real keystroke would — the deferred callback must not know or
+    // care where the caret lands.
+    const el = input();
+    el.value = "haggle";
+    el.setSelectionRange(3, 3);
+    await flushFrames();
+
+    // Before the fix, the deferred frame called `input.select()`
+    // unconditionally, which would move the selection to the whole value
+    // (0, "haggle".length) and prime the next keystroke to replace it —
+    // the same defect class this PR closes, one step later in the same
+    // callback. `select()` must run only when the field still holds the
+    // seeded name.
+    expect(el.selectionStart).toBe(3);
+    expect(el.selectionEnd).toBe(3);
   });
 });
