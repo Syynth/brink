@@ -411,7 +411,11 @@ interface Notification {
 
 - **API:** a shell `notify(n): NotificationHandle` service (handle supports
   dismiss/update). Callable from feature slices and from host extensions via the
-  `StudioApi` facade (§8).
+  `StudioApi` facade (§8) — and, since #2528, from a `studio-ui` action module
+  raising through the store's injected notifier directly
+  (`performSymbolRename`). That is the first production producer that is neither
+  a slice nor a host extension; it reports through the same store→shell bridge
+  rather than a new channel.
 - **Actions dispatch commands only** — no raw callbacks. This keeps the model
   serializable and consistent with §6 ("nothing binds a key directly to a function"
   applies to notification buttons too). The Binder's undo toast becomes a notification
@@ -426,7 +430,16 @@ interface Notification {
 - **Refused structural operations report here.** A rename/move/delete that the
   underlying op declines raises an `error`-severity notification tagged with the
   same `source` as its success toast, so both outcomes of one operation report
-  through one channel and a failure cannot be mistaken for a success. Established
+  through one channel and a failure cannot be mistaken for a success.
+  ⚠ This states the TARGET, not the current state of every call site. Known
+  non-compliant paths, all pre-existing: the **inline-rename commit path** —
+  `error_json` (`crates/brink-web/src/editor_refactor.rs`) returns `safe: true`
+  with no `introduced_diagnostics`, so `isSafeRename`
+  (`packages/ink-editor/src/breakage.ts`) treats an `ok: false` refusal as safe,
+  `settleCommit` commits, and `applyMoveResult` raises the ordinary INFO
+  `Rename X to Y` toast with an Undo action although nothing was applied — and
+  the reorder/move/promote/demote ops in `dispatchSymbolAction`, which do not
+  report refusals at all. Established
   by the file rename (`applyRename`, studio-store's binder slice); extended to the
   knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
   returned to `SymbolRenamePrompt` and discarded when the prompt closed. Guarded by

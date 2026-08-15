@@ -166,14 +166,22 @@ export async function performSymbolRename(
     // (`applyRename` in studio-store's binder slice), and the same `source`
     // tag the success path's `applyMoveResult` toast carries, so both outcomes
     // of one rename report through one channel.
+    //
+    // Guarded by packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts;
+    // the invariant is recorded in docs/studio-shell-spec.md §7.5.
+    //
+    // The frame is "Rename X failed: <reason>", NOT "Cannot rename X: <reason>":
+    // the op's most common refusal is literally "cannot rename this symbol",
+    // which the latter turns into "Cannot rename hello: cannot rename this
+    // symbol". Keep the frame and the op's own wording from colliding.
     const label = renameLabel(req);
     state._notify?.({
       severity: "error",
       source: "binder",
       message:
         result.error != null && result.error !== ""
-          ? `Cannot rename ${label}: ${result.error}`
-          : `Cannot rename ${label}`,
+          ? `Rename ${label} failed: ${result.error}`
+          : `Rename ${label} failed`,
     });
     return { applied: false, diagnostics: [], error: result.error };
   }

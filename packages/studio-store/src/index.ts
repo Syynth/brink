@@ -32,7 +32,10 @@ import { createConflictSlice } from "./slices/conflict.js";
 // ── Notifications (store → shell bridge) ────────────────────────────
 
 /**
- * A notification request raised by a slice (binder undo, replay divergence).
+ * A notification request raised by a slice (binder undo, replay divergence),
+ * or — since #2528 — by a `studio-ui` action module holding the injected
+ * notifier (`performSymbolRename`'s refusal path). Producers are not limited
+ * to slices; what is fixed is the SHAPE and the store→shell bridge below.
  *
  * The store sits below the shell (spec §7.2), so it cannot import the
  * notification service — instead the app boundary (main.tsx) injects a
