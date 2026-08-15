@@ -339,6 +339,31 @@ importing process. Each script's `describe("the main-guard")` block holds
 the two tests that pin it (inert on import; still acts when run
 standalone). A third preflight script gets the same treatment.
 
+That last sentence used to be enforced by nothing (#2478), which is how the
+pair came to be named one script at a time in the first place.
+`src/__tests__/scripts-main-guard.test.ts` now closes the class instead of
+the instances: it directory-scans `packages/brink-desktop/scripts/*.mjs`
+rather than holding a list of filenames, and for every file it finds asserts
+a named export and the exact
+`process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href`
+line. The `process.argv[1] &&` half is required deliberately — with no
+script path (`node -e`, which is how the inert-on-import test loads the
+module) `pathToFileURL(undefined)` throws, so a guard missing it does not
+make the module inert. Because a scan matching nothing would pass forever,
+the same file pins the exact expected roster of scripts; adding a preflight
+script means adding one name there, and its guard is then checked
+automatically.
+
+**Scope, and what is NOT ruled here.** That scan covers
+`packages/brink-desktop/scripts/` only — the directory this section governs.
+The repo root's `scripts/check-wasm-pkg.mjs` (#2479) carries the identical
+idiom but sits outside this package, is covered by Node's built-in test
+runner (`pnpm test:scripts`) rather than Vitest, and is not part of the
+`dev` preflight pair; nothing currently asserts *its* main-guard. Whether
+the invariant should be repo-wide rather than desktop-scoped is a real
+question and is **NOT settled here** — it is raised on #2478 rather than
+answered by a package test reaching across the fence.
+
 The sidecar seam is also what made the stub option above testable — it was
 added (#2452) as a prerequisite and spent by #2469.
 
