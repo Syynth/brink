@@ -204,7 +204,11 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   ran this lane only on the post-merge push to `main` — including the two
   `*_matches_the_root_workspace` drift tests, which could not fail the PR
   that caused the drift.
-  (`desktop_smoke_path_filter_covers_its_shared_inputs`)
+  (`desktop_smoke_path_filter_covers_its_shared_inputs`) `crates/brink-cli/**`
+  was one of those crate globs until #2477: once `BRINK_SIDECAR_STUB` (below)
+  made the sidecar step a placeholder, nothing left in the lane read
+  `brink-cli` source, so the same test now asserts the entry stays **absent**
+  rather than present.
 - **Checks are non-blocking for their siblings but gated on their setup
   steps.** A bare `if: '!cancelled()'` also overrides the implicit
   `success()` on a failed *prerequisite*, so a dying setup step let the
@@ -233,10 +237,16 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   also flattening the "Build brink-web wasm package" step's `wasm-pack
   build` (release by default, and this lane's largest build), not only the
   sidecar build it was written to excuse. Removing the vars un-flattens
-  that wasm build too: the lane now deliberately runs a fully-optimised
-  `wasm-pack build`, rather than keep vars that would be dead configuration
-  for the (now-gone) sidecar build while still quietly de-optimising the
-  wasm one. The guard asserts the stub is wired **and** that the three
+  that wasm build too: the lane now runs a fully-optimised `wasm-pack
+  build`, rather than keep vars that would be dead configuration for the
+  (now-gone) sidecar build while still quietly de-optimising the wasm one.
+  #2482 asked whether that build should get the sidecar's stub treatment;
+  it should not (#2502) — unlike the sidecar's staged file, whose content is
+  never read, the wasm-pack output is genuinely consumed by "Typecheck (tsc
+  --noEmit)" and `pnpm build` below, so a stub cannot stand in for it. The
+  release-vs-dev optimisation level and reusing `ci.yml`'s own artefact
+  remain open, tracked by #2482. The guard asserts the stub is wired **and**
+  that the three
   stopgap vars are gone, so the lane cannot drift back or carry both. Every
   other caller — `pnpm --filter @brink/desktop build` on a developer
   machine, where the sidecar really is shipped and run — still builds a

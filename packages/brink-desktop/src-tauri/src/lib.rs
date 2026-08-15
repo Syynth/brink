@@ -1542,12 +1542,22 @@ mod tests {
     /// `dependency_versions_track_the_root_workspace` (#2451, which also
     /// compares root's `Cargo.lock`), whose entire purpose is catching
     /// root-policy drift, cannot fail the PR that causes it.
+    ///
+    /// `crates/brink-cli/**` is deliberately NOT in this list (#2477):
+    /// `BRINK_SIDECAR_STUB: "1"` is unconditional in this workflow's `env:`
+    /// block, so `ensure-cli-sidecar.mjs` never runs `cargo build -p
+    /// brink-cli --release` in this lane — see `STUB_SIDECAR` in
+    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs`, which stages
+    /// a placeholder without reading any `brink-cli` source. `src-tauri` is
+    /// its own excluded workspace and does not depend on the `brink-cli`
+    /// crate either, so nothing left in this lane can notice a
+    /// `crates/brink-cli/**` change; watching that tree here would only
+    /// trigger the job for a change it can no longer detect.
     #[test]
     fn desktop_smoke_path_filter_covers_its_shared_inputs() {
         let entries = path_filter(&workflow("desktop-smoke.yml"));
         for required in [
             "packages/brink-desktop/**",
-            "crates/brink-cli/**",
             "pnpm-lock.yaml",
             "Cargo.toml",
             "Cargo.lock",
@@ -1568,6 +1578,15 @@ mod tests {
                  it lists {entries:?}"
             );
         }
+        assert!(
+            !entries.iter().any(|entry| entry == "crates/brink-cli/**"),
+            "desktop-smoke.yml's pull_request path filter should NOT list \
+             \"crates/brink-cli/**\" (#2477): BRINK_SIDECAR_STUB is unconditional in this \
+             workflow, so nothing left in this lane can notice a brink-cli source change \
+             — re-adding the entry without also restoring something that reads brink-cli \
+             sources would just resurrect the dead-weight trigger this test now guards \
+             against"
+        );
     }
 
     /// Each check in the smoke lane must stay non-blocking for its SIBLINGS
@@ -1788,6 +1807,14 @@ mod tests {
     /// the "Three properties of `desktop-smoke.yml` ... asserted by tests"
     /// that docs/desktop-shell-spec.md's "Smoke-lane inputs and step
     /// gating" section claims.
+    ///
+    /// Restoring a real (non-stubbed) sidecar build here also means
+    /// re-adding `crates/brink-cli/**` to the `pull_request` path filter —
+    /// `desktop_smoke_path_filter_covers_its_shared_inputs` now asserts
+    /// that entry stays **absent** (#2477), on the premise that this guard
+    /// keeps `BRINK_SIDECAR_STUB` unconditional. Un-stub the sidecar
+    /// without also touching that test and the filter goes back to
+    /// watching a tree the lane silently ignores.
     #[test]
     fn desktop_smoke_stubs_the_staged_sidecar() {
         let workflow = workflow("desktop-smoke.yml");
@@ -1812,7 +1839,11 @@ mod tests {
              exact string ensureCliSidecar's `stub` option opts in on) so \
              ensure-cli-sidecar.mjs stages a placeholder instead of building a \
              brink-cli release binary this check-only lane never runs; an env var \
-             rather than a step flag because `pnpm build` re-runs that script"
+             rather than a step flag because `pnpm build` re-runs that script — if you \
+             are restoring a real sidecar build, also re-add \"crates/brink-cli/**\" to \
+             desktop-smoke.yml's pull_request path filter, which \
+             desktop_smoke_path_filter_covers_its_shared_inputs (#2477) currently \
+             forbids"
         );
         for key in [
             "CARGO_PROFILE_RELEASE_OPT_LEVEL",
