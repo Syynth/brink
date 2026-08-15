@@ -43,9 +43,13 @@
  *
  *  4. The scan's roots are DERIVED from `pnpm-workspace.yaml`'s `packages:`
  *     globs ({@link import("./workspace-roots.js")}), not a hand-maintained
- *     `packages/` assumption — so a workspace-layout change (a new glob, a
- *     package with sources outside `src/`) either widens the scan to match
+ *     `packages/` assumption — so a NEW GLOB either widens the scan to match
  *     or fails loudly, rather than silently narrowing coverage.
+ *     ⚠ Partial: `discoverCallSiteFiles` still hard-codes `<pkg>/src` and
+ *     skips a package that has none, so a package whose sources live
+ *     elsewhere is NOT covered by the derivation. That residue is pinned
+ *     instead — "every derived root has a src/ the scan can walk" fails
+ *     loudly if such a package ever appears.
  *  5. Every non-exempt `SAVE-PATH` id is required to name exactly ONE call
  *     site across the whole scan. Without this, a brand-new call site could
  *     satisfy step 3 above by reusing an id already claimed by an unrelated,
@@ -342,6 +346,20 @@ describe("every production save path is enrolled in SAVE_PATHS (#2480)", () => {
         "save-retire-invariant.test.ts), or mark it SAVE-PATH-EXEMPT if it provably never has " +
         "an await between its confirming read and the call",
     ).toEqual([]);
+
+    // The other direction. `idSites` is built FROM the discovered call
+    // sites, so the check above can only catch an id claimed twice — a
+    // registry id claimed by ZERO non-exempt markers is invisible to it.
+    // That orphan is exactly the loophole this test exists to close: it is
+    // a free id a future call site can cite as its sole claimant, passing
+    // the uniqueness check while nothing enrols it.
+    expect(
+      SAVE_PATH_IDS.filter((id) => !idSites.has(id)),
+      "these SAVE_PATHS ids are in the registry but named by no non-exempt call-site marker — " +
+        "either the marker that claimed the id lost it (restore it), or the save path is gone " +
+        "and its driver should be retired from save-paths.ts and save-retire-invariant.test.ts. " +
+        "Leaving it orphaned lets a future call site claim it and look enrolled",
+    ).toEqual([]);
   });
 });
 
@@ -355,13 +373,46 @@ describe("the scan's roots are derived from pnpm-workspace.yaml, not hand-mainta
     expect(globs).toEqual(["packages/*"]);
   });
 
+  it("every derived root has a src/ the scan can walk (#2515 hole 2, residual)", () => {
+    // `discoverCallSiteFiles` hard-codes `join(pkgDir, "src")` and SKIPS a
+    // package that has no such directory. Deriving the roots from
+    // pnpm-workspace.yaml closed the "package outside packages/*" half of
+    // hole 2, but NOT this half: a package whose sources live somewhere
+    // other than `src/` is still silently invisible to the scan. Until the
+    // walk is generalised, pin that no such package exists — so adding one
+    // fails loudly here ("teach the scan where this package's sources
+    // live") instead of quietly shrinking the scanned set.
+    const missing = discoverPackageDirs()
+      .filter((root) => {
+        try {
+          return !statSync(join(root, "src")).isDirectory();
+        } catch {
+          return true;
+        }
+      })
+      .map((root) => relative(repoRoot, root));
+    expect(
+      missing,
+      "these workspace packages have no src/ directory, so discoverCallSiteFiles skips them " +
+        "entirely — any .markFilesSaved(/.markAllSaved( call inside them is unguarded. Either " +
+        "give the package a src/, or generalise the walk in discoverCallSiteFiles to find its " +
+        "sources",
+    ).toEqual([]);
+  });
+
   it("the derived roots are exactly today's package directories, not zero and not a guess", () => {
     const roots = discoverPackageDirs();
     const names = roots.map((root) => relative(repoRoot, root)).sort();
     // Non-vacuity: pinned as an exact set (not "length > 0") so a
     // derivation that silently under- or over-matches is caught here,
     // before it ever reaches discoverCallSiteFiles.
-    expect(names).toEqual(
+    expect(
+      names,
+      "the set of workspace packages changed. This is a PIN, not the scan's source of truth — " +
+        "the roots are derived from pnpm-workspace.yaml — so if a package was genuinely added " +
+        "or removed, bump this list consciously and check the new package's sources are " +
+        "reachable by the scan",
+    ).toEqual(
       [
         "brink-desktop",
         "brink-studio",
