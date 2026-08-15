@@ -37,14 +37,17 @@ ignore = [
 ]
 
 [licenses]
-# Allowlist — every crate in the ROOT workspace's graph resolves to one of
-# these (verified via `cargo metadata`: 100% permissive, no copyleft
-# obligations). NOT true of the src-tauri graph this file also governs: its
-# `cargo-deny (src-tauri)` run rejects 5 MPL-2.0 crates (cssparser,
-# cssparser-macros, dtoa-short, option-ext, selectors) against this same
-# allowlist. That step reports rather than blocks pending a maintainer
-# ruling — see desktop-smoke.yml and docs/desktop-shell-spec.md "Smoke-lane
-# inputs and step gating" — so the allowlist stays unchanged here.
+# POLICY: permissive-only by default, PLUS MPL-2.0 admitted for five named
+# transitive Tauri dependencies (the `exceptions` table below). That is the
+# whole policy — the blanket `allow` list stays permissive-only, so no
+# copyleft licence is accepted graph-wide, only per-crate.
+#
+# This comment used to claim the allowlist was "100% permissive, no copyleft
+# obligations". That was true of the ROOT workspace's graph and is still true
+# of it, but it was never true of everything this file governs: the
+# `packages/brink-desktop/src-tauri` graph has carried MPL-2.0 crates since
+# the repo took a Tauri dependency. Corrected with the 2026-08-15 ruling
+# below rather than left as a sentence the config contradicts.
 allow = [
     "MIT",
     "MIT-0",
@@ -61,6 +64,51 @@ allow = [
     "BSL-1.0",
     "CC0-1.0",
     "WTFPL",
+]
+# MPL-2.0 — admitted PER-CRATE. MAINTAINER RULING, 2026-08-15 (see
+# docs/decision-log.md "MPL-2.0 admitted for the five transitive Tauri
+# dependencies"): these five crates are unavoidable transitively through
+# Tauri itself — there is no version bump or feature flag that removes them —
+# and MPL-2.0 is file-level copyleft whose obligations attach to modifying
+# and distributing those files, which this project links rather than
+# modifies.
+#
+# `exceptions` is the NARROWEST mechanism cargo-deny offers here: adding
+# "MPL-2.0" to `allow` above would admit copyleft for every crate in both
+# graphs, whereas each entry below admits it for exactly one crate name. Any
+# sixth MPL-2.0 crate that appears in either graph still fails the audit,
+# which is the point — the ruling covers these five, not the licence.
+#
+# Verified against the cargo-deny the PINNED action image actually ships
+# (0.19.8, EmbarkStudios/cargo-deny-action@bb137d7), not a newer local one:
+# the `crate = ...` spelling of an exception is accepted by both 0.19.8 and
+# 0.20.2, so this survives the next pin bump either way.
+#
+# Deliberately NOT version-pinned: the ruling is about these crates' licence,
+# not about a Tauri patch release, and a `version` field here would silently
+# re-break the audit on every routine bump of the graph they arrive through.
+#
+# Same shared-file consequence as the `ignore` list above, mirrored: none of
+# these five exist in the ROOT graph, so the required root job now prints
+# `warning[license-exception-not-encountered]` for all five. Warnings only —
+# the root `check` still reports `advisories ok, bans ok, licenses ok,
+# sources ok`.
+#
+# GUARDED BY `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies`
+# (packages/brink-desktop/src-tauri/src/lib.rs), which asserts these exact
+# five crate names and that "MPL-2.0" stays out of the blanket `allow` list
+# above. Edit either list and that test is what fails.
+exceptions = [
+    # selectors <- dom_query <- tauri-utils, wry
+    { crate = "selectors", allow = ["MPL-2.0"] },
+    # cssparser <- selectors + dom_query
+    { crate = "cssparser", allow = ["MPL-2.0"] },
+    # cssparser-macros <- cssparser
+    { crate = "cssparser-macros", allow = ["MPL-2.0"] },
+    # dtoa-short <- cssparser
+    { crate = "dtoa-short", allow = ["MPL-2.0"] },
+    # option-ext <- dirs-sys <- dirs <- tauri, tauri-build, wry
+    { crate = "option-ext", allow = ["MPL-2.0"] },
 ]
 # Crates whose license must be confirmed by hand can be pinned here; none needed.
 confidence-threshold = 0.9
