@@ -14,9 +14,12 @@
 #     `cargo nextest run --workspace`, measured at 35s vs `cargo test`'s
 #     2m52s for identical results (issue #1695). Without it every pump agent
 #     falls back to the 5x-slower path or fails outright.
-#   - cargo-deny — the `cargo-deny` CI job (.github/workflows/ci.yml) gates
-#     advisories/licenses; installing it locally lets a gate run catch what
-#     would otherwise only fail in CI.
+#   - cargo-deny (BRINK_SETUP_FULL=1 only) — pinned to the version CI's
+#     pinned EmbarkStudios/cargo-deny-action SHA runs, then run against BOTH
+#     workspaces .github/workflows/ci.yml's "cargo-deny" job and
+#     .github/workflows/desktop-smoke.yml's "cargo-deny (src-tauri)" step
+#     audit, so advisory/licence breaks in either graph surface locally
+#     instead of only in CI.
 #
 # Prebuilt binaries are preferred over `cargo install` wherever upstream
 # publishes them: building nextest + wasm-pack from source costs minutes each,
@@ -142,20 +145,69 @@ else
 fi
 
 # --- cargo-deny (opt-in) -----------------------------------------------------
-# Mirrors the cargo-deny CI job so advisory/license breaks surface locally.
-# OPT-IN because it has no prebuilt binary and compiles from source in ~2m —
-# real latency when this script runs at every cloud-session start, for a gate
-# CI already enforces on every PR. Set BRINK_SETUP_FULL=1 to include it.
+# Mirrors BOTH cargo-deny CI steps so advisory/licence breaks surface locally:
+#   - .github/workflows/ci.yml's required "cargo-deny" job — root workspace,
+#     blocking.
+#   - .github/workflows/desktop-smoke.yml's "cargo-deny (src-tauri)" step —
+#     packages/brink-desktop/src-tauri's OWN Cargo.lock (451 [[package]]
+#     entries via the Tauri graph), which shares no resolution with the root
+#     lock and gets no audit anywhere else in CI (#2470). continue-on-error:
+#     true there, because the first audit surfaced 21 real findings (16
+#     unmaintained-crate RUSTSEC advisories inherent to Tauri v2 on Linux, 5
+#     MPL-2.0 licences) pending a maintainer ruling — see
+#     docs/desktop-shell-spec.md "Smoke-lane inputs and step gating".
+#
+# Both CI steps pin the SAME action SHA (guarded by
+# desktop_smoke_audits_the_src_tauri_dependency_graph in
+# packages/brink-desktop/src-tauri/src/lib.rs):
+#   EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
+# whose bundled image ships cargo-deny 0.19.8 (see the "--config" comment
+# beside that step in desktop-smoke.yml). Installing whatever `cargo install
+# cargo-deny` considers latest would let a local run disagree with CI in
+# EITHER direction — a false pass as easily as a false failure, both look
+# authoritative — so pin to the exact version instead. Bump CARGO_DENY_VERSION
+# only alongside that action SHA.
+#
+# OPT-IN (BRINK_SETUP_FULL=1) because cargo-deny has no prebuilt binary and
+# compiles from source in ~2m — real latency when this script runs at every
+# cloud-session start, for gates CI already enforces on every PR.
+
+CARGO_DENY_VERSION="0.19.8"
+
+cargo_deny_ok() {
+  command -v cargo-deny >/dev/null 2>&1 &&
+    [ "$(cargo deny --version 2>/dev/null | awk '{print $2}')" = "${CARGO_DENY_VERSION}" ]
+}
 
 if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
-  if command -v cargo-deny >/dev/null 2>&1; then
+  if cargo_deny_ok; then
     echo "==> cargo-deny already installed ($(cargo deny --version 2>/dev/null | head -n1))"
   else
-    echo "==> Installing cargo-deny (BRINK_SETUP_FULL=1; ~2m from source)"
-    cargo install cargo-deny --locked || echo "==> cargo-deny install failed; skipping"
+    if command -v cargo-deny >/dev/null 2>&1; then
+      echo "==> cargo-deny present but not ${CARGO_DENY_VERSION} ($(cargo deny --version 2>/dev/null | head -n1)) — replacing"
+    fi
+    echo "==> Installing cargo-deny ${CARGO_DENY_VERSION} (BRINK_SETUP_FULL=1; ~2m from source, no prebuilt binary)"
+    cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked || echo "==> cargo-deny install failed; skipping audit"
+  fi
+
+  if command -v cargo-deny >/dev/null 2>&1; then
+    echo "==> Running cargo-deny check (root workspace) — mirrors ci.yml's required \"cargo-deny\" job"
+    if ! cargo deny check; then
+      echo "==> cargo-deny check (root workspace) reported findings — this job is REQUIRED in ci.yml; fix before pushing"
+    fi
+
+    echo "==> Running cargo-deny check (packages/brink-desktop/src-tauri) — mirrors desktop-smoke.yml's \"cargo-deny (src-tauri)\" step"
+    # NOTE: --manifest-path/--all-features/--locked are top-level cargo-deny
+    # flags, not `check` subcommand flags (`cargo deny --help` vs
+    # `cargo deny check --help`) — they MUST precede `check` on the command
+    # line, matching how the action assembles `arguments` before `command`
+    # (see the comment beside this step in desktop-smoke.yml).
+    if ! cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml --all-features --locked check; then
+      echo "==> cargo-deny check (src-tauri) reported findings — non-blocking, matches desktop-smoke.yml's continue-on-error (#2470; known MPL-2.0/RUSTSEC findings pending a maintainer ruling)"
+    fi
   fi
 else
-  echo "==> Skipping cargo-deny (set BRINK_SETUP_FULL=1 to install; CI gates it anyway)"
+  echo "==> Skipping cargo-deny (set BRINK_SETUP_FULL=1 to install + audit; CI gates it anyway)"
 fi
 
 # --- pnpm (via corepack) -----------------------------------------------------
