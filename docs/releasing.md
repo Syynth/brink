@@ -231,21 +231,35 @@ The release path is hardened:
 
 ### Dependency audit (baseline)
 
-As of the initial setup, the resolved graph is **750 crates** (727 third-party).
-Breadth is driven almost entirely by `bevy-brink` (~151 transitive deps; the
-bevy/wgpu/winit ecosystem alone is ~88 crates) — the core is lean
-(`brink-runtime` ~12, `brink-compiler` ~34).
+The project audits **two separate dependency graphs** via `cargo-deny`:
 
-- **Licenses:** 100% permissive (MIT/Apache dominant; Unicode-3.0, Zlib, BSD,
-  ISC, CC0, etc.). No copyleft obligations — every crate offers a permissive
-  option. Enforced by `deny.toml`'s allowlist.
-- **Advisories:** 0 vulnerabilities. Three informational advisories, all
-  transitive and accepted (ignored with rationale in `deny.toml`): `paste`
-  unmaintained (RUSTSEC-2024-0436) and `rand` unsoundness under a custom-logger
-  edge case (RUSTSEC-2026-0097).
+1. **Root workspace** (enforced in CI): 762 crates resolved. Breadth is driven
+   almost entirely by `bevy-brink` (~151 transitive deps; the bevy/wgpu/winit
+   ecosystem alone is ~88 crates) — the core is lean (`brink-runtime` ~12,
+   `brink-compiler` ~34).
 
-Re-check anytime with `cargo deny check` (and `cargo audit` for the latest
-advisory DB).
+   - **Licenses:** 100% permissive (MIT/Apache dominant; Unicode-3.0, Zlib,
+     BSD, ISC, CC0, etc.). No copyleft obligations — every crate offers a
+     permissive option. Enforced by `deny.toml`'s allowlist.
+   - **Advisories:** 0 vulnerabilities. Three informational advisories, all
+     transitive and accepted (ignored with rationale in `deny.toml`):
+     `ttf-parser` unmaintained (RUSTSEC-2026-0192) and `quick-xml` quadratic
+     XML parsing (RUSTSEC-2026-0194/0195; we parse only local XLIFF files).
+
+2. **`packages/brink-desktop/src-tauri` workspace** (reported, non-required):
+   451 crates resolved. This excluded workspace brings in additional dependencies
+   for the Tauri desktop shell. Its cargo-deny run reports separately and is not
+   part of the CI enforce gate.
+
+   - **Licenses:** Includes 5 MPL-2.0 crates (cssparser, cssparser-macros,
+     dtoa-short, option-ext, selectors) — copyleft obligations ruled as
+     admitted as of 2026-08-15 (`docs/decision-log.md`).
+   - **Advisories:** The src-tauri graph currently reports unmaintained-crate
+     RUSTSEC advisories and an `unlicensed` crate finding — neither ruled on and
+     both remain reporting-only (not enforced).
+
+Re-check both anytime with `cargo deny check` at the root (checks both
+lockfiles via one `deny.toml`) and `cargo audit` for the latest advisory DB.
 
 [crates.io]: https://crates.io
 [release-plz]: https://release-plz.dev
