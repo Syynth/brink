@@ -70,6 +70,12 @@ export function registerFileCommands(
         // a host save (the standalone playground) the synchronous
         // flush-and-re-baseline path is byte-identical to before.
         const markSavedAndNotify = (): void => {
+          // SAVE-PATH markFilesSaved: file.save, file.save (settled)
+          // (checked against src/__tests__/save-paths.ts by
+          // src/__tests__/save-path-enrolment.test.ts, issue #2480.) All
+          // three callers of `markSavedAndNotify` — the settled branch, the
+          // disk-confirmed branch, and the no-host-save branch — retire
+          // through this one call site, so both `file.save` drivers sweep it.
           project.markFilesSaved([path]);
           notify({ severity: "info", source: "file", message: `Saved ${path}` });
         };
@@ -218,6 +224,8 @@ export function registerFileCommands(
                 ...confirmed.filter((p): p is string => p !== null),
               ].filter((path) => atMark[path] === current[path]);
               const stale = dirty.length - saved.length;
+              // SAVE-PATH markFilesSaved: file.saveAll
+              // (src/__tests__/save-path-enrolment.test.ts, issue #2480.)
               if (saved.length > 0) project.markFilesSaved(saved);
               if (stale > 0) {
                 notify({
@@ -242,6 +250,10 @@ export function registerFileCommands(
           // Synchronous no-host-save path — safe to call `markAllSaved`
           // unconditionally (see its ⚠ comment): nothing awaited above it,
           // so nothing could have moved on since `dirty` was captured.
+          // SAVE-PATH-EXEMPT markAllSaved: no `await` sits between
+          // `dirtyPaths()`/`getFiles()` above and this call, so the
+          // confirm→retire race the sweep guards against cannot occur here
+          // (checked by src/__tests__/save-path-enrolment.test.ts, #2480).
           project.markAllSaved();
           report(dirty.length);
         }
