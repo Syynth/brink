@@ -108,6 +108,32 @@ graph — the two dependency graphs resolve transitive crates differently for
 legitimate reasons, and `src-tauri` depends on no first-party crate at all
 (it reaches the compiler only through the `brink-cli` sidecar binary).
 
+**Fourth cost, named later (#2507): `run_cli`'s subcommand allowlist doesn't
+cross the fence either.** `ALLOWED_CLI_SUBCOMMANDS` in `src-tauri/src/lib.rs`
+hand-mirrors a subset of `brink-cli`'s real `clap` subcommand surface
+(`crates/brink-cli/src/main.rs`'s `Commands` enum), and — same shape as the
+two costs above — `src-tauri` cannot take a dev-dependency on `brink-cli` to
+introspect that surface without pulling the excluded crate back across the
+fence it was pushed out of. `cli_allowlist_subcommands_exist_in_brink_cli_surface`
+in `src/lib.rs` closes the gap by reading `crates/brink-cli/src/main.rs` as
+plain text (not a Cargo dependency), extracting each top-level `Commands`
+variant name and applying clap's default kebab-case rename, then asserting
+every entry in `ALLOWED_CLI_SUBCOMMANDS` is present in that derived set. It
+is deliberately a subset check, not an equality one: `brink-cli` has more
+subcommands than the sidecar exposes (`play`, `fmt`, `convert`,
+`migrate-xliff`, `replay`, `ide` are intentionally not sidecar-invokable) —
+`brink-cli` growing one of those must not fail this test, only a rename or
+removal of a subcommand the allowlist actually depends on should. Both files
+carry a pointer comment to the other (`ALLOWED_CLI_SUBCOMMANDS`'s doc comment
+here, and a comment on `enum Commands` in `crates/brink-cli/src/main.rs`).
+Same standing as every guard above: it lives in `src-tauri`'s own,
+non-required test suite (see the ruling immediately below) — a subcommand
+rename on the `brink-cli` side alone fails `cargo test` in this crate, not
+any check branch protection requires. #2466 is the still-open question of
+whether a cross-workspace guard like this one needs a home with
+merge-blocking teeth; this one inherits the existing (unruled-on) pattern's
+non-required standing rather than resolving that question.
+
 CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
 required lanes must not grow a Tauri build.
