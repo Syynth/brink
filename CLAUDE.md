@@ -145,7 +145,7 @@ instead of more text.
 
 ## Cloud / fresh-environment sessions
 
-On a fresh checkout (including cloud sessions with no local toolchain cache), run `scripts/setup-dev.sh` first. It installs/verifies rustup + the pinned toolchain (`rust-toolchain.toml`), `wasm-pack`, and `pnpm` (via corepack), mirroring the versions `.github/workflows/ci.yml` uses.
+On a fresh checkout (including cloud sessions with no local toolchain cache), run `scripts/setup-dev.sh` first. It installs/verifies rustup + the pinned toolchain (`rust-toolchain.toml`), `wasm-pack`, and `pnpm` (via corepack), mirroring the versions `.github/workflows/ci.yml` uses. Setting `BRINK_SETUP_FULL=1` additionally installs CI's pinned `cargo-deny` and runs both workspace audits (root and `packages/brink-desktop/src-tauri`) — opt-in because cargo-deny has no prebuilt binary and compiles from source in ~2m, which is real latency at every cloud-session start for gates CI already enforces.
 
 - **Oracle regeneration is NOT needed.** The C# oracle (`tools/ink-oracle/`, `oracle/*.oracle.json`) requires `dotnet` and is only for producing new golden episodes. All `oracle.json` files consumed by tests are already checked in — do not install `dotnet` or run the oracle generator just to get the test suite working.
 - **Expect the first full `cargo build`/`cargo test --workspace` to take minutes.** The workspace includes the `bevy-brink` crate tree (Bevy + its dependency graph), which is the dominant cost of a cold build. Subsequent builds are incremental and much faster.

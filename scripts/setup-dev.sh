@@ -152,10 +152,14 @@ fi
 #     packages/brink-desktop/src-tauri's OWN Cargo.lock (451 [[package]]
 #     entries via the Tauri graph), which shares no resolution with the root
 #     lock and gets no audit anywhere else in CI (#2470). continue-on-error:
-#     true there, because the first audit surfaced 21 real findings (16
-#     unmaintained-crate RUSTSEC advisories inherent to Tauri v2 on Linux, 5
-#     MPL-2.0 licences) pending a maintainer ruling — see
-#     docs/desktop-shell-spec.md "Smoke-lane inputs and step gating".
+#     true there, because that audit surfaces real findings: unmaintained-crate
+#     RUSTSEC advisories inherent to Tauri v2 on Linux, plus brink-desktop's
+#     own `unlicensed` entry. Neither is ruled on. (The MPL-2.0 licence
+#     rejections that used to appear alongside them ARE ruled — admitted
+#     per-crate as of 2026-08-15, see docs/decision-log.md.) For the current
+#     count, defer to docs/desktop-shell-spec.md "Smoke-lane inputs and step
+#     gating" rather than restating a number here that drifts every time the
+#     graph moves.
 #
 # Both CI steps pin the SAME action SHA (guarded by
 # desktop_smoke_audits_the_src_tauri_dependency_graph in
@@ -190,9 +194,18 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
     cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked || echo "==> cargo-deny install failed; skipping audit"
   fi
 
-  if command -v cargo-deny >/dev/null 2>&1; then
+  # ⚠ Gate on cargo_deny_ok, NOT `command -v` — the latter is true in exactly
+  # the present-but-wrong-version case that triggered the reinstall above, so
+  # a FAILED reinstall would fall through to auditing under the wrong binary
+  # while printing that it mirrors CI, reintroducing the version skew this
+  # block exists to remove.
+  if cargo_deny_ok; then
     echo "==> Running cargo-deny check (root workspace) — mirrors ci.yml's required \"cargo-deny\" job"
-    if ! cargo deny check; then
+    # `--all-features` matches what CI actually runs: ci.yml's required job
+    # passes only `command: check`, so the action's own default
+    # `arguments: "--all-features"` applies. No `--locked` here — ci.yml does
+    # not pass it, and a mirror must not be stricter than the job it mirrors.
+    if ! cargo deny --all-features check; then
       echo "==> cargo-deny check (root workspace) reported findings — this job is REQUIRED in ci.yml; fix before pushing"
     fi
 
@@ -203,8 +216,10 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
     # line, matching how the action assembles `arguments` before `command`
     # (see the comment beside this step in desktop-smoke.yml).
     if ! cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml --all-features --locked check; then
-      echo "==> cargo-deny check (src-tauri) reported findings — non-blocking, matches desktop-smoke.yml's continue-on-error (#2470; known MPL-2.0/RUSTSEC findings pending a maintainer ruling)"
+      echo "==> cargo-deny check (src-tauri) reported findings — non-blocking, matches desktop-smoke.yml's continue-on-error (#2470). The MPL-2.0 licences are RULED and admitted per-crate (docs/decision-log.md, 2026-08-15); what remains is the unmaintained-crate RUSTSEC advisories plus brink-desktop's own unlicensed entry, neither of which is ruled on."
     fi
+  else
+    echo "==> Skipping audits — cargo-deny is not ${CARGO_DENY_VERSION} (install failed, or a different version is on PATH). Auditing under a mismatched binary would disagree with CI in either direction while looking authoritative."
   fi
 else
   echo "==> Skipping cargo-deny (set BRINK_SETUP_FULL=1 to install + audit; CI gates it anyway)"
