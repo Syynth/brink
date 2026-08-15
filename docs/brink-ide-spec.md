@@ -236,6 +236,13 @@ impl EditorSession {
 }
 ```
 
+#### Document-handle (`*_doc`) entry points: two standing invariants
+
+Most queries have a `*_doc` variant taking a document handle (`open_document` / `open_fragment`) alongside the session-level form that reads `active_path`. Two invariants govern them, each guarded by a named test in `crates/brink-web/src/editor/mod.rs`'s `mod tests`:
+
+1. **A handle's own `view` is honoured.** A handle from `open_fragment` carries `view: Some(..)`; line- and offset-bearing results are rebased onto that view and results preceding it are dropped, not rebased. Guarded for folding by `native_folding_ranges_doc_uses_the_handles_own_fragment_view` (#2500), which asserts both halves against a whole-file handle on the same session.
+2. **A `.brink` file opened through a handle still reaches native lowering**, rather than silently falling back to ink-only parsing. Guarded by `native_folding_ranges_doc_entry_point` (#2458), `native_inlay_hints_doc_reaches_the_native_cst_path` and `native_outline_and_navigation_doc_entry_points_reach_native_lowering` (#2501). The audit of which `*_doc` families carry a brink-web-level `is_native` branch, which dispatch a layer down in `brink_db::queries::raw_lowered_query`, and which have no dialect axis at all, is tabulated in the comment above those tests.
+
 The existing stateless `pub fn semantic_tokens(source: &str) -> String` free functions in brink-web are removed. The `compile()` free function and `StoryRunner` struct remain unchanged -- compilation and runtime are separate concerns.
 
 On the TypeScript side, `packages/brink-studio/src/wasm.ts` replaces its collection of `getSemanticTokens(source)`, `getCompletions(source, offset)`, etc. with methods on the `EditorSession` wasm object. The `BrinkStudioOptions` interface in `extensions.ts` changes accordingly: instead of passing individual callback functions, the editor receives an `EditorSession` handle.

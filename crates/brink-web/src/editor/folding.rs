@@ -6,6 +6,13 @@ use crate::editor_dto::{FoldRangeJs, fold_kind_str};
 #[wasm_bindgen]
 impl EditorSession {
     /// Compute folding ranges for a document handle. Returns JSON array.
+    ///
+    /// The handle's own `view` reaches `Self::to_relative_line` below, which
+    /// rebases surviving folds onto the fragment and drops those starting
+    /// before it — guarded by `native_folding_ranges_doc_uses_the_handles_own_fragment_view`
+    /// (#2500) and `native_folding_ranges_doc_entry_point` (#2458) in
+    /// `super::tests`; see `docs/brink-ide-spec.md`, "Document-handle
+    /// (`*_doc`) entry points: two standing invariants".
     pub fn folding_ranges_doc(&self, doc: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();

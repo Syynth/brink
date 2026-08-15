@@ -7,6 +7,16 @@ use crate::editor_dto::LocationJs;
 #[wasm_bindgen]
 impl EditorSession {
     /// Compute goto-definition for a document handle at the given offset. Returns JSON or "null".
+    ///
+    /// Like the outline family, none of this module's `*_doc` entry points
+    /// branches on `is_native`: they read `analysis`, whose native dispatch
+    /// happens a layer down in `brink_db::queries::raw_lowered_query`. That
+    /// `goto_definition_doc`, `find_references_doc` and `prepare_rename_doc`
+    /// all still reach native lowering for a `.brink` file opened through a
+    /// handle is guarded by
+    /// `native_outline_and_navigation_doc_entry_points_reach_native_lowering`
+    /// (#2501) in `super::tests`; see `docs/brink-ide-spec.md`,
+    /// "Document-handle (`*_doc`) entry points: two standing invariants".
     pub fn goto_definition_doc(&self, doc: u32, offset: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
             return "null".to_owned();

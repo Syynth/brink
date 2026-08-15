@@ -11,6 +11,14 @@ use crate::editor_dto::{
 #[wasm_bindgen]
 impl EditorSession {
     /// Compute inlay hints for a document handle. Returns JSON array.
+    ///
+    /// Reaches `inlay_hints_impl`'s native-CST arm for a `.brink` file —
+    /// guarded by `native_inlay_hints_doc_reaches_the_native_cst_path`
+    /// (#2501) in `super::tests`, whose fixture uses a plain call rather
+    /// than a divert-with-args precisely so that forcing the ink arm turns
+    /// it red. `color_hints_doc`/`argument_widgets_doc` below are guarded by
+    /// their own sibling tests there. See `docs/brink-ide-spec.md`,
+    /// "Document-handle (`*_doc`) entry points: two standing invariants".
     pub fn inlay_hints_doc(&self, doc: u32, start: u32, end: u32) -> String {
         let Some(d) = self.docs.get(&doc) else {
             return "[]".to_owned();
