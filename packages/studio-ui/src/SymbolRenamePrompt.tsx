@@ -48,7 +48,16 @@ export function SymbolRenamePrompt() {
   const open = req != null;
   const currentName = req ? (req.currentName ?? req.stitch ?? req.knot ?? "") : "";
 
-  // Reset transient state and focus/select the input on each fresh open.
+  // Reset transient state on each fresh open, then focus/select the input.
+  //
+  // The input's *value* is seeded synchronously by React (`defaultValue` +
+  // `key`, below), never from this frame callback (#2511). Seeding it here
+  // used to leave a window in which the field was mounted, visible and
+  // editable but still empty — and anything typed during that window was
+  // overwritten when the frame ran. Because the field is uncontrolled and
+  // `confirmName()` reads `input.value`, a clobbered rename degrades to
+  // `name === currentName`, which closes the prompt without renaming
+  // anything. Only focus/select are deferred, as neither can lose input.
   useEffect(() => {
     if (!open) return;
     setReport(null);
@@ -57,7 +66,6 @@ export function SymbolRenamePrompt() {
     const id = requestAnimationFrame(() => {
       const input = inputRef.current;
       if (input) {
-        input.value = currentName;
         input.focus();
         input.select();
       }
@@ -119,11 +127,17 @@ export function SymbolRenamePrompt() {
             Rename {label} to
           </label>
           <input
+            // `key` re-mounts the field when the prompt is re-pointed at a
+            // different symbol without closing first, so `defaultValue` — which
+            // React only applies at mount — always reflects the current target
+            // (#2511).
+            key={currentName}
             id="brink-rename-input"
             ref={inputRef}
             className="shell-palette-input"
             type="text"
             aria-label="New symbol name"
+            defaultValue={currentName}
             disabled={busy}
             onKeyDown={(event) => {
               if (event.key === "Enter") {

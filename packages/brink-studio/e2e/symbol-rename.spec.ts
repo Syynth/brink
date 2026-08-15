@@ -19,6 +19,14 @@ async function openRename(page: Page, knot: string): Promise<void> {
   await expect(item).toBeVisible();
   await item.click();
   await expect(page.locator("#brink-rename-input")).toBeVisible();
+  // Wait on the prompt being *seeded*, not merely mounted (#2511). The field is
+  // uncontrolled and `confirmName()` reads `input.value`, so filling it before
+  // the seed lands lets the seed overwrite the typed name; the prompt then sees
+  // `name === currentName`, closes without renaming, and the binder assertion
+  // below fails against a rename that never happened. Holding the current name
+  // is the app's own signal that the prompt is ready for input — the same wait
+  // the inline (F2) rename test already makes on `.brink-inline-rename-input`.
+  await expect(page.locator("#brink-rename-input")).toHaveValue(knot);
 }
 
 test.describe("knot/stitch rename (#305)", () => {
@@ -91,6 +99,11 @@ test.describe("knot/stitch rename (#305)", () => {
 
     const input = page.locator(".brink-inline-rename-input");
     await expect(input).toBeVisible();
+    // Same seeded-before-typing discipline as `openRename` (#2511). The inline
+    // widget seeds its value while building its DOM, so unlike the modal it has
+    // no window in which the field is observable but empty — this is a guard
+    // that it stays that way, not a fix for a live race.
+    await expect(input).toHaveValue("threshold");
     // Rename `threshold` onto the existing `intro` knot → duplicate-knot break.
     await input.fill("intro");
 
