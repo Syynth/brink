@@ -294,26 +294,41 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   an accepted advisory is recorded in exactly one place.
   (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
 
-  **PROVISIONAL, pending a maintainer ruling — it reports, it does not
-  block.** The first audit surfaces 22 errors: 16 unmaintained-crate
-  advisories inherent to Tauri v2 on Linux (`RUSTSEC-2024-0411`..`0420`
-  gtk-rs GTK3 bindings, `RUSTSEC-2024-0370` `proc-macro-error`,
+  **STILL REPORTING, NOT BLOCKING — but the licence half is now ruled.**
+  The audit first surfaced 22 errors. The **2026-08-15 maintainer ruling**
+  (`docs/decision-log.md`, "MPL-2.0 admitted for the five transitive Tauri
+  dependencies") settled the licence class: `deny.toml`'s `[licenses]
+  exceptions` now admits MPL-2.0 per-crate for `cssparser`,
+  `cssparser-macros`, `dtoa-short`, `option-ext` and `selectors`, so those
+  5 `error[rejected]` findings are gone. **17 errors remain** — measured by
+  re-running the step's exact invocation against cargo-deny 0.19.8, the
+  version the pinned action image ships, not by subtraction:
+
+  ```
+  advisories FAILED, bans ok, licenses FAILED, sources ok
+  ```
+
+  Those 17 are 16 unmaintained-crate advisories inherent to Tauri v2 on
+  Linux (`RUSTSEC-2024-0411`..`0420` gtk-rs GTK3 bindings,
+  `RUSTSEC-2024-0370` `proc-macro-error`,
   `RUSTSEC-2025-0075`/`0080`/`0081`/`0098`/`0100` for the five `unic-*`
   crates reached via `urlpattern` → `tauri-utils`; every one of them
-  "no safe upgrade available"), 5 MPL-2.0 crates (`cssparser`,
-  `cssparser-macros`, `dtoa-short`, `option-ext`, `selectors`) against a
-  licence allowlist whose stated policy is "100% permissive, no copyleft
-  obligations", and one `error[unlicensed]: brink-desktop = 0.1.0 is
-  unlicensed` — our own `publish = false` crate; `[licenses]
-  private.ignore` is the documented cargo-deny knob for it, but that edits
-  the shared root policy, so it is left for the same ruling as the other
-  21. Accepting any of these classes is a policy call, so the step carries
-  `continue-on-error: true` rather than a blanket `ignore`, and it lives in
-  this non-required lane: a non-blocking step inside `ci.yml`'s required
-  `cargo-deny` job would raise the "the required lanes must not grow a
-  Tauri build" question (#2402/#2346) for exactly zero blocking power.
-  Once the findings are ruled on, promote the step to `ci.yml` and drop the
-  `continue-on-error` assertion from the guard. Note the audit builds
+  "no safe upgrade available"), plus one `error[unlicensed]: brink-desktop
+  = 0.1.0 is unlicensed` — our own `publish = false` crate; `[licenses]
+  private.ignore` is the documented cargo-deny knob for it. **Neither of
+  those two classes is ruled on**; the 2026-08-15 ruling covers the MPL-2.0
+  crates and nothing else, so `[licenses] private.ignore` stays unset and no
+  advisory is added to `ignore`. The five admitted crate names, and the fact
+  that the admission is per-crate rather than a blanket `allow` entry, are
+  asserted by `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies`.
+  Accepting either remaining class is a policy
+  call, so the step keeps `continue-on-error: true` rather than a blanket
+  `ignore`, and it lives in this non-required lane: a non-blocking step
+  inside `ci.yml`'s required `cargo-deny` job would raise the "the required
+  lanes must not grow a Tauri build" question (#2402/#2346) for exactly
+  zero blocking power. Once those remaining 17 are ruled on, promote the
+  step to `ci.yml` and drop the `continue-on-error` assertion from the
+  guard. Note the audit builds
   nothing — it resolves metadata only, no compilation and none of the
   webkit2gtk system deps — so the fence question, when it is asked, is
   about graph *resolution*, not a Tauri build; "seconds, not a build" is
