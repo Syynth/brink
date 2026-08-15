@@ -457,6 +457,13 @@ async function applyRename(
     // renameFile validates (and throws) before mutating the session, so a
     // failed rename — e.g. a name collision — must leave the open file and
     // its tabs untouched. Tear-down happens only on success, below.
+    //
+    // This is the pattern for reporting a refused structural operation
+    // (`docs/studio-shell-spec.md` §7.5): an error-severity notification
+    // carrying the op's own reason, tagged with the same `source` as the
+    // operation's success toast. The knot/stitch rename's failure path
+    // follows it — see `performSymbolRename` in studio-ui's
+    // `symbolMenuActions.ts` (#2528).
     get()._notify?.({
       severity: "error",
       source: "binder",

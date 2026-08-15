@@ -423,6 +423,17 @@ interface Notification {
 - **History:** a bell item in the status bar's right group with an unread badge; click
   opens a popover listing the session's notifications (cleared on demand). The history is
   capped (e.g. 100 entries, oldest dropped) per the unbounded-growth guard principle.
+- **Refused structural operations report here.** A rename/move/delete that the
+  underlying op declines raises an `error`-severity notification tagged with the
+  same `source` as its success toast, so both outcomes of one operation report
+  through one channel and a failure cannot be mistaken for a success. Established
+  by the file rename (`applyRename`, studio-store's binder slice); extended to the
+  knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
+  returned to `SymbolRenamePrompt` and discarded when the prompt closed. Guarded by
+  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts`.
+  PROVISIONAL: this records where a refused rename reports, which follows the
+  existing pattern. Whether the rename prompt should additionally *stay open* on
+  failure is an open UX question (#2528) and is not settled here.
 - **Out of scope:** progress notifications (compile/story status lives in the status
   bar, §7.3) and do-not-disturb modes.
 
