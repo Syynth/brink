@@ -64,6 +64,15 @@ on:
       # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
       # (src-tauri/src/lib.rs) would still catch the regression on the
       # next push to `main`, but only after it had already merged.
+      # `deny.toml` is BOTH the licence/advisory policy the `cargo-deny
+      # (src-tauri)` step below resolves via cargo-deny's `<cwd>/deny.toml`
+      # fallback, AND a test input in its own right:
+      # `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies` reads it
+      # directly. Without this entry a PR that deletes an `exceptions` entry
+      # or adds a sixth MPL crate — touching nothing else — never triggers
+      # this lane, so that guard fires only on the post-merge push to `main`,
+      # where nothing blocks. Same #2418 gap-2 class as the entries below.
+      - "deny.toml"
       - "pnpm-lock.yaml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -252,16 +261,21 @@ jobs:
       # audit coverage.
       #
       # WHY HERE and not in ci.yml's required `cargo-deny` job: this audit
-      # cannot be a blocking gate yet. Its first run surfaces 21 real errors —
-      # 16 unmaintained-crate advisories inherent to Tauri v2 on Linux
-      # (RUSTSEC-2024-0411..0420 gtk-rs GTK3 bindings, RUSTSEC-2024-0370
-      # proc-macro-error, RUSTSEC-2025-0075/0080/0081/0098/0100 unic-* via
-      # urlpattern -> tauri-utils; all "no safe upgrade available") and 5
-      # MPL-2.0 crates (cssparser, cssparser-macros, dtoa-short, option-ext,
-      # selectors) against a licence allowlist whose stated policy is "100%
-      # permissive, no copyleft obligations". Accepting either class is a
-      # maintainer policy call, not one this step may make with a blanket
-      # ignore — so it REPORTS (`continue-on-error`) rather than blocks, and a
+      # cannot be a blocking gate yet. Its first run surfaced 22 real errors.
+      # The 2026-08-15 maintainer ruling (docs/decision-log.md, "MPL-2.0
+      # admitted for the five transitive Tauri dependencies") cleared the 5
+      # MPL-2.0 `error[rejected]` findings — cssparser, cssparser-macros,
+      # dtoa-short, option-ext, selectors are now admitted per-crate by
+      # deny.toml's `[licenses] exceptions` — leaving 17: 16 unmaintained-crate
+      # advisories inherent to Tauri v2 on Linux (RUSTSEC-2024-0411..0420
+      # gtk-rs GTK3 bindings, RUSTSEC-2024-0370 proc-macro-error,
+      # RUSTSEC-2025-0075/0080/0081/0098/0100 unic-* via urlpattern ->
+      # tauri-utils; all "no safe upgrade available"), plus one
+      # `error[unlicensed]` for brink-desktop itself. NEITHER of those two
+      # classes is ruled on — the ruling was about the licences of those five
+      # crates and nothing else. Accepting either is a maintainer policy call,
+      # not one this step may make with a blanket ignore — so it still REPORTS
+      # (`continue-on-error`) rather than blocks, and a
       # non-blocking step in the required job would pay the "required lanes
       # must not grow a Tauri build" question (#2402/#2346) for exactly zero
       # blocking power. Promote it to ci.yml once those findings are ruled on.

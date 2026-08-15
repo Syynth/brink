@@ -1570,6 +1570,11 @@ mod tests {
             "Cargo.lock",
             "clippy.toml",
             "rust-toolchain.toml",
+            // #2488/#2522: `deny.toml` is the policy the `cargo-deny
+            // (src-tauri)` step resolves AND the file
+            // `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies`
+            // parses, so a PR editing only it must still trigger this lane.
+            "deny.toml",
             ".github/workflows/ci.yml",
             ".github/workflows/desktop-smoke.yml",
             // #2504: the individual entries above are not enough — a
@@ -1712,12 +1717,14 @@ mod tests {
     ///
     /// The step lives in this deliberately NON-required lane rather than in
     /// `ci.yml`'s required `cargo-deny` job because it cannot be a blocking
-    /// gate yet: the first audit surfaced 21 real errors (16 unmaintained
-    /// RUSTSEC advisories inherent to Tauri v2 on Linux, and 5 MPL-2.0
-    /// crates against a licence allowlist whose stated policy is "100%
-    /// permissive, no copyleft obligations"). Accepting either class is a
-    /// maintainer policy call, so the step reports rather than blocks —
-    /// see docs/desktop-shell-spec.md "Smoke-lane inputs and step gating".
+    /// gate yet: the first audit surfaced 22 real errors. The 2026-08-15
+    /// maintainer ruling cleared the 5 MPL-2.0 `error[rejected]` findings
+    /// (see `deny_toml_admits_mpl_for_the_transitive_tauri_dependencies`
+    /// below), leaving 17: 16 unmaintained RUSTSEC advisories inherent to
+    /// Tauri v2 on Linux, plus `error[unlicensed]` for this crate itself.
+    /// NEITHER of those is ruled on. Accepting either class is a maintainer
+    /// policy call, so the step still reports rather than blocks — see
+    /// docs/desktop-shell-spec.md "Smoke-lane inputs and step gating".
     #[test]
     fn desktop_smoke_audits_the_src_tauri_dependency_graph() {
         let smoke = workflow("desktop-smoke.yml");
@@ -1768,14 +1775,17 @@ mod tests {
         );
 
         // Reporting, not blocking — see the doc comment. Removing this
-        // while the 21 findings stand turns the whole smoke lane
+        // while the remaining 17 findings stand turns the whole smoke lane
         // permanently red, which trains everyone to ignore the checks
-        // beside it that DO pass today. Delete this assertion (and the
-        // spec bullet) only together with a ruling on those findings.
+        // beside it that DO pass today. The 2026-08-15 ruling settled the
+        // MPL-2.0 licence class only; delete this assertion (and the spec
+        // bullet) only together with a ruling on the 16 unmaintained
+        // advisories and the `error[unlicensed]` finding.
         assert!(
             step.iter().any(|line| line == "continue-on-error: true"),
             "the cargo-deny (src-tauri) step should stay `continue-on-error: true` until \
-             the MPL-2.0 and unmaintained-advisory findings are ruled on, otherwise this \
+             the unmaintained-advisory and error[unlicensed] findings are ruled on too \
+             (the 2026-08-15 ruling covered only the MPL-2.0 crates), otherwise this \
              lane is permanently red; it reads {step:?}"
         );
 
@@ -1793,6 +1803,132 @@ mod tests {
             "both cargo-deny invocations should pin the same SHA-pinned action revision \
              (supply-chain hardening, docs/decision-log.md 2026-06-04), so the two audits \
              cannot drift onto different cargo-deny versions"
+        );
+    }
+
+    /// The entries of the array assigned to `key` inside `deny.toml`'s
+    /// `[licenses]` table — one raw line each (trimmed, blank and comment
+    /// lines dropped, trailing comma removed). Hand-rolled rather than
+    /// pulled in via a `toml` dev-dependency on purpose: this crate's
+    /// `Cargo.lock` is the very artefact the audit under guard reads, so a
+    /// test-only dependency added here would enlarge the graph it checks.
+    fn licences_array(deny: &str, key: &str) -> Vec<String> {
+        let opener = format!("{key} = [");
+        let mut out = Vec::new();
+        let mut inside_licenses = false;
+        let mut inside_array = false;
+        for line in deny.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if inside_array {
+                if line.starts_with(']') {
+                    inside_array = false;
+                } else {
+                    out.push(line.trim_end_matches(',').trim().to_owned());
+                }
+            } else if line.starts_with('[') {
+                inside_licenses = line == "[licenses]";
+            } else if inside_licenses && line == opener {
+                inside_array = true;
+            }
+        }
+        out
+    }
+
+    /// MAINTAINER RULING, 2026-08-15 — `docs/decision-log.md` "MPL-2.0
+    /// admitted for the five transitive Tauri dependencies", and the
+    /// `cargo-deny (src-tauri)` bullet of `docs/desktop-shell-spec.md`'s
+    /// "Smoke-lane inputs and step gating".
+    ///
+    /// `deny.toml` is the policy file the `cargo-deny (src-tauri)` step
+    /// above resolves (via cargo-deny's `<cwd>/deny.toml` fallback), so
+    /// this crate's audit outcome is decided by a file outside this crate
+    /// that nothing else here would notice changing. Before the ruling the
+    /// audit reported 22 errors, five of them `error[rejected]` for the
+    /// MPL-2.0 crates named below; after it, 17 (verified by running the
+    /// step's exact invocation against cargo-deny 0.19.8, the version the
+    /// pinned action image ships).
+    ///
+    /// The crate names and the `MPL-2.0` expression are asserted as the
+    /// exact strings cargo-deny matches on, not merely as "an `exceptions`
+    /// key exists": a typo in either silently restores the five rejections,
+    /// and `continue-on-error: true` would keep the lane green while it
+    /// happened.
+    ///
+    /// The second assertion is a PRESERVATION guard and is expected to be
+    /// green both before and after the ruling — it is not vacuous, because
+    /// it is the one thing pinning the ruling's *mechanism*: adding
+    /// "MPL-2.0" to the blanket `allow` list would also silence all five
+    /// findings, and would equally admit copyleft for every other crate in
+    /// both governed graphs. The ruling covers five crates, not a licence.
+    #[test]
+    fn deny_toml_admits_mpl_for_the_transitive_tauri_dependencies() {
+        const MPL: &str = "MPL-2.0";
+
+        let deny_path = repo_root().join("deny.toml");
+        assert!(
+            deny_path.is_file(),
+            "the repo-root deny.toml is the policy this crate's cargo-deny step resolves, \
+             expected at {deny_path:?}"
+        );
+        let deny = std::fs::read_to_string(&deny_path).expect("just asserted this file exists");
+
+        let allowed_for = format!("allow = [\"{MPL}\"]");
+        let mut admitted: Vec<String> = licences_array(&deny, "exceptions")
+            .iter()
+            .filter(|entry| entry.contains(&allowed_for))
+            .filter_map(|entry| {
+                entry
+                    .split_once("crate = \"")
+                    .and_then(|(_, rest)| rest.split_once('"'))
+                    .map(|(name, _)| name.to_owned())
+            })
+            .collect();
+        admitted.sort();
+        let admitted: Vec<&str> = admitted.iter().map(String::as_str).collect();
+
+        assert_eq!(
+            admitted,
+            [
+                "cssparser",
+                "cssparser-macros",
+                "dtoa-short",
+                "option-ext",
+                "selectors"
+            ],
+            "deny.toml's [licenses] exceptions should admit {MPL} for exactly the five \
+             crates the 2026-08-15 ruling names — they are unavoidable transitively \
+             through Tauri (selectors/cssparser/cssparser-macros/dtoa-short via dom_query \
+             under tauri-utils and wry; option-ext via dirs-sys -> dirs under tauri, \
+             tauri-build and wry). A SIXTH MPL crate appearing here is outside that \
+             ruling and needs its own."
+        );
+
+        // Precondition, or the assertion below fails OPEN: `licences_array`
+        // only recognises a MULTI-LINE `allow = [` block, so a legal
+        // reformat collapsing that array to one line makes it return an
+        // empty vec and the `!any(...)` check vacuously true — while
+        // cargo-deny happily accepts the reformatted file with MPL-2.0
+        // blanket-allowed and the per-crate exceptions doing nothing. Pin
+        // that the parser actually found the list before trusting its
+        // contents.
+        let blanket = licences_array(&deny, "allow");
+        assert!(
+            blanket.iter().any(|entry| unquote(entry) == "MIT"),
+            "expected to parse deny.toml's multi-line [licenses] allow list (it should \
+             still contain \"MIT\"); an inlined or reformatted array would make the \
+             check below vacuous. It parsed as {blanket:?}"
+        );
+
+        assert!(
+            !blanket.iter().any(|entry| unquote(entry) == MPL),
+            "{MPL} should stay OUT of deny.toml's blanket [licenses] allow list — the \
+             2026-08-15 ruling admits it per-crate via `exceptions`, which is the \
+             narrowest mechanism cargo-deny offers. Allowing it graph-wide would admit \
+             copyleft for every crate in BOTH workspaces this policy governs, including \
+             the root one that is 100% permissive today."
         );
     }
 
