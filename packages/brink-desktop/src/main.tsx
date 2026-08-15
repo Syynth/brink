@@ -138,7 +138,13 @@ async function renderLanding(): Promise<void> {
   }
 }
 
-async function openProject(root: string): Promise<void> {
+/**
+ * Exported (only) so `__tests__/autosave-reopen.test.ts` can drive the real
+ * open/close pair directly (#2486) — every in-app caller still reaches this
+ * through the same `chooseAndOpen` / menu-event / `handleFileOpen` wiring as
+ * before; the export adds no new call site.
+ */
+export async function openProject(root: string): Promise<void> {
   const provider = new TauriFileProvider(root);
   const paths = await provider.listFiles();
   const files: Record<string, string> = {};
@@ -273,8 +279,17 @@ async function openRecent(path: string): Promise<void> {
  * too). Ruled 2026-08-07 (docs/decision-log.md, "Desktop close: no dirty
  * prompt; quit awaits the final save"): no dirty-state close confirmation
  * prompt — dead UI, not implemented.
+ *
+ * Clearing `autosaveTimer` here — and `openProject` always calling this
+ * before arming a fresh one — is the entire reason a reopened project never
+ * ends up with two autosave tickers running at once. That "no-duplicate-
+ * interval" property is pinned by `__tests__/autosave-reopen.test.ts`
+ * (#2486): dropping or reordering the clear below is a data-loss-adjacent
+ * regression, not a cosmetic one (docs/desktop-shell-spec.md, autosave row).
+ * Exported (only) so that test can call it directly — see `openProject`'s
+ * export comment.
  */
-function closeProject(): void {
+export function closeProject(): void {
   if (current === null) return;
   if (autosaveTimer !== null) {
     clearInterval(autosaveTimer);
