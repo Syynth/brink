@@ -241,25 +241,49 @@ The project audits **two separate dependency graphs** via `cargo-deny`:
    - **Licenses:** 100% permissive (MIT/Apache dominant; Unicode-3.0, Zlib,
      BSD, ISC, CC0, etc.). No copyleft obligations — every crate offers a
      permissive option. Enforced by `deny.toml`'s allowlist.
-   - **Advisories:** 0 vulnerabilities. Three informational advisories, all
-     transitive and accepted (ignored with rationale in `deny.toml`):
-     `ttf-parser` unmaintained (RUSTSEC-2026-0192) and `quick-xml` quadratic
-     XML parsing (RUSTSEC-2026-0194/0195; we parse only local XLIFF files).
+   - **Advisories:** three accepted, all transitive, each ignored with a
+     rationale in `deny.toml` — so the job reports `advisories ok`. One is
+     informational (`ttf-parser` unmaintained, RUSTSEC-2026-0192); the other
+     two are quadratic-parsing DoS advisories (`quick-xml`,
+     RUSTSEC-2026-0194/0195), accepted on `deny.toml`'s own reasoning that we
+     parse only local XLIFF files, never attacker-controlled input.
 
 2. **`packages/brink-desktop/src-tauri` workspace** (reported, non-required):
    451 crates resolved. This excluded workspace brings in additional dependencies
-   for the Tauri desktop shell. Its cargo-deny run reports separately and is not
-   part of the CI enforce gate.
+   for the Tauri desktop shell. The audit runs as the `cargo-deny (src-tauri)`
+   step in [`.github/workflows/desktop-smoke.yml`](../.github/workflows/desktop-smoke.yml)
+   under `continue-on-error: true`, so it reports without blocking; the
+   governing text is `docs/desktop-shell-spec.md` § "Smoke-lane inputs and step
+   gating".
 
    - **Licenses:** Includes 5 MPL-2.0 crates (cssparser, cssparser-macros,
      dtoa-short, option-ext, selectors) — copyleft obligations ruled as
      admitted as of 2026-08-15 (`docs/decision-log.md`).
-   - **Advisories:** The src-tauri graph currently reports unmaintained-crate
-     RUSTSEC advisories and an `unlicensed` crate finding — neither ruled on and
-     both remain reporting-only (not enforced).
+   - **Advisories:** 16 unmaintained-crate RUSTSEC advisories, inherent to
+     Tauri v2 on Linux (the gtk-rs GTK3 bindings, `proc-macro-error`, and five
+     `unic-*` crates via `urlpattern` → `tauri-utils`); cargo-deny reports "no
+     safe upgrade is available" for each. **Not ruled on** — reporting-only.
+   - **Our own crate:** one `error[unlicensed]: brink-desktop = 0.1.0`. This is
+     *our* `publish = false` crate, not an unlicensed third-party dependency;
+     the documented fix is `[licenses] private.ignore`. Also not ruled on.
+   - **Count:** 17 findings total after the MPL admission above (22 before it).
+     Take the current number from a run rather than from this doc — see
+     `docs/desktop-shell-spec.md` § "Smoke-lane inputs and step gating".
 
-Re-check both anytime with `cargo deny check` at the root (checks both
-lockfiles via one `deny.toml`) and `cargo audit` for the latest advisory DB.
+Re-check them anytime. One `deny.toml` governs both policies, but the two
+graphs share no resolution, so each needs its own invocation — `cargo deny
+check` at the root covers only the root `Cargo.lock`:
+
+```sh
+cargo deny check                                     # root workspace (CI-enforced)
+cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml \
+  --all-features --locked check                      # src-tauri (reported only)
+```
+
+Note `--manifest-path`/`--all-features`/`--locked` are **top-level** cargo-deny
+flags and must precede `check`. `scripts/setup-dev.sh` with `BRINK_SETUP_FULL=1`
+runs both at CI's pinned cargo-deny version. `cargo audit` remains useful for
+the latest advisory DB.
 
 [crates.io]: https://crates.io
 [release-plz]: https://release-plz.dev
