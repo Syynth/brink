@@ -13,9 +13,10 @@ import { desktopAliases } from "./alias-map";
 // default — `autosave-reopen.test.ts` (#2486) is the first, because it
 // drives `main.tsx`'s real `openProject`/`closeProject` (Tauri IPC,
 // `mountStudio` and the file provider all mocked) and those read
-// `document`. So the Tauri IPC surfaces ARE now exercised headlessly under
-// mocks in that one file; `quit.ts`'s awaitable-save seam is no longer the
-// only thing unit-tested here.
+// `document`; `autosave-quit.test.ts` (#2517) is the second, driving
+// `handleQuitRequested` the same way. So the Tauri IPC surfaces ARE now
+// exercised headlessly under mocks in those files; `quit.ts`'s awaitable-save
+// seam is no longer the only thing unit-tested here.
 //
 // The alias map is imported from `./alias-map.ts`, which this config shares
 // with `vite.config.ts` (#2418). It used to be a hand-copied SUBSET of the
