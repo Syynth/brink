@@ -509,6 +509,15 @@ arriving, a project reload, a focus-restore effect) would make the same
 `packages/brink-studio/src/__tests__/search-view-focus.test.tsx` pins both
 halves.
 
+**Known outstanding violator.**
+[inline-name-input.ts:171-175](../packages/ink-editor/src/inline-name-input.ts)
+(`InlineNameInput`, the shared widget behind F2 rename and extract — exported
+at `ink-editor/src/index.ts`, used from `extract-actions.ts`) runs `focus()`
+and an unguarded `select()` inside a `setTimeout(…, 0)`, which rule 2 above
+forbids. It is not fixed here: `@brink-lang/editor` is a published package
+(0.14.0), so the guard and its regression test need their own changeset
+rather than riding in on this docs-only change. Tracked as #2540.
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*
