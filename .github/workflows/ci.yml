@@ -407,6 +407,10 @@ jobs:
       # it reports rather than blocks. Both steps share the root `deny.toml`
       # and this SHA pin; `desktop_smoke_audits_the_src_tauri_dependency_graph`
       # (src-tauri/src/lib.rs) fails if the two pins drift apart.
+      # ⚠ The bundled image's cargo-deny version is mirrored by
+      # `CARGO_DENY_VERSION` in scripts/setup-dev.sh (#2498). Bumping this
+      # SHA changes that version — update the script in the same PR, or a
+      # local audit silently disagrees with this job.
       - uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           command: check

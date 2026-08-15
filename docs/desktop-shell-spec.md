@@ -295,7 +295,12 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   `check` subcommand flag, not a top-level one, and `action.yml` places
   `arguments` before `command` on the assembled line, so passing it there
   is a clap parse failure), so one policy file governs both workspaces and
-  an accepted advisory is recorded in exactly one place.
+  an accepted advisory is recorded in exactly one place. A **second, local**
+  audit path exists for developers: `scripts/setup-dev.sh` under
+  `BRINK_SETUP_FULL=1` runs both workspaces at `CARGO_DENY_VERSION`, which
+  mirrors the version the pinned action's image ships and must move with that
+  action SHA (#2498). PROVISIONAL — no maintainer ruling establishes the
+  local mirror; it exists so a developer sees what CI sees.
   (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
 
   **STILL REPORTING, NOT BLOCKING — but the licence half is now ruled.**
