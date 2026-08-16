@@ -2,7 +2,8 @@
 	"scripts": {
 		"release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/studio build && pnpm changeset publish",
 		"check:wasm-pkg": "node scripts/check-wasm-pkg.mjs",
-		"test:scripts": "node --test scripts/*.test.mjs"
+		"test:scripts": "node --test scripts/*.test.mjs",
+		"test:setup-dev": "bash scripts/setup-dev.test.sh"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.31.0",

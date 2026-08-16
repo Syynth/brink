@@ -311,8 +311,15 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   audit path exists for developers: `scripts/setup-dev.sh` under
   `BRINK_SETUP_FULL=1` runs both workspaces at `CARGO_DENY_VERSION`, which
   mirrors the version the pinned action's image ships and must move with that
-  action SHA (#2498). PROVISIONAL — no maintainer ruling establishes the
-  local mirror; it exists so a developer sees what CI sees.
+  action SHA (#2498). Each invocation is bounded by
+  `BRINK_SETUP_AUDIT_TIMEOUT` (default 300s) so a stalled RUSTSEC DB fetch
+  can't block setup indefinitely (#2531): a genuine timeout is distinguished
+  from normal audit findings and reported as `TIMED OUT`, exiting the script
+  non-zero for the required root-workspace audit but only warning and
+  continuing for the non-blocking `src-tauri` audit below, so the timeout
+  itself can never abort setup before the pnpm/toolchain-verification steps
+  that follow. PROVISIONAL — no maintainer ruling establishes the local
+  mirror; it exists so a developer sees what CI sees.
   (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
 
   **STILL REPORTING, NOT BLOCKING — but the licence half is now ruled.**
