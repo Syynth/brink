@@ -4,7 +4,8 @@
 #
 # The two `cargo update` invocations in that script were BARE until #2667 —
 # the same wedged-proxy hang class #2591/#2638/#2642 bounded in setup-dev.sh,
-# sitting in a script scripts/check-setup-dev.mjs never looked at.
+# sitting in a script scripts/check-scripts.mjs (then named scripts/check-setup-dev.mjs)
+# never looked at.
 #
 # This harness follows scripts/setup-dev.test.sh's precedent exactly: it runs
 # the REAL script against a PATH-injected `cargo` stub whose behaviour is
@@ -119,7 +120,7 @@ fi
 # The stub sleeps 30s; a 1s bound that actually fired returns in ~1s. This is
 # what separates "the bound is wired to the fetching command" from "the text
 # run_with_timeout appears somewhere on the line" — the lexical scan in
-# check-setup-dev.mjs can only prove the latter, and says so in its header.
+# check-scripts.mjs can only prove the latter, and says so in its header.
 if [ "${elapsed}" -lt 15 ]; then
   pass "dry-run hang: the bound actually fired (${elapsed}s elapsed, stub sleeps 30s)"
 else
