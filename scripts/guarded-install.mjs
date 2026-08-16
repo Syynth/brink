@@ -104,7 +104,11 @@ export function sanitizeInstallArgs(rawArgs) {
         `[guarded-install] refusing to forward the bare argument "${positional}" to ` +
         "`pnpm install` — pnpm would read it as a package name and ADD it to " +
         "package.json. This command verifies an install; it never changes the " +
-        "manifest. Use `pnpm add` for that.",
+        "manifest. If this was meant to be a flag's value (e.g. `--filter " +
+        '"@scope/pkg"`, `--reporter default`), use `--flag=value` instead ' +
+        '(`--filter=@scope/pkg`, `--reporter=default`) — space-separated flag ' +
+        "values are indistinguishable from a package name here and are rejected " +
+        "the same way. Use `pnpm add` if you actually meant to add a dependency.",
     };
   }
 

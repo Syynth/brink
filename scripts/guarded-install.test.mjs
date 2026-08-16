@@ -192,6 +192,20 @@ describe("sanitizeInstallArgs", () => {
     assert.equal(result.args, undefined);
     assert.match(result.error, /left-pad/);
   });
+
+  // A space-separated flag VALUE (`--filter @scope/pkg`, `--reporter default`)
+  // hits this same rejection, because it is indistinguishable from a bare
+  // package name at this layer. The rejection is correct to keep (this
+  // command must never mutate the manifest) but the error text must name the
+  // real escape hatch — `--flag=value` — rather than pointing at `pnpm add`,
+  // which is not what a caller passing `--filter @scope/pkg` meant to do.
+  it("names the `--flag=value` escape hatch for a would-be flag value", () => {
+    const result = sanitizeInstallArgs(["--filter", "@brink-lang/studio"]);
+
+    assert.equal(result.args, undefined);
+    assert.match(result.error, /@brink-lang\/studio/);
+    assert.match(result.error, /--flag=value/);
+  });
 });
 
 // --- end-to-end layer --------------------------------------------------------
@@ -289,6 +303,20 @@ describe("scripts/guarded-install.mjs end to end (real script, stubbed pnpm)", (
       existsSync(markerPath),
       false,
       "pnpm must never have been spawned — the guard runs before it",
+    );
+    // checkWasmPkg's own remediation prints above guardedInstall's REFUSING TO
+    // INSTALL message (it runs first, as the precondition check) — it must
+    // not tell a fresh-checkout dev to trust the unguarded command this whole
+    // family of fixes exists to stop relying on.
+    assert.doesNotMatch(
+      output,
+      /^ {4}pnpm install --frozen-lockfile$/m,
+      "the refusal output must not recommend a bare `pnpm install --frozen-lockfile`",
+    );
+    assert.match(
+      output,
+      /pnpm install:checked/,
+      "the refusal output should point at the guarded entry point instead",
     );
   });
 
