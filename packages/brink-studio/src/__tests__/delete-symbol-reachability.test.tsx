@@ -44,9 +44,16 @@
  * ## What this file does, and deliberately does not do
  *
  * It PINS the state above rather than repairing it. Whether Delete should be
- * offered on a knot/stitch, and what its refusal should say and when, is a
- * maintainer call with no ruling behind it (`docs/studio-shell-spec.md` §7.5
- * covers rename only) — inventing one here is the failure mode #2636 names.
+ * *offered* on a knot/stitch is a maintainer call with no ruling behind it —
+ * inventing one here is the failure mode #2636 names. The refusal-reporting
+ * question is *not* unruled the same way: `docs/studio-shell-spec.md` §7.5
+ * says "A rename/move/**delete** that the underlying op declines raises an
+ * `error`-severity notification" — delete is named, and `delete_symbol` is a
+ * `StructuralResult` op, so that clause already covers it. §7.5 is a
+ * CONTRADICTED spec here, not silence: it prescribes behavior for an op that
+ * has no invocation to carry it out. There is nothing to apply the clause
+ * *to* until Delete is wired up, which is the part that stays a maintainer
+ * call.
  *
  * The tests are a tripwire. The moment anyone wires a symbol Delete into the
  * menu or the dispatcher, the assertions below turn red and the author has to
@@ -62,9 +69,6 @@
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { InMemoryFileProvider, ProjectSession } from "@brink-lang/editor";
@@ -80,25 +84,15 @@ import type { DocumentSymbol, FileOutline } from "@brink/wasm-types";
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
- * Production's own refusal wording, read off the generated fixture the Rust
- * crate owns (`driven_messages()` in `crates/brink-web/src/editor_refactor.rs`
- * calls the real op and records what it answered). Read, not transcribed, so
- * this file cannot pin a string production never emits — the exact failure
- * #2627 was fixing. Same derivation `structural-refusal-shape.test.ts` uses;
- * that file is not imported (house rule: never import a `.test.ts`), only the
- * JSON it also reads.
+ * NOTE: this package's vitest suite aliases `brink-web` to
+ * `src/__mocks__/brink-web.ts` (`studioTestWasmAliases`, `vitest.config.ts`),
+ * so every `project.getSession().deleteSymbol(...)` call in this file lands
+ * on the JSDOM MOCK's regex implementation, never `brink_ide::
+ * structural_delete::delete_symbol`. The mock's refusal wording matches
+ * production's own (verified against the Rust-driven fixture) in
+ * `structural-refusal-shape.test.ts`, which owns that parity check — this
+ * file does not repeat it; see the describe block below.
  */
-const repoRoot = resolve(fileURLToPath(import.meta.url), "../../../../../");
-const FIXTURE_PATH = resolve(repoRoot, "crates/brink-web/fixtures/refusal-shapes.json");
-const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as {
-  messages: Record<string, string>;
-};
-
-function productionMessage(key: string): string {
-  const message = fixture.messages[key];
-  expect(message, `fixture has no driven message for "${key}"`).toBeTruthy();
-  return message!;
-}
 
 const MAIN = [
   "=== one ===",
@@ -217,39 +211,22 @@ const STITCH_TARGET = {
   siblingCount: 2,
 };
 
-// ── The op exists and refuses — one layer below any UI ───────────────
+// ── The mock exists and refuses, matching production's wording ───────
+//
+// This describe block drives `src/__mocks__/brink-web.ts` (see the NOTE
+// above `MAIN`), not `brink_ide::structural_delete::delete_symbol` — this
+// package's vitest config aliases `brink-web` to that mock package-wide. The
+// three refusal cases (missing knot, missing file, missing stitch-in-knot)
+// already exist verbatim as data-table entries in
+// `structural-refusal-shape.test.ts` (same mock, same three inputs, same
+// three fixture keys) — that file is the mock↔production parity suite, so
+// they are not repeated here. Only the success case is unique to this file:
+// it is not a mock↔production parity check, only evidence that the refusals
+// pinned elsewhere come from the mock's control flow deliberately, not from
+// the mock itself being broken.
 
-describe("delete_symbol at the ProjectSession boundary (#2636)", () => {
-  it("refuses a missing knot in production's own wording", async () => {
-    const { project } = await makeStore({ "main.ink": MAIN });
-
-    const result = project.getSession().deleteSymbol("main.ink", "nowhere");
-
-    expect(result.ok).toBe(false);
-    // #2627's corrected string. It is real at this layer — the finding below
-    // is that no studio surface ever calls the method that produces it.
-    expect(result.error).toBe(productionMessage("delete_symbol:missing-symbol"));
-  });
-
-  it("refuses a file that is gone — the same trigger the rename control uses", async () => {
-    const { project } = await makeStore({ "main.ink": MAIN });
-
-    const result = project.getSession().deleteSymbol("vanished.ink", "one");
-
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe(productionMessage("delete_symbol:missing-file"));
-  });
-
-  it("refuses a missing stitch inside a knot that does exist", async () => {
-    const { project } = await makeStore({ "main.ink": MAIN });
-
-    const result = project.getSession().deleteSymbol("main.ink", "one", "nowhere");
-
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe(productionMessage("delete_symbol:missing-stitch-in-knot"));
-  });
-
-  it("succeeds on a real knot, so the refusals above are not the op being broken", async () => {
+describe("the jsdom mock's delete_symbol answers the ProjectSession call (#2636)", () => {
+  it("succeeds on a real knot, so a real call site (if one existed) would work", async () => {
     const { project } = await makeStore({ "main.ink": MAIN });
 
     const result = project.getSession().deleteSymbol("main.ink", "two");
@@ -268,6 +245,12 @@ describe("no user path invokes delete_symbol (#2636)", () => {
     // "no Delete" would keep passing if the menu stopped rendering entirely.
     expect(menu.labels.length).toBeGreaterThan(0);
     expect(menu.labels.filter((l) => /delete/i.test(l))).toEqual([]);
+    // KNOT_TARGET ("one") has stitches, so `buildItems` skips the "Demote
+    // into" submenu entirely (`hasStitches` guard, BinderContextMenu.tsx) —
+    // this menu has NO submenu at all. Pin that explicitly: without it, a
+    // Delete added one level down inside a future submenu would not turn the
+    // top-level check above red.
+    expect(menu.submenuLabels).toEqual([]);
   });
 
   it("offers no Delete on a stitch's context menu, submenu included", () => {
