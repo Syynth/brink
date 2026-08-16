@@ -122,7 +122,31 @@ export interface DocumentCallbacks {
   ): void;
   /** Inline rename (#323/#324): commit a safe (or forced) rename. `result` is
    *  the already-computed safe-rename payload; the host applies its edits and
-   *  re-keys any open symbol tab. `path` is the file the rename ran in. */
+   *  re-keys any open symbol tab. `path` is the file the rename ran in.
+   *
+   *  ⚠ `result` CAN carry `ok: false` with `safe: true` — a REFUSED rename
+   *  (the op declined), not a clean one. The widget only opens where
+   *  `prepareRename` resolved a range, and those renames go on to succeed, so
+   *  the refusals that actually arrive here are ones that appear *after* it
+   *  opened: the file unloading out from under an open rename ("file not
+   *  loaded"), or the analysis⇄db identity-space mismatch guarded by
+   *  `rename_refuses_rather_than_silently_dropping_edits_when_identity_spaces_disagree`
+   *  (`crates/internal/brink-ide/src/rename.rs`).
+   *  `result.safe` describes whether the (possibly empty) computed
+   *  edits introduce new diagnostics; it says nothing about whether the op
+   *  actually happened. That's `result.ok`. A refusal's `error_json` (Rust,
+   *  `crates/brink-web/src/editor_refactor.rs`) sets `safe: true` with no
+   *  `introduced_diagnostics`, so `isSafeRename` (`breakage.ts`) — which reads
+   *  only those two fields — calls a refusal "safe" and the editor's own
+   *  `settleCommit` still calls this callback (#2543).
+   *
+   *  **Check `result.ok` before applying anything.** On `ok: false`, do not
+   *  write `new_source`/`cross_file_edits`, push an undo entry, re-key the
+   *  tab, or toast success — report `result.error` as a failure instead.
+   *  `@brink-lang/studio`'s own apply seam
+   *  (`applyComputedRename`/`applyMoveResult`) added exactly this guard
+   *  in #2543/#2564 (rationale: `docs/studio-shell-spec.md` §7.5); every other
+   *  host of this callback needs the same check in its own apply seam. */
   onRenameCommit?(req: {
     path: string;
     newName: string;
