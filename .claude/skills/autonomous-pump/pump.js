@@ -357,6 +357,147 @@ const mergeSchemaFor = (b) => ({
   },
 });
 
+// ── #2686: A MECHANICAL READER FOR GATE EVIDENCE ────────────────────────────
+//
+// #2664 gave the MERGE/fix phase the same structured `gateResults` array BUILD
+// carries. But the BUILD rows are interpolated into the ADVERSARIAL REVIEWER's
+// prompt — read by an agent whose entire job is to disbelieve them — while the
+// MERGE rows went into the wave's returned payload and a bare `k/N` ratio in
+// the retro's tracker table. Required, structured, schema-enforced, and obliged
+// to be read by nobody. That is #2612's original hole one layer over: unread
+// evidence and absent evidence are close cousins.
+//
+// `auditGateEvidence` is the reader, and it is DETERMINISTIC rather than an
+// agent, deliberately. An extra reviewer agent that cannot fail anything is
+// theatre; these checks either produce a named concern or they do not, and the
+// concern rides into the reviewer prompt, the retro prompt AND the wave's
+// return payload (`gateEvidenceConcerns`) rather than into prose.
+//
+// ⚠ WHAT IT CAN CATCH:
+//   - a row count below the gate's command count. `minItems` already refuses
+//     that at the tool-call layer, but that enforcement was probed ONCE (#2665)
+//     and no in-tree test can detect a harness that stops honouring it — this
+//     is the check that still fires if that ever happens.
+//   - two rows reporting the SAME command: padding that satisfies `minItems`
+//     while a real command goes unreported. Exactly the "extra rows can hide a
+//     missing one" case #2672's OVER-COMPLETE banner could only ASK a reader to
+//     verify by hand.
+//   - a gate command that no row plausibly corresponds to.
+//   - a row whose own `result` says the command did NOT run, in a report that
+//     simultaneously claims the work landed or the gate was green.
+//
+// ⚠ WHAT IT CANNOT CATCH — say this every time, it has not changed since #2612:
+//   FABRICATION. A row reading "36 passed" for a command that never ran passes
+//   every check here exactly as cleanly as it passes the schema. Only a MISSING
+//   command is mechanically impossible; a FALSE one is not, at BUILD or MERGE.
+//   The coverage check is also a FUZZY string match (normalised containment,
+//   else token-overlap ≥ 0.6, assigned one-to-one) — it can flag a paraphrased
+//   row that is perfectly fine. It is a prompt to LOOK, never a verdict, and
+//   nothing downstream rejects a report on its say-so.
+//
+// ⚠ AND THE STRUCTURAL LIMIT: merge-phase evidence is produced by the phase
+// that merges, so NO reader of it can block that merge. The honest positions
+// are "gate the merge on the BUILD's evidence" (already done, via the review)
+// and "detect and route afterwards" (this). The retro is where the routing
+// lands because it is the only phase that runs after landing and can comment on
+// an issue. For an `armed` PR that routing is still actionable; for a `landed`
+// one it is a durable record and a re-gate recommendation, nothing more.
+// ⚠ Same class as SKIPPED_RE below: a bare `\btimed out\b` false-positives on
+// an honest result that explicitly NEGATES a timeout — e.g. "exit 0, 271/271
+// pass. Note: no test was skipped and none timed out." — because the regex
+// cannot see the "none " immediately before it. The lookbehind excludes the
+// common negations ("not"/"never"/"none"/"no"/"n't") directly preceding
+// "timed out" so a genuine "the build timed out after 10 minutes" still
+// matches while a stated non-timeout does not.
+const UNRUN_RE = /\bnot run\b|\bnever ran\b|\bdid ?n[o']?t run\b|\bnot executed\b|\bcould not run\b|\bunable to run\b|(?<!\b(?:not|never|none|no|n't)\s)\btimed out\b|output was lost|lost the output|no output captured|aborted before|\bn\/a\b/i;
+// "skipped" is deliberately NOT in the list above: "36 passed, 2 skipped" is an
+// ordinary green cargo/vitest result and flagging it would make the audit noise
+// on the normal path. Only an unnumbered "skipped" (an agent SAYING it skipped
+// the step) counts.
+// ⚠ The lookbehind alone is NOT enough (found post-merge, verified against this
+// PR's own `[3/3]` row text): `node --test`'s canonical summary line
+// (`# tests 271 / # pass 271 / # fail 0 / # cancelled 0 / # skipped 0 / # todo 0`)
+// has "skipped" preceded by "# " — not a digit/comma — so the lookbehind alone
+// let it through and this fires on `pnpm run test:scripts`'s OWN normal-path
+// output, on every pump-config item. The lookahead below suppresses "skipped"
+// when it is immediately followed by a count (optionally via `:`/`=`), which
+// covers "# skipped 0", "skipped: 0" and "0 skipped" (already caught by the
+// lookbehind) alike, while still catching an agent SAYING "I skipped this leg"
+// or "skipped the gate entirely" (no trailing count).
+const SKIPPED_RE = /(?<![\d,]\s)\bskipped\b(?!\s*[:=]?\s*\d)/i;
+const looksUnrun = (s) => UNRUN_RE.test(s) || SKIPPED_RE.test(s);
+const normCmd = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim().replace(/[.,;]+$/, "");
+const cmdSimilarity = (a, b) => {
+  const na = normCmd(a);
+  const nb = normCmd(b);
+  if (!na || !nb) return 0;
+  if (na === nb || na.includes(nb) || nb.includes(na)) return 1;
+  const ta = new Set(na.split(" ").filter(Boolean));
+  const tb = new Set(nb.split(" ").filter(Boolean));
+  let hits = 0;
+  for (const t of ta) if (tb.has(t)) hits += 1;
+  // Overlap coefficient, not Jaccard: a row that abbreviates a long command
+  // ("export CARGO_TARGET_DIR=… (CACHE)") should still match it.
+  return hits / Math.min(ta.size, tb.size);
+};
+const COVERAGE_MATCH = 0.6;
+// `expected` takes the same number-or-list shape `formatGateEvidence` does.
+// With a plain number only the count-based checks can run; the command list is
+// what unlocks coverage.
+const auditGateEvidence = (report, expected) => {
+  const rows = Array.isArray(report?.gateResults) ? report.gateResults : [];
+  const cmds = Array.isArray(expected) ? expected : [];
+  const count = Array.isArray(expected) ? expected.length : expected;
+  const concerns = [];
+  if (typeof count === "number" && rows.length < count) {
+    concerns.push(`UNDER-EVIDENCED: ${rows.length} rows returned for a ${count}-command gate — at least one command has no evidence at all.`);
+  }
+  const firstSeenAt = new Map();
+  rows.forEach((r, i) => {
+    const key = normCmd(r?.command);
+    if (!key) return;
+    if (firstSeenAt.has(key)) {
+      concerns.push(`DUPLICATE COMMAND: rows ${firstSeenAt.get(key) + 1} and ${i + 1} both report "${key}" — a repeated row satisfies the row COUNT while some other command goes unreported.`);
+    } else {
+      firstSeenAt.set(key, i);
+    }
+  });
+  // One-to-one greedy assignment: each row can cover at most one gate command,
+  // so three rows cannot "cover" a four-command gate by being vaguely similar
+  // to all of it.
+  const claimed = new Set();
+  cmds.forEach((cmd, ci) => {
+    let bestRow = -1;
+    let bestScore = 0;
+    rows.forEach((r, ri) => {
+      if (claimed.has(ri)) return;
+      const score = cmdSimilarity(r?.command, cmd);
+      if (score > bestScore) {
+        bestScore = score;
+        bestRow = ri;
+      }
+    });
+    if (bestRow >= 0 && bestScore >= COVERAGE_MATCH) claimed.add(bestRow);
+    else concerns.push(`UNCOVERED COMMAND: no gateResults row corresponds to gate command ${ci + 1}/${cmds.length}: "${String(cmd).slice(0, GATE_CMD_CAP)}" — the rows may satisfy minItems while omitting this one.`);
+  });
+  // A "not run" row is the DOCUMENTED, valid answer for a park that aborted
+  // before gating (#2664), and for an honest `gateGreen: false`. It is only a
+  // contradiction when the same report claims the work landed / went green.
+  const claim =
+    report?.landedState === "landed" || report?.landedState === "armed"
+      ? `landedState:"${report.landedState}"`
+      : report?.gateGreen === true
+        ? "gateGreen:true"
+        : null;
+  if (claim) {
+    rows.forEach((r, i) => {
+      if (!looksUnrun(String(r?.result ?? ""))) return;
+      concerns.push(`SELF-DECLARED UNRUN: row ${i + 1} ("${normCmd(r?.command).slice(0, 60)}") reports "${String(r?.result ?? "").slice(0, 120)}" — yet this report claims ${claim}.`);
+    });
+  }
+  return concerns;
+};
+
 // Gate evidence as shown to the adversarial reviewer: per-command rows FIRST
 // (each capped individually), free-text notes after. Before #2645 this was a
 // single `.slice(0, 2000)` over free-text `gateOutput` — for PR #2642 that cut
@@ -399,15 +540,41 @@ const GATE_CMD_CAP = 200;
 //
 // `notes` reads `gateOutput` (BUILD) or `detail` (MERGE/fix, #2664) — the
 // free-text half of whichever phase's report this is; `notesLabel` names it.
+//
+// ⚠ `expected` TAKES A NUMBER **OR** THE COMMAND LIST (#2686). Passing the list
+// is what unlocks `auditGateEvidence`'s coverage check, so both real call sites
+// (the review prompt and the wave's landing renderer) pass `gateCmds(b)`. The
+// number form is kept working on purpose: this function has four call paths and
+// a signature change that silently blinded one of them would be the same class
+// of bug this whole saga is about.
 const formatGateEvidence = (build, expected, notesLabel = "free-text notes (preflight/disk; NOT per-command evidence)") => {
   const results = Array.isArray(build?.gateResults) ? build.gateResults : [];
-  const denom = expected ?? results.length;
+  const expectedCount = Array.isArray(expected) ? expected.length : expected;
+  const denom = expectedCount ?? results.length;
+  // The audit renders ABOVE the rows and ALWAYS renders — including when it is
+  // clean, because silence would read as "verified" and it is not. Its own text
+  // states what it cannot see.
+  const concerns = auditGateEvidence(build, expected);
+  const audit =
+    `── MECHANICAL EVIDENCE AUDIT (deterministic checks, #2686) ──\n` +
+    (concerns.length
+      ? `⚠ ${concerns.length} concern(s) — read these FIRST, then judge the rows yourself:\n${concerns.map((c) => "  - " + c).join("\n")}\n(fuzzy string checks over the rows below, not a verdict: a paraphrased row can be flagged wrongly.)`
+      // ⚠ The coverage check (UNCOVERED/DUPLICATE COMMAND) only runs when
+      // `expected` is the command LIST — with the number form (still a valid
+      // call shape, see below) there is nothing to match rows against, so an
+      // unconditional "every gate command has a corresponding row" line would
+      // assert a check that never ran. Branch the clean message on which form
+      // the caller passed.
+      : Array.isArray(expected)
+        ? `No mechanical concerns: every gate command has a corresponding row, no row is duplicated, and no row declares itself unrun.`
+        : `No mechanical concerns among the count-based checks only; the caller passed a count, so command COVERAGE was not checked.`) +
+    `\n⚠ THIS IS NOT VERIFICATION. These checks cannot see a FABRICATED result — "36 passed" for a command that never ran passes all of them, and passes the schema too. Only a MISSING, duplicated or self-declared-unrun command is mechanically detectable.\n\n`;
   const banner =
-    expected === undefined || results.length === expected
+    expectedCount === undefined || results.length === expectedCount
       ? ""
-      : results.length < expected
-        ? `⚠ ${results.length} gateResults rows returned for a ${expected}-command gate — evidence is INCOMPLETE; gateGreen is unsupported\n\n`
-        : `⚠ ${results.length} gateResults rows returned for a ${expected}-command gate — this is OVER-COMPLETE, NOT incomplete: there is MORE evidence here than the gate has commands, not less. The expected count is an \`&&\`-split of the gate string, which UNDER-counts any step hidden behind \`;\` or a subshell, and an agent may also legitimately report a preflight or a re-run step. Read the extra rows and judge them on their content. An over-long array does NOT imply coverage: \`minItems\` only counts rows, so extra rows can hide a missing one. CHECK that each of the gate's ${expected} commands appears among the rows below before accepting this as complete.\n\n`;
+      : results.length < expectedCount
+        ? `⚠ ${results.length} gateResults rows returned for a ${expectedCount}-command gate — evidence is INCOMPLETE; gateGreen is unsupported\n\n`
+        : `⚠ ${results.length} gateResults rows returned for a ${expectedCount}-command gate — this is OVER-COMPLETE, NOT incomplete: there is MORE evidence here than the gate has commands, not less. The expected count is an \`&&\`-split of the gate string, which UNDER-counts any step hidden behind \`;\` or a subshell, and an agent may also legitimately report a preflight or a re-run step. Read the extra rows and judge them on their content. An over-long array does NOT imply coverage: \`minItems\` only counts rows, so extra rows can hide a missing one. CHECK that each of the gate's ${expectedCount} commands appears among the rows below before accepting this as complete. (The audit above runs that coverage check mechanically when the caller passed the command list — but it is a fuzzy match, so read the rows.)\n\n`;
   const shownRows = results.slice(0, GATE_ROWS_CAP);
   const dropped = results.length - shownRows.length;
   const rows = results.length
@@ -418,7 +585,7 @@ const formatGateEvidence = (build, expected, notesLabel = "free-text notes (pref
       (dropped > 0 ? `\n\n⚠ ${dropped} further gateResults rows not shown (render cap ${GATE_ROWS_CAP}) — that many commands' evidence is NOT below; treat them as unread, not as passing.` : "")
     : "(no gateResults returned — schema should have refused this; treat as unevidenced)";
   const notes = String(build?.gateOutput ?? build?.detail ?? "(none returned)").slice(0, GATE_NOTES_CAP);
-  return `${banner}${rows}\n\n--- ${notesLabel} ---\n${notes}`;
+  return `${audit}${banner}${rows}\n\n--- ${notesLabel} ---\n${notes}`;
 };
 // GATE_SCHEMA_HELPERS_END
 
@@ -549,9 +716,9 @@ Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed),
     if (!build || !build.ok || !build.pr) return { build: build ?? null, verdict: null };
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
-⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. This item's gate has ${gateCmds(b).length} command(s), so that many \`gateResults\` rows should appear below — if fewer do, that is a FINDING in its own right and a banner above the rows will say so; gateGreen is unsupported in that case. A row being present also does NOT mean it's true: if a row's result reads as skipped/lost/invented, or the free-text notes below it don't square with a real completed run, that is a FINDING too:
+⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. This item's gate has ${gateCmds(b).length} command(s), so that many \`gateResults\` rows should appear below — if fewer do, that is a FINDING in its own right and a banner above the rows will say so; gateGreen is unsupported in that case. A row being present also does NOT mean it's true: if a row's result reads as skipped/lost/invented, or the free-text notes below it don't square with a real completed run, that is a FINDING too. A MECHANICAL EVIDENCE AUDIT (#2686) heads the block: it is a set of deterministic checks (row count, duplicate rows, uncovered commands, rows that declare themselves unrun) and it is a prompt to LOOK, not a verdict — a clean audit is NOT a verified gate, and a flagged row may just be paraphrased. It cannot see a fabricated result; that judgement is still yours:
 <gate-output>
-${formatGateEvidence(build, gateCmds(b).length)}
+${formatGateEvidence(build, gateCmds(b))}
 </gate-output>
 ${GH.pre}
 READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via the GitHub read tools and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
@@ -603,12 +770,36 @@ Return {pr, landedState, detail, gateResults}.
 const built = results.map((r) => r.build).filter(Boolean);
 const reviewed = results.map((r) => r.verdict).filter(Boolean);
 
+// ── PENDING HOUSE RULES (#2673 Gap 2) ───────────────────────────────────────
+// A house-rule candidate that an earlier build/review EARNED but could not
+// land, because BRINK-CONFIG.md is owned by the lessons phase's per-wave PR and
+// every build fence forbids touching it. #2669 hit exactly that and proposed
+// its rule in a PR body; nothing carried it forward, so #2673 had to be filed
+// to track the handoff — and a tracked handoff only works if the lessons agent
+// happens to read the tracker. This list is interpolated into the lessons
+// prompt EVERY WAVE instead, so the rule cannot evaporate between the wave that
+// learned it and the wave that writes it down.
+//
+// ⚠ REMOVE AN ENTRY ONCE IT HAS LANDED in BRINK-CONFIG.md. The prompt also
+// tells the agent to drop anything already covered by an existing rule, so a
+// stale entry is noise rather than a duplicate on the page — but it is still
+// noise, and this list is meant to be short and to shrink.
+const PENDING_HOUSE_RULES = [
+  "a schema constraint is enforcement only if a validator honours it; `description` text and typo'd keywords (`minItem`, `minlength`) parse fine and enforce nothing — probe the enforcer once and write down what it answered. (earned by #2665 / PR #2669; handed over by #2673)",
+];
+const pendingRulesBlock = PENDING_HOUSE_RULES.length
+  ? `\n\n⚠ CARRIED-OVER RULES (#2673). These were earned by earlier waves whose fences forbade editing BRINK-CONFIG.md, so they have never landed on the page. Treat each as a lesson that ALREADY QUALIFIED — include it in your PR verbatim-or-sharper, and count it toward this wave's output even if the findings above yielded nothing. The ONE exception: if it is already covered by an existing rule, say which one and drop it.\n${PENDING_HOUSE_RULES.map((r) => "- " + r).join("\n")}`
+  : "";
+
 phase("Lessons"); // close the learning loop mechanically: findings -> next wave's RULES
 const allFindings = reviewed.flatMap((v) => (v?.findings ?? []).map((f) => `${v.pr} [${v.decision}]: ${f}`));
-const lessons = allFindings.length
+// ⚠ The carried-over rules make this phase worth running even with ZERO review
+// findings (#2673): a wave where nothing was rejected is exactly the wave that
+// used to drop a pending rule on the floor.
+const lessons = (allFindings.length || PENDING_HOUSE_RULES.length)
   ? await agent(`Distill HOUSE-RULE candidates from this wave's review findings for ${REPO}. A lesson qualifies only if it GENERALIZES (would prevent a class of mistake in future builds), not a one-off fix. Merge duplicates; imperative voice; one line each ("use only tokens from X", "wire features into the UI, not just a hook"). 0-6 lessons — an empty list is a valid answer.
-FINDINGS:\n${allFindings.map((s) => "- " + s).join("\n")}
-Current house rules (don't repeat):\n${RULES || "(none)"}
+FINDINGS:\n${allFindings.length ? allFindings.map((s) => "- " + s).join("\n") : "(none this wave)"}
+Current house rules (don't repeat):\n${RULES || "(none)"}${pendingRulesBlock}
 Return {lessons}.
 
 ⚠ THEN PERSIST THEM — this is the whole point, and it has historically been the broken link. Measured across 671 agents: **fix cycles are 18.3% of all token spend, and ~80% of reviewed PRs need one** (133 fix agents against 165 reviews). Those fixes are triggered by findings that RECUR wave after wave. Returning lessons as text that a human must remember to copy forward is why the same mistakes kept costing full re-read/re-gate/re-push cycles.
@@ -653,6 +844,34 @@ const trackerFacts = BATCH.map((b) => {
   return `#${b.n} -> ${r.build?.pr ?? "(no PR)"} | ${state} | verdict ${r.verdict?.decision ?? "-"} | merge gate rows ${rows} | claims: ${cl}`;
 }).join("\n");
 
+// #2686: THE MERGE-PHASE EVIDENCE FINALLY GETS A READER.
+// #2664 made this phase's `gateResults` required, structured and schema-pinned
+// — and then handed it to the wave payload (a human, sometimes) and a `k/N`
+// ratio in the table above. Nothing was obliged to look at it. The ratio only
+// ever detects a SHORT array, which is the one shape `minItems` already refuses
+// at the tool-call layer; every other way the evidence can be hollow (a padded
+// duplicate row, an uncovered command, a row that says outright it never ran
+// under a landing that claims green) passed straight through.
+// `auditGateEvidence` runs those checks per item; the concerns go to the retro,
+// which is the only phase that runs AFTER landing and can act on the record.
+const gateCmdsFor = (issue) => {
+  const b = BATCH.find((x) => x.n === issue);
+  return b ? gateCmds(b) : undefined;
+};
+const gateEvidenceConcerns = results.flatMap((r) =>
+  r?.land
+    ? auditGateEvidence(r.land, gateCmdsFor(r.issue)).map((concern) => ({
+        issue: r.issue,
+        pr: r.land.pr ?? r.build?.pr ?? "(no PR)",
+        landedState: r.land.landedState,
+        concern,
+      }))
+    : [],
+);
+const gateAuditFacts = gateEvidenceConcerns.length
+  ? gateEvidenceConcerns.map((c) => `- #${c.issue} ${c.pr} [${c.landedState}]: ${c.concern}`).join("\n")
+  : "(no mechanical concerns — which is NOT the same as verified; see the limit below)";
+
 const scopeReconciliation = await agent(`You are running this wave's RETRO for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}.
 ${GH.pre} An agent landed a deliverable for each item below. Your job is to TRUE UP what was actually built against what was actually requested, item by item, and leave both the tracker and the plan honest.
 
@@ -661,6 +880,12 @@ ${trackerFacts || "(none)"}
 
 DISCOVERED-SCOPE SIGNALS reported by the builds and reviews:
 ${scopeSignals.length ? scopeSignals.map((s) => "- " + s).join("\n") : "(none reported)"}
+
+MERGE-PHASE GATE-EVIDENCE AUDIT (#2686) — deterministic checks over the \`gateResults\` rows the merge/fix agent returned for the commit that ACTUALLY LANDED ON MAIN:
+${gateAuditFacts}
+⚠ YOU ARE THE READER FOR THIS. The BUILD phase's gate evidence goes to an adversarial reviewer whose job is to disbelieve it; this phase's evidence had no equivalent adversary, which is why it is in front of you. For EACH line above: read the PR yourself, decide whether the landing is genuinely under-evidenced, and if it is, COMMENT ON THE ISSUE saying what was and was not evidenced, and recommend a re-gate on main. For a PR that is merely ARMED, also recommend disarming until it is re-gated — that one is still preventable.
+⚠ WHAT YOU CANNOT DO, stated so you do not pretend otherwise: you cannot un-merge a landed commit, and no reader of this evidence could — it is produced by the phase that merges. Routing it into a durable record and a re-gate is the whole of the remedy available here.
+⚠ WHAT THESE CHECKS CANNOT SEE, and you must say so in your assessment rather than reporting a clean audit as a clean wave: they detect a MISSING, DUPLICATED or SELF-DECLARED-UNRUN command. They CANNOT detect a FABRICATED one — a row reading "36 passed" for a command that never ran passes every check and every schema constraint. An empty list above is not evidence the gates ran.
 
 For EACH item, compare DELIVERED against REQUESTED and land the difference somewhere real:
 - **Delivered the whole fence and the PR merged** — close the issue if it is still open.
@@ -672,6 +897,8 @@ For EACH item, compare DELIVERED against REQUESTED and land the difference somew
 - **The item NEVER RAN** (agent died mid-flight) — say so plainly and recommend a re-queue. Do NOT report the wave as scope-held on the strength of items that never executed; absence of a result is absence of evidence, not evidence of health.\n- **Genuinely new work no existing issue covers** — file it, after deduping against the board (${GH.issueList(MILESTONE ? `milestone "${MILESTONE}", state all` : "")}; read the roadmap/plan doc if the repo has one).
 
 You MAY act on all of the above — it is truing up the record of work that already happened, not rewriting the plan. The one thing you may NOT do unilaterally is restructure MILESTONES (add or expand one): propose that with rationale and let the human decide.
+
+⚠ ONCE PER WAVE — THE HARNESS-ENFORCEMENT RE-PROBE TRIGGER (#2673). Everything above about \`gateResults\` being *enforced* rests on ONE direct probe (#2665): a live agent submitted a short array and the harness rejected the call. That was observed on a specific CLI build and nothing in-tree pins it, so a release that quietly stopped honouring \`minItems\` would leave every downstream claim reading as true. Run \`claude --version\` and compare it to the \`PROBED-CLI:\` line in \`.claude/skills/autonomous-pump/SKILL.md\` ("Harness enforcement of the build schema"). If they DIFFER, file an issue to re-run the probe, naming both versions — the recipe is in that section. If they match, say nothing. ⚠ No test in the repo can do this for you: a version string is the only currency signal the record has.
 
 Finally judge the batch as a whole: did its scope HOLD, UNDER-capture, or OVER-capture? Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone, with a crisp \`proposal\` the human can act on.${LEDGER ? `
 ⚠ FIRST, BEFORE writing this wave's ledger: TRUE UP THE PREVIOUS WAVE'S LEDGER. Read the most recent wave-ledger comment on #${LEDGER} and re-check the CURRENT state of every PR it recorded as parked/open/armed. Since agents ARM auto-merge rather than merging (ruled 2026-08-13), landings are ASYNCHRONOUS — GitHub lands a PR whenever its required checks go green, which is routinely AFTER the wave that built it has ended. So the previous ledger's landed/parked split is provisional by construction, and w148's ledger was already wrong within 18 minutes of being written (it recorded #2402 as parked; PR #2413 merged at 17:48). If anything moved, post a short correction comment naming the wave and what changed — do NOT edit the old comment; the timing gap should stay visible. If nothing moved, say nothing about it.
@@ -692,12 +919,11 @@ Return {assessment, trackerActions, discoveredWork:[{title,why,suggestedMileston
 // which is worse than not collecting it, because it LOOKS like oversight.
 // This return payload is what the orchestrator and the human read at wave
 // close, and it is the only place a merge-phase gate claim is ever shown.
-const gateExpectedFor = (issue) => {
-  const b = BATCH.find((x) => x.n === issue);
-  return b ? gateCmds(b).length : undefined;
-};
+// #2686: passes the command LIST (not just its length) so the rendered block
+// carries the mechanical audit's coverage check, not only the row count.
+// `gateCmdsFor` is defined above the retro, which reads the same audit.
 const landEvidence = (r) =>
-  formatGateEvidence(r.land, gateExpectedFor(r.issue), "merge/fix detail (conflicts, landing state; NOT per-command evidence)");
+  formatGateEvidence(r.land, gateCmdsFor(r.issue), "merge/fix detail (conflicts, landing state; NOT per-command evidence)");
 
 const landedList = results
   .filter((r) => r.land?.landedState === "landed")
@@ -732,5 +958,12 @@ return {
   buildFailed,   // never reached a PR
   lessons: lessons?.lessons ?? [],  // paste-ready house-rule candidates for the next wave's RULES
   scopeReconciliation, // PROPOSAL for the human: did scope hold? new issues / milestone to add or expand?
-  counts: { batch: BATCH.length, landed: landedList.length, awaitingChecks: awaitingChecks.length, parked: parked.length, buildFailed: buildFailed.length, lessons: (lessons?.lessons ?? []).length, scopeDiscovered: scopeReconciliation?.discoveredWork?.length ?? 0 },
+  // #2686: the merge-phase gate evidence's mechanical concerns, as their own
+  // top-level field rather than buried inside each landing's rendered string —
+  // a summariser that skips the long `gateEvidence` blob still sees this, and
+  // `counts` below makes a non-zero value visible at a glance. ⚠ An empty list
+  // is NOT a verification: these checks catch a missing/duplicated/
+  // self-declared-unrun command, never a fabricated result.
+  gateEvidenceConcerns,
+  counts: { batch: BATCH.length, landed: landedList.length, awaitingChecks: awaitingChecks.length, parked: parked.length, buildFailed: buildFailed.length, lessons: (lessons?.lessons ?? []).length, scopeDiscovered: scopeReconciliation?.discoveredWork?.length ?? 0, gateEvidenceConcerns: gateEvidenceConcerns.length },
 };
