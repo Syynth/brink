@@ -555,6 +555,24 @@ so a future widening cannot land in one family and miss the other. The
 positive control (`delete_symbol` on the `==` fence the inline family already
 resolved) so the widening is not bought by making everything match.
 
+**`ALT_FENCES` carries five knots, not three (review finding).** The first
+three (`== one ==`, `===two===`, `==== three ====`) vary only fence width and
+the optional space; two of the grammar's other claims — the tolerated leading
+indent and the optional-any-width trailing fence — had no source exercising
+them at all. `ALT_FENCES` now also carries `  ==== four ====` (indented) and
+`=== five` (no closing fence), so a regression in either `^\s*` or the
+trailing `(?:={2,})?` is red instead of silently unguarded.
+
+**`file_symbols`'s `detail` field is part of the pinned shape, not dropped
+(review finding).** `driven_outlines()`/`outline_shape()` initially stripped
+`detail` — the `Some("function")` a function knot carries
+(`DocumentSymbolJs.detail`, `crates/brink-web/src/editor_dto.rs`) — on the
+theory that everything besides `name`/`kind` was a range. `detail` is not a
+range; it is what `Binder.tsx`'s function marker renders off, and
+`KNOT_AND_FUNCTION` is the `outlines` map's control for exactly that field.
+`outline_shape()`, the TS `shape()`/`OutlineSymbol`, and the mock's
+`MockSymbol` all carry it now.
+
 Not covered: the **stitch** header vocabulary has the same split shape
 (`STITCH_HEADER_RE` is `^=\s+`, the three inline stitch sites are `^\s*=\s+`).
 It is untouched here because #2662 was narrowed to knots, and because the

@@ -15,6 +15,9 @@ export default function init(): Promise<void> {
 interface MockSymbol {
   name: string;
   kind: string;
+  /** Mirrors `DocumentSymbolJs.detail` (`crates/brink-web/src/editor_dto.rs`):
+   *  `"function"` for a function knot, absent otherwise. */
+  detail?: string;
   start: number;
   end: number;
   full_start: number;
@@ -125,6 +128,15 @@ function knotHeaderFor(name: string): RegExp {
   return new RegExp(`${KNOT_HEADER_PREFIX}${escapeForRegex(name)}\\b`);
 }
 
+/**
+ * Does this header line carry the `function` segment? The question
+ * `KnotHeader::is_function` answers production-side, which is what sets
+ * `DocumentSymbolJs.detail` to `Some("function")` for a function knot
+ * (`crates/internal/brink-ide/src/document.rs`) — the field
+ * `Binder.tsx`'s function marker renders off (review finding on #2662).
+ */
+const KNOT_IS_FUNCTION_RE = new RegExp(`^\\s*${KNOT_FENCE_EQUALS}\\s*function\\s+`);
+
 /** Does this line OPEN a top-level knot? */
 function opensKnot(line: string): boolean {
   return KNOT_OPEN_RE.test(line);
@@ -156,6 +168,7 @@ function parseOutline(source: string): MockSymbol[] {
       symbols.push({
         name,
         kind: "knot",
+        detail: KNOT_IS_FUNCTION_RE.test(line) ? "function" : undefined,
         start: nameStart,
         end: nameEnd,
         full_start: offset,
@@ -1018,9 +1031,13 @@ export class EditorSession {
     if (!stitch && newName !== knot) {
       const lines = source.split("\n");
       // #2662: `knotHeaderFor` rather than a fourth hand-written fence. It
-      // also carries the `function` segment this site used to omit, which is
-      // production's answer too — a function knot already holding the new name
-      // is a duplicate knot definition like any other.
+      // also carries the `function` segment this site used to omit — a
+      // function knot already holding the new name really is production's
+      // answer too (E022 `duplicate knot definition`), driven and pinned by
+      // `rename_symbol:collides-with-function-knot` in
+      // `crates/brink-web/fixtures/refusal-shapes.json`, checked below in
+      // `structural-refusal-shape.test.ts` (review finding on #2662 — this
+      // claim previously had no driven case behind it).
       const collisionLine = lines.findIndex((l) => knotHeaderFor(newName).test(l));
       if (collisionLine >= 0) {
         introduced.push({

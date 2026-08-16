@@ -1,5 +1,5 @@
 {
-  "$comment": "GENERATED from the Rust refusal payloads — do not hand-edit. `shapes` are the serialized structs (message elided to the placeholder in `error`); `messages` are real refusal strings read back out of the production ops, not typed (#2603); `sources` are the exact inputs those drivers ran against, and `acceptance` is each (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based guard can express, because a mock that never refuses has no string to compare (#2661); `outlines` are the symbol names/kinds `file_symbols` reports, pinning the header recognizer itself rather than an op built on it (#2662). Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).",
+  "$comment": "GENERATED from the Rust refusal payloads — do not hand-edit. `shapes` are the serialized structs (message elided to the placeholder in `error`); `messages` are real refusal strings read back out of the production ops, not typed (#2603); `sources` are the exact inputs those drivers ran against, and `acceptance` is each (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based guard can express, because a mock that never refuses has no string to compare (#2661); `outlines` are the symbol names/kinds/detail `file_symbols` reports, pinning the header recognizer itself rather than an op built on it (#2662); `diagnostics` are the introduced-diagnostic CODES a driven (op, input) pair reports, the half `acceptance`'s ok/error pair cannot see (review finding on #2662). Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).",
   "acceptance": {
     "delete_symbol:alt-fence-terse": {
       "error": null,
@@ -110,6 +110,11 @@
       "ok": true
     }
   },
+  "diagnostics": {
+    "rename_symbol:collides-with-function-knot": [
+      "E022"
+    ]
+  },
   "error": "REFUSAL",
   "headers": {
     "demote_knot:function-knot": "= function greet()",
@@ -159,22 +164,38 @@
         "children": [
           {
             "children": [],
+            "detail": null,
             "kind": "stitch",
             "name": "a"
           }
         ],
+        "detail": null,
         "kind": "knot",
         "name": "one"
       },
       {
         "children": [],
+        "detail": null,
         "kind": "knot",
         "name": "two"
       },
       {
         "children": [],
+        "detail": null,
         "kind": "knot",
         "name": "three"
+      },
+      {
+        "children": [],
+        "detail": null,
+        "kind": "knot",
+        "name": "four"
+      },
+      {
+        "children": [],
+        "detail": null,
+        "kind": "knot",
+        "name": "five"
       }
     ],
     "KNOT_AND_FUNCTION": [
@@ -182,15 +203,18 @@
         "children": [
           {
             "children": [],
+            "detail": null,
             "kind": "stitch",
             "name": "a"
           }
         ],
+        "detail": null,
         "kind": "knot",
         "name": "one"
       },
       {
         "children": [],
+        "detail": "function",
         "kind": "knot",
         "name": "greet"
       }
@@ -200,15 +224,18 @@
         "children": [
           {
             "children": [],
+            "detail": null,
             "kind": "stitch",
             "name": "a"
           },
           {
             "children": [],
+            "detail": null,
             "kind": "stitch",
             "name": "b"
           }
         ],
+        "detail": null,
         "kind": "knot",
         "name": "one"
       },
@@ -216,10 +243,12 @@
         "children": [
           {
             "children": [],
+            "detail": null,
             "kind": "stitch",
             "name": "a"
           }
         ],
+        "detail": null,
         "kind": "knot",
         "name": "two"
       }
@@ -253,7 +282,7 @@
     }
   },
   "sources": {
-    "ALT_FENCES": "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n",
+    "ALT_FENCES": "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n\n  ==== four ====\nFourth.\n\n=== five\nFifth.\n",
     "BLANK_BODY": "=== one ===\nFirst.\n\nLast.\n",
     "FUNCTION_KNOT": "=== function greet() ===\n~ return \"hi\"\n",
     "KNOT_AND_FUNCTION": "=== one ===\nFirst.\n= a\nA.\n\n=== function greet() ===\n~ return \"hi\"\n",
