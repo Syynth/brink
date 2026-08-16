@@ -137,6 +137,12 @@ interface RefusalFixture {
   shapes: Record<string, Record<string, unknown>>;
   /** Real refusal strings, read out of the production ops (#2603). */
   messages: Record<string, string>;
+  /** The exact source text each Rust driver ran against (#2661). */
+  sources: Record<string, string>;
+  /** Each driven (op, input) pair's own `ok` flag and `error` (#2661). */
+  acceptance: Record<string, { ok: boolean; error: string | null }>;
+  /** Header lines production's promote/demote rewrites produced (#2661). */
+  headers: Record<string, string>;
 }
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as RefusalFixture;
@@ -214,6 +220,25 @@ const TWO_KNOTS =
  * still went green against them.
  */
 const FUNCTION_KNOT = '=== function greet() ===\n~ return "hi"\n';
+
+/** A plain knot with one stitch, plus a function knot: TWO top-level knots. */
+const KNOT_AND_FUNCTION = '=== one ===\nFirst.\n= a\nA.\n\n=== function greet() ===\n~ return "hi"\n';
+
+/** Two knots, neither carrying a stitch. */
+const STITCHLESS_KNOTS = "=== one ===\nFirst.\n\n=== two ===\nSecond.\n";
+
+/** A stitch whose name is already a top-level FUNCTION knot. */
+const STITCH_SHADOWS_FUNCTION =
+  '=== one ===\nFirst.\n= greet\nG.\n\n=== function greet() ===\n~ return "hi"\n';
+
+/** A `VAR` beside a knot — the `extract_*` var-collision input. */
+const VAR_AND_KNOT = "VAR score = 0\n\n=== one ===\nFirst.\nSecond.\n";
+
+/** A knot body with a blank line: non-empty in offsets, empty in content. */
+const BLANK_BODY = "=== one ===\nFirst.\n\nLast.\n";
+
+/** A stitch carrying parameters, for the promote rewrite. */
+const PARAM_STITCH = "=== one ===\nFirst.\n= deal(n)\nD.\n";
 
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
@@ -557,6 +582,269 @@ const compileRefusals: Array<{ site: string; error: string; call: () => string }
     call: () => sessionWith({ "main.ink": MAIN }).compile_project("ghost.ink"),
   },
 ];
+
+/**
+ * The ACCEPTANCE half (#2661) — the one every guard above is blind to.
+ *
+ * Everything before this compares the WORDING of a refusal the mock emits. An
+ * op that answers `ok: true` where production refuses has no wording to
+ * compare, so it is invisible: `delete_symbol` (#2641) and `rename_symbol`
+ * (#2634) were both found by reading the two implementations side by side, and
+ * the audit that produced this table found seven more.
+ *
+ * `fixture.acceptance` is each (op, input) pair's own `ok` flag plus the
+ * `error` beside it, harvested by CALLING the op on a real `EditorSession`
+ * (`driven_outline_acceptance` / `driven_extract_acceptance` in
+ * `crates/brink-web/src/editor_refactor.rs`). Each case below asks the mock the
+ * same question and compares BOTH — so a mock that succeeds where production
+ * refuses, refuses where production succeeds, or refuses for a different
+ * reason, is red here.
+ *
+ * The inputs are the same question by construction: the offsets are derived
+ * from the source text (`indexOf`, exactly as the Rust `at()` helper does), and
+ * the source constants are asserted byte-identical to `fixture.sources` below.
+ */
+const acceptanceCases: Array<{ key: string; call: () => string }> = [
+  // ── The outline ops. Most of these turn on one thing: production
+  // resolves knots through `tree.knots()`, which yields a `function` knot
+  // like any other, while the mock resolved them with a header regex that
+  // could not see past the `function` segment.
+  {
+    key: "reorder_knot:function-knot",
+    call: () => sessionWith({ "main.ink": FUNCTION_KNOT }).reorder_knot("main.ink", "greet", 1),
+  },
+  {
+    key: "reorder_knots:function-knot-counted",
+    call: () => sessionWith({ "main.ink": KNOT_AND_FUNCTION }).reorder_knots("main.ink", ["one"]),
+  },
+  {
+    key: "reorder_knots:function-knot-permuted",
+    call: () =>
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).reorder_knots("main.ink", ["greet", "one"]),
+  },
+  {
+    // Production short-circuits to `Ok(source)` when the knot carries no
+    // stitches, BEFORE the permutation is resolved — so even a nonsense
+    // order is accepted rather than refused.
+    key: "reorder_stitches:stitchless-knot",
+    call: () =>
+      sessionWith({ "main.ink": STITCHLESS_KNOTS }).reorder_stitches("main.ink", "one", ["nope"]),
+  },
+  {
+    key: "reorder_stitch:function-knot",
+    call: () =>
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).reorder_stitch("main.ink", "greet", "a", 1),
+  },
+  {
+    key: "move_stitch:into-function-knot",
+    call: () =>
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).move_stitch("main.ink", "one", "a", "greet"),
+  },
+  {
+    key: "promote_stitch:collides-with-function-knot",
+    call: () =>
+      sessionWith({ "main.ink": STITCH_SHADOWS_FUNCTION }).promote_stitch(
+        "main.ink",
+        "one",
+        "greet",
+      ),
+  },
+  {
+    key: "demote_knot:function-knot-source",
+    call: () =>
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).demote_knot("main.ink", "greet", "one"),
+  },
+  {
+    key: "demote_knot:function-knot-dest",
+    call: () =>
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).demote_knot("main.ink", "one", "greet"),
+  },
+  {
+    key: "reorder_stitch:accepted",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_stitch("main.ink", "one", "a", 1),
+  },
+  {
+    key: "move_stitch:accepted",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "b", "two"),
+  },
+  // ── The extract ops. `ExtractError` has EIGHT variants; the mock
+  // modelled three, so five production refusals answered `ok: true`.
+  {
+    key: "extract_to_knot:crosses-header",
+    call: () =>
+      sessionWith({ "main.ink": TWO_KNOTS }).extract_to_knot(
+        "main.ink",
+        TWO_KNOTS.indexOf("B."),
+        TWO_KNOTS.indexOf("Second."),
+        "lifted",
+      ),
+  },
+  {
+    key: "extract_to_knot:knot-name-collision",
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).extract_to_knot(
+        "main.ink",
+        MAIN.indexOf("Hi."),
+        MAIN.indexOf("Hi.") + 3,
+        "hello",
+      ),
+  },
+  {
+    key: "extract_to_knot:var-collision",
+    call: () =>
+      sessionWith({ "main.ink": VAR_AND_KNOT }).extract_to_knot(
+        "main.ink",
+        VAR_AND_KNOT.indexOf("First."),
+        VAR_AND_KNOT.indexOf("First.") + 6,
+        "score",
+      ),
+  },
+  {
+    key: "extract_to_knot:invalid-name",
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).extract_to_knot(
+        "main.ink",
+        MAIN.indexOf("Hi."),
+        MAIN.indexOf("Hi.") + 3,
+        "1bad",
+      ),
+  },
+  {
+    key: "extract_to_knot:blank-selection",
+    call: () =>
+      sessionWith({ "main.ink": BLANK_BODY }).extract_to_knot(
+        "main.ink",
+        BLANK_BODY.indexOf("\n\n") + 1,
+        BLANK_BODY.indexOf("\n\n") + 2,
+        "lifted",
+      ),
+  },
+  {
+    key: "extract_to_knot:accepted",
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).extract_to_knot(
+        "main.ink",
+        MAIN.indexOf("Hi."),
+        MAIN.indexOf("Hi.") + 3,
+        "lifted",
+      ),
+  },
+  {
+    key: "extract_to_function:flow-control",
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).extract_to_function(
+        "main.ink",
+        MAIN.indexOf("-> END"),
+        MAIN.indexOf("-> END") + 6,
+        "lifted",
+      ),
+  },
+  {
+    key: "extract_to_function:invalid-name",
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).extract_to_function(
+        "main.ink",
+        MAIN.indexOf("Hi."),
+        MAIN.indexOf("Hi.") + 3,
+        "1bad",
+      ),
+  },
+  {
+    key: "extract_to_function:var-collision",
+    call: () =>
+      sessionWith({ "main.ink": VAR_AND_KNOT }).extract_to_function(
+        "main.ink",
+        VAR_AND_KNOT.indexOf("First."),
+        VAR_AND_KNOT.indexOf("First.") + 6,
+        "score",
+      ),
+  },
+  {
+    key: "extract_to_function:accepted",
+    call: () =>
+      sessionWith({ "main.ink": MAIN }).extract_to_function(
+        "main.ink",
+        MAIN.indexOf("Hi."),
+        MAIN.indexOf("Hi.") + 3,
+        "lifted",
+      ),
+  },
+];
+
+describe("the mock accepts exactly what production accepts (#2661)", () => {
+  it("this file's source constants are byte-identical to the Rust drivers' (#2661)", () => {
+    // Every driven answer in the fixture is evidence about the mock ONLY if
+    // the mock was asked the same question. Before #2661 that identity was a
+    // comment on both sides and nothing checked it.
+    expect({
+      BLANK_BODY,
+      FUNCTION_KNOT,
+      KNOT_AND_FUNCTION,
+      MAIN,
+      PARAM_STITCH,
+      STITCHLESS_KNOTS,
+      STITCH_SHADOWS_FUNCTION,
+      TWO_KNOTS,
+      VAR_AND_KNOT,
+    }).toEqual(fixture.sources);
+  });
+
+  it("every driven acceptance case has a call site here", () => {
+    // Same omission guard the messages half carries: a driven (op, input) pair
+    // nobody calls is a row parked in a fixture, not a guard.
+    expect(acceptanceCases.map((c) => c.key).sort()).toEqual(Object.keys(fixture.acceptance).sort());
+  });
+
+  for (const { key, call } of acceptanceCases) {
+    it(`${key}: the mock answers production's ok flag`, () => {
+      const parsed = JSON.parse(call()) as { ok: boolean; error?: string };
+      expect({ ok: parsed.ok, error: parsed.error ?? null }).toEqual(fixture.acceptance[key]);
+    });
+  }
+});
+
+/**
+ * The half acceptance cannot see: an op that ACCEPTS on both sides but
+ * rewrites the header differently (#2661).
+ *
+ * Production's promote/demote header rewrites are name-agnostic — they strip
+ * the `=` fences and keep whatever is between them — so a function knot keeps
+ * its `function` segment and a parameterised stitch keeps its `(n)` inside the
+ * new fences. The mock interpolated the declared name into a regex instead,
+ * which is exactly the trap PR #2658's own fix fell into: `={2,3}\s*<name>`
+ * does not match `=== function greet() ===`.
+ *
+ * The expected strings are read off `fixture.headers`, which is production's
+ * own `new_source` (`driven_header_rewrites` in
+ * `crates/brink-web/src/editor_refactor.rs`) — not typed here.
+ */
+describe("promote/demote rewrite the header the way production does (#2661)", () => {
+  it("demoting a function knot keeps its `function` segment", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).demote_knot("main.ink", "greet", "one"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain(fixture.headers["demote_knot:function-knot"]);
+    // And the knot fence is gone — a rewrite that matched nothing would leave
+    // `=== function greet() ===` sitting inside another knot's body.
+    expect(parsed.new_source).not.toContain("=== function greet() ===");
+  });
+
+  it("promoting a parameterised stitch keeps the params inside the fences", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": PARAM_STITCH }).promote_stitch("main.ink", "one", "deal"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain(fixture.headers["promote_stitch:parameterised"]);
+  });
+
+  it("every driven header rewrite has a call site here", () => {
+    expect(Object.keys(fixture.headers).sort()).toEqual([
+      "demote_knot:function-knot",
+      "promote_stitch:parameterised",
+    ]);
+  });
+});
 
 describe("mock refusal payloads match the Rust structs (#2568)", () => {
   it("the generated fixture is present and carries the shapes this file reads", () => {

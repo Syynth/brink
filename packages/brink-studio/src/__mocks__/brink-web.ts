@@ -43,6 +43,33 @@ function escapeForRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * A top-level knot header line, capturing the declared name.
+ *
+ * ⚠ The `(?:function\s+)?` segment and the optional `(params)` are load-bearing
+ * (#2661). Production resolves knots through `brink_syntax`'s `tree.knots()`,
+ * and `KnotHeader::name()` answers the bare `greet` for
+ * `=== function greet() ===` exactly as it does for `=== hello ===` — a
+ * function knot IS a top-level knot to every structural op and to
+ * `document_symbols` (which merely tags it `detail: "function"`).
+ *
+ * This regex used to be `/^===\s+(\w+)\s*===/`, which matched neither form
+ * with a `function` segment nor a knot with parameters. Every op that resolves
+ * a knot through {@link parseOutline} therefore disagreed with production
+ * about whether the knot exists at all — in BOTH directions: `promote_stitch`
+ * missed a collision with a function knot and succeeded where production
+ * refuses, `reorder_knots` accepted an order that omitted the function knot
+ * (production: not a permutation), and `move_stitch`/`demote_knot` refused
+ * `destination knot not found` for a destination production resolves fine.
+ *
+ * The optional group backtracks, so a knot legitimately NAMED `function`
+ * (`=== function ===`) still resolves to `function`.
+ */
+const KNOT_HEADER_RE = /^===\s+(?:function\s+)?(\w+)\s*(?:\([^)]*\))?\s*===/;
+
+/** A stitch header line (`= name`, `= name(params)`), capturing the name. */
+const STITCH_HEADER_RE = /^=\s+(\w+)/;
+
 /** Parse knot/stitch headers from ink source for outline generation. */
 function parseOutline(source: string): MockSymbol[] {
   const symbols: MockSymbol[] = [];
@@ -51,7 +78,7 @@ function parseOutline(source: string): MockSymbol[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    const knotMatch = line.match(/^===\s+(\w+)\s*===/);
+    const knotMatch = line.match(KNOT_HEADER_RE);
     if (knotMatch) {
       const name = knotMatch[1]!;
       const nameStart = offset + line.indexOf(name);
@@ -67,7 +94,7 @@ function parseOutline(source: string): MockSymbol[] {
       });
     }
 
-    const stitchMatch = line.match(/^=\s+(\w+)/);
+    const stitchMatch = line.match(STITCH_HEADER_RE);
     if (stitchMatch && !knotMatch) {
       const name = stitchMatch[1]!;
       const nameStart = offset + line.indexOf(name);
@@ -178,18 +205,133 @@ function requalifyReferences(src: string, old: string, next: string): string {
   return src.replace(new RegExp(`((?:->|<-)\\s*)${esc}(?![\\w.])`, "g"), `$1${next}`);
 }
 
-/** `= name` → `=== name ===` on a promoted stitch's first header line
- *  (`structural_move::rewrite_stitch_to_knot_header`). */
-function stitchHeaderToKnot(text: string, name: string): string {
-  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text.replace(new RegExp(`^(\\s*)=\\s*${esc}([^\\n]*)`), `$1=== ${name} ===$2`);
+/**
+ * Rewrite the first `=`-leading line of `text` with `rewrite`, applied to the
+ * header's inner text (everything between the fences). Lines before it — a
+ * `///` doc block or a comment — pass through, exactly as
+ * `structural_move::rewrite_stitch_to_knot_header` /
+ * `rewrite_knot_to_stitch_header` do.
+ *
+ * ⚠ Both Rust rewrites are NAME-AGNOSTIC: they strip the `=` fences and keep
+ * whatever is between them, never matching on the declared name. The mock's
+ * two rewrites used to interpolate the name into a regex, and both were wrong
+ * for a header the name alone does not describe (#2661):
+ *
+ * | header                     | op      | mock before              | production            |
+ * | -------------------------- | ------- | ------------------------ | --------------------- |
+ * | `=== function greet() ===` | demote  | no match, header UNCHANGED | `= function greet()`  |
+ * | `= greet(a)`               | promote | `=== greet ===(a)`       | `=== greet(a) ===`    |
+ *
+ * The first is the function-knot trap: `={2,3}\s*<name>` cannot match a header
+ * whose name is preceded by a `function` segment. Mirroring production's
+ * strip-and-refence removes the class rather than adding a `function` case.
+ */
+function rewriteFirstHeader(text: string, rewrite: (inner: string) => string): string {
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i]!.trimStart();
+    if (trimmed.startsWith("=")) {
+      lines[i] = rewrite(trimmed);
+      break;
+    }
+  }
+  return lines.join("\n");
 }
 
-/** `=== name ===` → `= name` on a demoted knot's first header line
+/** `= name` / `= name(params)` → `=== name(params) ===` on a promoted stitch's
+ *  first header line (`structural_move::rewrite_stitch_to_knot_header`). */
+function stitchHeaderToKnot(text: string): string {
+  return rewriteFirstHeader(text, (header) => `=== ${header.slice(1).trim()} ===`);
+}
+
+/** `=== name ===` (or `=== function name() ===`) → `= name` / `= function
+ *  name()` on a demoted knot's first header line
  *  (`structural_move::rewrite_knot_to_stitch_header`). */
-function knotHeaderToStitch(text: string, name: string): string {
-  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text.replace(new RegExp(`^(\\s*)={2,3}\\s*${esc}\\s*={0,3}([^\\n]*)`), `$1= ${name}$2`);
+function knotHeaderToStitch(text: string): string {
+  return rewriteFirstHeader(
+    text,
+    (header) => `= ${header.replace(/^=+/, "").trim().replace(/=+$/, "").trimEnd()}`,
+  );
+}
+
+// ── Extraction model (#2661) ─────────────────────────────────────────
+//
+// `brink_ide::extract::ExtractError` has EIGHT variants, and the mock
+// modelled three (`FileNotFound`, one of the three `EmptySelection` routes,
+// and a `NameCollision` it worded in a string production never emits). The
+// other five answered `ok: true` — the #2641 class again, five times over,
+// invisible to every wording-based guard because there was no refusal to
+// compare. These helpers mirror `extract.rs`'s own checks so `extractImpl`
+// below reads as production's sequence rather than an ad-hoc subset.
+
+/** An ink identifier — `extract.rs::is_valid_name`. */
+function isValidExtractionName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+/**
+ * Snap `[lo, hi)` out to whole lines — `extract.rs::snap_to_lines`.
+ *
+ * The `hi` already at a line start rule is production's and matters: a
+ * selection ending exactly at a line boundary must not swallow the following
+ * line, which is what decides whether the snapped window reaches the next
+ * knot's header.
+ */
+function snapToLines(source: string, lo: number, hi: number): [number, number] {
+  const l = Math.min(lo, source.length);
+  const h = Math.min(hi, source.length);
+  const start = source.lastIndexOf("\n", l - 1) + 1;
+  let end: number;
+  if (h > start && source[h - 1] === "\n") {
+    end = h;
+  } else {
+    const rel = source.indexOf("\n", h);
+    end = rel < 0 ? source.length : rel + 1;
+  }
+  return [start, end];
+}
+
+/**
+ * Does `[selStart, selEnd)` overlap any knot or stitch HEADER?
+ * `extract.rs` intersects the snapped window against each header node's range;
+ * the mock has lines rather than nodes, and a header node always lies inside
+ * its own line, so overlapping the line is the same question here.
+ */
+function selectionCrossesHeader(source: string, selStart: number, selEnd: number): boolean {
+  let offset = 0;
+  for (const line of source.split("\n")) {
+    const lineStart = offset;
+    const lineEnd = offset + line.length;
+    offset = lineEnd + 1;
+    if (!KNOT_HEADER_RE.test(line) && !STITCH_HEADER_RE.test(line)) continue;
+    if (selStart < lineEnd && lineStart < selEnd) return true;
+  }
+  return false;
+}
+
+/** Every `VAR` / `CONST` / `LIST` name declared in `source`. Production reads
+ *  these off the CST (`var_decls`/`const_decls`/`list_decls`). */
+function declaredGlobals(source: string): string[] {
+  const names: string[] = [];
+  for (const line of source.split("\n")) {
+    const m = line.match(/^\s*(?:VAR|CONST|LIST)\s+(\w+)/);
+    if (m) names.push(m[1]!);
+  }
+  return names;
+}
+
+/** Flow control illegal inside a function body — `extract.rs::
+ *  selection_has_flow_control`: a `->` anywhere on a line, or a line-leading
+ *  `*` / `+` / `-`. */
+function selectionHasFlowControl(selected: string): boolean {
+  for (const line of selected.split("\n")) {
+    const t = line.trimStart();
+    if (t === "") continue;
+    if (t.includes("->")) return true;
+    const first = t[0];
+    if (first === "*" || first === "+" || first === "-") return true;
+  }
+  return false;
 }
 
 interface MockDoc {
@@ -537,6 +679,33 @@ export class EditorSession {
     return this.extractImpl(path, startOffset, endOffset, name, "function");
   }
 
+  /**
+   * The shared extract body, in production's own refusal sequence
+   * (`brink_ide::extract::plan_extraction`, then `extract_to_function`'s extra
+   * function-body check).
+   *
+   * ## Five refusals were MISSING, and the sixth was worded wrong (#2661)
+   *
+   * | input                              | mock before        | production                                        |
+   * | ---------------------------------- | ------------------ | ------------------------------------------------- |
+   * | name `1bad`                        | extracted          | `invalid extraction name: '1bad'`                  |
+   * | selection spanning a knot header   | extracted          | `selection crosses a knot or stitch header`        |
+   * | name of an existing knot           | *own wording*      | `name collision: '…' already exists as a top-level knot` |
+   * | name of a declared `VAR`           | extracted          | `name collision: '…' already exists as a variable, const, or list` |
+   * | a blank-line selection             | extracted          | `empty selection: nothing to extract`              |
+   * | `-> END` into a FUNCTION           | extracted          | `selection cannot be a function body: …`           |
+   *
+   * The wording row is its own lesson: `a knot or function named '…' already
+   * exists` is a string production has never emitted, and no guard could see
+   * it because the site was undriven — the same shape as the three #2620
+   * caught. All six are driven acceptance cases now
+   * (`driven_extract_acceptance` in `crates/brink-web/src/editor_refactor.rs`).
+   *
+   * The ORDER is production's, not a convenient one: an invalid name is
+   * refused before the selection is even looked at, and the collision checks
+   * run after the header-crossing check, so an input that trips two of them
+   * gets the same answer on both sides.
+   */
   private extractImpl(
     path: string,
     startOffset: number,
@@ -548,25 +717,45 @@ export class EditorSession {
     if (source === undefined) {
       return EditorSession.structuralRefusal("file not loaded");
     }
+    if (!isValidExtractionName(name)) {
+      return EditorSession.structuralRefusal(`invalid extraction name: '${name}'`);
+    }
     const lo = Math.min(startOffset, endOffset);
     const hi = Math.max(startOffset, endOffset);
     if (lo === hi) {
       return EditorSession.structuralRefusal("empty selection: nothing to extract");
     }
-    // Name collision (#2578): mirrors the real op's "name collision" refusal
-    // class named in `document-sessions.ts`'s doc-comment ("name collision,
-    // header crossing, illegal function body") — enough to drive a genuine
-    // `ok: false` extract result in tests without reimplementing the Rust
-    // scope-analysis. The precise collision math is covered by Rust tests.
-    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`^\\s*={2,3}\\s*(function\\s+)?${esc}\\b`, "m").test(source)) {
-      return EditorSession.structuralRefusal(`a knot or function named '${name}' already exists`);
+    const [selStart, selEnd] = snapToLines(source, lo, hi);
+    if (selStart >= selEnd) {
+      return EditorSession.structuralRefusal("empty selection: nothing to extract");
     }
-    // Snap to whole lines.
-    const selStart = source.lastIndexOf("\n", lo - 1) + 1;
-    const nextNl = source.indexOf("\n", hi);
-    const selEnd = nextNl < 0 ? source.length : nextNl + 1;
+    if (selectionCrossesHeader(source, selStart, selEnd)) {
+      return EditorSession.structuralRefusal("selection crosses a knot or stitch header");
+    }
+    // Resolved through `parseOutline` — the same knot model every other
+    // structural op uses, so a function knot collides here too, exactly as it
+    // does in production (whose check is over `tree.knots()`).
+    if (parseOutline(source).some((k) => k.name === name)) {
+      return EditorSession.structuralRefusal(
+        `name collision: '${name}' already exists as a top-level knot`,
+      );
+    }
+    if (declaredGlobals(source).includes(name)) {
+      return EditorSession.structuralRefusal(
+        `name collision: '${name}' already exists as a variable, const, or list`,
+      );
+    }
     const selected = source.slice(selStart, selEnd);
+    if (selected.trim() === "") {
+      return EditorSession.structuralRefusal("empty selection: nothing to extract");
+    }
+    // Ink functions cannot divert or branch, so a selection carrying flow
+    // control cannot become one. Checked after the plan, as production does.
+    if (kind === "function" && selectionHasFlowControl(selected)) {
+      return EditorSession.structuralRefusal(
+        "selection cannot be a function body: it contains a divert, choice, or gather",
+      );
+    }
 
     const call = kind === "knot" ? `-> ${name} ->\n` : `~ ${name}()\n`;
     const header = kind === "knot" ? `=== ${name} ===\n` : `=== function ${name}() ===\n`;
@@ -919,6 +1108,14 @@ export class EditorSession {
     if (!k) {
       return EditorSession.structuralRefusal("source knot not found");
     }
+    // A knot with no stitches has nothing to reorder: production returns
+    // `Ok(source)` unchanged BEFORE `resolve_permutation` runs, so even a
+    // nonsense order is accepted here (#2661). The mock reached the
+    // permutation check and refused `invalid reorder` — a refusal production
+    // never emits for this input.
+    if (k.children.length === 0) {
+      return EditorSession.structuralOk(path, source);
+    }
     const indices = resolvePermutation(
       k.children.map((s) => s.name),
       order,
@@ -1031,7 +1228,7 @@ export class EditorSession {
     }
     const plan = planKnots(source, knots);
     const [moved] = plan[ki]!.stitches.splice(si, 1);
-    let promoted = stitchHeaderToKnot(moved!.text, stitch);
+    let promoted = stitchHeaderToKnot(moved!.text);
     if (!promoted.endsWith("\n")) promoted += "\n";
     plan.splice(ki + 1, 0, { name: stitch, head: promoted, stitches: [] });
     const rendered = renderKnots(source, knots, plan);
@@ -1071,7 +1268,7 @@ export class EditorSession {
     }
     const plan = planKnots(source, knots);
     const [removed] = plan.splice(ki, 1);
-    let demoted = knotHeaderToStitch(removed!.head, knot);
+    let demoted = knotHeaderToStitch(removed!.head);
     if (!demoted.endsWith("\n")) demoted += "\n";
     plan.find((p) => p.name === destKnot)!.stitches.push({ name: knot, text: demoted });
     const rendered = renderKnots(source, knots, plan);
