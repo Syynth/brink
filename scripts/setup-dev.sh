@@ -87,41 +87,14 @@ set -euo pipefail
 echo "==> Brink dev environment setup"
 
 # --- run_with_timeout helper -------------------------------------------------
-# Wraps a command with a bounded timeout to prevent stalled network fetches
-# (e.g., RUSTSEC DB fetch in cargo deny) from blocking indefinitely.
-#
-# Usage: run_with_timeout <timeout_seconds> <command> [args...]
-#
-# Returns:
-#   - 0 if the command succeeds
-#   - 124 if the command times out (timeout exit code)
-#   - non-zero if the command fails normally
-#
-# Prefers GNU `timeout` (Linux), falling back to `gtimeout` (macOS + Homebrew
-# coreutils) before degrading to no timeout protection at all. `-k 10` sends
-# SIGKILL 10s after the initial SIGTERM, so a child wedged in a syscall (e.g.
-# a proxied git fetch) that ignores SIGTERM still gets reaped instead of
-# hanging the wrapper forever.
-run_with_timeout() {
-  local timeout_secs="$1"
-  shift
-
-  local timeout_bin=""
-  if command -v timeout >/dev/null 2>&1; then
-    timeout_bin="timeout"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    timeout_bin="gtimeout"
-  fi
-
-  if [ -z "$timeout_bin" ]; then
-    echo "⚠  timeout command not found — running without timeout protection"
-    "$@"
-    return $?
-  fi
-
-  "$timeout_bin" -k 10 "$timeout_secs" "$@"
-  return $?
-}
+# The wrapper that bounds every network fetch below. Its definition moved to
+# scripts/lib/run-with-timeout.sh in #2667, when refresh-excluded-lockfiles.sh
+# needed the identical wrapper and a second copy would have been a second
+# thing to keep in sync. Read that file for the $?-capture and subshell
+# contracts.
+setup_dev_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/run-with-timeout.sh
+. "${setup_dev_here}/lib/run-with-timeout.sh"
 
 # Shared bound for every from-source `cargo install <tool>` fallback in this
 # script (wasm-pack, cargo-nextest, cargo-deny — see #2591). All three have

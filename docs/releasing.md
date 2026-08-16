@@ -292,6 +292,17 @@ every network step in `setup-dev.sh` carries its own `BRINK_SETUP_*_TIMEOUT`
 authoritative knob/default/fail-vs-warn table lives in that script's header
 block. `cargo audit` remains useful for the latest advisory DB.
 
+`scripts/refresh-excluded-lockfiles.sh` (the release-plz lockfile refresh
+described under "Release flow" above) is bounded the same way: both of its
+`cargo update` invocations hit the network, and each carries its own timeout
+— `BRINK_REFRESH_DRY_RUN_TIMEOUT` (default 180s) for the `--dry-run`
+resolution-only path, and `BRINK_REFRESH_UPDATE_TIMEOUT` (default 300s) for
+the real refresh that rewrites the excluded lockfiles. Unlike the audit
+knobs above, neither may warn-and-continue — both FAIL the script on
+timeout, since a silent pass here means a stale-lockfile release (#1418) or
+a vacuously-green dry run (#1427). The authoritative knob/default table
+lives in that script's own header block.
+
 [crates.io]: https://crates.io
 [release-plz]: https://release-plz.dev
 [cargo-dist]: https://opensource.axo.dev/cargo-dist/

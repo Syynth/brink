@@ -22,6 +22,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  LOCAL_COMMANDS,
   NETWORK_COMMANDS,
   POINTER_DOCS,
   REPO_ROOT,
@@ -29,16 +30,24 @@ import {
   checkDocPointers,
   checkKnobTable,
   checkSetupDev,
+  commandHead,
+  discoverShellScripts,
+  findFunctionNames,
   findKnobAssignments,
   findUnboundedFetches,
+  findUnclassifiedCommands,
   findUnrecognizedKnobShapes,
+  networkBinaries,
   nextTokenIsVersionFlag,
   parseKnobTable,
   sliceSection,
+  splitSegmentsQuoteAware,
   toLogicalLines,
 } from "./check-setup-dev.mjs";
 
 const realSetupDev = readFileSync(join(REPO_ROOT, SETUP_DEV_PATH), "utf8");
+const REFRESH_LOCKFILES_PATH = "scripts/refresh-excluded-lockfiles.sh";
+const realRefreshLockfiles = readFileSync(join(REPO_ROOT, REFRESH_LOCKFILES_PATH), "utf8");
 
 describe("toLogicalLines", () => {
   it("joins a backslash continuation", () => {
@@ -110,6 +119,9 @@ describe("findUnboundedFetches — planted red, one per allowlisted command shap
     yarn: "yarn install",
     "cargo-network": "cargo install cargo-nextest --locked",
     "git-remote": "git clone https://example.test/repo.git",
+    "wasm-pack": "wasm-pack build crates/brink-web --target web",
+    "cargo-deny-binary": "cargo-deny check advisories",
+    "cargo-nextest-binary": "cargo-nextest run --workspace",
   };
 
   for (const command of NETWORK_COMMANDS) {
@@ -194,12 +206,31 @@ describe("findUnboundedFetches — documented non-findings", () => {
     assert.deepEqual(findUnboundedFetches("# ⚠ never fetch this with curl").problems, []);
   });
 
-  // Honesty check on the header's stated limitation, asserted rather than
-  // merely claimed: a TRAILING comment is not stripped, so it is a known
-  // false-positive source. If this ever starts passing, the header note is
-  // stale and must be updated.
-  it("DOES flag a trailing comment mentioning curl — a stated false positive", () => {
-    assert.equal(findUnboundedFetches("FOO=1 # fetched with curl elsewhere").ok, false);
+  // Was "DOES flag a trailing comment — a stated false positive" until
+  // #2667 gave check 1 the quote-aware tokenizer, which strips trailing
+  // comments outside quotes. The header's "cannot see" list was updated in
+  // the same change; this test now pins the NEW behaviour so the note and
+  // the code cannot drift apart again in either direction.
+  it("does not flag a trailing comment mentioning curl", () => {
+    assert.deepEqual(findUnboundedFetches("FOO=1 # fetched with curl elsewhere").problems, []);
+  });
+
+  // The other half of that tokenizer change: a tool NAME printed in prose is
+  // not an invocation. `echo "==> wasm-pack already installed ($(wasm-pack
+  // --version))"` is live in setup-dev.sh, and the pre-#2667 scan reported
+  // the PROSE occurrence as an unbounded fetch while the real (exempt) one
+  // sat inside the substitution.
+  it("does not flag a tool named in echo prose alongside a real substitution", () => {
+    assert.deepEqual(
+      findUnboundedFetches('echo "==> wasm-pack already installed ($(wasm-pack --version))"').problems,
+      [],
+    );
+  });
+
+  // `command -v X` is a PATH lookup, never an invocation — so it cannot
+  // fetch, whatever X is.
+  it("does not flag `command -v` on a network binary", () => {
+    assert.deepEqual(findUnboundedFetches("if command -v wasm-pack >/dev/null 2>&1; then").problems, []);
   });
 });
 
@@ -561,5 +592,262 @@ describe("the REAL repo", () => {
     const result = findUnboundedFetches(unwrappedToolchain);
     assert.equal(result.ok, false);
     assert.match(result.problems.join("\n"), /rustup/);
+  });
+});
+
+// =============================================================================
+// #2667 — the scan covers EVERY shell script in scripts/, not one hardcoded
+// path; and #2666 — every command those scripts invoke is classified.
+// =============================================================================
+
+describe("discoverShellScripts (#2667)", () => {
+  const scripts = discoverShellScripts();
+
+  it("finds setup-dev.sh — the file the scan used to be hardcoded to", () => {
+    assert.equal(scripts.includes(SETUP_DEV_PATH), true);
+  });
+
+  // The regression that IS #2667: this script had two bare `cargo update`
+  // calls and sat entirely outside the scan because SETUP_DEV_PATH was a
+  // single hardcoded string.
+  it("finds refresh-excluded-lockfiles.sh — the script #2667 was invisible in", () => {
+    assert.equal(scripts.includes(REFRESH_LOCKFILES_PATH), true);
+  });
+
+  it("descends into scripts/lib/", () => {
+    assert.equal(scripts.includes("scripts/lib/run-with-timeout.sh"), true);
+  });
+
+  it("excludes *.test.sh (their heredoc stub bodies would all read as fetches)", () => {
+    assert.deepEqual(scripts.filter((path) => path.endsWith(".test.sh")), []);
+    assert.equal(scripts.includes("scripts/setup-dev.test.sh"), false);
+  });
+
+  it("returns a sorted list, so problem order is deterministic", () => {
+    assert.deepEqual(scripts, [...scripts].sort());
+  });
+
+  it("returns only .sh files", () => {
+    for (const path of scripts) assert.match(path, /\.sh$/);
+  });
+});
+
+describe("splitSegmentsQuoteAware (#2667)", () => {
+  it("does not split on a `;` inside a string", () => {
+    assert.deepEqual(splitSegmentsQuoteAware('echo "a; b"'), ['echo "a; b"']);
+  });
+
+  it("does not split on a `|` inside a single-quoted regex", () => {
+    assert.deepEqual(splitSegmentsQuoteAware("grep -E '^(a|b)'"), ["grep -E '^(a|b)'"]);
+  });
+
+  it("does split on a real pipe", () => {
+    assert.deepEqual(
+      splitSegmentsQuoteAware("curl x | tar zxf -").map((piece) => piece.trim()),
+      ["curl x", "tar zxf -"],
+    );
+  });
+
+  it("splits on `&&` but NOT on the lone `&` of a redirection", () => {
+    assert.deepEqual(
+      splitSegmentsQuoteAware("command -v timeout >/dev/null 2>&1 && echo yes").map((piece) => piece.trim()),
+      ["command -v timeout >/dev/null 2>&1", "echo yes"],
+    );
+  });
+
+  it("drops a trailing comment", () => {
+    assert.equal(splitSegmentsQuoteAware("FOO=1 # see curl(1)")[0].trim(), "FOO=1");
+  });
+
+  it("does not split inside a `$( … )` substitution", () => {
+    assert.equal(splitSegmentsQuoteAware("pkgs=$(grep x f | sort -u)").length, 1);
+  });
+});
+
+describe("commandHead (#2666)", () => {
+  const cases = [
+    ["curl -sSf https://example.test", "curl"],
+    ["if curl -sSf https://example.test", "curl"],
+    ["! cargo update", "cargo"],
+    ["while read -r line", "read"],
+    // `commandHead` runs on an ALREADY-SPLIT segment, so a subshell's `cd`
+    // and its `&&` right-hand side arrive separately; the grouping `(` is
+    // peeled off the first.
+    ["(cd dir", "cd"],
+    ["run_with_timeout 60 corepack prepare", "corepack"],
+    ['run_with_timeout "${T}" cargo install x', "cargo"],
+    ["command -v rustup >/dev/null", "rustup"],
+    ["FOO=1 BAR=2 curl x", "curl"],
+    ["*) exit 0 ;;", "exit"],
+    ["Linux/x86_64) ASSET=a", ""],
+    ["run_with_timeout() {", ""],
+    ["rc=0", ""],
+    ["dirs=(a b c)", ""],
+    ["n=$((n + 1))", ""],
+    ['V="$(node -p "x")"', ""],
+    ["for tool in curl pnpm; do", "for"],
+  ];
+
+  for (const [segment, expected] of cases) {
+    it(`${JSON.stringify(segment)} → ${JSON.stringify(expected)}`, () => {
+      assert.equal(commandHead(segment), expected);
+    });
+  }
+
+  // The shape #2667 introduced into refresh-excluded-lockfiles.sh, driven
+  // through the same split→head pipeline the checks use.
+  it("reaches `cargo` inside `( cd dir && run_with_timeout N cargo update )`", () => {
+    const heads = splitSegmentsQuoteAware('(cd "$dir" && run_with_timeout "${T}" cargo update -p brink)').map(
+      commandHead,
+    );
+    assert.equal(heads.includes("cargo"), true, `saw ${JSON.stringify(heads)}`);
+  });
+});
+
+describe("findFunctionNames (#2666)", () => {
+  it("finds a plain definition", () => {
+    assert.equal(findFunctionNames("run_with_timeout() {\n  :\n}").has("run_with_timeout"), true);
+  });
+
+  it("finds a `function`-keyword definition", () => {
+    assert.equal(findFunctionNames("function wasm_pack_ok() {").has("wasm_pack_ok"), true);
+  });
+
+  it("ignores a definition inside a comment", () => {
+    assert.equal(findFunctionNames("# helper() { … }").size, 0);
+  });
+});
+
+describe("findUnclassifiedCommands (#2666)", () => {
+  it("reports a binary in neither list", () => {
+    const result = findUnclassifiedCommands("brand_new_fetcher --pull https://example.test", "fake.sh");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /invokes `brand_new_fetcher`/);
+    assert.match(result.problems.join("\n"), /Classify it \(#2666\)/);
+  });
+
+  it("names the file and line so the report is actionable", () => {
+    const result = findUnclassifiedCommands("#!/usr/bin/env bash\nset -e\nmystery_tool run\n", "fake.sh");
+    assert.match(result.problems.join("\n"), /^fake\.sh:3 /);
+  });
+
+  it("accepts a known-LOCAL binary", () => {
+    assert.deepEqual(findUnclassifiedCommands("mkdir -p /tmp/x", "fake.sh").problems, []);
+  });
+
+  it("accepts a known-NETWORK binary (boundedness is check 1's job, not this one)", () => {
+    assert.deepEqual(findUnclassifiedCommands("curl -sSf https://example.test", "fake.sh").problems, []);
+  });
+
+  it("accepts a shell function defined in another scanned script", () => {
+    const known = new Set(["run_with_timeout"]);
+    assert.deepEqual(findUnclassifiedCommands("run_with_timeout 60 curl x", "fake.sh", known).problems, []);
+  });
+
+  it("reports that same function name when NO scanned script defines it", () => {
+    assert.equal(findUnclassifiedCommands("some_helper 60", "fake.sh").ok, false);
+  });
+
+  // The whole point of peeling wrappers: without it the inventory would see
+  // only `run_with_timeout` and never learn `mystery_fetcher` is invoked.
+  it("looks THROUGH run_with_timeout at the command it wraps", () => {
+    const known = new Set(["run_with_timeout"]);
+    const result = findUnclassifiedCommands('run_with_timeout "${T}" mystery_fetcher --go', "fake.sh", known);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /mystery_fetcher/);
+  });
+
+  it("does not report a tool NAME listed in a for-loop word list", () => {
+    assert.deepEqual(findUnclassifiedCommands("for tool in mystery_tool other; do", "fake.sh").problems, []);
+  });
+
+  it("does not report prose printed by echo", () => {
+    assert.deepEqual(findUnclassifiedCommands('echo "==> committing; retry later"', "fake.sh").problems, []);
+  });
+
+  it("reports each unknown head once, however many times it appears", () => {
+    const result = findUnclassifiedCommands("mystery_tool a\nmystery_tool b\nmystery_tool c\n", "fake.sh");
+    assert.equal(result.problems.length, 1);
+  });
+
+  it("finds a command hidden inside a substitution", () => {
+    const result = findUnclassifiedCommands('V="$(mystery_tool --print)"', "fake.sh");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /mystery_tool/);
+  });
+});
+
+describe("the classification lists themselves (#2666)", () => {
+  it("keeps NETWORK and LOCAL disjoint — a command cannot be both", () => {
+    const overlap = [...networkBinaries()].filter((binary) => LOCAL_COMMANDS.has(binary));
+    assert.deepEqual(overlap, [], "a binary listed as both network and local makes the check meaningless");
+  });
+
+  it("gives every allowlist entry a resolvable binary name", () => {
+    for (const command of NETWORK_COMMANDS) {
+      const binary = command.binary ?? command.id;
+      assert.match(binary, /^[a-z][a-z0-9-]*$/, `${command.id} has no usable binary name`);
+    }
+  });
+});
+
+describe("the REAL repo, widened scan (#2667/#2666)", () => {
+  it("scans more than one script", () => {
+    const result = checkSetupDev();
+    assert.equal(result.scripts.length > 1, true);
+    assert.equal(result.scripts.includes(REFRESH_LOCKFILES_PATH), true);
+  });
+
+  // NON-VACUITY for #2667 specifically. Strip the bounds out of
+  // refresh-excluded-lockfiles.sh and its `cargo update` calls must light up.
+  // Before #2667 this file was not scanned at all, so this went green with
+  // the hazard present — which is exactly how the bug shipped.
+  it("detects refresh-excluded-lockfiles.sh's cargo update once its bounds are stripped", () => {
+    const unwrapped = realRefreshLockfiles
+      .split("\n")
+      .map((line) => (/^\s*#/.test(line) ? line : line.replace(/run_with_timeout\s+"[^"]*"\s*/g, "")))
+      .join("\n");
+    assert.notEqual(unwrapped, realRefreshLockfiles, "the cargo update calls must still be wrapped");
+
+    const result = findUnboundedFetches(unwrapped, REFRESH_LOCKFILES_PATH);
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.findings.some((finding) => finding.id === "cargo-network"),
+      true,
+      `expected a cargo finding, got ${JSON.stringify(result.findings.map((f) => f.id))}`,
+    );
+    assert.match(result.problems.join("\n"), new RegExp(REFRESH_LOCKFILES_PATH.replace(/[/.]/g, "\\$&")));
+  });
+
+  it("goes red when an unclassified binary is planted in a real script", () => {
+    const planted = `${realRefreshLockfiles}\nbrand_new_fetcher --sync\n`;
+    const result = findUnclassifiedCommands(planted, REFRESH_LOCKFILES_PATH, new Set(["run_with_timeout"]));
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /brand_new_fetcher/);
+  });
+
+  // The inventory must actually be SEEING commands. A head extractor that
+  // silently returned nothing would pass every green assertion above.
+  it("extracts the commands setup-dev.sh really invokes", () => {
+    const functions = new Set();
+    for (const path of discoverShellScripts()) {
+      for (const name of findFunctionNames(readFileSync(join(REPO_ROOT, path), "utf8"))) functions.add(name);
+    }
+
+    const heads = new Set(findUnclassifiedCommands(realSetupDev, SETUP_DEV_PATH, functions).heads.map((h) => h.head));
+    for (const expected of ["curl", "cargo", "rustup", "corepack", "pnpm", "node", "tar"]) {
+      assert.equal(heads.has(expected), true, `expected to see \`${expected}\`; saw ${JSON.stringify([...heads])}`);
+    }
+  });
+
+  it("extracts the commands refresh-excluded-lockfiles.sh really invokes", () => {
+    const heads = new Set(
+      findUnclassifiedCommands(realRefreshLockfiles, REFRESH_LOCKFILES_PATH, new Set(["run_with_timeout"])).heads.map(
+        (head) => head.head,
+      ),
+    );
+    for (const expected of ["cargo", "grep", "sed", "sort"]) {
+      assert.equal(heads.has(expected), true, `expected to see \`${expected}\`; saw ${JSON.stringify([...heads])}`);
+    }
   });
 });
