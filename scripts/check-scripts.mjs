@@ -178,7 +178,7 @@
 //     told to run is not.
 //   - IT SHARES CHECK 1'S TOKENIZER LIMITS above — heredocs, deep nesting.
 //
-// Exported as pure functions over text so scripts/check-setup-dev.test.mjs can
+// Exported as pure functions over text so scripts/check-scripts.test.mjs can
 // drive them with synthetic inputs (a deleted table row, an unbounded fetch);
 // the CLI at the bottom applies them to the real repo files. Node builtins
 // only: this runs under `pnpm test:scripts`, which CI's `frontend` job executes
@@ -882,7 +882,7 @@ export function findUnclassifiedCommands(text, path, knownFunctions = new Set())
     .map(
       ([head, line]) =>
         `${path}:${line} invokes \`${head}\`, which is in neither NETWORK_COMMANDS nor LOCAL_COMMANDS in ` +
-        `scripts/check-setup-dev.mjs. Classify it (#2666): if it can touch the network — including on a cache ` +
+        `scripts/check-scripts.mjs. Classify it (#2666): if it can touch the network — including on a cache ` +
         `miss, the way \`pnpm --version\` does — add it to NETWORK_COMMANDS so its boundedness is checked; if it ` +
         `is genuinely local, add it to LOCAL_COMMANDS. Leaving it unlisted is how a new fetching binary stays ` +
         `invisible.`,
@@ -1167,7 +1167,7 @@ export function checkDocPointers(docs) {
  *
  * @returns {{ok: boolean, problems: string[]}}
  */
-export function checkSetupDev({ repoRoot = REPO_ROOT } = {}) {
+export function checkScripts({ repoRoot = REPO_ROOT } = {}) {
   // Checks 1 and 3 apply to EVERY shell script under scripts/ (#2667). Checks
   // 2a/2b are setup-dev.sh's alone: the knob table and the three delegating
   // documents are about that one script.
@@ -1215,7 +1215,7 @@ export function checkSetupDev({ repoRoot = REPO_ROOT } = {}) {
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
 if (invokedDirectly) {
-  const result = checkSetupDev();
+  const result = checkScripts();
   if (result.ok) {
     console.log(
       `ok - across ${result.scripts.length} shell script(s) in ${SCRIPTS_DIR}/ (${result.scripts.join(", ")}): ` +

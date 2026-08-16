@@ -42,8 +42,8 @@
 # index + dependency resolution) and are therefore bounded by
 # run_with_timeout, the same wedged-proxy hang class #2591/#2638/#2642
 # bounded in setup-dev.sh. They were left BARE until #2667 because
-# check-setup-dev.mjs only ever looked at setup-dev.sh — a whole script
-# outside the scan. Knobs:
+# scripts/check-scripts.mjs (then scripts/check-setup-dev.mjs) only ever
+# looked at setup-dev.sh — a whole script outside the scan. Knobs:
 #
 #   Knob                                     Default  On timeout
 #   ---------------------------------------------------------------------

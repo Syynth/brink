@@ -1,4 +1,4 @@
-// Tests for scripts/check-setup-dev.mjs (#2648, #2647). Node's built-in test
+// Tests for scripts/check-scripts.mjs (#2648, #2647, #2666, #2667). Node's built-in test
 // runner, matching check-pnpm-pin.test.mjs / check-wasm-pkg.test.mjs /
 // guarded-install.test.mjs: this file runs under `pnpm test:scripts`, which
 // CI's `frontend` job executes BEFORE `pnpm install`, so it must not depend on
@@ -29,7 +29,7 @@ import {
   SETUP_DEV_PATH,
   checkDocPointers,
   checkKnobTable,
-  checkSetupDev,
+  checkScripts,
   commandHead,
   discoverShellScripts,
   findFunctionNames,
@@ -43,7 +43,7 @@ import {
   sliceSection,
   splitSegmentsQuoteAware,
   toLogicalLines,
-} from "./check-setup-dev.mjs";
+} from "./check-scripts.mjs";
 
 const realSetupDev = readFileSync(join(REPO_ROOT, SETUP_DEV_PATH), "utf8");
 const REFRESH_LOCKFILES_PATH = "scripts/refresh-excluded-lockfiles.sh";
@@ -534,7 +534,7 @@ describe("checkDocPointers", () => {
 
 describe("the REAL repo", () => {
   it("passes every check", () => {
-    const result = checkSetupDev();
+    const result = checkScripts();
     assert.deepEqual(result.problems, []);
     assert.equal(result.ok, true);
   });
@@ -793,7 +793,7 @@ describe("the classification lists themselves (#2666)", () => {
 
 describe("the REAL repo, widened scan (#2667/#2666)", () => {
   it("scans more than one script", () => {
-    const result = checkSetupDev();
+    const result = checkScripts();
     assert.equal(result.scripts.length > 1, true);
     assert.equal(result.scripts.includes(REFRESH_LOCKFILES_PATH), true);
   });
