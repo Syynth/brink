@@ -31,6 +31,34 @@ set -euo pipefail
 
 echo "==> Brink dev environment setup"
 
+# --- run_with_timeout helper -------------------------------------------------
+# Wraps a command with a bounded timeout to prevent stalled network fetches
+# (e.g., RUSTSEC DB fetch in cargo deny) from blocking indefinitely.
+#
+# Usage: run_with_timeout <timeout_seconds> <command> [args...]
+#
+# Returns:
+#   - 0 if the command succeeds
+#   - 124 if the command times out (timeout exit code)
+#   - non-zero if the command fails normally
+#
+# On systems without `timeout` (e.g., macOS without GNU coreutils), prints a
+# warning and runs the command without timeout protection.
+run_with_timeout() {
+  local timeout_secs="$1"
+  shift
+
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "⚠  timeout command not found — running audit without timeout protection"
+    "$@"
+    return $?
+  fi
+
+  timeout "$timeout_secs" "$@"
+  return $?
+}
+
+
 # --- rustup + toolchain -----------------------------------------------------
 
 if ! command -v rustup >/dev/null 2>&1; then
@@ -205,8 +233,16 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
     # passes only `command: check`, so the action's own default
     # `arguments: "--all-features"` applies. No `--locked` here — ci.yml does
     # not pass it, and a mirror must not be stricter than the job it mirrors.
-    if ! cargo deny --all-features check; then
-      echo "==> cargo-deny check (root workspace) reported findings — this job is REQUIRED in ci.yml; fix before pushing"
+    # Wrapped in timeout to prevent a stalled RUSTSEC DB fetch from blocking
+    # indefinitely (issue #2531).
+    if ! run_with_timeout 60 cargo deny --all-features check; then
+      audit_exit_code=$?
+      if [ "$audit_exit_code" -eq 124 ]; then
+        echo "==> ✗ cargo-deny check (root workspace) TIMED OUT after 60s — audit never completed, likely due to stalled RUSTSEC DB fetch. Retry when network/proxy is stable."
+        exit 1
+      else
+        echo "==> cargo-deny check (root workspace) reported findings — this job is REQUIRED in ci.yml; fix before pushing"
+      fi
     fi
 
     echo "==> Running cargo-deny check (packages/brink-desktop/src-tauri) — mirrors desktop-smoke.yml's \"cargo-deny (src-tauri)\" step"
@@ -215,8 +251,16 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
     # `cargo deny check --help`) — they MUST precede `check` on the command
     # line, matching how the action assembles `arguments` before `command`
     # (see the comment beside this step in desktop-smoke.yml).
-    if ! cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml --all-features --locked check; then
-      echo "==> cargo-deny check (src-tauri) reported findings — non-blocking, matches desktop-smoke.yml's continue-on-error (#2470). The MPL-2.0 licences are RULED and admitted per-crate (docs/decision-log.md, 2026-08-15); what remains is the unmaintained-crate RUSTSEC advisories plus brink-desktop's own unlicensed entry, neither of which is ruled on."
+    # Wrapped in timeout to prevent a stalled RUSTSEC DB fetch from blocking
+    # indefinitely (issue #2531).
+    if ! run_with_timeout 60 cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml --all-features --locked check; then
+      audit_exit_code=$?
+      if [ "$audit_exit_code" -eq 124 ]; then
+        echo "==> ✗ cargo-deny check (src-tauri) TIMED OUT after 60s — audit never completed, likely due to stalled RUSTSEC DB fetch. Retry when network/proxy is stable."
+        exit 1
+      else
+        echo "==> cargo-deny check (src-tauri) reported findings — non-blocking, matches desktop-smoke.yml's continue-on-error (#2470). The MPL-2.0 licences are RULED and admitted per-crate (docs/decision-log.md, 2026-08-15); what remains is the unmaintained-crate RUSTSEC advisories plus brink-desktop's own unlicensed entry, neither of which is ruled on."
+      fi
     fi
   else
     echo "==> Skipping audits — cargo-deny is not ${CARGO_DENY_VERSION} (install failed, or a different version is on PATH). Auditing under a mismatched binary would disagree with CI in either direction while looking authoritative."
