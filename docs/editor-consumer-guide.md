@@ -160,7 +160,10 @@ tab set, then `restoreViewState` each entry.
 
 After #316 every mutating structural op returns one shape —
 `StructuralResult { ok, path?, new_source?, cross_file_edits, safe, introduced_diagnostics }` — so you
-gate them all the same way (show the breakage report when `!safe`, apply `cross_file_edits` on proceed):
+gate them all the same way: check `ok` first (a refused op reports `ok: false` with `safe: true` and
+no `introduced_diagnostics`, so `safe` cannot distinguish a refusal from a clean success), then show
+the breakage report when `!safe` and apply `cross_file_edits` on proceed; on `ok: false` surface
+`error`.
 `rename_symbol` / `rename_symbol_at` · `move_stitch` · `promote_stitch` · `demote_stitch` · `reorder_*`
 · `delete_symbol` (#316) · `rename_dir` (#314) · `extract_to_knot` / `extract_to_function` (#315) ·
 `resolve_code_action` (#321) · `find_references_at` / `references_to_symbol` (#317, document-agnostic).
