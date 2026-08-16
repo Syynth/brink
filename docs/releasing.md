@@ -286,8 +286,11 @@ runs both at CI's pinned cargo-deny version, each bounded by
 `BRINK_SETUP_AUDIT_TIMEOUT` (default 300s) so a stalled RUSTSEC DB fetch can't
 block setup indefinitely (#2531) — a timeout is reported distinctly from
 normal findings and only aborts the script for the required root-workspace
-audit, not the non-blocking `src-tauri` one. `cargo audit` remains useful for
-the latest advisory DB.
+audit, not the non-blocking `src-tauri` one. That knob is one of a family:
+every network step in `setup-dev.sh` carries its own `BRINK_SETUP_*_TIMEOUT`
+(#2584/#2591/#2638), some fatal on timeout and some warn-and-continue, and the
+authoritative knob/default/fail-vs-warn table lives in that script's header
+block. `cargo audit` remains useful for the latest advisory DB.
 
 [crates.io]: https://crates.io
 [release-plz]: https://release-plz.dev

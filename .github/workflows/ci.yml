@@ -685,7 +685,12 @@ jobs:
       # via `pnpm --filter @brink/desktop test`.
       - name: Unit tests (node --test, scripts)
         run: pnpm run test:scripts
-      - name: Unit tests (scripts/setup-dev.sh audit-timeout handling)
+      # Named for the whole script, not one branch of it: this harness began
+      # as audit-timeout-only (#2531) but now drives setup-dev.sh end to end
+      # against a stubbed fresh machine, plus every bounded network step's
+      # hang AND fast-failure path (#2591/#2638). The step name is the first
+      # thing a red CI shows, so it must not describe a subset.
+      - name: Unit tests (scripts/setup-dev.sh)
         run: pnpm run test:setup-dev
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
