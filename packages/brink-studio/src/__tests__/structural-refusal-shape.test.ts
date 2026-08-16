@@ -200,3 +200,68 @@ describe("a refused structural op is indistinguishable from an unsafe one (#2568
     });
   }
 });
+
+/**
+ * Guards the *enumeration* above, not just the shapes it checks.
+ *
+ * The `structuralRefusals`/`autoImportRefusals` arrays list call sites by
+ * hand. A NEW mock method that answers its own inline `{ ok: false, error }`
+ * literal instead of routing through `structuralRefusal`/`autoImportRefusal`
+ * turns nothing red here — the arrays above simply don't know it exists. That
+ * is the exact recurrence vector #2568 was opened to close, so this reads the
+ * mock's own source and asserts no `ok: false` literal exists outside the two
+ * helpers, following the source-scanning precedent in
+ * `no-test-file-imports.test.ts`.
+ */
+describe("no mock call site answers ok: false outside the two refusal helpers (#2568)", () => {
+  const mockPath = resolve(fileURLToPath(import.meta.url), "../../__mocks__/brink-web.ts");
+  const mockSource = readFileSync(mockPath, "utf8");
+
+  /**
+   * Slices out a `private static <name>(...) { ... }` method body by brace
+   * matching on indentation rather than regex brace-counting: every line
+   * inside a class method body in this file is indented 4+ spaces, so the
+   * first `\n  }` (exactly two spaces) after the opening brace is the
+   * method's own close, not an inner literal's.
+   */
+  function extractMethodBody(source: string, name: string): string {
+    const marker = `private static ${name}(`;
+    const start = source.indexOf(marker);
+    expect(start, `could not find ${name}(...) in the mock source`).toBeGreaterThanOrEqual(0);
+    const braceOpen = source.indexOf("{", start);
+    expect(braceOpen, `could not find ${name}'s opening brace`).toBeGreaterThan(start);
+    const end = source.indexOf("\n  }", braceOpen);
+    expect(end, `could not find the end of ${name}'s body`).toBeGreaterThan(braceOpen);
+    return source.slice(braceOpen, end);
+  }
+
+  const structuralBody = extractMethodBody(mockSource, "structuralRefusal");
+  const autoImportBody = extractMethodBody(mockSource, "autoImportRefusal");
+
+  it("structuralRefusal and autoImportRefusal each still emit exactly one ok: false", () => {
+    // Guards the guard: if a helper refactor stopped emitting `ok: false`,
+    // the "nothing outside the helpers" check below would pass vacuously.
+    expect((structuralBody.match(/ok:\s*false/g) ?? []).length).toBe(1);
+    expect((autoImportBody.match(/ok:\s*false/g) ?? []).length).toBe(1);
+  });
+
+  it("no ok: false literal exists in the mock outside those two bodies", () => {
+    // Excise the two known-good bodies, then strip comments — the doc block
+    // above these helpers quotes `{ ok: false, error }` as prose explaining
+    // the history this file guards against, and a naive scan would flag its
+    // own explanation as a violation of the invariant it documents.
+    const withoutKnownBodies = mockSource
+      .replace(structuralBody, "")
+      .replace(autoImportBody, "");
+    const withoutComments = withoutKnownBodies
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+
+    const strayMatches = withoutComments.match(/ok:\s*false/g) ?? [];
+    expect(
+      strayMatches,
+      "found a raw `ok: false` outside structuralRefusal/autoImportRefusal — " +
+        "route the new site through one of those helpers instead of an inline literal",
+    ).toEqual([]);
+  });
+});

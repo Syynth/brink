@@ -392,7 +392,7 @@ export class EditorSession {
    * A refused structural op, in the exact shape the real wasm emits (#2543).
    *
    * Rust's `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes
-   * the whole `StructuralResultJs`, and only `path`/`new_source` carry
+   * the whole `StructuralResultJs`, and only `path`/`new_source`/`error` carry
    * `skip_serializing_if` — so a REFUSAL still ships `safe: true` with empty
    * `cross_file_edits`/`introduced_diagnostics` beside its `ok: false`.
    *
