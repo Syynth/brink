@@ -256,4 +256,32 @@ describe("studio alias map", () => {
     );
     expect(pkg.scripts.typecheck).toContain("-p tsconfig.node.json");
   });
+
+  it("typechecks e2e test specs in their own program", () => {
+    // #2607: e2e specs live outside src/ and were typechecked by nothing
+    // before tsconfig.e2e.json, only transformed at run time by Playwright's
+    // esbuild-based loader. The e2e program ensures they're type-checked
+    // before running, like src/ and config modules are.
+    const e2eProgram: { include: string[] } = JSON.parse(
+      readFileSync(resolve(packageRoot, "tsconfig.e2e.json"), "utf8")
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("//"))
+        .join("\n"),
+    );
+    expect(e2eProgram.include, "tsconfig.e2e.json must include e2e directory").toContain("e2e");
+
+    // Verify e2e specs actually exist and are checked
+    const e2eDir = resolve(packageRoot, "e2e");
+    expect(existsSync(e2eDir), "e2e directory must exist").toBe(true);
+    const e2eSpecs = readdirSync(e2eDir)
+      .filter((name) => name.endsWith(".spec.ts"))
+      .sort();
+    expect(e2eSpecs.length, "e2e/*.spec.ts files").toBeGreaterThan(0);
+
+    // Verify the package script runs it — an unrun program checks nothing
+    const pkg: { scripts: Record<string, string> } = JSON.parse(
+      readFileSync(resolve(packageRoot, "package.json"), "utf8"),
+    );
+    expect(pkg.scripts.typecheck).toContain("-p tsconfig.e2e.json");
+  });
 });
