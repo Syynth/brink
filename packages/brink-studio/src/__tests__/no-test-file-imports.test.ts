@@ -44,6 +44,10 @@ const packagesDir = resolve(fileURLToPath(import.meta.url), "../../../../");
 // means `from "./x.test.ts"` is a TS5097 compile error and never appears),
 // so the extension must be optional to catch the actual incident form
 // (`from "./x.test.js"`) as well as an extensionless `from "./x.test"`.
+//
+// Pattern 1 is intentionally load-bearing for both imports (static `from "..."`)
+// and re-exports (`export * from "..."`, `export { x } from "..."`), because all
+// three forms share the `from "..."` syntax. This pins the re-export regression.
 const TEST_FILE_IMPORT_PATTERNS: readonly RegExp[] = [
   /from\s+["']([^"']*\.test(?:\.[jt]sx?)?)["']/,
   // Excludes a JSDoc `{@link import("./x.test.js")}` type-reference — that's
@@ -201,6 +205,18 @@ describe("packages/*/src must not import from .test.ts files (#2516)", () => {
           expect(findTestFileImports(filePath)).toEqual(["./fixture.test.js"]);
         },
       );
+    });
+
+    it("detects a re-export via export * from a .test.js file", () => {
+      withFixture('export * from "./helpers.test.js";\n', (filePath) => {
+        expect(findTestFileImports(filePath)).toEqual(["./helpers.test.js"]);
+      });
+    });
+
+    it("detects a re-export via export { named } from a .test.js file", () => {
+      withFixture('export { Helper } from "./helpers.test.js";\n', (filePath) => {
+        expect(findTestFileImports(filePath)).toEqual(["./helpers.test.js"]);
+      });
     });
 
     it("does not flag a regular .js import (the repo's own import convention)", () => {
