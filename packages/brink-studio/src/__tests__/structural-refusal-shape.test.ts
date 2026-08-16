@@ -143,6 +143,35 @@ interface RefusalFixture {
   acceptance: Record<string, { ok: boolean; error: string | null }>;
   /** Header lines production's promote/demote rewrites produced (#2661). */
   headers: Record<string, string>;
+  /**
+   * The symbols `file_symbols` reports for a named source — name/kind, nested
+   * (#2662). Pins the header RECOGNIZER itself rather than an op built on it,
+   * so a mock that resolves a knot for `delete_symbol` but hides it from the
+   * Binder is red here even when every acceptance flag agrees.
+   */
+  outlines: Record<string, OutlineSymbol[]>;
+  /**
+   * The `introduced_diagnostics` CODES a driven (op, input) pair reports
+   * (review finding on #2662). `acceptance` only records the `ok`/`error`
+   * pair, which is blind to a call that succeeds on both sides regardless of
+   * whether a particular diagnostic fired — exactly `rename_symbol`'s
+   * function-knot collision check, which answers `ok: true` either way.
+   */
+  diagnostics: Record<string, string[]>;
+}
+
+interface OutlineSymbol {
+  name: string;
+  kind: string;
+  /**
+   * Mirrors `DocumentSymbolJs.detail` — `"function"` for a function knot
+   * (review finding on #2662). `null` rather than `undefined`: the fixture is
+   * parsed JSON, and Rust's `outline_shape()` always emits the key (via
+   * `serde_json::Value`'s `Index`, not `skip_serializing_if`), so a
+   * non-function knot's `detail` comes through as an explicit `null`.
+   */
+  detail: string | null;
+  children: OutlineSymbol[];
 }
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as RefusalFixture;
@@ -260,6 +289,31 @@ const FUNCTION_KNOT_SHORT_NAME_OFFSET = FUNCTION_KNOT_SHORT_NAME.indexOf("f(");
  *  `l - 1 === -1` to `lastIndexOf`, which JS clamps to `0` — so it finds the
  *  leading `\n` itself and answers `start = 1` instead of `0`. */
 const LEADING_BLANK_LINE = "\n=== a ===\nContent.\n";
+
+/**
+ * Five knots, none of them fenced `=== name ===` (#2662).
+ *
+ * Production's `knot_header` rule is
+ * `"==" ~ "="* ~ INLINE_WS* ~ … ~ INLINE_WS* ~ ("==" ~ "="*)?`: two or MORE
+ * `=`, zero or more spaces, a tolerated leading indent, and an optional
+ * trailing fence of any width. So `== one ==`, `===two===`, `==== three
+ * ====`, `  ==== four ====` and `=== five` are all ordinary top-level knots,
+ * and `one` still owns its stitch `a` — driven, not asserted, in
+ * `driven_outlines()`.
+ *
+ * The mock had two narrower answers and which applied depended on the op:
+ * `parseOutline` wanted `^===\s+` (all five invisible), while
+ * `delete_symbol`/`rename_symbol` matched `^\s*={2,3}\s*` inline (the first
+ * two resolved, the rest did not). One source exercises both halves.
+ *
+ * `four` (indented) and `five` (no closing fence) are the two widenings
+ * `KNOT_HEADER_PREFIX`'s `^\s*` and `KNOT_HEADER_RE`'s trailing
+ * `(?:={2,})?` claim and nothing before them drove (review finding on
+ * #2662) — every other case here uses a flush-left header with a closing
+ * fence.
+ */
+const ALT_FENCES =
+  "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n\n  ==== four ====\nFourth.\n\n=== five\nFifth.\n";
 
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
@@ -796,6 +850,40 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
         "lifted",
       ),
   },
+  // ── One knot-header vocabulary (#2662). Both mock families are driven
+  // against ALT_FENCES on purpose: the four `parseOutline` ops saw NONE of
+  // its five knots, and the two inline ops saw the first two but not the
+  // rest. A case list covering only one family would read as though the
+  // split had a single victim.
+  {
+    key: "reorder_knots:alt-fences",
+    call: () =>
+      sessionWith({ "main.ink": ALT_FENCES }).reorder_knots("main.ink", [
+        "five",
+        "four",
+        "three",
+        "two",
+        "one",
+      ]),
+  },
+  {
+    key: "promote_stitch:alt-fence-terse",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).promote_stitch("main.ink", "one", "a"),
+  },
+  {
+    key: "delete_symbol:alt-fence-wide",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).delete_symbol("main.ink", "three", ""),
+  },
+  {
+    key: "rename_symbol:alt-fence-wide",
+    call: () =>
+      sessionWith({ "main.ink": ALT_FENCES }).rename_symbol("main.ink", "three", "", "renamed"),
+  },
+  {
+    // Positive control: the `==` fence the inline family already resolved.
+    key: "delete_symbol:alt-fence-terse",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).delete_symbol("main.ink", "one", ""),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -804,6 +892,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
     // the mock was asked the same question. Before #2661 that identity was a
     // comment on both sides and nothing checked it.
     expect({
+      ALT_FENCES,
       BLANK_BODY,
       FUNCTION_KNOT,
       KNOT_AND_FUNCTION,
@@ -827,6 +916,60 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
     it(`${key}: the mock answers production's ok flag`, () => {
       const parsed = JSON.parse(call()) as { ok: boolean; error?: string };
       expect({ ok: parsed.ok, error: parsed.error ?? null }).toEqual(fixture.acceptance[key]);
+    });
+  }
+});
+
+/**
+ * The recognizer itself, not an op built on it (#2662).
+ *
+ * Acceptance pins whether an op RUNS. It cannot see the studio's other
+ * outline consumers — the Binder, the symbol menu and the story graph all
+ * read `file_symbols`/`project_outline`, which is where a knot the ops
+ * happily resolve can still be invisible. That was the shape of Gap A: the
+ * mock had two answers to "is this a knot", and `== two ==` was a knot to
+ * `delete_symbol` and absent from the outline.
+ *
+ * `fixture.outlines` is production's own `file_symbols` output, harvested by
+ * `driven_outlines()` in `crates/brink-web/src/editor_refactor.rs`. Names and
+ * kinds only: ranges are pinned by the #2670 offset guards below.
+ */
+describe("the outline reports exactly the symbols production reports (#2662)", () => {
+  const outlineSources: Record<string, string> = {
+    ALT_FENCES,
+    KNOT_AND_FUNCTION,
+    TWO_KNOTS,
+  };
+
+  it("every driven outline has a source here", () => {
+    expect(Object.keys(outlineSources).sort()).toEqual(Object.keys(fixture.outlines).sort());
+  });
+
+  /**
+   * Strip everything but the recognizer's answer: which symbols, nested, and
+   * whether each is a function knot (`detail`) — the field `KNOT_AND_FUNCTION`
+   * exists to control (review finding on #2662). Normalized to `null` rather
+   * than left `undefined`: the fixture is JSON, where an absent Rust `Option`
+   * serializes as an explicit `detail: null` (via `serde_json::Value`'s
+   * `Index`, not `skip_serializing_if`, since `outline_shape` on the Rust
+   * side always emits the key), and `toEqual` treats `undefined` and `null`
+   * as different values.
+   */
+  function shape(symbols: OutlineSymbol[]): OutlineSymbol[] {
+    return symbols.map((s) => ({
+      name: s.name,
+      kind: s.kind,
+      detail: s.detail ?? null,
+      children: shape(s.children),
+    }));
+  }
+
+  for (const [name, source] of Object.entries(outlineSources)) {
+    it(`${name}: file_symbols agrees with production`, () => {
+      const symbols = JSON.parse(
+        sessionWith({ "main.ink": source }).file_symbols("main.ink"),
+      ) as OutlineSymbol[];
+      expect(shape(symbols)).toEqual(fixture.outlines[name]);
     });
   }
 });
@@ -871,6 +1014,38 @@ describe("promote/demote rewrite the header the way production does (#2661)", ()
       "demote_knot:function-knot",
       "promote_stitch:parameterised",
     ]);
+  });
+});
+
+/**
+ * The half `acceptance` cannot see, and the reason the fixture carries a
+ * `diagnostics` map at all (review finding on #2662).
+ *
+ * `rename_symbol`'s collision check (`knotHeaderFor(newName)`) was widened to
+ * carry the `function` segment, on the claim that a function knot already
+ * holding the new name is a duplicate knot definition in production too — but
+ * the rename itself answers `ok: true` on both sides regardless of whether
+ * that collision fires, so no `acceptance` case could tell a fired E022 from
+ * a silently skipped check. This drives the same call the mock makes and
+ * compares the diagnostic CODES against `fixture.diagnostics`, which is
+ * production's own answer (`driven_diagnostics()` in
+ * `crates/brink-web/src/editor_refactor.rs`), not typed here.
+ */
+describe("rename_symbol's collision check counts a function knot (#2662 review)", () => {
+  it("every driven diagnostics case has a call site here", () => {
+    expect(Object.keys(fixture.diagnostics).sort()).toEqual([
+      "rename_symbol:collides-with-function-knot",
+    ]);
+  });
+
+  it("renaming a knot onto an existing function knot's name introduces the diagnostic production does", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).rename_symbol("main.ink", "one", "", "greet"),
+    ) as { ok: boolean; introduced_diagnostics: Array<{ code: string }> };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.introduced_diagnostics.map((d) => d.code)).toEqual(
+      fixture.diagnostics["rename_symbol:collides-with-function-knot"],
+    );
   });
 });
 
