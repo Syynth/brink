@@ -671,15 +671,19 @@ writing that property — a freshly mounted `defaultValue={"barter"}` input read
 This was first measured in jsdom, and #2580 recorded the park as a *jsdom*
 behaviour that "a real browser, seeded through the `value` **attribute**,"
 would not show, reading `(0, 0)` instead. **That browser half was inferred, not
-observed, and it is wrong (#2595.)** Measured in Chromium 145.0.7632.6 by
-`packages/brink-studio/e2e/symbol-rename.spec.ts` ("a defaultValue-seeded field
-parks the caret at the end in a real browser"):
+observed, and it is wrong (#2595).** Every cell below is measured — in Chromium
+145.0.7632.6 by `packages/brink-studio/e2e/symbol-rename.spec.ts` ("a
+defaultValue-seeded field parks the caret at the end in a real browser"), and in
+jsdom 29.0.1 by the seed-race suites plus a direct probe of the same four paths:
 
-| how the field is seeded | caret in Chromium 145 | caret in jsdom |
+| how the field is seeded | Chromium 145 | jsdom 29 |
 | --- | --- | --- |
 | `value` **attribute** (`<input value="barter">`) | `(0, 0)` | `(0, 0)` |
+| `setAttribute("value", "barter")` | `(0, 0)` | `(0, 0)` |
 | `.value` **property** write | `(6, 6)` | `(6, 6)` |
 | React `defaultValue={"barter"}` at mount | `(6, 6)` | `(6, 6)` |
+
+The two environments agree on every row.
 
 Both recorded readings were real; the error was joining them to the wrong
 paths. React does **not** seed an uncontrolled field through the `value`
@@ -704,7 +708,7 @@ confirming the suite goes red. Thirteen mutations across
 `SearchView.tsx`, `SymbolRenamePrompt.tsx`, `inline-name-input.ts` and the
 search store's `setSearchQuery`; twelve reddened the intended assertion. The
 one that did not
-was not a jsdom park but a missing *positive* half:
+was not a seed park but a missing *positive* half:
 `symbol-rename-prompt-seed.test.tsx` asserted only where the selection must
 NOT go, so deleting `SymbolRenamePrompt`'s `input.select()` outright — as
 opposed to un-guarding it — left the suite green. It now carries the same

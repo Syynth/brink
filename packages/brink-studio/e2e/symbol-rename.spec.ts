@@ -106,16 +106,28 @@ test.describe("knot/stitch rename (#305)", () => {
       attrSeeded.innerHTML = '<input value="barter">';
       document.body.appendChild(attrSeeded);
       const viaAttribute = attrSeeded.firstElementChild as HTMLInputElement;
+
+      const viaSetAttribute = document.createElement("input");
+      document.body.appendChild(viaSetAttribute);
+      viaSetAttribute.setAttribute("value", "barter");
+
       const viaProperty = document.createElement("input");
       document.body.appendChild(viaProperty);
       viaProperty.value = "barter";
+
       const read = (el: HTMLInputElement) => [el.selectionStart, el.selectionEnd];
-      const result = { viaAttribute: read(viaAttribute), viaProperty: read(viaProperty) };
+      const result = {
+        viaAttribute: read(viaAttribute),
+        viaSetAttribute: read(viaSetAttribute),
+        viaProperty: read(viaProperty),
+      };
       attrSeeded.remove();
+      viaSetAttribute.remove();
       viaProperty.remove();
       return result;
     });
     expect(control.viaAttribute).toEqual([0, 0]);
+    expect(control.viaSetAttribute).toEqual([0, 0]);
     expect(control.viaProperty).toEqual(["barter".length, "barter".length]);
 
     // PRODUCTION — open the real prompt by the real user path and read what
