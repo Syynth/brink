@@ -282,7 +282,11 @@ cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml \
 
 Note `--manifest-path`/`--all-features`/`--locked` are **top-level** cargo-deny
 flags and must precede `check`. `scripts/setup-dev.sh` with `BRINK_SETUP_FULL=1`
-runs both at CI's pinned cargo-deny version. `cargo audit` remains useful for
+runs both at CI's pinned cargo-deny version, each bounded by
+`BRINK_SETUP_AUDIT_TIMEOUT` (default 300s) so a stalled RUSTSEC DB fetch can't
+block setup indefinitely (#2531) — a timeout is reported distinctly from
+normal findings and only aborts the script for the required root-workspace
+audit, not the non-blocking `src-tauri` one. `cargo audit` remains useful for
 the latest advisory DB.
 
 [crates.io]: https://crates.io

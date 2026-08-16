@@ -31,6 +31,43 @@ set -euo pipefail
 
 echo "==> Brink dev environment setup"
 
+# --- run_with_timeout helper -------------------------------------------------
+# Wraps a command with a bounded timeout to prevent stalled network fetches
+# (e.g., RUSTSEC DB fetch in cargo deny) from blocking indefinitely.
+#
+# Usage: run_with_timeout <timeout_seconds> <command> [args...]
+#
+# Returns:
+#   - 0 if the command succeeds
+#   - 124 if the command times out (timeout exit code)
+#   - non-zero if the command fails normally
+#
+# Prefers GNU `timeout` (Linux), falling back to `gtimeout` (macOS + Homebrew
+# coreutils) before degrading to no timeout protection at all. `-k 10` sends
+# SIGKILL 10s after the initial SIGTERM, so a child wedged in a syscall (e.g.
+# a proxied git fetch) that ignores SIGTERM still gets reaped instead of
+# hanging the wrapper forever.
+run_with_timeout() {
+  local timeout_secs="$1"
+  shift
+
+  local timeout_bin=""
+  if command -v timeout >/dev/null 2>&1; then
+    timeout_bin="timeout"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="gtimeout"
+  fi
+
+  if [ -z "$timeout_bin" ]; then
+    echo "⚠  timeout command not found — running audit without timeout protection"
+    "$@"
+    return $?
+  fi
+
+  "$timeout_bin" -k 10 "$timeout_secs" "$@"
+  return $?
+}
+
 # --- rustup + toolchain -----------------------------------------------------
 
 if ! command -v rustup >/dev/null 2>&1; then
@@ -178,6 +215,13 @@ fi
 
 CARGO_DENY_VERSION="0.19.8"
 
+# Bound applied to each cargo-deny invocation below. 60s covers a warm
+# advisory-db cache, but a cold `advisory-db` clone plus a full
+# `--all-features` resolve of the 451-package src-tauri graph can legitimately
+# exceed that on a first run — override via BRINK_SETUP_AUDIT_TIMEOUT if a
+# healthy cold run is getting misclassified as a stall.
+BRINK_SETUP_AUDIT_TIMEOUT="${BRINK_SETUP_AUDIT_TIMEOUT:-300}"
+
 cargo_deny_ok() {
   command -v cargo-deny >/dev/null 2>&1 &&
     [ "$(cargo deny --version 2>/dev/null | awk '{print $2}')" = "${CARGO_DENY_VERSION}" ]
@@ -205,7 +249,14 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
     # passes only `command: check`, so the action's own default
     # `arguments: "--all-features"` applies. No `--locked` here — ci.yml does
     # not pass it, and a mirror must not be stricter than the job it mirrors.
-    if ! cargo deny --all-features check; then
+    # Wrapped in timeout to prevent a stalled RUSTSEC DB fetch from blocking
+    # indefinitely (issue #2531).
+    audit_exit_code=0
+    run_with_timeout "${BRINK_SETUP_AUDIT_TIMEOUT}" cargo deny --all-features check || audit_exit_code=$?
+    if [ "$audit_exit_code" -eq 124 ]; then
+      echo "==> ✗ cargo-deny check (root workspace) TIMED OUT after ${BRINK_SETUP_AUDIT_TIMEOUT}s — audit never completed, likely due to stalled RUSTSEC DB fetch. Retry when network/proxy is stable, or raise BRINK_SETUP_AUDIT_TIMEOUT."
+      exit 1
+    elif [ "$audit_exit_code" -ne 0 ]; then
       echo "==> cargo-deny check (root workspace) reported findings — this job is REQUIRED in ci.yml; fix before pushing"
     fi
 
@@ -215,7 +266,17 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
     # `cargo deny check --help`) — they MUST precede `check` on the command
     # line, matching how the action assembles `arguments` before `command`
     # (see the comment beside this step in desktop-smoke.yml).
-    if ! cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml --all-features --locked check; then
+    # Wrapped in timeout to prevent a stalled RUSTSEC DB fetch from blocking
+    # indefinitely (issue #2531). This audit is non-blocking end-to-end
+    # (desktop-smoke.yml's continue-on-error, #2470), so a timeout here warns
+    # and continues rather than aborting the script — an `exit 1` at this
+    # point would skip the pnpm/corepack section and the verification block
+    # below, leaving a cloud session with no pnpm over a non-required audit.
+    audit_exit_code=0
+    run_with_timeout "${BRINK_SETUP_AUDIT_TIMEOUT}" cargo deny --manifest-path packages/brink-desktop/src-tauri/Cargo.toml --all-features --locked check || audit_exit_code=$?
+    if [ "$audit_exit_code" -eq 124 ]; then
+      echo "==> ⚠ cargo-deny check (src-tauri) TIMED OUT after ${BRINK_SETUP_AUDIT_TIMEOUT}s — audit never completed, likely due to stalled RUSTSEC DB fetch. Non-blocking (matches desktop-smoke.yml's continue-on-error, #2470); retry with BRINK_SETUP_FULL=1 later, or raise BRINK_SETUP_AUDIT_TIMEOUT."
+    elif [ "$audit_exit_code" -ne 0 ]; then
       echo "==> cargo-deny check (src-tauri) reported findings — non-blocking, matches desktop-smoke.yml's continue-on-error (#2470). The MPL-2.0 licences are RULED and admitted per-crate (docs/decision-log.md, 2026-08-15); what remains is the unmaintained-crate RUSTSEC advisories plus brink-desktop's own unlicensed entry, neither of which is ruled on."
     fi
   else
