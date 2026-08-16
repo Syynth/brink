@@ -394,8 +394,20 @@ export class EditorSession {
       : new RegExp(`^\\s*={2,3}\\s*${name}\\b`);
     const start = lines.findIndex((l) => headerRe.test(l));
     if (start < 0) {
-      // #2620: this said `symbol not found`, a string production never emits
-      // from this op — same `MoveError::SourceNotFound` as the branch above.
+      // #2620 review: this folded BOTH "missing knot" and "missing stitch in
+      // an existing knot" onto `source knot not found`, but production's
+      // `MoveError` distinguishes them (crates/internal/brink-ide/src/
+      // structural_delete.rs delete_symbol): a missing KNOT is
+      // `SourceNotFound` ("source knot not found"), while a missing STITCH
+      // inside a knot that DOES exist is `StitchNotFound` ("stitch '<name>'
+      // not found in knot", structural_move.rs:23). Only fold the stitch case
+      // onto the knot wording when the parent knot header is itself absent.
+      if (stitch) {
+        const knotRe = new RegExp(`^\\s*={2,3}\\s*${knot}\\b`);
+        if (lines.some((l) => knotRe.test(l))) {
+          return EditorSession.structuralRefusal(`stitch '${stitch}' not found in knot`);
+        }
+      }
       return EditorSession.structuralRefusal("source knot not found");
     }
     // The region runs until the next header at the same-or-shallower level.

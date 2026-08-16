@@ -55,19 +55,26 @@
  * | ------------------------------- | ------------------ | ----------------------------- |
  * | `rename_file` (missing file)    | `file not loaded`  | `file 'ghost.ink' not found`  |
  * | `delete_symbol` (missing file)  | `file not loaded`  | `source knot not found`       |
- * | `delete_symbol` (missing symbol)| `symbol not found` | `source knot not found`       |
+ * | `delete_symbol` (missing knot)  | `symbol not found` | `source knot not found`       |
  *
  * `rename_file` has no wasm-level "loaded" guard at all (it delegates to
  * `brink_ide::file_rename`, whose error is `file '{0}' not found`), and
- * `delete_symbol` maps BOTH an unloaded path and a missing knot onto the same
- * `MoveError::SourceNotFound`. A fourth site — `resolve_code_action`'s
+ * `delete_symbol` maps BOTH an unloaded path and a missing KNOT onto the same
+ * `MoveError::SourceNotFound` — true only when the knot itself is missing. A
+ * missing STITCH inside a knot that DOES exist is a different variant,
+ * `MoveError::StitchNotFound` (`stitch '<name>' not found in knot`); that case
+ * was undriven at the time of this sweep and is now its own driven site
+ * (`delete_symbol (missing stitch in existing knot)`, #2627) rather than
+ * folded into this table. A fourth site — `resolve_code_action`'s
  * "no change" case — pinned the right *wording* against an input production
  * ACCEPTS (`FormatKnot` reindents `TWO_KNOTS` and answers `ok: true`), so the
  * parity claim was against a question production answers differently; it now
  * drives `SortKnots` over a single-knot file, which genuinely is a no-op.
  *
  * Rather than re-transcribe, every site below now reads its wording from
- * `driven_messages()`. No `error:` string in the arrays below is typed.
+ * `driven_messages()`. No `error:` string in the arrays below is typed,
+ * except the one mock-only serde abbreviation noted further down (anchored as
+ * a genuine prefix of the driven production string, never an invention).
  *
  * ⚠ **What this does and does not guarantee.** Driving is still PER-SITE, not
  * automatic: nothing enumerates the (op, refusing-input) pairs, so each entry
@@ -210,17 +217,35 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
       sessionWith({ "main.ink": MAIN, "other.ink": MAIN }).rename_file("main.ink", "other.ink"),
   },
   {
-    // #2620: pinned `file not loaded`. Production folds this onto
-    // `MoveError::SourceNotFound` like the missing-symbol case below.
+    // #2620: pinned `file not loaded`. Production folds an unloaded path onto
+    // `MoveError::SourceNotFound` — the same variant as a missing KNOT below,
+    // but NOT the same as a missing STITCH inside a knot that does exist
+    // (`delete_symbol (stitch not found, #2627)` further down) — those are a
+    // different `MoveError` variant with different wording.
     site: "delete_symbol (file not loaded)",
     error: productionMessage("delete_symbol:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).delete_symbol("ghost.ink", "hello", ""),
   },
   {
-    // #2620: pinned `symbol not found`, a string this op never emits.
-    site: "delete_symbol (symbol not found)",
+    // #2620: pinned `symbol not found`, a string this op never emits. This
+    // case is a missing KNOT specifically — `MoveError::SourceNotFound`, the
+    // same variant as the missing-file case above. A missing STITCH inside an
+    // EXISTING knot is a different variant (`StitchNotFound`); see the
+    // dedicated case below (#2627) rather than reading this one as covering
+    // both.
+    site: "delete_symbol (missing knot)",
     error: productionMessage("delete_symbol:missing-symbol"),
     call: () => sessionWith({ "main.ink": MAIN }).delete_symbol("main.ink", "nowhere", ""),
+  },
+  {
+    // #2627 review: the two cases above fold onto `MoveError::SourceNotFound`
+    // because the KNOT itself is missing. A missing STITCH inside a knot that
+    // DOES exist is `MoveError::StitchNotFound` instead — `stitch '<name>'
+    // not found in knot` (structural_move.rs:23) — and was previously
+    // undriven, so this sub-case was invisible to the sweep.
+    site: "delete_symbol (missing stitch in existing knot)",
+    error: productionMessage("delete_symbol:missing-stitch-in-knot"),
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "one", "nowhere"),
   },
   {
     site: "extract_to_knot (file not loaded)",
@@ -456,6 +481,7 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
       "auto_import_include_doc:unknown-handle",
       "compile_project:missing-entry",
       "delete_symbol:missing-file",
+      "delete_symbol:missing-stitch-in-knot",
       "delete_symbol:missing-symbol",
       "demote_knot:illegal-nesting",
       "demote_knot:missing-dest-knot",

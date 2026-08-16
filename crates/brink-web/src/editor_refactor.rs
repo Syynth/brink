@@ -603,6 +603,16 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "delete_symbol (missing symbol)",
                 &main.delete_symbol("main.ink", "nowhere", ""),
             ),
+            // #2627 review: the missing-KNOT case above and a missing STITCH
+            // inside a knot that DOES exist are different `MoveError`
+            // variants in production (`SourceNotFound` vs `StitchNotFound`),
+            // so they need their own driven input — `active` is already
+            // loaded with `TWO_KNOTS`, whose knot `one` is real but has no
+            // stitch `nowhere`.
+            "delete_symbol:missing-stitch-in-knot": refusal_message(
+                "delete_symbol (missing stitch in existing knot)",
+                &active.delete_symbol("main.ink", "one", "nowhere"),
+            ),
             "extract_to_knot:missing-file": refusal_message(
                 "extract_to_knot (missing file)",
                 &main.extract_to_knot("ghost.ink", 0, 4, "lifted"),

@@ -7,6 +7,7 @@
     "auto_import_include_doc:unknown-handle": "unknown document handle",
     "compile_project:missing-entry": "entry file not found in session: ghost.ink",
     "delete_symbol:missing-file": "source knot not found",
+    "delete_symbol:missing-stitch-in-knot": "stitch 'nowhere' not found in knot",
     "delete_symbol:missing-symbol": "source knot not found",
     "demote_knot:illegal-nesting": "illegal nesting: knot has sub-stitches and cannot be demoted",
     "demote_knot:missing-dest-knot": "destination knot not found",

@@ -282,8 +282,10 @@ was the fourth instance of the class (after #2583's invented serde message,
   - `driven_op_messages()` — every other refusal site (#2620): the
     structural ops, `rename_dir`, `resolve_code_action`, `compile_project`.
 - **`structural-refusal-shape.test.ts` reads its expectations from that map**
-  via `productionMessage(key)`. As of #2620 that is **every site in the file**
-  — no `error:` string in its call-site arrays is typed. A site that uses
+  via `productionMessage(key)`. As of #2620 that is **every site in the file
+  but one** — the mock-only serde abbreviation noted below is the sole
+  `error:` string in its call-site arrays that is typed, and it is anchored
+  as a checked prefix rather than free-typed. A site that uses
   `productionMessage` cannot drift from production: changing the Rust wording
   restales the fixture, and the regenerated fixture fails the TypeScript test
   until the mock is updated to match. `productionMessage` also records the key
@@ -297,14 +299,18 @@ was the fourth instance of the class (after #2583's invented serde message,
   been answering them and the guard had been asserting them:
   `rename_file` on a missing file (`file not loaded` → production's
   `file '{0}' not found`, from `brink_ide::file_rename`), and `delete_symbol`
-  for both an unloaded path and a missing symbol (`file not loaded` /
+  for both an unloaded path and a missing KNOT (`file not loaded` /
   `symbol not found` → the single `MoveError::SourceNotFound`,
-  `source knot not found`). A fourth site pinned the correct wording against
-  an input production *accepts*: `resolve_code_action`'s no-change case drove
-  `FormatKnot`, which reindents and answers `ok: true`. Driving makes that
-  class self-detecting — a driver whose input does not refuse fails
-  `refusal_message`'s `ok: false` assertion instead of quietly pinning
-  nothing.
+  `source knot not found` — true only when the knot itself is missing). A
+  fourth site pinned the correct wording against an input production
+  *accepts*: `resolve_code_action`'s no-change case drove `FormatKnot`, which
+  reindents and answers `ok: true`. Driving makes that class self-detecting —
+  a driver whose input does not refuse fails `refusal_message`'s `ok: false`
+  assertion instead of quietly pinning nothing. A follow-up review of this PR
+  (#2627) found the sweep's own fold was itself over-broad: a missing STITCH
+  inside a knot that DOES exist is a different `MoveError` variant,
+  `StitchNotFound` (`stitch '<name>' not found in knot`), and had no driven
+  site at all until then — it is now `delete_symbol:missing-stitch-in-knot`.
 - **One wording stays deliberately divergent, and is anchored as a prefix.**
   The mock has no serde, so it cannot reproduce serde_json's unknown-variant
   error (which names every known variant plus a line/column). Its abbreviation
