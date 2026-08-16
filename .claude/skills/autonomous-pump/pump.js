@@ -402,12 +402,29 @@ const mergeSchemaFor = (b) => ({
 // lands because it is the only phase that runs after landing and can comment on
 // an issue. For an `armed` PR that routing is still actionable; for a `landed`
 // one it is a durable record and a re-gate recommendation, nothing more.
-const UNRUN_RE = /\bnot run\b|\bnever ran\b|\bdid ?n[o']?t run\b|\bnot executed\b|\bcould not run\b|\bunable to run\b|\btimed out\b|output was lost|lost the output|no output captured|aborted before|\bn\/a\b/i;
+// ⚠ Same class as SKIPPED_RE below: a bare `\btimed out\b` false-positives on
+// an honest result that explicitly NEGATES a timeout — e.g. "exit 0, 271/271
+// pass. Note: no test was skipped and none timed out." — because the regex
+// cannot see the "none " immediately before it. The lookbehind excludes the
+// common negations ("not"/"never"/"none"/"no"/"n't") directly preceding
+// "timed out" so a genuine "the build timed out after 10 minutes" still
+// matches while a stated non-timeout does not.
+const UNRUN_RE = /\bnot run\b|\bnever ran\b|\bdid ?n[o']?t run\b|\bnot executed\b|\bcould not run\b|\bunable to run\b|(?<!\b(?:not|never|none|no|n't)\s)\btimed out\b|output was lost|lost the output|no output captured|aborted before|\bn\/a\b/i;
 // "skipped" is deliberately NOT in the list above: "36 passed, 2 skipped" is an
 // ordinary green cargo/vitest result and flagging it would make the audit noise
 // on the normal path. Only an unnumbered "skipped" (an agent SAYING it skipped
 // the step) counts.
-const SKIPPED_RE = /(?<![\d,]\s)\bskipped\b/i;
+// ⚠ The lookbehind alone is NOT enough (found post-merge, verified against this
+// PR's own `[3/3]` row text): `node --test`'s canonical summary line
+// (`# tests 271 / # pass 271 / # fail 0 / # cancelled 0 / # skipped 0 / # todo 0`)
+// has "skipped" preceded by "# " — not a digit/comma — so the lookbehind alone
+// let it through and this fires on `pnpm run test:scripts`'s OWN normal-path
+// output, on every pump-config item. The lookahead below suppresses "skipped"
+// when it is immediately followed by a count (optionally via `:`/`=`), which
+// covers "# skipped 0", "skipped: 0" and "0 skipped" (already caught by the
+// lookbehind) alike, while still catching an agent SAYING "I skipped this leg"
+// or "skipped the gate entirely" (no trailing count).
+const SKIPPED_RE = /(?<![\d,]\s)\bskipped\b(?!\s*[:=]?\s*\d)/i;
 const looksUnrun = (s) => UNRUN_RE.test(s) || SKIPPED_RE.test(s);
 const normCmd = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim().replace(/[.,;]+$/, "");
 const cmdSimilarity = (a, b) => {
@@ -542,7 +559,15 @@ const formatGateEvidence = (build, expected, notesLabel = "free-text notes (pref
     `── MECHANICAL EVIDENCE AUDIT (deterministic checks, #2686) ──\n` +
     (concerns.length
       ? `⚠ ${concerns.length} concern(s) — read these FIRST, then judge the rows yourself:\n${concerns.map((c) => "  - " + c).join("\n")}\n(fuzzy string checks over the rows below, not a verdict: a paraphrased row can be flagged wrongly.)`
-      : `No mechanical concerns: every gate command has a corresponding row, no row is duplicated, and no row declares itself unrun.`) +
+      // ⚠ The coverage check (UNCOVERED/DUPLICATE COMMAND) only runs when
+      // `expected` is the command LIST — with the number form (still a valid
+      // call shape, see below) there is nothing to match rows against, so an
+      // unconditional "every gate command has a corresponding row" line would
+      // assert a check that never ran. Branch the clean message on which form
+      // the caller passed.
+      : Array.isArray(expected)
+        ? `No mechanical concerns: every gate command has a corresponding row, no row is duplicated, and no row declares itself unrun.`
+        : `No mechanical concerns among the count-based checks only; the caller passed a count, so command COVERAGE was not checked.`) +
     `\n⚠ THIS IS NOT VERIFICATION. These checks cannot see a FABRICATED result — "36 passed" for a command that never ran passes all of them, and passes the schema too. Only a MISSING, duplicated or self-declared-unrun command is mechanically detectable.\n\n`;
   const banner =
     expectedCount === undefined || results.length === expectedCount

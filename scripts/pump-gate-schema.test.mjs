@@ -873,6 +873,49 @@ describe("mechanical audit over gate evidence (#2686)", () => {
     assert.deepEqual(concerns, [], `an honest red build must raise no concerns, got: ${concerns.join(" | ")}`);
   });
 
+  it("does NOT flag `node --test`'s own canonical summary line as a self-declared skip", () => {
+    // Found post-merge: SKIPPED_RE's lookbehind alone let "# skipped 0" through
+    // because it is preceded by "# ", not a digit/comma. This is the repo's
+    // OWN gate leg (`"test:scripts": "node --test scripts/*.test.mjs"`), so it
+    // fired on the normal path for every pump-config item, in the reviewer's
+    // <gate-output> block AND in gateEvidenceConcerns -> the retro, whose
+    // prompt then instructs the agent to comment on the issue and recommend
+    // DISARMING an armed PR. This is this PR's own verbatim [3/3] row text.
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "landed",
+        gateResults: [
+          { command: CMDS[0], result: "exit 0" },
+          { command: CMDS[1], result: "exit 0, clean" },
+          {
+            command: CMDS[2],
+            result: "# tests 271\n# pass 271\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0",
+          },
+        ],
+      },
+      CMDS,
+    );
+    assert.deepEqual(concerns, [], `an ordinary node --test summary must raise no concerns, got: ${concerns.join(" | ")}`);
+  });
+
+  it("does NOT flag a result that explicitly NEGATES a timeout — same false-positive class as SKIPPED_RE", () => {
+    // "\btimed out\b" alone cannot see the "none " immediately before it, so
+    // an honest, fully-green result stating that nothing timed out used to
+    // read as SELF-DECLARED UNRUN.
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "landed",
+        gateResults: [
+          { command: CMDS[0], result: "exit 0" },
+          { command: CMDS[1], result: "exit 0, 271/271 pass. All green; none timed out." },
+          { command: CMDS[2], result: "exit 0, clean" },
+        ],
+      },
+      CMDS,
+    );
+    assert.deepEqual(concerns, [], `a stated non-timeout must raise no concerns, got: ${concerns.join(" | ")}`);
+  });
+
   it("formatGateEvidence accepts the command LIST and renders the audit above the rows", () => {
     const shown = helpers.formatGateEvidence(
       {
@@ -903,6 +946,35 @@ describe("mechanical audit over gate evidence (#2686)", () => {
     );
     assert.ok(shown.includes("INCOMPLETE"), "the direction-aware banner must still fire on a number");
     assert.ok(shown.includes("[1/5]"), "a numeric expected must still denominate the rows");
+  });
+
+  it("formatGateEvidence's clean-audit wording depends on whether coverage was actually checked", () => {
+    // The clean line used to be UNCONDITIONAL — "every gate command has a
+    // corresponding row" — even though the coverage half of the audit
+    // (UNCOVERED/DUPLICATE COMMAND) only runs when `expected` is the command
+    // LIST. With the number form (kept working on purpose, see above), that
+    // line asserted a check that never ran. Both wordings are pinned here.
+    const cleanWithList = helpers.formatGateEvidence(
+      { landedState: "landed", gateResults: CMDS.map((command) => ({ command, result: "exit 0, clean" })) },
+      CMDS,
+    );
+    assert.ok(
+      cleanWithList.includes("No mechanical concerns: every gate command has a corresponding row"),
+      `expected the coverage-checked clean wording, got: ${cleanWithList.slice(0, 400)}`,
+    );
+
+    const cleanWithNumber = helpers.formatGateEvidence(
+      { landedState: "landed", gateResults: CMDS.map((command) => ({ command, result: "exit 0, clean" })) },
+      CMDS.length,
+    );
+    assert.ok(
+      /count-based checks only.*coverage was not checked/is.test(cleanWithNumber),
+      `expected a clean wording that admits coverage was NOT checked for the number form, got: ${cleanWithNumber.slice(0, 400)}`,
+    );
+    assert.ok(
+      !cleanWithNumber.includes("every gate command has a corresponding row"),
+      "the number form must not claim the coverage check ran",
+    );
   });
 
   it("states the fabrication limit IN the rendered audit, even when there are no concerns", () => {
