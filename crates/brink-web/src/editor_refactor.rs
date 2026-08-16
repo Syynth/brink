@@ -338,10 +338,31 @@ pub(crate) fn error_json(msg: &str) -> String {
 /// Option<String>` — the signature of a payload that can refuse — and fails if
 /// one is missing from [`generated`]. Adding a fourth refusal struct is
 /// therefore a red test, not a silent gap.
+///
+/// ## Shape is not vocabulary (#2603)
+///
+/// Everything above pins which *keys* a refusal ships. It says nothing about
+/// the `error` *string* — the fixture deliberately carries a placeholder
+/// (`REFUSAL`) there. That gap let the studio mock answer `"unknown handle"`
+/// for both auto-import doc-handle ops while production answered
+/// `"unknown document handle"`, with the mirroring test pinning the mock's
+/// wording rather than production's — so the guard asserted the mock agreed
+/// with itself. That is the fourth instance of the same drift class in three
+/// waves (#2583, #2599, #2602).
+///
+/// [`driven_messages`] closes it for the doc-handle ops by *running* them:
+/// every string in the fixture's `messages` map is read out of a real
+/// [`EditorSession`] refusal payload, never typed. It is **per-site, not
+/// automatic** — nothing in this crate can enumerate the (op, refusing-input)
+/// pairs, so a site nobody drives stays unpinned.
+/// [`doc_handle_refusal_vocabulary_is_uniform`] is the omission guard for
+/// this one class: a new doc-handle refusal wording anywhere in the crate
+/// turns it red instead of shipping unnoticed.
 #[cfg(test)]
 mod refusal_shape {
     use super::{AutoImportJs, dir_error_json, error_json};
     use crate::compile::CompileResult;
+    use crate::editor::EditorSession;
 
     const FIXTURE: &str = include_str!("../fixtures/refusal-shapes.json");
     const FIXTURE_REL_PATH: &str = "fixtures/refusal-shapes.json";
@@ -351,6 +372,8 @@ mod refusal_shape {
     const REFUSAL_MSG: &str = "REFUSAL";
 
     const COMMENT: &str = "GENERATED from the Rust refusal payloads — do not hand-edit. \
+`shapes` are the serialized structs (message elided to the placeholder in `error`); \
+`messages` are real refusal strings read back out of the production ops, not typed (#2603). \
 Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. \
 Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).";
 
@@ -389,6 +412,74 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "DirMoveResultJs": parse(&dir_error_json(REFUSAL_MSG)),
                 "StructuralResultJs": parse(&error_json(REFUSAL_MSG)),
             },
+            "messages": driven_messages(),
+        })
+    }
+
+    // ── Vocabulary: the refusal STRING, driven out of production (#2603) ──
+
+    /// An unknown document handle. `insert_doc` never hands out an id this
+    /// large in these fixtures, and `0` is documented as never valid.
+    const UNKNOWN_DOC: u32 = 999;
+
+    /// The `error` string out of a refusal payload, with the payload's own
+    /// `ok: false` asserted first — so a message can never be harvested from a
+    /// *successful* answer and pinned as if it were a refusal's wording.
+    fn refusal_message(site: &str, json: &str) -> String {
+        let value = parse(json);
+        assert!(
+            value["ok"] == serde_json::json!(false),
+            "`{site}` was expected to refuse, but answered ok: true — the driver no \
+             longer reaches the refusal it is meant to pin: {value:#}"
+        );
+        let message = value["error"].as_str();
+        assert!(
+            message.is_some_and(|m| !m.is_empty()),
+            "`{site}` refused without an `error` string, so there is no vocabulary \
+             to pin: {value:#}"
+        );
+        message.expect("just asserted above").to_owned()
+    }
+
+    /// The refusal *vocabulary* of the document-handle ops, obtained by calling
+    /// the real production methods on a real [`EditorSession`] and reading the
+    /// `error` field back out of the JSON they answer with.
+    ///
+    /// Nothing here types a message. Change
+    /// `crates/brink-web/src/editor/refactor.rs`'s or `code_actions.rs`'s
+    /// wording and this map moves with it, turning the checked-in fixture
+    /// stale — which is what forces the studio mock
+    /// (`packages/brink-studio/src/__mocks__/brink-web.ts`) to be updated too,
+    /// since `structural-refusal-shape.test.ts` reads its expectations from
+    /// here rather than repeating them (#2603).
+    ///
+    /// Keys are `<op>:<refusing-input>`. Every key must have a consumer on the
+    /// TS side; adding one without a mock counterpart just parks a string.
+    fn driven_messages() -> serde_json::Value {
+        let mut session = EditorSession::new();
+        session.update_file("main.ink", "=== hello ===\nHi.\n-> END\n");
+
+        let include_doc = refusal_message(
+            "auto_import_include_doc",
+            &session.auto_import_include_doc(UNKNOWN_DOC, "other.ink"),
+        );
+        let apply_include_doc = refusal_message(
+            "auto_import_apply_include_doc",
+            &session.auto_import_apply_include_doc(UNKNOWN_DOC, "other.ink"),
+        );
+        let code_action_doc = refusal_message(
+            "resolve_code_action_doc",
+            &session.resolve_code_action_doc(
+                UNKNOWN_DOC,
+                &serde_json::json!({ "action": "SortKnots" }).to_string(),
+                0,
+            ),
+        );
+
+        serde_json::json!({
+            "auto_import_include_doc:unknown-handle": include_doc,
+            "auto_import_apply_include_doc:unknown-handle": apply_include_doc,
+            "resolve_code_action_doc:unknown-handle": code_action_doc,
         })
     }
 
@@ -488,6 +579,125 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             i += 1;
         }
         found
+    }
+
+    /// The *set* of refusal-message literals in `text` (sorted, deduplicated —
+    /// `dir_error_json("…")` also contains `error_json("…")`, and two sites may
+    /// legitimately share a message; only the vocabulary matters here).
+    ///
+    /// Every refusal-message *literal* in `text`: the string argument of an
+    /// `error_json("…")` / `dir_error_json("…")` call, and the literal in an
+    /// `error: Some("…".to_owned())` struct field. Deliberately literal-only —
+    /// a message built from a lower-layer error (`Some(e.to_string())`, e.g.
+    /// `brink-ide`'s `entry file not found in session: {0}`) has no string in
+    /// this crate to find, and pretending otherwise is how a scan starts
+    /// looking more complete than it is.
+    fn refusal_message_literals_in(text: &str) -> Vec<String> {
+        const PREFIXES: [&str; 3] = ["error_json(\"", "dir_error_json(\"", "error: Some(\""];
+        let mut found = Vec::new();
+        for line in text.lines() {
+            for prefix in PREFIXES {
+                let mut rest = line;
+                while let Some(at) = rest.find(prefix) {
+                    let after = &rest[at + prefix.len()..];
+                    // Messages never contain an escaped quote today; a literal
+                    // that did would simply be truncated here, not missed.
+                    if let Some(end) = after.find('"') {
+                        found.push(after[..end].to_owned());
+                        rest = &after[end..];
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// The omission guard for the vocabulary [`driven_messages`] pins (#2603).
+    ///
+    /// Driving is per-site, so a *fourth* doc-handle op could refuse with its
+    /// own invented wording and nothing above would notice. This scans the
+    /// crate for every refusal-message literal that talks about a handle and
+    /// asserts the vocabulary is exactly the two strings production uses today
+    /// — so `"unknown handle"`, `"bad doc handle"` or any other coinage is red
+    /// at the source, before it can reach a mock.
+    #[test]
+    fn doc_handle_refusal_vocabulary_is_uniform() {
+        let mut handle_words: Vec<String> = crate_sources()
+            .iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .flat_map(|text| refusal_message_literals_in(&text))
+            .filter(|m| m.contains("handle"))
+            .collect();
+        handle_words.sort();
+        handle_words.dedup();
+
+        let expected = vec![
+            "document handle is read-only (mounted stdlib file)".to_owned(),
+            "unknown document handle".to_owned(),
+        ];
+        assert!(
+            handle_words == expected,
+            "the doc-handle refusal vocabulary changed.\n\
+             Every op that refuses an unhandled document handle must say \
+             `unknown document handle` — one wording, so the studio mock and \
+             `structural-refusal-shape.test.ts` cannot drift into a private \
+             dialect (#2603, the fourth instance of that class after \
+             #2583/#2599/#2602).\n\
+             If the wording legitimately changed, drive the new site in \
+             `driven_messages`, regenerate the fixture, and update this list.\n\
+             found in source: {handle_words:?}\n\
+             expected:        {expected:?}"
+        );
+
+        // The driven map is the other half: the strings the fixture ships must
+        // be members of the vocabulary just scanned, not something a driver
+        // picked up elsewhere.
+        let driven = driven_messages();
+        let entries = driven.as_object().expect("driven messages is an object");
+        assert!(
+            !entries.is_empty(),
+            "no doc-handle message is driven at all"
+        );
+        for (key, value) in entries {
+            let message = value.as_str().unwrap_or_default();
+            assert!(
+                handle_words.iter().any(|w| w == message),
+                "driven message for `{key}` is {message:?}, which is not one of the \
+                 doc-handle refusal literals found in this crate's source: {handle_words:?}"
+            );
+        }
+    }
+
+    /// The scanner above is load-bearing, so it is exercised on inputs it must
+    /// accept and reject rather than only on the live tree.
+    #[test]
+    fn the_message_scanner_reads_both_refusal_literal_forms() {
+        let both = "        return error_json(\"file not loaded\");\n\
+             \x20               error: Some(\"unknown document handle\".to_owned()),\n\
+             \x20   return dir_error_json(\"no files found\");\n";
+        let found = refusal_message_literals_in(both);
+        assert!(
+            found
+                == vec![
+                    "file not loaded".to_owned(),
+                    "no files found".to_owned(),
+                    "unknown document handle".to_owned(),
+                ],
+            "{found:?}"
+        );
+
+        // A message composed from a lower-layer error carries no literal here,
+        // and the scan must not invent one for it.
+        let composed = "            error: Some(e.to_string()),\n";
+        assert!(refusal_message_literals_in(composed).is_empty());
+
+        // An unrelated string literal on the same line is not a refusal message.
+        let unrelated = "    let label = \"unknown document handle\";\n";
+        assert!(refusal_message_literals_in(unrelated).is_empty());
     }
 
     /// The guard the hand-written enumeration in [`generated`] needed: a NEW
