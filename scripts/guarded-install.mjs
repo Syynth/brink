@@ -36,11 +36,14 @@
 // `vitest: not found`. The "exit 0" half did not.
 //
 // That is a reason to stop DEPENDING on pnpm's exit code, not a reason to
-// skip the guard. The repo pins pnpm only to a floating major (`corepack
-// prepare pnpm@10` in scripts/setup-dev.sh, `pnpm/action-setup version: 10`
-// in .github/workflows/ci.yml), so which of the two behaviours a given
-// machine gets is whatever 10.x resolved there that day — the exact shape
-// that let #2479 and #2531 survive. So the post-check below asserts the
+// skip the guard. When those two shapes were recorded the repo pinned pnpm
+// only to a floating major, so which behaviour a given machine got was
+// whatever 10.x resolved there that day — the exact shape that let #2479 and
+// #2531 survive. #2604 has since pinned an exact version (root package.json's
+// `packageManager` field, enforced by scripts/check-pnpm-pin.mjs), which
+// removes that variability but does NOT make the exit code trustworthy: both
+// shapes are real pnpm behaviours and the pin can be moved. So the post-check
+// below asserts the
 // EFFECT (did an installed tree actually appear?) INDEPENDENTLY of what
 // pnpm reported, and fails non-zero on a silent no-op regardless.
 //
