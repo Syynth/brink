@@ -152,10 +152,11 @@ neither is redundant.
 
 `tsconfig.json`'s `include` is `["src"]`, so the package's root-level config
 modules are not in that program. `tsconfig.node.json` is the program that
-covers them, and `pnpm --filter @brink-lang/studio typecheck` runs both. Its
-`include` must list every root-level `.ts` module — the guard asserts that
-against the directory listing, so a config module added later cannot quietly
-go unchecked.
+covers them, and `pnpm --filter @brink-lang/studio typecheck` runs both. The
+guard covers root-level `.ts`, `.mts`, and `.cts` modules alike, comparing
+`tsconfig.node.json`'s `include` array against the directory listing name for
+name — no globs, so a config module added later, in any of the three
+extensions, fails the guard until it is added to `include` explicitly.
 
 `src/__tests__/alias-map.test.ts`'s "resolves every alias to a target that
 exists on disk" case runs `existsSync` over `studioWasmAliases()` and

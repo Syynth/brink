@@ -238,31 +238,17 @@ describe("studio alias map", () => {
       .filter(
         (name) =>
           (name.endsWith(".ts") || name.endsWith(".mts") || name.endsWith(".cts")) &&
-          !name.endsWith(".d.ts"),
+          !name.endsWith(".d.ts") &&
+          !name.endsWith(".d.mts") &&
+          !name.endsWith(".d.cts"),
       )
       .sort();
     expect(rootModules.length, "root-level .ts/.mts/.cts modules").toBeGreaterThan(0);
 
-    // Expand glob patterns in the include array for comparison
-    const expandedIncludes = program.include
-      .flatMap((pattern) => {
-        if (pattern.includes("*")) {
-          // Expand glob patterns like "*.mts" or "*.cts"
-          const filePattern = pattern.split("/").pop(); // Get the filename pattern
-          if (!filePattern) return [];
-          return readdirSync(packageRoot).filter((file) => {
-            // Simple glob matching: handle *.ext patterns
-            if (filePattern.startsWith("*.")) {
-              return file.endsWith(filePattern.substring(1));
-            }
-            return file === filePattern;
-          });
-        }
-        return [pattern];
-      })
-      .sort();
-
-    expect(expandedIncludes).toEqual(rootModules);
+    // "include" lists every root-level module by name, no globs — a config
+    // module added as any of the three extensions has to be added here
+    // explicitly, or this comparison fails.
+    expect([...program.include].sort()).toEqual(rootModules);
     // And that the package script actually runs it — an unrun program checks
     // nothing.
     const pkg: { scripts: Record<string, string> } = JSON.parse(
