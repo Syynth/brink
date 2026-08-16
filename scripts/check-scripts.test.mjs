@@ -16,7 +16,8 @@
 //      table row) so the checks are proved non-vacuous against the actual
 //      file, not just against fixtures shaped to suit them.
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -683,6 +684,62 @@ describe("discoverShellScripts (#2667)", () => {
     for (const path of scripts) {
       assert.equal(path.includes("/worktrees/"), false, `walked into a nested checkout: ${path}`);
       assert.equal(path.includes("node_modules"), false, `walked into dependencies: ${path}`);
+    }
+  });
+});
+
+// The real-repo assertion above (`prunes nested checkouts`) is VACUOUS on CI
+// and on any machine without agent worktrees: discoverShellScripts() over the
+// real tree just never contains a nested path to begin with, so the assertion
+// has nothing to catch. This is exactly how the #2692 review finding shipped
+// — `.claude/worktrees/wf_stale/benchmarks/setup.sh` (a worktree with its
+// `.git` file stripped) walked straight through the `.git`-only check with no
+// test able to see it. Build a synthetic repo tree instead, so all three
+// shapes the walk must tell apart are exercised directly.
+describe("discoverShellScripts nested-checkout pruning (#2692 review)", () => {
+  it("prunes a nested dir with its own `.git` FILE, keeps a plain nested dir with a real script, and — per the fix above — also prunes a nested tree copy with NO `.git` at all", () => {
+    const root = mkdtempSync(join(tmpdir(), "check-scripts-nested-"));
+    try {
+      // Shape 1: a real git worktree/submodule — a `.git` FILE (not a
+      // directory), the same as `.claude/worktrees/<id>/.git`. Must be pruned.
+      mkdirSync(join(root, "worktree-with-git", "scripts"), { recursive: true });
+      writeFileSync(join(root, "worktree-with-git", ".git"), "gitdir: /elsewhere/.git\n");
+      writeFileSync(join(root, "worktree-with-git", "scripts", "inner.sh"), "#!/usr/bin/env bash\n");
+
+      // Shape 2: a tree copy with NO `.git` at all — an extracted archive, a
+      // `cp -r` backup, or a worktree stripped of its `.git` file, matching
+      // the reproduction in the review finding. Only catchable by shape
+      // (Cargo.toml + justfile), which is exactly what the fix above adds.
+      mkdirSync(join(root, "copy-no-git", "scripts"), { recursive: true });
+      writeFileSync(join(root, "copy-no-git", "Cargo.toml"), "[workspace]\n");
+      writeFileSync(join(root, "copy-no-git", "justfile"), "default:\n  echo hi\n");
+      writeFileSync(join(root, "copy-no-git", "scripts", "inner2.sh"), "#!/usr/bin/env bash\n");
+
+      // Shape 3: an ordinary nested directory that is NOT a checkout copy —
+      // no `.git`, no Cargo.toml/justfile pair — holding a real script that
+      // must still be discovered.
+      mkdirSync(join(root, "plain-subdir"), { recursive: true });
+      writeFileSync(join(root, "plain-subdir", "util.sh"), "#!/usr/bin/env bash\n");
+
+      const found = discoverShellScripts(root);
+
+      assert.deepEqual(
+        found.filter((p) => p.startsWith("worktree-with-git/")),
+        [],
+        "a nested dir with its own .git file must be pruned",
+      );
+      assert.deepEqual(
+        found.filter((p) => p.startsWith("copy-no-git/")),
+        [],
+        "a nested tree copy with no .git (Cargo.toml + justfile) must also be pruned",
+      );
+      assert.deepEqual(
+        found,
+        ["plain-subdir/util.sh"],
+        "a plain nested directory's real script must still be discovered",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

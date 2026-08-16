@@ -1,6 +1,8 @@
 # shellcheck shell=bash
 # The ONE definition of `run_with_timeout`, sourced by every script under
-# scripts/ that performs a network fetch (#2667).
+# scripts/ that performs a network fetch (#2667), and — since #2677/#2678 —
+# by the justfile's recipe bodies (`wasm`, `book-ts-check`, `book-assets`,
+# `studio-build`) and by `benchmarks/setup.sh`.
 #
 # It lived inline in scripts/setup-dev.sh from #2531 until #2667, when
 # scripts/refresh-excluded-lockfiles.sh needed the identical wrapper for its
@@ -9,11 +11,29 @@
 # #2642 → #2667 — is hand-maintained duplicates of "the network safety rule"
 # drifting apart. So the definition moved here and both scripts source it.
 #
-# Usage (source first, then call):
+# Usage, scripts/ callers (source relative to the sourcing file, then call):
 #
 #   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   . "${here}/lib/run-with-timeout.sh"
 #   run_with_timeout <timeout_seconds> <command> [args...]
+#
+# Usage, justfile recipes and benchmarks/setup.sh (source repo-root-relative):
+#
+#   . scripts/lib/run-with-timeout.sh
+#   run_with_timeout <timeout_seconds> <command> [args...]
+#
+# The repo-root-relative form is correct ONLY under a repo-root cwd — that is
+# a PRECONDITION on the caller, not something this file arranges. `just`
+# recipes get it for free: `just` always cds to the justfile's own directory
+# before running a recipe body, and the justfile lives at the repo root.
+# `benchmarks/setup.sh` is NOT invoked from the repo root (`just
+# cross-language-benchmark` runs `bash benchmarks/setup.sh` from wherever
+# `just` was cd'd to, which is the same repo root, but the script is also
+# runnable directly as `bash benchmarks/setup.sh` from any cwd) — it restores
+# the precondition itself with `cd "$(dirname "$0")/.."` before sourcing this
+# file. A caller added later that sources the repo-root-relative form without
+# either guarantee will fail to find this file, or worse, source some other
+# file at that relative path.
 #
 # Returns:
 #   - 0   if the command succeeds

@@ -361,7 +361,16 @@ export function discoverShellScripts(repoRoot = REPO_ROOT) {
         // checkout, and on this repo `.claude/worktrees/<id>/` holds a full
         // second copy of the tree, which an unpruned walk would scan as if it
         // were this one.
+        //
+        // That `.git` check alone does NOT cover every nested-checkout shape:
+        // an untracked tree copy (a worktree with its `.git` stripped, an
+        // extracted archive, a `cp -r` backup, a vendored checkout) has no
+        // `.git` at all. `isNestedCheckoutByShape` catches that case instead
+        // of relying on file identity — see its own doc comment (#2692
+        // review, reproduced against `.claude/worktrees/wf_stale/` lacking a
+        // `.git` file).
         if (existsSync(join(child, ".git"))) continue;
+        if (isNestedCheckoutByShape(child)) continue;
         walk(child, relative);
         continue;
       }
@@ -375,6 +384,22 @@ export function discoverShellScripts(repoRoot = REPO_ROOT) {
 
   walk(repoRoot, "");
   return found.sort();
+}
+
+/**
+ * SHAPE-BASED nested-checkout detection, for the case the `.git`-file check
+ * above misses: a tree copy that carries no `.git` at all. On this repo
+ * exactly one directory holds both a `Cargo.toml` AND a `justfile` at its own
+ * root — the repo root itself — so a directory that ALSO carries that pair,
+ * anywhere else in the walk, is a full second copy of the tree rather than a
+ * subdirectory of it. `.claude/` itself carries neither file and stays
+ * walked; only a genuine nested copy (which does) gets pruned here.
+ *
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function isNestedCheckoutByShape(dir) {
+  return existsSync(join(dir, "Cargo.toml")) && existsSync(join(dir, "justfile"));
 }
 
 /**
