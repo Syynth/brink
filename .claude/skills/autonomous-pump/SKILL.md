@@ -46,7 +46,7 @@ A ready template lives at **`pump.js`** (next to this file). **Copy it and fill 
   - **flag scope overflow** — if the real work exceeds the issue (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), report it as `scopeNotes` instead of silently growing the PR. Keep `Closes #N` honest; the overflow becomes a candidate issue, not a bloated diff.
   - stage explicit paths, commit, push, open a PR with an **honest** `Closes #N`.
 - **Review** (per item, starts the moment that item's build returns; one **adversarial** reviewer per PR). Prompt it to REFUTE — find bugs, dead code, scope gaps, regressions; **and call out where the issue/milestone *under-captured* the work** (scope the plan missed); default to "request changes" if materially off. This is your real quality bar and *will* catch what the gate didn't.
-- **Land** (**the train queue** — serial in completion order; keeps main green). An `approve` verdict enqueues a merge agent; a `changes` verdict enqueues a fix agent carrying the reviewer's **exact** findings (apply-fix → re-gate → merge); `reject` parks for the human. Both train agents report their re-gate as the **same `gateResults` array the build does**, `minItems` pinned to that item's own gate command count (#2664) — this phase re-runs the identical gate on the commit that actually lands on main, so a free-text claim here was the same unevidenced-claim hole #2612 → #2645 → #2657 closed at BUILD, one phase later and at higher stakes. A park that aborts *before* gating still returns a row per command saying `"not run — merge aborted before the gate"`: silence is what the array exists to prevent, and an explicit "not run" is honest. The rows render through `formatGateEvidence` into the wave's returned `landed`/`awaitingChecks`/`parked` entries, and a compact `merge gate rows k/N` ratio rides the retro's tracker table. Runs in **ONE persistent train worktree** (created once, node_modules survives across stops — a fresh worktree + install per merge was pure critical-path overhead). Per landing: update against main, re-gate, combine additive conflicts (registry/index appends — ⚠ diff3/union styles can duplicate/drop closing braces when combining; recheck brace balance, the gate is the arbiter), merge with `--delete-branch` (detach first so local deletion can't fail). Park what won't cleanly land. `log()` a landed-count pulse per stop.
+- **Land** (**the train queue** — serial in completion order; keeps main green). An `approve` verdict enqueues a merge agent; a `changes` verdict enqueues a fix agent carrying the reviewer's **exact** findings (apply-fix → re-gate → merge); `reject` parks for the human. Both train agents report their re-gate as the **same `gateResults` array the build does**, `minItems` pinned to that item's own gate command count (#2664) — this phase re-runs the identical gate on the commit that actually lands on main, so a free-text claim here was the same unevidenced-claim hole #2612 → #2645 → #2657 closed at BUILD, one phase later and at higher stakes. A park that aborts *before* gating still returns a row per command saying `"not run — merge aborted before the gate"`: silence is what the array exists to prevent, and an explicit "not run" is honest. The rows render through `formatGateEvidence` into the wave's returned `landed`/`awaitingChecks`/`parked` entries, and a compact `merge gate rows k/N` ratio rides the retro's tracker table. Since #2686 they also pass through `auditGateEvidence`, a deterministic reader whose concerns are handed to the retro as a MUST-ADDRESS list and returned as `gateEvidenceConcerns` — see "The merge phase's evidence now has a reader" below for what it can and cannot detect. Runs in **ONE persistent train worktree** (created once, node_modules survives across stops — a fresh worktree + install per merge was pure critical-path overhead). Per landing: update against main, re-gate, combine additive conflicts (registry/index appends — ⚠ diff3/union styles can duplicate/drop closing braces when combining; recheck brace balance, the gate is the arbiter), merge with `--delete-branch` (detach first so local deletion can't fail). Park what won't cleanly land. `log()` a landed-count pulse per stop.
 - **Reconciliation** (end of run): assert every built+approved PR was **merged OR parked-with-a-reason** — no silent drops. (v3: verdict + landing ride each pipeline item, so this is a per-item read — never match PR identifiers across phases on decorated strings; that once mis-parked approved PRs.)
 
 ## Harness enforcement of the build schema — probed, not assumed (#2665)
@@ -100,6 +100,29 @@ whether a reported `result` is TRUE — an agent can still write a fabricated
 job, and `formatGateEvidence`'s INCOMPLETE banner remains the reviewer-facing
 signal for the shortfall the schema now prevents at the tool-call layer.
 
+**Which harness answered — `PROBED-CLI: 2.1.233`** (read from `claude --version`
+in the pump's cloud environment on **2026-08-16**, the same day as the probe, at
+`/opt/claude-code/bin/claude`). The probing session did not capture its own
+version at the time, which is exactly the gap #2673 names; this line records the
+version observed in the same environment on the same day, and it is the only
+currency signal the record has. ⚠ Note a wrinkle worth not tripping over: the
+Ajv corroboration above was read from `@anthropic-ai/claude-code/cli.js` in a
+**separate, older npm install** (`2.1.42`, under `/opt/node22/lib/node_modules`)
+— a different artifact from the binary on `PATH`. That is one more reason the
+source reading is secondary to the two live probes, which were answered by
+whatever was actually serving the session.
+
+**RE-PROBE TRIGGER.** Re-run the probe when `claude --version` no longer matches
+the `PROBED-CLI` version above. The pump's retro phase carries this as a
+once-per-wave duty (`pump.js`, retro prompt): compare, and if the versions
+differ, file an issue to re-probe naming both. The recipe is unchanged — one
+deliberately-short `gateResults` array, and one row whose `result` is under 8
+characters; record what the harness answered, verbatim, and update the version
+line. ⚠ A version *match* is weak evidence, not proof: the CLI could change
+validator behaviour without a version bump visible here, and a differing version
+does not by itself mean enforcement was dropped. The trigger exists to stop the
+record reading as timeless, not to certify it.
+
 **The in-tree / harness boundary.** `scripts/pump-gate-schema.test.mjs` checks
 the half this repo owns — that pump.js *generates* a schema carrying
 `minItems` equal to the item's own gate command count, `minLength` on every
@@ -110,6 +133,15 @@ future harness release that stopped honouring `minItems` would go undetected
 in-tree. Re-run the probe if that assumption ever needs re-confirming; the
 recipe is one deliberately-short `gateResults` array, and one row whose
 `result` is under 8 characters.
+
+**SKILL.md is this record's home** (#2673 Gap 3). #2665 asked for the result to
+be written into `BRINK-CONFIG.md`, but that file is owned by the lessons phase's
+per-wave PR and every build fence forbids touching it, so #2669 recorded it
+here instead. Future issues in this area should name SKILL.md, not
+BRINK-CONFIG.md, to avoid re-running that fence conflict. House rules that
+belong on the BRINK-CONFIG.md page reach it through `pump.js`'s
+`PENDING_HOUSE_RULES` list, which the Lessons prompt interpolates every wave
+until the rule lands — a mechanical handoff rather than a tracked one.
 
 **The floor is pinned; the ceiling is deliberately open (#2672).** `minItems`
 has no `maxItems` counterpart, and adding one would be a regression, not the
@@ -133,8 +165,49 @@ stops enforcing `minItems` at all. Row rendering is also bounded now
 many rows it dropped** — #2645's lesson was that truncation may shorten
 evidence but must never make a command silently disappear.
 
+**The merge phase's evidence now has a reader (#2686).** #2664 made this phase's
+`gateResults` required, structured and pinned to the gate's command count — and
+then handed it to the wave's return payload and a `k/N` ratio in the retro's
+table. Required, schema-enforced, and obliged to be read by nobody: #2612's
+original hole one layer over. `auditGateEvidence` (in `pump.js`, inside the
+marker-fenced helper block) is a **deterministic** reader, not another agent —
+a reviewer that cannot fail anything is theatre. It runs on every rendered
+evidence block, build and merge alike, and its concerns ride into the reviewer
+prompt, the retro prompt and the wave's returned `gateEvidenceConcerns`.
+
+It catches four things: a row count below the gate's command count (the signal
+that still fires if a harness ever stops honouring `minItems`); two rows
+reporting the **same** command (padding that satisfies `minItems` while a real
+command goes unreported — the "extra rows can hide a missing one" case #2672's
+banner could only *ask* a reader to check); a gate command no row plausibly
+corresponds to; and a row whose own `result` says the command did **not** run in
+a report that simultaneously claims `landed`/`armed`/`gateGreen: true`. A "not
+run" row on an honest **park** or an honest `gateGreen: false` is the documented,
+valid answer and is deliberately **not** flagged — an audit that cries wolf on
+the normal path is one nobody reads.
+
+⚠ It cannot catch **fabrication**, and nothing here ever will: "36 passed" for a
+command that never ran passes every check and every schema constraint. The
+coverage check is also a fuzzy string match and can flag a paraphrased row that
+is fine — it is a prompt to look, never a verdict. And the structural limit
+worth stating plainly: merge-phase evidence is produced by the phase that
+merges, so **no reader of it can block that merge**. The retro is where the
+concerns land because it is the only phase that runs after landing and can
+comment on an issue; for an `armed` PR that is still preventable, for a `landed`
+one it is a durable record and a re-gate recommendation.
+
+**A `;`-joined gate would silently break the banner (#2686 Gap 2).** `gateCmds`
+splits on `&&`, so a gate written with `;` under-counts its own steps — which
+lowers the schema floor (fails safe) *and* makes every honest report render as a
+false OVER-COMPLETE (does not). That accuracy was silently coupled to a
+BRINK-CONFIG.md convention nothing enforced; `scripts/pump-gate-schema.test.mjs`
+now lints the gate strings on that page and refuses a `;`-joined one. It only
+**reads** that file — the lessons phase owns writes to it.
+
 ## Close the learning loop
 The template now closes it mechanically: a final **Lessons** agent distills the wave's review findings into generalizable, paste-ready house-rule candidates (returned as `lessons`). Feed them into the next wave's `RULES` — with human review, since not every finding generalizes. The pump should get *smarter* each cycle, not repeat the same mistakes (e.g. "use only tokens from tokens.css", "wire the feature into the UI, not just the hook").
+
+`pump.js` also carries `PENDING_HOUSE_RULES` (#2673): rules a build **earned** but could not land, because every build fence forbids editing `BRINK-CONFIG.md` — the lessons phase owns that file's per-wave PR. Filing an issue for the handoff only works if the next lessons agent reads the tracker; this list is interpolated into the Lessons prompt **every wave** instead, and the phase now runs even when the wave produced zero review findings (a quiet wave was exactly the one that used to drop a pending rule). ⚠ Delete an entry once it lands on the page — the list is meant to shrink.
 
 ## Scope reconciliation — let the plan catch up to reality
 Milestone scope is an **estimate made before building**; building reveals work the plan didn't capture. Treat scope as **provisional** and reconcile it, so discovered work neither bloats PRs nor evaporates in chat:
