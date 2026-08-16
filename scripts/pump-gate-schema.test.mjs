@@ -19,6 +19,34 @@
 //
 // It runs under `pnpm test:scripts` (`node --test scripts/*.test.mjs`), the
 // same command CLAUDE.md's autonomous-pump gate requires.
+//
+// ── WHICH HALF THIS FILE CAN CHECK, AND WHICH IT CANNOT (#2665) ──────────────
+// The enforcement story has TWO halves and only ONE of them is reachable from
+// in-tree tests. Saying so explicitly is the whole point of #2665, because
+// three rounds of work (#2612 -> #2645 -> #2657) rested on the second half
+// being ASSUMED.
+//
+//   IN-TREE (this file checks it, `pnpm test:scripts` goes red if it breaks):
+//     that pump.js GENERATES a schema carrying real, enforceable constraints —
+//     `gateResults.minItems` equal to this item's own gate command count,
+//     `minLength` on the strings, `required` on the rows — that the build
+//     agent's call site actually passes that schema, and that a hand-rolled
+//     checker over the same vocabulary rejects a short array.
+//
+//   NOT IN-TREE (no test here can reach it): that the AGENT HARNESS actually
+//     compiles that schema and REJECTS a tool call violating it. That is the
+//     harness's behaviour, not this repo's code — there is no harness to
+//     import, and the schema alone is inert without a validator that honours
+//     it. It was verified ONCE by direct probe; the evidence lives in
+//     `.claude/skills/autonomous-pump/SKILL.md` (see "Harness enforcement of
+//     the build schema"), and the last test in this file asserts that record
+//     has not been deleted — which is a check on the RECORD, not on the
+//     harness.
+//
+// So: if someone deletes `minItems` from pump.js, this file catches it. If a
+// future harness release stops honouring `minItems`, NOTHING here catches it —
+// the only signal would be builds shipping short `gateResults` arrays again,
+// which `formatGateEvidence`'s INCOMPLETE banner surfaces to the reviewer.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -28,6 +56,7 @@ import assert from "node:assert/strict";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUMP_JS = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "pump.js");
+const SKILL_MD = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "SKILL.md");
 
 function extractBlock(source, startMarker, endMarker) {
   const startMarkerPos = source.indexOf(startMarker);
@@ -285,5 +314,91 @@ describe("pump.js gate-evidence schema (#2645)", () => {
     };
     const completeShown = helpers.formatGateEvidence(completeBuild, 1);
     assert.ok(!completeShown.includes("INCOMPLETE"), "a complete gateResults array must not show the INCOMPLETE banner");
+  });
+});
+
+// ── #2665: the constraints must stay ENFORCEABLE, not decorative ─────────────
+// #2645/#2657 pinned `minItems` to the gate's command count and #2612 added
+// `minLength`. Both are load-bearing ONLY if (a) they are actually emitted and
+// (b) they are spelled with keywords a JSON-Schema validator honours. The
+// tests below cover exactly that — the schema pump.js hands the harness. They
+// do NOT and cannot test the harness's own validator; see this file's header.
+describe("pump.js build schema keeps enforceable constraints (#2665)", () => {
+  // Every gate shape BRINK-CONFIG.md actually uses, plus the degenerate
+  // single-command case. `{}` is the default (Rust) gate.
+  const GATE_SHAPES = [
+    { label: "default Rust gate", item: {} },
+    { label: "TS override", item: { gate: "pnpm -w typecheck && pnpm -w test && pnpm --filter @brink-lang/studio test" } },
+    { label: "single-command override", item: { gate: "pnpm run test:scripts" } },
+  ];
+
+  for (const { label, item } of GATE_SHAPES) {
+    it(`emits a positive integer gateResults.minItems matching gateCmds for the ${label}`, () => {
+      const cmds = helpers.gateCmds(item);
+      const minItems = helpers.buildSchemaFor(item).properties.gateResults.minItems;
+      assert.equal(typeof minItems, "number", "minItems must be a number, not a string or undefined");
+      assert.ok(Number.isInteger(minItems) && minItems >= 1, `minItems must be a positive integer, got ${minItems}`);
+      assert.equal(minItems, cmds.length, "minItems must equal this item's own gate command count");
+    });
+  }
+
+  it("keeps a numeric minLength on every gate-evidence string, so an empty one cannot satisfy the schema", () => {
+    // #2612's lesson: `required` alone let an EMPTY string through, which
+    // reproduced the exact hole it was added to close. These three are the
+    // strings a build could otherwise return blank.
+    const props = helpers.buildSchemaFor({ gate: "pnpm run a && pnpm run b" }).properties;
+    const row = props.gateResults.items.properties;
+    for (const [name, sub] of [["gateOutput", props.gateOutput], ["gateResults.items.command", row.command], ["gateResults.items.result", row.result]]) {
+      assert.equal(typeof sub.minLength, "number", `${name} must carry a numeric minLength`);
+      assert.ok(sub.minLength > 0, `${name}'s minLength must be > 0, got ${sub.minLength}`);
+    }
+    assert.deepEqual(props.gateResults.items.required, ["command", "result"], "a row missing either half must be rejected by `required`");
+  });
+
+  it("uses only JSON-Schema keywords a standard validator enforces — a typo'd keyword would be silently ignored", () => {
+    // This is the failure this test exists to prevent: `minItem` (singular),
+    // `minlength` (lowercase) or a hand-invented `minRows` all PARSE fine and
+    // are simply IGNORED by a JSON-Schema validator, so the schema would look
+    // strict while enforcing nothing — exactly the "documented is not
+    // verified" trap #2665 was opened about. The check is lexical: walk the
+    // generated schema and assert every key is one this vocabulary knows.
+    // `description` is on the list because it is a legal ANNOTATION; it is
+    // listed here as allowed-but-inert, and is never the sole constraint on a
+    // field (the assertions above are what make that true).
+    const KNOWN = new Set([
+      "type", "properties", "required", "additionalProperties", "items",
+      "minItems", "minLength", "enum", "description",
+    ]);
+    const unknown = [];
+    const walk = (node, path) => {
+      if (!node || typeof node !== "object" || Array.isArray(node)) return;
+      for (const [key, value] of Object.entries(node)) {
+        if (!KNOWN.has(key)) unknown.push(`${path}.${key}`);
+        if (key === "properties") {
+          for (const [propName, sub] of Object.entries(value ?? {})) walk(sub, `${path}.properties.${propName}`);
+        } else if (key === "items") {
+          walk(value, `${path}.items`);
+        }
+      }
+    };
+    walk(helpers.buildSchemaFor({ gate: "pnpm run a && pnpm run b" }), "$");
+    assert.deepEqual(unknown, [], `unknown/ignored schema keywords would enforce nothing: ${unknown.join(", ")}`);
+  });
+
+  it("SKILL.md still records the one-off harness probe — the half no test here can re-run", () => {
+    // ⚠ THIS ASSERTS THE RECORD EXISTS, NOT THAT THE HARNESS ENFORCES
+    // ANYTHING. The harness's validator is out of this repo's reach; the probe
+    // that observed it was run once (#2665) and written down so the next
+    // iteration on this hole is not a fourth guess. Deleting the record
+    // silently is what this catches.
+    const skill = readFileSync(SKILL_MD, "utf8");
+    assert.ok(
+      skill.includes("Harness enforcement of the build schema"),
+      "SKILL.md must keep the 'Harness enforcement of the build schema' probe record (#2665)",
+    );
+    assert.ok(
+      skill.includes("#2665"),
+      "the probe record in SKILL.md must cite #2665 so the evidence is traceable",
+    );
   });
 });
