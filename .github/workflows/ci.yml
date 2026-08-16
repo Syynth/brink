@@ -679,6 +679,8 @@ jobs:
       # via `pnpm --filter @brink/desktop test`.
       - name: Unit tests (node --test, scripts)
         run: pnpm run test:scripts
+      - name: Unit tests (scripts/setup-dev.sh audit-timeout handling)
+        run: pnpm run test:setup-dev
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       # `pnpm install --frozen-lockfile` exits 0 even when the file: link
