@@ -30,7 +30,7 @@ the editor owns the resulting UX.
 | `compile`, `getSemanticTokens`, `getTokenTypeNames` | required base | `compile`, `semantic_tokens`, … |
 | `getCompletions` + `autoImport` | completions + **auto-import** (#312): out-of-scope completions tagged `from <file>`, accept inserts the `INCLUDE` | `completions_*`, `auto_import_include_doc` / `auto_import_apply_include_doc` → `AutoImportResult` |
 | `getFoldingRanges` | folding incl. the **INCLUDE-block fold** (#313, `INCLUDE … (N files)`) and **fold kinds** (#365: structural/machinery/narrative run-based folds + JetBrains-style summary pills) | `folding_ranges` → `FoldRange[]` |
-| `getCodeActions` | **code-actions** menu (#321); apply via the resolve op | `code_actions_*` + `resolve_code_action` |
+| `getCodeActions` | **code-actions** menu (#321); apply via the resolve op — apply/extract both forward through `DocumentSessions`' `onApplyStructural` callback (`document-sessions.ts`); ⚠ its `result` carries the same refused-op (`ok: false`/`safe: true`) hazard as `onRenameCommit` — see the note below the table | `code_actions_*` + `resolve_code_action` |
 | `prepareRename` + `renameSymbolAt` + `commitRename` (+ `onRenameBreakage`) | **inline rename** (#323) with the live **"⚠ breaks N"** badge (#324) and the inline breakage report — `commitRename` forwards straight to `DocumentSessions`' `onRenameCommit` callback (`document-sessions.ts`); ⚠ its `result` can be a REFUSED rename (`ok: false`) that still reads as `safe: true` — see the note below the table | `prepare_rename` + `rename_symbol_at` → `StructuralResult` |
 | `getHover`, `gotoDefinition`, `findReferences`, `getSignatureHelp`, `getInlayHints`, `getArgumentWidgets` | the corresponding LSP-style features | `hover`, `goto_definition`, `find_references*`, … |
 | `onPlayFrom`, `onSymbolContextMenu`, `onNavigateToFile` | host hooks for your own chrome | — |
@@ -79,6 +79,23 @@ Notes on the rename contract (the one with the most moving parts):
   itself (#2543) until its apply seam (`applyComputedRename` / `applyMoveResult`) added the `ok`
   guard (#2564; rationale recorded in `docs/studio-shell-spec.md` §7.5). Copy that guard rather than
   re-discovering the bug in your own apply seam.
+
+Notes on the code-actions / extract contract (`onApplyStructural`, its sibling seam):
+- ⚠ **`onApplyStructural`'s `result` carries the identical `ok: false`/`safe: true` refusal
+  hazard as `onRenameCommit` above.** The two paths that feed it reach it differently, though:
+  - **Extract** (`computeExtract`/`applyExtract`, #315 H): a refusal never arrives.
+    `computeExtract` returns `null` on `!result.ok`, and `InlineNameInput`
+    (`packages/ink-editor/src/inline-name-input.ts`) treats a `null` query result as "no commit" —
+    so `applyExtract`, and this callback, only ever see `ok: true` extract results.
+  - **Code actions** (`applyCodeAction`, #321): forwards `resolveCodeAction`'s result to this
+    callback **unconditionally, with no `ok` filter**. A stale pick (source or doc changed between
+    the menu opening and the selection) reaches `resolve_code_action_impl`
+    (`crates/brink-web/src/editor/code_actions.rs`), which refuses via `error_json` — `"file not
+    loaded"`, `"no source"`, `"invalid code-action data: …"`, or `"code action produced no
+    change"` — all `ok: false`, `safe: true`. This is the path that needs the `result.ok` guard.
+- Check `result.ok` before applying, for the same reason as `onRenameCommit`: `safe` describes the
+  breakage of edits already computed, not whether the op happened.
+  `@brink-lang/studio`'s `applyMoveResult` has this guard (#2543/#2564).
 
 ## Per-feature: what you get vs. what you rebuild
 

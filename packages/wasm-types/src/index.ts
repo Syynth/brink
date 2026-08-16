@@ -890,6 +890,10 @@ export interface RenameDiagnostic {
  * `introduced_diagnostics` holds the breakage report and the edits apply only on
  * an explicit force. Reorders are trivially safe (empty breakage). */
 export interface StructuralResult {
+  /** True when the op actually happened. `false` means the op was refused
+   *  and no write occurred — check this before `safe`: a refusal reports
+   *  `safe: true` with no `introduced_diagnostics`, which reads exactly like
+   *  a clean success (`docs/studio-shell-spec.md` §7.5). */
   ok: boolean;
   /** The file path this result applies to. */
   path?: string;
