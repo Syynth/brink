@@ -22,6 +22,27 @@ interface MockSymbol {
   children: MockSymbol[];
 }
 
+/**
+ * Escape a symbol name for literal use inside a `new RegExp(...)` template.
+ *
+ * `rename_symbol` has always escaped (its own local `esc`); `delete_symbol`
+ * interpolated `knot`/`name` raw until #2641 lifted this to module scope so
+ * both use one helper.
+ *
+ * ⚠ Can a real name reach it? **Not through the studio today.** Both the
+ * parser's knot/stitch header rules and the mock's own `parseOutline`
+ * (`/^===\s+(\w+)\s*===/`, `/^=\s+(\w+)/`) admit `\w+` only, so every name the
+ * outline — and therefore the symbol menu — can hand these ops is
+ * metacharacter-free. The escape is defence for the *mock's own* callers:
+ * `delete_symbol` takes its `knot`/`stitch` as free strings, and a test (or a
+ * future caller) passing `"a.b"` or `"a("` got a silently wrong match or a
+ * thrown `SyntaxError` rather than a refusal. Escaping costs nothing and
+ * removes the difference between the two sibling ops.
+ */
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Parse knot/stitch headers from ink source for outline generation. */
 function parseOutline(source: string): MockSymbol[] {
   const symbols: MockSymbol[] = [];
@@ -376,6 +397,30 @@ export class EditorSession {
    * `E020`-style breakage when any other line still diverts/threads to the
    * removed symbol — enough to drive the studio's safe-by-default report. The
    * precise dangling-reference math is covered by Rust tests.
+   *
+   * ## The knot is resolved FIRST, and the stitch only inside it (#2641)
+   *
+   * This used to locate the target with a single `lines.findIndex` over the
+   * WHOLE file, which made the mock succeed in two cases production refuses:
+   *
+   * | call on `TWO_KNOTS`                | mock before        | production        |
+   * | ---------------------------------- | ------------------ | ----------------- |
+   * | `delete_symbol(p, "two", "b")`     | deleted `b` (under `one`) | `stitch 'b' not found in knot` |
+   * | `delete_symbol(p, "ghost", "a")`   | deleted `a` (under `one`) | `source knot not found` |
+   *
+   * `brink_ide::structural_delete::delete_symbol` resolves the knot first
+   * (`MoveError::SourceNotFound` when it is missing) and only then looks the
+   * stitch up **inside that knot's body** (`MoveError::StitchNotFound`), so a
+   * whole-file scan answers a different question. The `knotRe` guard #2627
+   * added only ran on the not-found branch, so once the stitch was found
+   * anywhere the knot was never checked at all.
+   *
+   * ⚠ This is the one divergence class `structural-refusal-shape.test.ts`
+   * structurally cannot catch: every mechanism built across
+   * #2568/#2577/#2610/#2627 compares refusal WORDING, and here the mock did
+   * not refuse — it returned `ok: true`. Hence the two driven sub-cases
+   * (`delete_symbol:stitch-under-wrong-knot`,
+   * `delete_symbol:stitch-under-missing-knot`) rather than an argument.
    */
   delete_symbol(path: string, knot: string, stitch: string): string {
     const source = this.files.get(path);
@@ -389,37 +434,51 @@ export class EditorSession {
     }
     const name = stitch || knot;
     const lines = source.split("\n");
-    const headerRe = stitch
-      ? new RegExp(`^\\s*=\\s+${name}\\b`)
-      : new RegExp(`^\\s*={2,3}\\s*${name}\\b`);
-    const start = lines.findIndex((l) => headerRe.test(l));
-    if (start < 0) {
-      // #2620 review: this folded BOTH "missing knot" and "missing stitch in
-      // an existing knot" onto `source knot not found`, but production's
-      // `MoveError` distinguishes them (crates/internal/brink-ide/src/
-      // structural_delete.rs delete_symbol): a missing KNOT is
-      // `SourceNotFound` ("source knot not found"), while a missing STITCH
-      // inside a knot that DOES exist is `StitchNotFound` ("stitch '<name>'
-      // not found in knot", structural_move.rs:23). Only fold the stitch case
-      // onto the knot wording when the parent knot header is itself absent.
-      if (stitch) {
-        const knotRe = new RegExp(`^\\s*={2,3}\\s*${knot}\\b`);
-        if (lines.some((l) => knotRe.test(l))) {
-          return EditorSession.structuralRefusal(`stitch '${stitch}' not found in knot`);
-        }
-      }
+    // #2641: interpolated unescaped for three waves, unlike the sibling
+    // `rename_symbol`, which has always escaped. See `escapeForRegex`'s doc
+    // for why no real symbol name reaches it today and it is fixed anyway.
+    const knotRe = new RegExp(`^\\s*={2,3}\\s*(?:function\\s+)?${escapeForRegex(knot)}\\b`);
+    const knotStart = lines.findIndex((l) => knotRe.test(l));
+    if (knotStart < 0) {
+      // The knot itself is missing — `MoveError::SourceNotFound`, the same
+      // variant an unloaded path folds onto above. Production reaches this
+      // BEFORE it considers the stitch at all, so a named stitch that exists
+      // under some *other* knot does not rescue the call (#2641 case 2).
       return EditorSession.structuralRefusal("source knot not found");
     }
-    // The region runs until the next header at the same-or-shallower level.
-    const stopRe = stitch ? /^\s*={1,3}/ : /^\s*={2,3}/;
-    let end = start + 1;
-    while (end < lines.length && !stopRe.test(lines[end]!)) end++;
+    // The knot's own region: header through the line before the next
+    // top-level header. Every stitch lookup below is bounded by it.
+    let knotEnd = knotStart + 1;
+    while (knotEnd < lines.length && !/^\s*={2,3}/.test(lines[knotEnd]!)) knotEnd++;
+
+    let start: number;
+    let end: number;
+    if (stitch) {
+      const stitchRe = new RegExp(`^\\s*=\\s+${escapeForRegex(stitch)}\\b`);
+      const relative = lines.slice(knotStart + 1, knotEnd).findIndex((l) => stitchRe.test(l));
+      if (relative < 0) {
+        // #2620 review / #2627: a missing STITCH inside a knot that DOES
+        // exist is `MoveError::StitchNotFound` ("stitch '<name>' not found in
+        // knot", structural_move.rs:23), not the knot wording. #2641: it is
+        // also what production answers when the stitch exists but lives under
+        // a DIFFERENT knot, which is why the search is bounded here rather
+        // than re-checked after a whole-file hit.
+        return EditorSession.structuralRefusal(`stitch '${stitch}' not found in knot`);
+      }
+      start = knotStart + 1 + relative;
+      // A stitch region ends at the next header of any level, and never
+      // escapes its own knot.
+      end = start + 1;
+      while (end < knotEnd && !/^\s*={1,3}/.test(lines[end]!)) end++;
+    } else {
+      start = knotStart;
+      end = knotEnd;
+    }
     const kept = [...lines.slice(0, start), ...lines.slice(end)];
     const newSource = kept.join("\n");
 
     // Breakage: any remaining `-> name` / `<- name` (here or in another file).
-    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const refRe = new RegExp(`(?:->|<-)\\s*${esc}\\b`);
+    const refRe = new RegExp(`(?:->|<-)\\s*${escapeForRegex(name)}\\b`);
     const introduced: {
       severity: string;
       code: string;
@@ -636,6 +695,26 @@ export class EditorSession {
    * onto an existing top-level knot name (the safe-by-default gate, #305). The
    * precise rename + diagnostic-diff math is covered by Rust tests; the mock is
    * enough to drive the studio prompt/report plumbing.
+   *
+   * ## Two guards, in production's order (#2634)
+   *
+   * ⚠ The `file not loaded` guard here is FAITHFUL and must stay. Unlike
+   * `rename_file` and `delete_symbol` — which delegate straight to `brink-ide`
+   * with no wasm-level file guard, which is why #2620 found their mock wording
+   * lying — `rename_symbol` really does emit `error_json("file not loaded")` at
+   * the wasm level (`crates/brink-web/src/editor/refactor.rs:478`).
+   *
+   * The `symbol not found` guard below is the one that was MISSING: production
+   * resolves `brink_ide::rename::declaration_offset(hir, knot, stitch)` and
+   * refuses when it finds no declaration, while the mock proceeded — so a
+   * rename of a knot that had been edited away *succeeded* under the mock,
+   * rewriting nothing and reporting `ok: true`. `performSymbolRename`
+   * (`packages/studio-ui/src/symbolMenuActions.ts`) names exactly this case in
+   * its own comment as one it notifies the author about, and that branch was
+   * unreachable by the studio suite.
+   *
+   * `declaration_offset` looks the stitch up **inside the named knot only**, so
+   * this does too — a stitch that exists under a different knot is not found.
    */
   rename_symbol(path: string, knot: string, stitch: string, newName: string): string {
     const source = this.files.get(path);
@@ -643,7 +722,31 @@ export class EditorSession {
       return EditorSession.structuralRefusal("file not loaded");
     }
     const oldName = stitch || knot;
-    const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const esc = escapeForRegex;
+
+    // #2634: mirrors `declaration_offset` — resolve the knot, then the stitch
+    // within that knot's region. Same `={2,3}` / `=\s+` header vocabulary the
+    // rewrite below uses, so a header this function can rename is one this
+    // guard can find.
+    {
+      const lines = source.split("\n");
+      const knotLine = lines.findIndex((l) =>
+        new RegExp(`^\\s*={2,3}\\s*(?:function\\s+)?${esc(knot)}\\b`).test(l),
+      );
+      if (knotLine < 0) {
+        return EditorSession.structuralRefusal("symbol not found");
+      }
+      if (stitch) {
+        let knotEnd = knotLine + 1;
+        while (knotEnd < lines.length && !/^\s*={2,3}/.test(lines[knotEnd]!)) knotEnd++;
+        const found = lines
+          .slice(knotLine + 1, knotEnd)
+          .some((l) => new RegExp(`^\\s*=\\s+${esc(stitch)}\\b`).test(l));
+        if (!found) {
+          return EditorSession.structuralRefusal("symbol not found");
+        }
+      }
+    }
 
     // Breakage: renaming a knot onto an existing top-level knot collides.
     const introduced: {
@@ -680,7 +783,7 @@ export class EditorSession {
         out = out.replace(new RegExp(`(^|\\n)(\\s*=\\s*)${esc(oldName)}\\b`, "g"), `$1$2${newName}`);
       } else {
         out = out.replace(
-          new RegExp(`(={2,3}\\s*)${esc(oldName)}(\\s*={0,3})`, "g"),
+          new RegExp(`(={2,3}\\s*(?:function\\s+)?)${esc(oldName)}(\\s*={0,3})`, "g"),
           `$1${newName}$2`,
         );
       }

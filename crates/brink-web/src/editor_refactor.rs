@@ -534,7 +534,69 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// unpinned. What changed is that the pinned set is now nearly all of them
     /// rather than three.
     fn driven_op_messages() -> serde_json::Value {
-        merge_driven(&[driven_file_and_symbol_messages(), driven_outline_messages()])
+        merge_driven(&[
+            driven_file_and_symbol_messages(),
+            driven_outline_messages(),
+            driven_mock_fidelity_messages(),
+        ])
+    }
+
+    /// The three gaps #2620's sweep left behind (#2634 / #2635 / #2641).
+    ///
+    /// Its own function rather than more lines in
+    /// [`driven_file_and_symbol_messages`] because that one is already at the
+    /// crate's line limit, and because these sites share a reason: each is a
+    /// production refusal the studio mock could not answer *at all*, rather
+    /// than one it answered with the wrong words.
+    ///
+    /// - `rename_symbol:missing-symbol` (#2634) — `declaration_offset` finds
+    ///   no declaration. The mock had no such branch: renaming a knot that had
+    ///   been edited away *succeeded*.
+    /// - `resolve_code_action:missing-file` (#2635) — the active path is not a
+    ///   loaded file. The mock's wording was already right; the site was simply
+    ///   undriven, which is #2621 gap 2 made concrete. `EditorSession`'s
+    ///   `active_path` starts as `main.ink`, so a session that loaded only
+    ///   `other.ink` reaches the guard without touching `set_active_file`.
+    /// - `delete_symbol:stitch-under-wrong-knot` /
+    ///   `delete_symbol:stitch-under-missing-knot` (#2641) — production
+    ///   resolves the knot first and looks the stitch up inside its body only.
+    ///   The mock scanned the whole file, so both of these DELETED instead of
+    ///   refusing. Two keys, not one, because production answers them with
+    ///   different `MoveError` variants.
+    fn driven_mock_fidelity_messages() -> serde_json::Value {
+        let main = session_with(&[("main.ink", MAIN)]);
+        let two = session_with(&[("main.ink", TWO_KNOTS)]);
+        // `active_path` defaults to `main.ink` and `set_active_file` refuses a
+        // path it cannot resolve, so loading only `other.ink` leaves the active
+        // path pointing at a file the session does not have.
+        let inactive = session_with(&[("other.ink", MAIN)]);
+
+        serde_json::json!({
+            "rename_symbol:missing-symbol": refusal_message(
+                "rename_symbol (no declaration for the named symbol)",
+                &main.rename_symbol("main.ink", "nowhere", "", "hi"),
+            ),
+            "resolve_code_action:missing-file": refusal_message(
+                "resolve_code_action (active path not loaded)",
+                &inactive.resolve_code_action(
+                    &serde_json::json!({ "action": "SortKnots" }).to_string(),
+                    0,
+                ),
+            ),
+            // `TWO_KNOTS` puts stitches `a`/`b` under knot `one` and a second
+            // `a` under knot `two`. `b` therefore exists in the file but NOT
+            // under `two` — the exact input a whole-file scan gets wrong.
+            "delete_symbol:stitch-under-wrong-knot": refusal_message(
+                "delete_symbol (stitch exists, but under another knot)",
+                &two.delete_symbol("main.ink", "two", "b"),
+            ),
+            // And with no such knot at all, production refuses at the knot
+            // lookup before the stitch is ever considered.
+            "delete_symbol:stitch-under-missing-knot": refusal_message(
+                "delete_symbol (named knot does not exist)",
+                &two.delete_symbol("main.ink", "ghost", "a"),
+            ),
+        })
     }
 
     /// Concatenate driven-message maps, refusing a key claimed twice — two
@@ -970,6 +1032,81 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "expected `brink-ide`'s CurrentNotFound wording naming the removed \
              file, got {message:?}"
         );
+    }
+
+    /// `rename_symbol`'s `"no analysis"` branch gets NO mock counterpart, and
+    /// this is the input that reaches it (#2634).
+    ///
+    /// #2634 asked for a per-string decision on the two refusals its Ask did
+    /// not name. This is the first: `session.hir(file_id)` is `None` only when
+    /// `file_id` resolved but `brink_db`'s `is_source_file` excludes the path
+    /// — i.e. an extension that is neither `.ink` nor `.brink` (`db.rs:304`).
+    /// A `.ink` file that is loaded always has HIR, so the branch is
+    /// unreachable for every path the studio can hand it: `performSymbolRename`
+    /// (`packages/studio-ui/src/symbolMenuActions.ts`) takes `req.path` from
+    /// the outline, and only source files have an outline to open a symbol menu
+    /// on. Mirroring it would model a production answer no studio path can
+    /// produce (#2577's lesson, the same call `current file source
+    /// unavailable` got above).
+    ///
+    /// The half that keeps that reasoning honest is the second assertion: a
+    /// loaded `.ink` file gets *past* the guard. If HIR ever became optional
+    /// for source files, this goes red and the branch earns a mock branch.
+    #[test]
+    fn rename_symbol_says_no_analysis_only_for_a_non_source_extension() {
+        let mut session = session_with(&[("main.ink", MAIN)]);
+        session.update_file("notes.md", MAIN);
+
+        let message = refusal_message(
+            "rename_symbol (non-source extension)",
+            &session.rename_symbol("notes.md", "hello", "", "hi"),
+        );
+        assert!(
+            message == "no analysis",
+            "expected the `no analysis` guard for a non-source path, got {message:?}"
+        );
+
+        let ink: serde_json::Value = parse(&session.rename_symbol("main.ink", "hello", "", "hi"));
+        assert!(
+            ink["ok"] == serde_json::json!(true),
+            "a loaded `.ink` file must get past the `no analysis` guard, or the \
+             branch is studio-reachable and needs a mock counterpart (#2634): {ink:#}"
+        );
+    }
+
+    /// `rename_symbol`'s `"cannot rename this symbol"` branch gets no SECOND
+    /// mock counterpart either — the vocabulary is already mirrored, by the
+    /// sibling op that can actually produce it (#2634).
+    ///
+    /// The branch sits below `declaration_offset`, so it is only reached when
+    /// a declaration WAS resolved and `rename_safe` then declined it. Every
+    /// declining case `rename` has — an `External` symbol, a UFCS field call, a
+    /// prelude intrinsic — is a symbol `declaration_offset` cannot name in the
+    /// first place: it walks `hir.knots` and their stitches only. So the
+    /// name-based op reaches its own last line and answers, as the two
+    /// assertions below pin for a knot and for a stitch.
+    ///
+    /// This is deliberately weaker than a proof of unreachability — no input
+    /// we can construct reaches it. What makes it safe to leave unmirrored is
+    /// that the wording is NOT unpinned: `rename_symbol_at` (the F2 road) does
+    /// reach it with an offset that resolves nothing, the mock answers it
+    /// there, and `rename_symbol_at:unrenameable` drives it. So the studio's
+    /// notification path for this string is exercised; only a second entrance
+    /// to it would be modelled, and nothing can walk through that entrance.
+    #[test]
+    fn rename_symbol_answers_once_a_declaration_resolves() {
+        let two = session_with(&[("main.ink", TWO_KNOTS)]);
+
+        for (knot, stitch) in [("one", ""), ("one", "a")] {
+            let value: serde_json::Value =
+                parse(&two.rename_symbol("main.ink", knot, stitch, "zz"));
+            assert!(
+                value["error"] != serde_json::json!("cannot rename this symbol"),
+                "`rename_symbol({knot:?}, {stitch:?})` reached the post-`rename_safe` \
+                 refusal — it now has an input the name-based road can produce, so give \
+                 it a driver and a mock counterpart (#2634): {value:#}"
+            );
+        }
     }
 
     /// The scanner above is load-bearing, so it is exercised on inputs it must

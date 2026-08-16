@@ -372,7 +372,67 @@ was the fourth instance of the class (after #2583's invented serde message,
     invisible to every guard here, the uniformity scan included — that scan
     only catches wrong vocabulary at sites it already knows about. This is
     the same wall one level up, named here so it is not rediscovered a fourth
-    time (#2621 gap 2).
+    time (#2621 gap 2). #2635 is the one concrete instance found and closed:
+    `resolveCodeActionImpl`'s `file not loaded` spelled the production string
+    correctly (`crates/brink-web/src/editor/code_actions.rs`) and had neither a
+    fixture key nor a call site, so nothing measured it. It is now
+    `resolve_code_action:missing-file`. Driving one site does not solve
+    site-enumeration in general; the wall stands.
+
+### A MISSING refusal is invisible to all of the above (#2641)
+
+Everything in the two sections above compares a refusal the mock *emits* — its
+shape, then its wording. None of it can see an op that does not refuse at all.
+That is a distinct blind spot, and it is the harder one: no amount of driving
+strings out of production detects a mock that answers `ok: true`.
+
+`delete_symbol` was the instance. It located its target with one
+`lines.findIndex` over the WHOLE file, while
+`brink_ide::structural_delete::delete_symbol` resolves the knot first
+(`MoveError::SourceNotFound`) and only then looks the stitch up **inside that
+knot's body** (`MoveError::StitchNotFound`). So the mock succeeded and DELETED
+in two cases production refuses — a stitch named under the wrong knot, and a
+knot that does not exist at all (the `knotRe` guard #2627 added ran only on the
+not-found branch, so a hit anywhere in the file meant the knot was never
+checked). Both are now knot-scoped, driven as
+`delete_symbol:stitch-under-wrong-knot` /
+`delete_symbol:stitch-under-missing-knot`, and additionally asserted
+behaviourally — a refusal carries no `new_source`, so a regression reads as
+"content was deleted", not as a key diff.
+
+`rename_symbol` had the same shape in a smaller way (#2634): production refuses
+`symbol not found` when `brink_ide::rename::declaration_offset` resolves no
+declaration, and the mock had no such branch, so renaming a knot that had been
+edited away answered `ok: true` — the exact case
+`performSymbolRename` (`packages/studio-ui/src/symbolMenuActions.ts`) names as
+one it notifies the author about. It is now `rename_symbol:missing-symbol`.
+
+Two decisions that go with it, recorded because "mirror every literal" is the
+wrong reflex (#2577's lesson):
+
+- **`rename_symbol`'s `file not loaded` guard is FAITHFUL — do not "fix" it.**
+  It is the one op of the three #2620 swept that really does emit
+  `error_json("file not loaded")` at the wasm level
+  (`crates/brink-web/src/editor/refactor.rs`); `rename_file` and
+  `delete_symbol` delegate straight to `brink-ide` with no wasm-level file
+  guard, which is why *their* wording was lying. After a wave that found three
+  wrong strings, the live risk is correcting the one that is right.
+- **`no analysis` and `cannot rename this symbol` get NO mock branch.**
+  `no analysis` fires only when `file_id` resolves but `brink-db`'s
+  `is_source_file` excludes the path — an extension that is neither `.ink` nor
+  `.brink`, which has no outline and therefore no symbol menu to invoke a
+  rename from. `cannot rename this symbol` sits below the `symbol not found`
+  guard, so it is reached only after a declaration resolved, and every case
+  `rename` declines (`External`, a UFCS field call, a prelude intrinsic) names
+  a symbol `declaration_offset` cannot reach — it walks `hir.knots` and their
+  stitches only. Its wording is not unpinned either: the F2 road
+  (`rename_symbol_at`) does reach it and drives it as
+  `rename_symbol_at:unrenameable`. Both decisions are pinned by tests rather
+  than argued —
+  `rename_symbol_says_no_analysis_only_for_a_non_source_extension` and
+  `rename_symbol_answers_once_a_declaration_resolves`
+  (`crates/brink-web/src/editor_refactor.rs`) go red if either branch becomes
+  reachable from the name-based road.
 
 ## Visual hierarchy
 

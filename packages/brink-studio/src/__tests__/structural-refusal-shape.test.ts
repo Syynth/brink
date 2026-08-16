@@ -76,6 +76,32 @@
  * except the one mock-only serde abbreviation noted further down (anchored as
  * a genuine prefix of the driven production string, never an invention).
  *
+ * ## A refusal that is MISSING is invisible to all of the above (#2641)
+ *
+ * Everything described so far — shape, then vocabulary, then driving — checks
+ * a refusal the mock actually emits. None of it can see an op that does not
+ * refuse at all. `delete_symbol` located its target with one `lines.findIndex`
+ * over the whole file, so `delete_symbol(p, "two", "b")` (stitch `b` lives
+ * under `one`) and `delete_symbol(p, "ghost", "a")` (no such knot) both
+ * answered `ok: true` and DELETED, where production answers
+ * `MoveError::StitchNotFound` / `MoveError::SourceNotFound`. No amount of
+ * driving refusal strings out of production detects that, because there is no
+ * mock refusal to compare against — which makes it strictly harder to find
+ * than the three wrong strings #2620 caught. The two cases are now driven
+ * sites like any other, plus a dedicated behavioural block at the bottom of
+ * this file asserting the mock leaves the source alone.
+ *
+ * ## Two more sites the sweep left behind (#2634, #2635)
+ *
+ * `rename_symbol` had the same shape of gap in a smaller way: production
+ * refuses `symbol not found` when `declaration_offset` resolves nothing, and
+ * the mock had no such branch, so renaming a knot that had been edited away
+ * succeeded. `resolveCodeActionImpl`'s `file not loaded` was the opposite —
+ * correct wording, no driver and no fixture key, i.e. #2621's "gap 2" (a real
+ * site invisible to discovery) in its narrowest possible form. Both are driven
+ * below. Two of `rename_symbol`'s literals deliberately get NO mock branch;
+ * the reasoning is recorded at that call site and pinned by two Rust tests.
+ *
  * ⚠ **What this does and does not guarantee.** Driving is still PER-SITE, not
  * automatic: nothing enumerates the (op, refusing-input) pairs, so each entry
  * is a driver someone wrote against an input someone chose, and a refusal site
@@ -179,6 +205,16 @@ const MAIN = "=== hello ===\nHi.\n-> END\n";
 const TWO_KNOTS =
   "=== one ===\nFirst.\n= a\nA.\n= b\nB.\n\n=== two ===\nSecond.\n= a\nOther A.\n";
 
+/**
+ * A single `function` knot (`=== function name() ===`, not `=== name ===`).
+ * Its header carries a `function` segment between the `===` fence and the
+ * declared name that a plain knot's never does — the shape the reviewer
+ * flagged as unreached by every fixture above: `MAIN` and `TWO_KNOTS` are
+ * both plain knots, so a guard/rewrite that forgot the `function` segment
+ * still went green against them.
+ */
+const FUNCTION_KNOT = '=== function greet() ===\n~ return "hi"\n';
+
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
   for (const [path, source] of Object.entries(files)) s.update_file(path, source);
@@ -248,6 +284,29 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "one", "nowhere"),
   },
   {
+    // #2641, and the reason this file's whole mechanism needed a case it could
+    // not previously express: the mock did not answer the WRONG WORDS here, it
+    // answered `ok: true` and DELETED. `b` exists in `TWO_KNOTS` — under knot
+    // `one` — so the old whole-file `lines.findIndex` matched it and removed
+    // that region, while production's knot-scoped lookup answers
+    // `MoveError::StitchNotFound`. Every guard built across
+    // #2568/#2577/#2610/#2627 compares refusal wording, so a *missing* refusal
+    // is invisible to all of them; this case exists to make it visible.
+    site: "delete_symbol (stitch exists, but under another knot)",
+    error: productionMessage("delete_symbol:stitch-under-wrong-knot"),
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "two", "b"),
+  },
+  {
+    // #2641 case 2. The `knotRe` guard #2627 added only ran on the
+    // stitch-not-found branch, so a hit anywhere in the file meant the named
+    // knot was never checked at all: `ghost` does not exist, yet the mock
+    // deleted `a`. Production refuses at the knot lookup — `SourceNotFound`,
+    // before the stitch is considered.
+    site: "delete_symbol (named knot does not exist)",
+    error: productionMessage("delete_symbol:stitch-under-missing-knot"),
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "ghost", "a"),
+  },
+  {
     site: "extract_to_knot (file not loaded)",
     error: productionMessage("extract_to_knot:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).extract_to_knot("ghost.ink", 0, 4, "lifted"),
@@ -273,6 +332,28 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     site: "rename_symbol (file not loaded)",
     error: productionMessage("rename_symbol:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).rename_symbol("ghost.ink", "hello", "", "hi"),
+  },
+  {
+    // #2634. The guard above is FAITHFUL — `rename_symbol` is the one op of
+    // the three #2620 swept that really does emit `file not loaded` at the
+    // wasm level (`editor/refactor.rs:478`). What was missing is this one:
+    // production also refuses when `declaration_offset` resolves nothing, and
+    // the mock proceeded, so renaming a knot that had been edited away
+    // answered `ok: true`. `performSymbolRename` names exactly this case
+    // ("'symbol not found' after the knot was edited away") as one it notifies
+    // the author about, and the branch was unreachable under the mock.
+    //
+    // The op's other two literals get no mock counterpart, decided per string
+    // (#2634's Ask): `no analysis` fires only for a non-source extension, which
+    // has no outline and therefore no symbol menu
+    // (`rename_symbol_says_no_analysis_only_for_a_non_source_extension`), and
+    // `cannot rename this symbol` sits below the guard added here, unreachable
+    // once a declaration resolved — its wording is already pinned through the
+    // F2 road at `rename_symbol_at (cannot rename this symbol)` below
+    // (`rename_symbol_answers_once_a_declaration_resolves`).
+    site: "rename_symbol (symbol not found)",
+    error: productionMessage("rename_symbol:missing-symbol"),
+    call: () => sessionWith({ "main.ink": MAIN }).rename_symbol("main.ink", "nowhere", "", "hi"),
   },
   {
     site: "rename_symbol_at (cannot rename this symbol)",
@@ -370,6 +451,25 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
       s.set_active_file("main.ink");
       return s.resolve_code_action(JSON.stringify({ action: "SortKnots" }), 0);
     },
+  },
+  {
+    // #2635 — #2621's "gap 2" made concrete. `resolveCodeActionImpl` refuses
+    // `file not loaded` and production says the same thing
+    // (`editor/code_actions.rs:102`), so unlike the three strings #2620 caught
+    // the wording was never wrong. The site was simply UNDRIVEN: no fixture
+    // key, no call site, invisible to every guard in this file.
+    //
+    // Both sides reach it the same way — the active path is not a loaded file.
+    // Production's `active_path` starts as `main.ink` and the mock's as `""`,
+    // and `set_active_file` refuses an unknown path on both, so a session that
+    // loaded only `other.ink` is left pointing at nothing either way.
+    site: "resolve_code_action (active path not loaded)",
+    error: productionMessage("resolve_code_action:missing-file"),
+    call: () =>
+      sessionWith({ "other.ink": MAIN }).resolve_code_action(
+        JSON.stringify({ action: "SortKnots" }),
+        0,
+      ),
   },
   {
     site: "resolve_code_action_doc (unknown document handle)",
@@ -483,6 +583,8 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
       "delete_symbol:missing-file",
       "delete_symbol:missing-stitch-in-knot",
       "delete_symbol:missing-symbol",
+      "delete_symbol:stitch-under-missing-knot",
+      "delete_symbol:stitch-under-wrong-knot",
       "demote_knot:illegal-nesting",
       "demote_knot:missing-dest-knot",
       "extract_to_function:empty-selection",
@@ -499,12 +601,14 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
       "rename_file:read-only-mount",
       "rename_file:target-exists",
       "rename_symbol:missing-file",
+      "rename_symbol:missing-symbol",
       "rename_symbol_at:unrenameable",
       "reorder_knot:missing-knot",
       "reorder_knots:invalid-order",
       "reorder_stitch:missing-file",
       "reorder_stitch:missing-stitch",
       "reorder_stitches:invalid-order",
+      "resolve_code_action:missing-file",
       "resolve_code_action:no-change",
       "resolve_code_action:unknown-variant",
       "resolve_code_action_doc:unknown-handle",
@@ -594,6 +698,105 @@ describe("a refused structural op is indistinguishable from an unsafe one (#2568
       expect(parsed.cross_file_edits).toEqual([]);
     });
   }
+});
+
+/**
+ * The behavioural half of #2641, stated in the direction that matters.
+ *
+ * The two driven cases above already fail against the pre-#2641 mock — a
+ * successful `{ ok: true, new_source, ... }` is not the refusal shape. But
+ * shape-equality states the failure as "wrong keys", when the defect is
+ * "content was DELETED that production would have left alone". These assert
+ * that directly, so the regression they guard reads as itself: a mock that
+ * reintroduces the whole-file `findIndex` deletes `= b`/`= a` here and goes
+ * red on the `toContain`, not on a key diff.
+ *
+ * Both calls name a stitch that exists SOMEWHERE in the file, which is the
+ * whole point — a scan not scoped to the named knot finds it.
+ */
+describe("delete_symbol does not delete across a knot boundary (#2641)", () => {
+  it("refuses, and removes nothing, when the stitch lives under a different knot", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "two", "b"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(false);
+    // Nothing was rewritten: a refusal carries no `new_source` at all. The
+    // op is pure on both sides, so this — not the session's contents — is
+    // where the deletion would have shown up.
+    expect(parsed.new_source).toBeUndefined();
+  });
+
+  it("refuses, and removes nothing, when the named knot does not exist", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "ghost", "a"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.new_source).toBeUndefined();
+  });
+
+  it("still deletes a stitch that really is under the named knot", () => {
+    // The guard above must not have been bought by refusing everything: the
+    // ordinary case still computes a deletion.
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "one", "b"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).not.toContain("= b");
+    // The identically-named stitch under `two` survives, and so does `two`.
+    expect(parsed.new_source).toContain("=== two ===");
+  });
+});
+
+/**
+ * The behavioural half of #2634: the mock must not report a rename of a
+ * symbol that is not there as having happened.
+ */
+describe("rename_symbol refuses a symbol the file does not declare (#2634)", () => {
+  it("refuses a knot that is not declared", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": MAIN }).rename_symbol("main.ink", "nowhere", "", "hi"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.new_source).toBeUndefined();
+  });
+
+  it("refuses a stitch that exists only under a different knot", () => {
+    // `declaration_offset` looks the stitch up inside the named knot only, so
+    // `b` (under `one`) is not found when `two` is named — the same scoping
+    // #2641 fixed in `delete_symbol`.
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": TWO_KNOTS }).rename_symbol("main.ink", "two", "b", "hi"),
+    ) as { ok: boolean };
+    expect(parsed.ok).toBe(false);
+  });
+
+  it("still renames a knot and a stitch that really are declared", () => {
+    const knot = JSON.parse(
+      sessionWith({ "main.ink": TWO_KNOTS }).rename_symbol("main.ink", "one", "", "uno"),
+    ) as { ok: boolean; new_source?: string };
+    expect(knot.ok).toBe(true);
+    expect(knot.new_source).toContain("=== uno ===");
+
+    const stitch = JSON.parse(
+      sessionWith({ "main.ink": TWO_KNOTS }).rename_symbol("main.ink", "one", "b", "bee"),
+    ) as { ok: boolean; new_source?: string };
+    expect(stitch.ok).toBe(true);
+    expect(stitch.new_source).toContain("= bee");
+  });
+
+  it("does not refuse a function knot — the guard must see past the `function` segment", () => {
+    // `KnotHeader::name()` returns the bare name for a function header too
+    // (pinned production-side by `ast/tests/decl.rs::function_knot_header`),
+    // so `brink_ide::rename::declaration_offset` resolves `greet` here just
+    // like it would a plain knot. A guard regex that only matches
+    // `={2,3}\s*<name>` — skipping the `function` keyword in between — would
+    // find no declaration and wrongly answer `symbol not found`.
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": FUNCTION_KNOT }).rename_symbol("main.ink", "greet", "", "hail"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain("=== function hail() ===");
+  });
 });
 
 /**
