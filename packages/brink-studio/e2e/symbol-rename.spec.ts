@@ -43,8 +43,13 @@ async function openRename(page: Page, knot: string): Promise<void> {
  * `#brink-rename-input`. Both wrappers delegate to the original setter, so
  * the app's behaviour is unchanged; only the reading is added.
  *
- * A property write landing at all is itself the finding: an attribute-seeded
- * field would produce no entries here.
+ * The finding is not carried by entries existing at all — `defaultValue` is
+ * also an attribute-reflecting IDL property (it mirrors the `value` content
+ * attribute, the same path the control's `viaSetAttribute` case exercises),
+ * so a write there produces an entry too. It is carried by the assertion
+ * below that `seeded.map((e) => e.prop)` contains `"value"`: that is the
+ * specific property React's own seed write goes through, and it has no
+ * attribute-only counterpart to be confused with.
  */
 type SeedProbeEntry = { prop: "value" | "defaultValue"; text: string; start: number | null; end: number | null };
 
@@ -144,8 +149,15 @@ test.describe("knot/stitch rename (#305)", () => {
     expect(seeded.length).toBeGreaterThan(0);
     expect(seeded.map((e) => e.prop)).toContain("value");
 
-    // And that seed leaves the caret at the END, exactly as jsdom does.
-    for (const entry of seeded) {
+    // And that seed leaves the caret at the END, exactly as jsdom does. Scoped
+    // to the `value`-property entries only: `defaultValue` writes (if any land
+    // here) read back whatever the field held at that moment, which is
+    // React's write ORDER, not a caret claim this test can make on its own —
+    // asserting them here would encode an implementation detail of React as
+    // though it were platform behaviour.
+    const valueWrites = seeded.filter((e) => e.prop === "value");
+    expect(valueWrites.length).toBeGreaterThan(0);
+    for (const entry of valueWrites) {
       expect(entry.start).toBe("barter".length);
       expect(entry.end).toBe("barter".length);
     }

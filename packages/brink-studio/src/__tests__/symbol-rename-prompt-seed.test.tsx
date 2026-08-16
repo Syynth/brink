@@ -172,8 +172,13 @@ describe("SymbolRenamePrompt seeding (#2511)", () => {
     // assertion made it vacuous outright.
     //
     // The reset is a vacuity guard only (#2595). It does NOT restore "what a
-    // real browser would show": the (6, 6) reading is what an author actually
-    // faces. Measured on the real `#brink-rename-input` in Chromium 145 by the
+    // real browser would show": (0, 0) is what the seed leaves, before the
+    // prompt's own `select()` runs. This component's rAF effect calls
+    // `input.select()` while the field still holds the seeded name
+    // (`SymbolRenamePrompt.tsx`, the SELECT-INVARIANT site this suite
+    // guards), so an author actually faces the fully-selected (0, 6) reading
+    // asserted below — neither (0, 0) nor the unguarded (6, 6) this reset
+    // undoes. Measured on the real `#brink-rename-input` in Chromium 145 by the
     // e2e "a defaultValue-seeded field parks the caret at the end in a real
     // browser" (`e2e/symbol-rename.spec.ts`) — the park is HTML-standard
     // behaviour for the `.value` setter, which jsdom reproduces faithfully.
