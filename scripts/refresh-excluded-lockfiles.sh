@@ -37,8 +37,57 @@
 # Callers: release-plz.yml (real refresh, then commits + pushes the diff —
 # driving its `git diff`/`git add` off `--print-lockfiles`) and the
 # `verify-lockfile-refresh` job in the same workflow (dry run only).
+#
+# Both `cargo update` invocations below hit the network (crates.io sparse
+# index + dependency resolution) and are therefore bounded by
+# run_with_timeout, the same wedged-proxy hang class #2591/#2638/#2642
+# bounded in setup-dev.sh. They were left BARE until #2667 because
+# check-setup-dev.mjs only ever looked at setup-dev.sh — a whole script
+# outside the scan. Knobs:
+#
+#   Knob                                     Default  On timeout
+#   ---------------------------------------------------------------------
+#   BRINK_REFRESH_DRY_RUN_TIMEOUT               180s   FAIL (exit 1). The
+#                                                      --dry-run path only
+#                                                      resolves — no crate
+#                                                      downloads, no writes —
+#                                                      so 180s is already
+#                                                      generous for a cold
+#                                                      sparse-index fetch,
+#                                                      and this path runs on
+#                                                      every PR touching the
+#                                                      verify job, where a
+#                                                      tight bound is cheap
+#                                                      (a red job you re-run)
+#                                                      and fast feedback is
+#                                                      worth more.
+#   BRINK_REFRESH_UPDATE_TIMEOUT                300s   FAIL (exit 1). The real
+#                                                      refresh does the same
+#                                                      resolution and then
+#                                                      REWRITES three
+#                                                      Cargo.locks, and it
+#                                                      runs once per release
+#                                                      where a spurious
+#                                                      timeout aborts a
+#                                                      release — so it gets
+#                                                      the more generous
+#                                                      bound.
+#
+# NEITHER step may warn-and-continue, which is why both say FAIL. A timeout
+# that exits 0 would make the dry run vacuously green (its entire purpose is
+# to prove resolution still works, #1427) and would make the real refresh
+# commit-and-push lockfiles it never refreshed — a stale-lockfile release,
+# the exact #1418 failure this script exists to prevent. "Bounded but exits
+# 0" converts a visible hang into a silent wrong answer.
 
 set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/run-with-timeout.sh
+. "${here}/lib/run-with-timeout.sh"
+
+BRINK_REFRESH_DRY_RUN_TIMEOUT="${BRINK_REFRESH_DRY_RUN_TIMEOUT:-180}"
+BRINK_REFRESH_UPDATE_TIMEOUT="${BRINK_REFRESH_UPDATE_TIMEOUT:-300}"
 
 excluded_dirs=(demos/compound benchmarks/tools/gen-input benchmarks/drivers/brink-loop)
 
@@ -66,11 +115,45 @@ for dir in "${excluded_dirs[@]}"; do
     args+=(-p "$pkg")
   done
 
+  # The bound goes INSIDE the subshell, not around it: `run_with_timeout` is
+  # a shell function, and a subshell inherits functions (unlike `bash -c`,
+  # which would not see it at all — and would additionally need an explicit
+  # `-o pipefail`, since SHELLOPTS is not exported). Wrapping the subshell
+  # from outside is not expressible anyway — run_with_timeout takes a command
+  # and its args, not a compound statement. With the bound inside, `timeout`
+  # is cargo's direct parent, so `-k 10`'s SIGKILL reaches the real process,
+  # and the subshell's exit status IS the wrapped command's status, so a 124
+  # propagates out unchanged. `scripts/refresh-excluded-lockfiles.test.sh`
+  # proves that propagation against a sleeping stub rather than asserting it.
+  #
+  # `rc=0; … || rc=$?` — NOT `if ! …; then rc=$?`, which reads $? off the
+  # negated pipeline and is therefore always 0, making the `-eq 124` branch
+  # dead code (#2531/PR #2584). The `|| rc=$?` also suppresses `set -e`,
+  # which would otherwise abort before the branch below could classify the
+  # failure.
+  rc=0
   if [[ "$mode" == dry-run ]]; then
     echo "==> cargo update --dry-run ${args[*]} (in $dir)"
-    (cd "$dir" && cargo update --dry-run "${args[@]}")
+    (cd "$dir" && run_with_timeout "${BRINK_REFRESH_DRY_RUN_TIMEOUT}" cargo update --dry-run "${args[@]}") || rc=$?
+    if [[ "$rc" -eq 124 ]]; then
+      echo "==> ✗ cargo update --dry-run TIMED OUT after ${BRINK_REFRESH_DRY_RUN_TIMEOUT}s in $dir — the crates.io index fetch/resolution never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_REFRESH_DRY_RUN_TIMEOUT." >&2
+      exit 1
+    fi
   else
     echo "==> cargo update ${args[*]} (in $dir)"
-    (cd "$dir" && cargo update "${args[@]}")
+    (cd "$dir" && run_with_timeout "${BRINK_REFRESH_UPDATE_TIMEOUT}" cargo update "${args[@]}") || rc=$?
+    if [[ "$rc" -eq 124 ]]; then
+      echo "==> ✗ cargo update TIMED OUT after ${BRINK_REFRESH_UPDATE_TIMEOUT}s in $dir — the crates.io index fetch/resolution never completed, likely a stalled proxy. $dir/Cargo.lock has NOT been refreshed; committing now would ship a stale lockfile (#1418). Retry when network is stable, or raise BRINK_REFRESH_UPDATE_TIMEOUT." >&2
+      exit 1
+    fi
+  fi
+
+  # Any other non-zero status is a genuine cargo failure (unresolvable path
+  # dep, version constraint that no longer matches, missing crate — the
+  # failure mode #1427 wants surfaced). `set -e` was suppressed above, so
+  # re-raise it explicitly rather than falling through to the next directory.
+  if [[ "$rc" -ne 0 ]]; then
+    echo "==> ✗ cargo update failed (exit $rc) in $dir" >&2
+    exit "$rc"
   fi
 done

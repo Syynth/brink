@@ -7,7 +7,8 @@
 		"check:wasm-pkg": "node scripts/check-wasm-pkg.mjs",
 		"install:checked": "node scripts/guarded-install.mjs",
 		"test:scripts": "node --test scripts/*.test.mjs",
-		"test:setup-dev": "bash scripts/setup-dev.test.sh"
+		"test:setup-dev": "bash scripts/setup-dev.test.sh",
+		"test:refresh-lockfiles": "bash scripts/refresh-excluded-lockfiles.test.sh"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.31.0",
