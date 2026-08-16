@@ -541,3 +541,35 @@ describe("fold placeholders are styled, not just class-tagged (#2546)", () => {
     expect(rendered.filter((cls) => !STYLED_CLASSES.has(cls))).toEqual([]);
   });
 });
+
+// A decl fold's per-kind tint (--bs-symbol-knot/-stitch/-function) must land
+// on BOTH .brink-fold-decl-icon and .brink-fold-decl-header — not the icon
+// alone. Before #2546's follow-up fix, .brink-fold-decl-header carried an
+// unconditional --bs-symbol-knot rule with no [data-decl-kind="…"] variants,
+// so a collapsed stitch or function showed a mauve (knot-colored) header
+// beside a correctly-tinted glyph. This scans the CSS source directly
+// (rather than jsdom computed style, which never loads the real
+// stylesheet) for a rule whose selector is scoped to the kind's
+// [data-decl-kind="…"] attribute and reaches both the icon and the header.
+describe("decl fold: per-kind tint reaches the header, not just the icon (#2546)", () => {
+  const EDITOR_CSS = Object.entries(STYLE_SOURCES).find(([path]) =>
+    path.endsWith("studio-ui/src/styles/editor.css"),
+  )?.[1];
+
+  it("locates studio-ui's editor.css (sanity check on the glob)", () => {
+    expect(EDITOR_CSS).toBeTruthy();
+  });
+
+  it.each(["knot", "stitch", "function"])(
+    "the %s kind's [data-decl-kind] selector reaches both the icon and the header",
+    (kind) => {
+      const stripped = selectorText(EDITOR_CSS!);
+      const kindSelectors = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, selector]) => selector.includes(`data-decl-kind="${kind}"]`))
+        .map(([, selector]) => selector)
+        .join(",");
+      expect(kindSelectors).toContain("brink-fold-decl-icon");
+      expect(kindSelectors).toContain("brink-fold-decl-header");
+    },
+  );
+});
