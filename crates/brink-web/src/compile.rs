@@ -453,7 +453,7 @@ mod compile_fragment_tests {
     // (`evaluate-dispatch.ts`'s `isNativeEntry`/`expressionWrapSource`/
     // `contentWrapSource`), so a native-project embedder's Tier-1 fragment
     // eval actually reaches this primitive now — see
-    // `packages/wasm/src/evaluate-fragment-native.test.ts`.
+    // `packages/wasm/src/__tests__/evaluate-fragment-native.test.ts`.
 
     #[test]
     fn native_entry_expression_wrap_resolves_against_project_globals() {
