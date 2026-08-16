@@ -2066,6 +2066,19 @@ mod tests {
              documented `cd packages/brink-desktop/src-tauri && cargo test` works on a \
              fresh tree (#2617)"
         );
+        // The assertion above is a string-literal grep, so it stays green even if the
+        // script it names is moved or renamed — exactly the drift that would silently
+        // re-break the gate this test exists to protect. Assert the path actually
+        // resolves on disk, so a rename fails this test instead of only the vitest-side
+        // guard (`src/__tests__/scripts-main-guard.test.ts`), which does not cover this
+        // crate's build script at all.
+        assert!(
+            repo_root()
+                .join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs")
+                .is_file(),
+            "packages/brink-desktop/scripts/ensure-cli-sidecar.mjs should exist — build.rs \
+             hard-codes this path as a literal string, so a rename or move must be caught here"
+        );
         assert!(
             build_rs.contains("BRINK_SIDECAR_STUB"),
             "build.rs should ask ensure-cli-sidecar.mjs for a STUB via BRINK_SIDECAR_STUB, \

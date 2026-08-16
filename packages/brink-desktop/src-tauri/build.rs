@@ -47,7 +47,7 @@
 //! `ensure-cli-sidecar.mjs` with no stub variable set.
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn main() {
     stage_dev_sidecar_if_missing();
@@ -101,10 +101,20 @@ fn stage_dev_sidecar_if_missing() {
         return;
     }
 
+    // `ensure-cli-sidecar.mjs` stages under `hostTriple()` (from `rustc
+    // -vV`), not the `TARGET` this function is probing — under a
+    // cross-target `cargo test/check --target <other>` those two triples
+    // differ, so the script would succeed while writing a wrong-triple file
+    // that this function can never see as staged. Cargo sets `HOST` for
+    // build scripts specifically so it can be compared against `TARGET`;
+    // bail with the same warning below rather than invoke a script whose
+    // host-triple assumption does not match.
+    let host_matches_target = std::env::var("HOST").as_deref() == Ok(target.as_str());
+
     // `ensure-cli-sidecar.mjs` refuses to stage the POSIX stub under a
     // `.exe`-suffixed name (#2481) — Windows would load it through the PE
     // loader and never start it. Don't ask for something it will reject.
-    if exe_suffix.is_empty() {
+    if exe_suffix.is_empty() && host_matches_target {
         // The desktop package dir: `scripts/` sits beside `src-tauri/`.
         let package_dir = manifest_dir.join("..");
         let script = package_dir.join("scripts").join("ensure-cli-sidecar.mjs");
@@ -113,6 +123,13 @@ fn stage_dev_sidecar_if_missing() {
                 .arg("scripts/ensure-cli-sidecar.mjs")
                 .current_dir(&package_dir)
                 .env("BRINK_SIDECAR_STUB", "1")
+                // The child's `console.log` output would otherwise land in
+                // cargo's build-script directive channel (stdout) — harmless
+                // today since none of its lines start with `cargo:`, but
+                // cargo swallows that stream either way, so nothing is lost
+                // by keeping it out and every warning stays on the
+                // `cargo:warning=` channel below where a developer can see it.
+                .stdout(Stdio::null())
                 .status();
             if matches!(ran, Ok(status) if status.success()) && staged.exists() {
                 warn(&format!(
