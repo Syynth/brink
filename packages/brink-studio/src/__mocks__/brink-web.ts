@@ -392,6 +392,31 @@ export class EditorSession {
   }
 
   /**
+   * A refused structural op, in the exact shape the real wasm emits (#2543).
+   *
+   * Rust's `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes
+   * the whole `StructuralResultJs`, and only `path`/`new_source` carry
+   * `skip_serializing_if` — so a REFUSAL still ships `safe: true` with empty
+   * `cross_file_edits`/`introduced_diagnostics` beside its `ok: false`.
+   *
+   * The rename mocks used to answer `{ ok: false, error }` alone, and that
+   * omission is why #2543 survived the studio suite: `isSafeRename` reads
+   * `result.safe`, an absent `safe` is falsy, so under the mock a refused
+   * rename looked UNSAFE (report shown, nothing committed) while production
+   * called it SAFE and committed it. Keep this payload faithful — a mock that
+   * understates the contract cannot see a bug that lives in the contract.
+   */
+  private static structuralRefusal(error: string): string {
+    return JSON.stringify({
+      ok: false,
+      cross_file_edits: [],
+      introduced_diagnostics: [],
+      safe: true,
+      error,
+    });
+  }
+
+  /**
    * Mock of the real `rename_symbol` op (pure — computes edits, does not
    * mutate the session). Rewrites the symbol's header plus `->`/`<-` diverts
    * to it across every file, and flags an `E022` breakage when renaming a knot
@@ -402,7 +427,7 @@ export class EditorSession {
   rename_symbol(path: string, knot: string, stitch: string, newName: string): string {
     const source = this.files.get(path);
     if (source === undefined) {
-      return JSON.stringify({ ok: false, error: "file not loaded" });
+      return EditorSession.structuralRefusal("file not loaded");
     }
     const oldName = stitch || knot;
     const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -477,7 +502,7 @@ export class EditorSession {
   rename_symbol_at(path: string, offset: number, newName: string): string {
     const source = this.files.get(path);
     if (source === undefined) {
-      return JSON.stringify({ ok: false, error: "file not loaded" });
+      return EditorSession.structuralRefusal("file not loaded");
     }
     for (const knot of parseOutline(source)) {
       if (offset >= knot.start && offset <= knot.end) {
@@ -489,7 +514,7 @@ export class EditorSession {
         }
       }
     }
-    return JSON.stringify({ ok: false, error: "cannot rename this symbol" });
+    return EditorSession.structuralRefusal("cannot rename this symbol");
   }
 
   /**

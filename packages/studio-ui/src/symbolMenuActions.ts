@@ -218,6 +218,34 @@ export async function applyComputedRename(
   args: { path: string; currentName: string; newName: string; result: StructuralResult },
 ): Promise<void> {
   const { path, currentName, newName, result } = args;
+  if (!result.ok) {
+    // The op refused — there is nothing to apply (#2543). Without this branch
+    // the refusal flowed into `applyMoveResult` and came back out as the
+    // success toast ("Rename X to Y", with Undo) plus a re-keyed symbol tab,
+    // asserting an edit that never happened.
+    //
+    // `isSafeRename` cannot catch this upstream: a refusal carries
+    // `safe: true` with no introduced diagnostics (Rust's `error_json`), so
+    // the editor's inline gate reads it as safe and commits. `ok` is the field
+    // that says whether the operation happened; `safe` only ever described the
+    // breakage of edits that were actually computed.
+    //
+    // Reports on the same channel as the modal path's refusal (#2528) — an
+    // error-severity `binder` notification carrying the op's own reason, with
+    // the "Rename X failed: …" frame that keeps the message from colliding
+    // with the op's most common wording ("cannot rename this symbol").
+    //
+    // Guarded by packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts.
+    state._notify?.({
+      severity: "error",
+      source: "binder",
+      message:
+        result.error != null && result.error !== ""
+          ? `Rename ${currentName} failed: ${result.error}`
+          : `Rename ${currentName} failed`,
+    });
+    return;
+  }
   await applyMoveResult(
     result,
     `Rename ${currentName} to ${newName}`,
