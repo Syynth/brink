@@ -105,6 +105,24 @@
   color: var(--bs-symbol-knot);
   font-weight: 700;
 }
+/* The decl fold's kind glyph (◆ knot / § stitch / ƒ function). Tinted from
+   the same --bs-symbol-* tokens the binder's outline icons use, so a
+   collapsed knot and its binder entry read as the same symbol. The glyph is
+   empty when the header's kind could not be classified — :not(:empty) keeps
+   an unclassified fold from carrying a dead gap. */
+.brink-studio .brink-fold-decl-icon:not(:empty) {
+  margin-right: 5px;
+  opacity: 0.85;
+}
+.brink-studio .brink-fold-decl[data-decl-kind="knot"] .brink-fold-decl-icon {
+  color: var(--bs-symbol-knot);
+}
+.brink-studio .brink-fold-decl[data-decl-kind="stitch"] .brink-fold-decl-icon {
+  color: var(--bs-symbol-stitch);
+}
+.brink-studio .brink-fold-decl[data-decl-kind="function"] .brink-fold-decl-icon {
+  color: var(--bs-symbol-function);
+}
 /* Collapsed leading INCLUDE block: "INCLUDE … (N files)" */
 .brink-studio .brink-fold-include {
   cursor: pointer;
@@ -112,6 +130,63 @@
 }
 .brink-studio .brink-fold-include-label {
   font-style: italic;
+}
+/* Collapsed machinery/narrative run (#365): an inline chip carrying an icon
+   slot, the summary the placeholder computed, and the run's line count.
+   Sized and tinted like the other inline chips above the fold — the same
+   0.85em / muted-fill / 1px-border language as .brink-host-chip and
+   .brink-value-chip — so a collapsed run reads as one collapsed object
+   rather than loose glyphs spliced into the line (#2546). */
+.brink-studio .brink-fold-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 100%;
+  margin: 0 2px;
+  padding: 0 8px;
+  font-size: 0.85em;
+  color: var(--bs-fg-muted);
+  background: rgb(var(--bs-fg-muted-rgb) / 12%);
+  border: 1px solid var(--bs-border);
+  border-radius: 10px;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.brink-studio .brink-fold-pill:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-accent, var(--bs-border));
+  background: rgb(var(--bs-accent-rgb, var(--bs-fg-muted-rgb)) / 14%);
+}
+.brink-studio .brink-fold-pill-icon {
+  flex: none;
+  line-height: 1;
+}
+/* The two kinds are told apart by the hue their contents already carry in
+   the source: machinery summarises logic (the keyword hue), narrative
+   summarises prose (the string hue). */
+.brink-studio .brink-fold-pill-machinery .brink-fold-pill-icon {
+  color: var(--bs-syn-keyword);
+}
+.brink-studio .brink-fold-pill-narrative .brink-fold-pill-icon {
+  color: var(--bs-syn-string);
+}
+/* The summary is the pill's only elastic part: it takes the leftover width
+   and ellipsises, so the icon and the count never get pushed out of view. */
+.brink-studio .brink-fold-pill-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .brink-fold-pill-narrative .brink-fold-pill-summary {
+  font-style: italic;
+}
+.brink-studio .brink-fold-pill-count {
+  flex: none;
+  padding-left: 6px;
+  border-left: 1px solid rgb(var(--bs-border-rgb) / 55%);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }
 .brink-studio .cm-line.brink-choice {
   color: var(--bs-accent);

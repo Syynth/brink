@@ -429,3 +429,115 @@ describe("exact-span tie-break — structural vs machinery/narrative (#405)", ()
     expect(v.dom.querySelector(".brink-fold-pill-machinery")).toBeNull();
   });
 });
+
+// ── Fold-placeholder skin guard (#2546) ─────────────────────────────
+//
+// Every test above asserts the placeholder classes are APPLIED, and every
+// one of them stayed green for the whole time `brink-fold-pill`, its kind
+// classes, `-icon`, `-summary`, `-count` and `brink-fold-decl-icon` had no
+// rule anywhere in the repo (#2546) — the pill rendered as bare glyphs and a
+// count spliced into the line. Applied-ness alone is therefore not a guard.
+// This pairs the DOM contract with a skin contract: every `brink-*` class
+// the placeholder DOM actually renders must be addressed by a rule in some
+// workspace style source.
+//
+// The class list is derived from the LIVE rendered DOM, not hardcoded, so a
+// class added to a placeholder without a matching rule fails here too.
+//
+// The scan is deliberately package-agnostic — CSS files plus the TS sources
+// that embed CM6 themes — so if #2547 rules that these rules belong in an
+// `EditorView.baseTheme` inside `@brink-lang/editor` rather than in
+// `studio-ui`'s stylesheets, this stays green without an edit here.
+
+const STYLE_SOURCES = import.meta.glob(
+  [
+    "../../../*/src/**/*.{css,ts,tsx}",
+    "!**/__tests__/**",
+    "!**/__mocks__/**",
+  ],
+  { query: "?raw", import: "default", eager: true },
+) as Record<string, string>;
+
+/** Strip comments (an explanatory mention of a class is not a rule) and the
+ *  string arguments of DOM lookups (`querySelector(".brink-x")` is a read,
+ *  not a rule) so only selector text reaches the class scan. */
+function selectorText(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/\b(?:querySelector|querySelectorAll|closest|matches)\s*(?:<[^<>]*>)?\s*\(\s*(["'`])[\s\S]*?\1/g, "");
+}
+
+/** Every `brink-*` class token appearing in selector position across the
+ *  workspace's style sources. Tokens are matched whole — `.brink-fold-pill`
+ *  and `.brink-fold-pill-icon` are separate entries, so a substring of a
+ *  longer selector can never make a missing rule look present. */
+const STYLED_CLASSES: ReadonlySet<string> = new Set(
+  Object.values(STYLE_SOURCES).flatMap((source) =>
+    [...selectorText(source).matchAll(/\.(brink-[\w-]+)/g)].map((m) => m[1]),
+  ),
+);
+
+/** The `brink-*` classes on `root` and every descendant, as rendered. */
+function renderedBrinkClasses(root: Element): string[] {
+  const seen = new Set<string>();
+  for (const el of [root, ...root.querySelectorAll("*")]) {
+    for (const cls of el.classList) if (cls.startsWith("brink-")) seen.add(cls);
+  }
+  return [...seen].sort();
+}
+
+describe("fold placeholders are styled, not just class-tagged (#2546)", () => {
+  const SRC = "~ change_party_member(2, false)\n~ leave = true\nHello there, friend.\nHow are you?\n";
+  const ranges: FoldRange[] = [
+    { start_line: 0, end_line: 1, kind: "machinery" },
+    { start_line: 2, end_line: 3, kind: "narrative" },
+  ];
+
+  it("scans a plausible style-source set (sanity check on the glob)", () => {
+    expect(Object.keys(STYLE_SOURCES).length).toBeGreaterThan(50);
+    // Classes styled since long before #2546 — if these are missing the scan
+    // itself is broken rather than the rules.
+    expect(STYLED_CLASSES.has("brink-fold-decl")).toBe(true);
+    expect(STYLED_CLASSES.has("brink-fold-decl-header")).toBe(true);
+    expect(STYLED_CLASSES.has("brink-fold-include-label")).toBe(true);
+  });
+
+  it("machinery pill: every class it renders has a style rule", () => {
+    const v = mountFolding(SRC, () => ranges);
+    foldLine(v, 0);
+    const pill = v.dom.querySelector<HTMLElement>(".brink-fold-pill-machinery");
+    expect(pill).not.toBeNull();
+    const rendered = renderedBrinkClasses(pill!);
+    expect(rendered).toEqual([
+      "brink-fold-pill",
+      "brink-fold-pill-count",
+      "brink-fold-pill-icon",
+      "brink-fold-pill-machinery",
+      "brink-fold-pill-summary",
+    ]);
+    expect(rendered.filter((cls) => !STYLED_CLASSES.has(cls))).toEqual([]);
+  });
+
+  it("narrative pill: every class it renders has a style rule", () => {
+    const v = mountFolding(SRC, () => ranges);
+    foldLine(v, 2);
+    const pill = v.dom.querySelector<HTMLElement>(".brink-fold-pill-narrative");
+    expect(pill).not.toBeNull();
+    const rendered = renderedBrinkClasses(pill!);
+    expect(rendered).toContain("brink-fold-pill-narrative");
+    expect(rendered.filter((cls) => !STYLED_CLASSES.has(cls))).toEqual([]);
+  });
+
+  it("decl placeholder: every class it renders has a style rule", () => {
+    const v = mountFolding("== hub ==\ntext\n", () => [
+      { start_line: 0, end_line: 1, from_line_start: true, kind: "structural" },
+    ]);
+    foldLine(v, 0);
+    const el = v.dom.querySelector<HTMLElement>(".brink-fold-decl");
+    expect(el).not.toBeNull();
+    const rendered = renderedBrinkClasses(el!);
+    expect(rendered).toContain("brink-fold-decl-icon");
+    expect(rendered.filter((cls) => !STYLED_CLASSES.has(cls))).toEqual([]);
+  });
+});
