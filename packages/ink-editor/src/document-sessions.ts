@@ -125,8 +125,14 @@ export interface DocumentCallbacks {
    *  re-keys any open symbol tab. `path` is the file the rename ran in.
    *
    *  ⚠ `result` CAN carry `ok: false` with `safe: true` — a REFUSED rename
-   *  (the op declined, e.g. renaming a symbol that can't be renamed), not a
-   *  clean one. `result.safe` describes whether the (possibly empty) computed
+   *  (the op declined), not a clean one. The widget only opens where
+   *  `prepareRename` resolved a range, and those renames go on to succeed, so
+   *  the refusals that actually arrive here are ones that appear *after* it
+   *  opened: the file unloading out from under an open rename ("file not
+   *  loaded"), or the analysis⇄db identity-space mismatch guarded by
+   *  `rename_refuses_rather_than_silently_dropping_edits_when_identity_spaces_disagree`
+   *  (`crates/internal/brink-ide/src/rename.rs`).
+   *  `result.safe` describes whether the (possibly empty) computed
    *  edits introduce new diagnostics; it says nothing about whether the op
    *  actually happened. That's `result.ok`. A refusal's `error_json` (Rust,
    *  `crates/brink-web/src/editor_refactor.rs`) sets `safe: true` with no

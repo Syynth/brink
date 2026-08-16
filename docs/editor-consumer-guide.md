@@ -62,8 +62,12 @@ Notes on the rename contract (the one with the most moving parts):
   route non-editor (binder/graph) renames to its own modal. Your tool decides its own rendering here.
 - ⚠ **`onRenameCommit`'s `result` can be a refusal reporting `ok: false` with `safe: true`.**
   `safe`/`introduced_diagnostics` describe the breakage of edits the op actually computed; `ok`
-  is the separate field that says whether the op happened at all. A refused rename (e.g. the
-  cursor symbol isn't renameable) computes no edits, so `error_json`
+  is the separate field that says whether the op happened at all. The inline widget only opens
+  where `prepareRename` resolved a range, and those renames succeed — so the refusals that reach
+  this callback are ones arising *after* it opened: the file unloading out from under an open
+  rename (`"file not loaded"`), or the analysis⇄db identity-space mismatch guarded by
+  `rename_refuses_rather_than_silently_dropping_edits_when_identity_spaces_disagree`
+  (`crates/internal/brink-ide/src/rename.rs`). A refused rename computes no edits, so `error_json`
   (`crates/brink-web/src/editor_refactor.rs`) reports it with `safe: true` and an empty
   `introduced_diagnostics` — which is indistinguishable from a clean, successful rename to
   `isSafeRename` (`packages/ink-editor/src/breakage.ts`), which reads only those two fields. The
