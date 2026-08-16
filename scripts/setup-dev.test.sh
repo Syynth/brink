@@ -454,9 +454,18 @@ exit 0
 EOF
   chmod +x "${dir}/corepack"
 
+  # Reports the pin by default, but honors STUB_PNPM_VERSION at runtime so
+  # tests can simulate a drifted/never-updated pnpm — e.g. proving the
+  # COREPACK_TIMEOUT WARN-and-continue path still lets the pin-verification
+  # `exit 1` catch a corepack that failed to fetch the pin (#2642 review).
+  # HANG_PNPM_VERSION simulates the real failure mode `pnpm --version`
+  # exposes on a corepack cache miss: it execs corepack's shim, which
+  # re-attempts the same network fetch `corepack prepare` above just gave up
+  # on — so this stub, like the real shim, can itself stall.
   cat > "${dir}/pnpm" <<EOF
 #!/usr/bin/env bash
-echo "${pinned_pnpm_version}"
+if [ "\${HANG_PNPM_VERSION:-0}" = "1" ]; then sleep 5; exit 0; fi
+echo "\${STUB_PNPM_VERSION:-${pinned_pnpm_version}}"
 EOF
   chmod +x "${dir}/pnpm"
 }
@@ -828,6 +837,55 @@ if printf '%s' "${out}" | grep -q "pnpm ready"; then
   pass "corepack prepare failure: verification still ran and passed ('pnpm ready')"
 else
   fail "corepack prepare failure: never reached the pin verification:\n${out}"
+fi
+
+# --- Test 20: `corepack prepare` FAILING FAST, and this time the pin genuinely
+# never activates (STUB_PNPM_VERSION drifts pnpm's reported version away from
+# the pin). This is the composition Tests 18/19 never exercised: both used the
+# pin-already-active stub, so they only proved the WARN-and-continue, never
+# that the safety argument for it — "the run still exits 1 if pnpm isn't at
+# the pin" — actually holds. Without this, a corepack that fails AND leaves
+# pnpm un-pinned would silently pass Tests 18/19's shape while the real script
+# printed success. ---
+out="$(run_full_script 1 FAIL_COREPACK_PREPARE=1 STUB_PNPM_VERSION=9.99.99)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "corepack prepare failure (pin never activated): script exits non-zero"
+else
+  fail "corepack prepare failure (pin never activated): script exited 0 — a genuinely un-pinned pnpm was not caught:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm resolved to '9.99.99'"; then
+  pass "corepack prepare failure (pin never activated): names the resolved (wrong) version"
+else
+  fail "corepack prepare failure (pin never activated): does not name the resolved version:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm ready"; then
+  fail "corepack prepare failure (pin never activated): printed 'pnpm ready' despite the pin mismatch:\n${out}"
+else
+  pass "corepack prepare failure (pin never activated): does not print 'pnpm ready'"
+fi
+
+# --- Test 21: the HANG_ twin of Test 20, proving the #2642 review's finding-1
+# fix — `pnpm --version` (the pin-verification read) is now itself bounded by
+# BRINK_SETUP_COREPACK_TIMEOUT. Before that fix this test would hang for the
+# stub's full 5s sleep and the script would never reach a diagnostic; against
+# unpatched main this is exactly finding 1's "relocated, not bounded" hang. ---
+out="$(run_full_script 1 HANG_COREPACK_PREPARE=1 HANG_PNPM_VERSION=1 BRINK_SETUP_COREPACK_TIMEOUT=1 STUB_PNPM_VERSION=9.99.99)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "pnpm --version timeout: script exits non-zero — the hang was bounded"
+else
+  fail "pnpm --version timeout: script exited 0 — the hang was not detected:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm resolved to ''"; then
+  pass "pnpm --version timeout: resolved version is empty (the bounded read produced no output)"
+else
+  fail "pnpm --version timeout: does not report an empty resolved version:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm ready"; then
+  fail "pnpm --version timeout: printed 'pnpm ready' despite the bounded read timing out:\n${out}"
+else
+  pass "pnpm --version timeout: does not print 'pnpm ready'"
 fi
 
 if [ "${failures}" -gt 0 ]; then

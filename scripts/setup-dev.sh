@@ -61,6 +61,13 @@
 #                                                wasm-pack/nextest: FAIL
 #                                                (exit 1). cargo-deny: WARN,
 #                                                skip the audit.
+#   BRINK_SETUP_AUDIT_TIMEOUT            300s   The two `cargo deny check`
+#                                                audits themselves
+#                                                (BRINK_SETUP_FULL=1 only).
+#                                                Root workspace: FAIL.
+#                                                src-tauri workspace: WARN
+#                                                (matches desktop-smoke.yml's
+#                                                continue-on-error, #2470).
 #   BRINK_SETUP_COREPACK_TIMEOUT         120s   WARN, continue — the
 #                                                npm-registry fetch of the
 #                                                pinned pnpm tarball
@@ -69,13 +76,6 @@
 #                                                is what FAILS the run if
 #                                                pnpm did not end up at the
 #                                                pinned version.
-#   BRINK_SETUP_AUDIT_TIMEOUT            300s   The two `cargo deny check`
-#                                                audits themselves
-#                                                (BRINK_SETUP_FULL=1 only).
-#                                                Root workspace: FAIL.
-#                                                src-tauri workspace: WARN
-#                                                (matches desktop-smoke.yml's
-#                                                continue-on-error, #2470).
 #
 # Also see BRINK_SETUP_FULL (below, and CLAUDE.md "Cloud / fresh-environment
 # sessions") — gates whether cargo-deny installs/audits at all.
@@ -530,7 +530,12 @@ fi
 # mismatch here, and the abort must say which one happened, not just that one
 # did.
 resolved_pnpm_stderr="$(mktemp)"
-resolved_pnpm="$(pnpm --version 2>"${resolved_pnpm_stderr}" || true)"
+# Bounded the same as `corepack prepare` above (#2642 review): on a cache
+# miss, this invokes corepack's shim, which downloads the pinned pnpm
+# tarball itself — through the same possibly-wedged proxy, with no bound of
+# its own otherwise. Without this, the WARN-and-continue path above just
+# relocates the hang here instead of eliminating it.
+resolved_pnpm="$(run_with_timeout "${BRINK_SETUP_COREPACK_TIMEOUT}" pnpm --version 2>"${resolved_pnpm_stderr}" || true)"
 if [ "${resolved_pnpm}" != "${PNPM_VERSION}" ]; then
   echo "==> ERROR: pnpm resolved to '${resolved_pnpm}' but package.json pins ${PNPM_VERSION}"
   if [ -s "${resolved_pnpm_stderr}" ]; then

@@ -322,18 +322,17 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   its own `BRINK_SETUP_*_TIMEOUT` (#2584/#2591/#2638), and the authoritative
   knob/default/fail-vs-warn table lives in that script's header block — the
   audit bound is simply the one this section is about. A genuine timeout is
-  distinguished
-  from normal audit findings and reported as `TIMED OUT`, exiting the script
-  non-zero for the required root-workspace audit but only warning and
-  continuing for the non-blocking `src-tauri` audit below, so the timeout
-  itself can never abort setup before the pnpm/toolchain-verification steps
-  that follow — though #2604 gives the pnpm block itself a new hard `exit 1`
-  on a resolved-version/pin mismatch, ahead of `Verifying toolchain`, so the
-  audit's timeout is no longer the only thing that can end setup early; that
-  new abort is a version-pin failure, not an audit outcome, and is reported
-  separately by `scripts/check-pnpm-pin.mjs`. PROVISIONAL — no maintainer
-  ruling establishes the local mirror; it exists so a developer sees what CI
-  sees.
+  distinguished from normal audit findings and reported as `TIMED OUT`,
+  exiting the script non-zero for the required root-workspace audit but only
+  warning and continuing for the non-blocking `src-tauri` audit below, so the
+  timeout itself can never abort setup before the pnpm/toolchain-verification
+  steps that follow — though #2604 gives the pnpm block itself a new hard
+  `exit 1` on a resolved-version/pin mismatch, ahead of `Verifying
+  toolchain`, so the audit's timeout is no longer the only thing that can end
+  setup early; that new abort is a version-pin failure, not an audit outcome,
+  and is reported separately by `scripts/check-pnpm-pin.mjs`. PROVISIONAL —
+  no maintainer ruling establishes the local mirror; it exists so a developer
+  sees what CI sees.
   (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
 
   **STILL REPORTING, NOT BLOCKING — but the licence half is now ruled.**
