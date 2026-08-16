@@ -25,6 +25,33 @@
  * regenerate; this file then fails until the mock matches. A hand-copied field
  * list would drift exactly the way the thing it guards drifted, so the list is
  * read off the Rust type instead — no field name below is typed by hand.
+ *
+ * ## Shape was checked; vocabulary was not (#2603)
+ *
+ * The generated shapes carry a placeholder message, so every `error` string
+ * below was typed by hand — and two of them were typed from the *mock*. Both
+ * auto-import doc-handle sites pinned `"unknown handle"` while production
+ * (`crates/brink-web/src/editor/refactor.rs`) answers
+ * `"unknown document handle"`, so those two cases asserted only that the mock
+ * agreed with itself. That is the fourth instance of the class in three waves
+ * (#2583's invented serde message, #2599's shadowed stub, #2602's invented
+ * `entry file '...' not found`).
+ *
+ * The fixture now also carries a `messages` map, produced by *running* the
+ * production ops in `driven_messages()` and reading `error` back out of the
+ * payload they answer with — see `productionMessage` below. A site that reads
+ * from it cannot drift: changing the Rust wording restales the fixture, and
+ * the regenerated fixture fails this file until the mock matches.
+ *
+ * ⚠ **It covers the document-handle ops only, and it is per-site, not
+ * automatic.** Nothing can enumerate the (op, refusing-input) pairs, so each
+ * driven message is a driver someone wrote. Every other `error:` string in
+ * this file is still HAND-COPIED from the production call path, and most of
+ * them originate below `brink-web` (`file not loaded`, `stitch '...' not found
+ * in knot`, `entry file not found in session:` come out of `brink-ide` error
+ * types), which the Rust-side literal scan cannot see at all. Treat those as
+ * what they are — transcriptions to re-verify against the source when touched,
+ * not machine-checked facts.
  */
 
 import { readFileSync } from "node:fs";
@@ -49,6 +76,8 @@ interface RefusalFixture {
   /** The refusal message baked into every generated shape below. */
   error: string;
   shapes: Record<string, Record<string, unknown>>;
+  /** Real refusal strings, read out of the production ops (#2603). */
+  messages: Record<string, string>;
 }
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as RefusalFixture;
@@ -58,6 +87,37 @@ function refusalShape(name: string, error: string): Record<string, unknown> {
   const shape = fixture.shapes[name];
   expect(shape, `fixture is missing the ${name} shape — regenerate it`).toBeDefined();
   return { ...shape!, error };
+}
+
+/**
+ * Every `fixture.messages` key that a case below has actually pulled through
+ * `productionMessage`. Tracked by KEY, not by the string value it resolved
+ * to — three driven messages currently share the identical value ("unknown
+ * document handle"), so a value-keyed set would pass as soon as any one case
+ * used it, silently tolerating another case being deleted. See the coverage
+ * assertion below, which compares this against `Object.keys(fixture.messages)`.
+ */
+const consumedMessageKeys = new Set<string>();
+
+/**
+ * Production's own wording for a refusal site, read off the generated fixture
+ * rather than transcribed (#2603).
+ *
+ * `driven_messages()` in `crates/brink-web/src/editor_refactor.rs` calls the
+ * real op on a real `EditorSession` and stores the `error` it answered with,
+ * so this is production's string by construction. Sites that use it are the
+ * ones whose vocabulary is machine-checked; the rest are hand-copied, per the
+ * warning in this file's header.
+ */
+function productionMessage(key: string): string {
+  const message = fixture.messages[key];
+  expect(
+    message,
+    `fixture has no driven message for "${key}" — add a driver to driven_messages() ` +
+      "and regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`",
+  ).toBeTypeOf("string");
+  consumedMessageKeys.add(key);
+  return message!;
 }
 
 const MAIN = "=== hello ===\nHi.\n-> END\n";
@@ -221,8 +281,9 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     },
   },
   {
+    // Vocabulary read off the fixture, not typed — see `productionMessage`.
     site: "resolve_code_action_doc (unknown document handle)",
-    error: "unknown document handle",
+    error: productionMessage("resolve_code_action_doc:unknown-handle"),
     call: () =>
       sessionWith({ "main.ink": TWO_KNOTS }).resolve_code_action_doc(
         999,
@@ -251,16 +312,20 @@ const dirMoveRefusals: Array<{ site: string; error: string; call: () => string }
 ];
 
 /** The doc-handle refusals, which answer with the `AutoImportJs` shape instead
- *  — a different Rust struct, so a different generated shape. */
+ *  — a different Rust struct, so a different generated shape.
+ *
+ *  Their wording is read off the fixture's driven `messages` (#2603): these two
+ *  are exactly the sites that drifted, pinning the mock's `"unknown handle"`
+ *  against production's `"unknown document handle"`. */
 const autoImportRefusals: Array<{ site: string; error: string; call: () => string }> = [
   {
-    site: "auto_import_include_doc (unknown handle)",
-    error: "unknown handle",
+    site: "auto_import_include_doc (unknown document handle)",
+    error: productionMessage("auto_import_include_doc:unknown-handle"),
     call: () => sessionWith({ "main.ink": MAIN }).auto_import_include_doc(999, "other.ink"),
   },
   {
-    site: "auto_import_apply_include_doc (unknown handle)",
-    error: "unknown handle",
+    site: "auto_import_apply_include_doc (unknown document handle)",
+    error: productionMessage("auto_import_apply_include_doc:unknown-handle"),
     call: () => sessionWith({ "main.ink": MAIN }).auto_import_apply_include_doc(999, "other.ink"),
   },
 ];
@@ -291,6 +356,25 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
       "DirMoveResultJs",
       "StructuralResultJs",
     ]);
+  });
+
+  it("the driven refusal messages are present and every one has a call site here (#2603)", () => {
+    // Same canary for the vocabulary half: a renamed key would otherwise make
+    // `productionMessage` fail once per site with no hint of the cause.
+    expect(Object.keys(fixture.messages).sort()).toEqual([
+      "auto_import_apply_include_doc:unknown-handle",
+      "auto_import_include_doc:unknown-handle",
+      "resolve_code_action_doc:unknown-handle",
+    ]);
+
+    // A driven message with no site exercising it is a string parked in a
+    // fixture, not a guard: it would keep passing while the mock said anything
+    // it liked. Tracked by KEY (`consumedMessageKeys`, populated by
+    // `productionMessage` as the arrays above are built), not by the string
+    // VALUE it resolved to — all three driven messages currently share the
+    // identical value "unknown document handle", so comparing values would
+    // pass as soon as any one case used it, even with the other two deleted.
+    expect([...consumedMessageKeys].sort()).toEqual(Object.keys(fixture.messages).sort());
   });
 
   for (const { site, error, call } of structuralRefusals) {
