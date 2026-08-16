@@ -240,6 +240,75 @@ is hand-copied from the other:
   lines). A struct that hits one of these blind spots ships silently
   unguarded, the same as before #2577.
 
+### Shape is checked; vocabulary is checked only for the doc-handle ops (#2603)
+
+Everything above pins which *keys* a refusal payload ships. It says nothing
+about the `error` *string* inside those keys — until #2603, the fixture
+carried a placeholder (`REFUSAL`) there, and every string on the TypeScript
+side was hand-typed. Two of the doc-handle sites were typed **from the
+mock**: `auto_import_include_doc`/`auto_import_apply_include_doc` pinned the
+mock's own `"unknown handle"` against production's `"unknown document
+handle"`, so the guard asserted only that the mock agreed with itself. That
+was the fourth instance of the class (after #2583's invented serde message,
+#2599's shadowed stub, #2602's invented `entry file '...' not found`).
+
+- **The fixture now also carries a `messages` map**, alongside `shapes`:
+  `{ "<op>:<refusing-input>": "<real error string>" }`. It is produced by
+  `driven_messages()` in `#[cfg(test)] mod refusal_shape`
+  (`crates/brink-web/src/editor_refactor.rs`), which constructs a real
+  `EditorSession`, calls the real production op with an unknown document
+  handle, and reads `error` back out of the JSON payload — after first
+  asserting `ok: false`, so a message can never be harvested from a
+  *successful* answer. Nothing in the map is typed by hand.
+- **`structural-refusal-shape.test.ts` reads its expectations from that map**
+  via `productionMessage(key)`, for the three doc-handle sites this covers:
+  `auto_import_include_doc`, `auto_import_apply_include_doc`, and
+  `resolve_code_action_doc`. A site that uses `productionMessage` cannot
+  drift from production — changing the Rust wording restales the fixture,
+  and the regenerated fixture fails the TypeScript test until the mock is
+  updated to match. `productionMessage` also records the key it resolved
+  into a module-level `consumedMessageKeys` set; a canary in the same file
+  asserts that set equals `Object.keys(fixture.messages)`, keyed rather than
+  valued so that deleting a case cannot hide behind another case sharing the
+  same string.
+- **A third guard closes the omission gap for this one class.**
+  `doc_handle_refusal_vocabulary_is_uniform`
+  (`crates/brink-web/src/editor_refactor.rs`) scans every `.rs` file under
+  this crate's `src/` for a refusal-message literal — the string argument of
+  `error_json("…")`/`dir_error_json("…")`, or the literal in an
+  `error: Some("…".to_owned())` field — that contains the substring
+  `"handle"`, and asserts that set is exactly the two strings production
+  uses today (`"unknown document handle"` and `"document handle is
+  read-only (mounted stdlib file)"`). A fourth doc-handle op inventing its
+  own `"handle"`-containing wording is red at the source, before it can
+  reach a mock. **"Both guard halves must stay green together" above is now
+  three**: `refusal_shape`/`doc_handle_refusal_vocabulary_is_uniform`
+  (Rust), and `structural-refusal-shape.test.ts` (TypeScript).
+- **The honest limits, stated once here rather than only in code comments:**
+  - Vocabulary checking is **per-site, not automatic**. Nothing in this
+    crate can enumerate the `(op, refusing-input)` pairs — Rust has no
+    reflection and this crate has no `inventory`-style registry — so every
+    driven message is a driver someone wrote in `driven_messages()`. A site
+    nobody drives stays unpinned.
+  - The literal scan only sees strings that exist **in this crate**. Most
+    refusals — `file not loaded`, `stitch '...' not found in knot`, `entry
+    file not found in session:` — are `Some(e.to_string())` over
+    `brink-ide` error types, so there is no literal for the scan to find;
+    driving them is possible in principle but is a per-site job with
+    matching setup, not a scan (the same wall #2577 hit one level up, for
+    shapes rather than wording).
+  - The literal scan's own filter is narrow: it only catches a coinage that
+    contains the word `"handle"`. A fourth doc-handle refusal worded
+    without that word (`"unknown document id"`, `"no such document"`) has
+    no literal the scan recognizes as belonging to this class and is
+    invisible to it.
+  - Every other `error:` string in `structural-refusal-shape.test.ts` is
+    still **hand-copied** from the production call path, documented as such
+    in the file's own header rather than silently read as verified. That
+    list drifts the same way the thing it guards drifted; treat it as a
+    transcription to re-verify against the source when touched, not a
+    machine-checked fact.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:
