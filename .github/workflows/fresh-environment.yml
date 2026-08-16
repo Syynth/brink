@@ -1,0 +1,205 @@
+name: Fresh Environment (setup-dev.sh, real network)
+
+# The gap this closes (#2639, follow-up from #2591/PR #2628 review):
+# scripts/setup-dev.test.sh drives scripts/setup-dev.sh end to end, but ONLY
+# against PATH-injected stub tools (fake `curl`, `cargo`, `corepack`, `pnpm`
+# binaries — see that file). Its stubs bake in real upstream packaging
+# shapes as fixtures:
+#   - scripts/setup-dev.test.sh:338 fabricates a tarball whose top-level
+#     directory is literally named `wasm-pack-v0.14.0-x86_64-unknown-linux-musl`
+#     — the exact `WP_TARBALL` value scripts/setup-dev.sh:193 constructs from
+#     `WASM_PACK_VERSION` and extracts via `${WP_TMP}/${WP_TARBALL}/wasm-pack`
+#     at scripts/setup-dev.sh:201.
+#   - scripts/setup-dev.test.sh:356-361 fabricates a tarball nested as
+#     `binaryen-version_117/bin/wasm-opt` — the exact two-level shape
+#     scripts/setup-dev.sh:262 assumes via `--strip-components=1` (stripping
+#     only the outer `binaryen-<version>` layer) then
+#     `install ... "${BN_TMP}/bin/wasm-opt"` at scripts/setup-dev.sh:263.
+# Both fixtures are hand-authored to match what setup-dev.sh's extraction
+# code already expects, so the stub harness proves the SCRIPT's logic is
+# internally consistent — it can never prove upstream still packages
+# `WASM_PACK_VERSION`/`BINARYEN_VERSION` releases that way. If a version bump
+# (or an unannounced upstream repackaging at the SAME pinned version) changes
+# either directory shape, the stub test keeps passing while a real fetch
+# would extract into a path that no longer exists, silently degrading to
+# scripts/setup-dev.sh's non-fatal fallback branches (or, for wasm-pack,
+# to a slow from-source `cargo install` — see the "real degrade" step
+# below) — and nothing in CI would notice until a contributor's fresh
+# checkout hit it firsthand.
+#
+# This lane runs the real, unstubbed script against the real network in a
+# container that starts with none of the tools it installs (no rustup, no
+# wasm-pack, no wasm-opt, no cargo-nextest — see the `container:` comment
+# below), so a layout/version drift shows up here first.
+#
+# Schedule: nightly cron + workflow_dispatch, NOT on every PR (see the
+# `on:` block below for why), and NOT added to branch protection's
+# required-checks list — a third-party release-asset outage or packaging
+# change must never block a merge nobody's PR caused. This lane is a
+# once-a-day signal a human (or whoever does periodic repo maintenance)
+# checks in the Actions tab; GitHub also emails/notifies the repo's
+# watchers by default when a scheduled workflow's run fails, so a red run
+# doesn't require anyone to be actively looking. See CLAUDE.md's "Cloud /
+# fresh-environment sessions" for what scripts/setup-dev.sh promises to
+# every contributor and cloud session that runs it first.
+on:
+  schedule:
+    # 03:11 UTC daily — off the hour and offset from the other scheduled
+    # lanes (benchmarks.yml 12:00 Mon, benchmarks-inkjs.yml 18:00 Mon,
+    # demo.yml 00:00 Mon) so this doesn't contend with them for a runner
+    # window; deliberately not a round number so it doesn't land in
+    # whatever pile-up GitHub's own cron minute-zero traffic creates.
+    - cron: '11 3 * * *'
+  # Manual trigger: run this on demand right after bumping
+  # WASM_PACK_VERSION or BINARYEN_VERSION in scripts/setup-dev.sh, to
+  # validate the new pin against the real upstream artifact before that
+  # bump PR merges — without waiting for the next nightly run, and without
+  # making the bump PR itself depend on third-party availability by
+  # running this lane on every push.
+  workflow_dispatch:
+
+# Least privilege: this lane only reads the repo. Grant more per-job if
+# ever needed.
+permissions: {}
+
+# Not a required check (see the header comment above) — never add this
+# workflow's job to branch protection. A third-party outage (GitHub
+# Releases, crates.io, the npm registry) must fail this lane loudly on its
+# own schedule, not block whatever PR happens to be open when it does.
+#
+# One job, single attempt, bounded runtime: this is a nightly signal, not
+# a build users wait on, so cost is a single job's worth of runner minutes
+# per day rather than per-PR.
+jobs:
+  setup-dev-real:
+    name: setup-dev.sh (real network, clean container)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 25
+    # A container that starts with none of the tools scripts/setup-dev.sh
+    # installs (no rustup/cargo, no wasm-pack, no wasm-opt, no
+    # cargo-nextest) — the point of this lane is to exercise the script's
+    # real fetch-and-extract logic, not to confirm tools the runner image
+    # already carries. `node:22-bookworm` (the full image, not `-slim`) is
+    # built on `buildpack-deps:bookworm`, which ships git + curl + a C
+    # build toolchain — i.e. roughly what a contributor's laptop already
+    # has before ever touching this repo. Node itself is also the one
+    # prerequisite scripts/setup-dev.sh explicitly assumes rather than
+    # installs (`corepack not found; it ships with Node.js >= 16.9 —
+    # install Node first`, scripts/setup-dev.sh:437) — and a Node runtime
+    # in the container is what lets `actions/checkout` (a JS action) run
+    # here at all.
+    container:
+      image: node:22-bookworm
+    steps:
+      # Belt-and-suspenders ahead of relying on the base image's package
+      # set: install the exact baseline a fresh contributor machine is
+      # assumed to have (git so actions/checkout can run; curl/ca-certs
+      # for every fetch scripts/setup-dev.sh makes; a C toolchain for
+      # anything cargo needs to compile). Runs before checkout — it needs
+      # no repo content, only the container's own shell.
+      - name: Install baseline OS packages
+        shell: bash
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential pkg-config libssl-dev
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # The real run: no PATH-injected stubs, no fixture tarballs — every
+      # curl/cargo-install/corepack call below hits the real network.
+      # `tee`'d to a log file (not just stdout) so the verification step
+      # after this one can grep it for the specific success/fallback
+      # markers that tell prebuilt-fetch success apart from a masked
+      # degrade (see that step). GitHub Actions' default bash step already
+      # runs with `-eo pipefail`, so a hard failure inside
+      # scripts/setup-dev.sh (e.g. rustup itself failing) fails this step
+      # — `pipefail` is what makes that propagate through the `tee`.
+      - name: Run scripts/setup-dev.sh against the real network
+        shell: bash
+        run: bash scripts/setup-dev.sh 2>&1 | tee /tmp/setup-dev.log
+      # scripts/setup-dev.sh deliberately treats a binaryen/wasm-opt fetch
+      # failure as non-fatal (it's an optional accelerator — wasm-pack
+      # falls back to its own download) and its final "Verifying
+      # toolchain" block only WARNS on a missing tool, never fails the
+      # script (scripts/setup-dev.sh:495-497). Both are the right default
+      # for a contributor's setup run, but they mean the exit code alone
+      # is not this lane's signal: a real upstream layout drift would hit
+      # exactly those soft-fallback branches and the script would still
+      # exit 0. This step re-asserts, as hard failures, the two things
+      # this lane exists to catch — read the PINNED versions from the
+      # script itself (not restated here) so this check can never drift
+      # from what was actually run.
+      - name: Verify the real fetch used the pinned tarball (not a fallback)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          wasm_pack_version="$(grep -m1 '^WASM_PACK_VERSION=' scripts/setup-dev.sh | sed -E 's/^WASM_PACK_VERSION="([^"]+)".*/\1/')"
+          binaryen_version="$(grep -m1 '^BINARYEN_VERSION=' scripts/setup-dev.sh | sed -E 's/^BINARYEN_VERSION="([^"]+)".*/\1/')"
+          echo "Pinned WASM_PACK_VERSION=${wasm_pack_version} BINARYEN_VERSION=${binaryen_version} (read from scripts/setup-dev.sh)"
+
+          fail=0
+
+          # scripts/setup-dev.sh:202 prints this exact prefix only on the
+          # prebuilt-tarball path (WP_TARBALL extraction at line 201
+          # succeeding). If the real tarball's top-level directory name no
+          # longer matches `${WP_TARBALL}` (scripts/setup-dev.sh:193), the
+          # `&&`-chain at scripts/setup-dev.sh:200-201 fails, and the
+          # script silently falls through to the "Prebuilt wasm-pack
+          # unavailable ... building from source" branch instead — a
+          # correct end state (wasm-pack still gets installed) that would
+          # otherwise mask exactly the drift this lane exists to catch.
+          if ! grep -qF "==> Installed prebuilt " /tmp/setup-dev.log; then
+            echo "::error::wasm-pack did not install via the pinned tarball — the real download either failed, or its extracted directory no longer matches WP_TARBALL (\"wasm-pack-${wasm_pack_version}-x86_64-unknown-linux-musl\", scripts/setup-dev.sh:193). Check whether rustwasm/wasm-pack's ${wasm_pack_version} release asset layout changed."
+            fail=1
+          fi
+
+          # scripts/setup-dev.sh:264 prints this exact prefix only when the
+          # binaryen tarball extracted to `bin/wasm-opt` after
+          # --strip-components=1 (scripts/setup-dev.sh:262-263) — i.e. the
+          # real release still nests as `binaryen-<version>/bin/wasm-opt`.
+          # A missing/renamed nesting hits the non-fatal warn branch at
+          # scripts/setup-dev.sh:266 instead, which by design does not fail
+          # the script (wasm-pack would fall back to its own download) —
+          # so this lane must check for it explicitly rather than trust
+          # the script's own exit code.
+          if ! grep -qF "==> Installed wasm-opt version" /tmp/setup-dev.log; then
+            echo "::error::wasm-opt did not install from the pinned binaryen tarball — the real download either failed, or the extracted layout no longer nests as binaryen-${binaryen_version}/bin/wasm-opt (scripts/setup-dev.sh:255-263). Check whether WebAssembly/binaryen's ${binaryen_version} release asset layout changed."
+            fail=1
+          fi
+
+          # Cross-check the installed wasm-pack actually reports the
+          # pinned version — catches the (unlikely but real) case of a
+          # pinned release URL now serving a mismatched binary inside a
+          # correctly-named tarball, which the prefix check above cannot
+          # see.
+          resolved_wasm_pack="$(wasm-pack --version 2>/dev/null | awk '{print $2}')"
+          if [ "${resolved_wasm_pack}" != "${wasm_pack_version#v}" ]; then
+            echo "::error::wasm-pack --version reports '${resolved_wasm_pack}', expected '${wasm_pack_version#v}' (WASM_PACK_VERSION in scripts/setup-dev.sh)"
+            fail=1
+          fi
+
+          # setup-dev.sh's own "Verifying toolchain" block (lines 484-497)
+          # only WARNS on a missing tool, so this lane re-asserts every
+          # tool it installs is actually on PATH as a hard failure.
+          missing=0
+          for tool in rustc cargo rustfmt wasm-pack wasm-opt cargo-nextest pnpm node; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::'${tool}' is not on PATH after scripts/setup-dev.sh completed"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::scripts/setup-dev.sh completed but degraded to a fallback path (or left a tool missing) against the REAL network — see the errors above. scripts/setup-dev.test.sh's stubbed harness cannot catch this because its fixtures are hand-authored to match the script's own extraction assumptions, not upstream reality."
+            exit 1
+          fi
+
+          echo "OK — wasm-pack and wasm-opt both installed via their pinned prebuilt tarballs, matching this script's extraction assumptions."
