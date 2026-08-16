@@ -326,9 +326,22 @@ pub(crate) fn error_json(msg: &str) -> String {
 /// ```text
 /// BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape
 /// ```
+///
+/// ## The enumeration itself is discovered, not trusted (#2577)
+///
+/// [`generated`] still *constructs* each shape by hand — Rust has no runtime
+/// reflection, and this crate has no `inventory`-style registry or derive macro
+/// to enumerate types with, so there is no way to build a payload for a struct
+/// nobody named. What [`every_refusal_struct_is_in_the_fixture`] adds is that
+/// nobody can *omit* one: it scans this crate's own sources for every
+/// `Serialize` struct carrying both an `ok: bool` and an `error:
+/// Option<String>` — the signature of a payload that can refuse — and fails if
+/// one is missing from [`generated`]. Adding a fourth refusal struct is
+/// therefore a red test, not a silent gap.
 #[cfg(test)]
 mod refusal_shape {
     use super::{AutoImportJs, dir_error_json, error_json};
+    use crate::compile::CompileResult;
 
     const FIXTURE: &str = include_str!("../fixtures/refusal-shapes.json");
     const FIXTURE_REL_PATH: &str = "fixtures/refusal-shapes.json";
@@ -357,15 +370,216 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         };
         let auto_import_json =
             serde_json::to_string(&auto_import).expect("AutoImportJs serializes");
+        // Likewise a struct literal — `CompileResult` is the compile channel's
+        // refusal (`{ ok: false, error }` out of `compile_project`), discovered
+        // by `every_refusal_struct_is_in_the_fixture` rather than remembered.
+        let compile = CompileResult {
+            ok: false,
+            story_bytes: None,
+            warnings: Vec::new(),
+            error: Some(REFUSAL_MSG.to_owned()),
+        };
+        let compile_json = serde_json::to_string(&compile).expect("CompileResult serializes");
         serde_json::json!({
             "$comment": COMMENT,
             "error": REFUSAL_MSG,
             "shapes": {
                 "AutoImportJs": parse(&auto_import_json),
+                "CompileResult": parse(&compile_json),
                 "DirMoveResultJs": parse(&dir_error_json(REFUSAL_MSG)),
                 "StructuralResultJs": parse(&error_json(REFUSAL_MSG)),
             },
         })
+    }
+
+    // ── Discovery: which structs can refuse at all (#2577) ───────────
+
+    /// Every `.rs` file under this crate's `src/`, sorted for determinism.
+    fn crate_sources() -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out.sort();
+        out
+    }
+
+    /// `struct Name {` (with any visibility) → `Name`.
+    fn struct_name(line: &str) -> Option<&str> {
+        let rest = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub "))
+            .unwrap_or(line);
+        let rest = rest.strip_prefix("struct ")?;
+        let name = rest.strip_suffix(" {")?;
+        name.chars()
+            .all(|c| c.is_alphanumeric() || c == '_')
+            .then_some(name)
+    }
+
+    /// Does `body` declare a field `name` of exactly type `ty`?
+    fn has_field(body: &str, name: &str, ty: &str) -> bool {
+        body.lines().any(|line| {
+            let line = line.trim();
+            let line = line
+                .strip_prefix("pub(crate) ")
+                .or_else(|| line.strip_prefix("pub "))
+                .unwrap_or(line);
+            line == format!("{name}: {ty},")
+        })
+    }
+
+    /// The names of every `Serialize` struct in `text` that carries BOTH an
+    /// `ok: bool` and an `error: Option<String>` — i.e. a wire payload that can
+    /// express a refusal. Line-oriented rather than a real parser (this crate
+    /// has no `syn` dependency and does not want one for a test): a `#[derive]`
+    /// attribute mentioning `Serialize` immediately above a `struct X {` line,
+    /// whose body runs to the first `}` at the struct's own indentation. Every
+    /// struct in this crate is written that way; a hand-implemented `Serialize`
+    /// or a macro-generated struct would slip past, which is why the guard is
+    /// documented as "no new struct is silently omitted", not "no shape can
+    /// possibly exist elsewhere".
+    fn refusal_structs_in(text: &str) -> Vec<String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut found = Vec::new();
+        let mut derives_serialize = false;
+        let mut i = 0;
+        while i < lines.len() {
+            let raw = lines[i];
+            let line = raw.trim_start();
+            if line.starts_with("#[derive(") {
+                derives_serialize = line.contains("Serialize");
+            } else if let Some(name) = struct_name(line) {
+                if derives_serialize {
+                    let indent = &raw[..raw.len() - line.len()];
+                    let close = format!("{indent}}}");
+                    let mut body = String::new();
+                    let mut j = i + 1;
+                    while j < lines.len() && lines[j] != close {
+                        body.push_str(lines[j]);
+                        body.push('\n');
+                        j += 1;
+                    }
+                    if has_field(&body, "ok", "bool") && has_field(&body, "error", "Option<String>")
+                    {
+                        found.push(name.to_owned());
+                    }
+                    i = j;
+                }
+                derives_serialize = false;
+            } else if !line.is_empty() && !line.starts_with("//") && !line.starts_with('#') {
+                // Any other code between the derive and a struct ends its reach.
+                derives_serialize = false;
+            }
+            i += 1;
+        }
+        found
+    }
+
+    /// The guard the hand-written enumeration in [`generated`] needed: a NEW
+    /// refusal-producing struct anywhere in this crate turns this red instead
+    /// of shipping with every gate green and no mock counterpart (#2577).
+    #[test]
+    fn every_refusal_struct_is_in_the_fixture() {
+        let mut discovered: Vec<String> = crate_sources()
+            .iter()
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .flat_map(|text| refusal_structs_in(&text))
+            .collect();
+        discovered.sort();
+        discovered.dedup();
+
+        assert!(
+            discovered.len() >= 3,
+            "the source scan found {} refusal-producing struct(s) — it has stopped \
+             seeing this crate's payloads, so it can no longer catch a new one. \
+             Check `refusal_structs_in`'s assumptions against the current source: {discovered:?}",
+            discovered.len()
+        );
+
+        let generated = generated();
+        let mut enumerated: Vec<String> = generated["shapes"]
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        enumerated.sort();
+
+        assert!(
+            discovered == enumerated,
+            "the refusal-shape fixture no longer covers every refusal-producing struct \
+             in this crate.\n\
+             A `Serialize` struct with both `ok: bool` and `error: Option<String>` can \
+             refuse, so its shape must be pinned here AND mirrored by the studio mock \
+             (`packages/brink-studio/src/__mocks__/brink-web.ts`) — otherwise the studio \
+             suite is blind to bugs living in the fields it omits (#2543/#2568/#2577).\n\
+             Add it to `generated()`, regenerate with \
+             `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`, \
+             then update the mock and \
+             `packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts`.\n\
+             found in source: {discovered:?}\n\
+             enumerated here: {enumerated:?}"
+        );
+    }
+
+    /// The scanner is the load-bearing half of the guard above, so it is
+    /// exercised on inputs it must accept and reject rather than only on the
+    /// live tree (where a silently-broken scanner would still find the three
+    /// structs that happen to be there).
+    #[test]
+    fn the_scanner_keys_on_serialize_plus_ok_plus_error() {
+        let accepted = "#[derive(Serialize)]\n\
+             pub(crate) struct Refuses {\n\
+             \x20   pub(crate) ok: bool,\n\
+             \x20   #[serde(skip_serializing_if = \"Option::is_none\")]\n\
+             \x20   pub(crate) error: Option<String>,\n\
+             }\n";
+        assert!(
+            refusal_structs_in(accepted) == vec!["Refuses".to_owned()],
+            "{:?}",
+            refusal_structs_in(accepted)
+        );
+
+        // No `Serialize` — an internal type, not a wire payload.
+        let no_derive = accepted.replace("#[derive(Serialize)]", "#[derive(Debug)]");
+        assert!(refusal_structs_in(&no_derive).is_empty());
+
+        // `ok` without `error` is a report, not a refusal channel.
+        let no_error = "#[derive(Serialize)]\n\
+             struct Reports {\n\
+             \x20   ok: bool,\n\
+             }\n";
+        assert!(refusal_structs_in(no_error).is_empty());
+
+        // A struct with an unrelated `error` field but no `ok` flag.
+        let no_ok = "#[derive(Serialize)]\n\
+             struct Diagnostic {\n\
+             \x20   error: Option<String>,\n\
+             }\n";
+        assert!(refusal_structs_in(no_ok).is_empty());
+
+        // The struct's own body ends at its own indentation — a nested struct
+        // literal inside a later fn must not be swallowed into it.
+        let two = format!("{accepted}\n{}", accepted.replace("Refuses", "AlsoRefuses"));
+        let mut names = refusal_structs_in(&two);
+        names.sort();
+        assert!(
+            names == vec!["AlsoRefuses".to_owned(), "Refuses".to_owned()],
+            "{names:?}"
+        );
     }
 
     #[test]

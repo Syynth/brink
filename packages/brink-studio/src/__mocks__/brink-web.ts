@@ -83,6 +83,94 @@ function parseOutline(source: string): MockSymbol[] {
   return symbols;
 }
 
+// ── Structural region model (#2577) ──────────────────────────────────
+//
+// The seven `dispatchSymbolAction` ops (`reorder_stitch`, `reorder_knot`,
+// `reorder_stitches`, `reorder_knots`, `move_stitch`, `promote_stitch`,
+// `demote_knot`) all do the same thing in the real Rust op
+// (`brink_ide::structural_move`): slice the file into knot/stitch *ownership
+// regions*, rearrange whole regions, requalify the references that the move
+// renamed, and reassemble. These helpers give the mock the same shape of
+// model over `parseOutline`'s ranges, so each op below is a rearrangement of
+// regions rather than an ad-hoc string edit per op.
+
+/** One knot's text split into the regions a structural op moves: `head` is the
+ *  knot header plus its own body up to the first stitch; `stitches` are the
+ *  per-stitch ownership regions in document order. */
+interface KnotPlan {
+  name: string;
+  head: string;
+  stitches: { name: string; text: string }[];
+}
+
+/** Slice `source` into the region plan the structural ops rearrange. */
+function planKnots(source: string, knots: MockSymbol[]): KnotPlan[] {
+  return knots.map((k) => ({
+    name: k.name,
+    head: source.slice(k.full_start, k.children[0]?.full_start ?? k.full_end),
+    stitches: k.children.map((s) => ({
+      name: s.name,
+      text: source.slice(s.full_start, s.full_end),
+    })),
+  }));
+}
+
+/** Reassemble a plan into full source, preserving the pre-first-knot preamble
+ *  (the real ops preserve it too — a file's leading `INCLUDE`s and `VAR`s must
+ *  not move when knots are reordered). */
+function renderKnots(source: string, knots: MockSymbol[], plan: KnotPlan[]): string {
+  if (knots.length === 0) return source;
+  const preamble = source.slice(0, knots[0]!.full_start);
+  return preamble + plan.map((k) => k.head + k.stitches.map((s) => s.text).join("")).join("");
+}
+
+/**
+ * Resolve `order` (a list of names) to indices into `current`, or null when it
+ * is not a permutation of it — mirroring `structural_move::resolve_permutation`,
+ * whose three rejections (length mismatch, unknown name, repeated name) all
+ * surface as the one `invalid reorder` error.
+ */
+function resolvePermutation(current: string[], order: readonly string[]): number[] | null {
+  if (current.length !== order.length) return null;
+  const used = new Set<number>();
+  const out: number[] = [];
+  for (const name of order) {
+    const i = current.indexOf(name);
+    if (i < 0 || used.has(i)) return null;
+    used.add(i);
+    out.push(i);
+  }
+  return out;
+}
+
+/**
+ * Rewrite every `-> old` / `<- old` reference in `src` to `next`. The mock's
+ * stand-in for `structural_move::compute_reference_edits`, which requalifies a
+ * moved symbol's references (`src.stitch` → `dest.stitch` on a move, `knot.x` →
+ * `x` on a promote, `knot` → `dest.knot` on a demote). The real op resolves
+ * references through the analyzer; this matches the divert/thread syntax the
+ * studio fixtures use. The negative lookahead keeps `-> knot.stitch` from
+ * matching a rewrite of the bare `knot`.
+ */
+function requalifyReferences(src: string, old: string, next: string): string {
+  const esc = old.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return src.replace(new RegExp(`((?:->|<-)\\s*)${esc}(?![\\w.])`, "g"), `$1${next}`);
+}
+
+/** `= name` → `=== name ===` on a promoted stitch's first header line
+ *  (`structural_move::rewrite_stitch_to_knot_header`). */
+function stitchHeaderToKnot(text: string, name: string): string {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`^(\\s*)=\\s*${esc}([^\\n]*)`), `$1=== ${name} ===$2`);
+}
+
+/** `=== name ===` → `= name` on a demoted knot's first header line
+ *  (`structural_move::rewrite_knot_to_stitch_header`). */
+function knotHeaderToStitch(text: string, name: string): string {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`^(\\s*)={2,3}\\s*${esc}\\s*={0,3}([^\\n]*)`), `$1= ${name}$2`);
+}
+
 interface MockDoc {
   path: string;
   viewStart: number | null;
@@ -422,6 +510,48 @@ export class EditorSession {
   }
 
   /**
+   * A refused directory move (`DirMoveResultJs`, the third Rust refusal struct
+   * — `crates/brink-web/src/editor_refactor.rs::dir_error_json`). Multi-file,
+   * so it carries `moved_files` instead of `path`/`new_source`, and NOTHING is
+   * `skip_serializing_if`: a refusal ships the full `moved_files` /
+   * `cross_file_edits` / `introduced_diagnostics` / `safe` set beside its
+   * `ok: false`, exactly like {@link structuralRefusal}'s (#2577).
+   */
+  private static dirMoveRefusal(error: string): string {
+    return JSON.stringify({
+      ok: false,
+      moved_files: [],
+      cross_file_edits: [],
+      introduced_diagnostics: [],
+      safe: true,
+      error,
+    });
+  }
+
+  /**
+   * A successful structural op, in the shape Rust's `structural_result_json` /
+   * `move_result_json_simple` emit. `introduced_diagnostics`/`safe` are the
+   * breakage gate: the mock has no analyzer, so — like every other structural
+   * mock in this file — it reports a computed op as safe with no introduced
+   * diagnostics, and the real gate math stays covered by the Rust tests in
+   * brink-ide. Refusals go through {@link structuralRefusal}, never here.
+   */
+  private static structuralOk(
+    path: string,
+    newSource: string,
+    crossFileEdits: { path: string; new_source: string }[] = [],
+  ): string {
+    return JSON.stringify({
+      ok: true,
+      path,
+      new_source: newSource,
+      cross_file_edits: crossFileEdits,
+      introduced_diagnostics: [],
+      safe: true,
+    });
+  }
+
+  /**
    * A refused auto-import (`AutoImportJs`, a *different* Rust struct from
    * {@link structuralRefusal}'s — no `safe`/`cross_file_edits` gate, and
    * `edit` is the only skipped field).
@@ -534,6 +664,491 @@ export class EditorSession {
       }
     }
     return EditorSession.structuralRefusal("cannot rename this symbol");
+  }
+
+  // ── Structural symbol ops (#2577) ────────────────────────────────
+  //
+  // The seven ops `dispatchSymbolAction` (packages/studio-ui) calls on a real
+  // session. Before #2577 the mock had NO method for any of them, so the
+  // studio suite could not exercise the Binder's reorder / move / promote /
+  // demote menu at all — not badly, at all: the call threw
+  // `session.reorderStitch is not a function`.
+  //
+  // Each op below mirrors its Rust counterpart in
+  // `crates/brink-web/src/editor/refactor.rs` → `brink_ide::structural_move`,
+  // read off that source rather than off what a test wanted:
+  //
+  //   - the SAME refusal vocabulary (`MoveError`'s `Display` strings) in the
+  //     SAME order the real op checks them — a mock that refuses for a
+  //     different reason than production is a new lie, not a smaller one;
+  //   - a boundary reorder (first stitch "up") is NOT a refusal: the real op
+  //     returns `Ok(source)` unchanged, so the mock answers a successful,
+  //     unchanged `StructuralResult` too;
+  //   - refusals go through {@link structuralRefusal} so they carry the full
+  //     `safe`/`cross_file_edits`/`introduced_diagnostics` payload production
+  //     ships (#2543/#2568).
+  //
+  // What the mock does NOT model, and must not be read as: the breakage gate.
+  // The real move / promote / demote run `gated_move_json`, which re-analyzes
+  // and can come back `safe: false`. The mock has no analyzer, so a computed
+  // op is always `safe: true` — same simplification `rename_file` and
+  // `extract_to_knot` already document above.
+
+  /** Reorder a stitch within its knot. `direction`: >= 0 = down, < 0 = up. */
+  reorder_stitch(path: string, knot: string, stitch: string, direction: number): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    const k = knots.find((s) => s.name === knot);
+    if (!k) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const si = k.children.findIndex((s) => s.name === stitch);
+    if (si < 0) {
+      return EditorSession.structuralRefusal(`stitch '${stitch}' not found in knot`);
+    }
+    const target = direction >= 0 ? si + 1 : si - 1;
+    // At the boundary the real op returns the source unchanged, not an error.
+    if (target < 0 || target >= k.children.length) {
+      return EditorSession.structuralOk(path, source);
+    }
+    const plan = planKnots(source, knots);
+    const stitches = plan.find((p) => p.name === knot)!.stitches;
+    [stitches[si], stitches[target]] = [stitches[target]!, stitches[si]!];
+    return EditorSession.structuralOk(path, renderKnots(source, knots, plan));
+  }
+
+  /** Reorder a knot within the top-level knot list. `direction`: >= 0 = down. */
+  reorder_knot(path: string, knot: string, direction: number): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    const ki = knots.findIndex((s) => s.name === knot);
+    if (ki < 0) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const target = direction >= 0 ? ki + 1 : ki - 1;
+    if (target < 0 || target >= knots.length) {
+      return EditorSession.structuralOk(path, source);
+    }
+    const plan = planKnots(source, knots);
+    [plan[ki], plan[target]] = [plan[target]!, plan[ki]!];
+    return EditorSession.structuralOk(path, renderKnots(source, knots, plan));
+  }
+
+  /** Reorder every stitch in `knot` to match `order` (a permutation of its
+   *  stitch names) — the drag-and-drop / multi-select entry point. */
+  reorder_stitches(path: string, knot: string, order: string[]): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    const k = knots.find((s) => s.name === knot);
+    if (!k) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const indices = resolvePermutation(
+      k.children.map((s) => s.name),
+      order,
+    );
+    if (!indices) {
+      return EditorSession.structuralRefusal(
+        "invalid reorder: list is not a permutation of the existing names",
+      );
+    }
+    const plan = planKnots(source, knots);
+    const entry = plan.find((p) => p.name === knot)!;
+    entry.stitches = indices.map((i) => entry.stitches[i]!);
+    return EditorSession.structuralOk(path, renderKnots(source, knots, plan));
+  }
+
+  /** Reorder every top-level knot to match `order` (a permutation of the knot
+   *  names). */
+  reorder_knots(path: string, order: string[]): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    if (knots.length === 0) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const indices = resolvePermutation(
+      knots.map((s) => s.name),
+      order,
+    );
+    if (!indices) {
+      return EditorSession.structuralRefusal(
+        "invalid reorder: list is not a permutation of the existing names",
+      );
+    }
+    const plan = planKnots(source, knots);
+    return EditorSession.structuralOk(
+      path,
+      renderKnots(
+        source,
+        knots,
+        indices.map((i) => plan[i]!),
+      ),
+    );
+  }
+
+  /** Move a stitch from one knot to another, requalifying `src.stitch` →
+   *  `dest.stitch` here and in every other file. */
+  move_stitch(path: string, srcKnot: string, stitch: string, destKnot: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    const src = knots.find((s) => s.name === srcKnot);
+    if (!src) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const dest = knots.find((s) => s.name === destKnot);
+    if (!dest) {
+      return EditorSession.structuralRefusal("destination knot not found");
+    }
+    // The real op checks the destination collision BEFORE resolving the source
+    // stitch, so a move onto an occupied name reports the collision even when
+    // the source stitch is also missing. Keep the order.
+    if (dest.children.some((s) => s.name === stitch)) {
+      return EditorSession.structuralRefusal(
+        `name collision: '${stitch}' already exists in ${destKnot}`,
+      );
+    }
+    const si = src.children.findIndex((s) => s.name === stitch);
+    if (si < 0) {
+      return EditorSession.structuralRefusal(`stitch '${stitch}' not found in knot`);
+    }
+    const plan = planKnots(source, knots);
+    const [moved] = plan.find((p) => p.name === srcKnot)!.stitches.splice(si, 1);
+    plan.find((p) => p.name === destKnot)!.stitches.push(moved!);
+    const rendered = renderKnots(source, knots, plan);
+    const oldQual = `${srcKnot}.${stitch}`;
+    const newQual = `${destKnot}.${stitch}`;
+    return EditorSession.structuralOk(
+      path,
+      requalifyReferences(rendered, oldQual, newQual),
+      this.requalifyOtherFiles(path, oldQual, newQual),
+    );
+  }
+
+  /** Promote a stitch to a top-level knot, inserted immediately after its
+   *  former parent (the position the real op uses) and requalifying
+   *  `knot.stitch` → `stitch`. */
+  promote_stitch(path: string, knot: string, stitch: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    // Checked first by the real op, before the parent knot is resolved.
+    if (knots.some((s) => s.name === stitch)) {
+      return EditorSession.structuralRefusal(
+        `name collision: '${stitch}' already exists in top-level knots`,
+      );
+    }
+    const ki = knots.findIndex((s) => s.name === knot);
+    if (ki < 0) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const si = knots[ki]!.children.findIndex((s) => s.name === stitch);
+    if (si < 0) {
+      return EditorSession.structuralRefusal(`stitch '${stitch}' not found in knot`);
+    }
+    const plan = planKnots(source, knots);
+    const [moved] = plan[ki]!.stitches.splice(si, 1);
+    let promoted = stitchHeaderToKnot(moved!.text, stitch);
+    if (!promoted.endsWith("\n")) promoted += "\n";
+    plan.splice(ki + 1, 0, { name: stitch, head: promoted, stitches: [] });
+    const rendered = renderKnots(source, knots, plan);
+    const oldQual = `${knot}.${stitch}`;
+    return EditorSession.structuralOk(
+      path,
+      requalifyReferences(rendered, oldQual, stitch),
+      this.requalifyOtherFiles(path, oldQual, stitch),
+    );
+  }
+
+  /** Demote a top-level knot into another knot as its last stitch,
+   *  requalifying `knot` → `dest.knot`. */
+  demote_knot(path: string, knot: string, destKnot: string): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    const knots = parseOutline(source);
+    const ki = knots.findIndex((s) => s.name === knot);
+    if (ki < 0) {
+      return EditorSession.structuralRefusal("source knot not found");
+    }
+    const dest = knots.find((s) => s.name === destKnot);
+    if (!dest) {
+      return EditorSession.structuralRefusal("destination knot not found");
+    }
+    if (knots[ki]!.children.length > 0) {
+      return EditorSession.structuralRefusal(
+        "illegal nesting: knot has sub-stitches and cannot be demoted",
+      );
+    }
+    if (dest.children.some((s) => s.name === knot)) {
+      return EditorSession.structuralRefusal(
+        `name collision: '${knot}' already exists in ${destKnot}`,
+      );
+    }
+    const plan = planKnots(source, knots);
+    const [removed] = plan.splice(ki, 1);
+    let demoted = knotHeaderToStitch(removed!.head, knot);
+    if (!demoted.endsWith("\n")) demoted += "\n";
+    plan.find((p) => p.name === destKnot)!.stitches.push({ name: knot, text: demoted });
+    const rendered = renderKnots(source, knots, plan);
+    const newQual = `${destKnot}.${knot}`;
+    return EditorSession.structuralOk(
+      path,
+      requalifyReferences(rendered, knot, newQual),
+      this.requalifyOtherFiles(path, knot, newQual),
+    );
+  }
+
+  /** Every OTHER file's requalification, in `cross_file_edits` shape. */
+  private requalifyOtherFiles(
+    path: string,
+    old: string,
+    next: string,
+  ): { path: string; new_source: string }[] {
+    const edits: { path: string; new_source: string }[] = [];
+    for (const [p, src] of this.files) {
+      if (p === path) continue;
+      const rewritten = requalifyReferences(src, old, next);
+      if (rewritten !== src) edits.push({ path: p, new_source: rewritten });
+    }
+    return edits;
+  }
+
+  /**
+   * Mock of the real `rename_dir` op (#314): relocate every file under
+   * `oldPrefix` to `newPrefix` and re-point the `INCLUDE`s that named them.
+   *
+   * Answers `DirMoveResultJs` — the multi-file payload, NOT `StructuralResult`:
+   * `moved_files` (each `old_path`/`new_path`/`new_source`) instead of a single
+   * `path`/`new_source`, plus the shared `cross_file_edits`/`safe`/
+   * `introduced_diagnostics` gate. Both refusals use the real op's own wording
+   * (`DirRenameError`).
+   *
+   * Simplifications, all deliberate: a moved file's own source travels verbatim
+   * (the real op also rewrites the moved file's outbound relative includes —
+   * same simplification `rename_file` above already makes), and inbound rewrites
+   * are a `oldPrefix/` → `newPrefix/` substitution on `INCLUDE` lines in files
+   * outside the folder. Note the real op has NO read-only fence here (unlike
+   * `rename_file`), so the mock has none either.
+   */
+  rename_dir(oldPrefixRaw: string, newPrefixRaw: string): string {
+    // The real op trims trailing slashes off both prefixes before doing
+    // anything else (`brink_ide::dir_rename::rename_dir`,
+    // crates/internal/brink-ide/src/dir_rename.rs:123-124) — without this,
+    // `renameDir("chapters/", "acts/")` refuses here where production
+    // succeeds, because `startsWith("chapters//")` never matches.
+    const oldPrefix = oldPrefixRaw.replace(/\/+$/, "");
+    const newPrefix = newPrefixRaw.replace(/\/+$/, "");
+    const moved = [...this.files.keys()].filter((p) => p.startsWith(`${oldPrefix}/`)).sort();
+    if (moved.length === 0) {
+      return EditorSession.dirMoveRefusal(`no files found under directory '${oldPrefix}'`);
+    }
+    const remap = (p: string): string => {
+      const rest = p.slice(oldPrefix.length + 1);
+      return newPrefix === "" ? rest : `${newPrefix}/${rest}`;
+    };
+    const movedSet = new Set(moved);
+    for (const old of moved) {
+      const dest = remap(old);
+      if (this.files.has(dest) && !movedSet.has(dest)) {
+        return EditorSession.dirMoveRefusal(`a file already exists at '${dest}'`);
+      }
+    }
+    const movedFiles = moved.map((old) => ({
+      old_path: old,
+      new_path: remap(old),
+      new_source: this.files.get(old)!,
+    }));
+    const includeRe = new RegExp(
+      `(INCLUDE\\s+\\S*?)${oldPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+      "g",
+    );
+    const crossFileEdits: { path: string; new_source: string }[] = [];
+    for (const [p, src] of this.files) {
+      if (movedSet.has(p)) continue;
+      const rewritten = src.replace(includeRe, `$1${newPrefix === "" ? "" : `${newPrefix}/`}`);
+      if (rewritten !== src) crossFileEdits.push({ path: p, new_source: rewritten });
+    }
+    return JSON.stringify({
+      ok: true,
+      moved_files: movedFiles,
+      cross_file_edits: crossFileEdits,
+      introduced_diagnostics: [],
+      safe: true,
+    });
+  }
+
+  /**
+   * Mock of the real `resolve_code_action` (`crates/brink-web/src/editor/
+   * code_actions.rs`): apply the action a `CodeAction.data` payload names and
+   * answer a `StructuralResult`.
+   *
+   * `data_json` is the internally-tagged `CodeActionData` (`action` is the
+   * discriminator). The mock resolves the families it can model over
+   * `parseOutline` — `SortKnots`/`SortStitches` and the four that delegate
+   * straight to the structural ops above (`ReorderStitch`, `MoveStitch`,
+   * `PromoteStitch`, `DemoteKnot`).
+   *
+   * ⚠ Every OTHER known action (`FormatKnot`, `FormatStitch`, `AddImport`, the
+   * `#fn(...)` quick-fixes) is UNMODELLED and answers the real op's own
+   * no-change refusal. That is deliberately the real vocabulary — the real op
+   * emits exactly this string whenever its rewrite is a no-op — but do not read
+   * it as production's answer for those actions.
+   *
+   * The refusal ORDER is production's: an unknown handle / unloaded file
+   * outranks malformed data, and a structural action whose op errors falls
+   * through to `code action produced no change` (the Rust path `.ok()`s the
+   * `MoveError` away before the pure resolver returns `None`), NOT to the
+   * op's own message.
+   *
+   * ⚠ The two malformed-`data_json` refusals (unknown `action` tag, missing
+   * `action` field) are MOCK-ONLY ABBREVIATIONS of what serde_json actually
+   * produces for `CodeActionData`'s internally-tagged enum — real serde
+   * output names every known variant and a source line/column, which these
+   * strings omit. Unlike `code action produced no change` above, these two
+   * do NOT carry vocabulary parity with production; see the inline comments
+   * at each `return` for the real wording.
+   */
+  resolve_code_action(dataJson: string, offset: number): string {
+    return this.resolveCodeActionImpl(this.activePath, dataJson, offset);
+  }
+
+  /** Document-handle variant of {@link resolve_code_action}. */
+  resolve_code_action_doc(doc: number, dataJson: string, offset: number): string {
+    const d = this.docs.get(doc);
+    if (!d) {
+      return EditorSession.structuralRefusal("unknown document handle");
+    }
+    return this.resolveCodeActionImpl(d.path, dataJson, offset);
+  }
+
+  private resolveCodeActionImpl(path: string, dataJson: string, _offset: number): string {
+    const source = this.files.get(path);
+    if (source === undefined) {
+      return EditorSession.structuralRefusal("file not loaded");
+    }
+    let data: { action?: unknown; [key: string]: unknown };
+    try {
+      data = JSON.parse(dataJson) as { action?: unknown };
+    } catch (e) {
+      return EditorSession.structuralRefusal(
+        `invalid code-action data: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const action = typeof data.action === "string" ? data.action : null;
+    if (action === null) {
+      // MOCK-ONLY ABBREVIATION, not serde's wording: production's serde_json
+      // error for a missing internally-tagged discriminator is `missing field
+      // \`action\` at line L column C`. This string is not that string.
+      return EditorSession.structuralRefusal(
+        "invalid code-action data: missing `action` discriminator",
+      );
+    }
+    const noChange = EditorSession.structuralRefusal("code action produced no change");
+    // ⚠ Same class as the two comments above: `asString` silently substitutes
+    // `""` for a missing field instead of refusing. Production's serde deserializes
+    // `CodeActionData` as a whole, so e.g. `{ action: "SortStitches" }` with no
+    // `knot` is a hard `missing field \`knot\`` refusal there; here it falls
+    // through to `code action produced no change` instead. Not modelled, same
+    // as the unmodelled action families above.
+    const asString = (key: string): string => (typeof data[key] === "string" ? data[key] : "");
+    switch (action) {
+      case "SortKnots": {
+        const knots = parseOutline(source);
+        const plan = planKnots(source, knots);
+        const sorted = [...plan].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        const next = renderKnots(source, knots, sorted);
+        return next === source ? noChange : EditorSession.structuralOk(path, next);
+      }
+      case "SortStitches": {
+        const knots = parseOutline(source);
+        const knot = asString("knot");
+        const entry = planKnots(source, knots).map((p) =>
+          p.name === knot
+            ? {
+                ...p,
+                stitches: [...p.stitches].sort((a, b) =>
+                  a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+                ),
+              }
+            : p,
+        );
+        const next = renderKnots(source, knots, entry);
+        return next === source ? noChange : EditorSession.structuralOk(path, next);
+      }
+      case "ReorderStitch":
+        return this.codeActionOrNoChange(
+          this.reorder_stitch(
+            path,
+            asString("knot"),
+            asString("stitch"),
+            data.direction === "Up" ? -1 : 1,
+          ),
+          source,
+        );
+      case "MoveStitch":
+        return this.codeActionOrNoChange(
+          this.move_stitch(path, asString("src_knot"), asString("stitch"), asString("dest_knot")),
+          source,
+        );
+      case "PromoteStitch":
+        return this.codeActionOrNoChange(
+          this.promote_stitch(path, asString("knot"), asString("stitch")),
+          source,
+        );
+      case "DemoteKnot":
+        return this.codeActionOrNoChange(
+          this.demote_knot(path, asString("knot"), asString("dest_knot")),
+          source,
+        );
+      case "FormatKnot":
+      case "FormatStitch":
+      case "AddImport":
+      case "TrimFnLiteralArgs":
+      case "BindFnLiteralRefArgs":
+      case "TrimValueCallArgs":
+        // Known to the real op, unmodelled here — see this method's doc.
+        return noChange;
+      default:
+        // MOCK-ONLY ABBREVIATION, not serde's wording: production's serde_json
+        // error for an internally-tagged enum's unknown variant is `unknown
+        // variant \`${action}\`, expected one of \`SortKnots\`, \`SortStitches\`,
+        // ...\` at line L column C` (verified against serde/serde_json directly,
+        // not read off this switch's tag list). This string omits the
+        // `expected one of` clause and the line/column suffix.
+        return EditorSession.structuralRefusal(
+          `invalid code-action data: unknown variant \`${action}\``,
+        );
+    }
+  }
+
+  /** Fold a delegated structural op's answer into the code-action contract: a
+   *  refusal or an unchanged rewrite both surface as `code action produced no
+   *  change`, because the Rust resolver discards the `MoveError` and then
+   *  reports a no-op rewrite as `None`. */
+  private codeActionOrNoChange(delegated: string, source: string): string {
+    const parsed = JSON.parse(delegated) as { ok: boolean; new_source?: string };
+    if (!parsed.ok || parsed.new_source === source) {
+      return EditorSession.structuralRefusal("code action produced no change");
+    }
+    return delegated;
   }
 
   /**

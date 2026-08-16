@@ -7,6 +7,11 @@
       "error": "REFUSAL",
       "ok": false
     },
+    "CompileResult": {
+      "error": "REFUSAL",
+      "ok": false,
+      "warnings": []
+    },
     "DirMoveResultJs": {
       "cross_file_edits": [],
       "error": "REFUSAL",
