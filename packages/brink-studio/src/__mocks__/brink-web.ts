@@ -437,7 +437,7 @@ export class EditorSession {
     // #2641: interpolated unescaped for three waves, unlike the sibling
     // `rename_symbol`, which has always escaped. See `escapeForRegex`'s doc
     // for why no real symbol name reaches it today and it is fixed anyway.
-    const knotRe = new RegExp(`^\\s*={2,3}\\s*${escapeForRegex(knot)}\\b`);
+    const knotRe = new RegExp(`^\\s*={2,3}\\s*(?:function\\s+)?${escapeForRegex(knot)}\\b`);
     const knotStart = lines.findIndex((l) => knotRe.test(l));
     if (knotStart < 0) {
       // The knot itself is missing — `MoveError::SourceNotFound`, the same
@@ -731,7 +731,7 @@ export class EditorSession {
     {
       const lines = source.split("\n");
       const knotLine = lines.findIndex((l) =>
-        new RegExp(`^\\s*={2,3}\\s*${esc(knot)}\\b`).test(l),
+        new RegExp(`^\\s*={2,3}\\s*(?:function\\s+)?${esc(knot)}\\b`).test(l),
       );
       if (knotLine < 0) {
         return EditorSession.structuralRefusal("symbol not found");
@@ -783,7 +783,7 @@ export class EditorSession {
         out = out.replace(new RegExp(`(^|\\n)(\\s*=\\s*)${esc(oldName)}\\b`, "g"), `$1$2${newName}`);
       } else {
         out = out.replace(
-          new RegExp(`(={2,3}\\s*)${esc(oldName)}(\\s*={0,3})`, "g"),
+          new RegExp(`(={2,3}\\s*(?:function\\s+)?)${esc(oldName)}(\\s*={0,3})`, "g"),
           `$1${newName}$2`,
         );
       }

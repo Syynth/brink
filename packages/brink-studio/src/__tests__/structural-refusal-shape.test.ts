@@ -205,6 +205,16 @@ const MAIN = "=== hello ===\nHi.\n-> END\n";
 const TWO_KNOTS =
   "=== one ===\nFirst.\n= a\nA.\n= b\nB.\n\n=== two ===\nSecond.\n= a\nOther A.\n";
 
+/**
+ * A single `function` knot (`=== function name() ===`, not `=== name ===`).
+ * Its header carries a `function` segment between the `===` fence and the
+ * declared name that a plain knot's never does — the shape the reviewer
+ * flagged as unreached by every fixture above: `MAIN` and `TWO_KNOTS` are
+ * both plain knots, so a guard/rewrite that forgot the `function` segment
+ * still went green against them.
+ */
+const FUNCTION_KNOT = '=== function greet() ===\n~ return "hi"\n';
+
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
   for (const [path, source] of Object.entries(files)) s.update_file(path, source);
@@ -772,6 +782,20 @@ describe("rename_symbol refuses a symbol the file does not declare (#2634)", () 
     ) as { ok: boolean; new_source?: string };
     expect(stitch.ok).toBe(true);
     expect(stitch.new_source).toContain("= bee");
+  });
+
+  it("does not refuse a function knot — the guard must see past the `function` segment", () => {
+    // `KnotHeader::name()` returns the bare name for a function header too
+    // (pinned production-side by `ast/tests/decl.rs::function_knot_header`),
+    // so `brink_ide::rename::declaration_offset` resolves `greet` here just
+    // like it would a plain knot. A guard regex that only matches
+    // `={2,3}\s*<name>` — skipping the `function` keyword in between — would
+    // find no declaration and wrongly answer `symbol not found`.
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": FUNCTION_KNOT }).rename_symbol("main.ink", "greet", "", "hail"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain("=== function hail() ===");
   });
 });
 
