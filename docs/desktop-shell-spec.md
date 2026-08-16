@@ -290,9 +290,13 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   remain open, tracked by #2482. The guard asserts the stub is wired **and**
   that the three
   stopgap vars are gone, so the lane cannot drift back or carry both. Every
-  other caller — `pnpm --filter @brink/desktop build` on a developer
-  machine, where the sidecar really is shipped and run — still builds a
-  real release binary, since the option defaults to off.
+  other caller that runs a *release* build — `pnpm --filter @brink/desktop
+  build` on a developer machine, where the sidecar really is shipped and
+  run — still builds a real release binary, since the option defaults to
+  off. As of #2617 this is no longer the only caller that sets the var at
+  all: `src-tauri/build.rs` now sets it too, for every **debug** build with
+  no sidecar staged, on a developer machine and not only in CI — see
+  "Build-script sidecar auto-staging" below.
   (`desktop_smoke_stubs_the_staged_sidecar`)
 - **This workspace's dependency graph is audited here, and nowhere else**
   (#2470). `ci.yml`'s `cargo-deny` job runs `check` exactly once, at the
@@ -472,6 +476,63 @@ answered by a package test reaching across the fence.
 
 The sidecar seam is also what made the stub option above testable — it was
 added (#2452) as a prerequisite and spent by #2469.
+
+`ensure-cli-sidecar.mjs` gained a third caller in #2617, outside this pair
+and outside CI: `src-tauri/build.rs` itself. See "Build-script sidecar
+auto-staging" below.
+
+### Build-script sidecar auto-staging (#2617)
+
+`tauri_build::build()` resolves `bundle.externalBin` unconditionally — not
+only when a bundle is actually produced — so `binaries/brink-cli-<triple>`
+has to exist on disk before this crate will even `cargo check`. That path is
+gitignored (the triple suffix is host-specific), and until #2617 nothing on
+the local path staged it, so CLAUDE.md's documented gate (`cd
+packages/brink-desktop/src-tauri && cargo test`) failed on every fresh
+checkout and every fresh git worktree before a single test ran.
+
+`src-tauri/build.rs`'s `stage_dev_sidecar_if_missing` now stages a stub when
+the file is missing, by invoking the same script the smoke lane's "Stage
+brink-cli sidecar" step invokes — `ensure-cli-sidecar.mjs` — under the same
+`BRINK_SIDECAR_STUB=1` that step sets. This is a delegation, not a second
+mechanism: the stub payload, host-triple detection and staged filename
+(including #2481's Windows `.exe` refusal) stay owned by that script alone;
+`build.rs` only decides *whether* to invoke it, per
+`build_script_stages_the_dev_sidecar_the_way_ci_does`.
+
+As the "Smoke-lane inputs" bullet above now notes, this makes `build.rs` a
+second caller that sets `BRINK_SIDECAR_STUB=1` outside the smoke lane's own
+step — and, unlike that step, it fires on a plain developer machine, not
+just CI, whenever a debug build finds no sidecar staged.
+
+- **`PROFILE == "debug"` gates all of it.** `cargo tauri build` (release)
+  must keep failing loudly on a missing sidecar: a real bundle ships the
+  real `brink-cli`, and silently substituting a stub there would turn a
+  build-time error into a shipped, `exit 127` one. Release staging stays on
+  its existing path — `beforeBuildCommand` -> `pnpm build` ->
+  `ensure-cli-sidecar.mjs` with no stub variable set.
+- **Three cases degrade to a `cargo:warning=` instead of staging, and
+  `tauri_build::build()` is left to fail on the missing file exactly as
+  before #2617:** the target triple is a Windows one (`ensure-cli-sidecar.mjs`
+  refuses to stage the POSIX stub under a `.exe`-suffixed name, #2481); the
+  build is cross-target (`cargo test/check --target <other>`) — the script
+  stages under `hostTriple()` from `rustc -vV`, not the `TARGET` this
+  function probes, so a mismatched `HOST` would otherwise leave a
+  wrong-triple file staged for no benefit, which is why the check compares
+  `HOST` to `TARGET` before invoking the script rather than after; or `node`
+  is not on `PATH` / the script is not where expected (`Command::new("node")`
+  fails, or `script.is_file()` is false). All three are "could not stage" —
+  a developer who hits one runs the script by hand, per the warning text.
+- **The staged file lands in `src-tauri/binaries/`, not `OUT_DIR`.** This
+  contradicts the usual Cargo build-script guidance (write generated
+  artifacts under `OUT_DIR`, never back into the source tree), and the
+  contradiction is deliberate rather than an oversight:
+  `tauri.conf.json`'s `bundle.externalBin` is a path Tauri resolves
+  relative to the manifest directory, not to `OUT_DIR` — Tauri reads that
+  config independently of this crate's build-script output, so a stub
+  staged under `OUT_DIR` would be invisible to the exact resolution step
+  this function exists to satisfy. `binaries/` is gitignored specifically
+  because it now holds build output despite living in the source tree.
 
 ### CI coverage blind spots
 

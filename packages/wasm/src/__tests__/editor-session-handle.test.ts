@@ -92,7 +92,7 @@ vi.mock("brink-web", () => ({
   diffSnapshots: () => "",
 }));
 
-import { EditorSessionHandle } from "./index";
+import { EditorSessionHandle } from "../index";
 
 describe("EditorSessionHandle wasm-lever passthroughs", () => {
   it("exposes setSemanticTypeCheck (PR #534 review: the lever was unreachable without it)", () => {

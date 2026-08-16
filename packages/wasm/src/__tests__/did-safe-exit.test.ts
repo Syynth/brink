@@ -49,7 +49,7 @@ vi.mock("brink-web", () => ({
   diffSnapshots: () => "",
 }));
 
-import { StoryRunnerHandle, StorySessionHandle } from "./index";
+import { StoryRunnerHandle, StorySessionHandle } from "../index";
 
 describe("didSafeExit wrapper passthrough (#1573)", () => {
   it("StoryRunnerHandle exposes didSafeExit, forwarding to the raw did_safe_exit", () => {

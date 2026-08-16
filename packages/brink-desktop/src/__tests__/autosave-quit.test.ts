@@ -43,7 +43,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // fresh object each call would hand back a fresh `destroy` mock each time
 // too, so `vi.hoisted` keeps one shared spy the test can assert call counts
 // against, the same pattern used elsewhere in this package (e.g.
-// `packages/wasm/src/*.test.ts`).
+// `packages/wasm/src/__tests__/*.test.ts`).
 const { destroyMock } = vi.hoisted(() => ({ destroyMock: vi.fn(() => Promise.resolve()) }));
 
 // ── Tauri IPC surface: never exercised by this scenario, just needs to

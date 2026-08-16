@@ -41,7 +41,7 @@ vi.mock("brink-web", () => ({
   diffSnapshots: () => "",
 }));
 
-import { StorySessionHandle } from "./index";
+import { StorySessionHandle } from "../index";
 
 describe("StorySessionHandle.wakeCheck (FS-3w §10.2 review fix)", () => {
   it("exposes wakeCheck (PR #992 review: the raw WebSession::wake_check was unreachable without it)", () => {
