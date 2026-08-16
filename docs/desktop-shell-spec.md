@@ -425,10 +425,13 @@ automatically.
 
 **Scope, and what is NOT ruled here.** That scan covers
 `packages/brink-desktop/scripts/` only — the directory this section governs.
-The repo root's `scripts/check-wasm-pkg.mjs` (#2479) carries the identical
-idiom but sits outside this package, is covered by Node's built-in test
-runner (`pnpm test:scripts`) rather than Vitest, and is not part of the
-`dev` preflight pair; nothing currently asserts *its* main-guard. Whether
+The repo root's `scripts/check-wasm-pkg.mjs` (#2479) and
+`scripts/guarded-install.mjs` (#2593) carry the identical idiom but sit
+outside this package, are covered by Node's built-in test runner
+(`pnpm test:scripts`) rather than Vitest, and are not part of the
+`dev` preflight pair; nothing currently asserts *their* main-guards
+directly, though `guarded-install.test.mjs` spawns its script as a real
+process, which exercises that script's guard incidentally. Whether
 the invariant should be repo-wide rather than desktop-scoped is a real
 question and is **NOT settled here** — it is raised on #2478 rather than
 answered by a package test reaching across the fence.
