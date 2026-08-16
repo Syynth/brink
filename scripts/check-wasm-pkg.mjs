@@ -28,12 +28,15 @@
 // missing-pkg install instead prints `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND` and
 // **exits 1** in all four — but two of those four still write nothing to
 // `node_modules` at all, which is its own silent-failure shape (a bare
-// "vitest: not found" from the next command, not a wasm-link error). The repo
-// pins pnpm only to a floating major (`corepack prepare pnpm@10` in
-// scripts/setup-dev.sh, `pnpm/action-setup version: 10` in ci.yml), so which
-// of these shapes a given machine sees depends on whatever 10.x resolved
-// there that day — never rely on the exit code, on any pnpm version, to
-// decide whether an install actually happened.
+// "vitest: not found" from the next command, not a wasm-link error). When
+// those shapes were recorded the repo pinned pnpm only to a floating major, so
+// which one a given machine saw depended on whatever 10.x resolved there that
+// day; #2604 has since pinned an exact version (root package.json's
+// `packageManager` field, which scripts/setup-dev.sh and every
+// `pnpm/action-setup` lane now derive from, enforced by
+// scripts/check-pnpm-pin.mjs). That makes the behaviour reproducible, not
+// benign — never rely on the exit code, on any pnpm version, to decide
+// whether an install actually happened.
 //
 // In every version checked, the root project's own `preinstall`/`postinstall`
 // lifecycle scripts are skipped entirely when the link fails (verified
