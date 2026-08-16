@@ -354,8 +354,6 @@ const COMMAND_SUBSTITUTION = /\$\(|(?<!\\)`/;
 /** Leading tokens that wrap a command without being one. */
 const WRAPPER_HEADS = new Set(["if", "elif", "then", "else", "do", "!", "{", "(", "[", "[[", "&&", "||"]);
 
-const SEGMENT_SPLIT = /\|\||&&|[|;]/;
-
 /**
  * Join physical lines into logical ones across a trailing `\`, `|`, `||` or
  * `&&`. A comment line never continues, and never continues a join.
@@ -599,14 +597,16 @@ export function findFunctionNames(text) {
 }
 
 /**
- * Quote-aware segment split, used by CHECK 3 ONLY.
+ * Quote-aware segment split, shared by CHECK 1 and CHECK 3.
  *
- * Check 1 keeps its quote-naive `SEGMENT_SPLIT` deliberately: splitting on a
- * `;` inside a string can only ever produce EXTRA segments and therefore
- * extra reports, and over-reporting an unbounded fetch is the safe direction
- * for a hang guard. Check 3 is the opposite — an inventory that emits a
- * report per prose word ("committing", "retry", "see") is one nobody reads,
- * so it needs to know where strings are.
+ * Both checks split a logical line into segments on `;`, `|` and `&&`
+ * outside quotes and outside `$( … )`. Splitting on one of those inside a
+ * string can only ever produce EXTRA segments and therefore extra reports,
+ * and over-reporting an unbounded fetch is the safe direction for check 1's
+ * hang guard — so quote-awareness there is a refinement, not a requirement.
+ * Check 3 is the opposite — an inventory that emits a report per prose word
+ * ("committing", "retry", "see") is one nobody reads, so it needs to know
+ * where strings are, which is why this splitter exists in the first place.
  *
  * Handles: single and double quotes, backslash escapes, `$( … )` nesting (a
  * `|` inside a substitution does not split the outer line — the substitution
