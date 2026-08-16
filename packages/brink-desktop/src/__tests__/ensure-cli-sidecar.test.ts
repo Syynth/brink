@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   ensureCliSidecar,
+  executableFormatFor,
   hostTriple,
   sidecarPaths,
   STUB_SIDECAR,
@@ -87,6 +88,51 @@ describe("hostTriple", () => {
 
   it("throws when `rustc -vV` carries no host line", () => {
     expect(() => hostTriple(() => "rustc 1.90.0\n")).toThrow("host:");
+  });
+});
+
+// #2687: `assert-real-sidecar.mjs`'s positive identity check needs to know
+// which executable format a triple's loader expects. That rule lives HERE,
+// beside the `.exe`-suffix rule it generalises (#2481), because #2626's
+// review established that triple-derived knowledge about the staged sidecar
+// lives in this module alone.
+describe("executableFormatFor", () => {
+  it("maps the three platforms the desktop shell can bundle for", () => {
+    expect(executableFormatFor("x86_64-unknown-linux-gnu")).toBe("elf");
+    expect(executableFormatFor("aarch64-unknown-linux-musl")).toBe("elf");
+    expect(executableFormatFor("aarch64-apple-darwin")).toBe("macho");
+    expect(executableFormatFor("x86_64-apple-darwin")).toBe("macho");
+    expect(executableFormatFor("x86_64-pc-windows-msvc")).toBe("pe");
+    expect(executableFormatFor("x86_64-pc-windows-gnu")).toBe("pe");
+    expect(executableFormatFor("aarch64-pc-windows-msvc")).toBe("pe");
+  });
+
+  it("covers the mobile targets D3's file-association surface names", () => {
+    expect(executableFormatFor("aarch64-apple-ios")).toBe("macho");
+    expect(executableFormatFor("aarch64-linux-android")).toBe("elf");
+  });
+
+  it("returns null rather than guessing for an unrecognised triple", () => {
+    // Not an oversight: a positive identity check that rejects a REAL
+    // binary on some platform is worse than no check, so "no rule known"
+    // has to be distinguishable from an answer.
+    expect(executableFormatFor("aarch64-unknown-mysteryos")).toBeNull();
+    expect(executableFormatFor("wasm32-unknown-unknown")).toBeNull();
+  });
+
+  it("is the single source of the `.exe` rule sidecarPaths applies", () => {
+    const windows = sidecarPaths({
+      triple: "x86_64-pc-windows-msvc",
+      repoRoot: "/repo",
+      srcTauriDir: "/repo/src-tauri",
+    });
+    const linux = sidecarPaths({
+      triple: "x86_64-unknown-linux-gnu",
+      repoRoot: "/repo",
+      srcTauriDir: "/repo/src-tauri",
+    });
+    expect(windows.destBin.endsWith(".exe")).toBe(executableFormatFor("x86_64-pc-windows-msvc") === "pe");
+    expect(linux.destBin.endsWith(".exe")).toBe(false);
   });
 });
 

@@ -2209,6 +2209,42 @@ mod tests {
              of build.rs"
         );
 
+        // #2687: comparing against STUB_SIDECAR alone is a BLOCKLIST — it
+        // refuses the one placeholder that exists today and passes an
+        // empty, truncated or wrong-architecture file, because
+        // `tauri_build`'s externalBin resolution only tests that the path
+        // exists. The hook must also POSITIVELY identify the staged file as
+        // a native executable for the target.
+        assert!(
+            assert_script.contains("looksLikeNativeExecutable"),
+            "assert-real-sidecar.mjs should positively identify the staged sidecar as a \
+             native executable (ELF/Mach-O/PE magic), not merely differ from STUB_SIDECAR \
+             (#2687) — a blocklist fails open on every placeholder that is not \
+             byte-identical to the one we happen to have"
+        );
+        assert!(
+            assert_script.contains("executableFormatFor"),
+            "assert-real-sidecar.mjs should ask ensure-cli-sidecar.mjs's \
+             `executableFormatFor` which executable format the target triple expects, \
+             rather than deciding that for itself (#2626's single-mechanism rule, #2687)"
+        );
+        assert!(
+            !assert_script.contains("includes(\"windows\")"),
+            "assert-real-sidecar.mjs should not re-derive platform facts from the triple \
+             string — `ensure-cli-sidecar.mjs` owns triple detection and the `.exe`/PE rule \
+             (#2481, #2626); import `executableFormatFor` instead of testing the triple here"
+        );
+        let ensure_script = std::fs::read_to_string(
+            repo_root().join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"),
+        )
+        .expect("ensure-cli-sidecar.mjs should exist");
+        assert!(
+            ensure_script.contains("export function executableFormatFor"),
+            "`executableFormatFor` should be defined in ensure-cli-sidecar.mjs — the one \
+             module #2626's review allows to hold triple-derived knowledge about the \
+             staged sidecar (#2687)"
+        );
+
         // `bundle.active` turning this on is explicitly D3 scope (#2631's
         // own instruction), not this fix's — this assertion exists to keep
         // the two from getting conflated by a later, unrelated edit to this
