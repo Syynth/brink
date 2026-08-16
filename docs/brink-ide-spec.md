@@ -232,7 +232,16 @@ impl EditorSession {
     /// Returns JSON-serialized Vec<SemanticToken>.
     pub fn semantic_tokens(&self) -> String;
 
-    // ... all other IDE queries delegate to self.session
+    /// Enable or disable the machinery/narrative fold-run pass (#479).
+    /// Defaults to `false` (disabled). The pass is CST-dependent and gated
+    /// at session level: hosts implementing prose/logic view modes typically
+    /// enable this at mount time alongside activating the desired fold kinds
+    /// in the editor (`setActiveFoldKinds`). When disabled, folding queries
+    /// return structural folds only, avoiding the per-query CST traversal.
+    pub fn set_fold_runs_enabled(&mut self, enabled: bool);
+
+    // ... other session-level configuration (`set_dialect`, `set_type_policy`, etc.)
+    // ... and IDE queries delegate to self.session
 }
 ```
 
