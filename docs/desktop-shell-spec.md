@@ -582,8 +582,46 @@ legitimately wants `build.rs`'s auto-staged stub and must keep getting it.
   already guards against for `build.rs`, and
   `before_bundle_command_asserts_the_staged_sidecar_is_real` (same file)
   extends that same guard to this script;
-- throws — refusing the bundle — when they match, and is a silent
-  passthrough otherwise.
+- throws — refusing the bundle — when they match;
+- and then, separately, checks **positively** that the staged file begins
+  with the executable magic its target triple's loader requires (#2687),
+  throwing if it does not.
+
+**Why two checks and not one (#2687).** The stub comparison on its own is a
+**blocklist**: it refuses the one placeholder that exists today and passes
+everything else. That fails open, because `tauri_build`'s `externalBin`
+resolution only tests that the path EXISTS — an empty file, a half-finished
+copy, or a binary built for a different platform's loader all bundled clean
+under #2660's version (measured directly against it: a zero-byte file, a
+two-byte truncated ELF, and a Mach-O staged for a linux bundle were all
+passed). Any future placeholder that is not byte-identical to `STUB_SIDECAR`
+would sail through too. The positive check covers the whole "the bundle
+shipped something that is not the CLI" class instead. The stub comparison is
+**kept alongside** it rather than replaced, because it is the only one of the
+two that can say *which* placeholder is staged and what to rebuild; it runs
+first for the specific diagnosis, and the magic check follows for the general
+class.
+
+The triple → format rule is **`executableFormatFor` in
+`ensure-cli-sidecar.mjs`**, not in the hook: `\x7fELF` for the ELF Unixes
+(linux/android/the BSDs/solaris/illumos/fuchsia/redox/haiku), any of the
+eight Mach-O header magics for Apple triples — 32- and 64-bit, both byte
+orders, thin *and* fat/universal, since a macOS release binary may
+legitimately be a universal wrapper — and the `MZ` DOS stub for Windows
+triples. It lives there because it generalises the `.exe`-suffix rule
+`sidecarPaths` already encoded for exactly the same reason (#2481), and
+because #2626's review established that triple-derived knowledge about the
+staged sidecar lives in that module **alone**; `sidecarPaths` and the
+Windows-stub guard now ask `executableFormatFor` rather than testing the
+triple substring themselves, so the rule is stated once.
+
+`executableFormatFor` returns `null` for a triple it has no rule for, and the
+hook then falls back to rejecting only an empty file or an interpreter
+script. That asymmetry is deliberate and load-bearing: **a positive check
+that rejects a REAL binary on an unanticipated platform would be worse than
+the blocklist it replaces**, so "no rule known" must stay distinguishable
+from "judged and rejected" (`looksLikeNativeExecutable` returns `undefined`,
+not `false`, for an unknown format) and must never harden into a guess.
 
 Like the two preflight scripts it joins, it is main-guarded and exports its
 core logic (`assertRealSidecarStaged`), so
@@ -594,24 +632,50 @@ inert-on-import and still-acts-standalone properties, the same shape
 `ensure-cli-sidecar.test.ts` uses for the script it imports `STUB_SIDECAR`
 from.
 
-**Deliberately inert today, not a gap.** Nothing in this repo invokes
-`tauri build` at all today, in CI or in any documented developer command
-(grepped at the time of #2631: only `pnpm --filter @brink/desktop
-dev`/`build` exist, neither of which reaches tauri-cli's bundler) — so the
-hook is unreached, by design. But its firing condition is not simply
-"`bundle.active` flips to `true`": tauri-cli enters its bundling phase (and
-therefore runs this hook) on `!options.no_bundle && (config.bundle.active
-|| options.bundles.is_some())`, so an explicit `tauri build --bundles
+**Deliberately inert by default, not a gap.** No CI lane and no documented
+developer command invokes `tauri build` (grepped at the time of #2631: only
+`pnpm --filter @brink/desktop dev`/`build` exist, neither of which reaches
+tauri-cli's bundler) — so the hook does not fire in the ordinary course of
+things, by design. But its firing condition is not simply "`bundle.active`
+flips to `true`": tauri-cli enters its bundling phase (and therefore runs
+this hook) on `!options.no_bundle && (config.bundle.active ||
+options.bundles.is_some())`, so an explicit `tauri build --bundles
 <target>` / `-b <target>` already fires it **today**, with `bundle.active`
 still `false` — D3 flipping `bundle.active` to `true` only widens which
 invocation reaches it (the *default*, bundle-less `tauri build` starts
-doing so too); it is not the sole door. Neither door is reachable today
-because nothing in this repo invokes `tauri build` in any form.
+doing so too); it is not the sole door. No CI lane or documented command
+invokes either door — but an ad-hoc `--bundles` invocation reaches the hook
+today, as #2687's observation (below) did; that is a narrower claim than
+"unreachable."
 `before_bundle_command_asserts_the_staged_sidecar_is_real` pins that
 `bundle.active` stays `false` here specifically so a later, unrelated PR
 that does flip it does not silently change what this hook's presence means
 without anyone noticing — that assertion should be deleted (not edited)
 once D3 makes it legitimately `true`.
+
+**The firing point is OBSERVED, not inferred (#2687).** Up to and including
+#2660 it rested on Tauri's documented ordering plus a reading of tauri-cli
+2.11.4's source; nothing in-repo invokes `tauri build`, so nobody had watched
+it happen. It has now been watched, three times, by driving a real
+`pnpm tauri build --debug --bundles deb` in a worktree with `bundle.active`
+left at `false`:
+
+| staged at `binaries/brink-cli-<triple>` | observed |
+|---|---|
+| `STUB_SIDECAR` (via `BRINK_SIDECAR_STUB=1`) | `Built application at …` → `Running beforeBundleCommand` → refused, `exit 1`, no bundle produced |
+| an **empty file** — which #2660's blocklist passed | same firing point, refused by the #2687 magic check, `exit 1`, no bundle produced |
+| a real ELF binary | hook logged `carries ELF executable magic — proceeding`, and tauri-bundler went on to produce `Brink Studio_0.1.0_amd64.deb` |
+
+Three things that were previously only argued are now facts on the record:
+the hook runs **after** the crate compiles and **before** tauri-bundler
+touches anything; `--bundles deb` really does reach it with `bundle.active`
+still `false` (confirming tauri-cli's `config.bundle.active ||
+options.bundles.is_some()`); and a refusal genuinely **stops** the bundle
+rather than merely printing. The third row also demonstrates the positive
+check does not false-reject a real native binary at the real firing point.
+No CI lane runs any of this — a `tauri build --debug --bundles deb` lane is
+still the standing follow-up, and this observation does not substitute for
+one, it only removes the doubt about *where* the hook fires.
 
 Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
 checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`
