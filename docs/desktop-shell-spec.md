@@ -318,8 +318,13 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   non-zero for the required root-workspace audit but only warning and
   continuing for the non-blocking `src-tauri` audit below, so the timeout
   itself can never abort setup before the pnpm/toolchain-verification steps
-  that follow. PROVISIONAL — no maintainer ruling establishes the local
-  mirror; it exists so a developer sees what CI sees.
+  that follow — though #2604 gives the pnpm block itself a new hard `exit 1`
+  on a resolved-version/pin mismatch, ahead of `Verifying toolchain`, so the
+  audit's timeout is no longer the only thing that can end setup early; that
+  new abort is a version-pin failure, not an audit outcome, and is reported
+  separately by `scripts/check-pnpm-pin.mjs`. PROVISIONAL — no maintainer
+  ruling establishes the local mirror; it exists so a developer sees what CI
+  sees.
   (`desktop_smoke_audits_the_src_tauri_dependency_graph`)
 
   **STILL REPORTING, NOT BLOCKING — but the licence half is now ruled.**
@@ -374,9 +379,14 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   its four reproduced permutations still write nothing to `node_modules` at
   all — see `scripts/check-wasm-pkg.mjs`'s header and
   `scripts/guarded-install.mjs` (`pnpm install:checked`) for the full
-  account. Either shape means a future reorder — or a new lane adding
-  the install step without the wasm build first — would otherwise
-  re-open #2479 with nothing catching it. The walk enumerates every job in every
+  account, both of which #2604 has since corrected: which shape a machine
+  saw used to depend on whatever 10.x resolved there that day (the repo
+  pinned only the major), and #2604 pins an exact version instead (root
+  `package.json`'s `packageManager` field), which makes the shape
+  reproducible, not harmless — either shape still means a future reorder —
+  or a new lane adding the install step without the wasm build first —
+  would otherwise re-open #2479 with nothing catching it. The walk
+  enumerates every job in every
   workflow file from disk, not a hard-coded list of the four known lanes,
   and separately pins the exact set of `pnpm install`-prefixed lanes found
   today (`ci.yml`'s `frontend` and `e2e`, `desktop-smoke.yml`'s own job,
@@ -390,6 +400,24 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   rejects a silent rename there too.
   (`every_pnpm_install_lane_builds_wasm_first_in_the_same_job`,
   `book_job_install_is_a_plain_npm_install_not_a_pnpm_lane`)
+- **The pnpm version itself is pinned to one exact value, in one place**
+  (#2604, closing the gap the bullet above assumed away). Root
+  `package.json`'s `packageManager` field (`pnpm@10.34.5`) is the single
+  source; `scripts/setup-dev.sh` derives it and verifies what actually
+  resolved, and all five `pnpm/action-setup` workflow steps pass no
+  `version:` input so the action reads the same field — two pins that can
+  disagree was the shape of the original problem, so nothing restates the
+  version a second time. `scripts/check-pnpm-pin.mjs` (wired into `pnpm
+  test:scripts`) is the drift assertion, and it also guards a precondition
+  this change made load-bearing: `actions/checkout` must precede
+  `pnpm/action-setup` in every job, because removing the `version:` input
+  makes each lane depend on the checked-out `package.json`
+  (`checkActionSetupFollowsCheckout`). It further rejects a workflow
+  `version:` input that disagrees with the pin (`checkWorkflowPins`). This
+  is the first guard of this cross-lane-invariant class enforced from a
+  plain Node script rather than from `src-tauri/src/lib.rs`'s Rust
+  workflow-parsing tests above — it needs no Cargo build, so `pnpm
+  test:scripts` catches drift before the Rust gate would.
 
 ### The `dev` preflight pair (#2452, #2468)
 
