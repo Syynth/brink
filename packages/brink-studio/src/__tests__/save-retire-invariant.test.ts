@@ -41,6 +41,12 @@
  * The sweep also asserts that at least one injection was actually declined
  * per path: if every adversarial edit landed harmlessly outside a decision
  * window, the run would prove nothing about the guards.
+ *
+ * This file is itself the incident that motivated #2516: an earlier draft
+ * of `save-path-enrolment.test.ts` imported `SAVE_PATHS` straight from this
+ * file, re-registering every test above under the enrolment suite's name.
+ * `save-paths.ts` is the plain-module fix; the recurrence guard is
+ * `packages/brink-studio/src/__tests__/no-test-file-imports.test.ts`.
  */
 
 import { describe, it, expect } from "vitest";
