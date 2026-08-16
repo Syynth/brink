@@ -237,7 +237,8 @@ impl EditorSession {
     /// at session level: hosts implementing prose/logic view modes typically
     /// enable this at mount time alongside activating the desired fold kinds
     /// in the editor (`setActiveFoldKinds`). When disabled, folding queries
-    /// return structural folds only, avoiding the per-query CST traversal.
+    /// return the always-on structural and block folds only (§Folding),
+    /// avoiding the per-query CST traversal.
     pub fn set_fold_runs_enabled(&mut self, enabled: bool);
 
     // ... other session-level configuration (`set_dialect`, `set_type_policy`, etc.)
