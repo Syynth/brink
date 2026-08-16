@@ -240,7 +240,11 @@ const gateCmds = (b) => gateFor(b).split("&&").map((s) => s.trim()).filter(Boole
 // checked. Probed 2026-08-16 (w169): a live build agent under this exact
 // schema (`minItems: 3`) submitted 2 rows and the harness answered
 //   Output does not match required schema: /gateResults: must NOT have fewer than 3 items
-// — call rejected, result not recorded, agent free to retry. See SKILL.md
+// — call rejected, result not recorded, agent free to retry. `minLength` was
+// probed separately in the same session (a row's `result` of "exit 0", 6 chars
+// against minLength 8) and rejected the same way, by JSON-Pointer path:
+//   Output does not match required schema: /gateResults/0/result: must NOT have fewer than 8 characters
+// so #2612's half is enforced too. See SKILL.md
 // "Harness enforcement of the build schema" for the full record. Note the
 // boundary: `scripts/pump-gate-schema.test.mjs` guards that THIS FILE keeps
 // emitting the constraint; NO in-tree test can detect a future harness that

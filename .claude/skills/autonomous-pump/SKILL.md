@@ -71,14 +71,27 @@ The call was **rejected**, the result was **not** recorded, and the agent was
 free to retry with a complete 3-row array — exactly the behaviour #2645/#2657
 assumed. **`minItems` is enforced.**
 
-**Corroboration (source, secondary to the probe).** The harness constructs the
+**The second probe (`minLength`, #2612's half).** Separately observed, because
+it is a separate claim: the same agent then submitted a complete 3-row array
+whose first row's `result` was `"exit 0"` — 6 characters against
+`minLength: 8` — and nothing else invalid. The harness answered:
+
+```
+Output does not match required schema: /gateResults/0/result: must NOT have fewer than 8 characters
+```
+
+Rejected likewise. **`minLength` is enforced, on nested array items, by
+JSON-Pointer path.** #2612's fix is not decorative either.
+
+**Corroboration (source, secondary to the probes).** The harness constructs the
 `StructuredOutput` tool by compiling the supplied JSON Schema with Ajv
 (`new Ajv({allErrors: true})`, `validateSchema` then `compile`), and its
 `call()` throws `Output does not match required schema: <instancePath>:
-<message>` when the compiled validator rejects the input — matching the message
-above verbatim in shape. (Seen in the installed CLI bundle at
-`@anthropic-ai/claude-code/cli.js`.) Ajv honours the full draft vocabulary, so
-`minLength` is enforced by the same code path as `minItems`.
+<message>` when the compiled validator rejects the input — which is exactly the
+shape of both messages above. (Seen in the installed CLI bundle at
+`@anthropic-ai/claude-code/cli.js`.) That the errors carry Ajv's JSON-Pointer
+`instancePath` and Ajv's own wording is why the two probes generalise: the full
+draft vocabulary is honoured, not a hand-rolled subset.
 
 **What this does and does not establish.** It establishes that a **missing**
 command row is mechanically impossible to submit. It establishes nothing about
@@ -95,7 +108,8 @@ would silently ignore; plus that the build call site passes that schema. It
 **cannot** check the harness's validator: there is nothing to import, and a
 future harness release that stopped honouring `minItems` would go undetected
 in-tree. Re-run the probe if that assumption ever needs re-confirming; the
-recipe is one deliberately-short `gateResults` array.
+recipe is one deliberately-short `gateResults` array, and one row whose
+`result` is under 8 characters.
 
 ## Close the learning loop
 The template now closes it mechanically: a final **Lessons** agent distills the wave's review findings into generalizable, paste-ready house-rule candidates (returned as `lessons`). Feed them into the next wave's `RULES` — with human review, since not every finding generalizes. The pump should get *smarter* each cycle, not repeat the same mistakes (e.g. "use only tokens from tokens.css", "wire the feature into the UI, not just the hook").
