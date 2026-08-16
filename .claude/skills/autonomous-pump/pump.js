@@ -36,15 +36,30 @@ const REPO = "OWNER/REPO";
 // documented all of this and the PROMPTS still said `gh`; the doc is not the
 // part agents obey. Setting this flag rewrites the prompts.
 const CLOUD = true;
-// Gate: build shared deps -> test -> typecheck. CACHE is prepended to every
-// gate invocation so all agents share one build cache (turbo/nx: unchanged
-// packages become cache hits — this is the pump's single biggest speed lever).
+// CACHE is prepended to every gate invocation so all agents share one build
+// cache — the pump's single biggest speed lever.
 // CARGO_INCREMENTAL=0: every build agent works in a FRESH worktree, so the
 // incremental dep-graph cache is written and never read — pure disk write for
 // zero benefit, multiplied by ~5 agents per wave across thousands of builds.
 // (Local human iteration is unaffected; this only applies to agent gates.)
-const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache CARGO_INCREMENTAL=0";
-const GATE = "pnpm install --prefer-offline && pnpm turbo run test typecheck";
+//
+// ⚠ THESE TWO ARE REPO-SPECIFIC AND MUST STAY FILLED IN. They shipped as
+// generic template defaults (`TURBO_CACHE_DIR`, `pnpm turbo run test typecheck`)
+// and nobody noticed for a long time, because BRINK-CONFIG.md's per-item `gate:`
+// overrides masked it: light-lane entries always carry one, so only entries
+// WITHOUT an explicit `gate:` ever reached the default — and those are the
+// heavyweight opus items. This repo has no turbo (no `turbo.json`, no
+// dependency), so `pnpm turbo run test typecheck` exits "Command not found".
+// `gateFor` is used at THREE points — build, merge-train and fix-loop — so the
+// broken default reached all three, and each agent improvised its own
+// substitute. That makes the gate not a floor but a per-agent choice, which is
+// the opposite of what a gate is for. Caught 2026-08-16 when two w166 agents
+// independently reported the command does not exist. Values below are
+// BRINK-CONFIG.md's documented "Rust (default GATE)" and its CACHE prefix; a TS
+// entry still overrides via `gate:` (see BRINK-CONFIG.md "TS entries").
+const CACHE = "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink CARGO_INCREMENTAL=0";
+const GATE =
+  "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots";
 const MILESTONE = null; // optional milestone name for scope reconciliation
 const LEDGER = null; // optional: standing wave-ledger issue number (durable-by-default rule) — brink: 967
 const WAVE_ID = "wN"; // fill per wave when LEDGER is set
