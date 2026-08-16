@@ -222,17 +222,14 @@ export class EditorSession {
     // Session-level read-only fence (issue #2306/#2343): mirrors the real
     // `rename_file`'s refusal for a mounted source path.
     if (this.readOnlyPaths.has(oldPath)) {
-      return JSON.stringify({
-        ok: false,
-        error: "cannot rename: file is part of the read-only library",
-      });
+      return EditorSession.structuralRefusal("cannot rename: file is part of the read-only library");
     }
     const source = this.files.get(oldPath);
     if (source === undefined) {
-      return JSON.stringify({ ok: false, error: "file not loaded" });
+      return EditorSession.structuralRefusal("file not loaded");
     }
     if (oldPath !== newPath && this.files.has(newPath)) {
-      return JSON.stringify({ ok: false, error: `a file already exists at '${newPath}'` });
+      return EditorSession.structuralRefusal(`a file already exists at '${newPath}'`);
     }
     const oldBase = oldPath.split("/").pop()!;
     const newBase = newPath.split("/").pop()!;
@@ -270,7 +267,7 @@ export class EditorSession {
   delete_symbol(path: string, knot: string, stitch: string): string {
     const source = this.files.get(path);
     if (source === undefined) {
-      return JSON.stringify({ ok: false, error: "file not loaded" });
+      return EditorSession.structuralRefusal("file not loaded");
     }
     const name = stitch || knot;
     const lines = source.split("\n");
@@ -279,7 +276,7 @@ export class EditorSession {
       : new RegExp(`^\\s*={2,3}\\s*${name}\\b`);
     const start = lines.findIndex((l) => headerRe.test(l));
     if (start < 0) {
-      return JSON.stringify({ ok: false, error: "symbol not found" });
+      return EditorSession.structuralRefusal("symbol not found");
     }
     // The region runs until the next header at the same-or-shallower level.
     const stopRe = stitch ? /^\s*={1,3}/ : /^\s*={2,3}/;
@@ -358,12 +355,12 @@ export class EditorSession {
   ): string {
     const source = this.files.get(path);
     if (source === undefined) {
-      return JSON.stringify({ ok: false, error: "file not loaded" });
+      return EditorSession.structuralRefusal("file not loaded");
     }
     const lo = Math.min(startOffset, endOffset);
     const hi = Math.max(startOffset, endOffset);
     if (lo === hi) {
-      return JSON.stringify({ ok: false, error: "empty selection: nothing to extract" });
+      return EditorSession.structuralRefusal("empty selection: nothing to extract");
     }
     // Snap to whole lines.
     const selStart = source.lastIndexOf("\n", lo - 1) + 1;
@@ -395,7 +392,7 @@ export class EditorSession {
    * A refused structural op, in the exact shape the real wasm emits (#2543).
    *
    * Rust's `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes
-   * the whole `StructuralResultJs`, and only `path`/`new_source` carry
+   * the whole `StructuralResultJs`, and only `path`/`new_source`/`error` carry
    * `skip_serializing_if` — so a REFUSAL still ships `safe: true` with empty
    * `cross_file_edits`/`introduced_diagnostics` beside its `ok: false`.
    *
@@ -405,6 +402,14 @@ export class EditorSession {
    * rename looked UNSAFE (report shown, nothing committed) while production
    * called it SAFE and committed it. Keep this payload faithful — a mock that
    * understates the contract cannot see a bug that lives in the contract.
+   *
+   * ⚠ EVERY structural refusal in this file must route through here (#2568) —
+   * `rename_file`, `delete_symbol`, `extract_to_knot`/`extract_to_function`,
+   * `rename_symbol`, `rename_symbol_at`. Each site that answers its own object
+   * literal is another latent invisible instance of the #2543 class. Enforced
+   * by `src/__tests__/structural-refusal-shape.test.ts`, which compares every
+   * site against `crates/brink-web/fixtures/refusal-shapes.json` — a fixture
+   * GENERATED from the Rust structs, not hand-copied from them.
    */
   private static structuralRefusal(error: string): string {
     return JSON.stringify({
@@ -414,6 +419,20 @@ export class EditorSession {
       safe: true,
       error,
     });
+  }
+
+  /**
+   * A refused auto-import (`AutoImportJs`, a *different* Rust struct from
+   * {@link structuralRefusal}'s — no `safe`/`cross_file_edits` gate, and
+   * `edit` is the only skipped field).
+   *
+   * These two doc-handle sites already emitted the faithful shape before
+   * #2568; the helper exists so they cannot drift away from it, and so the
+   * shape-parity test has one named seam per Rust struct rather than a set of
+   * ad-hoc literals.
+   */
+  private static autoImportRefusal(error: string): string {
+    return JSON.stringify({ ok: false, already_reachable: false, error });
   }
 
   /**
@@ -739,7 +758,7 @@ export class EditorSession {
   auto_import_include_doc(doc: number, target: string): string {
     const d = this.docs.get(doc);
     if (!d) {
-      return JSON.stringify({ ok: false, already_reachable: false, error: "unknown handle" });
+      return EditorSession.autoImportRefusal("unknown handle");
     }
     const source = this.files.get(d.path) ?? "";
     const base = target.split("/").pop()!;
@@ -765,7 +784,7 @@ export class EditorSession {
   auto_import_apply_include_doc(doc: number, target: string): string {
     const d = this.docs.get(doc);
     if (!d) {
-      return JSON.stringify({ ok: false, already_reachable: false, error: "unknown handle" });
+      return EditorSession.autoImportRefusal("unknown handle");
     }
     const source = this.files.get(d.path) ?? "";
     const base = target.split("/").pop()!;
