@@ -575,8 +575,10 @@ scans every workspace `src/` tree — roots derived from
 the `SAVE_PATHS` enrolment guard (`docs/embedder-api.md`, "Confirm and
 retire in ONE synchronous step") uses, not a hand-typed
 `studio-ui`/`studio-shell`/`ink-editor` list — for every real call site of any
-of the **ten** spellings in the suite's `CALL_PATTERNS`: zero-argument
-`.select()`, `.setSelectionRange(`, a `.selectionStart` write, a
+of the **ten** spellings in the suite's `CALL_PATTERNS`, in every workspace
+`src/` tree except `__tests__`/`dist`/`node_modules`/`.turbo` (so a suite that
+races a seeded field does not have to enrol its own keystroke simulation):
+zero-argument `.select()`, `.setSelectionRange(`, a `.selectionStart` write, a
 `.selectionEnd` write, `execCommand(`, `getSelection()`, `createRange()`,
 `.selectNodeContents(`, `.setBaseAndExtent(` and `.addRange(`. Each one
 requires a

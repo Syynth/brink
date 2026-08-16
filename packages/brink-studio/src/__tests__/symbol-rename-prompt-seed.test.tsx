@@ -185,5 +185,14 @@ describe("SymbolRenamePrompt seeding (#2511)", () => {
     expect(el.value).toBe("barter");
     expect(el.selectionStart).toBe(0);
     expect(el.selectionEnd).toBe("barter".length);
+
+    // B5 (#2580 follow-up): `input.focus()` sits directly above the guarded
+    // `select()` in the same deferred frame and was pinned by nothing —
+    // deleting it left this whole suite green, this test included, while
+    // the rename prompt opened unfocused and the author's first keystroke
+    // went nowhere. `search-view-focus.test.tsx` (A1) and
+    // `inline-name-input-seed.test.ts` (C3) already assert
+    // `document.activeElement`; this was the one sibling suite missing it.
+    expect(document.activeElement).toBe(el);
   });
 });
