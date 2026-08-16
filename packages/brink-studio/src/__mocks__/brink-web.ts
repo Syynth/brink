@@ -1425,7 +1425,10 @@ export class EditorSession {
   auto_import_include_doc(doc: number, target: string): string {
     const d = this.docs.get(doc);
     if (!d) {
-      return EditorSession.autoImportRefusal("unknown handle");
+      // Production's wording verbatim (`crates/brink-web/src/editor/refactor.rs`,
+      // `auto_import_include_doc`); pinned by the driven `messages` map in
+      // `crates/brink-web/fixtures/refusal-shapes.json` (#2603).
+      return EditorSession.autoImportRefusal("unknown document handle");
     }
     const source = this.files.get(d.path) ?? "";
     const base = target.split("/").pop()!;
@@ -1451,7 +1454,10 @@ export class EditorSession {
   auto_import_apply_include_doc(doc: number, target: string): string {
     const d = this.docs.get(doc);
     if (!d) {
-      return EditorSession.autoImportRefusal("unknown handle");
+      // Production's wording verbatim (`crates/brink-web/src/editor/refactor.rs`,
+      // `auto_import_apply_include_doc`); pinned by the driven `messages` map in
+      // `crates/brink-web/fixtures/refusal-shapes.json` (#2603).
+      return EditorSession.autoImportRefusal("unknown document handle");
     }
     const source = this.files.get(d.path) ?? "";
     const base = target.split("/").pop()!;

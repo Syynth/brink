@@ -46,9 +46,15 @@ jobs:
           persist-credentials: false
       # Toolchain (incl. the wasm32-unknown-unknown target) comes from
       # rust-toolchain.toml, honored automatically by rustup.
+      # No `version:` input on purpose (#2604): with it omitted the action reads
+      # root package.json's `packageManager` field, so corepack, this lane and
+      # scripts/setup-dev.sh all resolve ONE exact pnpm version. Pinning only a
+      # major here made which 10.x a runner got ambient, and the same missing
+      # `crates/brink-web/www/pkg` link produced two different failure shapes
+      # across that range (#2479/#2492 exit 0 vs #2593/#2596 exit 1).
+      # `scripts/check-pnpm-pin.mjs` (via `pnpm test:scripts`) fails if a
+      # `version:` input reappears here disagreeing with the pin.
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 10
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
