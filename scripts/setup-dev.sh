@@ -321,12 +321,25 @@ corepack enable
 corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 # Verify what actually resolved. A pin nothing checks is a pin that drifts
-# silently, which is the whole point of #2604.
-resolved_pnpm="$(pnpm --version 2>/dev/null || true)"
+# silently, which is the whole point of #2604. Capture stderr too — a
+# corepack that refused or failed to fetch the pinned version, or a
+# standalone pnpm sitting earlier on PATH than corepack's shim, both report a
+# mismatch here, and the abort must say which one happened, not just that one
+# did.
+resolved_pnpm_stderr="$(mktemp)"
+resolved_pnpm="$(pnpm --version 2>"${resolved_pnpm_stderr}" || true)"
 if [ "${resolved_pnpm}" != "${PNPM_VERSION}" ]; then
   echo "==> ERROR: pnpm resolved to '${resolved_pnpm}' but package.json pins ${PNPM_VERSION}"
+  if [ -s "${resolved_pnpm_stderr}" ]; then
+    echo "==> pnpm --version reported:"
+    sed 's/^/    /' "${resolved_pnpm_stderr}"
+  fi
+  echo "==> Remedy: corepack prepare \"pnpm@${PNPM_VERSION}\" --activate"
+  echo "==> If that doesn't fix it, check for a standalone pnpm earlier on PATH than corepack's shim (\`which -a pnpm\`) — it can shadow the pin."
+  rm -f "${resolved_pnpm_stderr}"
   exit 1
 fi
+rm -f "${resolved_pnpm_stderr}"
 
 echo "==> pnpm ready (${resolved_pnpm})"
 

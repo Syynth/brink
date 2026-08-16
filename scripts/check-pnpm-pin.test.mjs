@@ -13,9 +13,10 @@
 //      silently. This is the "assert the resolved version in one place" the
 //      issue asks for.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { describe, it } from "node:test";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -222,6 +223,92 @@ describe("checkResolvedVersion", () => {
   });
 });
 
+// Planted-drift proof for the "pnpm absent" vs "pnpm ran and failed" conflation
+// this review finding raised: a stub `pnpm` on PATH that exits non-zero must
+// be reported as `failed` (carrying the exit code and stderr), never folded
+// into the same `missing` bucket a genuinely absent binary gets — collapsing
+// them silently discarded the real cause (e.g. a corepack fetch failure) and
+// let checkPnpmPin()/the test above SKIP GREEN instead of failing loud.
+describe("resolvePnpmVersion", () => {
+  const originalPath = process.env.PATH;
+  const stubDirs = [];
+
+  after(() => {
+    process.env.PATH = originalPath;
+    for (const dir of stubDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function withStubOnPath(script, fn) {
+    const dir = mkdtempSync(join(tmpdir(), "check-pnpm-pin-stub-"));
+    stubDirs.push(dir);
+    if (script !== null) {
+      const stubPath = join(dir, "pnpm");
+      writeFileSync(stubPath, script);
+      chmodSync(stubPath, 0o755);
+    }
+    const previous = process.env.PATH;
+    // Restrict PATH to the stub dir only, so a real pnpm elsewhere on this
+    // machine's PATH cannot mask the case under test.
+    process.env.PATH = dir;
+    try {
+      return fn();
+    } finally {
+      process.env.PATH = previous;
+    }
+  }
+
+  it("reports failed — with the real exit code and stderr — for a pnpm that exists but exits non-zero", () => {
+    const result = withStubOnPath(
+      '#!/bin/sh\necho "corepack: cannot fetch pnpm@10.34.5 (offline)" >&2\nexit 1\n',
+      () => resolvePnpmVersion(),
+    );
+    assert.equal(result.status, "failed");
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /cannot fetch pnpm@10\.34\.5 \(offline\)/);
+  });
+
+  it("reports missing only when no pnpm binary exists on PATH at all", () => {
+    const result = withStubOnPath(null, () => resolvePnpmVersion());
+    assert.deepEqual(result, { status: "missing" });
+  });
+
+  it("reports ok with the version for a pnpm that runs cleanly", () => {
+    const result = withStubOnPath('#!/bin/sh\necho "10.34.5"\nexit 0\n', () => resolvePnpmVersion());
+    assert.deepEqual(result, { status: "ok", version: "10.34.5" });
+  });
+});
+
+// Planted-drift proof that checkPnpmPin() surfaces a `failed` resolution as a
+// real problem quoting the captured stderr, rather than the softer "not on
+// PATH" message reserved for a genuinely missing pnpm.
+describe("checkPnpmPin() problem text for a failed (not missing) resolution", () => {
+  it("quotes the stub's stderr and exit code instead of claiming pnpm is absent", () => {
+    const originalPath = process.env.PATH;
+    const dir = mkdtempSync(join(tmpdir(), "check-pnpm-pin-stub-"));
+    const stubPath = join(dir, "pnpm");
+    writeFileSync(stubPath, '#!/bin/sh\necho "corepack: cannot fetch pnpm@10.34.5 (offline)" >&2\nexit 1\n');
+    chmodSync(stubPath, 0o755);
+    process.env.PATH = dir;
+    try {
+      const result = checkPnpmPin({ checkResolved: true });
+      assert.equal(result.ok, false);
+      const problem = result.problems.find((p) => /ran but failed/.test(p));
+      assert.ok(problem, `expected a "ran but failed" problem, got:\n${result.problems.join("\n")}`);
+      assert.match(problem, /exit 1/);
+      assert.match(problem, /cannot fetch pnpm@10\.34\.5 \(offline\)/);
+      assert.ok(
+        !result.problems.some((p) => /is not on PATH/.test(p)),
+        "must not also report the missing-pnpm message when pnpm ran and failed",
+      );
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the real repository", () => {
   const pin = readPin(readFileSync(join(REPO_ROOT, PACKAGE_JSON_PATH), "utf8"));
 
@@ -247,17 +334,22 @@ describe("the real repository", () => {
 
   it("the pnpm actually on PATH is the pinned version", (t) => {
     const resolved = resolvePnpmVersion();
-    if (resolved === null) {
+    if (resolved.status === "missing") {
       t.skip("pnpm is not on PATH in this environment");
       return;
     }
+    assert.equal(
+      resolved.status,
+      "ok",
+      resolved.status === "failed" ? `pnpm on PATH exited ${resolved.code}: ${resolved.stderr}` : "",
+    );
     assert.equal(pin.ok, true, "pin must resolve before the running version can be compared");
-    const result = checkResolvedVersion(resolved, pin.version);
+    const result = checkResolvedVersion(resolved.version, pin.version);
     assert.equal(result.ok, true, result.problems.join("\n"));
   });
 
   it("checkPnpmPin() — the CLI's own entry point — is green end to end", () => {
-    const result = checkPnpmPin({ checkResolved: resolvePnpmVersion() !== null });
+    const result = checkPnpmPin({ checkResolved: resolvePnpmVersion().status !== "missing" });
     assert.equal(result.ok, true, result.problems.join("\n"));
   });
 });

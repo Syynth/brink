@@ -180,6 +180,46 @@ else
   pass "pnpm drift: does not report 'pnpm ready' for a mismatched pnpm"
 fi
 
+# --- Test 4: pnpm drift must name WHAT actually happened, not just THAT a
+# mismatch happened, and must print a remedy (review follow-up on #2604).
+# The old abort discarded `pnpm --version`'s stderr and named no fix at all —
+# planting a stub that fails the way a corepack refusing/failing to fetch the
+# pinned version would (stderr message, empty-string version on stdout) must
+# surface that exact stderr text plus a `corepack prepare` remedy, not a bare
+# "pnpm resolved to ''" with no explanation. ---
+stub_dir="$(mktemp -d)"
+make_stub_bin "${stub_dir}" "src-tauri"
+cat > "${stub_dir}/pnpm" <<'EOF'
+#!/usr/bin/env bash
+echo "corepack: cannot fetch pnpm@10.34.5 (offline)" >&2
+exit 1
+EOF
+chmod +x "${stub_dir}/pnpm"
+out="$(PATH="${stub_dir}:${PATH}" BRINK_SETUP_FULL=1 BRINK_SETUP_AUDIT_TIMEOUT=1 bash "${script}" 2>&1)"
+rc=$?
+rm -rf "${stub_dir}"
+
+if [ "${rc}" -ne 0 ]; then
+  pass "pnpm drift (failed, not silent): script exits non-zero when pnpm --version itself fails (got ${rc})"
+else
+  fail "pnpm drift (failed, not silent): script exited 0 despite pnpm --version failing:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "cannot fetch pnpm@10.34.5 (offline)"; then
+  pass "pnpm drift (failed, not silent): surfaces pnpm --version's own stderr instead of discarding it"
+else
+  fail "pnpm drift (failed, not silent): stub's stderr message missing from output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "corepack prepare \"pnpm@${pinned_pnpm_version}\" --activate"; then
+  pass "pnpm drift (failed, not silent): names the remedy command"
+else
+  fail "pnpm drift (failed, not silent): no remedy command in output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -qi "standalone pnpm"; then
+  pass "pnpm drift (failed, not silent): hints at a standalone pnpm shadowing corepack's shim"
+else
+  fail "pnpm drift (failed, not silent): no shadowing-PATH hint in output:\n${out}"
+fi
+
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} failure(s)" >&2
   exit 1

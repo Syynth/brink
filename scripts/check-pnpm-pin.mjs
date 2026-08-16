@@ -301,11 +301,30 @@ export function readWorkflows(repoRoot = REPO_ROOT) {
     .map((name) => ({ name, text: readFileSync(join(dir, name), "utf8") }));
 }
 
-/** @returns {string | null} the version `pnpm --version` reports, or null if pnpm is absent. */
+/**
+ * Resolve the pnpm on PATH, distinguishing "pnpm isn't there at all" from
+ * "pnpm is there but ran and failed" — collapsing those two into one `null`
+ * discarded a real corepack failure as if pnpm were simply absent (a stub
+ * `pnpm` exiting 1 with "corepack: cannot fetch pnpm@10.34.5 (offline)" on
+ * stderr reported as `missing`, silently losing that message). #2604 makes
+ * this more likely to matter, not less: `packageManager` gives the corepack
+ * shim an exact version it may have to fetch, so "pnpm exists but exits
+ * non-zero" is the expected cold/offline first-run state, not an edge case.
+ *
+ * @returns {{status: "ok", version: string}
+ *   | {status: "missing"}
+ *   | {status: "failed", code: string | number | null, stderr: string}}
+ */
 export function resolvePnpmVersion(cwd = REPO_ROOT) {
   const result = spawnSync("pnpm", ["--version"], { cwd, encoding: "utf8" });
-  if (result.error || result.status !== 0) return null;
-  return result.stdout.trim();
+  if (result.error) {
+    if (result.error.code === "ENOENT") return { status: "missing" };
+    return { status: "failed", code: result.error.code ?? null, stderr: (result.stderr ?? result.error.message ?? "").trim() };
+  }
+  if (result.status !== 0) {
+    return { status: "failed", code: result.status, stderr: (result.stderr ?? "").trim() };
+  }
+  return { status: "ok", version: result.stdout.trim() };
 }
 
 /**
@@ -326,10 +345,15 @@ export function checkPnpmPin({ repoRoot = REPO_ROOT, checkResolved = true } = {}
 
   if (checkResolved) {
     const resolved = resolvePnpmVersion(repoRoot);
-    if (resolved === null) {
+    if (resolved.status === "missing") {
       problems.push("pnpm is not on PATH — cannot verify the resolved version against the pin.");
+    } else if (resolved.status === "failed") {
+      problems.push(
+        `pnpm on PATH ran but failed (exit ${resolved.code}), so the resolved version could not be checked ` +
+          `against the pin: ${resolved.stderr || "(no stderr captured)"}`,
+      );
     } else {
-      problems.push(...checkResolvedVersion(resolved, pin.version).problems);
+      problems.push(...checkResolvedVersion(resolved.version, pin.version).problems);
     }
   }
 
