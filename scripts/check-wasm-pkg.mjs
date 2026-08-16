@@ -17,26 +17,34 @@
 // that test is the CI-time guard against the ordering regressing in the
 // first place.
 //
-// ⚠ `pnpm install --frozen-lockfile` does NOT fail loudly when that
-// ordering is skipped. Confirmed by direct reproduction (worktree with the
-// pkg directory removed, pnpm store already warm from an earlier install):
-// pnpm reports the per-package `file:` link failure —
+// ⚠ `pnpm install --frozen-lockfile`'s exit code is NOT trustworthy for this
+// failure, and that has now been checked on two different pnpm behaviours,
+// not assumed from one. On the pnpm this repo pinned when #2479 was filed,
+// the missing-pkg install reported the per-package `file:` link failure —
 //   ENOENT: no such file or directory, scandir '.../crates/brink-web/www/pkg'
-// — but still **exits 0**, and it skips the root project's own
-// `preinstall`/`postinstall` lifecycle scripts entirely (verified directly:
-// pnpm gates ALL project lifecycle scripts on the whole install completing
-// without a per-package error, so neither hook ever fires in exactly the
-// state this check exists to catch). That rules out wiring this check as a
-// pnpm lifecycle script — it would be dead code in the one case it needs to
-// fire. Run it as an explicit, separate step instead, immediately after
-// `pnpm install --frozen-lockfile` (see `pnpm check:wasm-pkg` and
-// `scripts/setup-dev.sh`'s "Next steps").
+// — but still exited **0**, with `node_modules` left in a half-written state
+// (the link silently unresolved). On pnpm 10.34.5 (#2593's reproduction, four
+// permutations: cold/warm store x node_modules absent/present), the same
+// missing-pkg install instead prints `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND` and
+// **exits 1** in all four — but two of those four still write nothing to
+// `node_modules` at all, which is its own silent-failure shape (a bare
+// "vitest: not found" from the next command, not a wasm-link error). The repo
+// pins pnpm only to a floating major (`corepack prepare pnpm@10` in
+// scripts/setup-dev.sh, `pnpm/action-setup version: 10` in ci.yml), so which
+// of these shapes a given machine sees depends on whatever 10.x resolved
+// there that day — never rely on the exit code, on any pnpm version, to
+// decide whether an install actually happened.
 //
-// (On a genuinely cold pnpm store — nothing ever installed in this
-// environment — the same missing-pkg install DOES exit non-zero; only a
-// warm store hits the silent path. Since a warm store, not a cold one, is
-// the common case for CI/dev-machine/agent-worktree pnpm caches, this check
-// is not a rare-edge-case guard.)
+// In every version checked, the root project's own `preinstall`/`postinstall`
+// lifecycle scripts are skipped entirely when the link fails (verified
+// directly: pnpm gates ALL project lifecycle scripts on the whole install
+// completing without a per-package error, so neither hook ever fires in
+// exactly the state this check exists to catch). That rules out wiring this
+// check as a pnpm lifecycle script — it would be dead code in the one case it
+// needs to fire. `pnpm install:checked` (scripts/guarded-install.mjs) is what
+// wraps this check around the real install instead — see its own header and
+// `scripts/setup-dev.sh`'s "Next steps", which prints that command rather
+// than a bare `pnpm install --frozen-lockfile` for exactly this reason.
 //
 // ⚠ `checkWasmPkg` below only checks the CAUSE — did `wasm-pack build`
 // actually produce output? It does NOT prove `pnpm install` linked that
@@ -170,7 +178,7 @@ export function checkWasmPkg({
       "Build the wasm package, then reinstall:",
       "",
       `    ${BUILD_COMMAND}`,
-      "    pnpm install --frozen-lockfile",
+      "    pnpm install:checked",
       "",
     ].join("\n"),
   );
@@ -225,7 +233,7 @@ export function checkWasmPkgLink({
       "",
       "Reinstall so pnpm re-links against the wasm-pack output:",
       "",
-      "    pnpm install --frozen-lockfile",
+      "    pnpm install:checked",
       "",
     ].join("\n"),
   );
