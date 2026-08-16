@@ -235,9 +235,19 @@ describe("studio alias map", () => {
         .join("\n"),
     );
     const rootModules = readdirSync(packageRoot)
-      .filter((name) => name.endsWith(".ts") && !name.endsWith(".d.ts"))
+      .filter(
+        (name) =>
+          (name.endsWith(".ts") || name.endsWith(".mts") || name.endsWith(".cts")) &&
+          !name.endsWith(".d.ts") &&
+          !name.endsWith(".d.mts") &&
+          !name.endsWith(".d.cts"),
+      )
       .sort();
-    expect(rootModules.length, "root-level .ts modules").toBeGreaterThan(0);
+    expect(rootModules.length, "root-level .ts/.mts/.cts modules").toBeGreaterThan(0);
+
+    // "include" lists every root-level module by name, no globs — a config
+    // module added as any of the three extensions has to be added here
+    // explicitly, or this comparison fails.
     expect([...program.include].sort()).toEqual(rootModules);
     // And that the package script actually runs it — an unrun program checks
     // nothing.

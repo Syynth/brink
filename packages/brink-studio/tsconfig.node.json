@@ -9,9 +9,11 @@
   // coverage is this package's own rather than an external consumer's
   // accident.
   //
-  // "include" must list EVERY root-level .ts module: that is asserted
-  // against the directory listing by src/__tests__/alias-map.test.ts, so a
-  // config module added here later cannot quietly go unchecked.
+  // "include" must list every root-level .ts/.mts/.cts module explicitly:
+  // that is asserted against the directory listing by
+  // src/__tests__/alias-map.test.ts (#2494), so a config module added as any
+  // of those extensions cannot quietly go unchecked — the guard fails until
+  // it is added here by name.
   //
   // These files are node, not browser: "types": ["node"] is what makes
   // `__dirname` and `import { resolve } from "path"` resolve, and naming it
