@@ -58,6 +58,35 @@ and leaving `minItems`/`minLength` decorative. Documented is not verified —
 that distinction is the whole subject of the saga. It was probed directly on
 **2026-08-16 (wave w169, issue #2665)**.
 
+**This record's home is `SKILL.md`** — deliberately, and future issues in this
+area should say so (#2673). #2665 asked for the result in `BRINK-CONFIG.md`;
+that file is owned by the lessons phase's per-wave PR and every build fence
+forbids touching it, so the record landed here instead. Naming the wrong home
+cost one round of fence conflict; it should not cost a second.
+
+**Probed under CLI version `2.1.233`** (`claude --version`, the native
+launcher at `/opt/node22/bin/claude` — the binary that actually serves the
+session). Recorded 2026-08-16 alongside the probe wave. ⚠ The *source*
+corroboration below was read from a **different artifact**: the npm bundle
+`@anthropic-ai/claude-code@2.1.42` at
+`/opt/node22/lib/node_modules/@anthropic-ai/claude-code/cli.js`. Both carry the
+`Output does not match required schema` string, but they are not the same
+build, so treat the Ajv reading as corroboration of a *shape*, not as proof
+about the running binary. The **probes** are the evidence; the source is
+secondary, and now explicitly so.
+
+**RE-PROBE TRIGGER.** Re-run the probe when `claude --version` no longer
+matches the version pinned above. The pump evaluates this every wave: the retro
+prompt in `pump.js` runs `claude --version`, compares it to this section, and
+recommends a re-probe on drift. ⚠ **Nothing in-tree can detect a harness that
+stopped enforcing** (see the boundary paragraph below and
+`scripts/pump-gate-schema.test.mjs`'s header) — a version comparison is a proxy
+for "the thing I probed may no longer be the thing running", not a test of
+enforcement. It is also only as reliable as the retro agent obeying a prompt;
+that is the same trust every other instruction here runs on, and it is worth
+saying rather than implying. The recipe is one deliberately-short `gateResults`
+array and one row whose `result` is under 8 characters — see both probes below.
+
 **The probe.** A live build agent whose per-item schema was
 `buildSchemaFor({gate: "node --check … && pnpm run test:scripts"})` —
 `gateResults.minItems: 3` — deliberately submitted its `StructuredOutput` call

@@ -72,6 +72,11 @@ import assert from "node:assert/strict";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUMP_JS = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "pump.js");
 const SKILL_MD = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "SKILL.md");
+// ⚠ READ-ONLY HERE. The lessons phase owns a per-wave PR against this file, so
+// nothing outside that phase edits it — but linting its gate strings (#2686
+// gap 2) is a read, and the coupling it makes explicit is real: `gateCmds` is
+// an `&&` split, so a `;`-joined gate would silently under-count.
+const BRINK_CONFIG_MD = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "BRINK-CONFIG.md");
 
 function extractBlock(source, startMarker, endMarker) {
   const startMarkerPos = source.indexOf(startMarker);
@@ -107,7 +112,7 @@ const helpersSrc = extractBlock(source, "GATE_SCHEMA_HELPERS_START", "GATE_SCHEM
 const helpers = new Function(
   "CACHE",
   "GATE",
-  `${helpersSrc}\nreturn { gateFor, gateCmds, buildSchemaFor, mergeSchemaFor, formatGateEvidence, GATE_ROWS_CAP, GATE_CMD_CAP };`,
+  `${helpersSrc}\nreturn { gateFor, gateCmds, buildSchemaFor, mergeSchemaFor, formatGateEvidence, auditGateEvidence, formatEvidenceAudit, hasSemicolonChain, GATE_ROWS_CAP, GATE_CMD_CAP };`,
 )(cache, gate);
 
 // Minimal hand-rolled validator covering only the JSON-Schema vocabulary
@@ -702,6 +707,353 @@ describe("MERGE/fix schema carries per-command gate evidence (#2664)", () => {
     assert.ok(
       /merge gate rows k\/N.{0,600}"-".{0,100}no merge\/fix agent ran/s.test(source),
       "the legend must explain that '-' means no merge/fix agent ran for that item",
+    );
+  });
+});
+
+// ── #2686 gap 1: the MERGE-phase evidence gets a READER ──────────────────────
+// #2664 (PR #2680) made merge/fix `gateResults` required, structured and
+// schema-enforced, and rendered it into the wave's return payload. Nothing was
+// OBLIGED to read it. The BUILD rows are interpolated into an adversarial
+// reviewer's prompt — an agent whose whole job is to disbelieve them; the MERGE
+// rows, which cover the commit that actually LANDS ON MAIN, went to the
+// wave-close payload and a bare `k/N` ratio in the retro. That is #2612's
+// original hole one layer over: evidence that is collected and unread.
+//
+// ⚠ WHAT `auditGateEvidence` CAN AND CANNOT DETECT — the honest boundary, and
+// the reason these tests are shaped the way they are:
+//   CAN (mechanically):
+//     • a gate command with NO matching row, even when `minItems` is satisfied
+//       by padding — the failure mode the missing `maxItems` (#2672, ruled) is
+//       deliberately open to;
+//     • a row that SELF-DECLARES it did not run ("not run", "timed out",
+//       "output lost") — honest at a park, a red flag on a landing;
+//     • a row whose result carries no number at all (no counts, no exit
+//       status) — #2686 gap 3's "bare 'passed'" shape;
+//     • rows fewer than the gate's own command count.
+//   CANNOT, EVER:
+//     • tell a TRUE result from a FABRICATED one. "36 passed" for a command
+//       never run audits perfectly clean, at BUILD and at MERGE alike. Only a
+//       MISSING command is mechanically impossible. Nothing in this round
+//       changes that, and the audit's own rendered output says so.
+//   ALSO CANNOT:
+//     • BLOCK a landing. The merge agent gates and merges inside one turn, so
+//       every reader of its evidence is necessarily post-hoc. The reader added
+//       here is the retro, whose lever is the tracker (flag it, comment, leave
+//       the issue open), not the merge.
+describe("merge-phase gate evidence has a mechanical auditor (#2686 gap 1)", () => {
+  const CMDS = [
+    "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink CARGO_INCREMENTAL=0",
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "cargo nextest run --workspace",
+  ];
+
+  it("gives an honest, complete report ZERO flags — no false positives on real gate rows", () => {
+    const audit = helpers.auditGateEvidence({
+      gateResults: [
+        { command: "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink CARGO_INCREMENTAL=0 ...", result: "exit 0" },
+        { command: "cargo fmt --all -- --check", result: "exit 0, 0 files reformatted" },
+        { command: "cargo clippy --workspace --all-targets -- -D warnings", result: "exit 0, 0 warnings" },
+        { command: "cargo nextest run --workspace", result: "1204 tests run: 1204 passed, 2 skipped" },
+      ],
+    }, CMDS);
+    assert.equal(audit.flagged, false, `expected no flags, got ${JSON.stringify(audit)}`);
+    assert.deepEqual(audit.missing, []);
+    assert.deepEqual(audit.unrun, []);
+    assert.deepEqual(audit.weak, []);
+  });
+
+  it("flags a gate command with NO matching row even when minItems is satisfied by padding", () => {
+    // The exact hole the deliberately-absent `maxItems` (#2672) leaves open:
+    // 4 rows for a 4-command gate, but clippy never ran and a preflight row
+    // takes its place. `minItems` counts rows; only a matcher sees the gap.
+    const audit = helpers.auditGateEvidence({
+      gateResults: [
+        { command: "df -h / (preflight)", result: "17G avail" },
+        { command: "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink ...", result: "exit 0" },
+        { command: "cargo fmt --all -- --check", result: "exit 0, clean, 0 files changed" },
+        { command: "cargo nextest run --workspace", result: "1204 passed" },
+      ],
+    }, CMDS);
+    assert.equal(audit.flagged, true);
+    assert.equal(audit.missing.length, 1, `expected exactly clippy missing, got ${JSON.stringify(audit.missing)}`);
+    assert.ok(audit.missing[0].includes("clippy"), `expected the clippy command flagged, got ${audit.missing[0]}`);
+  });
+
+  it("flags rows that SELF-DECLARE they did not run — honest at a park, a red flag on a landing", () => {
+    const audit = helpers.auditGateEvidence({
+      gateResults: CMDS.map((command) => ({ command, result: "not run — merge aborted before the gate" })),
+    }, CMDS);
+    assert.equal(audit.unrun.length, 4, `every self-declared not-run row must be flagged, got ${JSON.stringify(audit.unrun)}`);
+    assert.equal(audit.flagged, true);
+    assert.deepEqual(audit.missing, [], "a parked report still covers every command — that is not a MISSING row");
+  });
+
+  it("does NOT read a real nextest summary's '2 skipped' as a skipped COMMAND", () => {
+    // The obvious naive regex (/skipped/) would flag every green nextest run
+    // in this repo. A false positive here trains the reader to ignore the
+    // auditor, which is the same failure as having no auditor.
+    const audit = helpers.auditGateEvidence({
+      gateResults: CMDS.map((command) => ({ command, result: "1204 tests run: 1204 passed, 2 skipped, 0 failed" })),
+    }, CMDS);
+    assert.deepEqual(audit.unrun, [], `a nextest '2 skipped' tally must not read as an unrun command, got ${JSON.stringify(audit)}`);
+    assert.equal(audit.flagged, false);
+  });
+
+  it("flags a result carrying no number at all — #2686 gap 3's bare 'passed', without a schema pattern", () => {
+    // ⚠ RULED HERE, deliberately NOT as schema enforcement. #2686 gap 3 proposes
+    // requiring a digit or exit-status token in `result` at the SCHEMA layer.
+    // That would REJECT the tool call — and the schema's own description has
+    // always named `"clean"` as a valid answer, so a digit requirement would
+    // refuse honest rows and push an agent toward inventing a number to get
+    // its call accepted. The pump is what every future wave lands through; a
+    // constraint that rejects a valid merge is a worse bug than the one it
+    // closes. So the mitigation lands as an ADVISORY flag a reader sees, not
+    // as a rejection.
+    const audit = helpers.auditGateEvidence({
+      gateResults: CMDS.map((command) => ({ command, result: "passed" })),
+    }, CMDS);
+    assert.equal(audit.weak.length, 4, `a digitless result must be flagged as weak, got ${JSON.stringify(audit.weak)}`);
+    assert.equal(audit.flagged, true);
+  });
+
+  it("counts rows against the gate's own command count, so a short array is flagged too", () => {
+    const audit = helpers.auditGateEvidence({ gateResults: [{ command: "cargo nextest run --workspace", result: "1204 passed" }] }, CMDS);
+    assert.equal(audit.rows, 1);
+    assert.equal(audit.expected, 4);
+    assert.equal(audit.flagged, true);
+    assert.equal(audit.missing.length, 3, "the three unreported commands must all be named");
+  });
+
+  it("treats a missing/absent report as unevidenced rather than clean", () => {
+    const audit = helpers.auditGateEvidence(null, CMDS);
+    assert.equal(audit.rows, 0);
+    assert.equal(audit.flagged, true, "no report at all must never audit as clean");
+  });
+
+  it("formatEvidenceAudit always states the limit it cannot cross — fabrication", () => {
+    const clean = helpers.formatEvidenceAudit(helpers.auditGateEvidence({
+      gateResults: CMDS.map((command) => ({ command, result: "exit 0, 12 passed" })),
+    }, CMDS));
+    assert.ok(/fabricat/i.test(clean), `a CLEAN audit must still disclaim fabrication, got: ${clean}`);
+    assert.ok(!/^\s*$/.test(clean), "a clean audit must still render a line, not an empty string");
+
+    const dirty = helpers.formatEvidenceAudit(helpers.auditGateEvidence({
+      gateResults: [{ command: "cargo fmt --all -- --check", result: "clean" }],
+    }, CMDS));
+    assert.ok(dirty.includes("MECHANICAL AUDIT"), "the audit block must be labelled");
+    assert.ok(/no matching row/i.test(dirty), "a missing command must be named in the rendered audit");
+    assert.ok(/fabricat/i.test(dirty), "the rendered audit must disclaim fabrication in the flagged case too");
+    // The matcher is a heuristic; saying so is what stops a false positive
+    // being read as proof of dishonesty.
+    assert.ok(/heuristic/i.test(dirty), "the rendered audit must name itself a heuristic");
+  });
+
+  it("the retro prompt carries the FULL merge evidence, not just the k/N ratio, and is told to disbelieve it", () => {
+    // The reader. Without this the audit is exactly what #2664 was: structured
+    // evidence nobody is obliged to look at.
+    assert.ok(
+      source.includes("MERGE-PHASE GATE EVIDENCE"),
+      "the retro prompt must carry a MERGE-PHASE GATE EVIDENCE section",
+    );
+    assert.ok(
+      source.includes("formatEvidenceAudit("),
+      "the mechanical audit must be rendered somewhere, not just computed",
+    );
+    assert.ok(
+      /\$\{mergeEvidence/.test(source),
+      "the assembled merge evidence must be interpolated into the retro prompt",
+    );
+    // The instruction has to name what the reader should DO, or it is a
+    // paragraph nobody acts on.
+    assert.ok(
+      /MERGE-PHASE GATE EVIDENCE[\s\S]{0,4000}trackerActions/.test(source),
+      "the retro must be told to record what it found in trackerActions",
+    );
+  });
+
+  it("the landing buckets carry the mechanical audit alongside the rendered rows", () => {
+    const auditWirings = source.match(/gateAudit: /g) ?? [];
+    assert.ok(auditWirings.length >= 3, `landed, awaitingChecks and parked must each carry gateAudit, found ${auditWirings.length}`);
+    assert.ok(
+      source.includes("landingsFlagged"),
+      "the wave payload's counts must surface how many landings the audit flagged",
+    );
+  });
+});
+
+// ── #2686 gap 2: the OVER-COMPLETE banner's hidden coupling, made explicit ────
+// `gateCmds` splits on `&&`. A gate written with `;` instead would report an
+// expected count of 1, and then EVERY honest report renders the #2680
+// OVER-COMPLETE banner as a false positive. Latent today — every BRINK-CONFIG
+// gate is `&&`-chained — and #2672 refused `maxItems` precisely because the
+// split under-counts. But "latent" was resting on a convention nothing checked.
+//
+// A `;`-joined gate is also a broken GATE independent of any counting: `;`
+// does not fail fast, so a red first leg still runs the rest and the chain's
+// exit status is the LAST command's. That is why this is a hard refusal at
+// launch rather than a warning.
+describe("gate strings are &&-chained, not ;-chained (#2686 gap 2)", () => {
+  it("hasSemicolonChain distinguishes a ;-joined gate from an &&-joined one", () => {
+    assert.equal(helpers.hasSemicolonChain("cargo fmt --check && cargo test"), false);
+    assert.equal(helpers.hasSemicolonChain("cargo fmt --check; cargo test"), true);
+    assert.equal(helpers.hasSemicolonChain("pnpm run test:scripts"), false);
+  });
+
+  it("every gate string in BRINK-CONFIG.md is &&-chained", () => {
+    const config = readFileSync(BRINK_CONFIG_MD, "utf8");
+    // Gate strings are the backticked span on a bullet whose bold label names
+    // a gate ("Rust (default GATE)", "TS entries (gate override)", ...).
+    const gates = [...config.matchAll(/^- \*\*[^*]*\b(?:GATE|gate override)\b[^*]*\*\*:\s*`([^`]+)`/gm)].map((m) => m[1]);
+    assert.ok(
+      gates.length >= 3,
+      `expected to find BRINK-CONFIG.md's gate strings; found ${gates.length} — if the file's format changed, FIX THIS EXTRACTION rather than deleting the lint`,
+    );
+    const offenders = gates.filter((g) => helpers.hasSemicolonChain(g));
+    assert.deepEqual(offenders, [], `;-joined gate strings under-count gateCmds AND do not fail fast: ${offenders.join(" | ")}`);
+  });
+
+  it("pump.js's own CACHE and GATE constants are &&-chained", () => {
+    assert.equal(helpers.hasSemicolonChain(cache), false, "the CACHE prefix must not be ;-chained");
+    assert.equal(helpers.hasSemicolonChain(gate), false, "the default GATE must not be ;-chained");
+  });
+
+  it("pump.js refuses to LAUNCH a batch whose gate override is ;-chained", () => {
+    // A doc convention nothing enforces is how this coupling stayed latent.
+    // The misgating guard is the precedent: refuse before any agent spawns.
+    assert.ok(
+      /hasSemicolonChain\(gateFor\(b\)\)/.test(source),
+      "the guard must test each batch entry's FULL resolved gate (CACHE + override), the same string gateCmds splits",
+    );
+    assert.ok(
+      /semicolon-chained gate/.test(source),
+      "pump.js must return a named launch-time error for a ;-chained gate",
+    );
+  });
+});
+
+// ── #2686 gap 4: "complete work, incomplete evidence" is a first-class state ──
+// PR #2660 (closing #2631) reached wave-close with a green gate and ZERO review
+// because its build agent exhausted its turn budget mid-gate. The agent behaved
+// correctly — it refused to open a PR on half-run evidence — and the wave had
+// no routing for that state except a human noticing.
+//
+// ⚠ LIMIT, stated because it is load-bearing: this only covers the case where
+// the agent still manages to RETURN. An agent that dies without ever calling
+// StructuredOutput produces no result at all, and the retro's existing
+// "NEVER RAN" row remains the only signal. Nothing here changes that.
+describe("out-of-budget builds route as incomplete evidence, not as failures (#2686 gap 4)", () => {
+  it("the BUILD prompt tells an out-of-budget agent what to do instead of vanishing", () => {
+    assert.ok(
+      /RUNNING OUT MID-GATE/.test(source),
+      "the BUILD prompt must name the out-of-budget case explicitly",
+    );
+    assert.ok(
+      /RUNNING OUT MID-GATE[\s\S]{0,1200}push/i.test(source),
+      "the out-of-budget instruction must tell the agent to push its branch so the work survives",
+    );
+    assert.ok(
+      /RUNNING OUT MID-GATE[\s\S]{0,1200}do NOT open the PR/i.test(source),
+      "the out-of-budget instruction must keep the no-PR-on-half-run-evidence rule",
+    );
+  });
+
+  it("the wave payload separates incomplete-evidence builds from outright failures", () => {
+    assert.ok(source.includes("incompleteEvidence"), "the payload must carry an incompleteEvidence bucket");
+    assert.ok(
+      /incompleteEvidence[\s\S]{0,600}buildFailed/.test(source) || /buildFailed[\s\S]{0,600}incompleteEvidence/.test(source),
+      "incompleteEvidence must sit alongside buildFailed, not replace it",
+    );
+    assert.ok(
+      /re-queue|requeue/i.test(source),
+      "the retro must be told these need finishing, not rebuilding from scratch",
+    );
+  });
+});
+
+// ── #2673: the #2665 probe record gets a version pin and a re-probe trigger ───
+// The probe established BY DIRECT EXPERIMENT that the harness rejects a short
+// `gateResults` array. That record now sits in SKILL.md with nothing to
+// invalidate it: a CLI upgrade could silently drop enforcement and every
+// downstream claim would keep reading as true.
+//
+// ⚠ NO IN-TREE TEST CAN DETECT A HARNESS THAT STOPS ENFORCING. That boundary is
+// stated in this file's header and is NOT softened here. These tests check the
+// RECORD and the TRIGGER's wiring — that a version is pinned beside the probe,
+// that a re-probe condition is written down, and that a live phase is actually
+// instructed to compare the running harness against it. Whether the retro agent
+// obeys that instruction is the same trust the rest of the prompts run on.
+describe("the #2665 harness probe carries a version pin and a re-probe trigger (#2673)", () => {
+  const skill = readFileSync(SKILL_MD, "utf8");
+  // Slice the probe SECTION, not "everything after the first mention of it" —
+  // otherwise a semver or a trigger sentence anywhere later in the file would
+  // satisfy these assertions and they would drift into vacuous truth.
+  const sectionStart = skill.indexOf("## Harness enforcement of the build schema");
+  assert.ok(sectionStart !== -1, "SKILL.md must keep the probe record as its own section");
+  const rest = skill.slice(sectionStart + 3);
+  const sectionEnd = rest.indexOf("\n## ");
+  const record = sectionEnd === -1 ? rest : rest.slice(0, sectionEnd);
+
+  it("SKILL.md pins the CLI version the probe was observed under", () => {
+    assert.ok(
+      /probed under|observed under|CLI version/i.test(record),
+      "the probe record must name the CLI version it was observed under",
+    );
+    assert.ok(
+      /\b\d+\.\d+\.\d+\b/.test(record),
+      "the probe record must carry a concrete semver, not just a date",
+    );
+  });
+
+  it("SKILL.md states a re-probe trigger, not just a version", () => {
+    assert.ok(/RE-PROBE (?:TRIGGER|WHEN)/i.test(record), "the record must state WHEN to re-probe");
+    assert.ok(
+      /claude --version/.test(record),
+      "the trigger must name the concrete command that reads the running harness version",
+    );
+  });
+
+  it("a live phase is instructed to compare the running harness against the pinned version", () => {
+    // A trigger nobody evaluates is a sentence. The retro runs once per wave
+    // and is already this round's reader.
+    assert.ok(
+      /claude --version/.test(source),
+      "some pump.js prompt must actually read the running harness version",
+    );
+    assert.ok(
+      /claude --version[\s\S]{0,800}(?:SKILL\.md|#2665)/.test(source),
+      "the version read must be compared against the SKILL.md probe record",
+    );
+  });
+
+  it("the BRINK-CONFIG.md house-rule handoff has a tracked home the lessons phase reads", () => {
+    // #2673 gap 2: #2669 correctly did NOT edit BRINK-CONFIG.md (the lessons
+    // phase owns a per-wave PR against it), but nothing tracked the handoff —
+    // so if the lessons agent misses the issue, the rule evaporates. That is
+    // the exact failure mode #2665 was opened about. Parking the pending text
+    // in SKILL.md and pointing the lessons PROMPT at it makes the handoff
+    // survive in the file the agent is told to read.
+    assert.ok(
+      skill.includes("Pending BRINK-CONFIG.md house rules"),
+      "SKILL.md must carry the pending-handoff section",
+    );
+    assert.ok(
+      /a schema constraint is enforcement only if a validator honours it/i.test(skill),
+      "the pending section must carry #2669's proposed rule text verbatim enough to paste",
+    );
+    assert.ok(
+      source.includes("Pending BRINK-CONFIG.md house rules"),
+      "the lessons prompt must point at the pending-handoff section by name",
+    );
+  });
+
+  it("SKILL.md names itself as the home for this record, so a future issue does not re-hit the fence", () => {
+    // #2673 gap 3: #2665 asked for the result in BRINK-CONFIG.md; the wave's
+    // fence forbade touching that file, so it landed here instead.
+    assert.ok(
+      /this record's home is `?SKILL\.md`?/i.test(record),
+      "the record must say SKILL.md is its home (#2673 gap 3)",
     );
   });
 });
