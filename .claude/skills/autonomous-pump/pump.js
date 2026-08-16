@@ -91,7 +91,7 @@ Then call them normally. \`git\` itself (fetch/push/merge/worktree) works fine �
       prDiff: (pr) => `\`gh pr diff ${pr} --repo ${REPO}\``,
       prView: (pr) => `\`gh pr view ${pr} --repo ${REPO} --json headRefName -q .headRefName\``,
       prComment: (pr, what) => `post ${what}: \`gh pr comment ${pr} --repo ${REPO} --body "…"\``,
-      prMerge: (pr) => `LAND PR ${pr} per the three-case LANDING POLICY below (detach first so local branch deletion can't fail): checks still pending → \`gh pr merge ${pr} --repo ${REPO} --merge --auto --delete-branch\`; checks all completed green AND review approved/fixed → the same command WITHOUT \`--auto\`; anything else → park it`,
+      prMerge: (pr) => `LAND PR ${pr} per the three-case LANDING POLICY below (detach first so local branch deletion can't fail): checks still pending → \`gh pr merge ${pr} --repo ${REPO} --merge --auto --delete-branch\`; checks all completed green AND review approved/fixed → PARK IT for the orchestrator to merge (you have NO merge authority — never run \`gh pr merge\` without \`--auto\`, and never call \`mcp__github__merge_pull_request\`); anything else → park it`,
       issueList: (extra) => `\`gh issue list --repo ${REPO}${extra ? ` ${extra}` : ""}\``,
       parkNote: ``,
     };
