@@ -190,9 +190,18 @@ const closesLine = (b) => closesList(b).map((x) => `Closes #${x}`).join(", ");
 // (v3 note: verdicts ride the pipeline WITH their item — no string-matching of
 // PR references between phases, which once mis-parked approved PRs.)
 
+// ⚠ `gateOutput` is REQUIRED, not optional. It used to be optional while
+// `gateGreen` was required, so an agent could assert the gate passed and attach
+// nothing to show for it — and the review prompt below then states
+// `gateGreen=<value>` to the reviewer as fact, so an unevidenced claim was
+// inherited by the one phase whose job is to disbelieve it. Observed 2026-08-16:
+// w166's #2606 build returned `gateGreen: true` with no `gateOutput` at all,
+// and its PR did in fact have a real gap. A green claim with no output is the
+// same failure mode as this repo's lying exit codes (#2479/#2531/#2593), one
+// layer up.
 const BUILD = {
   type: "object", additionalProperties: false,
-  required: ["ok", "issue", "pr", "gateGreen", "reachability", "summary"],
+  required: ["ok", "issue", "pr", "gateGreen", "gateOutput", "reachability", "summary"],
   properties: {
     ok: { type: "boolean" }, issue: { type: "number" }, pr: { type: "string" },
     gateGreen: { type: "boolean" }, gateOutput: { type: "string" },
@@ -284,7 +293,8 @@ STEPS (Bash):
 7. VERIFY THE DIFF IS REAL: \`git diff origin/main --stat\` must be NON-EMPTY and match what you believe you built — an empty diff means your edits didn't land (wrong cwd/worktree); STOP and fix rather than opening a hollow PR (one shipped with a fully fabricated body and was caught by review — an instant reject and a wasted cycle). Then stage explicit paths (NOT git add -A), commit (end the message with "${TRAILER}"), \`git push -u origin auto/issue-${b.n}\`.
 8. ${GH.prCreate} — title "<concise>", body starting "${closesLine(b)}" then what + how + gate counts + reachability. Only an HONEST closes list (if you delivered N of M deliverables, drop the unearned Closes and say so).
 9. SCOPE OVERFLOW: if the work revealed anything BEYOND ${closesList(b).map((x) => "#" + x).join("/")} (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), record it in \`scopeNotes\` AND ${GH.issueComment(b.n, 'ONE comment ("Scope discovered beyond this fence: …")')} so the record survives the session (durable-by-default rule, decision 2026-07-18). Do NOT grow this PR to cover it.
-Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, reachability, summary, scopeNotes.`,
+Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, reachability, summary, scopeNotes.
+⚠ \`gateOutput\` IS REQUIRED AND IS THE EVIDENCE FOR \`gateGreen\` — paste the real tail of the real run (the command, the pass/fail counts, the exit status). "Gate passed" with nothing attached is not a gate result, and the reviewer is told your \`gateGreen\` value as fact. If the gate did NOT finish — still building, timed out, a step you skipped — say so in \`gateOutput\` and return \`gateGreen: false\`. A half-run gate reported as green is worse than an honest red, and DO NOT open the PR before the gate finishes.`,
       { label: `build#${b.n}`, phase: "Build", effort: effortFor(b), model: buildModelFor(b), isolation: "worktree", schema: BUILD }),
   // REVIEW — starts the moment THIS item's build returns; siblings unaffected.
   (build, b) => {
