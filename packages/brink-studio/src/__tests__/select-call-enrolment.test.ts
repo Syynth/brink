@@ -56,7 +56,8 @@
  * codebase today.
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { describe, it, expect } from "vitest";
@@ -193,6 +194,47 @@ function scanCallSites(file: string): CallSite[] {
   });
 }
 
+/**
+ * Validates one call site's marker per the invariant rules, and is the
+ * single source of truth for those rules: both the per-site `it()`s below
+ * and this file's own synthetic-exempt-marker regression test call it
+ * directly, so the regression test exercises the exact logic a real
+ * author's marker goes through rather than a hand-rolled re-implementation
+ * that could silently drift from it.
+ *
+ * An EXEMPT marker's id is deliberately NOT required to be in
+ * `SELECT_CALL_IDS` — the registry tracks call sites this invariant
+ * *enrols*, and an exempt site is by definition not one of those (see this
+ * file's header and `select-calls.ts`). Requiring exempt ids to also appear
+ * in `SELECT_CALL_IDS` would deadlock the escape hatch: the "every
+ * non-exempt id names exactly one call site" check further down would then
+ * need an exempt id to be claimed by a *non-exempt* marker, which is
+ * impossible by construction — exactly the bug the #2565 review caught.
+ */
+function validateMarker(
+  marker: NonNullable<CallSite["marker"]>,
+  enrolledIds: ReadonlySet<string>,
+  label: string,
+): void {
+  if (marker.exempt) {
+    expect(
+      marker.justification.length,
+      `${label}: SELECT-INVARIANT-EXEMPT marker has no justification text after the id`,
+    ).toBeGreaterThan(0);
+    return;
+  }
+  expect(
+    enrolledIds.has(marker.id),
+    `${label}: marker names id ${JSON.stringify(marker.id)}, which select-calls.ts's ` +
+      "SELECT_CALL_IDS does not have (a typo, or the id was renamed or removed without " +
+      "updating this marker)",
+  ).toBe(true);
+  expect(
+    marker.justification.length,
+    `${label}: SELECT-INVARIANT marker has no justification text after the id`,
+  ).toBeGreaterThan(0);
+}
+
 describe("every §7.7.1 select-call site is enrolled (#2542)", () => {
   const discovered = discoverCallSiteFiles();
 
@@ -267,17 +309,7 @@ describe("every §7.7.1 select-call site is enrolled (#2542)", () => {
 
     const marker = site.marker;
     it(`${label}'s marker names a real select-calls.ts id and a non-empty justification`, () => {
-      expect(
-        enrolledIds.has(marker.id),
-        `${label}: marker names id ${JSON.stringify(marker.id)}, which select-calls.ts's ` +
-          "SELECT_CALL_IDS does not have (a typo, or the id was renamed or removed without " +
-          "updating this marker)",
-      ).toBe(true);
-      expect(
-        marker.justification.length,
-        `${label}: SELECT-INVARIANT${marker.exempt ? "-EXEMPT" : ""} marker has no ` +
-          "justification text after the id",
-      ).toBeGreaterThan(0);
+      validateMarker(marker, enrolledIds, label);
     });
   }
 
@@ -318,5 +350,83 @@ describe("every §7.7.1 select-call site is enrolled (#2542)", () => {
         "marker — either the marker that claimed the id was removed (restore it), or the call " +
         "site is gone and the id should be retired from select-calls.ts",
     ).toEqual([]);
+  });
+});
+
+describe("SELECT-INVARIANT-EXEMPT is actually usable (regression test for the #2565 review fix)", () => {
+  // Before this fix, `validateMarker` (née the inline per-site check) ran
+  // `enrolledIds.has(marker.id)` unconditionally, so an exempt marker whose
+  // id was correctly kept OUT of SELECT_CALL_IDS still failed here — and
+  // the "every non-exempt id names exactly one call site" check could never
+  // rescue it, because that check only ever looks at non-exempt markers.
+  // The escape hatch this file's header and select-calls.ts document was
+  // therefore unusable: the first author who followed the instruction
+  // printed in three failure messages and both new file headers would hit
+  // a deadlock, not green. This plants a real exempt marker in a real file
+  // on disk and runs it through the exact scan + validation path a
+  // production call site goes through, so a regression here fails loudly
+  // instead of only being caught by re-reading the logic.
+  it("an exempt marker whose id is NOT in SELECT_CALL_IDS still validates", () => {
+    const dir = mkdtempSync(join(tmpdir(), "select-invariant-exempt-"));
+    const file = join(dir, "synthetic.ts");
+    try {
+      writeFileSync(
+        file,
+        [
+          "function synthetic(input: HTMLInputElement) {",
+          "  // SELECT-INVARIANT-EXEMPT synthetic.notInRegistry: synthetic call site for this",
+          "  // regression test only — not a real production text input.",
+          "  input.select();",
+          "}",
+          "",
+        ].join("\n"),
+      );
+
+      // synthetic.notInRegistry is deliberately absent from SELECT_CALL_IDS
+      // — that absence is the point of this test.
+      expect(SELECT_CALL_IDS as readonly string[]).not.toContain("synthetic.notInRegistry");
+
+      const sites = scanCallSites(file);
+      expect(sites).toHaveLength(1);
+      const marker = sites[0].marker;
+      if (marker === null) throw new Error("expected a marker; scanCallSites found none");
+      expect(marker.exempt).toBe(true);
+      expect(marker.id).toBe("synthetic.notInRegistry");
+
+      // The regression: this must NOT throw, even though marker.id is not
+      // enrolled in SELECT_CALL_IDS.
+      expect(() => validateMarker(marker, new Set(SELECT_CALL_IDS), "synthetic.ts:4")).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a non-exempt marker whose id is NOT in SELECT_CALL_IDS still fails (control case)", () => {
+    // The inverse of the test above: proves validateMarker's exempt branch
+    // is actually doing selective work, not just always passing.
+    const dir = mkdtempSync(join(tmpdir(), "select-invariant-non-exempt-"));
+    const file = join(dir, "synthetic.ts");
+    try {
+      writeFileSync(
+        file,
+        [
+          "function synthetic(input: HTMLInputElement) {",
+          "  // SELECT-INVARIANT synthetic.alsoNotInRegistry: deliberately unenrolled control case.",
+          "  input.select();",
+          "}",
+          "",
+        ].join("\n"),
+      );
+
+      const sites = scanCallSites(file);
+      expect(sites).toHaveLength(1);
+      const marker = sites[0].marker;
+      if (marker === null) throw new Error("expected a marker; scanCallSites found none");
+      expect(marker.exempt).toBe(false);
+
+      expect(() => validateMarker(marker, new Set(SELECT_CALL_IDS), "synthetic.ts:3")).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

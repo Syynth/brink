@@ -74,7 +74,7 @@ export function SymbolRenamePrompt() {
       if (input) {
         input.focus();
         // SELECT-INVARIANT SymbolRenamePrompt.select: guarded by the
-        // value-equality check on the line above — select() only fires when
+        // value-equality check on the line below — select() only fires when
         // the field still holds the seeded name, i.e. nobody has typed into
         // it yet during this deferred frame; see the comment block above
         // this effect and symbol-rename-prompt-seed.test.tsx.

@@ -107,6 +107,9 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
     // SELECT-INVARIANT Binder.renameInput.preSelectBasename: runs synchronously
     // in this mount effect, right after input.focus() — no deferred frame, no
     // window in which the user could have typed before this selection lands.
+    // `key={editing.initial}` on the call site (Binder.tsx below) guarantees
+    // this effect only ever runs on a fresh mount for a given `initial`, so a
+    // same-instance `initial` change can never re-run it over user-typed text.
     input.setSelectionRange(0, dot > 0 ? dot : initial.length);
   }, [initial]);
 
@@ -299,7 +302,16 @@ function BinderRow({
           {iconChar(kind, isFunction)}
         </span>
         {editing ? (
-          <RenameInput {...editing} />
+          // `key={editing.initial}` forces a fresh RenameInput instance (and
+          // thus a fresh mount effect) whenever `initial` changes, so the
+          // SELECT-INVARIANT justification below — "no window in which the
+          // user could have typed before this selection lands" — is true by
+          // construction rather than merely true today: without the key, a
+          // same-instance `initial` change would re-run the effect over
+          // whatever the user had already typed into the uncontrolled
+          // `defaultValue` input (React does not re-apply `defaultValue` on
+          // rerender).
+          <RenameInput key={editing.initial} {...editing} />
         ) : (
           <span className="brink-binder-label">{label}</span>
         )}

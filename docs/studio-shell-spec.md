@@ -558,6 +558,37 @@ deferral.
 guarded call site; every other deferred call in the package is a bare
 `focus()`, which rule 2 explicitly permits.
 
+**Enrolment is itself enforced, not merely instructed (issue #2542).** Before
+#2565, `search-view-focus.test.tsx` was the only test pinning rule 2, and it
+only covers `SearchView` — a new `.select()`/`.setSelectionRange()` call site
+anywhere else in `studio-ui`, `studio-shell`, or `ink-editor` shipped with no
+signal, which is exactly the shape `inline-name-input.ts` took until #2548
+fixed it. `packages/brink-studio/src/__tests__/select-call-enrolment.test.ts`
+scans every workspace `src/` tree — roots derived from
+`pnpm-workspace.yaml`'s `packages:` globs via
+`packages/brink-studio/src/__tests__/workspace-roots.ts`, the same module
+the `SAVE_PATHS` enrolment guard (`docs/embedder-api.md`, "Confirm and
+retire in ONE synchronous step") uses, not a hand-typed
+`studio-ui`/`studio-shell`/`ink-editor` list — for every real
+zero-argument `.select()` / `.setSelectionRange(` call site, and requires a
+`// SELECT-INVARIANT <id>: <justification>` (or `SELECT-INVARIANT-EXEMPT`)
+marker comment directly above each one, naming an id from
+`packages/brink-studio/src/__tests__/select-calls.ts`'s `SELECT_CALL_IDS`.
+The zero-argument boundary on `.select()` is deliberate, not a convenience
+narrowing: `.select(` alone also matches unrelated same-named methods
+elsewhere in the workspace (`themes.select(theme.id)`,
+`api.select((s) => s.diagnostics)`), which have nothing to do with
+`HTMLInputElement.select()`/`HTMLTextAreaElement.select()`; `.setSelectionRange(`
+has no such collision today. An `-EXEMPT` marker's id is deliberately kept
+*out* of `SELECT_CALL_IDS` — the registry enrols call sites this invariant
+governs, and an exempt site is by definition not one of those — with the
+justification alone required to be non-empty. This suite is a structural
+sibling of that `SAVE_PATHS` enrolment guard and inherits the same
+hardening: scan roots derived rather than hand-typed, every non-exempt id
+required to name exactly one call site (the #2515 reuse loophole, closed
+from the start), and the call-site count pinned exactly so a scan that stops
+matching real calls cannot silently pass every check downstream.
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*
