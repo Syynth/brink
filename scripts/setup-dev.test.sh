@@ -20,6 +20,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${here}/.." && pwd)"
 script="${repo_root}/scripts/setup-dev.sh"
 
+# The exact pnpm version root package.json pins (#2604). Read, never restated:
+# a hardcoded copy here would be exactly the second, drifting pin the pin
+# exists to abolish.
+pinned_pnpm_version="$(node -p "require('${repo_root}/package.json').packageManager.split('@')[1].split('+')[0]")"
+
 failures=0
 fail() {
   echo "FAIL: $1" >&2
@@ -85,9 +90,15 @@ EOF
 exit 0
 EOF
 
-  cat > "${dir}/pnpm" <<'EOF'
+  # setup-dev.sh now VERIFIES that the pnpm it activated is the exact version
+  # root package.json's `packageManager` field pins (#2604), so this stub
+  # reports the real pin rather than a hardcoded version that would go stale
+  # the next time the pin moves. The third argument overrides it, which is how
+  # Test 3 below plants a mismatch.
+  local pnpm_reports="${3:-${pinned_pnpm_version}}"
+  cat > "${dir}/pnpm" <<EOF
 #!/usr/bin/env bash
-echo "10.0.0"
+echo "${pnpm_reports}"
 EOF
 
   chmod +x "${dir}"/*
@@ -95,9 +106,10 @@ EOF
 
 run_script() {
   local hang_which="$1"
+  local pnpm_reports="${2:-}"
   local stub_dir
   stub_dir="$(mktemp -d)"
-  make_stub_bin "${stub_dir}" "${hang_which}"
+  make_stub_bin "${stub_dir}" "${hang_which}" "${pnpm_reports}"
 
   local out
   out="$(PATH="${stub_dir}:${PATH}" BRINK_SETUP_FULL=1 BRINK_SETUP_AUDIT_TIMEOUT=1 bash "${script}" 2>&1)"
@@ -143,8 +155,33 @@ else
   fail "src-tauri audit timeout: script never reached the pnpm section:\n${out}"
 fi
 
+# --- Test 3: pnpm version drift must be LOUD (#2604). setup-dev.sh derives the
+# version from root package.json's `packageManager` field and verifies what
+# actually resolved; if corepack activates something else (the ambient-10.x
+# situation that produced two different install-failure shapes across #2479
+# and #2593), the script must fail rather than print "pnpm ready" and hand a
+# mismatched toolchain to the next gate. Planted mismatch: a pnpm stub
+# reporting a version that is not the pin. ---
+out="$(run_script src-tauri "9.99.99")"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "pnpm drift: script exits non-zero when the resolved pnpm is not the pin (got ${rc})"
+else
+  fail "pnpm drift: script exited 0 despite pnpm reporting 9.99.99, not ${pinned_pnpm_version}:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm resolved to '9.99.99'"; then
+  pass "pnpm drift: names both the resolved version and the pin"
+else
+  fail "pnpm drift: no drift message in output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm ready"; then
+  fail "pnpm drift: printed 'pnpm ready' for a mismatched pnpm:\n${out}"
+else
+  pass "pnpm drift: does not report 'pnpm ready' for a mismatched pnpm"
+fi
+
 if [ "${failures}" -gt 0 ]; then
   echo "${failures} failure(s)" >&2
   exit 1
 fi
-echo "all setup-dev.sh audit-timeout tests passed"
+echo "all setup-dev.sh tests passed"

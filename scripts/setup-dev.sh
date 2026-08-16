@@ -8,8 +8,11 @@
 #   - wasm-pack, pinned to the version CI uses (.github/workflows/ci.yml,
 #     jetli/wasm-pack-action version v0.14.0) — needed to build the
 #     crates/brink-web wasm bundle that @brink-lang/web depends on.
-#   - pnpm, via corepack, pinned to the major version CI uses
-#     (pnpm/action-setup version: 10 in .github/workflows/ci.yml).
+#   - pnpm, via corepack, pinned to the EXACT version in root package.json's
+#     `packageManager` field — the single source of truth every CI lane's
+#     `pnpm/action-setup` step reads too (#2604). Verified after activation,
+#     so a drift fails here rather than surfacing as a different install
+#     failure shape days later (#2479/#2593).
 #   - cargo-nextest — the autonomous pump's per-round GATE runs
 #     `cargo nextest run --workspace`, measured at 35s vs `cargo test`'s
 #     2m52s for identical results (issue #1695). Without it every pump agent
@@ -287,19 +290,45 @@ else
 fi
 
 # --- pnpm (via corepack) -----------------------------------------------------
-
-PNPM_MAJOR="10" # keep in sync with pnpm/action-setup in .github/workflows/ci.yml
+# The pnpm version is pinned in ONE place — the root package.json
+# `packageManager` field, corepack's own mechanism — and derived here rather
+# than restated (#2604). This script used to carry `PNPM_MAJOR="10"`, a second
+# pin that pinned only the MAJOR: which 10.x a machine resolved was ambient,
+# and the failure shape of a missing `crates/brink-web/www/pkg` link demonstrably
+# differed across that range (exit 0 + `ENOENT … scandir` in #2479/#2492 vs
+# exit 1 + `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND` on 10.34.5 in #2593/#2596).
+# `scripts/check-pnpm-pin.mjs` (run by `pnpm test:scripts`) fails if this block
+# ever hardcodes a version again, or drifts from the field.
 
 if ! command -v corepack >/dev/null 2>&1; then
   echo "==> corepack not found; it ships with Node.js >= 16.9 — install Node first"
   exit 1
 fi
 
-echo "==> Enabling corepack + pinning pnpm@${PNPM_MAJOR}"
-corepack enable
-corepack prepare "pnpm@${PNPM_MAJOR}" --activate
+# Resolved from this script's own location, not the caller's cwd.
+brink_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo "==> pnpm ready ($(pnpm --version))"
+# `packageManager` is "pnpm@<exact>"; take the version part.
+PNPM_VERSION="$(node -p "require('${brink_repo_root}/package.json').packageManager.split('@')[1].split('+')[0]")"
+
+if [ -z "${PNPM_VERSION}" ]; then
+  echo "==> could not read the pnpm pin from package.json's \"packageManager\" field"
+  exit 1
+fi
+
+echo "==> Enabling corepack + pinning pnpm@${PNPM_VERSION}"
+corepack enable
+corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+# Verify what actually resolved. A pin nothing checks is a pin that drifts
+# silently, which is the whole point of #2604.
+resolved_pnpm="$(pnpm --version 2>/dev/null || true)"
+if [ "${resolved_pnpm}" != "${PNPM_VERSION}" ]; then
+  echo "==> ERROR: pnpm resolved to '${resolved_pnpm}' but package.json pins ${PNPM_VERSION}"
+  exit 1
+fi
+
+echo "==> pnpm ready (${resolved_pnpm})"
 
 # --- verification ------------------------------------------------------------
 # Print what actually resolved. A setup script that exits 0 having silently
