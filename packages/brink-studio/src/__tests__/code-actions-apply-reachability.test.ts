@@ -104,7 +104,14 @@ describe("onApplyStructural refusal reachability (#2578)", () => {
     expect(applied[0]!.result.ok).toBe(false);
     // The lie #2543/#2578 warn about: a refusal still ships `safe: true`.
     expect(applied[0]!.result.safe).toBe(true);
-    expect(applied[0]!.result.error).toBe("invalid code-action data: mock action");
+    // The mock's synthetic menu entry carries `data: {}`, so resolving it hits
+    // `resolveCodeActionImpl`'s missing-discriminator refusal. Asserting the
+    // exact string keeps this test bound to the shared implementation rather
+    // than to a stub: a second, always-refusing `resolve_code_action_doc` used
+    // to shadow it and answered "invalid code-action data: mock action" here.
+    expect(applied[0]!.result.error).toBe(
+      "invalid code-action data: missing `action` discriminator",
+    );
 
     dispose();
   });
