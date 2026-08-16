@@ -107,7 +107,7 @@ const helpersSrc = extractBlock(source, "GATE_SCHEMA_HELPERS_START", "GATE_SCHEM
 const helpers = new Function(
   "CACHE",
   "GATE",
-  `${helpersSrc}\nreturn { gateFor, gateCmds, buildSchemaFor, mergeSchemaFor, formatGateEvidence, GATE_ROWS_CAP, GATE_CMD_CAP };`,
+  `${helpersSrc}\nreturn { gateFor, gateCmds, buildSchemaFor, mergeSchemaFor, formatGateEvidence, auditGateEvidence, GATE_ROWS_CAP, GATE_CMD_CAP };`,
 )(cache, gate);
 
 // Minimal hand-rolled validator covering only the JSON-Schema vocabulary
@@ -267,11 +267,15 @@ describe("pump.js gate-evidence schema (#2645)", () => {
     // Guards the fix for the reviewer finding that formatGateEvidence(build)
     // (no `expected` arg) let a short gateResults array self-report as
     // complete (e.g. "[1/1]" for a 1-row array against a 5-command gate).
-    // The call site must pass gateCmds(b).length so a shortfall renders a
-    // banner instead of a falsely-complete-looking fraction.
+    // The call site must pass this item's own gate commands so a shortfall
+    // renders a banner instead of a falsely-complete-looking fraction.
+    // ⚠ #2686 widened `expected` from a COUNT to the command LIST (a number is
+    // still accepted): the list is what lets `auditGateEvidence` check that
+    // each command is actually covered, not merely counted. `gateCmds(b)`
+    // carries its own length, so the shortfall banner is unaffected.
     assert.ok(
-      source.includes("<gate-output>") && source.includes("${formatGateEvidence(build, gateCmds(b).length)}"),
-      "the <gate-output> block in the review prompt must call formatGateEvidence(build, gateCmds(b).length)",
+      source.includes("<gate-output>") && source.includes("${formatGateEvidence(build, gateCmds(b))}"),
+      "the <gate-output> block in the review prompt must call formatGateEvidence(build, gateCmds(b))",
     );
   });
 
@@ -702,6 +706,392 @@ describe("MERGE/fix schema carries per-command gate evidence (#2664)", () => {
     assert.ok(
       /merge gate rows k\/N.{0,600}"-".{0,100}no merge\/fix agent ran/s.test(source),
       "the legend must explain that '-' means no merge/fix agent ran for that item",
+    );
+  });
+});
+
+// ── #2686 Gap 1: a MECHANICAL READER over the merge-phase gate evidence ──────
+// #2664 gave the MERGE/fix phase the same structured `gateResults` array the
+// BUILD phase carries. But the BUILD rows are interpolated into the ADVERSARIAL
+// REVIEWER's prompt — read by an agent whose entire job is to disbelieve them —
+// while the MERGE rows went into the wave's returned payload and a bare `k/N`
+// ratio in the retro's table. Required, structured, schema-enforced, and
+// obliged to be read by nobody: #2612's original hole one layer over.
+//
+// `auditGateEvidence` is the reader. It is DETERMINISTIC, not an agent — it
+// runs on every rendered evidence block (build and merge alike) and produces
+// named concerns that ride into the reviewer prompt, the retro prompt and the
+// wave's return payload.
+//
+// ⚠ WHAT IT CAN AND CANNOT CATCH — the honest boundary, restated in code so it
+// cannot erode:
+//   CAN:    a row count below the gate's command count (the signal that
+//           survives if a future harness stops enforcing `minItems`);
+//           two rows reporting the SAME command (padding that satisfies
+//           `minItems` while a real command goes unreported);
+//           a gate command no row plausibly corresponds to;
+//           a row whose own `result` says the command did NOT run, in a report
+//           that simultaneously claims the work landed / the gate was green.
+//   CANNOT: fabrication. A row reading "36 passed" for a command never run
+//           passes every check here, exactly as it passes the schema. Only a
+//           MISSING command is mechanically impossible; a false one is not.
+//           The command-coverage check is also a FUZZY string match — it can
+//           flag a paraphrased row that is really fine, and it is a prompt for
+//           a human/agent to look, never a verdict.
+describe("mechanical audit over gate evidence (#2686)", () => {
+  const CMDS = ["export CARGO_TARGET_DIR=/tmp/x", "pnpm run a", "pnpm run b"];
+
+  it("exports auditGateEvidence and returns no concerns for verbatim, complete, all-ran evidence", () => {
+    assert.equal(typeof helpers.auditGateEvidence, "function");
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "landed",
+        detail: "merged clean",
+        gateResults: [
+          { command: "export CARGO_TARGET_DIR=/tmp/x", result: "exit 0, no output" },
+          { command: "pnpm run a", result: "12 passed, 0 failed" },
+          { command: "pnpm run b", result: "exit 0, clean" },
+        ],
+      },
+      CMDS,
+    );
+    assert.deepEqual(concerns, [], `clean evidence must raise no concerns, got: ${concerns.join(" | ")}`);
+  });
+
+  it("flags a gate command that no row plausibly covers", () => {
+    // 3 rows for a 3-command gate — `minItems` is satisfied — but `pnpm run b`
+    // was never reported; a preflight row took its slot. This is the exact
+    // "extra rows can hide a missing one" case the OVER-COMPLETE banner could
+    // only ASK a reader to check by hand.
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "landed",
+        gateResults: [
+          { command: "df -h / (preflight)", result: "21G avail" },
+          { command: "export CARGO_TARGET_DIR=/tmp/x", result: "exit 0" },
+          { command: "pnpm run a", result: "12 passed, 0 failed" },
+        ],
+      },
+      CMDS,
+    );
+    assert.ok(
+      concerns.some((c) => c.includes("UNCOVERED COMMAND") && c.includes("pnpm run b")),
+      `expected an UNCOVERED COMMAND concern naming "pnpm run b", got: ${concerns.join(" | ")}`,
+    );
+  });
+
+  it("flags two rows reporting the SAME command — padding that satisfies minItems", () => {
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "landed",
+        gateResults: [
+          { command: "export CARGO_TARGET_DIR=/tmp/x", result: "exit 0" },
+          { command: "pnpm run a", result: "12 passed" },
+          { command: "pnpm  run   a", result: "12 passed" },
+        ],
+      },
+      CMDS,
+    );
+    assert.ok(
+      concerns.some((c) => c.includes("DUPLICATE COMMAND")),
+      `expected a DUPLICATE COMMAND concern, got: ${concerns.join(" | ")}`,
+    );
+  });
+
+  it("flags a row count below the gate's command count — the signal that survives a harness that stops enforcing minItems", () => {
+    const concerns = helpers.auditGateEvidence(
+      { landedState: "landed", gateResults: [{ command: "pnpm run a", result: "12 passed" }] },
+      CMDS,
+    );
+    assert.ok(
+      concerns.some((c) => c.includes("UNDER-EVIDENCED") && c.includes("1") && c.includes("3")),
+      `expected an UNDER-EVIDENCED concern naming 1 of 3, got: ${concerns.join(" | ")}`,
+    );
+  });
+
+  it("flags a self-declared 'not run' row in a report that claims the work LANDED", () => {
+    // The contradiction worth catching: the commit is on main, and the merge
+    // agent's own evidence says one of the gate's commands never executed.
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "landed",
+        gateResults: [
+          { command: "export CARGO_TARGET_DIR=/tmp/x", result: "exit 0" },
+          { command: "pnpm run a", result: "12 passed, 0 failed" },
+          { command: "pnpm run b", result: "not run — I ran out of turns" },
+        ],
+      },
+      CMDS,
+    );
+    assert.ok(
+      concerns.some((c) => c.includes("SELF-DECLARED UNRUN") && c.includes("landed")),
+      `expected an escalated SELF-DECLARED UNRUN concern, got: ${concerns.join(" | ")}`,
+    );
+  });
+
+  it("does NOT flag 'not run' rows on an honest PARK — that is the documented, valid answer", () => {
+    // A merge that aborts before gating MUST return a row per command saying
+    // "not run — merge aborted before the gate" (#2664). Flagging that every
+    // time would make the audit noise on the normal path, and an audit nobody
+    // trusts is the same as no audit.
+    const concerns = helpers.auditGateEvidence(
+      {
+        landedState: "parked",
+        gateResults: CMDS.map((command) => ({ command, result: "not run — merge aborted before the gate" })),
+      },
+      CMDS,
+    );
+    assert.deepEqual(concerns, [], `an honest park must raise no concerns, got: ${concerns.join(" | ")}`);
+  });
+
+  it("flags a self-declared unrun row in a BUILD report that claims gateGreen", () => {
+    const concerns = helpers.auditGateEvidence(
+      {
+        gateGreen: true,
+        gateResults: [
+          { command: "export CARGO_TARGET_DIR=/tmp/x", result: "exit 0" },
+          { command: "pnpm run a", result: "12 passed, 0 failed" },
+          { command: "pnpm run b", result: "output was lost when the shell died" },
+        ],
+      },
+      CMDS,
+    );
+    assert.ok(
+      concerns.some((c) => c.includes("SELF-DECLARED UNRUN") && c.includes("gateGreen")),
+      `expected an escalated SELF-DECLARED UNRUN concern for a green build, got: ${concerns.join(" | ")}`,
+    );
+  });
+
+  it("does NOT flag an unrun row on a build that honestly reports gateGreen:false", () => {
+    const concerns = helpers.auditGateEvidence(
+      {
+        gateGreen: false,
+        gateResults: CMDS.map((command) => ({ command, result: "not run — stopped on the ENOSPC preflight" })),
+      },
+      CMDS,
+    );
+    assert.deepEqual(concerns, [], `an honest red build must raise no concerns, got: ${concerns.join(" | ")}`);
+  });
+
+  it("formatGateEvidence accepts the command LIST and renders the audit above the rows", () => {
+    const shown = helpers.formatGateEvidence(
+      {
+        landedState: "landed",
+        detail: "merged as abc1234 after reading all four checks green",
+        gateResults: [
+          { command: "df -h /", result: "21G avail" },
+          { command: "export CARGO_TARGET_DIR=/tmp/x", result: "exit 0" },
+          { command: "pnpm run a", result: "12 passed" },
+        ],
+      },
+      CMDS,
+    );
+    assert.ok(shown.includes("MECHANICAL EVIDENCE AUDIT"), `expected an audit block, got: ${shown.slice(0, 300)}`);
+    assert.ok(shown.includes("UNCOVERED COMMAND"), "the audit block must carry the concern");
+    // Passing the LIST must still denominate the rows against its length.
+    assert.ok(shown.includes("[1/3]"), "row denominators must come from the command list's length");
+  });
+
+  it("formatGateEvidence still accepts a plain NUMBER as `expected` — the coverage check just goes unrun", () => {
+    // Back-compatibility is load-bearing: this function is called from four
+    // places and a signature change that silently broke one would blind a
+    // phase. With a number there are no command strings to match against, so
+    // the audit reports only the count-based checks.
+    const shown = helpers.formatGateEvidence(
+      { gateGreen: true, gateOutput: "z".repeat(50), gateResults: [{ command: "cargo test", result: "36 passed" }] },
+      5,
+    );
+    assert.ok(shown.includes("INCOMPLETE"), "the direction-aware banner must still fire on a number");
+    assert.ok(shown.includes("[1/5]"), "a numeric expected must still denominate the rows");
+  });
+
+  it("states the fabrication limit IN the rendered audit, even when there are no concerns", () => {
+    // A clean audit line that just says "no concerns" would read as "this
+    // evidence is verified". It is not, and never can be: the reader must be
+    // told what was NOT checked, in the same breath as what was.
+    const shown = helpers.formatGateEvidence(
+      {
+        landedState: "landed",
+        detail: "merged clean, all required checks read green before merging",
+        gateResults: CMDS.map((command) => ({ command, result: "exit 0, clean" })),
+      },
+      CMDS,
+    );
+    assert.ok(shown.includes("MECHANICAL EVIDENCE AUDIT"), "the audit line must render even when clean");
+    assert.ok(
+      /fabricat/i.test(shown),
+      `the audit must state that fabrication is undetectable, got: ${shown.slice(0, 400)}`,
+    );
+  });
+
+  it("both the review and the landing call sites pass the command LIST, so coverage is actually checked", () => {
+    assert.ok(
+      source.includes("${formatGateEvidence(build, gateCmds(b))}"),
+      "the review prompt must pass gateCmds(b) (the list) so the coverage check runs",
+    );
+    assert.ok(
+      /formatGateEvidence\(r\.land, gateCmdsFor\(r\.issue\)/.test(source),
+      "the landing renderer must pass this item's command list, not just a count",
+    );
+  });
+
+  it("the wave's returned payload surfaces the audit concerns as their own field", () => {
+    // The point of #2686: evidence nothing is obliged to look at is barely
+    // better than no evidence. The concerns must be a first-class field, not
+    // buried inside a rendered string a summariser may skip.
+    assert.ok(source.includes("gateEvidenceConcerns"), "the wave return must carry a gateEvidenceConcerns field");
+    assert.ok(
+      /counts: \{[^}]*gateEvidenceConcerns/s.test(source),
+      "counts must include gateEvidenceConcerns so a non-zero value is visible at a glance",
+    );
+  });
+
+  it("the retro is handed the full merge-phase concerns and told to act on them", () => {
+    // The retro is the only phase that runs AFTER landing and has an action
+    // channel (issue comments, follow-up issues). It cannot un-merge anything
+    // — say so — but it can make an under-evidenced landing a named, durable
+    // item instead of a ratio nobody reads.
+    assert.ok(
+      source.includes("${gateAuditFacts"),
+      "the retro prompt must interpolate the wave-wide gate-evidence concerns",
+    );
+    assert.ok(
+      /MERGE-PHASE GATE-EVIDENCE AUDIT/.test(source),
+      "the retro prompt must label the audit section so the agent cannot skim past it",
+    );
+    assert.ok(
+      /cannot un-merge/i.test(source),
+      "the retro prompt must state plainly that it cannot un-merge a landed commit",
+    );
+  });
+});
+
+// ── #2686 Gap 2: the OVER-COMPLETE banner's accuracy is coupled to a config
+// convention nothing enforced ────────────────────────────────────────────────
+// `gateCmds` splits on `&&`. A gate written with `;` instead under-counts, and
+// then every honest report renders as a false OVER-COMPLETE. Latent today —
+// every BRINK-CONFIG.md gate is `&&`-chained — and #2672 refused `maxItems`
+// precisely because of that under-count. This lint makes the coupling explicit
+// instead of latent. It READS BRINK-CONFIG.md; it never writes it (the lessons
+// phase owns a per-wave PR against that file).
+describe("BRINK-CONFIG.md gate strings stay &&-chained (#2686 Gap 2)", () => {
+  const CONFIG_MD = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "BRINK-CONFIG.md");
+  const config = readFileSync(CONFIG_MD, "utf8");
+
+  // Only the lines that DEFINE a gate or the CACHE prefix — not every
+  // backticked command in the file's prose.
+  const gateLines = config
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/^- \*\*([^*]+)\*\*: `([^`]+)`/) ?? line.match(/^- (CACHE prefix): `([^`]+)`/);
+      if (!m) return null;
+      const [, label, command] = m;
+      return /gate|cache prefix/i.test(label) ? { label, command } : null;
+    })
+    .filter(Boolean);
+
+  it("finds the gate definitions it is meant to lint — a zero-match scan would pass vacuously", () => {
+    // House rule: a glob/scan that matches nothing exits green forever.
+    assert.ok(
+      gateLines.length >= 3,
+      `expected at least 3 gate/CACHE definitions in BRINK-CONFIG.md, found ${gateLines.length}: ${gateLines.map((g) => g.label).join(", ")}`,
+    );
+  });
+
+  it("no gate command is `;`-joined — `gateCmds` splits on `&&` and would under-count it", () => {
+    const offenders = gateLines.filter((g) => g.command.includes(";"));
+    assert.deepEqual(
+      offenders.map((g) => `${g.label}: ${g.command}`),
+      [],
+      "a `;`-joined gate makes gateCmds under-count its steps, which lowers the schema floor AND renders every honest report as a false OVER-COMPLETE. Rewrite the gate with `&&`, or change gateCmds and this lint together.",
+    );
+  });
+
+  it("every gate definition splits into at least one non-empty leg", () => {
+    for (const { label, command } of gateLines) {
+      const legs = command.split("&&").map((s) => s.trim()).filter(Boolean);
+      assert.ok(legs.length >= 1, `${label} produced no gate legs`);
+    }
+  });
+});
+
+// ── #2673: the #2665 probe record is a one-shot with no currency signal ──────
+// The probe established by direct experiment that the harness rejects a short
+// `gateResults` array. That record sits in SKILL.md with nothing to invalidate
+// it: a CLI upgrade could silently drop enforcement and every downstream claim
+// would keep reading as true.
+//
+// ⚠ THESE TESTS GUARD THE RECORD'S SHAPE, NOT ITS CURRENCY. No in-tree test can
+// detect a harness that stopped enforcing `minItems` — that boundary is stated
+// in this file's header and nothing below softens it. What they buy is that the
+// version and the re-probe trigger cannot be quietly dropped from the record,
+// so a reader can always tell WHICH harness answered.
+describe("the #2665 probe record carries a version and a re-probe trigger (#2673)", () => {
+  const skill = readFileSync(SKILL_MD, "utf8");
+
+  it("records the observed CLI version in a machine-readable line", () => {
+    const m = skill.match(/PROBED-CLI:\s*([0-9]+\.[0-9]+\.[0-9]+)/);
+    assert.ok(m, "SKILL.md must carry a `PROBED-CLI: <x.y.z>` line so the record names WHICH harness answered");
+    assert.ok(m[1].split(".").every((p) => /^[0-9]+$/.test(p)), `PROBED-CLI must parse as a version, got ${m[1]}`);
+  });
+
+  it("names the command that reads the running version, so the trigger is executable", () => {
+    assert.ok(
+      skill.includes("claude --version"),
+      "the re-probe trigger must name `claude --version` — a trigger nobody can evaluate is not a trigger",
+    );
+  });
+
+  it("states a re-probe trigger, not just a date", () => {
+    assert.ok(
+      /RE-PROBE TRIGGER/.test(skill),
+      "SKILL.md must carry an explicit RE-PROBE TRIGGER heading for the #2665 record",
+    );
+  });
+
+  it("keeps the boundary: no in-tree test can detect a harness that stops enforcing", () => {
+    assert.ok(
+      /cannot|can not/i.test(skill) && skill.includes("#2665"),
+      "the record must keep stating what it cannot establish",
+    );
+  });
+
+  it("the retro carries the version-drift duty, so the trigger has an actor once per wave", () => {
+    assert.ok(
+      source.includes("PROBED-CLI"),
+      "pump.js's retro prompt must tell the agent to compare the running CLI version against SKILL.md's PROBED-CLI record",
+    );
+  });
+});
+
+// ── #2673 Gap 2: the BRINK-CONFIG.md house-rule handoff had no tracked home ──
+// #2669 correctly did not edit BRINK-CONFIG.md (the lessons phase owns a
+// per-wave PR against that file), but nothing carried the proposed rule
+// forward — if the lessons agent misses the issue, the rule evaporates. A
+// tracked handoff depends on an agent reading a tracker; a MECHANICAL one is
+// interpolated into the lessons prompt every wave until the rule lands.
+describe("pending house rules are handed to the lessons phase mechanically (#2673 Gap 2)", () => {
+  it("pump.js declares PENDING_HOUSE_RULES and interpolates it into the lessons prompt", () => {
+    assert.ok(/const PENDING_HOUSE_RULES = \[/.test(source), "pump.js must declare a PENDING_HOUSE_RULES list");
+    assert.ok(
+      source.includes("${pendingRulesBlock}"),
+      "the lessons prompt must interpolate the pending house rules, not merely define them",
+    );
+  });
+
+  it("carries #2669's proposed rule about probing the enforcer", () => {
+    assert.ok(
+      /a schema constraint is enforcement only if a validator honours it/.test(source),
+      "the #2669/#2673 rule must be seeded into PENDING_HOUSE_RULES verbatim enough to be recognisable",
+    );
+    assert.ok(source.includes("#2673"), "the pending rule must cite its tracking issue");
+  });
+
+  it("tells the lessons agent to skip a pending rule already present in RULES", () => {
+    // Otherwise the list re-proposes the same rule every wave forever.
+    assert.ok(
+      /already covered by an existing rule/i.test(source),
+      "the lessons prompt must tell the agent to drop a pending rule that already landed",
     );
   });
 });
