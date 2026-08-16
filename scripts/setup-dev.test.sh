@@ -292,10 +292,21 @@ make_full_stub_bin() {
   mkdir -p "${dir}"
 
   if [ "${preseed_rustup}" = "1" ]; then
+    # `show` is the toolchain-resolution step (#2638) — the one rustup
+    # subcommand this script runs that touches the network, so it carries the
+    # HANG_/FAIL_ toggles. Every other subcommand is instant and local.
     cat > "${dir}/rustup" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   --version) echo "rustup 1.0.0" ;;
+  show)
+    if [ "${HANG_RUSTUP_SHOW:-0}" = "1" ]; then sleep 5; exit 0; fi
+    if [ "${FAIL_RUSTUP_SHOW:-0}" = "1" ]; then
+      echo "stub rustup: simulated toolchain fetch failure" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 EOF
@@ -324,6 +335,14 @@ cat > "$HOME/.cargo/bin/rustup" <<'INNER'
 #!/usr/bin/env bash
 case "$1" in
   --version) echo "rustup 1.0.0" ;;
+  show)
+    if [ "${HANG_RUSTUP_SHOW:-0}" = "1" ]; then sleep 5; exit 0; fi
+    if [ "${FAIL_RUSTUP_SHOW:-0}" = "1" ]; then
+      echo "stub rustup: simulated toolchain fetch failure" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 INNER
@@ -420,8 +439,17 @@ exec "${real_cargo}" "\$@"
 EOF
   chmod +x "${dir}/cargo"
 
+  # `prepare` is the npm-registry fetch of the pinned pnpm tarball (#2638);
+  # `enable` only writes local shims, so only `prepare` carries the toggles.
   cat > "${dir}/corepack" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "prepare" ]; then
+  if [ "${HANG_COREPACK_PREPARE:-0}" = "1" ]; then sleep 5; exit 0; fi
+  if [ "${FAIL_COREPACK_PREPARE:-0}" = "1" ]; then
+    echo "stub corepack: simulated registry fetch failure" >&2
+    exit 1
+  fi
+fi
 exit 0
 EOF
   chmod +x "${dir}/corepack"
@@ -694,6 +722,112 @@ if printf '%s' "${out}" | grep -q "Prebuilt cargo-nextest unavailable"; then
   pass "nextest fetch failure (fallback succeeds): names the failure and falls back"
 else
   fail "nextest fetch failure (fallback succeeds): no fallback message in output:\n${out}"
+fi
+
+# =============================================================================
+# Part 3 (#2638): the two network fetches #2591's own list of "remaining
+# fetches" missed — `rustup show` (which triggers the pinned-toolchain
+# install: channel + components + wasm32 target, the LARGEST download the
+# script performs) and `corepack prepare` (the npm-registry fetch of the
+# pinned pnpm tarball). Each gets both a HANG_* and a FAIL_* test, per the
+# lesson of #2628's review: seven HANG-only tests passed 36/36 while the
+# `bash -c` pipefail bug sat in the fast-failure path none of them took.
+# =============================================================================
+
+# --- Test 16: the pinned-toolchain resolution (`rustup show`) hanging must
+# TIME OUT and exit non-zero — a hard blocker, exactly like the rustup
+# installer above: without cargo/rustc no later step, and nothing in the
+# workspace, works. ---
+out="$(run_full_script 1 HANG_RUSTUP_SHOW=1 BRINK_SETUP_TOOLCHAIN_TIMEOUT=1)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "toolchain resolution timeout: script exits non-zero (got ${rc})"
+else
+  fail "toolchain resolution timeout: script exited 0 — the hang was not detected:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "toolchain resolution TIMED OUT"; then
+  pass "toolchain resolution timeout: prints a TIMED OUT message"
+else
+  fail "toolchain resolution timeout: no 'TIMED OUT' in output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -qF "BRINK_SETUP_TOOLCHAIN_TIMEOUT"; then
+  pass "toolchain resolution timeout: names the knob that raises the bound"
+else
+  fail "toolchain resolution timeout: does not name BRINK_SETUP_TOOLCHAIN_TIMEOUT:\n${out}"
+fi
+
+# --- Test 17: the pinned-toolchain resolution FAILING FAST (not hanging)
+# must exit non-zero AND say so distinctly — the fast-failure twin of Test
+# 16. Load-bearing: before this change `rustup show` was a bare command
+# under `set -e`, so the run did abort, but with NO diagnostic naming the
+# step, and (worse) a timeout and a genuine rustup error were
+# indistinguishable. ---
+out="$(run_full_script 1 FAIL_RUSTUP_SHOW=1)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "toolchain resolution failure: script exits non-zero (got ${rc})"
+else
+  fail "toolchain resolution failure: script exited 0 — the failure was not detected:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "toolchain resolution failed"; then
+  pass "toolchain resolution failure: prints a 'toolchain resolution failed' message"
+else
+  fail "toolchain resolution failure: no 'toolchain resolution failed' in output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "toolchain resolution TIMED OUT"; then
+  fail "toolchain resolution failure: reported as a TIMEOUT, but the stub failed fast:\n${out}"
+else
+  pass "toolchain resolution failure: not misreported as a timeout"
+fi
+
+# --- Test 18: the `corepack prepare` pnpm fetch hanging must WARN and
+# CONTINUE, not abort — the pin VERIFICATION immediately below it is what
+# decides fatality, and it produces the far better diagnostic (which of
+# "corepack could not fetch the pin" vs "a standalone pnpm shadows the shim"
+# happened). Here the stub pnpm already reports the pinned version (the
+# idempotent re-run case: the pin was activated by an earlier run), so the
+# verification passes and the script legitimately completes. ---
+out="$(run_full_script 1 HANG_COREPACK_PREPARE=1 BRINK_SETUP_COREPACK_TIMEOUT=1)"
+rc=$?
+if [ "${rc}" -eq 0 ]; then
+  pass "corepack prepare timeout (pin already active): script exits 0"
+else
+  fail "corepack prepare timeout (pin already active): script exited ${rc} — a warn-and-continue step aborted the run:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "corepack prepare TIMED OUT after 1s"; then
+  pass "corepack prepare timeout: names the timeout"
+else
+  fail "corepack prepare timeout: no timeout message in output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm ready"; then
+  pass "corepack prepare timeout: verification still ran and passed ('pnpm ready')"
+else
+  fail "corepack prepare timeout: never reached the pin verification:\n${out}"
+fi
+
+# --- Test 19: `corepack prepare` FAILING FAST (a registry 403/407, not a
+# stall) must behave identically — WARN, then let the pin verification
+# decide. Load-bearing: before this change `corepack prepare` was a bare
+# command under `set -e`, so a fast failure killed the script BEFORE the
+# verification block, meaning the carefully-worded "which one happened"
+# diagnostic that block exists to print was unreachable in exactly the case
+# it was written for. ---
+out="$(run_full_script 1 FAIL_COREPACK_PREPARE=1)"
+rc=$?
+if [ "${rc}" -eq 0 ]; then
+  pass "corepack prepare failure (pin already active): script exits 0"
+else
+  fail "corepack prepare failure (pin already active): script exited ${rc} — the run died before the pin verification:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "corepack prepare failed"; then
+  pass "corepack prepare failure: names the failure"
+else
+  fail "corepack prepare failure: no failure message in output:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "pnpm ready"; then
+  pass "corepack prepare failure: verification still ran and passed ('pnpm ready')"
+else
+  fail "corepack prepare failure: never reached the pin verification:\n${out}"
 fi
 
 if [ "${failures}" -gt 0 ]; then

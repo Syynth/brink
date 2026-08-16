@@ -36,6 +36,13 @@
 #   BRINK_SETUP_RUSTUP_TIMEOUT           120s   FAIL (exit 1) — nothing
 #                                                else works without cargo/
 #                                                rustc on PATH.
+#   BRINK_SETUP_TOOLCHAIN_TIMEOUT        600s   FAIL (exit 1) — the pinned
+#                                                toolchain install triggered
+#                                                by `rustup show` (channel +
+#                                                components + wasm32 target).
+#                                                The largest download here,
+#                                                hence the largest bound
+#                                                (#2638).
 #   BRINK_SETUP_WASM_PACK_TIMEOUT         60s   WARN, fall back to a
 #                                                from-source `cargo install`
 #                                                (see CARGO_INSTALL below).
@@ -54,6 +61,14 @@
 #                                                wasm-pack/nextest: FAIL
 #                                                (exit 1). cargo-deny: WARN,
 #                                                skip the audit.
+#   BRINK_SETUP_COREPACK_TIMEOUT         120s   WARN, continue — the
+#                                                npm-registry fetch of the
+#                                                pinned pnpm tarball
+#                                                (#2638). The pin
+#                                                verification right after it
+#                                                is what FAILS the run if
+#                                                pnpm did not end up at the
+#                                                pinned version.
 #   BRINK_SETUP_AUDIT_TIMEOUT            300s   The two `cargo deny check`
 #                                                audits themselves
 #                                                (BRINK_SETUP_FULL=1 only).
@@ -162,8 +177,35 @@ fi
 
 # rustup reads rust-toolchain.toml from the repo root and installs/selects
 # the pinned toolchain (channel, components, wasm32 target) on first use.
+#
+# On a fresh machine this is the LARGEST network operation in the whole
+# script — hundreds of MB of channel + components + the wasm32 target —
+# which is exactly why it needs the MOST generous bound here, not the
+# tightest. 600s is deliberate: a cold toolchain fetch on a slow-but-healthy
+# link legitimately runs into the minutes, and a bound that misclassifies
+# that as a stall converts a working (if slow) setup into a hard failure,
+# which is strictly worse than the stall it guards against. The number is
+# therefore sized to catch "this is never going to finish" (a wedged proxy),
+# not "this is slower than I'd like"; raise BRINK_SETUP_TOOLCHAIN_TIMEOUT if
+# a genuinely healthy link is still getting cut off.
+#
+# FAILS on timeout (and on any other error): every later step in this
+# script, every gate, and the workspace itself needs cargo/rustc from the
+# pinned toolchain. There is no degraded mode worth continuing into.
+BRINK_SETUP_TOOLCHAIN_TIMEOUT="${BRINK_SETUP_TOOLCHAIN_TIMEOUT:-600}"
 echo "==> Resolving pinned toolchain from rust-toolchain.toml"
-rustup show
+# `rc=0; cmd || rc=$?` — NOT `if ! cmd; then rc=$?`, which reads the
+# NEGATION's status and so always captures 0, leaving the -eq 124 branch
+# permanently dead (the exact bug #2584 shipped and #2531's test now guards).
+toolchain_rc=0
+run_with_timeout "${BRINK_SETUP_TOOLCHAIN_TIMEOUT}" rustup show || toolchain_rc=$?
+if [ "$toolchain_rc" -eq 124 ]; then
+  echo "==> ✗ toolchain resolution TIMED OUT after ${BRINK_SETUP_TOOLCHAIN_TIMEOUT}s — the pinned toolchain download never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_SETUP_TOOLCHAIN_TIMEOUT."
+  exit 1
+elif [ "$toolchain_rc" -ne 0 ]; then
+  echo "==> ✗ toolchain resolution failed (exit ${toolchain_rc}) — rustup could not install/select the toolchain pinned in rust-toolchain.toml."
+  exit 1
+fi
 
 # --- wasm-pack ---------------------------------------------------------------
 
@@ -450,8 +492,36 @@ if [ -z "${PNPM_VERSION}" ]; then
 fi
 
 echo "==> Enabling corepack + pinning pnpm@${PNPM_VERSION}"
+# `corepack enable` only writes local shims — no network, so no bound.
 corepack enable
-corepack prepare "pnpm@${PNPM_VERSION}" --activate
+
+# `corepack prepare` DOES hit the network: it downloads the pinned pnpm
+# tarball from the npm registry. A few MB, so 120s is generous for the
+# transfer itself — set at double the plain-tarball bounds (wasm-pack,
+# binaryen, nextest at 60s) because this one additionally does registry
+# resolution and integrity verification, and registry latency behind a proxy
+# is routinely worse than a GitHub release CDN's; and well under the 300s
+# cargo-install bound, since nothing is compiled here.
+BRINK_SETUP_COREPACK_TIMEOUT="${BRINK_SETUP_COREPACK_TIMEOUT:-120}"
+# WARNS and continues, rather than aborting, on BOTH a timeout and a plain
+# failure — because the pin verification immediately below is the better
+# judge of whether this run can proceed, and it cannot judge anything if the
+# script has already died. Two cases the warn path handles correctly that an
+# abort does not: an idempotent re-run where the pinned pnpm is ALREADY
+# activated (nothing was actually lost, so aborting is pure false negative),
+# and a genuinely broken fetch, where the verification's diagnostic
+# distinguishes "corepack could not fetch the pin" from "a standalone pnpm
+# shadows corepack's shim" — which is what that block was written for and,
+# before this change, could never print for a hard corepack failure, since a
+# bare command under `set -e` killed the run first.
+corepack_rc=0
+run_with_timeout "${BRINK_SETUP_COREPACK_TIMEOUT}" \
+  corepack prepare "pnpm@${PNPM_VERSION}" --activate || corepack_rc=$?
+if [ "$corepack_rc" -eq 124 ]; then
+  echo "==> ⚠  corepack prepare TIMED OUT after ${BRINK_SETUP_COREPACK_TIMEOUT}s — the pnpm tarball fetch never completed. Verifying what pnpm resolves to anyway; raise BRINK_SETUP_COREPACK_TIMEOUT if the link is healthy but slow."
+elif [ "$corepack_rc" -ne 0 ]; then
+  echo "==> ⚠  corepack prepare failed (exit ${corepack_rc}) — verifying what pnpm resolves to anyway."
+fi
 
 # Verify what actually resolved. A pin nothing checks is a pin that drifts
 # silently, which is the whole point of #2604. Capture stderr too — a

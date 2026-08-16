@@ -317,7 +317,12 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   mirrors the version the pinned action's image ships and must move with that
   action SHA (#2498). Each invocation is bounded by
   `BRINK_SETUP_AUDIT_TIMEOUT` (default 300s) so a stalled RUSTSEC DB fetch
-  can't block setup indefinitely (#2531): a genuine timeout is distinguished
+  can't block setup indefinitely (#2531). That knob is **one of a family**,
+  not a special case: every network step in `setup-dev.sh` is now bounded by
+  its own `BRINK_SETUP_*_TIMEOUT` (#2584/#2591/#2638), and the authoritative
+  knob/default/fail-vs-warn table lives in that script's header block — the
+  audit bound is simply the one this section is about. A genuine timeout is
+  distinguished
   from normal audit findings and reported as `TIMED OUT`, exiting the script
   non-zero for the required root-workspace audit but only warning and
   continuing for the non-blocking `src-tauri` audit below, so the timeout
