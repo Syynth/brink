@@ -134,6 +134,11 @@ function SearchViewInner() {
   // removed.
   useEffect(() => {
     inputRef.current?.focus();
+    // SELECT-INVARIANT SearchView.select: the query field is controlled
+    // (rule 1 holds by construction) and this effect runs only on mount or
+    // an explicit search.focus invocation (property 2 above) — "replace this
+    // query" is the correct reading of that command, not a clobber. See the
+    // comment block above this effect and search-view-focus.test.tsx.
     inputRef.current?.select();
   }, [focusSeq]);
 
