@@ -434,6 +434,81 @@ wrong reflex (#2577's lesson):
   (`crates/brink-web/src/editor_refactor.rs`) go red if either branch becomes
   reachable from the name-based road.
 
+### The missing-refusal class now has a mechanism (#2661)
+
+#2641 and #2634 were both found by *reading* the two implementations side by
+side. That does not scale and does not recur reliably, so #2661 audited the
+remaining structural ops for the same shape and — more importantly — gave the
+class a driven guard instead of another pair of hand-written cases.
+
+**The mechanism.** The generated fixture carries three more machine-produced
+maps beside `shapes` and `messages`:
+
+- **`sources`** — the exact source text every driver ran against.
+  `structural-refusal-shape.test.ts` asserts its own constants are
+  byte-identical to them. Before this, "byte-identical to the TS fixtures" was
+  a comment on both sides and nothing checked it, yet every parity claim in the
+  file depends on it: a driven answer is evidence about the mock only if the
+  mock was asked the same question.
+- **`acceptance`** — each driven `(op, input)` pair's own **`ok` flag** plus the
+  `error` beside it, produced by `driven_outline_acceptance()` /
+  `driven_extract_acceptance()` calling the op on a real `EditorSession`. The
+  TypeScript side asks the mock the same question and compares both fields, so
+  a mock that succeeds where production refuses, refuses where production
+  succeeds, **or** refuses for a different reason is red. Offsets are derived
+  from the source text on both sides (`find` / `indexOf`), never typed twice.
+
+A third map, **`headers`**, covers what acceptance still cannot see: two ops
+that answer `ok: true` on both sides while rewriting the header differently.
+It stores the header line out of production's own `new_source`.
+
+**What the audit found.** Seventeen of the twenty-one driven cases were red
+against the pre-#2661 mock (the four greens were deliberate positive controls).
+They reduce to three root causes, each fixed by scoping the mock's lookup to
+mirror production's resolution rather than by adding a special case:
+
+| op | production refuses / accepts | mock before |
+| --- | --- | --- |
+| `promote_stitch` | name collision with a top-level **function** knot | succeeded — **missing refusal** |
+| `reorder_knots` | a function knot counts toward the permutation | accepted a short order — **missing refusal** |
+| `reorder_knot` / `move_stitch` / `demote_knot` | a function knot resolves like any knot | refused `source`/`destination knot not found` |
+| `reorder_stitch` | `stitch '…' not found in knot` inside a function knot | refused with the knot wording |
+| `reorder_stitches` | `Ok(source)` unchanged when the knot has no stitches | refused `invalid reorder` |
+| `extract_to_*` | `invalid extraction name`, `selection crosses a knot or stitch header`, `name collision … variable, const, or list`, a blank-line `empty selection`, `selection cannot be a function body` | succeeded — **five missing refusals** |
+| `extract_to_*` | `name collision: '…' already exists as a top-level knot` | refused with `a knot or function named '…' already exists`, a string production never emits |
+| `demote_knot` / `promote_stitch` header rewrite | `= function greet()` / `=== deal(n) ===` | header left untouched / `=== deal ===(n)` |
+
+**The root causes, and why the fixes are scoping rather than special cases:**
+
+- **The mock's knot regex could not see a `function` knot.** `parseOutline`
+  matched `/^===\s+(\w+)\s*===/`, while production resolves knots through
+  `brink_syntax`'s `tree.knots()`, whose `KnotHeader::name()` answers the bare
+  `greet` for `=== function greet() ===` exactly as it does for a plain knot
+  (`document_symbols` merely tags it `detail: "function"`). One regex
+  (`KNOT_HEADER_RE`, now shared) fixed every op that resolves a knot.
+  ⚠ **Any knot-matching regex needs `(?:function\s+)?`** — PR #2658's own fix
+  introduced this trap and its review caught it. `FUNCTION_KNOT` /
+  `KNOT_AND_FUNCTION` exist as fixtures so a new one goes red.
+- **The two header rewrites interpolated the declared name.** Production's
+  `rewrite_stitch_to_knot_header` / `rewrite_knot_to_stitch_header` are
+  **name-agnostic**: they strip the `=` fences and keep whatever is between
+  them. The mock now does the same (`rewriteFirstHeader`), which fixes the
+  function-knot header *and* the parameterised-stitch header at once, rather
+  than adding a `function` case to a name-based regex.
+- **`extract_to_*` modelled three of `ExtractError`'s eight variants.**
+  `extractImpl` now runs production's own sequence — validate name, empty
+  selection, snap to lines (`snapToLines` mirrors `snap_to_lines`, including
+  its "`hi` already at a line start" rule), header crossing, knot collision,
+  global collision, whitespace-only selection, then the function-body check.
+  The order is production's, so an input that trips two checks gets the same
+  answer on both sides.
+
+**What this still does not close.** Acceptance is driven **per-site**, exactly
+like vocabulary: `driven_acceptance()` is a list someone wrote, so an
+`(op, input)` pair nobody drives is still invisible. The #2577 wall stands —
+what changed is that the class now *has* a mechanism, and adding a case to it
+costs one entry on each side instead of a fresh argument.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:

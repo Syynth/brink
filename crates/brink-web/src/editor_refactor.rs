@@ -373,7 +373,10 @@ mod refusal_shape {
 
     const COMMENT: &str = "GENERATED from the Rust refusal payloads — do not hand-edit. \
 `shapes` are the serialized structs (message elided to the placeholder in `error`); \
-`messages` are real refusal strings read back out of the production ops, not typed (#2603). \
+`messages` are real refusal strings read back out of the production ops, not typed (#2603); \
+`sources` are the exact inputs those drivers ran against, and `acceptance` is each \
+(op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based \
+guard can express, because a mock that never refuses has no string to compare (#2661). \
 Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. \
 Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).";
 
@@ -413,6 +416,9 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "StructuralResultJs": parse(&error_json(REFUSAL_MSG)),
             },
             "messages": driven_messages(),
+            "sources": source_fixtures(),
+            "acceptance": driven_acceptance(),
+            "headers": driven_header_rewrites(),
         })
     }
 
@@ -448,6 +454,71 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     const MAIN: &str = "=== hello ===\nHi.\n-> END\n";
     const TWO_KNOTS: &str =
         "=== one ===\nFirst.\n= a\nA.\n= b\nB.\n\n=== two ===\nSecond.\n= a\nOther A.\n";
+
+    /// A single `function` knot. `KnotHeader::name()` answers `greet` for it
+    /// exactly as it would for a plain knot, so every op below treats it as an
+    /// ordinary top-level knot — the fact a header-shaped regex has to skip a
+    /// `function` segment to see is the whole reason this fixture exists.
+    const FUNCTION_KNOT: &str = "=== function greet() ===\n~ return \"hi\"\n";
+
+    /// A plain knot carrying one stitch, plus a function knot. The mixed file:
+    /// production counts TWO top-level knots here.
+    const KNOT_AND_FUNCTION: &str =
+        "=== one ===\nFirst.\n= a\nA.\n\n=== function greet() ===\n~ return \"hi\"\n";
+
+    /// Two knots, neither carrying a stitch — the input that separates
+    /// `reorder_stitches`'s "no stitches, nothing to do" branch (production
+    /// answers `Ok(source)` unchanged) from its `InvalidReorder` refusal.
+    const STITCHLESS_KNOTS: &str = "=== one ===\nFirst.\n\n=== two ===\nSecond.\n";
+
+    /// A stitch whose name is already taken by a top-level FUNCTION knot —
+    /// `promote_stitch`'s collision check runs over every knot, function ones
+    /// included.
+    const STITCH_SHADOWS_FUNCTION: &str =
+        "=== one ===\nFirst.\n= greet\nG.\n\n=== function greet() ===\n~ return \"hi\"\n";
+
+    /// A `VAR` beside a knot — `extract_*` refuses a name that clashes with a
+    /// declared variable/const/list, a check nothing in the outline model sees.
+    const VAR_AND_KNOT: &str = "VAR score = 0\n\n=== one ===\nFirst.\nSecond.\n";
+
+    /// A knot body with a blank line in it, so a selection can be non-empty in
+    /// offsets yet whitespace-only in content.
+    const BLANK_BODY: &str = "=== one ===\nFirst.\n\nLast.\n";
+
+    /// A stitch carrying parameters — the promote rewrite has to keep the
+    /// `(n)` inside the new fences, not strand it after them.
+    const PARAM_STITCH: &str = "=== one ===\nFirst.\n= deal(n)\nD.\n";
+
+    /// A source whose very first character is a blank line (review finding
+    /// on #2670). `snap_to_lines`'s line-start search runs `source[..lo]`,
+    /// so an empty prefix answers `None` -> `0` for `lo == 0`; the mock's
+    /// `source.lastIndexOf("\n", l - 1)` used to pass `-1`, which JS clamps
+    /// to `0` and finds the LEADING newline itself instead of "no newline
+    /// before here", answering `start = 1`.
+    const LEADING_BLANK_LINE: &str = "\n=== a ===\nContent.\n";
+
+    /// Every named source the drivers run against, shipped INTO the fixture.
+    ///
+    /// The mirroring TypeScript test asserts its own constants are
+    /// byte-identical to these. Before #2661 that identity was a comment
+    /// ("byte-identical to `structural-refusal-shape.test.ts`'s `MAIN` /
+    /// `TWO_KNOTS`") and nothing checked it — yet every parity claim in the
+    /// fixture depends on it, since a driven answer is only evidence about the
+    /// mock if the mock was asked the same question.
+    fn source_fixtures() -> serde_json::Value {
+        serde_json::json!({
+            "BLANK_BODY": BLANK_BODY,
+            "FUNCTION_KNOT": FUNCTION_KNOT,
+            "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
+            "MAIN": MAIN,
+            "PARAM_STITCH": PARAM_STITCH,
+            "LEADING_BLANK_LINE": LEADING_BLANK_LINE,
+            "STITCHLESS_KNOTS": STITCHLESS_KNOTS,
+            "STITCH_SHADOWS_FUNCTION": STITCH_SHADOWS_FUNCTION,
+            "TWO_KNOTS": TWO_KNOTS,
+            "VAR_AND_KNOT": VAR_AND_KNOT,
+        })
+    }
 
     fn session_with(files: &[(&str, &str)]) -> EditorSession {
         let mut session = EditorSession::new();
@@ -791,6 +862,263 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// The whole driven map: doc-handle vocabulary plus every other site.
     fn driven_messages() -> serde_json::Value {
         merge_driven(&[driven_doc_handle_messages(), driven_op_messages()])
+    }
+
+    // ── Acceptance: the `ok` FLAG, driven out of production (#2661) ──
+
+    /// An op's answer reduced to the two things a mock can get wrong about
+    /// *whether* it happened: the `ok` flag, and the `error` beside it (`null`
+    /// on success).
+    ///
+    /// Deliberately NOT [`refusal_message`]: that helper asserts `ok: false`
+    /// up front, because a message harvested from a success is not a refusal's
+    /// wording. This one records whichever answer production gave, which is
+    /// the point — a case that production ACCEPTS is evidence too, and the
+    /// class #2661 is about is a mock answering `ok: true` where production
+    /// refuses (and its mirror image, a mock refusing what production accepts).
+    fn outcome(site: &str, json: &str) -> serde_json::Value {
+        let value = parse(json);
+        let ok = value["ok"].as_bool();
+        assert!(
+            ok.is_some(),
+            "`{site}` answered no `ok` flag at all, so there is no acceptance to \
+             pin: {value:#}"
+        );
+        let error = value
+            .get("error")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        assert!(
+            ok != Some(false) || error.is_string(),
+            "`{site}` refused without an `error` string: {value:#}"
+        );
+        serde_json::json!({ "ok": ok, "error": error })
+    }
+
+    /// The UTF-16 offset of `marker` in `source`. The fixtures are ASCII, so
+    /// this is also the byte offset; both sides derive their offsets from the
+    /// (byte-identical) source text rather than typing a number twice.
+    fn at(source: &str, marker: &str) -> u32 {
+        let idx = source.find(marker);
+        assert!(
+            idx.is_some(),
+            "marker {marker:?} is not in the source fixture — the driver is \
+             pointing at text that no longer exists"
+        );
+        u32::try_from(idx.expect("just asserted above")).expect("fixtures are tiny")
+    }
+
+    /// The outline-reshaping ops' ACCEPTANCE, driven the same way the messages
+    /// are (#2661).
+    ///
+    /// Every case here is an (op, input) pair where the studio mock's own
+    /// resolution could disagree with production's about whether the op runs
+    /// at all. Most of them turn on the same thing: production resolves knots
+    /// through `brink_syntax`'s `tree.knots()`, which yields a `function` knot
+    /// like any other, while the mock resolves them with a header regex.
+    fn driven_outline_acceptance() -> serde_json::Value {
+        let function_only = session_with(&[("main.ink", FUNCTION_KNOT)]);
+        let mixed = session_with(&[("main.ink", KNOT_AND_FUNCTION)]);
+        let stitchless = session_with(&[("main.ink", STITCHLESS_KNOTS)]);
+        let shadowed = session_with(&[("main.ink", STITCH_SHADOWS_FUNCTION)]);
+        let two = session_with(&[("main.ink", TWO_KNOTS)]);
+
+        serde_json::json!({
+            // A file whose only knot is a function knot: production finds it,
+            // and a "move the last knot down" is a no-op it ACCEPTS.
+            "reorder_knot:function-knot": outcome(
+                "reorder_knot (the only knot is a function knot)",
+                &function_only.reorder_knot("main.ink", "greet", 1),
+            ),
+            // Two knots exist here, so a one-name order is not a permutation.
+            "reorder_knots:function-knot-counted": outcome(
+                "reorder_knots (a function knot counts toward the permutation)",
+                &mixed.reorder_knots("main.ink", vec!["one".to_owned()]),
+            ),
+            // ...and the full permutation is accepted.
+            "reorder_knots:function-knot-permuted": outcome(
+                "reorder_knots (permuting a plain knot with a function knot)",
+                &mixed.reorder_knots("main.ink", vec!["greet".to_owned(), "one".to_owned()]),
+            ),
+            // A knot with a body but no stitches: production short-circuits to
+            // `Ok(source)` BEFORE the permutation is resolved, so even a
+            // nonsense order is accepted rather than refused.
+            "reorder_stitches:stitchless-knot": outcome(
+                "reorder_stitches (knot carries no stitches)",
+                &stitchless.reorder_stitches("main.ink", "one", vec!["nope".to_owned()]),
+            ),
+            // The function knot resolves, so this refuses on the STITCH, not
+            // on the knot — a different `MoveError` from "source knot not found".
+            "reorder_stitch:function-knot": outcome(
+                "reorder_stitch (stitch inside a function knot)",
+                &mixed.reorder_stitch("main.ink", "greet", "a", 1),
+            ),
+            "move_stitch:into-function-knot": outcome(
+                "move_stitch (destination is a function knot)",
+                &mixed.move_stitch("main.ink", "one", "a", "greet"),
+            ),
+            // The collision check runs over every top-level knot, so the
+            // function knot `greet` blocks promoting a stitch of that name.
+            "promote_stitch:collides-with-function-knot": outcome(
+                "promote_stitch (name taken by a function knot)",
+                &shadowed.promote_stitch("main.ink", "one", "greet"),
+            ),
+            "demote_knot:function-knot-source": outcome(
+                "demote_knot (demoting a function knot)",
+                &mixed.demote_knot("main.ink", "greet", "one"),
+            ),
+            // Both knots resolve, so production reaches the nesting check —
+            // `one` has a stitch — instead of refusing on the destination.
+            "demote_knot:function-knot-dest": outcome(
+                "demote_knot (destination is a function knot)",
+                &mixed.demote_knot("main.ink", "one", "greet"),
+            ),
+            // Positive controls: the guards above must not have been bought by
+            // refusing (or accepting) everything.
+            "reorder_stitch:accepted": outcome(
+                "reorder_stitch (ordinary success)",
+                &two.reorder_stitch("main.ink", "one", "a", 1),
+            ),
+            "move_stitch:accepted": outcome(
+                "move_stitch (ordinary success)",
+                &two.move_stitch("main.ink", "one", "b", "two"),
+            ),
+        })
+    }
+
+    /// `extract_to_knot` / `extract_to_function` acceptance (#2661).
+    ///
+    /// `brink_ide::extract::ExtractError` has EIGHT variants; the studio mock
+    /// modelled three of them, so five production refusals answered `ok: true`
+    /// under test. Offsets are derived from the (fixture-shipped) source text
+    /// via [`at`] so the TypeScript mirror can compute the same window without
+    /// a hand-typed number.
+    fn driven_extract_acceptance() -> serde_json::Value {
+        let main = session_with(&[("main.ink", MAIN)]);
+        let two = session_with(&[("main.ink", TWO_KNOTS)]);
+        let vars = session_with(&[("main.ink", VAR_AND_KNOT)]);
+        let blank = session_with(&[("main.ink", BLANK_BODY)]);
+        let leading_blank = session_with(&[("main.ink", LEADING_BLANK_LINE)]);
+
+        let hi = at(MAIN, "Hi.");
+        let end_divert = at(MAIN, "-> END");
+        let first = at(VAR_AND_KNOT, "First.");
+        // The blank line sits immediately after the first `\n\n`.
+        let blank_line = at(BLANK_BODY, "\n\n") + 1;
+
+        serde_json::json!({
+            // The snapped window swallows knot `two`'s header line.
+            "extract_to_knot:crosses-header": outcome(
+                "extract_to_knot (selection crosses a knot header)",
+                &two.extract_to_knot("main.ink", at(TWO_KNOTS, "B."), at(TWO_KNOTS, "Second."), "lifted"),
+            ),
+            "extract_to_knot:knot-name-collision": outcome(
+                "extract_to_knot (name already a top-level knot)",
+                &main.extract_to_knot("main.ink", hi, hi + 3, "hello"),
+            ),
+            "extract_to_knot:var-collision": outcome(
+                "extract_to_knot (name already a VAR)",
+                &vars.extract_to_knot("main.ink", first, first + 6, "score"),
+            ),
+            "extract_to_knot:invalid-name": outcome(
+                "extract_to_knot (name is not an identifier)",
+                &main.extract_to_knot("main.ink", hi, hi + 3, "1bad"),
+            ),
+            // Non-empty in offsets, whitespace-only in content.
+            "extract_to_knot:blank-selection": outcome(
+                "extract_to_knot (selection is a blank line)",
+                &blank.extract_to_knot("main.ink", blank_line, blank_line + 1, "lifted"),
+            ),
+            "extract_to_knot:accepted": outcome(
+                "extract_to_knot (ordinary success)",
+                &main.extract_to_knot("main.ink", hi, hi + 3, "lifted"),
+            ),
+            // Review finding on #2670: a source whose FIRST character is a
+            // blank line, selected at [0, 1). `snap_to_lines`'s `lo == 0`
+            // never finds a preceding newline (start stays 0), so the
+            // snapped window is just that leading blank line — empty
+            // content, not a real extraction.
+            "extract_to_knot:leading-blank-line": outcome(
+                "extract_to_knot (selection at offset 0, source starts with a blank line)",
+                &leading_blank.extract_to_knot("main.ink", 0, 1, "lifted"),
+            ),
+            // Functions cannot divert; `-> END` is flow control.
+            "extract_to_function:flow-control": outcome(
+                "extract_to_function (selection contains a divert)",
+                &main.extract_to_function("main.ink", end_divert, end_divert + 6, "lifted"),
+            ),
+            "extract_to_function:invalid-name": outcome(
+                "extract_to_function (name is not an identifier)",
+                &main.extract_to_function("main.ink", hi, hi + 3, "1bad"),
+            ),
+            "extract_to_function:var-collision": outcome(
+                "extract_to_function (name already a VAR)",
+                &vars.extract_to_function("main.ink", first, first + 6, "score"),
+            ),
+            "extract_to_function:accepted": outcome(
+                "extract_to_function (ordinary success)",
+                &main.extract_to_function("main.ink", hi, hi + 3, "lifted"),
+            ),
+        })
+    }
+
+    /// The whole driven acceptance map.
+    fn driven_acceptance() -> serde_json::Value {
+        merge_driven(&[driven_outline_acceptance(), driven_extract_acceptance()])
+    }
+
+    /// The header line `promote_stitch` / `demote_knot` REWRITE, read out of
+    /// production's own `new_source` (#2661).
+    ///
+    /// Acceptance alone cannot see this: both ops answer `ok: true` here, so a
+    /// rewrite that silently left the header alone (or mangled it) is a
+    /// successful answer with wrong content. Production's two rewrites are
+    /// name-agnostic — they strip the `=` fences and keep whatever is between
+    /// them — which is why a function knot keeps its `function` segment and a
+    /// parameterised stitch keeps its `(n)` inside the new fences.
+    ///
+    /// The mock interpolated the declared name into a regex instead, so
+    /// `=== function greet() ===` matched nothing (header left untouched) and
+    /// `= deal(n)` promoted to `=== deal ===(n)`.
+    fn driven_header_rewrites() -> serde_json::Value {
+        let mixed = session_with(&[("main.ink", KNOT_AND_FUNCTION)]);
+        let params = session_with(&[("main.ink", PARAM_STITCH)]);
+
+        serde_json::json!({
+            "demote_knot:function-knot": rewritten_header(
+                "demote_knot (function knot)",
+                &mixed.demote_knot("main.ink", "greet", "one"),
+                "greet",
+            ),
+            "promote_stitch:parameterised": rewritten_header(
+                "promote_stitch (stitch with parameters)",
+                &params.promote_stitch("main.ink", "one", "deal"),
+                "deal",
+            ),
+        })
+    }
+
+    /// The single `=`-leading line of a successful op's `new_source` that
+    /// mentions `name` — i.e. the header the rewrite produced.
+    fn rewritten_header(site: &str, json: &str, name: &str) -> String {
+        let value = parse(json);
+        assert!(
+            value["ok"] == serde_json::json!(true),
+            "`{site}` refused, so there is no rewritten header to read: {value:#}"
+        );
+        let source = value["new_source"].as_str().unwrap_or_default();
+        let headers: Vec<&str> = source
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with('=') && l.contains(name))
+            .collect();
+        assert!(
+            headers.len() == 1,
+            "`{site}` produced {} header lines mentioning `{name}`, so there is no \
+             single rewrite to pin: {headers:?}",
+            headers.len()
+        );
+        (*headers.first().expect("just asserted above")).to_owned()
     }
 
     // ── Discovery: which structs can refuse at all (#2577) ───────────
