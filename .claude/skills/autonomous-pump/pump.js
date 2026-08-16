@@ -202,7 +202,106 @@ const LANDING_POLICY = `LANDING POLICY — THREE CASES. Decide by READING the PR
 ⚠ CASE 1 CAN BE REFUSED, and the refusal is NOT case 3 (found in w154, PR #2474). GitHub's \`mergeable_state\` is UNSTABLE for BOTH "some checks still pending" and "some check failed", and \`enable_pr_auto_merge\` rejects an UNSTABLE PR with a message like "unstable status (required checks are failing)" — even when NOTHING has failed and the only laggard is a slow job. Do NOT believe that message over the check runs you just read, do NOT loop-retry the arm call, and do NOT park. WAIT for the outstanding checks to conclude (a few minutes; re-read the check runs, don't spin), then re-evaluate from the top: all green → case 2, something red → case 3. Waiting is the correct action because the state is genuinely undecided until the checks finish.
 ⚠ REPORT HONESTLY: \`merged: true\` means "auto-merge ARMED (case 1) or actually LANDED (case 2)" — armed does NOT mean the commit is in main. State WHICH case you took in \`detail\`, and for case 2 name the checks you read. Never claim a PR landed on the strength of having armed it: this repo has LOST two PRs (#1659, #1666) to auto-merge that armed, later conflicted, and left work looking landed while its issue stayed open.`;
 
+// GATE_SCHEMA_HELPERS_START — kept together + marker-fenced so a standalone
+// script (scripts/pump-gate-schema.test.mjs) can extract exactly this block —
+// gateFor through formatGateEvidence — and validate it against real,
+// hand-written objects without dragging in the rest of the file's
+// agent-harness dependencies (see #2645).
 const gateFor = (b) => `${CACHE} && ${b.gate ?? GATE}`;
+//
+// `gateCmds(b)` — the exact commands THIS item's gate runs, split on `&&`.
+// ⚠ SPLITTING ON `&&` IS DELIBERATELY CRUDE, NOT A SHELL PARSER. It matches
+// how every gate string in BRINK-CONFIG.md is actually written (CACHE and
+// each step chained on one line with `&&`), so it counts real steps for the
+// common case. A gate that instead uses `;` or hides a step inside a
+// subshell/heredoc will UNDER-count `gateCmds.length` — that fails SAFE:
+// `minItems` below comes out LOWER than the true step count, so the schema
+// is never stricter than the gate needs, only ever looser. It is not meant
+// to, and does not attempt to, understand shell syntax.
+const gateCmds = (b) => gateFor(b).split("&&").map((s) => s.trim()).filter(Boolean);
+
+// BUILD schema is PER-ITEM (#2645): `gateResults.minItems` is a compile-time
+// constant derived from THIS item's own gate string, computed right here at
+// prompt-assembly time — `gateFor(b)` is already known. A `gateResults` array
+// shorter than the gate's own command count now fails validation at the
+// TOOL-CALL layer and the agent is forced to retry, instead of producing an
+// unenforced claim a human or reviewer has to audit by hand.
+//
+// This is the THIRD attempt at closing this hole (#2612's `required` +
+// `minLength`, then a schema `description` demanding a result per command —
+// see #2645's evidence). Both were satisfiable by asserting harder: measured
+// across w167/w168, builds routinely claimed "all N commands ran" while
+// actually reporting fewer than N, and nothing at the tool-call layer could
+// tell the difference. `gateResults` makes a MISSING command a validation
+// error instead of an unaudited sentence.
+//
+// ⚠ WHAT THIS DOES NOT BUY: it does NOT verify that a reported `result` is
+// TRUE, and it CANNOT tell a real green from a fabricated one — an agent can
+// still write a false "36 passed" for a command it never ran. It only makes
+// a MISSING command mechanically impossible to submit. `gateOutput` stays as
+// a free-text field for preflight/disk notes that don't belong to any single
+// command (df/du figures, TDD red→green narration) — both fields are shown
+// to the adversarial reviewer, whose job is exactly to disbelieve the claim.
+const buildSchemaFor = (b) => {
+  const cmds = gateCmds(b);
+  return {
+    type: "object", additionalProperties: false,
+    required: ["ok", "issue", "pr", "gateGreen", "gateOutput", "gateResults", "reachability", "summary"],
+    properties: {
+      ok: { type: "boolean" }, issue: { type: "number" }, pr: { type: "string" },
+      gateGreen: { type: "boolean" },
+      // minLength: an empty string satisfied `type: "string"`, so "required"
+      // alone reproduced the exact hole it was added to close (#2612).
+      gateOutput: {
+        type: "string", minLength: 40,
+        description: "free-text preflight/disk notes and anything that belongs to no single gate command — NOT where per-command results go; use gateResults for those.",
+      },
+      gateResults: {
+        type: "array",
+        minItems: cmds.length,
+        description: `one entry per command in THIS gate, IN ORDER (${cmds.length} total): ${cmds.map((c, i) => `${i + 1}. ${c}`).join(" | ")}`,
+        items: {
+          type: "object", additionalProperties: false,
+          required: ["command", "result"],
+          properties: {
+            command: { type: "string", minLength: 3, description: "the command as run, verbatim" },
+            result: {
+              type: "string", minLength: 8,
+              description: "that command's own outcome — test/pass counts, 'clean', or an exit status. If it was skipped or its output was lost, SAY SO here explicitly; do not omit the row.",
+            },
+          },
+        },
+      },
+      reachability: { type: "string", description: "the concrete user path that exercises this change" },
+      summary: { type: "string" },
+      scopeNotes: { type: "string", description: "work discovered BEYOND this issue (hidden coupling, missing prereqs, an under-sized issue, adjacent follow-ups) — kept out of the PR; empty if scope held" },
+    },
+  };
+};
+
+// Gate evidence as shown to the adversarial reviewer: per-command rows FIRST
+// (each capped individually), free-text notes after. Before #2645 this was a
+// single `.slice(0, 2000)` over free-text `gateOutput` — for PR #2642 that cut
+// the interpolated block off mid-sentence inside the THIRD of four command
+// results and dropped the fourth entirely (confirmed: gateOutput was 3928
+// chars; the 2000-char slice ends inside "[3/4] pnpm run check:pnpm-pin").
+// Capping PER ROW instead of globally means every command's row is always at
+// least partially visible, so truncation can shorten evidence but can no
+// longer make an entire command disappear.
+const GATE_ROW_CAP = 600;
+const GATE_NOTES_CAP = 1200;
+const formatGateEvidence = (build) => {
+  const results = Array.isArray(build?.gateResults) ? build.gateResults : [];
+  const rows = results.length
+    ? results
+        .map((r, i) => `[${i + 1}/${results.length}] ${String(r?.command ?? "(missing command)")}\n${String(r?.result ?? "(missing result)").slice(0, GATE_ROW_CAP)}`)
+        .join("\n\n")
+    : "(no gateResults returned — schema should have refused this; treat as unevidenced)";
+  const notes = String(build?.gateOutput ?? "(none returned)").slice(0, GATE_NOTES_CAP);
+  return `${rows}\n\n--- free-text notes (preflight/disk; NOT per-command evidence) ---\n${notes}`;
+};
+// GATE_SCHEMA_HELPERS_END
+
 const effortFor = (b) => (b.lane === "light" ? "medium" : "high");
 // MODEL TIERS (credit control): subagents inherit the session model by default,
 // which burns the top tier on mechanical work. Builds/train/fix run on sonnet
@@ -218,28 +317,17 @@ const closesLine = (b) => closesList(b).map((x) => `Closes #${x}`).join(", ");
 // (v3 note: verdicts ride the pipeline WITH their item — no string-matching of
 // PR references between phases, which once mis-parked approved PRs.)
 
-// ⚠ `gateOutput` is REQUIRED, not optional. It used to be optional while
-// `gateGreen` was required, so an agent could assert the gate passed and attach
-// nothing to show for it — and the review prompt below then states
-// `gateGreen=<value>` to the reviewer as fact, so an unevidenced claim was
-// inherited by the one phase whose job is to disbelieve it. Observed 2026-08-16:
-// w166's #2606 build returned `gateGreen: true` with no `gateOutput` at all,
-// and its PR did in fact have a real gap. A green claim with no output is the
-// same failure mode as this repo's lying exit codes (#2479/#2531/#2593), one
-// layer up.
-const BUILD = {
-  type: "object", additionalProperties: false,
-  required: ["ok", "issue", "pr", "gateGreen", "gateOutput", "reachability", "summary"],
-  properties: {
-    ok: { type: "boolean" }, issue: { type: "number" }, pr: { type: "string" },
-    // minLength: an empty string satisfied `type: "string"`, so "required"
-    // alone reproduced the exact hole it was added to close.
-    gateGreen: { type: "boolean" }, gateOutput: { type: "string", minLength: 40 },
-    reachability: { type: "string", description: "the concrete user path that exercises this change" },
-    summary: { type: "string" },
-    scopeNotes: { type: "string", description: "work discovered BEYOND this issue (hidden coupling, missing prereqs, an under-sized issue, adjacent follow-ups) — kept out of the PR; empty if scope held" },
-  },
-};
+// ⚠ `gateOutput`/`gateResults` are REQUIRED, not optional. `gateGreen` used to
+// be required while its evidence was optional, so an agent could assert the
+// gate passed and attach nothing to show for it — and the review prompt below
+// then states `gateGreen=<value>` to the reviewer as fact, so an unevidenced
+// claim was inherited by the one phase whose job is to disbelieve it.
+// Observed 2026-08-16: w166's #2606 build returned `gateGreen: true` with no
+// `gateOutput` at all, and its PR did in fact have a real gap. A green claim
+// with no output is the same failure mode as this repo's lying exit codes
+// (#2479/#2531/#2593), one layer up. `gateResults` (see `buildSchemaFor`
+// above, #2645) is the mechanically-enforced half of that fix; `gateOutput`
+// remains for the free-text notes the array can't carry.
 const VERDICT = {
   type: "object", additionalProperties: false, required: ["pr", "decision", "findings"],
   properties: {
@@ -346,21 +434,21 @@ STEPS (Bash):
 3. Implement TDD. SCOPE DISCIPLINE: your own new files + minimal wiring; avoid shared hot files unless the hint names them; if you must touch one, make a minimal additive change so sibling PRs merge cleanly.
 4. PROVE REACHABILITY: confirm the change is actually reached by a user (wired into the UI / called), not just covered by a unit test. State the exact user path in \`reachability\`. Dead/unwired code is a FAIL.
 5. CONVENTIONS LINT: no invented identifiers/tokens — grep new design tokens etc. against the real source of truth; honor house rules.
-6. Run the GATE to GREEN: \`${gateFor(b)}\`. Capture counts.
+6. Run the GATE to GREEN: \`${gateFor(b)}\`. This gate is ${gateCmds(b).length} command(s): ${gateCmds(b).map((c, i) => `(${i + 1}) ${c}`).join(" ")}. Capture EACH command's own outcome separately — you will report one \`gateResults\` row per command, in order, not one blob for the whole chain.
 7. VERIFY THE DIFF IS REAL: \`git diff origin/main --stat\` must be NON-EMPTY and match what you believe you built — an empty diff means your edits didn't land (wrong cwd/worktree); STOP and fix rather than opening a hollow PR (one shipped with a fully fabricated body and was caught by review — an instant reject and a wasted cycle). Then stage explicit paths (NOT git add -A), commit (end the message with "${TRAILER}"), \`git push -u origin auto/issue-${b.n}\`.
 8. ${GH.prCreate} — title "<concise>", body starting "${closesLine(b)}" then what + how + gate counts + reachability. Only an HONEST closes list (if you delivered N of M deliverables, drop the unearned Closes and say so).
 9. SCOPE OVERFLOW: if the work revealed anything BEYOND ${closesList(b).map((x) => "#" + x).join("/")} (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), record it in \`scopeNotes\` AND ${GH.issueComment(b.n, 'ONE comment ("Scope discovered beyond this fence: …")')} so the record survives the session (durable-by-default rule, decision 2026-07-18). Do NOT grow this PR to cover it.
-Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, reachability, summary, scopeNotes.
-⚠ \`gateOutput\` IS REQUIRED AND IS THE EVIDENCE FOR \`gateGreen\` — paste the real tail of the real run (the command, the pass/fail counts, the exit status). "Gate passed" with nothing attached is not a gate result, and the reviewer is told your \`gateGreen\` value as fact. If the gate did NOT finish — still building, timed out, a step you skipped — say so in \`gateOutput\` and return \`gateGreen: false\`. A half-run gate reported as green is worse than an honest red, and DO NOT open the PR before the gate finishes.`,
-      { label: `build#${b.n}`, phase: "Build", effort: effortFor(b), model: buildModelFor(b), isolation: "worktree", schema: BUILD }),
+Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, gateResults, reachability, summary, scopeNotes.
+⚠ \`gateResults\` MUST have exactly ${gateCmds(b).length} entries, ONE PER COMMAND ABOVE, IN ORDER — {command, result}. This is checked at the schema layer: fewer rows and your tool call is REJECTED and you must retry, no matter what \`gateGreen\` says. A row's \`result\` is that command's own outcome — the real pass/fail counts or exit status, not "passed" with nothing behind it. If a command was skipped, timed out, or its output was lost, WRITE THAT as the row's result — do not omit the row and do not pad it with an invented pass. This enforces only that no command is MISSING; it does not and cannot verify a reported result is true — the adversarial reviewer's job is to disbelieve it. \`gateOutput\` stays free text for preflight/disk notes (df/du figures, TDD red→green narration) that belong to no single command — it is NOT where per-command results go, and a half-run gate reported as green is worse than an honest red. DO NOT open the PR before the gate finishes.`,
+      { label: `build#${b.n}`, phase: "Build", effort: effortFor(b), model: buildModelFor(b), isolation: "worktree", schema: buildSchemaFor(b) }),
   // REVIEW — starts the moment THIS item's build returns; siblings unaffected.
   (build, b) => {
     if (!build || !build.ok || !build.pr) return { build: build ?? null, verdict: null };
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
-⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. If it does not show the gate actually running to completion (no command, no counts, no exit status, a truncated or still-running log, or a gate that is not the one this entry should have run), that is a FINDING in its own right and gateGreen is unsupported:
+⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. \`gateResults\` rows are schema-ENFORCED to number one per gate command, so a missing row is impossible; that does NOT mean a row is true. If a row's result reads as skipped/lost/invented, or the free-text notes below it don't square with a real completed run, that is a FINDING in its own right and gateGreen is unsupported:
 <gate-output>
-${String(build.gateOutput ?? "(none returned)").slice(0, 2000)}
+${formatGateEvidence(build)}
 </gate-output>
 ${GH.pre}
 READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via the GitHub read tools and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
