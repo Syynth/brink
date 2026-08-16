@@ -36,15 +36,53 @@ const REPO = "OWNER/REPO";
 // documented all of this and the PROMPTS still said `gh`; the doc is not the
 // part agents obey. Setting this flag rewrites the prompts.
 const CLOUD = true;
-// Gate: build shared deps -> test -> typecheck. CACHE is prepended to every
-// gate invocation so all agents share one build cache (turbo/nx: unchanged
-// packages become cache hits — this is the pump's single biggest speed lever).
+// CACHE is prepended to every gate invocation so all agents share one build
+// cache — the pump's single biggest speed lever.
 // CARGO_INCREMENTAL=0: every build agent works in a FRESH worktree, so the
 // incremental dep-graph cache is written and never read — pure disk write for
 // zero benefit, multiplied by ~5 agents per wave across thousands of builds.
 // (Local human iteration is unaffected; this only applies to agent gates.)
-const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache CARGO_INCREMENTAL=0";
-const GATE = "pnpm install --prefer-offline && pnpm turbo run test typecheck";
+//
+// ⚠ THESE TWO ARE REPO-SPECIFIC AND MUST STAY FILLED IN. They shipped as
+// generic template defaults (`TURBO_CACHE_DIR`, `pnpm turbo run test typecheck`)
+// and nobody noticed for a long time, because BRINK-CONFIG.md's per-item `gate:`
+// overrides masked it: entries WITHOUT an explicit `gate:` were the only ones
+// that ever reached the default. This repo has no turbo (no `turbo.json`, no
+// dependency), so `pnpm turbo run test typecheck` exits "Command not found".
+// `gateFor` is used at THREE points — build, merge-train and fix-loop — so the
+// broken default reached all three, and each agent improvised its own
+// substitute. That makes the gate not a floor but a per-agent choice, which is
+// the opposite of what a gate is for. Caught 2026-08-16 when two w166 agents
+// independently reported the command does not exist. Values below are
+// BRINK-CONFIG.md's documented "Rust (default GATE)" and its CACHE prefix; a TS
+// entry still overrides via `gate:` (see BRINK-CONFIG.md "TS entries").
+//
+// ⚠ THE CARGO ENV VARS ARE NOT OPTIONAL. Swapping a pnpm-only default for a
+// cargo one created a collision that did not exist before: CLOUD_DISK (below)
+// is interpolated into the build, merge-train and fix prompts and says
+// "MANDATORY ON EVERY CARGO INVOCATION: prefix with CARGO_PROFILE_DEV_DEBUG=0
+// CARGO_PROFILE_TEST_DEBUG=0 and pass -j 4. Full debuginfo caused two same-day
+// ENOSPC crashes here." The default gate now issues four cargo commands, so the
+// vars live in CACHE (which is prepended to every gate) rather than relying on
+// an agent to hand-edit the gate string — the same "agents obey prompts, not
+// docs" reasoning that motivated this whole fix. CARGO_BUILD_JOBS=4 is the
+// env-var spelling of `-j 4`, so it applies to every stage without editing the
+// command. ⚠ CLOUD_DISK also says "ONE full workspace gate at a time across ALL
+// agents" — this default IS a full workspace gate, so the GO-token discipline
+// in that preamble now binds the default path too, not just Rust-heavy items.
+//
+// ⚠ ADOPTING THE SHARED CARGO_TARGET_DIR TAKES ON ITS DOCUMENTED DUTIES.
+// BRINK-CONFIG.md pairs this exact path with: "this cache reached 53GiB and
+// caused two ENOSPC incidents (see #533): bound it, sweep it between waves, and
+// have the pre-flight measure it explicitly." Before this change agents fell
+// back to a worktree-local ./target that died with the worktree, so the cache
+// could not accumulate across waves; now it can. The pre-flight measurement is
+// in DISK below. SWEEPING BETWEEN WAVES IS THE ORCHESTRATOR'S JOB and is not
+// automated here — sweep it alongside the worktree sweep at wave close.
+const CACHE =
+  "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=4";
+const GATE =
+  "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots";
 const MILESTONE = null; // optional milestone name for scope reconciliation
 const LEDGER = null; // optional: standing wave-ledger issue number (durable-by-default rule) — brink: 967
 const WAVE_ID = "wN"; // fill per wave when LEDGER is set
@@ -53,11 +91,16 @@ const TRAILER = "Co-Authored-By: Claude <noreply@anthropic.com>";
 const CONV = "(set CONV: language, quotes, file style, token source, PR footer)";
 // Seed RULES from the previous wave's `lessons` output — that's the learning loop.
 const RULES = "";
-// Batch entries: { n, hint, closes?: [n, ...], lane?: "light", gate?: "<override>", model?: "opus" }
+// Batch entries: { n, hint, closes?: [n, ...], lane?: "light", gate?: "<override>", model?: "opus", rustOnly?: true }
 //  - closes: all issues this ONE PR honestly closes (clustered same-hot-file work);
 //    defaults to [n].
 //  - lane "light": docs/comments/banners-level changes — lower agent effort and
 //    (via gate override) a cheaper gate, e.g. typecheck-only. Default lane: full.
+//  - gate / rustOnly: EVERY entry needs one or the other — the misgating guard
+//    below refuses to launch otherwise. `rustOnly: true` opts into the default
+//    Rust GATE and asserts the entry touches no TypeScript, no `demos/*`, no
+//    `packages/brink-desktop/src-tauri`, and nothing needing the wasm32 leg;
+//    anything else supplies an explicit `gate:`.
 const BATCH = [];
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -107,7 +150,7 @@ CLOUD DURABILITY — THE CONTAINER IS NOT STORAGE: it can be reverted to an olde
 ⚠ Always \`git fetch origin\` immediately before branching from origin/main — cloud sessions are long-lived while main moves under them, and branching off a stale ref silently resurrects old file states.`
   : "";
 
-const DISK = `PRE-FLIGHT: run \`df -h /\` FIRST — if free space is under 15GiB, STOP and return ok:false with reason "ENOSPC risk" instead of building (a full wave of worktrees on a near-full disk killed every agent at once; other repos' sessions share this disk, so never assume yesterday's free space). WORKTREE ECONOMY: don't cold-install. If the primary checkout's node_modules matches your lockfile, clone it into the worktree first (macOS/APFS: \`cp -c -R <primary>/node_modules ./node_modules\`; Linux: \`cp --reflink=auto -R\` or \`cp -al\`), then let the install command true it up (near-instant). Always run gates with the shared cache prefix so sibling agents' builds become cache hits.
+const DISK = `PRE-FLIGHT: run \`df -h /\` FIRST — and also \`du -sh /tmp/pump-cargo-target-brink 2>/dev/null || true\`, because that shared cargo cache is the one thing here that grows without bound across waves: it reached 53GiB and caused two ENOSPC incidents (#533). Report both figures. If the cache alone is over 30GiB, say so in your summary — sweeping it is the orchestrator's call, NEVER self-clean shared state. If free space is under 15GiB, STOP and return ok:false with reason "ENOSPC risk" instead of building (a full wave of worktrees on a near-full disk killed every agent at once; other repos' sessions share this disk, so never assume yesterday's free space). WORKTREE ECONOMY: don't cold-install. If the primary checkout's node_modules matches your lockfile, clone it into the worktree first (macOS/APFS: \`cp -c -R <primary>/node_modules ./node_modules\`; Linux: \`cp --reflink=auto -R\` or \`cp -al\`), then let the install command true it up (near-instant). Always run gates with the shared cache prefix so sibling agents' builds become cache hits.
 ⚠ NEVER \`git stash\` — all worktrees share ONE stash stack, so a sibling agent can pop YOUR work-in-progress (this has happened). To set WIP aside, commit it to your own branch and amend/reset later.`;
 
 // ⚠ ONE train worktree PER WAVE: suffix the path uniquely for THIS wave (e.g.
@@ -175,12 +218,23 @@ const closesLine = (b) => closesList(b).map((x) => `Closes #${x}`).join(", ");
 // (v3 note: verdicts ride the pipeline WITH their item — no string-matching of
 // PR references between phases, which once mis-parked approved PRs.)
 
+// ⚠ `gateOutput` is REQUIRED, not optional. It used to be optional while
+// `gateGreen` was required, so an agent could assert the gate passed and attach
+// nothing to show for it — and the review prompt below then states
+// `gateGreen=<value>` to the reviewer as fact, so an unevidenced claim was
+// inherited by the one phase whose job is to disbelieve it. Observed 2026-08-16:
+// w166's #2606 build returned `gateGreen: true` with no `gateOutput` at all,
+// and its PR did in fact have a real gap. A green claim with no output is the
+// same failure mode as this repo's lying exit codes (#2479/#2531/#2593), one
+// layer up.
 const BUILD = {
   type: "object", additionalProperties: false,
-  required: ["ok", "issue", "pr", "gateGreen", "reachability", "summary"],
+  required: ["ok", "issue", "pr", "gateGreen", "gateOutput", "reachability", "summary"],
   properties: {
     ok: { type: "boolean" }, issue: { type: "number" }, pr: { type: "string" },
-    gateGreen: { type: "boolean" }, gateOutput: { type: "string" },
+    // minLength: an empty string satisfied `type: "string"`, so "required"
+    // alone reproduced the exact hole it was added to close.
+    gateGreen: { type: "boolean" }, gateOutput: { type: "string", minLength: 40 },
     reachability: { type: "string", description: "the concrete user path that exercises this change" },
     summary: { type: "string" },
     scopeNotes: { type: "string", description: "work discovered BEYOND this issue (hidden coupling, missing prereqs, an under-sized issue, adjacent follow-ups) — kept out of the PR; empty if scope held" },
@@ -234,6 +288,33 @@ const LESSONS = {
 
 if (!BATCH.length) { log("CONFIG.BATCH is empty — fill the CONFIG block."); return { error: "empty batch" }; }
 
+// ⚠ MISGATING GUARD. The default GATE is the RUST gate, so an entry that
+// touches TypeScript and carries no `gate:` would run fmt/clippy/nextest/oracle
+// and NO typecheck, NO vitest, NO wasm32 leg — silently. That used to be
+// "documented" in a comment addressed to batch authors, which is exactly the
+// place this file twice says nobody obeys (see the `CLOUD` note above and
+// SKILL.md: "prompts are the only part they obey"). So it is enforced here
+// instead: an entry must either carry an explicit `gate:` or declare
+// `rustOnly: true` to opt into the default. A wrong batch now fails loudly
+// BEFORE any agent spawns, rather than producing a green PR that was never
+// typechecked. w166's #2603 was exactly this shape — full lane, Rust + TS, no
+// override.
+//
+// The default's blind spots are wider than TypeScript, and an enumeration that
+// stops there reads as complete when it is not. `cargo nextest run --workspace`
+// covers ROOT-workspace members only, so `rustOnly: true` still does NOT cover:
+//   • `demos/*` — excluded from the root workspace; BRINK-CONFIG has a DEMO_GATE
+//   • `packages/brink-desktop/src-tauri` — its own workspace, run its gates directly
+//   • the wasm32 leg — `wasm-pack test --node` exists because a real bug (#1017)
+//     passed both native cargo test and mocked vitest
+//   • doctests — deliberately out (BRINK-CONFIG: 101s to run one real doctest)
+// Touching any of those means an explicit `gate:`, not `rustOnly`.
+const misgated = BATCH.filter((b) => !b.gate && b.rustOnly !== true).map((b) => b.n);
+if (misgated.length) {
+  log(`BATCH entries ${misgated.join(", ")} have no \`gate:\` and no \`rustOnly: true\`. The default GATE is Rust-only — add BRINK-CONFIG's "TS entries" gate string, or mark the entry rustOnly.`);
+  return { error: "ungated batch entries", entries: misgated };
+}
+
 // ── Orchestration: PER-ITEM PIPELINE (v3 — no head-of-line blocking) ─────────
 // Each issue flows build → review → land INDEPENDENTLY: a finished build goes
 // straight to ITS adversarial review while slower siblings keep building (the
@@ -269,13 +350,18 @@ STEPS (Bash):
 7. VERIFY THE DIFF IS REAL: \`git diff origin/main --stat\` must be NON-EMPTY and match what you believe you built — an empty diff means your edits didn't land (wrong cwd/worktree); STOP and fix rather than opening a hollow PR (one shipped with a fully fabricated body and was caught by review — an instant reject and a wasted cycle). Then stage explicit paths (NOT git add -A), commit (end the message with "${TRAILER}"), \`git push -u origin auto/issue-${b.n}\`.
 8. ${GH.prCreate} — title "<concise>", body starting "${closesLine(b)}" then what + how + gate counts + reachability. Only an HONEST closes list (if you delivered N of M deliverables, drop the unearned Closes and say so).
 9. SCOPE OVERFLOW: if the work revealed anything BEYOND ${closesList(b).map((x) => "#" + x).join("/")} (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), record it in \`scopeNotes\` AND ${GH.issueComment(b.n, 'ONE comment ("Scope discovered beyond this fence: …")')} so the record survives the session (durable-by-default rule, decision 2026-07-18). Do NOT grow this PR to cover it.
-Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, reachability, summary, scopeNotes.`,
+Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed), gateOutput, reachability, summary, scopeNotes.
+⚠ \`gateOutput\` IS REQUIRED AND IS THE EVIDENCE FOR \`gateGreen\` — paste the real tail of the real run (the command, the pass/fail counts, the exit status). "Gate passed" with nothing attached is not a gate result, and the reviewer is told your \`gateGreen\` value as fact. If the gate did NOT finish — still building, timed out, a step you skipped — say so in \`gateOutput\` and return \`gateGreen: false\`. A half-run gate reported as green is worse than an honest red, and DO NOT open the PR before the gate finishes.`,
       { label: `build#${b.n}`, phase: "Build", effort: effortFor(b), model: buildModelFor(b), isolation: "worktree", schema: BUILD }),
   // REVIEW — starts the moment THIS item's build returns; siblings unaffected.
   (build, b) => {
     if (!build || !build.ok || !build.pr) return { build: build ?? null, verdict: null };
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
+⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. If it does not show the gate actually running to completion (no command, no counts, no exit status, a truncated or still-running log, or a gate that is not the one this entry should have run), that is a FINDING in its own right and gateGreen is unsupported:
+<gate-output>
+${String(build.gateOutput ?? "(none returned)").slice(0, 2000)}
+</gate-output>
 ${GH.pre}
 READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via the GitHub read tools and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
 DO: ${GH.prDiff(build.pr)} + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? **SPEC DRIFT** — does this PR leave a SPEC disagreeing with reality? Two shapes: (a) a decision-log PR that rules something but amends NO spec, so the ruling's only home is history nobody reads; (b) an implementation PR whose behavior contradicts, or is absent from, the spec that owns that territory. A 2026-07-27 ledger audit of 296 rulings found 29 ORPHANED and 15 CONTRADICTED precisely here — including a same-day ruling PR that touched only the decision log while the spec kept carrying the spelling that ruling rejected. Name the spec file+section in your findings. Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
