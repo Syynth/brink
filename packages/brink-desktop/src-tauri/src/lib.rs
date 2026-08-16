@@ -2231,12 +2231,17 @@ mod tests {
     /// wasm-build-before-install ordering self-enforcing. All four `pnpm
     /// install --frozen-lockfile` lanes (`ci.yml`'s `frontend` and `e2e`
     /// jobs, `desktop-smoke.yml`, `npm-release.yml`) are correctly ordered
-    /// today, but `pnpm install --frozen-lockfile` exits 0 even when the
-    /// `file:` link from `@brink-lang/web` to `crates/brink-web/www/pkg`
-    /// silently failed to resolve (confirmed by direct reproduction —
-    /// scripts/check-wasm-pkg.mjs's header comment) — so a future reorder,
-    /// or a new lane that adds the install step without the wasm build
-    /// first, would re-open #2479 with no lane catching it.
+    /// today, but `pnpm install --frozen-lockfile`'s exit code is not
+    /// trustworthy evidence the install happened when the `file:` link
+    /// from `@brink-lang/web` to `crates/brink-web/www/pkg` is missing:
+    /// depending on the pnpm 10.x resolved on the machine, it either exits
+    /// 0 with the link silently unresolved (#2479's original pnpm) or
+    /// exits non-zero while still writing nothing to `node_modules` at all
+    /// (#2593, reproduced on pnpm 10.34.5 — confirmed by direct
+    /// reproduction, scripts/check-wasm-pkg.mjs's header comment) — so a
+    /// future reorder, or a new lane that adds the install step without
+    /// the wasm build first, would re-open #2479 with no lane catching it
+    /// either way.
     ///
     /// Enumerated from the workflow files themselves — every workflow file
     /// under `.github/workflows` via `workflow_files()`, every job in each

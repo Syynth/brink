@@ -366,11 +366,17 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
 - **Every `pnpm install --frozen-lockfile` step, in every job in every
   `.github/workflows/*.yml` file, is preceded by a `wasm-pack build
   crates/brink-web` step in the same job** (#2504, follow-up to
-  #2479/#2492). `pnpm install --frozen-lockfile` exits 0 even when the
-  `file:` link from `@brink-lang/web` to `crates/brink-web/www/pkg`
-  silently failed to resolve, so a future reorder — or a new lane adding
-  the install step without the wasm build first — would otherwise re-open
-  #2479 with nothing catching it. The walk enumerates every job in every
+  #2479/#2492). `pnpm install --frozen-lockfile`'s exit code is not
+  trustworthy evidence the install actually happened when the `file:` link
+  from `@brink-lang/web` to `crates/brink-web/www/pkg` is missing: on the
+  pnpm #2479 was filed against it exited 0 with the link silently
+  unresolved, while on pnpm 10.34.5 (#2593) it instead exits 1 but two of
+  its four reproduced permutations still write nothing to `node_modules` at
+  all — see `scripts/check-wasm-pkg.mjs`'s header and
+  `scripts/guarded-install.mjs` (`pnpm install:checked`) for the full
+  account. Either shape means a future reorder — or a new lane adding
+  the install step without the wasm build first — would otherwise
+  re-open #2479 with nothing catching it. The walk enumerates every job in every
   workflow file from disk, not a hard-coded list of the four known lanes,
   and separately pins the exact set of `pnpm install`-prefixed lanes found
   today (`ci.yml`'s `frontend` and `e2e`, `desktop-smoke.yml`'s own job,
@@ -425,10 +431,13 @@ automatically.
 
 **Scope, and what is NOT ruled here.** That scan covers
 `packages/brink-desktop/scripts/` only — the directory this section governs.
-The repo root's `scripts/check-wasm-pkg.mjs` (#2479) carries the identical
-idiom but sits outside this package, is covered by Node's built-in test
-runner (`pnpm test:scripts`) rather than Vitest, and is not part of the
-`dev` preflight pair; nothing currently asserts *its* main-guard. Whether
+The repo root's `scripts/check-wasm-pkg.mjs` (#2479) and
+`scripts/guarded-install.mjs` (#2593) carry the identical idiom but sit
+outside this package, are covered by Node's built-in test runner
+(`pnpm test:scripts`) rather than Vitest, and are not part of the
+`dev` preflight pair; nothing currently asserts *their* main-guards
+directly, though `guarded-install.test.mjs` spawns its script as a real
+process, which exercises that script's guard incidentally. Whether
 the invariant should be repo-wide rather than desktop-scoped is a real
 question and is **NOT settled here** — it is raised on #2478 rather than
 answered by a package test reaching across the fence.
