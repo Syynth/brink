@@ -46,7 +46,7 @@ A ready template lives at **`pump.js`** (next to this file). **Copy it and fill 
   - **flag scope overflow** — if the real work exceeds the issue (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), report it as `scopeNotes` instead of silently growing the PR. Keep `Closes #N` honest; the overflow becomes a candidate issue, not a bloated diff.
   - stage explicit paths, commit, push, open a PR with an **honest** `Closes #N`.
 - **Review** (per item, starts the moment that item's build returns; one **adversarial** reviewer per PR). Prompt it to REFUTE — find bugs, dead code, scope gaps, regressions; **and call out where the issue/milestone *under-captured* the work** (scope the plan missed); default to "request changes" if materially off. This is your real quality bar and *will* catch what the gate didn't.
-- **Land** (**the train queue** — serial in completion order; keeps main green). An `approve` verdict enqueues a merge agent; a `changes` verdict enqueues a fix agent carrying the reviewer's **exact** findings (apply-fix → re-gate → merge); `reject` parks for the human. Runs in **ONE persistent train worktree** (created once, node_modules survives across stops — a fresh worktree + install per merge was pure critical-path overhead). Per landing: update against main, re-gate, combine additive conflicts (registry/index appends — ⚠ diff3/union styles can duplicate/drop closing braces when combining; recheck brace balance, the gate is the arbiter), merge with `--delete-branch` (detach first so local deletion can't fail). Park what won't cleanly land. `log()` a landed-count pulse per stop.
+- **Land** (**the train queue** — serial in completion order; keeps main green). An `approve` verdict enqueues a merge agent; a `changes` verdict enqueues a fix agent carrying the reviewer's **exact** findings (apply-fix → re-gate → merge); `reject` parks for the human. Both train agents report their re-gate as the **same `gateResults` array the build does**, `minItems` pinned to that item's own gate command count (#2664) — this phase re-runs the identical gate on the commit that actually lands on main, so a free-text claim here was the same unevidenced-claim hole #2612 → #2645 → #2657 closed at BUILD, one phase later and at higher stakes. A park that aborts *before* gating still returns a row per command saying `"not run — merge aborted before the gate"`: silence is what the array exists to prevent, and an explicit "not run" is honest. The rows render through `formatGateEvidence` into the wave's returned `landed`/`awaitingChecks`/`parked` entries, and a compact `merge gate rows k/N` ratio rides the retro's tracker table. Runs in **ONE persistent train worktree** (created once, node_modules survives across stops — a fresh worktree + install per merge was pure critical-path overhead). Per landing: update against main, re-gate, combine additive conflicts (registry/index appends — ⚠ diff3/union styles can duplicate/drop closing braces when combining; recheck brace balance, the gate is the arbiter), merge with `--delete-branch` (detach first so local deletion can't fail). Park what won't cleanly land. `log()` a landed-count pulse per stop.
 - **Reconciliation** (end of run): assert every built+approved PR was **merged OR parked-with-a-reason** — no silent drops. (v3: verdict + landing ride each pipeline item, so this is a per-item read — never match PR identifiers across phases on decorated strings; that once mis-parked approved PRs.)
 
 ## Harness enforcement of the build schema — probed, not assumed (#2665)
@@ -110,6 +110,28 @@ future harness release that stopped honouring `minItems` would go undetected
 in-tree. Re-run the probe if that assumption ever needs re-confirming; the
 recipe is one deliberately-short `gateResults` array, and one row whose
 `result` is under 8 characters.
+
+**The floor is pinned; the ceiling is deliberately open (#2672).** `minItems`
+has no `maxItems` counterpart, and adding one would be a regression, not the
+missing half of a symmetry. `gateCmds` is a crude `&&` split, not a shell
+parser, so it **under-counts** any gate hiding a step behind `;` or a
+subshell. `minItems` fails *safe* under that under-count — the floor only ever
+comes out too low, never stricter than the gate actually is. `maxItems` would
+invert exactly that property: an honest agent that ran and reported **more**
+steps than the split could see would be rejected at the tool-call layer and
+pushed to **delete evidence** to satisfy the schema. Extra rows are also often
+legitimate (a preflight `df -h /`, a leg re-run after a fix). Over-evidence was
+never the hole this saga was closing; under-evidence was. What #2672 fixed
+instead is the reviewer-facing wording: `formatGateEvidence`'s banner is now
+**direction-aware**, so an over-long array reads *"this is OVER-COMPLETE, NOT
+incomplete"* rather than the old `results.length !== expected` banner that
+called padded evidence "INCOMPLETE" and sent the reviewer hunting for a command
+that was never missing. The under-length wording is unchanged — it is the
+load-bearing direction, and the one signal that survives if a future harness
+stops enforcing `minItems` at all. Row rendering is also bounded now
+(`GATE_ROWS_CAP`, `GATE_CMD_CAP`), and when a cap bites the output **says how
+many rows it dropped** — #2645's lesson was that truncation may shorten
+evidence but must never make a command silently disappear.
 
 ## Close the learning loop
 The template now closes it mechanically: a final **Lessons** agent distills the wave's review findings into generalizable, paste-ready house-rule candidates (returned as `lessons`). Feed them into the next wave's `RULES` — with human review, since not every finding generalizes. The pump should get *smarter* each cycle, not repeat the same mistakes (e.g. "use only tokens from tokens.css", "wire the feature into the UI, not just the hook").

@@ -47,6 +47,21 @@
 // future harness release stops honouring `minItems`, NOTHING here catches it —
 // the only signal would be builds shipping short `gateResults` arrays again,
 // which `formatGateEvidence`'s INCOMPLETE banner surfaces to the reviewer.
+//
+// ── LATER ROUNDS ON THE SAME AREA ───────────────────────────────────────────
+// #2672 — the schema pins a FLOOR and deliberately NO ceiling, and the banner
+//   is direction-aware so an over-long array reads OVER-COMPLETE rather than
+//   "INCOMPLETE". The ruling and its reasoning live on `gateResultsSchema` in
+//   pump.js; the tests at the bottom of this file are what stop it eroding.
+// #2664 — the MERGE/fix phase carries the same `gateResults` array, since it
+//   re-runs the same gate on the commit that actually lands on main.
+//
+// ⚠ NEITHER ROUND CHANGES THE BOUNDARY ABOVE, and neither strengthens what any
+// of this buys. A FABRICATED row ("36 passed" for a command never run) still
+// validates — at BUILD and now at MERGE alike. Only a MISSING command is
+// mechanically impossible. And no test in this repo can detect a future
+// harness release that stops honouring `minItems` or `minLength` at either
+// phase; that half was probed once (#2665) and written down, never automated.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -92,7 +107,7 @@ const helpersSrc = extractBlock(source, "GATE_SCHEMA_HELPERS_START", "GATE_SCHEM
 const helpers = new Function(
   "CACHE",
   "GATE",
-  `${helpersSrc}\nreturn { gateFor, gateCmds, buildSchemaFor, formatGateEvidence };`,
+  `${helpersSrc}\nreturn { gateFor, gateCmds, buildSchemaFor, mergeSchemaFor, formatGateEvidence, GATE_ROWS_CAP, GATE_CMD_CAP };`,
 )(cache, gate);
 
 // Minimal hand-rolled validator covering only the JSON-Schema vocabulary
@@ -125,6 +140,12 @@ function validate(schema, value, path = "$") {
     }
     if (typeof schema.minItems === "number" && value.length < schema.minItems) {
       errors.push(`${path}: has ${value.length} items, needs at least ${schema.minItems}`);
+    }
+    // Honoured here so the "no maxItems" ruling (#2672) is testable rather
+    // than vacuously true: if someone adds `maxItems`, the over-long
+    // gateResults case below starts producing an error and goes red.
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) {
+      errors.push(`${path}: has ${value.length} items, allows at most ${schema.maxItems}`);
     }
     if (schema.items) {
       value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`)));
@@ -375,7 +396,7 @@ describe("pump.js build schema keeps enforceable constraints (#2665)", () => {
     // field (the assertions above are what make that true).
     const KNOWN = new Set([
       "type", "properties", "required", "additionalProperties", "items",
-      "minItems", "minLength", "enum", "description",
+      "minItems", "maxItems", "minLength", "enum", "description",
     ]);
     const unknown = [];
     const walk = (node, path) => {
@@ -407,6 +428,280 @@ describe("pump.js build schema keeps enforceable constraints (#2665)", () => {
     assert.ok(
       skill.includes("#2665"),
       "the probe record in SKILL.md must cite #2665 so the evidence is traceable",
+    );
+  });
+});
+
+// ── #2672: the OVER-length direction — no maxItems, direction-aware banner ───
+// `minItems` pins the FLOOR. The ceiling is deliberately left open, and the
+// reviewer-facing banner has to say the right thing in BOTH directions. See
+// pump.js's `gateResultsSchema` comment for the ruling and its reasoning;
+// these tests are what keep that ruling from silently eroding.
+describe("gateResults over-length is allowed and correctly labelled (#2672)", () => {
+  const item = { n: 9999, gate: "pnpm run a && pnpm run b" }; // 3 legs with CACHE
+
+  it("emits NO maxItems — an over-long gateResults must not be REJECTED at the tool-call layer", () => {
+    // RULED (#2672): `maxItems: cmds.length` was the obvious fix and is the
+    // WRONG one. `gateCmds` is a crude `&&` split, not a shell parser, and it
+    // UNDER-counts any gate hiding a step behind `;` or a subshell. `minItems`
+    // fails SAFE under that under-count (the floor only ever comes out too
+    // low); `maxItems` would fail UNSAFE — it would REJECT an honest agent
+    // that ran and reported MORE steps than the split could see, forcing it to
+    // DELETE evidence to satisfy the schema. Extra rows can also be legitimate
+    // (a preflight step, a re-run after a fix). Over-evidence is not the hole
+    // #2612 -> #2657 was closing; under-evidence was.
+    const gateResults = helpers.buildSchemaFor(item).properties.gateResults;
+    assert.equal(gateResults.maxItems, undefined, "gateResults must NOT carry maxItems — see the #2672 ruling in pump.js");
+  });
+
+  it("the BUILD prompt states a FLOOR ('AT LEAST'), never an exact count, and forbids deleting rows", () => {
+    // The schema's no-maxItems ruling is only real if the prompt agents
+    // actually read agrees with it. The prompt used to say "MUST have
+    // exactly N entries", which directly contradicts "no ceiling" — an
+    // agent following that literally would trim to N and delete real
+    // evidence to comply, making the OVER-COMPLETE banner near-unreachable.
+    assert.ok(
+      /gateResults.*MUST have AT LEAST \$\{gateCmds\(b\)\.length\}/s.test(source),
+      "the BUILD prompt must state gateResults needs AT LEAST N entries, not exactly N",
+    );
+    assert.ok(!/MUST have exactly \$\{gateCmds\(b\)\.length\}/.test(source), "the old exact-count BUILD prompt wording must be gone");
+    assert.ok(/NEVER delete a row to hit a count/.test(source), "the BUILD prompt must forbid trimming rows to satisfy a count");
+    assert.ok(/extra rows are accepted and are NOT a violation/.test(source), "the BUILD prompt must say extra rows (preflight, re-run legs) are accepted");
+  });
+
+  it("an OVER-long gateResults array still validates against the generated schema", () => {
+    const schema = helpers.buildSchemaFor(item);
+    const overLong = {
+      ok: true,
+      issue: 9999,
+      pr: "https://github.com/Syynth/brink/pull/1",
+      gateGreen: true,
+      gateOutput: "PRE-FLIGHT: df -h / and du of the shared cargo cache both recorded.",
+      // 4 rows for a 3-leg gate: the extra one is a real preflight step.
+      gateResults: [
+        { command: "df -h / (preflight)", result: "17G avail, well over the 15GiB floor" },
+        { command: "export CARGO_TARGET_DIR=... (CACHE)", result: "exit 0, no output" },
+        { command: "pnpm run a", result: "12 passed, 0 failed" },
+        { command: "pnpm run b", result: "exit 0, clean" },
+      ],
+      reachability: "wired into the CLI's `foo` subcommand",
+      summary: "did the thing",
+    };
+    const errors = validate(schema, overLong);
+    assert.deepEqual(errors, [], `an over-long gateResults must be accepted, got: ${errors.join("; ")}`);
+  });
+
+  it("formatGateEvidence calls an over-long array OVER-COMPLETE, never INCOMPLETE", () => {
+    // The #2672 bug verbatim: the banner fired on `results.length !== expected`
+    // in BOTH directions and always said "evidence is INCOMPLETE; gateGreen is
+    // unsupported" — telling the reviewer the opposite of what happened when
+    // the array was padded rather than short.
+    const build = {
+      gateGreen: true,
+      gateOutput: "z".repeat(100),
+      gateResults: [
+        { command: "df -h /", result: "preflight, 17G avail" },
+        { command: "cargo test", result: "36 passed" },
+        { command: "pnpm run test:scripts", result: "230 passed" },
+      ],
+    };
+    const shown = helpers.formatGateEvidence(build, 2);
+    assert.ok(!shown.includes("INCOMPLETE"), `an over-long array must NOT be called INCOMPLETE, got: ${shown.slice(0, 300)}`);
+    assert.ok(shown.includes("OVER-COMPLETE"), `expected an OVER-COMPLETE banner, got: ${shown.slice(0, 300)}`);
+    assert.ok(shown.includes("3 gateResults rows returned for a 2-command gate"), "the banner must name both counts");
+    // Every row still renders — the extra row is the information, not noise.
+    assert.ok(shown.includes("cargo test") && shown.includes("df -h /") && shown.includes("pnpm run test:scripts"));
+  });
+
+  it("the OVER-COMPLETE banner instructs the reviewer to CHECK coverage, not stand down", () => {
+    // Follow-up finding on #2672: with no maxItems, an over-long gateResults
+    // can satisfy minItems while OMITTING one of the gate's real commands —
+    // extra rows mask a missing one. The old closing line ("do not read this
+    // banner as missing evidence") told the reviewer the opposite of what it
+    // should: it must tell them to verify coverage, not reassure them away
+    // from checking it.
+    const build = {
+      gateGreen: true,
+      gateOutput: "z".repeat(10),
+      gateResults: [
+        { command: "a", result: "ok" },
+        { command: "b", result: "ok" },
+        { command: "c", result: "ok" },
+      ],
+    };
+    const shown = helpers.formatGateEvidence(build, 2);
+    assert.ok(shown.includes("OVER-COMPLETE"));
+    assert.ok(
+      !shown.includes("do not read this banner as missing evidence"),
+      "the old stand-down reassurance must be gone from the over-length banner",
+    );
+    assert.ok(
+      shown.includes("does NOT imply coverage") && shown.includes("CHECK that each"),
+      `expected a coverage-check instruction in the over-length banner, got: ${shown.slice(0, 500)}`,
+    );
+  });
+
+  it("the UNDER-length direction still reads INCOMPLETE and unsupported", () => {
+    const shown = helpers.formatGateEvidence(
+      { gateGreen: true, gateOutput: "z".repeat(100), gateResults: [{ command: "cargo test", result: "36 passed" }] },
+      5,
+    );
+    assert.ok(shown.includes("INCOMPLETE") && shown.includes("gateGreen is unsupported"), "a short array must still read INCOMPLETE");
+    assert.ok(!shown.includes("OVER-COMPLETE"), "a short array must not be called OVER-COMPLETE");
+  });
+
+  it("bounds the rendered row count and each command string, and SAYS SO when it drops rows (#2664 secondary)", () => {
+    // #2664's secondary note: `result` was capped per row but the `command`
+    // string and the NUMBER of rows were unbounded, so a pathological return
+    // could balloon the review prompt. Bounded — but the omission must be
+    // VISIBLE, because the whole point of per-row capping (#2645) was that
+    // truncation may shorten evidence and must never make a command silently
+    // disappear.
+    assert.ok(Number.isInteger(helpers.GATE_ROWS_CAP) && helpers.GATE_ROWS_CAP >= 12, "GATE_ROWS_CAP must be a generous positive integer");
+    assert.ok(Number.isInteger(helpers.GATE_CMD_CAP) && helpers.GATE_CMD_CAP >= 80, "GATE_CMD_CAP must be a positive integer with room for a real command line");
+    const rows = Array.from({ length: helpers.GATE_ROWS_CAP + 7 }, (_, i) => ({
+      command: `cmd ${i} ` + "q".repeat(5000),
+      result: `result ${i}`,
+    }));
+    const shown = helpers.formatGateEvidence({ gateGreen: true, gateOutput: "n".repeat(50), gateResults: rows }, rows.length);
+    assert.ok(shown.length < 60000, `rendered evidence must be bounded, got ${shown.length} chars`);
+    assert.ok(!shown.includes("q".repeat(500)), "a pathological command string must be capped");
+    assert.ok(shown.includes("7 further gateResults rows not shown"), `the dropped rows must be announced, got tail: ${shown.slice(-400)}`);
+  });
+});
+
+// ── #2664: the MERGE/fix phase gets the same structured evidence as BUILD ────
+// The merge-train and fix-loop agents re-run the SAME `gateFor(b)` gate, on the
+// commit that actually lands on main, and used to report it as one free-text
+// `detail` string — the exact unevidenced-claim shape #2612 -> #2645 -> #2657
+// spent three rounds removing from BUILD, one phase later and higher stakes.
+describe("MERGE/fix schema carries per-command gate evidence (#2664)", () => {
+  const item = { n: 9999, gate: "pnpm run a && pnpm run b" }; // 3 legs with CACHE
+
+  it("mergeSchemaFor pins gateResults.minItems to THIS item's own gate command count", () => {
+    const schema = helpers.mergeSchemaFor(item);
+    assert.equal(schema.properties.gateResults.minItems, helpers.gateCmds(item).length);
+    assert.equal(schema.properties.gateResults.minItems, 3);
+    assert.ok(schema.required.includes("gateResults"), "gateResults must be REQUIRED on the merge schema, not optional");
+    assert.equal(schema.properties.gateResults.maxItems, undefined, "the #2672 no-ceiling ruling applies to the merge schema too");
+  });
+
+  it("keeps landedState's three-value enum and detail — #2422's fix must survive", () => {
+    const schema = helpers.mergeSchemaFor(item);
+    assert.deepEqual(schema.properties.landedState.enum, ["landed", "armed", "parked"]);
+    assert.ok(schema.required.includes("detail") && schema.required.includes("landedState") && schema.required.includes("pr"));
+  });
+
+  it("a hand-written COMPLETE merge object validates", () => {
+    const errors = validate(helpers.mergeSchemaFor(item), {
+      pr: "https://github.com/Syynth/brink/pull/1",
+      landedState: "armed",
+      detail: "clean merge with main, no conflicts; auto-merge armed, required checks still running",
+      gateResults: [
+        { command: "export CARGO_TARGET_DIR=... (CACHE)", result: "exit 0, no output" },
+        { command: "pnpm run a", result: "12 passed, 0 failed" },
+        { command: "pnpm run b", result: "exit 0, clean" },
+      ],
+    });
+    assert.deepEqual(errors, [], `expected no validation errors, got: ${errors.join("; ")}`);
+  });
+
+  it("a PARKED merge must still account for every gate command — 'not run' is a valid, honest result", () => {
+    // A merge that aborts before gating has no gate output. It must still
+    // submit a row per command SAYING so, rather than being silent: that is
+    // what keeps "a missing command is mechanically impossible" true for this
+    // phase, and it is the same rule the build schema already states.
+    const errors = validate(helpers.mergeSchemaFor(item), {
+      pr: "https://github.com/Syynth/brink/pull/1",
+      landedState: "parked",
+      detail: "merge conflict in the LIR lowering was untangleable; git merge --abort, PR left open",
+      gateResults: [
+        { command: "export CARGO_TARGET_DIR=... (CACHE)", result: "not run — merge aborted before the gate" },
+        { command: "pnpm run a", result: "not run — merge aborted before the gate" },
+        { command: "pnpm run b", result: "not run — merge aborted before the gate" },
+      ],
+    });
+    assert.deepEqual(errors, [], `an honest parked report must validate, got: ${errors.join("; ")}`);
+  });
+
+  it("a SHORT merge gateResults array is rejected, exactly as at BUILD", () => {
+    const errors = validate(helpers.mergeSchemaFor(item), {
+      pr: "https://github.com/Syynth/brink/pull/1",
+      landedState: "landed",
+      detail: "re-gated after merging main; all green; merged as sha abc1234",
+      gateResults: [{ command: "pnpm run a", result: "12 passed, 0 failed" }],
+    });
+    assert.ok(
+      errors.some((e) => e.includes("gateResults") && e.includes("needs at least")),
+      `expected a gateResults minItems error, got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("the merge AND fix call sites both pass mergeSchemaFor(b) — no static shared MERGE survives", () => {
+    // Guards the other half: the per-item schema is inert unless BOTH train
+    // jobs actually hand it to the harness. The old code passed one static
+    // `MERGE` const to both, which cannot carry a per-item minItems.
+    const wirings = source.match(/schema: mergeSchemaFor\(b\)/g) ?? [];
+    assert.equal(wirings.length, 2, "both the merge and the fix agent() calls must pass `schema: mergeSchemaFor(b)`");
+    assert.ok(!/schema: MERGE\b/.test(source), "the static `schema: MERGE` wiring must be gone");
+  });
+
+  it("the merge and fix prompts both instruct one gateResults row per gate command", () => {
+    // A schema the agent is never TOLD about produces retry churn instead of
+    // evidence; the build prompt states the count explicitly and these must too.
+    // Split on the CALL SITE marker, not on the bare identifier — the latter
+    // also matches prose in the comments and would drift with any edit there.
+    // ⚠ Match on the PROSE, not on "`gateResults`" — inside pump.js these
+    // prompts are template literals, so their backticks are written escaped
+    // (\`gateResults\`) and a naive backtick match silently matches a nearby
+    // COMMENT instead, passing vacuously. This phrase is unique to the two
+    // train prompts (the build prompt says "MUST have AT LEAST N entries").
+    const ROW_RULE = "MUST have one entry per command";
+    assert.equal((source.match(new RegExp(ROW_RULE, "g")) ?? []).length, 2, "exactly the merge and fix prompts should carry the per-command row rule");
+    const chunks = source.split("schema: mergeSchemaFor(b)");
+    assert.equal(chunks.length, 3, "expected exactly two `schema: mergeSchemaFor(b)` call sites to split on");
+    for (const [i, chunk] of [chunks[0], chunks[1]].entries()) {
+      const which = i === 0 ? "merge" : "fix";
+      assert.ok(chunk.includes(ROW_RULE), `the ${which} prompt must state the per-command gateResults rule`);
+      assert.ok(chunk.includes("${gateCmds(b).length}"), `the ${which} prompt must interpolate THIS item's own gate command count`);
+      // The park-before-gating case is the one an agent will actually hit; if
+      // the prompt doesn't cover it, the schema just blocks honest parks.
+      assert.ok(chunk.includes("not run"), `the ${which} prompt must tell a parked agent to report "not run" rows rather than omit them`);
+    }
+  });
+
+  it("the wave's returned landings render the merge gate evidence, so it is not write-only", () => {
+    // Reachability: a structured field nobody renders is dead weight. The
+    // wave's return payload (landed / awaitingChecks / parked) is what the
+    // orchestrator and the human read at wave close.
+    assert.ok(
+      source.includes("formatGateEvidence(r.land,"),
+      "the wave's landings must be rendered through formatGateEvidence(r.land, ...)",
+    );
+    // All three landing buckets must carry it — `landed` and `awaitingChecks`
+    // unconditionally, `parked` only when a merge/fix agent actually ran.
+    const gateEvidenceWirings = source.match(/gateEvidence: landEvidence\(r\)/g) ?? [];
+    assert.equal(gateEvidenceWirings.length, 3, "landed, awaitingChecks and parked must each surface the merge gate evidence");
+  });
+
+  it("the retro prompt's table legend explains the 'merge gate rows k/N' column", () => {
+    // trackerFacts (L652) adds a `merge gate rows k/N` ratio per item, but the
+    // retro prompt used to document every OTHER column ("issue -> PR -> merge
+    // state -> what the PR claims to close") and never mentioned this one — so
+    // the retro had no instruction to treat k < N as an under-evidenced
+    // landing claim. A structured field nobody's told to read is dead weight
+    // by this PR's own standard.
+    assert.ok(
+      source.includes("merge gate rows k/N"),
+      "the retro prompt must name the 'merge gate rows k/N' column in its legend",
+    );
+    assert.ok(
+      /merge gate rows k\/N.{0,400}k < N.{0,200}under-evidenced/s.test(source),
+      "the legend must instruct the retro to treat k < N as an under-evidenced landing claim",
+    );
+    assert.ok(
+      /merge gate rows k\/N.{0,600}"-".{0,100}no merge\/fix agent ran/s.test(source),
+      "the legend must explain that '-' means no merge/fix agent ran for that item",
     );
   });
 });
