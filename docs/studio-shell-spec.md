@@ -594,6 +594,41 @@ required to name exactly one call site (the #2515 reuse loophole, closed
 from the start), and the call-site count pinned exactly so a scan that stops
 matching real calls cannot silently pass every check downstream.
 
+**The scan covers the sibling selection APIs too (#2571).** `.select()` and
+`.setSelectionRange(` are not the only spellings that clobber an edit: a
+`.selectionStart` / `.selectionEnd` write, `document.execCommand("selectAll")`,
+and the Selection/Range API on a `contenteditable` (`getSelection()` +
+`selectNodeContents(` / `setBaseAndExtent(` / `addRange(`) reach the same end
+state. All of them are in `CALL_PATTERNS` and enrol the same way. There were —
+and still are — zero instances of any of them in the workspace, and that
+emptiness is the argument for widening rather than against it: with nothing to
+match there is no false-positive cost and no marker churn, whereas deferring
+would bet on a future author picking the one spelling the scan happens to know.
+The two property-write patterns match writes only (`\s*=[^=]`), so a
+`selectionStart === selectionEnd` comparison is not a call site. A legitimate
+future use (a read-only `getSelection()` for a caret coordinate) takes the
+`SELECT-INVARIANT-EXEMPT` hatch.
+
+**A marker's justification is proven, not just present (#2571).** Enrolment
+proves a marker *exists*; it cannot prove the marker is *true* — the same gap
+#2515 left open for `SAVE-PATH`. Every call site is therefore also backed by a
+behavioural test: `search-view-focus.test.tsx`, `symbol-rename-prompt-seed.test.tsx`,
+`inline-name-input-seed.test.ts`, and — for `Binder.tsx`'s two sites —
+`packages/brink-studio/src/__tests__/binder-seed-race.test.tsx`. The binder's
+two claims differ. The in-row rename pre-select claims there is *no deferred
+window at all*, so its test asserts the selection is applied with no animation
+frame having run, and separately pins the `key={editing.initial}` remount that
+makes the claim true by construction: `RenameInput`'s effect is keyed
+`[initial]` over an uncontrolled `defaultValue` input, so without that key a
+same-instance seed change re-runs `setSelectionRange` over user-typed text.
+The new-file field's call *is* deferred into a `requestAnimationFrame` and is
+raced directly; its narrower claim is that the range stays zero-width
+(`start === end`) — a caret placement, with nothing to clobber — and that `end`
+is read from `input.value` at fire time rather than captured before the frame.
+
+Rule 1 ("seed synchronously at mount") still has no structural enforcement of
+its own; #2571 tracks the design for a companion guard.
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*

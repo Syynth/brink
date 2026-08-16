@@ -192,7 +192,14 @@ interface RowProps {
   onDrop: (e: React.DragEvent) => void;
 }
 
-function BinderRow({
+/**
+ * Exported for `binder-seed-race.test.tsx` (#2571): the `key={editing.initial}`
+ * remount below is only observable at this level. Inside the full `Binder` a
+ * row's key and its `editing.initial` are both derived from the same path, so
+ * they cannot diverge there — the row that would prove the guard works can
+ * only be rendered directly.
+ */
+export function BinderRow({
   rowKey,
   depth,
   kind,

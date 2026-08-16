@@ -22,7 +22,7 @@ export {
   type StudioPublicState,
 } from "./StudioApi.js";
 export { App } from "./App.js";
-export { Binder, computeReorder, buildBinderTree, LIBRARY_ROW_KEY } from "./Binder.js";
+export { Binder, BinderRow, computeReorder, buildBinderTree, LIBRARY_ROW_KEY } from "./Binder.js";
 export type { FolderNode } from "./Binder.js";
 export { SymbolContextMenuHost } from "./SymbolContextMenuHost.js";
 export { SymbolRenamePrompt } from "./SymbolRenamePrompt.js";
