@@ -168,15 +168,26 @@ export class InlineNameInput {
     this.input = input;
     this.badge = badge;
     this.report = report;
-    // Focus + select after CM mounts the widget.
-    // KNOWN VIOLATION of docs/studio-shell-spec.md §7.7.1 rule 2: this
-    // select() is unguarded inside a deferred setTimeout, so it can clobber
-    // a user edit typed during the deferred window. Not fixed here because
-    // @brink-lang/editor is published (0.14.0) and needs its own changeset;
-    // tracked as https://github.com/Syynth/brink/issues/2540.
+    // Focus + select after CM mounts the widget. The deferral is load-bearing
+    // for `focus()`: `render()` is called from `WidgetType.toDOM()`, which
+    // returns the element *before* CM inserts it, and `focus()` on a detached
+    // element is a no-op. CM6's `WidgetType` offers no post-mount hook —
+    // `toDOM`/`updateDOM`/`coordsAt`/`destroy` are the whole lifecycle, and
+    // `destroy` fires on removal — so there is nothing to replace the timer
+    // with (#2535).
+    //
+    // `select()` must not be deferred unconditionally, though
+    // (docs/studio-shell-spec.md §7.7.1 rule 2): a user who types during the
+    // deferred window would have their text selected, and the next keystroke
+    // would replace it. Unlike #2511's value-clobber — which made the rename a
+    // no-op — this one lets the rename *succeed with the wrong string*. Only
+    // select a field that still holds what we seeded it with, i.e. one nobody
+    // has touched; this mirrors the guard PR #2523 landed in
+    // `packages/studio-ui/src/SymbolRenamePrompt.tsx`. Pinned by
+    // `packages/brink-studio/src/__tests__/inline-name-input-seed.test.ts`.
     setTimeout(() => {
       input.focus();
-      input.select();
+      if (input.value === this.options.initialValue) input.select();
     }, 0);
     return root;
   }
