@@ -162,17 +162,29 @@ describe("SymbolRenamePrompt seeding (#2511)", () => {
     renderPrompt("barter");
     const el = input();
 
-    // jsdom parks the caret at the end of the value on every write to
-    // `.value`, and React seeds an uncontrolled field by writing that
-    // property — so this input arrives here already reading (6, 6) where a
-    // real browser, which gets the seed through the `value` ATTRIBUTE, reads
-    // (0, 0). Measured, not assumed. The park cannot fake `selectionStart ===
-    // 0`, so this test would go red for a deleted `select()` either way — but
-    // it *can* hand `selectionEnd === 6` over for free, so without this reset
-    // half the pair below would be unearned. Resetting is also what the field
-    // an author actually faces looks like. Same trap PR #2574 hit in
-    // `binder-seed-race.test.tsx`, where an end-caret assertion made it
-    // vacuous outright.
+    // A write to `.value` parks the caret at the end of the value, and React
+    // seeds an uncontrolled field by writing that property — so this input
+    // arrives here already reading (6, 6). The park cannot fake
+    // `selectionStart === 0`, so this test would go red for a deleted
+    // `select()` either way — but it *can* hand `selectionEnd === 6` over for
+    // free, so without this reset half the pair below would be unearned. Same
+    // trap PR #2574 hit in `binder-seed-race.test.tsx`, where an end-caret
+    // assertion made it vacuous outright.
+    //
+    // The reset is a vacuity guard only (#2595). It does NOT restore "what a
+    // real browser would show": (0, 0) is what the seed leaves, before the
+    // prompt's own `select()` runs. This component's rAF effect calls
+    // `input.select()` while the field still holds the seeded name
+    // (`SymbolRenamePrompt.tsx`, the SELECT-INVARIANT site this suite
+    // guards), so an author actually faces the fully-selected (0, 6) reading
+    // asserted below — neither (0, 0) nor the unguarded (6, 6) this reset
+    // undoes. Measured on the real `#brink-rename-input` in Chromium 145 by the
+    // e2e "a defaultValue-seeded field parks the caret at the end in a real
+    // browser" (`e2e/symbol-rename.spec.ts`) — the park is HTML-standard
+    // behaviour for the `.value` setter, which jsdom reproduces faithfully.
+    // The (0, 0) reading belongs to the `value` ATTRIBUTE path, which React
+    // does not take; the earlier comment here asserted the opposite and was
+    // never observed in a browser.
     el.setSelectionRange(0, 0);
 
     await flushFrames();

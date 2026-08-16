@@ -340,14 +340,22 @@ describe("Binder new-file caret placement (#2571, SELECT-INVARIANT Binder.newFil
     expect(input.value).toBe("scenes/");
     expect(frames).toHaveLength(1);
 
-    // jsdom parks the caret at the end of the value on every write to
-    // `.value`, so a freshly seeded field arrives here already reading (7, 7)
-    // — which would make the assertions below pass with the call site deleted
-    // (measured: deleting it left this test green). A real browser puts the
-    // caret at 0 in a field seeded through the `value` ATTRIBUTE, which is
-    // what React's `defaultValue` writes and what the user actually faces.
-    // Reset to 0 so this test observes the browser's starting state rather
-    // than jsdom's.
+    // A write to `.value` parks the caret at the end of the value, so a
+    // freshly seeded field arrives here already reading (7, 7) — which would
+    // make the assertions below pass with the call site deleted (measured:
+    // deleting it left this test green). Reset to 0 so the assertions have to
+    // be EARNED by the call site instead of inheriting their expected answer
+    // from the seed.
+    //
+    // This reset is a vacuity guard, not a jsdom-vs-browser correction
+    // (#2595). The park is platform behaviour the HTML standard mandates for
+    // the `.value` setter, and React seeds an uncontrolled `defaultValue`
+    // field by writing exactly that property — measured at (6, 6) on the real
+    // `#brink-rename-input` in Chromium 145 by the e2e "a defaultValue-seeded
+    // field parks the caret at the end in a real browser"
+    // (`e2e/symbol-rename.spec.ts`). jsdom is faithful here; the earlier claim
+    // that a real browser starts such a field at 0 was inferred and is wrong.
+    // Do not delete this line on the theory that it fakes a browser.
     input.setSelectionRange(0, 0);
 
     flushFrames();

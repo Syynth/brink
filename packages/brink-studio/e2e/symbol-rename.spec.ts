@@ -29,7 +29,140 @@ async function openRename(page: Page, knot: string): Promise<void> {
   await expect(page.locator("#brink-rename-input")).toHaveValue(knot);
 }
 
+/**
+ * Records how the rename prompt's field is seeded, and where the caret sits
+ * immediately after each seeding write, in the REAL browser (#2595).
+ *
+ * `docs/studio-shell-spec.md` §7.7.1 warns that a caret assertion can pass
+ * vacuously because the seed itself parks the caret at the end of the value.
+ * That warning was measured in jsdom; the half of it that contrasted jsdom
+ * with "a real browser, seeded through the `value` *attribute*" was inferred,
+ * never observed. This hook observes it: it wraps the two seeding entry
+ * points React can use on an `<input>` — the `value` and `defaultValue` IDL
+ * properties — and logs the caret right after each write reaches
+ * `#brink-rename-input`. Both wrappers delegate to the original setter, so
+ * the app's behaviour is unchanged; only the reading is added.
+ *
+ * The finding is not carried by entries existing at all — `defaultValue` is
+ * also an attribute-reflecting IDL property (it mirrors the `value` content
+ * attribute, the same path the control's `viaSetAttribute` case exercises),
+ * so a write there produces an entry too. It is carried by the assertion
+ * below that `seeded.map((e) => e.prop)` contains `"value"`: that is the
+ * specific property React's own seed write goes through, and it has no
+ * attribute-only counterpart to be confused with.
+ */
+type SeedProbeEntry = { prop: "value" | "defaultValue"; text: string; start: number | null; end: number | null };
+
+async function installSeedProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const probe: SeedProbeEntry[] = [];
+    (window as unknown as { __brinkSeedProbe: SeedProbeEntry[] }).__brinkSeedProbe = probe;
+    for (const prop of ["value", "defaultValue"] as const) {
+      const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, prop);
+      if (!desc?.get || !desc.set) continue;
+      const { get, set } = desc;
+      Object.defineProperty(HTMLInputElement.prototype, prop, {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get,
+        set(this: HTMLInputElement, next: string) {
+          set.call(this, next);
+          if (this.id === "brink-rename-input") {
+            probe.push({
+              prop,
+              text: get.call(this) as string,
+              start: this.selectionStart,
+              end: this.selectionEnd,
+            });
+          }
+        },
+      });
+    }
+  });
+}
+
 test.describe("knot/stitch rename (#305)", () => {
+  /**
+   * #2595 — settles, in a real browser, the factual claim §7.7.1 records about
+   * where a seeded field's caret starts.
+   *
+   * The measured answer contradicts the recorded one: React seeds an
+   * uncontrolled `defaultValue` field through the `.value` PROPERTY, and a
+   * property write parks the caret at the end of the value in Chromium exactly
+   * as it does in jsdom. The (0, 0) reading the spec attributed to "a real
+   * browser" belongs to the `value` ATTRIBUTE path, which React does not take
+   * — so the vacuity trap the seed-race suites guard against is a platform
+   * behaviour, not a jsdom artifact. The control assertions below pin both
+   * halves of that split so the finding cannot rot back into an assumption.
+   */
+  test("a defaultValue-seeded field parks the caret at the end in a real browser (#2595)", async ({
+    page,
+  }) => {
+    await installSeedProbe(page);
+    await page.goto("/");
+    await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
+
+    // CONTROL — the raw platform split, measured in this browser rather than
+    // assumed. Attribute-seeding leaves the caret at the start; a write to the
+    // `.value` property moves it to the end. Both readings are what §7.7.1
+    // now cites.
+    const control = await page.evaluate(() => {
+      const attrSeeded = document.createElement("div");
+      attrSeeded.innerHTML = '<input value="barter">';
+      document.body.appendChild(attrSeeded);
+      const viaAttribute = attrSeeded.firstElementChild as HTMLInputElement;
+
+      const viaSetAttribute = document.createElement("input");
+      document.body.appendChild(viaSetAttribute);
+      viaSetAttribute.setAttribute("value", "barter");
+
+      const viaProperty = document.createElement("input");
+      document.body.appendChild(viaProperty);
+      viaProperty.value = "barter";
+
+      const read = (el: HTMLInputElement) => [el.selectionStart, el.selectionEnd];
+      const result = {
+        viaAttribute: read(viaAttribute),
+        viaSetAttribute: read(viaSetAttribute),
+        viaProperty: read(viaProperty),
+      };
+      attrSeeded.remove();
+      viaSetAttribute.remove();
+      viaProperty.remove();
+      return result;
+    });
+    expect(control.viaAttribute).toEqual([0, 0]);
+    expect(control.viaSetAttribute).toEqual([0, 0]);
+    expect(control.viaProperty).toEqual(["barter".length, "barter".length]);
+
+    // PRODUCTION — open the real prompt by the real user path and read what
+    // React's seed actually did to the caret.
+    await openRename(page, "barter");
+    const seeded = await page.evaluate(() =>
+      (window as unknown as { __brinkSeedProbe: SeedProbeEntry[] }).__brinkSeedProbe.filter(
+        (e) => e.text === "barter",
+      ),
+    );
+
+    // React reaches the field through an IDL property, not the `value`
+    // attribute — the premise the spec's (0, 0) claim rested on.
+    expect(seeded.length).toBeGreaterThan(0);
+    expect(seeded.map((e) => e.prop)).toContain("value");
+
+    // And that seed leaves the caret at the END, exactly as jsdom does. Scoped
+    // to the `value`-property entries only: `defaultValue` writes (if any land
+    // here) read back whatever the field held at that moment, which is
+    // React's write ORDER, not a caret claim this test can make on its own —
+    // asserting them here would encode an implementation detail of React as
+    // though it were platform behaviour.
+    const valueWrites = seeded.filter((e) => e.prop === "value");
+    expect(valueWrites.length).toBeGreaterThan(0);
+    for (const entry of valueWrites) {
+      expect(entry.start).toBe("barter".length);
+      expect(entry.end).toBe("barter".length);
+    }
+  });
+
   test("a clean rename applies and the binder shows the new name", async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
