@@ -344,10 +344,14 @@ jobs:
         run: cargo test --locked
         working-directory: packages/brink-desktop/src-tauri
 
-      # `tsc` resolves the "brink-web" alias into the wasm-pack output
-      # THROUGH node_modules, so this needs the resolved link (#2514) to
-      # have actually verified, not merely `pnpm install`'s own (unreliable,
-      # #2479) exit code.
+      # Gated on `check_wasm_pkg`, not merely `pnpm install`'s own
+      # (unreliable, #2479) exit code — NOT because `tsc` itself resolves
+      # "brink-web" through node_modules (it doesn't: this package's
+      # tsconfig.json maps the alias directly to crates/brink-web/www/pkg,
+      # same as `pnpm build` below via vite.config.ts -> alias-map.ts).
+      # `check_wasm_pkg` is an independent, stronger signal instead: it
+      # confirms pnpm actually processed the `file:` dependency on that
+      # directory, which the install step's own exit code does not (#2514).
       - name: Typecheck (tsc --noEmit)
         if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.check_wasm_pkg.outcome == 'success'"
         run: pnpm --filter @brink/desktop typecheck

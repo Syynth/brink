@@ -53,8 +53,17 @@
 // `existsSync` follows symlinks, so a missing/dangling link and a resolved-
 // but-empty/incomplete target both read the same way here: "not linked" —
 // which is exactly the observable effect `packages/wasm/src/index.ts`'s
-// `import ... from "brink-web"` (and `packages/wasm/scripts/copy-wasm.mjs`,
-// via its own direct path into crates/brink-web/www/pkg) would hit.
+// `import ... from "brink-web"` would hit under Vitest (`packages/wasm`'s
+// own `vitest.config.ts` declares no alias, so that bare specifier resolves
+// through the real node_modules link `checkWasmPkgLink` checks here). It is
+// NOT what `tsc` or `tsup` hit for that same import elsewhere in the repo —
+// every other package's tsconfig `paths` (and `packages/wasm/tsup.config.ts`'s
+// `brink-web-relative` esbuild plugin) points straight at
+// crates/brink-web/www/pkg, bypassing node_modules entirely, so this check
+// does not stand in for those roads — `checkWasmPkg` above, checking the raw
+// wasm-pack output those roads read directly (via
+// `packages/wasm/scripts/copy-wasm.mjs`'s own direct path into it), is what
+// guards them instead.
 // `checkWasmPkg`'s cause check still earns its place alongside it: it is
 // what tells a developer to run `wasm-pack build` in the first place
 // (`checkWasmPkgLink` alone, faced with a `file:` target that was never

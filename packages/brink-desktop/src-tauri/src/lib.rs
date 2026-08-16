@@ -1625,10 +1625,17 @@ mod tests {
             .map(|(_, id, _)| id.as_str())
             .filter(|id| !id.is_empty())
             .collect();
-        let dependants: [(&str, &[&str]); 7] = [
+        let dependants: [(&str, &[&str]); 8] = [
             ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
             ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
             ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
+            // The step that makes the comment below's claim ("itself gated
+            // on `pnpm_install`") true in the first place — without this
+            // entry nothing asserted `check_wasm_pkg`'s own `if:` at all.
+            (
+                "Verify wasm package link (check-wasm-pkg)",
+                &["pnpm_install"],
+            ),
             // `check_wasm_pkg`, not `pnpm_install` (#2514): `pnpm install
             // --frozen-lockfile`'s own exit code is the lying signal #2479
             // named, so gating on `steps.pnpm_install.outcome` alone would

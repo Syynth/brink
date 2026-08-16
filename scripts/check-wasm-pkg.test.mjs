@@ -241,6 +241,23 @@ describe("checkWasmPkgLink", () => {
       !LINKED_FILES.includes("brink_web_bg.wasm.d.ts"),
       "LINKED_FILES should exclude brink_web_bg.wasm.d.ts",
     );
+    // Proves the filter actually removed something, not merely that the
+    // removed name happens to be absent: `LINKED_FILES` is
+    // `REQUIRED_FILES.filter((file) => file !== "brink_web_bg.wasm.d.ts")` —
+    // a string-literal match. If `REQUIRED_FILES` is ever renamed (it is
+    // already coupled elsewhere in this file to copy-wasm.mjs's `files`
+    // list), the filter predicate stops matching anything, `LINKED_FILES`
+    // silently becomes identical to `REQUIRED_FILES`, and `checkWasmPkgLink`
+    // starts demanding a file pnpm never links — false-failing every
+    // correctly-built CI run. The assertion above alone would stay green in
+    // that broken state (the renamed entry is still "not in LINKED_FILES"
+    // for the trivial reason nothing is), so this length check is what
+    // actually catches it.
+    assert.equal(
+      LINKED_FILES.length,
+      REQUIRED_FILES.length - 1,
+      "LINKED_FILES should be REQUIRED_FILES with exactly one entry filtered out",
+    );
     const linkDir = buildResolvedLink({ files: LINKED_FILES });
 
     const errors = [];
