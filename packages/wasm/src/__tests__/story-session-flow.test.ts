@@ -74,7 +74,7 @@ vi.mock("brink-web", () => ({
   diffSnapshots: () => "",
 }));
 
-import { StorySessionHandle, FlowHandle } from "./index";
+import { StorySessionHandle, FlowHandle } from "../index";
 
 function newSession(): StorySessionHandle {
   hoisted.calls.length = 0;
