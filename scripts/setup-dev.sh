@@ -71,11 +71,43 @@ run_with_timeout() {
   return $?
 }
 
+# Shared bound for every from-source `cargo install <tool>` fallback in this
+# script (wasm-pack, cargo-nextest, cargo-deny — see #2591). All three have
+# the identical shape: a crates.io index fetch + dependency downloads
+# followed by a genuinely multi-minute local compile, so they get one shared,
+# generous default rather than a per-tool number that would just restate the
+# same reasoning three times. 300s matches BRINK_SETUP_AUDIT_TIMEOUT's
+# existing reasoning (cargo-deny's own from-source install, just below, used
+# to be the only unbounded step here) — a cold cache legitimately takes a few
+# minutes; override via BRINK_SETUP_CARGO_INSTALL_TIMEOUT if a healthy cold
+# build is getting misclassified as a stall.
+BRINK_SETUP_CARGO_INSTALL_TIMEOUT="${BRINK_SETUP_CARGO_INSTALL_TIMEOUT:-300}"
+
 # --- rustup + toolchain -----------------------------------------------------
 
 if ! command -v rustup >/dev/null 2>&1; then
   echo "==> Installing rustup"
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+  # Bound the WHOLE pipeline (outer script fetch + the installer script's own
+  # internal download of the platform rustup-init binary), not just the
+  # initial curl — sh.rustup.rs is a tiny shell script that does its own
+  # network fetch once it starts running, and that inner fetch is the actual
+  # multi-MB download at risk of a proxied stall. 120s is generous for that:
+  # this step does NOT install the pinned toolchain itself (that's the
+  # separate `rustup show` below, which can legitimately take longer for a
+  # cold toolchain fetch). FAILS on timeout: every later step in this script,
+  # and the workspace itself, needs cargo/rustc on PATH.
+  BRINK_SETUP_RUSTUP_TIMEOUT="${BRINK_SETUP_RUSTUP_TIMEOUT:-120}"
+  rustup_install_rc=0
+  run_with_timeout "${BRINK_SETUP_RUSTUP_TIMEOUT}" bash -c \
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none" ||
+    rustup_install_rc=$?
+  if [ "$rustup_install_rc" -eq 124 ]; then
+    echo "==> ✗ rustup install TIMED OUT after ${BRINK_SETUP_RUSTUP_TIMEOUT}s — the installer fetch never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_SETUP_RUSTUP_TIMEOUT."
+    exit 1
+  elif [ "$rustup_install_rc" -ne 0 ]; then
+    echo "==> ✗ rustup install failed (exit ${rustup_install_rc})"
+    exit 1
+  fi
   # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
 else
@@ -115,12 +147,30 @@ else
   WP_TARBALL="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
   WP_URL="https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/${WP_TARBALL}.tar.gz"
   WP_TMP="$(mktemp -d)"
-  if curl --proto '=https' --tlsv1.2 -sSfL "${WP_URL}" | tar zxf - -C "${WP_TMP}" 2>/dev/null &&
+  # A pinned release tarball (~10MB) from GitHub — 60s is generous for that
+  # size. WARN-and-fallback on timeout: a from-source build is a working
+  # (if slower) alternative, same as any other fetch failure here.
+  BRINK_SETUP_WASM_PACK_TIMEOUT="${BRINK_SETUP_WASM_PACK_TIMEOUT:-60}"
+  if run_with_timeout "${BRINK_SETUP_WASM_PACK_TIMEOUT}" curl --proto '=https' --tlsv1.2 -sSfL "${WP_URL}" | tar zxf - -C "${WP_TMP}" 2>/dev/null &&
      install -m 0755 "${WP_TMP}/${WP_TARBALL}/wasm-pack" "${CARGO_BIN}/wasm-pack"; then
     echo "==> Installed prebuilt $(wasm-pack --version)"
   else
-    echo "==> Prebuilt wasm-pack unavailable; building ${WASM_PACK_VERSION} from source"
-    cargo install wasm-pack --version "${WASM_PACK_VERSION#v}" --locked --force
+    echo "==> Prebuilt wasm-pack unavailable (fetch failed or timed out after ${BRINK_SETUP_WASM_PACK_TIMEOUT}s); building ${WASM_PACK_VERSION} from source"
+    # FAILS on timeout, matching this fallback's pre-existing behavior: there
+    # was no further fallback before this change either (an unguarded `cargo
+    # install` under `set -euo pipefail` already aborted the script on
+    # failure) — a timeout is just a more diagnosable form of that same
+    # failure, not a new, softer outcome.
+    wasm_pack_install_rc=0
+    run_with_timeout "${BRINK_SETUP_CARGO_INSTALL_TIMEOUT}" cargo install wasm-pack --version "${WASM_PACK_VERSION#v}" --locked --force ||
+      wasm_pack_install_rc=$?
+    if [ "$wasm_pack_install_rc" -eq 124 ]; then
+      echo "==> ✗ cargo install wasm-pack TIMED OUT after ${BRINK_SETUP_CARGO_INSTALL_TIMEOUT}s — no prebuilt binary available and the from-source build never completed. Retry when network is stable, or raise BRINK_SETUP_CARGO_INSTALL_TIMEOUT."
+      exit 1
+    elif [ "$wasm_pack_install_rc" -ne 0 ]; then
+      echo "==> ✗ cargo install wasm-pack failed (exit ${wasm_pack_install_rc})"
+      exit 1
+    fi
   fi
   rm -rf "${WP_TMP}"
 fi
@@ -157,11 +207,17 @@ else
     mkdir -p "${CARGO_BIN}"
     BN_TMP="$(mktemp -d)"
     BN_URL="https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-${BINARYEN_ASSET}.tar.gz"
-    if curl --proto '=https' --tlsv1.2 -sSfL "${BN_URL}" | tar zxf - -C "${BN_TMP}" --strip-components=1 &&
+    # A GitHub release tarball (~20MB) — 60s is generous. WARN-and-continue on
+    # timeout, same as any other failure of this step: it was already
+    # non-fatal before this change (this binary is purely an optional
+    # accelerator; wasm-pack falls back to its own — proxy-hostile — download
+    # either way), so a stall here must not gain new severity it didn't have.
+    BRINK_SETUP_BINARYEN_TIMEOUT="${BRINK_SETUP_BINARYEN_TIMEOUT:-60}"
+    if run_with_timeout "${BRINK_SETUP_BINARYEN_TIMEOUT}" curl --proto '=https' --tlsv1.2 -sSfL "${BN_URL}" | tar zxf - -C "${BN_TMP}" --strip-components=1 &&
        install -m 0755 "${BN_TMP}/bin/wasm-opt" "${CARGO_BIN}/wasm-opt"; then
       echo "==> Installed $(wasm-opt --version 2>/dev/null | head -n1)"
     else
-      echo "==> wasm-opt install failed; wasm-pack will attempt its own download (expected to fail behind a proxy)"
+      echo "==> wasm-opt install failed or timed out after ${BRINK_SETUP_BINARYEN_TIMEOUT}s; wasm-pack will attempt its own download (expected to fail behind a proxy)"
     fi
     rm -rf "${BN_TMP}"
   fi
@@ -177,10 +233,29 @@ if command -v cargo-nextest >/dev/null 2>&1; then
 else
   echo "==> Installing cargo-nextest"
   mkdir -p "${CARGO_BIN}"
-  if ! curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/latest/linux \
+  # A prebuilt tarball (a few MB) from get.nexte.st — 60s is generous.
+  # WARN-and-fallback on timeout: a from-source build is a working (if
+  # slower) alternative, same as any other fetch failure here.
+  BRINK_SETUP_NEXTEST_TIMEOUT="${BRINK_SETUP_NEXTEST_TIMEOUT:-60}"
+  if ! run_with_timeout "${BRINK_SETUP_NEXTEST_TIMEOUT}" curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/latest/linux \
       | tar zxf - -C "${CARGO_BIN}"; then
-    echo "==> Prebuilt cargo-nextest unavailable; building from source"
-    cargo install cargo-nextest --locked
+    echo "==> Prebuilt cargo-nextest unavailable (fetch failed or timed out after ${BRINK_SETUP_NEXTEST_TIMEOUT}s); building from source"
+    # FAILS on timeout, matching this fallback's pre-existing behavior: there
+    # was no further fallback before this change either (an unguarded `cargo
+    # install` under `set -euo pipefail` already aborted the script on
+    # failure), and nextest is required by the pump's per-round gate — a
+    # timeout is a more diagnosable form of that same failure, not a softer
+    # outcome.
+    nextest_install_rc=0
+    run_with_timeout "${BRINK_SETUP_CARGO_INSTALL_TIMEOUT}" cargo install cargo-nextest --locked ||
+      nextest_install_rc=$?
+    if [ "$nextest_install_rc" -eq 124 ]; then
+      echo "==> ✗ cargo install cargo-nextest TIMED OUT after ${BRINK_SETUP_CARGO_INSTALL_TIMEOUT}s — no prebuilt binary available and the from-source build never completed. Retry when network is stable, or raise BRINK_SETUP_CARGO_INSTALL_TIMEOUT."
+      exit 1
+    elif [ "$nextest_install_rc" -ne 0 ]; then
+      echo "==> ✗ cargo install cargo-nextest failed (exit ${nextest_install_rc})"
+      exit 1
+    fi
   fi
 fi
 
@@ -238,7 +313,19 @@ if [ "${BRINK_SETUP_FULL:-0}" = "1" ]; then
       echo "==> cargo-deny present but not ${CARGO_DENY_VERSION} ($(cargo deny --version 2>/dev/null | head -n1)) — replacing"
     fi
     echo "==> Installing cargo-deny ${CARGO_DENY_VERSION} (BRINK_SETUP_FULL=1; ~2m from source, no prebuilt binary)"
-    cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked || echo "==> cargo-deny install failed; skipping audit"
+    # WARN-and-continue on timeout, matching this install's pre-existing `||
+    # echo ... skipping audit` non-fatal handling: cargo-deny is opt-in
+    # (BRINK_SETUP_FULL=1) to begin with, and cargo_deny_ok() below already
+    # skips the audit cleanly when the binary isn't the pinned version for
+    # any reason, install failure or timeout alike.
+    cargo_deny_install_rc=0
+    run_with_timeout "${BRINK_SETUP_CARGO_INSTALL_TIMEOUT}" cargo install cargo-deny --version "${CARGO_DENY_VERSION}" --locked ||
+      cargo_deny_install_rc=$?
+    if [ "$cargo_deny_install_rc" -eq 124 ]; then
+      echo "==> ⚠ cargo install cargo-deny TIMED OUT after ${BRINK_SETUP_CARGO_INSTALL_TIMEOUT}s; skipping audit (retry later, or raise BRINK_SETUP_CARGO_INSTALL_TIMEOUT)"
+    elif [ "$cargo_deny_install_rc" -ne 0 ]; then
+      echo "==> cargo-deny install failed (exit ${cargo_deny_install_rc}); skipping audit"
+    fi
   fi
 
   # ⚠ Gate on cargo_deny_ok, NOT `command -v` — the latter is true in exactly
