@@ -24,20 +24,25 @@
 // cannot mistake an ordinary `cargo check`/`cargo test` (which legitimately
 // wants build.rs's auto-staged stub) for a real bundle.
 //
-// ⚠ Inert today, by design (#2631's own ask: "correct and inert TODAY, and
-// must start biting the moment someone flips that flag"). `tauri.conf.json`'s
-// `bundle.active` is `false` (D3, docs/desktop-shell-spec.md), so tauri-cli's
-// bundling phase — and therefore this hook — never runs; nothing in this
-// repo invokes `tauri build`/`tauri build --debug` at all yet, in CI or in a
-// documented developer command. The moment D3 flips `bundle.active` to
-// `true` and something actually runs `tauri build` (debug or release), this
-// hook starts firing before every single bundle, unconditionally.
+// ⚠ `bundle.active` is `false` (D3, docs/desktop-shell-spec.md) and nothing
+// in this repo invokes `tauri build` yet, in CI or in a documented developer
+// command — so this hook is unreached TODAY, by design (#2631's own ask:
+// "correct and inert TODAY, and must start biting the moment someone flips
+// that flag"). But the firing condition is not just `bundle.active`:
+// tauri-cli enters its bundling phase — and therefore runs this hook — on
+// `!options.no_bundle && (config.bundle.active || options.bundles.is_some())`
+// (tauri-cli's `src/build.rs`), so an explicit `tauri build --bundles
+// <target>` / `-b <target>` fires it TODAY even with `bundle.active: false`.
+// D3 flipping `bundle.active` to `true` makes the *default* `tauri build`
+// reach it too; it is not the only door.
 //
 // Detects the stub by content, not by a copied payload: `STUB_SIDECAR` is
 // imported from `ensure-cli-sidecar.mjs`, the one place #2626's review
-// established it may live (its own `build_script_stages_the_dev_sidecar_the_way_ci_does`
-// guard in src-tauri/src/lib.rs fails on a second copy of the payload
-// appearing anywhere, including here).
+// established it may live. `before_bundle_command_asserts_the_staged_sidecar_is_real`
+// in src-tauri/src/lib.rs is the guard that keeps that true for this script
+// specifically — it asserts this file carries no shell-shebang payload of its own,
+// the same way `build_script_stages_the_dev_sidecar_the_way_ci_does` guards
+// `build.rs` (a different file; that guard does not read this one).
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -53,16 +58,23 @@ const defaultSrcTauriDir = resolve(here, "..", "src-tauri");
  * Throw unless the brink-cli sidecar staged for `triple` is real content,
  * not `STUB_SIDECAR`. Returns the staged path on success.
  *
- * Only the HOST triple is checked (`hostTriple()` by default) — the same
- * scope `build.rs`'s auto-staging accepts (it skips staging outright for a
- * cross-target `cargo test/check --target <other>`, per its `HOST` vs
- * `TARGET` comparison). A cross-compiled bundle is not covered by either
- * mechanism yet; that is a pre-existing gap, not one this script widens.
+ * `triple` defaults to `TAURI_ENV_TARGET_TRIPLE` when tauri-cli set it, and
+ * only falls back to `hostTriple()` when it did not (a standalone/manual
+ * invocation, not through `beforeBundleCommand`). In the released
+ * tauri-cli this hook runs under, `TAURI_ENV_TARGET_TRIPLE` is exactly the
+ * `--target` triple `tauri-bundler` is about to package — `command_env()`
+ * merges it in from `app_settings.target_triple`
+ * (`interface/rust.rs`), which is built from the real `--target` the
+ * build was invoked with. So a cross-compiled `--target` bundle IS covered
+ * when run through `tauri build`; the host-only limit belongs to
+ * `build.rs`/`ensure-cli-sidecar.mjs`, which have no better source for a
+ * triple than the host they're running on — it is not a limit this hook
+ * inherits or needs to repeat.
  */
 export function assertRealSidecarStaged({
   repoRoot = defaultRepoRoot,
   srcTauriDir = defaultSrcTauriDir,
-  triple = hostTriple(),
+  triple = process.env.TAURI_ENV_TARGET_TRIPLE ?? hostTriple(),
   log = console.log,
 } = {}) {
   const { destBin } = sidecarPaths({ triple, repoRoot, srcTauriDir });

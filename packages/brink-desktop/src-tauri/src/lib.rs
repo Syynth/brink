@@ -2151,11 +2151,18 @@ mod tests {
     ///
     /// Deliberately inert today, not a gap: `bundle.active` below must stay
     /// `false` (D3 scope, not this issue's — see
-    /// `docs/desktop-shell-spec.md`), so tauri-cli's bundling phase, and
-    /// this hook with it, never runs yet; nothing in this repo invokes
-    /// `tauri build`/`tauri build --debug` at all. The assertion starts
-    /// firing before every real bundle the moment `bundle.active` flips to
-    /// `true`, with no further wiring — which is what this test pins.
+    /// `docs/desktop-shell-spec.md`). That is not the only thing standing
+    /// between this hook and firing, though — tauri-cli's bundling phase
+    /// also runs on an explicit `tauri build --bundles <target>` even with
+    /// `bundle.active: false`, so "flip `bundle.active`" is not this hook's
+    /// only door, just the one this crate's own config controls. What
+    /// actually keeps it inert today is that nothing in this repo invokes
+    /// `tauri build` in any form yet — no `--bundles` flag, no default
+    /// bundle-on config. `bundle.active` flipping to `true` would widen
+    /// which invocation reaches the hook (the bundle-less default `tauri
+    /// build` starts doing so too) but does not, on its own, make the hook
+    /// reachable if nothing still calls `tauri build` — which is what this
+    /// test pins for now.
     #[test]
     fn before_bundle_command_asserts_the_staged_sidecar_is_real() {
         let conf = tauri_conf();

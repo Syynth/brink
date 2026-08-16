@@ -594,28 +594,39 @@ inert-on-import and still-acts-standalone properties, the same shape
 `ensure-cli-sidecar.test.ts` uses for the script it imports `STUB_SIDECAR`
 from.
 
-**Deliberately inert today, not a gap.** `bundle.active` is `false`
-(D3 scope, not this fix's — the flag stays off here on purpose, and turning
-it on is explicitly out of scope for #2631), so tauri-cli's bundling phase —
-and this hook with it — does not run yet; nothing in this repo invokes
-`tauri build`/`tauri build --debug` at all today, in CI or in any documented
-developer command (grepped at the time of #2631: only `pnpm --filter
-@brink/desktop dev`/`build` exist, neither of which reaches tauri-cli's
-bundler). The hook starts firing before every real bundle — debug or
-release — the moment D3 flips `bundle.active` to `true` and something
-actually runs `tauri build`, with no further wiring: `beforeBundleCommand`
-is already the correct hook for that world, not a placeholder for one.
+**Deliberately inert today, not a gap.** Nothing in this repo invokes
+`tauri build` at all today, in CI or in any documented developer command
+(grepped at the time of #2631: only `pnpm --filter @brink/desktop
+dev`/`build` exist, neither of which reaches tauri-cli's bundler) — so the
+hook is unreached, by design. But its firing condition is not simply
+"`bundle.active` flips to `true`": tauri-cli enters its bundling phase (and
+therefore runs this hook) on `!options.no_bundle && (config.bundle.active
+|| options.bundles.is_some())`, so an explicit `tauri build --bundles
+<target>` / `-b <target>` already fires it **today**, with `bundle.active`
+still `false` — D3 flipping `bundle.active` to `true` only widens which
+invocation reaches it (the *default*, bundle-less `tauri build` starts
+doing so too); it is not the sole door. Neither door is reachable today
+because nothing in this repo invokes `tauri build` in any form.
 `before_bundle_command_asserts_the_staged_sidecar_is_real` pins that
 `bundle.active` stays `false` here specifically so a later, unrelated PR
 that does flip it does not silently change what this hook's presence means
 without anyone noticing — that assertion should be deleted (not edited)
 once D3 makes it legitimately `true`.
 
-Scope note the fix does **not** widen: like `build.rs`'s own auto-staging,
-this only checks the **host** triple (`hostTriple()`), the same limit
-`build.rs` accepts by comparing `HOST` to `TARGET` before staging anything.
-A cross-compiled `--target` bundle is unchecked by either mechanism — a
-pre-existing gap, not one #2631 introduces.
+Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
+checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`
+before staging anything — a cross-compiled `cargo test/check --target
+<other>` gets nothing staged, and that gap is pre-existing, not one #2631
+introduces. This hook does not inherit that limit: `triple` defaults to
+`TAURI_ENV_TARGET_TRIPLE` when tauri-cli set it — the exact `--target`
+triple `app_settings` resolved for the build, exported into every hook
+tauri-cli runs, `beforeBundleCommand` included — and only falls back to
+`hostTriple()` for a standalone/manual invocation outside tauri-cli. A
+cross-compiled `--target` **bundle** is therefore checked correctly when
+run through `tauri build`; the unchecked case is `build.rs`/
+`ensure-cli-sidecar.mjs` not staging anything for a cross-target `cargo
+test`/`check` in the first place, which this hook cannot fix because there
+is nothing staged yet to check.
 
 ### CI coverage blind spots
 

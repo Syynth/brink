@@ -10,9 +10,9 @@ import {
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { sidecarPaths, STUB_SIDECAR } from "../../scripts/ensure-cli-sidecar.mjs";
+import { hostTriple, sidecarPaths, STUB_SIDECAR } from "../../scripts/ensure-cli-sidecar.mjs";
 import { assertRealSidecarStaged } from "../../scripts/assert-real-sidecar.mjs";
 
 // #2631: PR #2626's "a real bundle must ship the real brink-cli" invariant
@@ -39,7 +39,25 @@ function stageSidecar(srcTauriDir: string, triple: string, content: string): str
   return destBin;
 }
 
+// `assertRealSidecarStaged`'s `triple` default reads
+// `process.env.TAURI_ENV_TARGET_TRIPLE` (falling back to `hostTriple()`),
+// same seam `ensure-cli-sidecar.test.ts` isolates for `CARGO_TARGET_DIR`
+// after #2659/#2668 — leaving an ambient value here would let a real
+// tauri-cli invocation's env leak into an unrelated test.
+let originalTauriEnvTargetTriple: string | undefined;
+
+beforeEach(() => {
+  originalTauriEnvTargetTriple = process.env.TAURI_ENV_TARGET_TRIPLE;
+  delete process.env.TAURI_ENV_TARGET_TRIPLE;
+});
+
 afterEach(() => {
+  if (originalTauriEnvTargetTriple === undefined) {
+    delete process.env.TAURI_ENV_TARGET_TRIPLE;
+  } else {
+    process.env.TAURI_ENV_TARGET_TRIPLE = originalTauriEnvTargetTriple;
+  }
+
   while (temporaries.length > 0) {
     const dir = temporaries.pop();
     if (dir !== undefined) {
@@ -96,6 +114,35 @@ describe("assertRealSidecarStaged", () => {
         log: () => {},
       }),
     ).toThrow(/no brink-cli sidecar staged/);
+  });
+
+  it("reads TAURI_ENV_TARGET_TRIPLE when the caller names no triple and tauri-cli set it", () => {
+    // tauri-cli exports TAURI_ENV_TARGET_TRIPLE (from app_settings.target_triple,
+    // resolved from the real `--target` the build was invoked with) into every
+    // hook it runs, `beforeBundleCommand` included — see the JSDoc above
+    // assertRealSidecarStaged. A cross-compiled bundle stages its sidecar
+    // under that triple, not the host's, so the assertion has to read the
+    // same one or it would check the wrong file.
+    const srcTauriDir = scratch();
+    const destBin = stageSidecar(srcTauriDir, "aarch64-apple-darwin", "not-the-stub");
+
+    process.env.TAURI_ENV_TARGET_TRIPLE = "aarch64-apple-darwin";
+    const result = assertRealSidecarStaged({ srcTauriDir, log: () => {} });
+    expect(result).toBe(destBin);
+  });
+
+  it("falls back to hostTriple() when TAURI_ENV_TARGET_TRIPLE is unset", () => {
+    // Standalone/manual invocations (not through tauri-cli's beforeBundleCommand)
+    // carry no TAURI_ENV_TARGET_TRIPLE — the default must still resolve via
+    // hostTriple() exactly as it did before this default existed. Real
+    // `rustc -vV` on PATH, same as the sibling "asks rustc for the host
+    // triple" case below, just without emptying PATH first.
+    const srcTauriDir = scratch();
+    const destBin = stageSidecar(srcTauriDir, hostTriple(), "not-the-stub");
+
+    expect(process.env.TAURI_ENV_TARGET_TRIPLE).toBeUndefined();
+    const result = assertRealSidecarStaged({ srcTauriDir, log: () => {} });
+    expect(result).toBe(destBin);
   });
 
   it("asks rustc for the host triple when the caller names none", () => {
