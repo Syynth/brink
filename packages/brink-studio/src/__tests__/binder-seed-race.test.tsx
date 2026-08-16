@@ -283,11 +283,13 @@ describe("Binder new-file caret placement (#2571, SELECT-INVARIANT Binder.newFil
     return query<HTMLInputElement>(".brink-tab-input");
   }
 
-  /** Open "New file here" from a file row's context menu, which seeds the
-   *  field with that file's directory prefix. */
+  /** Open "New file here" from a folder row's context menu, which seeds the
+   *  field with that folder's prefix (`target.prefix` in
+   *  `BinderContextMenu.tsx`'s FOLDER branch). */
   function openNewFileInFolder(): HTMLInputElement {
     mountBinder();
-    // Expand `scenes/` so its file row exists, then right-click it.
+    // Right-click the folder row; folders render expanded by default so no
+    // expand step is needed.
     const folderRow = query<HTMLElement>(".brink-binder-folder-row");
     act(() => {
       folderRow.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));

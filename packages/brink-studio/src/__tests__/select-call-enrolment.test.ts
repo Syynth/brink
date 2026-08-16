@@ -143,12 +143,12 @@ function callLines(text: string): Array<{ index: number; method: string; code: s
 const SKIP_DIRS = new Set(["__tests__", "dist", "node_modules", ".turbo"]);
 
 /**
- * Every production file today holding a real `.select()` (zero-argument) /
- * `.setSelectionRange(` call site (grep-verified against `main` on
- * 2026-08-16). This is NOT the source of truth — {@link discoverCallSiteFiles}
- * re-derives it from every workspace `src/` root on every run, and the first
- * `it()` below fails the moment the two disagree, so this array going stale
- * is itself caught rather than trusted.
+ * Every production file today holding a real call site matched by {@link
+ * CALL_PATTERNS} (grep-verified against `main` on 2026-08-16). This is NOT
+ * the source of truth — {@link discoverCallSiteFiles} re-derives it from
+ * every workspace `src/` root on every run, and the first `it()` below
+ * fails the moment the two disagree, so this array going stale is itself
+ * caught rather than trusted.
  */
 const SCANNED_FILES = [
   resolve(packagesRoot, "ink-editor/src/inline-name-input.ts"),
