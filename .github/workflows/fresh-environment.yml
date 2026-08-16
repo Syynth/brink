@@ -87,9 +87,7 @@ jobs:
     # has before ever touching this repo. Node itself is also the one
     # prerequisite scripts/setup-dev.sh explicitly assumes rather than
     # installs (`corepack not found; it ships with Node.js >= 16.9 —
-    # install Node first`, scripts/setup-dev.sh:437) — and a Node runtime
-    # in the container is what lets `actions/checkout` (a JS action) run
-    # here at all.
+    # install Node first`, scripts/setup-dev.sh:437).
     container:
       image: node:22-bookworm
     steps:
@@ -121,6 +119,20 @@ jobs:
       - name: Run scripts/setup-dev.sh against the real network
         shell: bash
         run: bash scripts/setup-dev.sh 2>&1 | tee /tmp/setup-dev.log
+      # scripts/setup-dev.sh only puts the tools it installs (rustup/cargo,
+      # wasm-pack, wasm-opt, cargo-nextest) on PATH within its own process
+      # (it `source`s "$HOME/.cargo/env" internally, scripts/setup-dev.sh:
+      # 173) — GitHub Actions does not carry a step's PATH into the next
+      # step, and this job's `shell: bash` runs
+      # `bash --noprofile --norc -eo pipefail {0}`, so neither `.profile`
+      # nor `.bashrc` (which rustup edits) is read by later steps either.
+      # Without this, the verification step below would fail opaquely on a
+      # suppressed `wasm-pack: command not found` (exit 127) before any of
+      # its own ::error:: checks ever ran. Match this repo's own precedent
+      # in a container job: .github/workflows/release.yml:132.
+      - name: Put cargo/rustup-installed tools on PATH for later steps
+        shell: bash
+        run: echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
       # scripts/setup-dev.sh deliberately treats a binaryen/wasm-opt fetch
       # failure as non-fatal (it's an optional accelerator — wasm-pack
       # falls back to its own download) and its final "Verifying
@@ -158,17 +170,51 @@ jobs:
             fail=1
           fi
 
-          # scripts/setup-dev.sh:264 prints this exact prefix only when the
+          # scripts/setup-dev.sh does not own the literal "==> Installed
+          # wasm-opt version" as a string — it prints "==> Installed "
+          # concatenated with `$(wasm-opt --version 2>/dev/null | head -n1)`
+          # (scripts/setup-dev.sh:306), i.e. the script's own prefix plus
+          # binaryen's OWN `--version` output, which today happens to read
+          # "wasm-opt version <N>". This check therefore only works because
+          # of binaryen's current version-string wording, not because that
+          # literal exists in setup-dev.sh — a reworded upstream version
+          # string would misreport as a layout drift. What actually matters
+          # is the extraction layout: the prefix only prints when the
           # binaryen tarball extracted to `bin/wasm-opt` after
-          # --strip-components=1 (scripts/setup-dev.sh:262-263) — i.e. the
+          # --strip-components=1 (scripts/setup-dev.sh:304-305), i.e. the
           # real release still nests as `binaryen-<version>/bin/wasm-opt`.
-          # A missing/renamed nesting hits the non-fatal warn branch at
-          # scripts/setup-dev.sh:266 instead, which by design does not fail
-          # the script (wasm-pack would fall back to its own download) —
-          # so this lane must check for it explicitly rather than trust
-          # the script's own exit code.
+          # A missing/renamed nesting (or a failed/timed-out fetch) hits the
+          # non-fatal warn branch instead, which by design does not fail
+          # the script (wasm-pack would fall back to its own download) and
+          # prints the literal "wasm-opt install failed or timed out"
+          # (scripts/setup-dev.sh:308) — a string this script DOES own, so
+          # it is hard-failed on directly below rather than inferred solely
+          # from this marker's absence.
           if ! grep -qF "==> Installed wasm-opt version" /tmp/setup-dev.log; then
             echo "::error::wasm-opt did not install from the pinned binaryen tarball — the real download either failed, or the extracted layout no longer nests as binaryen-${binaryen_version}/bin/wasm-opt (scripts/setup-dev.sh:255-263). Check whether WebAssembly/binaryen's ${binaryen_version} release asset layout changed."
+            fail=1
+          fi
+
+          # Hard-fail directly on setup-dev.sh's own degrade marker (a
+          # literal the script actually owns, unlike the version-coupled
+          # success marker above) instead of relying only on that marker's
+          # absence.
+          if grep -qF "wasm-opt install failed or timed out" /tmp/setup-dev.log; then
+            echo "::error::wasm-opt fetch/install failed or timed out against the real network (scripts/setup-dev.sh's non-fatal warn branch, scripts/setup-dev.sh:308) — see the script's own log line above for the failure detail."
+            fail=1
+          fi
+
+          # scripts/setup-dev.sh:294-303 fetches cargo-nextest from an
+          # UNPINNED "latest" URL (https://get.nexte.st/latest/linux) — the
+          # most drift-exposed of the three fetches this lane guards — and
+          # on failure silently falls back to
+          # `cargo install cargo-nextest --locked`, printing "==> Prebuilt
+          # cargo-nextest unavailable ...". That fallback still lands
+          # cargo-nextest on PATH, so the toolchain-presence loop below
+          # would stay green straight through the degrade; hard-fail on the
+          # marker explicitly instead.
+          if grep -qF "Prebuilt cargo-nextest unavailable" /tmp/setup-dev.log; then
+            echo "::error::cargo-nextest did not install via its prebuilt tarball from https://get.nexte.st/latest/linux — it fell back to building from source (scripts/setup-dev.sh:294-303)."
             fail=1
           fi
 
@@ -177,7 +223,7 @@ jobs:
           # pinned release URL now serving a mismatched binary inside a
           # correctly-named tarball, which the prefix check above cannot
           # see.
-          resolved_wasm_pack="$(wasm-pack --version 2>/dev/null | awk '{print $2}')"
+          resolved_wasm_pack="$(wasm-pack --version | awk '{print $2}')" || true
           if [ "${resolved_wasm_pack}" != "${wasm_pack_version#v}" ]; then
             echo "::error::wasm-pack --version reports '${resolved_wasm_pack}', expected '${wasm_pack_version#v}' (WASM_PACK_VERSION in scripts/setup-dev.sh)"
             fail=1
