@@ -166,6 +166,23 @@ type FileChange = {
   proving the `SAVE_PATHS` driver behind an id actually exercises that exact
   call site at runtime — which needs call-site-level instrumentation and is
   intentionally left open (#2515).
+
+  **Enrolment blind spot — Rust-side save paths (issue #2545).** The enrolment
+  guard at `packages/brink-studio/src/__tests__/save-path-enrolment.test.ts`
+  derives its scan roots from `pnpm-workspace.yaml`'s `packages:` globs,
+  which expands to directories listed in that workspace configuration. The
+  desktop shell's Rust crate (`packages/brink-desktop/src-tauri`) is
+  deliberately its **own** cargo workspace, excluded from the pnpm globs by
+  design — so the enrolment scan can never reach any Rust-side code. Today,
+  no save/retire path exists in `src-tauri` (no `markFilesSaved`/`markAllSaved`
+  analog on the Rust side; only filesystem operations like read/write/delete).
+  If a future Rust-side save path is added that calls a hypothetical retirement
+  method, it will enrol **nowhere** in `SAVE_PATHS` and the guard will report
+  nothing wrong — a silent gap in exactly the invariant this guard was built to
+  protect. Either add a parallel enrolment guard in `src-tauri`'s own test
+  suite at that time (option a), or document the gap explicitly here so a
+  future save-path author isn't assumed to be covered (option b, currently
+  favored as no Rust-side path exists today).
 - **Orphaned files (2026-08-07 decision, "keep the view, mark orphaned").**
   When a file open in the editor is deleted externally, the session drops
   the file but the open view keeps its buffer — never auto-closed — marked
