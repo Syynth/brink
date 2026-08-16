@@ -255,7 +255,7 @@ is hand-copied from the other:
   lines). A struct that hits one of these blind spots ships silently
   unguarded, the same as before #2577.
 
-### Shape is checked; vocabulary is checked only for the doc-handle ops (#2603)
+### Shape is checked; vocabulary is driven for nearly every site (#2603, #2620)
 
 Everything above pins which *keys* a refusal payload ships. It says nothing
 about the `error` *string* inside those keys — until #2603, the fixture
@@ -271,21 +271,48 @@ was the fourth instance of the class (after #2583's invented serde message,
   `{ "<op>:<refusing-input>": "<real error string>" }`. It is produced by
   `driven_messages()` in `#[cfg(test)] mod refusal_shape`
   (`crates/brink-web/src/editor_refactor.rs`), which constructs a real
-  `EditorSession`, calls the real production op with an unknown document
-  handle, and reads `error` back out of the JSON payload — after first
-  asserting `ok: false`, so a message can never be harvested from a
-  *successful* answer. Nothing in the map is typed by hand.
+  `EditorSession`, calls the real production op with an input that refuses,
+  and reads `error` back out of the JSON payload — after first asserting
+  `ok: false`, so a message can never be harvested from a *successful*
+  answer. Nothing in the map is typed by hand. `driven_messages()` is the
+  merge of two halves, kept apart because only one of them is measured
+  against the handle vocabulary:
+  - `driven_doc_handle_messages()` — the document-handle ops (#2603, plus
+    #2621's read-only-mount fence).
+  - `driven_op_messages()` — every other refusal site (#2620): the
+    structural ops, `rename_dir`, `resolve_code_action`, `compile_project`.
 - **`structural-refusal-shape.test.ts` reads its expectations from that map**
-  via `productionMessage(key)`, for the three doc-handle sites this covers:
-  `auto_import_include_doc`, `auto_import_apply_include_doc`, and
-  `resolve_code_action_doc`. A site that uses `productionMessage` cannot
-  drift from production — changing the Rust wording restales the fixture,
-  and the regenerated fixture fails the TypeScript test until the mock is
-  updated to match. `productionMessage` also records the key it resolved
-  into a module-level `consumedMessageKeys` set; a canary in the same file
-  asserts that set equals `Object.keys(fixture.messages)`, keyed rather than
-  valued so that deleting a case cannot hide behind another case sharing the
-  same string.
+  via `productionMessage(key)`. As of #2620 that is **every site in the file**
+  — no `error:` string in its call-site arrays is typed. A site that uses
+  `productionMessage` cannot drift from production: changing the Rust wording
+  restales the fixture, and the regenerated fixture fails the TypeScript test
+  until the mock is updated to match. `productionMessage` also records the key
+  it resolved into a module-level `consumedMessageKeys` set; a canary in the
+  same file asserts that set equals `Object.keys(fixture.messages)`, keyed
+  rather than valued so that deleting a case cannot hide behind another case
+  sharing the same string.
+- **Driving is also the verification mechanism, and it found three lies.**
+  #2620's sweep converted ~28 hand-transcribed strings into driven ones, and
+  three of them turned out to be strings production never emits — the mock had
+  been answering them and the guard had been asserting them:
+  `rename_file` on a missing file (`file not loaded` → production's
+  `file '{0}' not found`, from `brink_ide::file_rename`), and `delete_symbol`
+  for both an unloaded path and a missing symbol (`file not loaded` /
+  `symbol not found` → the single `MoveError::SourceNotFound`,
+  `source knot not found`). A fourth site pinned the correct wording against
+  an input production *accepts*: `resolve_code_action`'s no-change case drove
+  `FormatKnot`, which reindents and answers `ok: true`. Driving makes that
+  class self-detecting — a driver whose input does not refuse fails
+  `refusal_message`'s `ok: false` assertion instead of quietly pinning
+  nothing.
+- **One wording stays deliberately divergent, and is anchored as a prefix.**
+  The mock has no serde, so it cannot reproduce serde_json's unknown-variant
+  error (which names every known variant plus a line/column). Its abbreviation
+  is registered through `mockAbbreviationOf` rather than typed free: a case
+  asserts the abbreviation is a genuine *prefix* of the driven production
+  string and strictly shorter than it, so it can never become an invention
+  (#2583's failure mode) nor silently become an equality that should have read
+  the driven message directly.
 - **A third guard closes the omission gap for this one class.**
   `doc_handle_refusal_vocabulary_is_uniform`
   (`crates/brink-web/src/editor_refactor.rs`) scans every `.rs` file under
@@ -305,24 +332,41 @@ was the fourth instance of the class (after #2583's invented serde message,
     reflection and this crate has no `inventory`-style registry — so every
     driven message is a driver someone wrote in `driven_messages()`. A site
     nobody drives stays unpinned.
-  - The literal scan only sees strings that exist **in this crate**. Most
-    refusals — `file not loaded`, `stitch '...' not found in knot`, `entry
-    file not found in session:` — are `Some(e.to_string())` over
-    `brink-ide` error types, so there is no literal for the scan to find;
-    driving them is possible in principle but is a per-site job with
-    matching setup, not a scan (the same wall #2577 hit one level up, for
-    shapes rather than wording).
+  - The literal scan only sees strings that exist **in this crate**. Many
+    refusals — `stitch '...' not found in knot`, `source knot not found`,
+    `entry file not found in session:` — are `Some(e.to_string())` over
+    `brink-ide` error types, so there is no literal for the scan to find.
+    #2620 drove those instead, which is why they are pinned despite being
+    invisible to the scan; but driving them is a per-site job with matching
+    setup, not a scan, so the two mechanisms cover different sets and
+    neither subsumes the other.
   - The literal scan's own filter is narrow: it only catches a coinage that
     contains the word `"handle"`. A fourth doc-handle refusal worded
     without that word (`"unknown document id"`, `"no such document"`) has
     no literal the scan recognizes as belonging to this class and is
     invisible to it.
-  - Every other `error:` string in `structural-refusal-shape.test.ts` is
-    still **hand-copied** from the production call path, documented as such
-    in the file's own header rather than silently read as verified. That
-    list drifts the same way the thing it guards drifted; treat it as a
-    transcription to re-verify against the source when touched, not a
-    machine-checked fact.
+  - **A driven message pins one input's answer, not the op's whole
+    vocabulary.** `rename_file` refuses three different ways and only those
+    three are driven; a fourth branch added tomorrow is unpinned until
+    someone writes it a driver.
+  - **An unreachable branch gets no driver and no mock counterpart.**
+    `"current file source unavailable"`
+    (`crates/brink-web/src/editor/refactor.rs`) is a defensive `let ... else`
+    sitting after `ensure_include` has already resolved the same source, so
+    no input reaches it —
+    `removing_a_file_under_an_open_handle_refuses_before_the_source_guard`
+    pins that the documented route refuses one layer earlier, and goes red if
+    a refactor ever makes the branch reachable. Mirroring it into the mock
+    would model an answer production cannot produce (#2621, applying #2577's
+    lesson that a mock method nothing can reach closes nothing).
+  - **Discovery still cannot see an undriven SITE.** #2577 guarantees no
+    refusal *struct* is omitted from the fixture; nothing guarantees no
+    refusal *site* is. A new doc-handle op that spells its error string
+    correctly but never gets a fixture entry or a mock counterpart is
+    invisible to every guard here, the uniformity scan included — that scan
+    only catches wrong vocabulary at sites it already knows about. This is
+    the same wall one level up, named here so it is not rediscovered a fourth
+    time (#2621 gap 2).
 
 ## Visual hierarchy
 

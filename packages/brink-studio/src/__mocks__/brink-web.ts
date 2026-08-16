@@ -335,7 +335,11 @@ export class EditorSession {
     }
     const source = this.files.get(oldPath);
     if (source === undefined) {
-      return EditorSession.structuralRefusal("file not loaded");
+      // #2620: this said `file not loaded` for two waves. Production's
+      // `rename_file` has NO such guard — it delegates straight to
+      // `brink_ide::file_rename::rename_file`, whose `RenameFileError::NotFound`
+      // is `file '{0}' not found`. Driven now, not read.
+      return EditorSession.structuralRefusal(`file '${oldPath}' not found`);
     }
     if (oldPath !== newPath && this.files.has(newPath)) {
       return EditorSession.structuralRefusal(`a file already exists at '${newPath}'`);
@@ -376,7 +380,12 @@ export class EditorSession {
   delete_symbol(path: string, knot: string, stitch: string): string {
     const source = this.files.get(path);
     if (source === undefined) {
-      return EditorSession.structuralRefusal("file not loaded");
+      // #2620: this said `file not loaded`. Production's `delete_symbol` has no
+      // wasm-level guard at all — `brink_ide::structural_delete::delete_symbol`
+      // maps BOTH an unloaded path and a missing knot onto the same
+      // `MoveError::SourceNotFound` (`source knot not found`), so the mock
+      // cannot distinguish them either. Driven now, not read.
+      return EditorSession.structuralRefusal("source knot not found");
     }
     const name = stitch || knot;
     const lines = source.split("\n");
@@ -385,7 +394,9 @@ export class EditorSession {
       : new RegExp(`^\\s*={2,3}\\s*${name}\\b`);
     const start = lines.findIndex((l) => headerRe.test(l));
     if (start < 0) {
-      return EditorSession.structuralRefusal("symbol not found");
+      // #2620: this said `symbol not found`, a string production never emits
+      // from this op — same `MoveError::SourceNotFound` as the branch above.
+      return EditorSession.structuralRefusal("source knot not found");
     }
     // The region runs until the next header at the same-or-shallower level.
     const stopRe = stitch ? /^\s*={1,3}/ : /^\s*={2,3}/;
@@ -1450,6 +1461,14 @@ export class EditorSession {
    * without the rebase, the next `update_document` fragment splice would clobber
    * the INCLUDE line (the very bug under test). Returns the applied edit (as a
    * shift descriptor) with no expectation the caller re-applies it.
+   *
+   * The read-only-mount fence below is #2621: production refuses a handle on a
+   * mounted stdlib file BEFORE attempting the include, and until now the mock
+   * modelled no fence at all, so the studio suite could not reach that branch.
+   * Only `auto_import_apply_include_doc` gets it — `auto_import_include_doc` is
+   * a pure query that computes an edit without writing, and production applies
+   * no such fence to it (`crates/brink-web/src/editor/refactor.rs`); adding one
+   * here would be a divergence, not fidelity.
    */
   auto_import_apply_include_doc(doc: number, target: string): string {
     const d = this.docs.get(doc);
@@ -1458,6 +1477,14 @@ export class EditorSession {
       // `auto_import_apply_include_doc`); pinned by the driven `messages` map in
       // `crates/brink-web/fixtures/refusal-shapes.json` (#2603).
       return EditorSession.autoImportRefusal("unknown document handle");
+    }
+    if (this.readOnlyPaths.has(d.path)) {
+      // #2621. Wording driven, not typed — see the fixture's
+      // `auto_import_apply_include_doc:read-only-mount`. Ordered after the
+      // unknown-handle check exactly as production orders it.
+      return EditorSession.autoImportRefusal(
+        "document handle is read-only (mounted stdlib file)",
+      );
     }
     const source = this.files.get(d.path) ?? "";
     const base = target.split("/").pop()!;
