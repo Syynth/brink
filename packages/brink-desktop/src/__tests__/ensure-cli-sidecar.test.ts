@@ -13,7 +13,7 @@ import {
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   ensureCliSidecar,
@@ -48,7 +48,27 @@ function stagedRepoRoot(): string {
   return repoRoot;
 }
 
+// `ensureCliSidecar`'s `targetDir` default reads `process.env.CARGO_TARGET_DIR`
+// (:161), so any test that means "the default `<repoRoot>/target` path" —
+// i.e. every `stagedRepoRoot()` case except the one below that deliberately
+// exercises the env var — has to run with it cleared, or it silently
+// disagrees with an ambient value the way #2659 found. The pump mandates
+// `CARGO_TARGET_DIR` on every gate invocation, so leaving it ambient here
+// makes these three tests fail whenever the suite runs under the pump.
+let originalCargoTargetDir: string | undefined;
+
+beforeEach(() => {
+  originalCargoTargetDir = process.env.CARGO_TARGET_DIR;
+  delete process.env.CARGO_TARGET_DIR;
+});
+
 afterEach(() => {
+  if (originalCargoTargetDir === undefined) {
+    delete process.env.CARGO_TARGET_DIR;
+  } else {
+    process.env.CARGO_TARGET_DIR = originalCargoTargetDir;
+  }
+
   while (temporaries.length > 0) {
     const dir = temporaries.pop();
     if (dir !== undefined) {
