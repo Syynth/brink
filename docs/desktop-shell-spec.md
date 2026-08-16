@@ -632,19 +632,21 @@ inert-on-import and still-acts-standalone properties, the same shape
 `ensure-cli-sidecar.test.ts` uses for the script it imports `STUB_SIDECAR`
 from.
 
-**Deliberately inert today, not a gap.** Nothing in this repo invokes
-`tauri build` at all today, in CI or in any documented developer command
-(grepped at the time of #2631: only `pnpm --filter @brink/desktop
-dev`/`build` exist, neither of which reaches tauri-cli's bundler) — so the
-hook is unreached, by design. But its firing condition is not simply
-"`bundle.active` flips to `true`": tauri-cli enters its bundling phase (and
-therefore runs this hook) on `!options.no_bundle && (config.bundle.active
-|| options.bundles.is_some())`, so an explicit `tauri build --bundles
+**Deliberately inert by default, not a gap.** No CI lane and no documented
+developer command invokes `tauri build` (grepped at the time of #2631: only
+`pnpm --filter @brink/desktop dev`/`build` exist, neither of which reaches
+tauri-cli's bundler) — so the hook does not fire in the ordinary course of
+things, by design. But its firing condition is not simply "`bundle.active`
+flips to `true`": tauri-cli enters its bundling phase (and therefore runs
+this hook) on `!options.no_bundle && (config.bundle.active ||
+options.bundles.is_some())`, so an explicit `tauri build --bundles
 <target>` / `-b <target>` already fires it **today**, with `bundle.active`
 still `false` — D3 flipping `bundle.active` to `true` only widens which
 invocation reaches it (the *default*, bundle-less `tauri build` starts
-doing so too); it is not the sole door. Neither door is reachable today
-because nothing in this repo invokes `tauri build` in any form.
+doing so too); it is not the sole door. No CI lane or documented command
+invokes either door — but an ad-hoc `--bundles` invocation reaches the hook
+today, as #2687's observation (below) did; that is a narrower claim than
+"unreachable."
 `before_bundle_command_asserts_the_staged_sidecar_is_real` pins that
 `bundle.active` stays `false` here specifically so a later, unrelated PR
 that does flip it does not silently change what this hook's presence means

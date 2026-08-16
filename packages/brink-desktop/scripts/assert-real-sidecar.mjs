@@ -24,17 +24,20 @@
 // cannot mistake an ordinary `cargo check`/`cargo test` (which legitimately
 // wants build.rs's auto-staged stub) for a real bundle.
 //
-// ⚠ `bundle.active` is `false` (D3, docs/desktop-shell-spec.md) and nothing
-// in this repo invokes `tauri build` yet, in CI or in a documented developer
-// command — so this hook is unreached TODAY, by design (#2631's own ask:
+// ⚠ `bundle.active` is `false` (D3, docs/desktop-shell-spec.md), and no CI
+// lane and no documented developer command invokes `tauri build` — so this
+// hook does not fire in the ordinary course of things (#2631's own ask:
 // "correct and inert TODAY, and must start biting the moment someone flips
-// that flag"). But the firing condition is not just `bundle.active`:
-// tauri-cli enters its bundling phase — and therefore runs this hook — on
-// `!options.no_bundle && (config.bundle.active || options.bundles.is_some())`
-// (tauri-cli's `src/build.rs`), so an explicit `tauri build --bundles
-// <target>` / `-b <target>` fires it TODAY even with `bundle.active: false`.
-// D3 flipping `bundle.active` to `true` makes the *default* `tauri build`
-// reach it too; it is not the only door.
+// that flag"). But that is narrower than "unreached": the firing condition
+// is not just `bundle.active`. tauri-cli enters its bundling phase — and
+// therefore runs this hook — on `!options.no_bundle && (config.bundle.active
+// || options.bundles.is_some())` (tauri-cli's `src/build.rs`), so an
+// explicit `tauri build --bundles <target>` / `-b <target>` fires it TODAY
+// even with `bundle.active: false` — and an ad-hoc invocation of exactly
+// that reached this hook for #2687's observation (see
+// docs/desktop-shell-spec.md "Bundle-time sidecar assertion (#2631)"). D3
+// flipping `bundle.active` to `true` makes the *default* `tauri build` reach
+// it too; it is not the only door.
 //
 // Two checks, not one (#2687). The stub comparison below is a BLOCKLIST: it
 // refuses the one placeholder that exists today and lets everything else
@@ -126,8 +129,10 @@ export function looksLikeNativeExecutable(bytes, format) {
 
 /**
  * The two-byte prefix of an interpreter script. Only consulted on the
- * unrecognised-triple fallback path, where no executable magic is known —
- * the known formats reject a script by magic already.
+ * "cannot judge by magic" fallback path — either an unrecognised triple, or
+ * a format `executableFormatFor` named that `EXECUTABLE_MAGIC` has no entry
+ * for (see `weakFallbackCheck`) — the known-and-covered formats reject a
+ * script by magic already.
  *
  * ⚠ Written as its own two bytes, NOT as a copy of `STUB_SIDECAR`'s first
  * line: #2626's review put the stub payload in `ensure-cli-sidecar.mjs`
@@ -137,16 +142,69 @@ export function looksLikeNativeExecutable(bytes, format) {
 const SCRIPT_PREFIX = [0x23, 0x21];
 
 /**
+ * Human-readable name for each recognised executable format, used only in
+ * log/error text. `format.toUpperCase()` alone read `macho` as `"MACHO"`
+ * instead of `"Mach-O"` — the stated reason for keeping both checks is that
+ * the message must be actionable, and a misspelled format name sends a
+ * developer hunting (#2687).
+ */
+const FORMAT_DISPLAY = {
+  elf: "ELF",
+  macho: "Mach-O",
+  pe: "PE",
+};
+
+/**
+ * The weakest checks that cannot produce a false rejection of a real binary:
+ * a zero-byte file is never an executable, and an interpreter script is
+ * never what `cargo build -p brink-cli --release` produced. Everything else
+ * is let through with a log line, not a throw.
+ *
+ * Shared by BOTH "cannot judge" cases (#2687 review): a triple
+ * `executableFormatFor` has no rule for at all (`format === null`), and a
+ * format it DID name that `EXECUTABLE_MAGIC` has no entry for
+ * (`looksLikeNativeExecutable` returns `undefined`). The two functions live
+ * in different files and nothing enforces that every value the first can
+ * return has an entry in the second's table — today they happen to line up,
+ * but a future format added to one and not the other must degrade here too,
+ * not silently reject a real binary.
+ */
+function weakFallbackCheck({ staged, destBin, triple, log, reasonNote }) {
+  if (staged.length === 0) {
+    throw new Error(
+      `[assert-real-sidecar] ${destBin} is empty — refusing to let this bundle ship a ` +
+        "zero-byte brink-cli (#2687). Stage the real binary first: run " +
+        "`pnpm --filter @brink/desktop build`.",
+    );
+  }
+  if (SCRIPT_PREFIX.every((byte, index) => staged[index] === byte)) {
+    throw new Error(
+      `[assert-real-sidecar] ${destBin} is an interpreter script, not a compiled ` +
+        "brink-cli — refusing to let this bundle ship it (#2687). Stage the real binary " +
+        "first: run `pnpm --filter @brink/desktop build`.",
+    );
+  }
+  log(
+    `[assert-real-sidecar] ${destBin} is not the stub — proceeding with the bundle. ` +
+      `(${reasonNote}, so its magic bytes were not checked; triple ${triple}.)`,
+  );
+  return destBin;
+}
+
+/**
  * Throw unless the brink-cli sidecar staged for `triple` is a real native
  * executable for that triple — i.e. it is not `STUB_SIDECAR`, AND it begins
  * with the executable magic `triple`'s loader requires (#2687). Returns the
  * staged path on success.
  *
- * The magic check is skipped, with a logged note, for a triple
- * `executableFormatFor` has no rule for; the stub comparison and an
- * empty/interpreter-script rejection still apply there. That asymmetry is
- * the point — this check must never be the reason a genuine `brink-cli`
- * fails to bundle on a platform nobody anticipated.
+ * The magic check is skipped, with a logged note (`weakFallbackCheck`), for
+ * a triple `executableFormatFor` has no rule for AND for a format it DID
+ * name that `EXECUTABLE_MAGIC` has no entry for; the stub comparison and an
+ * empty/interpreter-script rejection still apply in both cases. That
+ * asymmetry is the point — this check must never be the reason a genuine
+ * `brink-cli` fails to bundle on a platform nobody anticipated, whether
+ * because the triple is unrecognised or because the two format tables
+ * drifted apart.
  *
  * `triple` defaults to `TAURI_ENV_TARGET_TRIPLE` when tauri-cli set it, and
  * only falls back to `hostTriple()` when it did not (a standalone/manual
@@ -196,48 +254,49 @@ export function assertRealSidecarStaged({
 
   const format = executableFormatFor(triple);
   if (format === null) {
-    // No magic rule for this triple. Fall back to the weakest checks that
-    // cannot produce a false rejection of a real binary: a zero-byte file
-    // is never an executable, and an interpreter script is never what
-    // `cargo build -p brink-cli --release` produced.
-    if (staged.length === 0) {
-      throw new Error(
-        `[assert-real-sidecar] ${destBin} is empty — refusing to let this bundle ship a ` +
-          "zero-byte brink-cli (#2687). Stage the real binary first: run " +
-          "`pnpm --filter @brink/desktop build`.",
-      );
-    }
-    if (SCRIPT_PREFIX.every((byte, index) => staged[index] === byte)) {
-      throw new Error(
-        `[assert-real-sidecar] ${destBin} is an interpreter script, not a compiled ` +
-          "brink-cli — refusing to let this bundle ship it (#2687). Stage the real binary " +
-          "first: run `pnpm --filter @brink/desktop build`.",
-      );
-    }
-    log(
-      `[assert-real-sidecar] ${destBin} is not the stub — proceeding with the bundle. ` +
-        `(No executable-format rule for ${triple}, so its magic bytes were not checked; ` +
-        "see executableFormatFor in ensure-cli-sidecar.mjs.)",
-    );
-    return destBin;
+    // No magic rule for this triple at all.
+    return weakFallbackCheck({
+      staged,
+      destBin,
+      triple,
+      log,
+      reasonNote:
+        "no executable-format rule for this triple (see executableFormatFor in " +
+        "ensure-cli-sidecar.mjs)",
+    });
   }
 
-  if (looksLikeNativeExecutable(staged, format) !== true) {
+  const identity = looksLikeNativeExecutable(staged, format);
+  if (identity === undefined) {
+    // executableFormatFor named a format, but EXECUTABLE_MAGIC has no entry
+    // for it — "cannot judge", the same as format === null above, NOT
+    // "judged and rejected". Collapsing this into a throw would refuse a
+    // genuine binary the moment the two tables drift (#2687 review).
+    return weakFallbackCheck({
+      staged,
+      destBin,
+      triple,
+      log,
+      reasonNote: `no executable magic is known for format "${format}"`,
+    });
+  }
+
+  if (identity === false) {
     const leading = [...staged.subarray(0, 4)]
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join(" ");
+    const display = FORMAT_DISPLAY[format];
     throw new Error(
-      `[assert-real-sidecar] ${destBin} does not begin with ${format.toUpperCase()} executable ` +
-        `magic (first bytes: ${leading || "<empty file>"}) — ${triple} bundles ` +
-        `${format === "elf" ? "an" : "a"} ${format.toUpperCase()} binary, so whatever is ` +
-        "staged there is not a runnable brink-cli for this target " +
-        "(#2687). Refusing to let this bundle ship it. Stage the real binary first: run " +
-        "`pnpm --filter @brink/desktop build`, and check BRINK_SIDECAR_STUB is unset.",
+      `[assert-real-sidecar] ${destBin} does not begin with ${display} executable magic ` +
+        `(first bytes: ${leading || "<empty file>"}) — ${triple} requires ${display} format ` +
+        "for its binaries, so whatever is staged there is not a runnable brink-cli for this " +
+        "target (#2687). Refusing to let this bundle ship it. Stage the real binary first: " +
+        "run `pnpm --filter @brink/desktop build`, and check BRINK_SIDECAR_STUB is unset.",
     );
   }
 
   log(
-    `[assert-real-sidecar] ${destBin} is not the stub and carries ${format.toUpperCase()} ` +
+    `[assert-real-sidecar] ${destBin} is not the stub and carries ${FORMAT_DISPLAY[format]} ` +
       "executable magic — proceeding with the bundle.",
   );
   return destBin;

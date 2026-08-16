@@ -370,6 +370,43 @@ describe("assertRealSidecarStaged's positive identity check", () => {
       /interpreter script/,
     );
   });
+
+  it("falls back to weaker checks — never a rejection — when EXECUTABLE_MAGIC has no entry for a format executableFormatFor names", () => {
+    // #2687 review: `executableFormatFor` (ensure-cli-sidecar.mjs) and
+    // `EXECUTABLE_MAGIC` (this file) are maintained in different files, and
+    // nothing enforces that every format the former can return has an entry
+    // in the latter's table — today they happen to line up (elf/macho/pe in
+    // both), but that agreement is a cross-file invariant, not something the
+    // type system or a shared constant guarantees. If they ever drift,
+    // `looksLikeNativeExecutable` returns `undefined` (not `false`) for the
+    // orphaned format, and `assertRealSidecarStaged` MUST treat that the
+    // same as "no rule for this triple at all" — never as a rejection. This
+    // simulates the drift directly, rather than only asserting
+    // `looksLikeNativeExecutable`'s return value in isolation.
+    const srcTauriDir = scratch();
+    const triple = "x86_64-unknown-linux-gnu";
+    expect(executableFormatFor(triple)).toBe("elf");
+
+    const savedElfMagic = EXECUTABLE_MAGIC.elf;
+    delete (EXECUTABLE_MAGIC as Record<string, unknown>).elf;
+    try {
+      expect(
+        looksLikeNativeExecutable(Uint8Array.from([0x7f, 0x45, 0x4c, 0x46]), "elf"),
+      ).toBeUndefined();
+
+      // A plausible-looking binary — real ELF magic — must still PASS: this
+      // is exactly the "cannot judge" case, and rejecting it would be worse
+      // than not checking (#2687).
+      const destBin = stageSidecar(
+        srcTauriDir,
+        triple,
+        Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
+      );
+      expect(assertRealSidecarStaged({ srcTauriDir, triple, log: () => {} })).toBe(destBin);
+    } finally {
+      EXECUTABLE_MAGIC.elf = savedElfMagic;
+    }
+  });
 });
 
 describe("the main-guard", () => {

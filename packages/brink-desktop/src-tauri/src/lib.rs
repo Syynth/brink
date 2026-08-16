@@ -2149,20 +2149,19 @@ mod tests {
     /// it. `scripts/assert-real-sidecar.mjs` throws if that file's content
     /// is `STUB_SIDECAR` rather than a real binary.
     ///
-    /// Deliberately inert today, not a gap: `bundle.active` below must stay
-    /// `false` (D3 scope, not this issue's — see
+    /// Deliberately inert by default, not a gap: `bundle.active` below must
+    /// stay `false` (D3 scope, not this issue's — see
     /// `docs/desktop-shell-spec.md`). That is not the only thing standing
     /// between this hook and firing, though — tauri-cli's bundling phase
     /// also runs on an explicit `tauri build --bundles <target>` even with
     /// `bundle.active: false`, so "flip `bundle.active`" is not this hook's
-    /// only door, just the one this crate's own config controls. What
-    /// actually keeps it inert today is that nothing in this repo invokes
-    /// `tauri build` in any form yet — no `--bundles` flag, no default
-    /// bundle-on config. `bundle.active` flipping to `true` would widen
-    /// which invocation reaches the hook (the bundle-less default `tauri
-    /// build` starts doing so too) but does not, on its own, make the hook
-    /// reachable if nothing still calls `tauri build` — which is what this
-    /// test pins for now.
+    /// only door, just the one this crate's own config controls. No CI lane
+    /// and no documented developer command invokes `tauri build` today — but
+    /// an ad-hoc `--bundles` invocation does reach the hook, as #2687's
+    /// observation (docs/desktop-shell-spec.md "Bundle-time sidecar
+    /// assertion (#2631)") demonstrated. This test below pins only that
+    /// `bundle.active` stays `false`; it does not and cannot pin the absence
+    /// of a CI lane or developer command that calls `tauri build`.
     #[test]
     fn before_bundle_command_asserts_the_staged_sidecar_is_real() {
         let conf = tauri_conf();
