@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,7 @@ function listPackages(dir: string): string[] {
     .filter((name) => {
       const fullPath = join(dir, name);
       try {
-        const stat = require("node:fs").statSync(fullPath);
+        const stat = statSync(fullPath);
         return stat.isDirectory() && !name.startsWith(".");
       } catch {
         return false;
