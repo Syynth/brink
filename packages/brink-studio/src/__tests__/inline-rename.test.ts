@@ -304,6 +304,50 @@ describe("inline-rename widget", () => {
     view.destroy();
   });
 
+  it("settleCommit hands an `ok: false` refusal to commitRename unmodified (#2543)", () => {
+    // `isSafeRename` gates on `safe` + `introduced_diagnostics.length === 0`
+    // only — a refusal satisfies both (`error_json`'s `safe: true` with no
+    // diagnostics), so with a widget genuinely mounted via `prepareRename`
+    // (no bypass, unlike inline-rename-refusal.test.ts's offset-0 stand-in),
+    // `settleCommit` still treats the refusal as safe and commits it exactly
+    // as it would a real success. This is the fact `applyComputedRename` /
+    // `applyMoveResult` must guard against downstream (#2543).
+    const refused: StructuralResult = {
+      ok: false,
+      error: "cannot rename this symbol",
+      cross_file_edits: [],
+      introduced_diagnostics: [],
+      safe: true,
+    };
+    const prepareRename = (source: string, offset: number): Location | null => {
+      const start = source.indexOf(SYMBOL);
+      if (offset < start || offset > start + SYMBOL.length) return null;
+      return { file: "main.ink", start, end: start + SYMBOL.length };
+    };
+    const commits: StructuralResult[] = [];
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: DOC,
+        extensions: [
+          renameExtension({
+            prepareRename,
+            renameSymbolAt: () => refused,
+            commitRename: (result) => commits.push(result),
+          }),
+        ],
+      }),
+      parent: document.body,
+    });
+    startInlineRename(view, DOC.indexOf(SYMBOL));
+    const input = inputEl(view);
+    typeName(view, input, "greeting");
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    vi.advanceTimersByTime(1); // flush the deferred (idle-scheduled) query
+
+    expect(commits).toEqual([refused]);
+    view.destroy();
+  });
+
   it("destroying the editor tears the widget down (no leaked DOM)", () => {
     const { view } = mountRename(() => unsafe(1));
     startInlineRename(view, DOC.indexOf(SYMBOL));

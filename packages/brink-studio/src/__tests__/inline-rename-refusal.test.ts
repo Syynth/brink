@@ -13,6 +13,19 @@
  * happened. Strictly worse than #2528's silent close, which at least did
  * nothing visible.
  *
+ * Reachability: the widget only mounts when `prepareRename`
+ * (`packages/ink-editor/src/rename.ts`) resolves a range at the cursor —
+ * `brink_ide::rename::prepare_rename` returns one for a declaration or a
+ * reference site, and those renames go on to *succeed*. A refusal that IS
+ * reachable through a mounted widget is e.g. the file unloading out from under
+ * an open rename ("file not loaded"), or the analysis⇄db identity-space
+ * mismatch guarded by
+ * `rename_refuses_rather_than_silently_dropping_edits_when_identity_spaces_disagree`
+ * (`crates/internal/brink-ide/src/rename.rs`). Below, offset 0 (inside the
+ * leading `-> hello` divert) is the mock's stand-in for "the op refuses" — it
+ * is not itself a claim that F2 mounts the widget there; `renameSymbolAt` is
+ * exercised directly, bypassing `prepareRename` entirely.
+ *
  * Why the guard is on `ok` and not on `safe`:
  *
  *   Rust's `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes
@@ -27,6 +40,11 @@
  *   result. The honest guard is `ok`, at the consumers that treat a result as
  *   applicable. The first assertion below pins the `safe: true` shape so the
  *   reason this bug existed stays visible.
+ *
+ * `packages/brink-studio/src/__tests__/inline-rename.test.ts`'s `mountRename`
+ * harness proves the other half — that `settleCommit` really does hand a
+ * refusal to `commitRename` unmodified when a widget IS mounted, with no
+ * `prepareRename` bypass.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -78,8 +96,11 @@ describe("inline rename refusal (#2543)", () => {
   it("a refused rename is still reported as `safe` by the editor's gate", async () => {
     const { project } = await makeStore({ "main.ink": MAIN });
 
-    // Offset 0 sits in the leading `-> hello` divert, not a declaration name,
-    // so the op refuses rather than computing edits.
+    // Offset 0 (inside the leading `-> hello` divert) is a convenient stand-in
+    // for "the op refuses" — it calls `renameSymbolAt` directly, bypassing
+    // `prepareRename`, so it is not a claim that F2 reaches this offset in
+    // production. See the file header for a refusal that IS reachable through
+    // a mounted widget.
     const refused = project.getSession().renameSymbolAt("main.ink", 0, "greeting");
 
     expect(refused.ok).toBe(false);
