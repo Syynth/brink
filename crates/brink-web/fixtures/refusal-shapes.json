@@ -1,6 +1,11 @@
 {
-  "$comment": "GENERATED from the Rust refusal payloads — do not hand-edit. Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).",
+  "$comment": "GENERATED from the Rust refusal payloads — do not hand-edit. `shapes` are the serialized structs (message elided to the placeholder in `error`); `messages` are real refusal strings read back out of the production ops, not typed (#2603). Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).",
   "error": "REFUSAL",
+  "messages": {
+    "auto_import_apply_include_doc:unknown-handle": "unknown document handle",
+    "auto_import_include_doc:unknown-handle": "unknown document handle",
+    "resolve_code_action_doc:unknown-handle": "unknown document handle"
+  },
   "shapes": {
     "AutoImportJs": {
       "already_reachable": false,
