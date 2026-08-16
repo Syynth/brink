@@ -187,6 +187,11 @@ export class InlineNameInput {
     // `packages/brink-studio/src/__tests__/inline-name-input-seed.test.ts`.
     setTimeout(() => {
       input.focus();
+      // SELECT-INVARIANT InlineNameInput.select: guarded by the
+      // value-equality check on the line below — select() only fires when
+      // the field still holds what was seeded, i.e. nobody has typed into it
+      // yet during this deferred timer; see the comment block above and
+      // inline-name-input-seed.test.ts.
       if (input.value === this.options.initialValue) input.select();
     }, 0);
     return root;

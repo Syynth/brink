@@ -104,6 +104,9 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
     input.focus();
     // Pre-select the basename (without extension) for a quick retype.
     const dot = initial.lastIndexOf(".");
+    // SELECT-INVARIANT Binder.renameInput.preSelectBasename: runs synchronously
+    // in this mount effect, right after input.focus() — no deferred frame, no
+    // window in which the user could have typed before this selection lands.
     input.setSelectionRange(0, dot > 0 ? dot : initial.length);
   }, [initial]);
 
@@ -590,6 +593,11 @@ function BinderInner() {
         if (!input) return;
         input.focus();
         const end = input.value.length;
+        // SELECT-INVARIANT Binder.newFileInput.cursorToEnd: a zero-width
+        // range (start === end) places the caret, it does not select any
+        // text — there is nothing typed here for it to clobber even though
+        // it runs inside this deferred frame, and `end` is read fresh from
+        // `input.value` at fire time, not a value captured before the frame.
         input.setSelectionRange(end, end);
       });
     },
