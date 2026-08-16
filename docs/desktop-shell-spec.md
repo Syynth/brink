@@ -538,6 +538,85 @@ just CI, whenever a debug build finds no sidecar staged.
   this function exists to satisfy. `binaries/` is gitignored specifically
   because it now holds build output despite living in the source tree.
 
+### Bundle-time sidecar assertion (#2631)
+
+PR #2626's stated invariant is "a real bundle must ship the real
+`brink-cli`." For `cargo tauri build` (release), `build.rs` enforces that
+directly — its `stage_dev_sidecar_if_missing` only auto-stages
+`STUB_SIDECAR` when `PROFILE == "debug"`, so a release build with no sidecar
+staged keeps failing loudly on `tauri-build`'s `bundle.externalBin`
+resolution exactly as before #2617. But `tauri build --debug` is a
+debug-profile **bundling** path, and until this section's fix landed, the
+invariant held there only *indirectly*: via `beforeBuildCommand` ->
+`pnpm build` staging the real binary before `build.rs` ever ran, plus
+`bundle.active: false` making the question moot in practice. Nothing
+asserted it — an ordering coincidence (the pnpm build script happens to run
+before Tauri's own resource resolution) plus a feature flag that happens to
+be off. If the ordering assumption ever broke — a `build.rs` change, a
+`beforeBuildCommand` change, or a developer/CI shell that happens to carry
+`BRINK_SIDECAR_STUB=1` (the smoke lane's own `env:` var, #2469) into a real
+`--debug` bundle invocation — nothing would have caught the STUB shipping.
+
+The fix is `tauri.conf.json`'s `beforeBundleCommand`, a Tauri hook distinct
+from `beforeBuildCommand`: it runs immediately before the **bundling
+phase** of `tauri build`, i.e. after the crate has already compiled
+(`build.rs` has already run and either staged something or failed the build
+outright) and right before tauri-bundler reads
+`binaries/brink-cli-<triple>` off disk to package it. That is the latest
+point at which refusing is still useful, and it fires only when a bundle is
+actually being produced — unlike a check inside `build.rs` itself, it
+cannot be confused with an ordinary `cargo check`/`cargo test`, which
+legitimately wants `build.rs`'s auto-staged stub and must keep getting it.
+
+`beforeBundleCommand` runs `node scripts/assert-real-sidecar.mjs`
+(`packages/brink-desktop/scripts/`), which:
+
+- resolves the same triple-suffixed path `ensure-cli-sidecar.mjs` stages
+  (via that script's own `sidecarPaths`, not a re-derived path);
+- reads the staged file's bytes and compares them against
+  `STUB_SIDECAR` — **imported** from `ensure-cli-sidecar.mjs`, not
+  redefined. #2626's review established that the stub payload, host-triple
+  detection and staged filename live in that script alone; a second copy
+  anywhere (including here) is exactly the drift
+  `build_script_stages_the_dev_sidecar_the_way_ci_does` (`src-tauri/src/lib.rs`)
+  already guards against for `build.rs`, and
+  `before_bundle_command_asserts_the_staged_sidecar_is_real` (same file)
+  extends that same guard to this script;
+- throws — refusing the bundle — when they match, and is a silent
+  passthrough otherwise.
+
+Like the two preflight scripts it joins, it is main-guarded and exports its
+core logic (`assertRealSidecarStaged`), so
+`src/__tests__/scripts-main-guard.test.ts`'s directory scan (#2478) covers
+it automatically, and `src/__tests__/assert-real-sidecar.test.ts` drives the
+stub/non-stub/missing-file decisions directly plus the main-guard's
+inert-on-import and still-acts-standalone properties, the same shape
+`ensure-cli-sidecar.test.ts` uses for the script it imports `STUB_SIDECAR`
+from.
+
+**Deliberately inert today, not a gap.** `bundle.active` is `false`
+(D3 scope, not this fix's — the flag stays off here on purpose, and turning
+it on is explicitly out of scope for #2631), so tauri-cli's bundling phase —
+and this hook with it — does not run yet; nothing in this repo invokes
+`tauri build`/`tauri build --debug` at all today, in CI or in any documented
+developer command (grepped at the time of #2631: only `pnpm --filter
+@brink/desktop dev`/`build` exist, neither of which reaches tauri-cli's
+bundler). The hook starts firing before every real bundle — debug or
+release — the moment D3 flips `bundle.active` to `true` and something
+actually runs `tauri build`, with no further wiring: `beforeBundleCommand`
+is already the correct hook for that world, not a placeholder for one.
+`before_bundle_command_asserts_the_staged_sidecar_is_real` pins that
+`bundle.active` stays `false` here specifically so a later, unrelated PR
+that does flip it does not silently change what this hook's presence means
+without anyone noticing — that assertion should be deleted (not edited)
+once D3 makes it legitimately `true`.
+
+Scope note the fix does **not** widen: like `build.rs`'s own auto-staging,
+this only checks the **host** triple (`hostTriple()`), the same limit
+`build.rs` accepts by comparing `HOST` to `TARGET` before staging anything.
+A cross-compiled `--target` bundle is unchecked by either mechanism — a
+pre-existing gap, not one #2631 introduces.
+
 ### CI coverage blind spots
 
 ⚠ The smoke lane is `ubuntu-latest` only, so the `#[cfg(any(target_os =
