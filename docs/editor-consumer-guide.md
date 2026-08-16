@@ -31,7 +31,7 @@ the editor owns the resulting UX.
 | `getCompletions` + `autoImport` | completions + **auto-import** (#312): out-of-scope completions tagged `from <file>`, accept inserts the `INCLUDE` | `completions_*`, `auto_import_include_doc` / `auto_import_apply_include_doc` → `AutoImportResult` |
 | `getFoldingRanges` | folding incl. the **INCLUDE-block fold** (#313, `INCLUDE … (N files)`) and **fold kinds** (#365: structural/machinery/narrative run-based folds + JetBrains-style summary pills) | `folding_ranges` → `FoldRange[]` |
 | `getCodeActions` | **code-actions** menu (#321); apply via the resolve op | `code_actions_*` + `resolve_code_action` |
-| `prepareRename` + `renameSymbolAt` + `commitRename` (+ `onRenameBreakage`) | **inline rename** (#323) with the live **"⚠ breaks N"** badge (#324) and the inline breakage report | `prepare_rename` + `rename_symbol_at` → `StructuralResult` |
+| `prepareRename` + `renameSymbolAt` + `commitRename` (+ `onRenameBreakage`) | **inline rename** (#323) with the live **"⚠ breaks N"** badge (#324) and the inline breakage report — `commitRename` forwards straight to `DocumentSessions`' `onRenameCommit` callback (`document-sessions.ts`); ⚠ its `result` can be a REFUSED rename (`ok: false`) that still reads as `safe: true` — see the note below the table | `prepare_rename` + `rename_symbol_at` → `StructuralResult` |
 | `getHover`, `gotoDefinition`, `findReferences`, `getSignatureHelp`, `getInlayHints`, `getArgumentWidgets` | the corresponding LSP-style features | `hover`, `goto_definition`, `find_references*`, … |
 | `onPlayFrom`, `onSymbolContextMenu`, `onNavigateToFile` | host hooks for your own chrome | — |
 | `theme` | the editor skin (#363): absent ⇒ the default `brinkTheme`; `false` ⇒ **headless** (you style the class taxonomy below); an `Extension` ⇒ your own CM theme | — |
@@ -60,6 +60,21 @@ Notes on the rename contract (the one with the most moving parts):
 - `onRenameBreakage(result, ctx) => boolean` lets you **override how the breakage report is presented**
   (return whether to proceed). The editor's *default* is the inline report; studio uses this hook to
   route non-editor (binder/graph) renames to its own modal. Your tool decides its own rendering here.
+- ⚠ **`onRenameCommit`'s `result` can be a refusal reporting `ok: false` with `safe: true`.**
+  `safe`/`introduced_diagnostics` describe the breakage of edits the op actually computed; `ok`
+  is the separate field that says whether the op happened at all. A refused rename (e.g. the
+  cursor symbol isn't renameable) computes no edits, so `error_json`
+  (`crates/brink-web/src/editor_refactor.rs`) reports it with `safe: true` and an empty
+  `introduced_diagnostics` — which is indistinguishable from a clean, successful rename to
+  `isSafeRename` (`packages/ink-editor/src/breakage.ts`), which reads only those two fields. The
+  editor's own commit path (`settleCommit`) trusts `isSafeRename` and calls `onRenameCommit`
+  regardless, so **your callback receives the refusal exactly like a success — `ok` is the only
+  field that tells them apart.** Check `result.ok` before applying `new_source`/`cross_file_edits`,
+  pushing an undo entry, re-keying the tab, or toasting success; on `ok: false`, surface
+  `result.error` as a failure instead. This is not hypothetical — it shipped in `@brink-lang/studio`
+  itself (#2543) until its apply seam (`applyComputedRename` / `applyMoveResult`) added the `ok`
+  guard (#2564; rationale recorded in `docs/studio-shell-spec.md` §7.5). Copy that guard rather than
+  re-discovering the bug in your own apply seam.
 
 ## Per-feature: what you get vs. what you rebuild
 
