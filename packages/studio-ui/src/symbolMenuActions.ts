@@ -119,6 +119,27 @@ function renameLabel(req: SymbolRenameRequest): string {
   return req.currentName ?? (req.stitch ? `${req.knot}.${req.stitch}` : req.knot) ?? "symbol";
 }
 
+/**
+ * Report a refused rename through the shell's notification service —
+ * error-severity, `binder`-sourced, "Rename X failed: …". Shared by both
+ * rename surfaces (`performSymbolRename`'s modal path, #2528, and
+ * `applyComputedRename`'s inline/F2 path, #2543) so the two cannot drift:
+ * same severity, same source, same frame.
+ *
+ * The frame is "Rename X failed: <reason>", NOT "Cannot rename X: <reason>":
+ * the op's most common refusal is literally "cannot rename this symbol",
+ * which the latter turns into "Cannot rename hello: cannot rename this
+ * symbol". Keep the frame and the op's own wording from colliding.
+ */
+function notifyRenameRefusal(state: StudioState, label: string, error: string | undefined): void {
+  state._notify?.({
+    severity: "error",
+    source: "binder",
+    message:
+      error != null && error !== "" ? `Rename ${label} failed: ${error}` : `Rename ${label} failed`,
+  });
+}
+
 /** The outcome of attempting a symbol rename. */
 export interface SymbolRenameOutcome {
   /** True when the edits were applied (safe, or forced). */
@@ -169,20 +190,7 @@ export async function performSymbolRename(
     //
     // Guarded by packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts;
     // the invariant is recorded in docs/studio-shell-spec.md §7.5.
-    //
-    // The frame is "Rename X failed: <reason>", NOT "Cannot rename X: <reason>":
-    // the op's most common refusal is literally "cannot rename this symbol",
-    // which the latter turns into "Cannot rename hello: cannot rename this
-    // symbol". Keep the frame and the op's own wording from colliding.
-    const label = renameLabel(req);
-    state._notify?.({
-      severity: "error",
-      source: "binder",
-      message:
-        result.error != null && result.error !== ""
-          ? `Rename ${label} failed: ${result.error}`
-          : `Rename ${label} failed`,
-    });
+    notifyRenameRefusal(state, renameLabel(req), result.error);
     return { applied: false, diagnostics: [], error: result.error };
   }
 
@@ -218,6 +226,22 @@ export async function applyComputedRename(
   args: { path: string; currentName: string; newName: string; result: StructuralResult },
 ): Promise<void> {
   const { path, currentName, newName, result } = args;
+  if (!result.ok) {
+    // The op refused — there is nothing to apply (#2543). Without this branch
+    // the refusal flowed into `applyMoveResult` and came back out as the
+    // success toast ("Rename X to Y", with Undo) plus a re-keyed symbol tab,
+    // asserting an edit that never happened.
+    //
+    // `isSafeRename` cannot catch this upstream: a refusal carries
+    // `safe: true` with no introduced diagnostics (Rust's `error_json`), so
+    // the editor's inline gate reads it as safe and commits. `ok` is the field
+    // that says whether the operation happened; `safe` only ever described the
+    // breakage of edits that were actually computed.
+    //
+    // Guarded by packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts.
+    notifyRenameRefusal(state, currentName, result.error);
+    return;
+  }
   await applyMoveResult(
     result,
     `Rename ${currentName} to ${newName}`,

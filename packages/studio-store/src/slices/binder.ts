@@ -156,6 +156,15 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     const documents = state._documents;
     if (!project || !documents) return;
 
+    // A refused op (`ok: false`) carries no `new_source` and no cross-file
+    // edits, so applying it writes nothing — but it would still push an undo
+    // entry and raise this function's confirming toast, turning a refusal into
+    // a reported success (#2543). Refuse it at the seam so no caller can make
+    // that claim. The user-facing error belongs to the caller, which knows
+    // what was attempted (`applyComputedRename`, `performSymbolRename`);
+    // per-op reporting for the remaining structural ops is #2544.
+    if (!result.ok) return;
+
     const session = project.getSession();
 
     // Every file this move touches: the primary file plus any cross-file
