@@ -2022,6 +2022,113 @@ mod tests {
         }
     }
 
+    /// This crate's own `build.rs`.
+    fn build_script() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs");
+        assert!(path.is_file(), "build.rs should exist at {path:?}");
+        std::fs::read_to_string(&path).expect("just asserted the build script exists")
+    }
+
+    /// CLAUDE.md names `cd packages/brink-desktop/src-tauri && cargo test`
+    /// as this crate's gate, and until #2617 that command was false on
+    /// every fresh checkout and every fresh git worktree: `tauri-build`
+    /// resolves `bundle.externalBin` unconditionally, `binaries/` is
+    /// gitignored (the triple suffix is host-specific), and nothing on the
+    /// local path staged it — so the build script died with `resource path
+    /// "binaries/brink-cli-x86_64-unknown-linux-gnu" doesn't exist` before
+    /// a single test ran.
+    ///
+    /// `build.rs` now stages a stub for DEBUG builds by running the very
+    /// script `desktop-smoke.yml`'s "Stage brink-cli sidecar" step runs,
+    /// under the very variable that lane sets (asserted by
+    /// [`desktop_smoke_stubs_the_staged_sidecar`] above). That reuse is the
+    /// point of this guard: the stub payload, the host-triple detection and
+    /// the staged filename must keep living in
+    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs` alone. A
+    /// second copy of any of them in Rust is drift waiting to happen —
+    /// #2481's Windows `.exe` refusal, for one, exists in exactly one place
+    /// today.
+    ///
+    /// The `PROFILE`/`debug` gate is the other half. `cargo tauri build`
+    /// (release) must keep failing loudly on a missing sidecar: a real
+    /// bundle ships the real `brink-cli`, and silently substituting a
+    /// loudly-failing placeholder there would turn a build-time error into
+    /// a shipped one.
+    #[test]
+    fn build_script_stages_the_dev_sidecar_the_way_ci_does() {
+        let build_rs = build_script();
+
+        assert!(
+            build_rs.contains("scripts/ensure-cli-sidecar.mjs"),
+            "build.rs should stage the missing sidecar by invoking \
+             packages/brink-desktop/scripts/ensure-cli-sidecar.mjs — the same script \
+             desktop-smoke.yml's \"Stage brink-cli sidecar\" step runs — so CLAUDE.md's \
+             documented `cd packages/brink-desktop/src-tauri && cargo test` works on a \
+             fresh tree (#2617)"
+        );
+        // The assertion above is a string-literal grep, so it stays green even if the
+        // script it names is moved or renamed — exactly the drift that would silently
+        // re-break the gate this test exists to protect. Assert the path actually
+        // resolves on disk, so a rename fails this test instead of only the vitest-side
+        // guard (`src/__tests__/scripts-main-guard.test.ts`), which does not cover this
+        // crate's build script at all.
+        assert!(
+            repo_root()
+                .join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs")
+                .is_file(),
+            "packages/brink-desktop/scripts/ensure-cli-sidecar.mjs should exist — build.rs \
+             hard-codes this path as a literal string, so a rename or move must be caught here"
+        );
+        assert!(
+            build_rs.contains("BRINK_SIDECAR_STUB"),
+            "build.rs should ask ensure-cli-sidecar.mjs for a STUB via BRINK_SIDECAR_STUB, \
+             exactly as desktop-smoke.yml's env: block does (#2469) — a `cargo build -p \
+             brink-cli --release` out of the root workspace is not something a `cargo test` \
+             in this crate should trigger, and nothing here ever executes the sidecar"
+        );
+        assert!(
+            !build_rs.contains("#!/bin/sh"),
+            "build.rs should not carry its own copy of the stub payload — STUB_SIDECAR, the \
+             host-triple detection and the staged filename (including #2481's Windows `.exe` \
+             refusal) belong to ensure-cli-sidecar.mjs alone; a second mechanism is what this \
+             guard exists to keep out"
+        );
+        assert!(
+            build_rs.contains("PROFILE") && build_rs.contains("\"debug\""),
+            "build.rs's auto-staging should be gated on PROFILE == \"debug\": `cargo tauri \
+             build` (release) must keep failing loudly on a missing sidecar rather than \
+             bundling a placeholder that exits 127 in a shipped app"
+        );
+    }
+
+    /// The doc half of #2617. CLAUDE.md's "Key commands" block is where
+    /// every contributor and agent learns how to run this crate's gate, and
+    /// the whole point of the build-script staging above is that the
+    /// command printed there is TRUE as written — no unstated prerequisite
+    /// step, nothing to hand-stub first.
+    ///
+    /// Asserted from this side of the fence deliberately: CLAUDE.md is not
+    /// in any cargo workspace and nothing else in the repo checks that its
+    /// desktop command still matches what this crate does.
+    #[test]
+    fn claude_md_documents_the_desktop_gate_this_crate_actually_runs() {
+        let path = repo_root().join("CLAUDE.md");
+        assert!(path.is_file(), "CLAUDE.md should exist at {path:?}");
+        let claude_md = std::fs::read_to_string(&path).expect("just asserted CLAUDE.md exists");
+
+        assert!(
+            claude_md
+                .lines()
+                .any(|line| line.trim() == "cd packages/brink-desktop/src-tauri && cargo test"),
+            "CLAUDE.md's \"Key commands\" should still document `cd \
+             packages/brink-desktop/src-tauri && cargo test` verbatim as the desktop gate. \
+             If that command has grown a prerequisite again, the fix is to make the \
+             prerequisite unnecessary (build.rs stages the stub sidecar, #2617), not to \
+             document a caveat — a doc describing a working command is worth more than one \
+             describing a workaround"
+        );
+    }
+
     /// Every `.github/workflows/*.yml`/`*.yaml` file, sorted by name so the
     /// test's output order is stable. Enumerated from disk, not a
     /// hard-coded file list, so a brand-new workflow file is automatically

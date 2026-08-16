@@ -200,6 +200,10 @@ wasm-pack build crates/brink-web --target web --out-dir www/pkg   # rebuild wasm
 
 # Desktop (packages/brink-desktop — src-tauri is workspace-EXCLUDED, run its gates directly)
 pnpm --filter @brink/desktop dev                # preflights wasm freshness, then vite
+# Runs on a fresh checkout/worktree: `binaries/brink-cli-<triple>` is gitignored, so
+# src-tauri's build.rs stages a STUB sidecar for debug builds (#2617) via the same
+# `scripts/ensure-cli-sidecar.mjs` + BRINK_SIDECAR_STUB that desktop-smoke.yml uses.
+# Nothing here executes it; `pnpm --filter @brink/desktop build` stages the real binary.
 cd packages/brink-desktop/src-tauri && cargo test
 ```
 
