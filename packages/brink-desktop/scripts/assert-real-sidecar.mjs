@@ -228,8 +228,9 @@ export function assertRealSidecarStaged({
       .join(" ");
     throw new Error(
       `[assert-real-sidecar] ${destBin} does not begin with ${format.toUpperCase()} executable ` +
-        `magic (first bytes: ${leading || "<empty file>"}) — ${triple} bundles a ${format} ` +
-        "binary, so whatever is staged there is not a runnable brink-cli for this target " +
+        `magic (first bytes: ${leading || "<empty file>"}) — ${triple} bundles ` +
+        `${format === "elf" ? "an" : "a"} ${format.toUpperCase()} binary, so whatever is ` +
+        "staged there is not a runnable brink-cli for this target " +
         "(#2687). Refusing to let this bundle ship it. Stage the real binary first: run " +
         "`pnpm --filter @brink/desktop build`, and check BRINK_SIDECAR_STUB is unset.",
     );
