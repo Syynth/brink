@@ -31,6 +31,7 @@ import {
   checkSetupDev,
   findKnobAssignments,
   findUnboundedFetches,
+  findUnrecognizedKnobShapes,
   nextTokenIsVersionFlag,
   parseKnobTable,
   sliceSection,
@@ -77,6 +78,22 @@ describe("nextTokenIsVersionFlag", () => {
       assert.equal(nextTokenIsVersionFlag(rest), false);
     });
   }
+
+  // The reviewer-found hole: checking only "is the NEXT token --version" is
+  // exemptable-by-arg-order. `cargo install --version 1.2.3 some-crate` is a
+  // REAL crates.io fetch — `--version` takes a value here, it does not mean
+  // "print version and exit" — even though `--version` is the very next
+  // token after `install`. setup-dev.sh:411 runs the same command with the
+  // package name and `--version` swapped (`cargo install cargo-deny
+  // --version "${CARGO_DENY_VERSION}"`), which was already safe under the
+  // old check only by argument order, not by design.
+  it("does NOT treat a --version flag as the probe's tail when a bare word follows its value", () => {
+    assert.equal(nextTokenIsVersionFlag(' --version "${CARGO_DENY_VERSION}" cargo-deny --locked'), false);
+  });
+
+  it("does NOT treat a --version flag as the probe's tail when an unquoted value+word follows", () => {
+    assert.equal(nextTokenIsVersionFlag(" --version 1.2.3 some-crate"), false);
+  });
 });
 
 describe("findUnboundedFetches — planted red, one per allowlisted command shape", () => {
@@ -132,6 +149,19 @@ describe("findUnboundedFetches — the #2642 miss, encoded", () => {
     assert.deepEqual(findUnboundedFetches("[ \"$(cargo deny --version 2>/dev/null)\" = x ]").problems, []);
   });
 
+  // The reviewer-found arg-order hole (proved against setup-dev.sh:411's own
+  // command, with --version moved before the package name): the OLD check
+  // exempted this as a "local probe" and reported zero problems, even though
+  // it is an unbounded crates.io fetch.
+  it("does NOT exempt `cargo install --version X pkg` as a local probe", () => {
+    const result = findUnboundedFetches('cargo install --version "${CARGO_DENY_VERSION}" cargo-deny --locked');
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.findings.some((finding) => finding.id === "cargo-network"),
+      true,
+    );
+  });
+
   it("keeps every package manager opted out of the --version exemption", () => {
     for (const id of ["pnpm", "npm", "npx", "yarn"]) {
       const command = NETWORK_COMMANDS.find((entry) => entry.id === id);
@@ -170,6 +200,51 @@ describe("findUnboundedFetches — documented non-findings", () => {
   // stale and must be updated.
   it("DOES flag a trailing comment mentioning curl — a stated false positive", () => {
     assert.equal(findUnboundedFetches("FOO=1 # fetched with curl elsewhere").ok, false);
+  });
+});
+
+describe("findUnboundedFetches — a fetch hidden inside echo/printf's command substitution", () => {
+  // The pre-fix behaviour skipped the WHOLE segment for any echo/printf/read
+  // head, so `echo "$(curl ...)"` was invisible even though the outer
+  // command only prints and the inner `$(...)` runs a real fetch. This shape
+  // is live in the real script (`echo "==> … ($(rustup --version …))"`).
+  it("flags an unbounded curl hidden inside `echo \"$(...)\"`", () => {
+    const result = findUnboundedFetches('echo "$(curl -sSf https://example.test)"');
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.findings.some((finding) => finding.id === "curl"),
+      true,
+    );
+  });
+
+  it("flags an unbounded curl hidden inside `printf \"$(...)\"`", () => {
+    const result = findUnboundedFetches('printf "%s" "$(curl -sSf https://example.test)"');
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.findings.some((finding) => finding.id === "curl"),
+      true,
+    );
+  });
+
+  it("still does not flag a plain echo with no command substitution", () => {
+    assert.deepEqual(findUnboundedFetches('echo "install curl for local dev"').problems, []);
+  });
+
+  it("still does not flag a for-loop word list (structural heads stay unconditional)", () => {
+    assert.deepEqual(
+      findUnboundedFetches("for tool in rustc cargo wasm-pack cargo-nextest pnpm node; do").problems,
+      [],
+    );
+  });
+
+  // The real setup-dev.sh shape that made the naive "any backtick" version of
+  // this fix a false positive: escaped backticks around a command NAME shown
+  // to the user are quoting punctuation, not a command substitution.
+  it("does not flag an echo whose backticks are backslash-escaped literal quoting", () => {
+    assert.deepEqual(
+      findUnboundedFetches('echo "check for a standalone pnpm (\\`which -a pnpm\\`) on PATH"').problems,
+      [],
+    );
   });
 });
 
@@ -268,6 +343,101 @@ describe("parseKnobTable / findKnobAssignments", () => {
     const result = checkKnobTable('BRINK_SETUP_A_TIMEOUT="${BRINK_SETUP_A_TIMEOUT:-120}"');
     assert.equal(result.ok, false);
     assert.match(result.problems.join("\n"), /no parseable knob table/);
+  });
+});
+
+describe("findKnobAssignments — assignment spellings beyond the bare quoted form", () => {
+  it("recognises an `export`-ed assignment", () => {
+    const found = findKnobAssignments('export BRINK_SETUP_X_TIMEOUT="${BRINK_SETUP_X_TIMEOUT:-45}"');
+    assert.deepEqual(
+      found.map((a) => [a.name, a.default, a.selfReferential]),
+      [["BRINK_SETUP_X_TIMEOUT", 45, true]],
+    );
+  });
+
+  it("recognises an unquoted RHS", () => {
+    const found = findKnobAssignments("BRINK_SETUP_X_TIMEOUT=${BRINK_SETUP_X_TIMEOUT:-45}");
+    assert.deepEqual(
+      found.map((a) => [a.name, a.default, a.selfReferential]),
+      [["BRINK_SETUP_X_TIMEOUT", 45, true]],
+    );
+  });
+
+  it("recognises an `export`-ed assignment with an unquoted RHS", () => {
+    const found = findKnobAssignments("export BRINK_SETUP_X_TIMEOUT=${BRINK_SETUP_X_TIMEOUT:-45}");
+    assert.deepEqual(
+      found.map((a) => [a.name, a.default, a.selfReferential]),
+      [["BRINK_SETUP_X_TIMEOUT", 45, true]],
+    );
+  });
+});
+
+describe("checkKnobTable — the #2647 silent-drift finding, encoded", () => {
+  // Before the fix: an `export`-ed assignment was invisible to
+  // findKnobAssignments entirely, so a knob assigned ONLY this way, with NO
+  // row in the header table, produced zero problems — checkKnobTable
+  // returned [] with no missing-row check, no default comparison and no
+  // fail-vs-warn check, none of the three fired. That is the exact silent
+  // drift #2647 exists to stop.
+  it("catches a missing row for a knob assigned only via `export` (was silently invisible)", () => {
+    const table = [
+      "#   Knob                              Default  On timeout",
+      "#   ------------------------------------------------------",
+      "#   BRINK_SETUP_A_TIMEOUT                120s   FAIL (exit 1) — nothing",
+      "#                                                else works.",
+      "#",
+      'export BRINK_SETUP_X_TIMEOUT="${BRINK_SETUP_X_TIMEOUT:-45}"',
+      'run_with_timeout "${BRINK_SETUP_X_TIMEOUT}" curl https://example.test',
+    ].join("\n");
+
+    const result = checkKnobTable(table);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /BRINK_SETUP_X_TIMEOUT.*no row for it/s);
+  });
+
+  it("catches a drifted default in an `export`-ed assignment (was silently invisible)", () => {
+    const table = [
+      "#   BRINK_SETUP_X_TIMEOUT                 45s   WARN, continue.",
+      "#",
+      'export BRINK_SETUP_X_TIMEOUT="${BRINK_SETUP_X_TIMEOUT:-90}"',
+      'run_with_timeout "${BRINK_SETUP_X_TIMEOUT}" curl https://example.test',
+    ].join("\n");
+
+    const result = checkKnobTable(table);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /says 45s, but the assignment at line \d+ defaults to 90s/);
+  });
+});
+
+describe("findUnrecognizedKnobShapes — the colon-default idiom", () => {
+  it("reports `: \"${NAME:=N}\"`, a shape neither check parses", () => {
+    const found = findUnrecognizedKnobShapes(': "${BRINK_SETUP_X_TIMEOUT:=30}"');
+    assert.deepEqual(
+      found.map((f) => f.name),
+      ["BRINK_SETUP_X_TIMEOUT"],
+    );
+  });
+
+  it("does not re-report a line findKnobAssignments already recognised", () => {
+    const found = findUnrecognizedKnobShapes('BRINK_SETUP_X_TIMEOUT="${BRINK_SETUP_X_TIMEOUT:-45}"');
+    assert.deepEqual(found, []);
+  });
+
+  it("does not flag a plain read (no `=` immediately after the identifier)", () => {
+    const found = findUnrecognizedKnobShapes('run_with_timeout "${BRINK_SETUP_X_TIMEOUT}" curl https://example.test');
+    assert.deepEqual(found, []);
+  });
+
+  it("checkKnobTable surfaces it as a problem, not a silent pass", () => {
+    const table = [
+      "#   BRINK_SETUP_X_TIMEOUT                 30s   WARN, continue.",
+      "#",
+      ': "${BRINK_SETUP_X_TIMEOUT:=30}"',
+    ].join("\n");
+
+    const result = checkKnobTable(table);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /shape this check cannot parse/);
   });
 });
 

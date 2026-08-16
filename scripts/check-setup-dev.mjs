@@ -24,8 +24,14 @@
 //      `|`, `||` or `&&`.
 //   b. Whole-line comments (`^\s*#`) are dropped.
 //   c. Each logical line is split into segments on `;`, `|`, `||`, `&&`.
-//   d. A segment whose first word is an output builtin or a loop/case keyword
-//      (`echo`, `printf`, `for`, `while`, `until`, `case`, `read`) is skipped.
+//   d. A segment whose first word is a loop/case keyword (`for`, `while`,
+//      `until`, `case`) is always skipped. A segment whose first word is an
+//      output/read builtin (`echo`, `printf`, `read`) is skipped UNLESS it
+//      contains a command substitution (`$(` or an unescaped backtick) —
+//      that substitution runs a real subshell command, so `echo "$(curl …)"`
+//      is still scanned even though the outer command only prints. A
+//      backslash-escaped backtick (`echo "\`literal\`"`) does not count —
+//      that is quoting punctuation around displayed text, not a fetch.
 //   e. Each remaining segment is matched against NETWORK_COMMANDS — a small
 //      hand-maintained ALLOWLIST of command shapes known to touch the network.
 //   f. A matched segment must also contain the literal `run_with_timeout`.
@@ -82,6 +88,33 @@
 // says FAIL or WARN — the column an agent consults after setup aborts naming
 // an env var it has never seen. `checkDocPointers` asserts the three delegating
 // pointers still exist, since they are the entire delivery mechanism for #2640.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// EXACTLY WHAT CHECK 2 CANNOT SEE — read this before trusting it
+//
+// Same discipline as check 1 above (#2610, #2613): state the check performed,
+// not the strongest-sounding version of it.
+//
+//   - ASSIGNMENT SHAPES ARE ENUMERATED, NOT PARSED. `findKnobAssignments`
+//     recognises exactly two spellings — a bare or `export`-ed
+//     `NAME="${NAME:-N}"` / `NAME=${NAME:-N}` (quoted or unquoted RHS) — plus
+//     `findUnrecognizedKnobShapes` as a backstop that recognises one more,
+//     the colon-default idiom `: "${NAME:=N}"`, but only REPORTS it as
+//     unparsed rather than validating its default against the table. Any
+//     other shape (arithmetic, indirection through a second variable,
+//     multi-line `printf -v`, …) is invisible to every cross-check here.
+//   - THE TABLE ROW SHAPE IS FIXED. `parseKnobTable` requires
+//     `#  NAME  <n>s  <outcome>` — 2+ spaces after the leading `#`, a bare
+//     `\d+s` default (no other unit, no range), free-text outcome. A default
+//     written any other way does not parse as a row at all, which reads
+//     identically to a MISSING row.
+//   - THE TABLE'S END IS THE FIRST BLANK COMMENT LINE after rows begin. A
+//     table with a genuinely blank `#` line in the middle (for visual
+//     grouping) would truncate silently there.
+//   - `checkDocPointers` IS A PROSE-SHAPE ASSERTION, not a semantic one (see
+//     its own doc comment below): reworded-but-equivalent prose can fail it,
+//     and prose that repeats the required phrases while pointing somewhere
+//     useless can pass it.
 //
 // Exported as pure functions over text so scripts/check-setup-dev.test.mjs can
 // drive them with synthetic inputs (a deleted table row, an unbounded fetch);
@@ -163,8 +196,29 @@ export const NETWORK_COMMANDS = [
   },
 ];
 
-/** First words that mean "this segment is not invoking the command it names". */
-const NON_INVOKING_HEADS = new Set(["echo", "printf", "for", "while", "until", "case", "read"]);
+/**
+ * Loop/case keywords: a segment headed by one of these never itself invokes
+ * a network command (`for tool in curl pnpm; do` names tools without running
+ * them), so it is always skipped, unconditionally.
+ */
+const STRUCTURAL_HEADS = new Set(["for", "while", "until", "case"]);
+
+/**
+ * Output/read builtins. A segment headed by one of these is skipped UNLESS
+ * it contains a command substitution (`$(` or an UNESCAPED backtick) — that
+ * substitution runs a real subshell command, so `echo "$(curl ...)"` still
+ * fetches even though the outer command only prints. Skipping the whole
+ * segment unconditionally (the pre-fix behaviour) made that fetch invisible;
+ * `setup-dev.sh` contains this exact shape today, e.g.
+ * `echo "==> … ($(rustup --version | head -n1))"`.
+ *
+ * A backtick preceded by `\` is excluded: setup-dev.sh also contains
+ * `echo "… (\`which -a pnpm\`) …"`, where the backticks are escaped inside a
+ * double-quoted string specifically so they print as literal punctuation
+ * around a command NAME shown to the user, not so the shell runs it.
+ */
+const OUTPUT_HEADS = new Set(["echo", "printf", "read"]);
+const COMMAND_SUBSTITUTION = /\$\(|(?<!\\)`/;
 
 /** Leading tokens that wrap a command without being one. */
 const WRAPPER_HEADS = new Set(["if", "elif", "then", "else", "do", "!", "{", "(", "[", "[[", "&&", "||"]);
@@ -236,13 +290,32 @@ function firstWord(segment) {
 
 /**
  * Does the text immediately following a matched command start with a version
- * flag? See the "--version exemption is a hole" note in the header.
+ * flag AND is that flag the entire rest of the command? See the "--version
+ * exemption is a hole" note in the header.
+ *
+ * Checking only "is the next token --version/-V" is not enough: for some
+ * subcommands `--version` takes a VALUE rather than meaning "print version
+ * and exit" — `cargo install --version 1.2.3 some-crate` is a real crates.io
+ * fetch even though its very next token is `--version`, because the token
+ * after THAT is a package name, not a redirect/pipe/end. (`cargo install
+ * some-crate --version 1.2.3`, the arg order this repo actually uses at
+ * setup-dev.sh:411, was already safe under the old check only because the
+ * token immediately following `install` there is the package name, not
+ * `--version` — the old check was one arg-order away from a false exemption,
+ * not protected by design.) So the exemption now requires the flag to be the
+ * rest of the command: nothing after it but optional whitespace and then
+ * end-of-string or a shell operator. Quote characters are deliberately NOT
+ * accepted as "the end" here — a `"` right after `--version` is just as
+ * likely to be the OPENING quote of a value (`--version "${VERSION}"`) as a
+ * closing one, and this is a lexical scan with no way to tell those apart.
  *
  * @param {string} rest text after the matched command in its segment
  */
 export function nextTokenIsVersionFlag(rest) {
-  const token = (/^\s*(\S+)/.exec(rest) ?? [])[1];
-  return token === "--version" || token === "-V";
+  const match = /^\s*(?:--version|-V)\b(.*)$/.exec(rest);
+  if (!match) return false;
+  const after = match[1].replace(/^\s+/, "");
+  return after === "" || /^(?:\)|2?>|\|)/.test(after);
 }
 
 /**
@@ -251,7 +324,7 @@ export function nextTokenIsVersionFlag(rest) {
  *
  * @param {string} setupDevText
  * @param {string} [path] label used in problem messages
- * @returns {{ok: boolean, problems: string[], findings: {line: number, id: string, segment: string}[]}}
+ * @returns {{ok: boolean, problems: string[], findings: {line: number, id: string, segment: string, why: string}[]}}
  */
 export function findUnboundedFetches(setupDevText, path = SETUP_DEV_PATH) {
   const findings = [];
@@ -259,7 +332,9 @@ export function findUnboundedFetches(setupDevText, path = SETUP_DEV_PATH) {
   for (const logical of toLogicalLines(setupDevText)) {
     for (const segment of logical.text.split(SEGMENT_SPLIT)) {
       if (segment.trim().length === 0) continue;
-      if (NON_INVOKING_HEADS.has(firstWord(segment))) continue;
+      const head = firstWord(segment);
+      if (STRUCTURAL_HEADS.has(head)) continue;
+      if (OUTPUT_HEADS.has(head) && !COMMAND_SUBSTITUTION.test(segment)) continue;
 
       for (const command of NETWORK_COMMANDS) {
         const match = command.pattern.exec(segment);
@@ -320,7 +395,8 @@ export function parseKnobTable(setupDevText) {
 }
 
 /**
- * Every `BRINK_SETUP_*_TIMEOUT="${SAME:-<n>}"` assignment in the script body.
+ * Every `[export] BRINK_SETUP_*_TIMEOUT=["]${SAME:-<n>}["]` assignment in the
+ * script body — quoted or unquoted RHS, with or without a leading `export`.
  *
  * @param {string} setupDevText
  * @returns {{name: string, default: number, line: number, selfReferential: boolean}[]}
@@ -330,14 +406,55 @@ export function findKnobAssignments(setupDevText) {
 
   for (const [index, line] of setupDevText.split("\n").entries()) {
     if (/^\s*#/.test(line)) continue;
-    const match = /^\s*(BRINK_SETUP_[A-Z0-9_]*_TIMEOUT)="\$\{([A-Z0-9_]+):-(\d+)\}"/.exec(line);
+    const match =
+      /^\s*(?:export\s+)?(BRINK_SETUP_[A-Z0-9_]*_TIMEOUT)=("?)\$\{([A-Z0-9_]+):-(\d+)\}\2/.exec(line);
     if (!match) continue;
     found.push({
       name: match[1],
-      default: Number(match[3]),
+      default: Number(match[4]),
       line: index + 1,
-      selfReferential: match[1] === match[2],
+      selfReferential: match[1] === match[3],
     });
+  }
+
+  return found;
+}
+
+/**
+ * Backstop for the assignment shapes `findKnobAssignments` above does not
+ * parse — e.g. the colon-default idiom `: "${NAME:=30}"`, which assigns via
+ * a parameter-expansion side effect with no literal `NAME=` on the line at
+ * all. Rather than growing `findKnobAssignments`'s regex to cover every bash
+ * assignment shape (open-ended, and this file is a lexical scanner, not a
+ * shell parser — see "WHAT CHECK 1 CANNOT SEE"), this sweeps the non-comment
+ * body for any `BRINK_SETUP_*_TIMEOUT` identifier written in assignment
+ * position that `findKnobAssignments` did NOT already recognise on that same
+ * line, and reports it as an unparsed shape rather than silently skipping it
+ * — a knob assigned only this way was previously invisible to every
+ * `checkKnobTable` cross-check (no missing-row check, no default-drift
+ * check, no fail-vs-warn check), which is exactly the silent drift #2647
+ * exists to stop.
+ *
+ * @param {string} setupDevText
+ * @returns {{name: string, line: number}[]}
+ */
+export function findUnrecognizedKnobShapes(setupDevText) {
+  const recognizedLines = new Set(findKnobAssignments(setupDevText).map((assignment) => assignment.line));
+  const found = [];
+
+  for (const [index, line] of setupDevText.split("\n").entries()) {
+    if (/^\s*#/.test(line)) continue;
+    const lineNumber = index + 1;
+    if (recognizedLines.has(lineNumber)) continue;
+
+    // A literal `NAME=` (the common assignment shape), or the colon-default
+    // idiom `${NAME:=...}` (assigns via side effect, no literal `NAME=`).
+    const asAssignment = /(?:^|[\s:])(BRINK_SETUP_[A-Z0-9_]*_TIMEOUT)=(?!=)/.exec(line);
+    const asColonDefault = /\$\{(BRINK_SETUP_[A-Z0-9_]*_TIMEOUT):=/.exec(line);
+    const match = asAssignment ?? asColonDefault;
+    if (!match) continue;
+
+    found.push({ name: match[1], line: lineNumber });
   }
 
   return found;
@@ -420,6 +537,15 @@ export function checkKnobTable(setupDevText, path = SETUP_DEV_PATH) {
           `it has never seen (#2647).`,
       );
     }
+  }
+
+  for (const shape of findUnrecognizedKnobShapes(setupDevText)) {
+    problems.push(
+      `${path}:${shape.line} assigns ${shape.name} in a shape this check cannot parse (not a bare, possibly ` +
+        `\`export\`-ed \`NAME="\${NAME:-N}"\` assignment, nor a recognised \`\${NAME:=N}\` colon-default) — it is ` +
+        `invisible to every check above, which is the silent drift #2647 exists to stop. Rewrite it in the ` +
+        `recognised form.`,
+    );
   }
 
   return { ok: problems.length === 0, problems };
