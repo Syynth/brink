@@ -376,7 +376,9 @@ mod refusal_shape {
 `messages` are real refusal strings read back out of the production ops, not typed (#2603); \
 `sources` are the exact inputs those drivers ran against, and `acceptance` is each \
 (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based \
-guard can express, because a mock that never refuses has no string to compare (#2661). \
+guard can express, because a mock that never refuses has no string to compare (#2661); \
+`outlines` are the symbol names/kinds `file_symbols` reports, pinning the header \
+recognizer itself rather than an op built on it (#2662). \
 Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. \
 Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).";
 
@@ -419,6 +421,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "sources": source_fixtures(),
             "acceptance": driven_acceptance(),
             "headers": driven_header_rewrites(),
+            "outlines": driven_outlines(),
         })
     }
 
@@ -497,6 +500,27 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// before here", answering `start = 1`.
     const LEADING_BLANK_LINE: &str = "\n=== a ===\nContent.\n";
 
+    /// Three knots whose `=` fences are all legal and none of them the
+    /// `=== name ===` shape every other fixture uses (#2662).
+    ///
+    /// `brink_syntax`'s `knot_header` rule is
+    /// `"==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier …`,
+    /// so production's vocabulary is **two or more** `=` followed by **zero or
+    /// more** spaces — `== one ==`, `===two===` and `==== three ====` are all
+    /// ordinary top-level knots, and `one` still carries its stitch `a`.
+    ///
+    /// The studio mock had two narrower answers to that question, and which
+    /// one applied depended on which op a test happened to call: `parseOutline`
+    /// wanted exactly three `=` and a REQUIRED space (so all three knots here
+    /// were invisible to the outline and to the seven ops built on it), while
+    /// `delete_symbol`/`rename_symbol` matched two-or-three `=` inline (so the
+    /// first two resolved and `==== three ====` did not). One source exercises
+    /// both halves, which is the point: a fixture that only used `== one ==`
+    /// would leave the inline family green and read as though the split were
+    /// one-sided.
+    const ALT_FENCES: &str =
+        "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n";
+
     /// Every named source the drivers run against, shipped INTO the fixture.
     ///
     /// The mirroring TypeScript test asserts its own constants are
@@ -507,6 +531,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// mock if the mock was asked the same question.
     fn source_fixtures() -> serde_json::Value {
         serde_json::json!({
+            "ALT_FENCES": ALT_FENCES,
             "BLANK_BODY": BLANK_BODY,
             "FUNCTION_KNOT": FUNCTION_KNOT,
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
@@ -1062,9 +1087,121 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         })
     }
 
+    /// The knot-header VOCABULARY, driven through both mock families (#2662).
+    ///
+    /// Every case runs against [`ALT_FENCES`], whose three knots are fenced
+    /// `==`, `===` (no spaces) and `====`. Production resolves all three
+    /// through `tree.knots()`; the mock had two narrower recognizers, so the
+    /// same source answered differently depending on which op was called:
+    ///
+    /// | op family | recognizer | `== one ==` | `===two===` | `==== three ====` |
+    /// |---|---|---|---|---|
+    /// | the seven outline ops (`parseOutline`) | `^===\s+` | invisible | invisible | invisible |
+    /// | `delete_symbol` / `rename_symbol` (inline) | `^\s*={2,3}\s*` | resolves | resolves | invisible |
+    ///
+    /// Both families are driven here on purpose. A fixture that only pinned
+    /// `== one ==` would be green on the inline half and read as though the
+    /// split had one victim, which is how the two recognizers stayed out of
+    /// step across #2658 and #2670.
+    fn driven_fence_acceptance() -> serde_json::Value {
+        let outline_family = session_with(&[("main.ink", ALT_FENCES)]);
+        let promote = session_with(&[("main.ink", ALT_FENCES)]);
+        let delete_wide = session_with(&[("main.ink", ALT_FENCES)]);
+        let delete_terse = session_with(&[("main.ink", ALT_FENCES)]);
+        let rename_wide = session_with(&[("main.ink", ALT_FENCES)]);
+
+        serde_json::json!({
+            // The `parseOutline` family. Production counts THREE knots, so
+            // this order is a permutation; a mock that sees none of them
+            // cannot answer `ok: true` here however it words its refusal.
+            "reorder_knots:alt-fences": outcome(
+                "reorder_knots (knots fenced ==, ===tight and ====)",
+                &outline_family.reorder_knots(
+                    "main.ink",
+                    vec!["three".to_owned(), "two".to_owned(), "one".to_owned()],
+                ),
+            ),
+            // A second op on that family, so the case is not carried by
+            // `reorder_knots`'s permutation check alone: `one` really does own
+            // stitch `a`, and promoting it is an ordinary success.
+            "promote_stitch:alt-fence-terse": outcome(
+                "promote_stitch (stitch under a `==`-fenced knot)",
+                &promote.promote_stitch("main.ink", "one", "a"),
+            ),
+            // The inline family. `====` is where `={2,3}` runs out.
+            "delete_symbol:alt-fence-wide": outcome(
+                "delete_symbol (knot fenced with four `=`)",
+                &delete_wide.delete_symbol("main.ink", "three", ""),
+            ),
+            "rename_symbol:alt-fence-wide": outcome(
+                "rename_symbol (knot fenced with four `=`)",
+                &rename_wide.rename_symbol("main.ink", "three", "", "renamed"),
+            ),
+            // Positive control for the inline family: the two-`=` fence it
+            // already resolved must keep resolving, so the widening is not
+            // bought by making everything match.
+            "delete_symbol:alt-fence-terse": outcome(
+                "delete_symbol (knot fenced with two `=`)",
+                &delete_terse.delete_symbol("main.ink", "one", ""),
+            ),
+        })
+    }
+
     /// The whole driven acceptance map.
     fn driven_acceptance() -> serde_json::Value {
-        merge_driven(&[driven_outline_acceptance(), driven_extract_acceptance()])
+        merge_driven(&[
+            driven_outline_acceptance(),
+            driven_extract_acceptance(),
+            driven_fence_acceptance(),
+        ])
+    }
+
+    /// The OUTLINE production reports for a source: each symbol's `name` and
+    /// `kind`, nested (#2662).
+    ///
+    /// Acceptance pins whether an op runs; this pins the recognizer's own
+    /// answer — which symbols `file_symbols` reports at all — for the studio's
+    /// Binder, symbol menu and story graph, all of which read the mock's
+    /// `parseOutline` through this entry point. Ranges are deliberately NOT
+    /// pinned: the question here is "is this a knot", and a range mismatch is
+    /// already covered by the `#2670` offset guards.
+    fn outline_of(source: &str) -> serde_json::Value {
+        let session = session_with(&[("main.ink", source)]);
+        let symbols = parse(&session.file_symbols("main.ink"));
+        outline_shape(&symbols)
+    }
+
+    /// `name`/`kind`/`children`, recursively — everything else a
+    /// `DocumentSymbolJs` carries is a range, and ranges are pinned elsewhere.
+    fn outline_shape(symbols: &serde_json::Value) -> serde_json::Value {
+        serde_json::Value::Array(
+            symbols
+                .as_array()
+                .unwrap_or(&Vec::new())
+                .iter()
+                .map(|sym| {
+                    serde_json::json!({
+                        "name": sym["name"],
+                        "kind": sym["kind"],
+                        "children": outline_shape(&sym["children"]),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The outlines the mock's `parseOutline` has to reproduce.
+    ///
+    /// [`ALT_FENCES`] is the point — every knot in it uses a legal fence the
+    /// mock's outline regex rejected. The other two are controls: the ordinary
+    /// `=== name ===` shape and a function knot, both of which already worked,
+    /// so a widening that broke them is red here.
+    fn driven_outlines() -> serde_json::Value {
+        serde_json::json!({
+            "ALT_FENCES": outline_of(ALT_FENCES),
+            "KNOT_AND_FUNCTION": outline_of(KNOT_AND_FUNCTION),
+            "TWO_KNOTS": outline_of(TWO_KNOTS),
+        })
     }
 
     /// The header line `promote_stitch` / `demote_knot` REWRITE, read out of

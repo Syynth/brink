@@ -462,6 +462,12 @@ A third map, **`headers`**, covers what acceptance still cannot see: two ops
 that answer `ok: true` on both sides while rewriting the header differently.
 It stores the header line out of production's own `new_source`.
 
+A fourth, **`outlines`** (#2662), pins the header **recognizer** rather than an
+op built on it: production's own `file_symbols` output for a named source,
+names and kinds only. Acceptance can only see ops; the Binder, the symbol menu
+and the story graph read the outline directly, so a knot every structural op
+resolves can still be missing from the tree the author looks at.
+
 **What the audit found.** Seventeen of the twenty-one driven cases were red
 against the pre-#2661 mock (the four greens were deliberate positive controls).
 They reduce to three root causes, each fixed by scoping the mock's lookup to
@@ -489,6 +495,8 @@ mirror production's resolution rather than by adding a special case:
   ⚠ **Any knot-matching regex needs `(?:function\s+)?`** — PR #2658's own fix
   introduced this trap and its review caught it. `FUNCTION_KNOT` /
   `KNOT_AND_FUNCTION` exist as fixtures so a new one goes red.
+  ⚠ **There is now exactly ONE knot-header vocabulary in the mock, and every
+  consumer is built from it** (#2662) — see the next section.
 - **The two header rewrites interpolated the declared name.** Production's
   `rewrite_stitch_to_knot_header` / `rewrite_knot_to_stitch_header` are
   **name-agnostic**: they strip the `=` fences and keep whatever is between
@@ -508,6 +516,49 @@ like vocabulary: `driven_acceptance()` is a list someone wrote, so an
 `(op, input)` pair nobody drives is still invisible. The #2577 wall stands —
 what changed is that the class now *has* a mechanism, and adding a case to it
 costs one entry on each side instead of a fresh argument.
+
+### One knot-header vocabulary (#2662)
+
+Widening a recognizer requires auditing every consumer of what it produces.
+Three instances of that class shipped in as many waves — #2658 widened a guard
+and missed the rewrite it feeds, #2670 widened a regex and missed the offset
+math it feeds, and the mock carried the same shape at **file scope**: two
+different answers to "is this a knot", with the applicable one decided by which
+op a test happened to call.
+
+| consumer | pattern before | `== two ==` | `===two===` | `==== three ====` |
+| --- | --- | --- | --- | --- |
+| `parseOutline` (and the seven ops on it) | `^===\s+` | invisible | invisible | invisible |
+| `delete_symbol` / `rename_symbol`, six inline sites | `^\s*={2,3}\s*` | knot | knot | invisible |
+
+**Production is the tiebreak, and neither form was it.** `brink_syntax`'s
+`parser/knot.rs::knot_header` is
+
+```text
+knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+                ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
+```
+
+— **two or more** `=` (`at_knot` tests `EQ_EQ`, then `eat_extra_equals` takes
+the rest), **zero or more** spaces after it (`skip_ws`), an indent tolerated, a
+trailing fence that is optional and of any width. Driven, not read:
+`file_symbols` reports one knot `a` for each of `== a ==`, `===a===`, `==a==`,
+`==== a ====`, `  === a ===`, `=== a` and `=== a ==`. So the outline's form was
+wrong three ways and the inline form one way (it caps at three `=`).
+
+**The fix is a shared constant, not a wider regex.** `KNOT_FENCE_EQUALS` →
+`KNOT_FENCE` → `KNOT_HEADER_PREFIX` in `src/__mocks__/brink-web.ts`; the
+recognizer (`KNOT_HEADER_RE`), the per-name resolver (`knotHeaderFor`), the
+region-end scan (`opensKnot`) and the rename rewrite are all built from them,
+so a future widening cannot land in one family and miss the other. The
+`ALT_FENCES` fixture drives both families plus `file_symbols`, with a
+positive control (`delete_symbol` on the `==` fence the inline family already
+resolved) so the widening is not bought by making everything match.
+
+Not covered: the **stitch** header vocabulary has the same split shape
+(`STITCH_HEADER_RE` is `^=\s+`, the three inline stitch sites are `^\s*=\s+`).
+It is untouched here because #2662 was narrowed to knots, and because the
+correct form needs the same driven check against production before choosing.
 
 ## Visual hierarchy
 

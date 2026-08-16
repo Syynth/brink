@@ -44,14 +44,57 @@ function escapeForRegex(s: string): string {
 }
 
 /**
+ * The ONE knot-header vocabulary (#2662) — everything between the start of a
+ * header line and the declared name.
+ *
+ * Read off production's own grammar (`brink_syntax`'s
+ * `parser/knot.rs::knot_header`):
+ *
+ * ```text
+ * knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+ *                 ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
+ * ```
+ *
+ * so the fence is **two or more** `=` (`at_knot` is `current() == EQ_EQ`, then
+ * `eat_extra_equals` takes the rest), the space after it is **optional**
+ * (`skip_ws` matches zero), the leading indent is tolerated, and the trailing
+ * fence is optional and of any width. Driven, not read: `file_symbols` reports
+ * one knot named `a` for every one of `== a ==`, `===a===`, `==a==`,
+ * `==== a ====`, `  === a ===`, `=== a` and `=== a ==`.
+ *
+ * ⚠ **This is the single source both header families share.** Until #2662 the
+ * mock had two answers to "is this a knot": `KNOT_HEADER_RE` wanted
+ * `^===\s+` — exactly three `=` and a REQUIRED space — while `delete_symbol`
+ * and `rename_symbol` matched `^\s*={2,3}\s*` inline at six sites. `== two ==`
+ * and `===two===` were knots to the ops and invisible to the outline;
+ * `==== three ====` was a knot to neither. That split is the recurring class
+ * this file keeps paying for — #2658 widened a guard and missed the rewrite it
+ * feeds, #2670 widened a regex and missed the offset math it feeds — so every
+ * consumer below is built from these constants rather than repeating them, and
+ * a future widening lands in all of them at once.
+ */
+const KNOT_FENCE_EQUALS = "={2,}";
+
+/** The fence plus the optional `function` segment — everything a knot header
+ *  puts before the declared name. */
+const KNOT_FENCE = `${KNOT_FENCE_EQUALS}\\s*(?:function\\s+)?`;
+
+/** {@link KNOT_FENCE} anchored at the start of a line, indent allowed. */
+const KNOT_HEADER_PREFIX = `^\\s*${KNOT_FENCE}`;
+
+/** A line that OPENS a top-level knot, name irrelevant — the region-end
+ *  question: a knot's body runs to the line before the next match. */
+const KNOT_OPEN_RE = new RegExp(`^\\s*${KNOT_FENCE_EQUALS}`);
+
+/**
  * A top-level knot header line, capturing the declared name.
  *
- * ⚠ The `(?:function\s+)?` segment and the optional `(params)` are load-bearing
- * (#2661). Production resolves knots through `brink_syntax`'s `tree.knots()`,
- * and `KnotHeader::name()` answers the bare `greet` for
- * `=== function greet() ===` exactly as it does for `=== hello ===` — a
- * function knot IS a top-level knot to every structural op and to
- * `document_symbols` (which merely tags it `detail: "function"`).
+ * ⚠ The `(?:function\s+)?` segment (inside {@link KNOT_FENCE}) and the optional
+ * `(params)` are load-bearing (#2661). Production resolves knots through
+ * `brink_syntax`'s `tree.knots()`, and `KnotHeader::name()` answers the bare
+ * `greet` for `=== function greet() ===` exactly as it does for
+ * `=== hello ===` — a function knot IS a top-level knot to every structural op
+ * and to `document_symbols` (which merely tags it `detail: "function"`).
  *
  * This regex used to be `/^===\s+(\w+)\s*===/`, which matched neither form
  * with a `function` segment nor a knot with parameters. Every op that resolves
@@ -65,7 +108,34 @@ function escapeForRegex(s: string): string {
  * The optional group backtracks, so a knot legitimately NAMED `function`
  * (`=== function ===`) still resolves to `function`.
  */
-const KNOT_HEADER_RE = /^===\s+(?:function\s+)?(\w+)\s*(?:\([^)]*\))?\s*===/d;
+const KNOT_HEADER_RE = new RegExp(
+  `${KNOT_HEADER_PREFIX}(\\w+)\\s*(?:\\([^)]*\\))?\\s*(?:={2,})?`,
+  "d",
+);
+
+/**
+ * The header line declaring a knot NAMED `name` — the shape every op that
+ * resolves a caller-supplied knot needs.
+ *
+ * Built from {@link KNOT_HEADER_PREFIX}, so it recognises exactly what
+ * {@link KNOT_HEADER_RE} does; before #2662 these two disagreed and which
+ * answer a test saw depended on which op it called.
+ */
+function knotHeaderFor(name: string): RegExp {
+  return new RegExp(`${KNOT_HEADER_PREFIX}${escapeForRegex(name)}\\b`);
+}
+
+/** Does this line OPEN a top-level knot? */
+function opensKnot(line: string): boolean {
+  return KNOT_OPEN_RE.test(line);
+}
+
+/** Does this line open a header of ANY level (knot or stitch)? A stitch's
+ *  region ends at the next one. Was `/^\s*={1,3}/`, which accepts the same
+ *  set of lines as `^\s*=` — one `=` is one `=` however many follow. */
+function opensHeader(line: string): boolean {
+  return /^\s*=/.test(line);
+}
 
 /** A stitch header line (`= name`, `= name(params)`), capturing the name. */
 const STITCH_HEADER_RE = /^=\s+(\w+)/d;
@@ -579,7 +649,7 @@ export class EditorSession {
     // #2641: interpolated unescaped for three waves, unlike the sibling
     // `rename_symbol`, which has always escaped. See `escapeForRegex`'s doc
     // for why no real symbol name reaches it today and it is fixed anyway.
-    const knotRe = new RegExp(`^\\s*={2,3}\\s*(?:function\\s+)?${escapeForRegex(knot)}\\b`);
+    const knotRe = knotHeaderFor(knot);
     const knotStart = lines.findIndex((l) => knotRe.test(l));
     if (knotStart < 0) {
       // The knot itself is missing — `MoveError::SourceNotFound`, the same
@@ -591,7 +661,7 @@ export class EditorSession {
     // The knot's own region: header through the line before the next
     // top-level header. Every stitch lookup below is bounded by it.
     let knotEnd = knotStart + 1;
-    while (knotEnd < lines.length && !/^\s*={2,3}/.test(lines[knotEnd]!)) knotEnd++;
+    while (knotEnd < lines.length && !opensKnot(lines[knotEnd]!)) knotEnd++;
 
     let start: number;
     let end: number;
@@ -611,7 +681,7 @@ export class EditorSession {
       // A stitch region ends at the next header of any level, and never
       // escapes its own knot.
       end = start + 1;
-      while (end < knotEnd && !/^\s*={1,3}/.test(lines[end]!)) end++;
+      while (end < knotEnd && !opensHeader(lines[end]!)) end++;
     } else {
       start = knotStart;
       end = knotEnd;
@@ -914,20 +984,19 @@ export class EditorSession {
     const esc = escapeForRegex;
 
     // #2634: mirrors `declaration_offset` — resolve the knot, then the stitch
-    // within that knot's region. Same `={2,3}` / `=\s+` header vocabulary the
-    // rewrite below uses, so a header this function can rename is one this
-    // guard can find.
+    // within that knot's region. #2662: built from {@link KNOT_FENCE}, the one
+    // header vocabulary `parseOutline` and the rewrite below also use, so a
+    // header this function can rename is one this guard can find AND one the
+    // outline reports.
     {
       const lines = source.split("\n");
-      const knotLine = lines.findIndex((l) =>
-        new RegExp(`^\\s*={2,3}\\s*(?:function\\s+)?${esc(knot)}\\b`).test(l),
-      );
+      const knotLine = lines.findIndex((l) => knotHeaderFor(knot).test(l));
       if (knotLine < 0) {
         return EditorSession.structuralRefusal("symbol not found");
       }
       if (stitch) {
         let knotEnd = knotLine + 1;
-        while (knotEnd < lines.length && !/^\s*={2,3}/.test(lines[knotEnd]!)) knotEnd++;
+        while (knotEnd < lines.length && !opensKnot(lines[knotEnd]!)) knotEnd++;
         const found = lines
           .slice(knotLine + 1, knotEnd)
           .some((l) => new RegExp(`^\\s*=\\s+${esc(stitch)}\\b`).test(l));
@@ -948,9 +1017,11 @@ export class EditorSession {
     }[] = [];
     if (!stitch && newName !== knot) {
       const lines = source.split("\n");
-      const collisionLine = lines.findIndex(
-        (l) => new RegExp(`^\\s*={2,3}\\s*${esc(newName)}\\b`).test(l),
-      );
+      // #2662: `knotHeaderFor` rather than a fourth hand-written fence. It
+      // also carries the `function` segment this site used to omit, which is
+      // production's answer too — a function knot already holding the new name
+      // is a duplicate knot definition like any other.
+      const collisionLine = lines.findIndex((l) => knotHeaderFor(newName).test(l));
       if (collisionLine >= 0) {
         introduced.push({
           severity: "error",
@@ -971,8 +1042,12 @@ export class EditorSession {
       if (stitch) {
         out = out.replace(new RegExp(`(^|\\n)(\\s*=\\s*)${esc(oldName)}\\b`, "g"), `$1$2${newName}`);
       } else {
+        // #2662: the same {@link KNOT_FENCE} the guard above resolves with —
+        // unanchored here because a header can be rewritten anywhere in the
+        // file. The trailing fence is `={0,}`, matching production's optional
+        // `("==" ~ "="*)`, so a `==== name ====` header keeps its own width.
         out = out.replace(
-          new RegExp(`(={2,3}\\s*(?:function\\s+)?)${esc(oldName)}(\\s*={0,3})`, "g"),
+          new RegExp(`(${KNOT_FENCE})${esc(oldName)}(\\s*={0,})`, "g"),
           `$1${newName}$2`,
         );
       }

@@ -143,6 +143,19 @@ interface RefusalFixture {
   acceptance: Record<string, { ok: boolean; error: string | null }>;
   /** Header lines production's promote/demote rewrites produced (#2661). */
   headers: Record<string, string>;
+  /**
+   * The symbols `file_symbols` reports for a named source — name/kind, nested
+   * (#2662). Pins the header RECOGNIZER itself rather than an op built on it,
+   * so a mock that resolves a knot for `delete_symbol` but hides it from the
+   * Binder is red here even when every acceptance flag agrees.
+   */
+  outlines: Record<string, OutlineSymbol[]>;
+}
+
+interface OutlineSymbol {
+  name: string;
+  kind: string;
+  children: OutlineSymbol[];
 }
 
 const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as RefusalFixture;
@@ -260,6 +273,22 @@ const FUNCTION_KNOT_SHORT_NAME_OFFSET = FUNCTION_KNOT_SHORT_NAME.indexOf("f(");
  *  `l - 1 === -1` to `lastIndexOf`, which JS clamps to `0` — so it finds the
  *  leading `\n` itself and answers `start = 1` instead of `0`. */
 const LEADING_BLANK_LINE = "\n=== a ===\nContent.\n";
+
+/**
+ * Three knots, none of them fenced `=== name ===` (#2662).
+ *
+ * Production's `knot_header` rule is `"==" ~ "="* ~ INLINE_WS* ~ …`: two or
+ * MORE `=`, then zero or more spaces. So `== one ==`, `===two===` and
+ * `==== three ====` are all ordinary top-level knots, and `one` still owns its
+ * stitch `a` — driven, not asserted, in `driven_outlines()`.
+ *
+ * The mock had two narrower answers and which applied depended on the op:
+ * `parseOutline` wanted `^===\s+` (all three invisible), while
+ * `delete_symbol`/`rename_symbol` matched `^\s*={2,3}\s*` inline (the first
+ * two resolved, `==== three ====` did not). One source exercises both halves.
+ */
+const ALT_FENCES =
+  "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n";
 
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
@@ -796,6 +825,34 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
         "lifted",
       ),
   },
+  // ── One knot-header vocabulary (#2662). Both mock families are driven
+  // against ALT_FENCES on purpose: the four `parseOutline` ops saw NONE of
+  // its three knots, and the two inline ops saw the first two but not
+  // `==== three ====`. A case list covering only one family would read as
+  // though the split had a single victim.
+  {
+    key: "reorder_knots:alt-fences",
+    call: () =>
+      sessionWith({ "main.ink": ALT_FENCES }).reorder_knots("main.ink", ["three", "two", "one"]),
+  },
+  {
+    key: "promote_stitch:alt-fence-terse",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).promote_stitch("main.ink", "one", "a"),
+  },
+  {
+    key: "delete_symbol:alt-fence-wide",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).delete_symbol("main.ink", "three", ""),
+  },
+  {
+    key: "rename_symbol:alt-fence-wide",
+    call: () =>
+      sessionWith({ "main.ink": ALT_FENCES }).rename_symbol("main.ink", "three", "", "renamed"),
+  },
+  {
+    // Positive control: the `==` fence the inline family already resolved.
+    key: "delete_symbol:alt-fence-terse",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).delete_symbol("main.ink", "one", ""),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -804,6 +861,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
     // the mock was asked the same question. Before #2661 that identity was a
     // comment on both sides and nothing checked it.
     expect({
+      ALT_FENCES,
       BLANK_BODY,
       FUNCTION_KNOT,
       KNOT_AND_FUNCTION,
@@ -827,6 +885,46 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
     it(`${key}: the mock answers production's ok flag`, () => {
       const parsed = JSON.parse(call()) as { ok: boolean; error?: string };
       expect({ ok: parsed.ok, error: parsed.error ?? null }).toEqual(fixture.acceptance[key]);
+    });
+  }
+});
+
+/**
+ * The recognizer itself, not an op built on it (#2662).
+ *
+ * Acceptance pins whether an op RUNS. It cannot see the studio's other
+ * outline consumers — the Binder, the symbol menu and the story graph all
+ * read `file_symbols`/`project_outline`, which is where a knot the ops
+ * happily resolve can still be invisible. That was the shape of Gap A: the
+ * mock had two answers to "is this a knot", and `== two ==` was a knot to
+ * `delete_symbol` and absent from the outline.
+ *
+ * `fixture.outlines` is production's own `file_symbols` output, harvested by
+ * `driven_outlines()` in `crates/brink-web/src/editor_refactor.rs`. Names and
+ * kinds only: ranges are pinned by the #2670 offset guards below.
+ */
+describe("the outline reports exactly the symbols production reports (#2662)", () => {
+  const outlineSources: Record<string, string> = {
+    ALT_FENCES,
+    KNOT_AND_FUNCTION,
+    TWO_KNOTS,
+  };
+
+  it("every driven outline has a source here", () => {
+    expect(Object.keys(outlineSources).sort()).toEqual(Object.keys(fixture.outlines).sort());
+  });
+
+  /** Strip everything but the recognizer's answer: which symbols, nested. */
+  function shape(symbols: OutlineSymbol[]): OutlineSymbol[] {
+    return symbols.map((s) => ({ name: s.name, kind: s.kind, children: shape(s.children) }));
+  }
+
+  for (const [name, source] of Object.entries(outlineSources)) {
+    it(`${name}: file_symbols agrees with production`, () => {
+      const symbols = JSON.parse(
+        sessionWith({ "main.ink": source }).file_symbols("main.ink"),
+      ) as OutlineSymbol[];
+      expect(shape(symbols)).toEqual(fixture.outlines[name]);
     });
   }
 });
