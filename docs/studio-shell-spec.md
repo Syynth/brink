@@ -411,7 +411,11 @@ interface Notification {
 
 - **API:** a shell `notify(n): NotificationHandle` service (handle supports
   dismiss/update). Callable from feature slices and from host extensions via the
-  `StudioApi` facade (§8).
+  `StudioApi` facade (§8) — and, since #2528, from a `studio-ui` action module
+  raising through the store's injected notifier directly
+  (`performSymbolRename`). That is the first production producer that is neither
+  a slice nor a host extension; it reports through the same store→shell bridge
+  rather than a new channel.
 - **Actions dispatch commands only** — no raw callbacks. This keeps the model
   serializable and consistent with §6 ("nothing binds a key directly to a function"
   applies to notification buttons too). The Binder's undo toast becomes a notification
@@ -423,6 +427,26 @@ interface Notification {
 - **History:** a bell item in the status bar's right group with an unread badge; click
   opens a popover listing the session's notifications (cleared on demand). The history is
   capped (e.g. 100 entries, oldest dropped) per the unbounded-growth guard principle.
+- **Refused structural operations report here.** A rename/move/delete that the
+  underlying op declines raises an `error`-severity notification tagged with the
+  same `source` as its success toast, so both outcomes of one operation report
+  through one channel and a failure cannot be mistaken for a success.
+  ⚠ This states the TARGET, not the current state of every call site. Known
+  non-compliant paths, all pre-existing: the **inline-rename commit path** —
+  `error_json` (`crates/brink-web/src/editor_refactor.rs`) returns `safe: true`
+  with no `introduced_diagnostics`, so `isSafeRename`
+  (`packages/ink-editor/src/breakage.ts`) treats an `ok: false` refusal as safe,
+  `settleCommit` commits, and `applyMoveResult` raises the ordinary INFO
+  `Rename X to Y` toast with an Undo action although nothing was applied — and
+  the reorder/move/promote/demote ops in `dispatchSymbolAction`, which do not
+  report refusals at all. Established
+  by the file rename (`applyRename`, studio-store's binder slice); extended to the
+  knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
+  returned to `SymbolRenamePrompt` and discarded when the prompt closed. Guarded by
+  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts`.
+  PROVISIONAL: this records where a refused rename reports, which follows the
+  existing pattern. Whether the rename prompt should additionally *stay open* on
+  failure is an open UX question (#2528) and is not settled here.
 - **Out of scope:** progress notifications (compile/story status lives in the status
   bar, §7.3) and do-not-disturb modes.
 

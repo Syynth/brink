@@ -111,13 +111,23 @@ export async function dispatchSymbolAction(
   }
 }
 
+/** How a knot/stitch names itself in a rename message — the symbol's current
+ *  name when the request carries one, else the qualified `knot.stitch`. Shared
+ *  by the success description and the failure notification so both halves of
+ *  one rename name the same thing. */
+function renameLabel(req: SymbolRenameRequest): string {
+  return req.currentName ?? (req.stitch ? `${req.knot}.${req.stitch}` : req.knot) ?? "symbol";
+}
+
 /** The outcome of attempting a symbol rename. */
 export interface SymbolRenameOutcome {
   /** True when the edits were applied (safe, or forced). */
   applied: boolean;
   /** The diagnostics the rename would introduce (the breakage report). */
   diagnostics: RenameDiagnostic[];
-  /** An error from the rename op (symbol vanished, etc.), if any. */
+  /** An error from the rename op (symbol vanished, etc.), if any. Already
+   *  reported to the user as an error notification before it is returned
+   *  (#2528) — callers use it to decide control flow, not to surface it. */
   error?: string;
 }
 
@@ -126,6 +136,9 @@ export interface SymbolRenameOutcome {
  * introduced-diagnostic breakage report; applies the edits when the rename is
  * safe or `force` is set, otherwise returns the report so the prompt can show
  * it. Used by `SymbolRenamePrompt`.
+ *
+ * A refused rename raises an error notification through the store's injected
+ * notifier before returning (#2528); see the failure branch below.
  */
 export async function performSymbolRename(
   state: StudioState,
@@ -144,12 +157,38 @@ export async function performSymbolRename(
       ? session.renameSymbolAt(req.path, req.offset, newName)
       : session.renameSymbol(req.path, req.knot ?? "", req.stitch ?? "", newName);
   if (!result.ok) {
+    // Report the failure before returning it (#2528). `SymbolRenamePrompt`
+    // closes on `outcome.error` exactly as it closes on success, so without a
+    // notification here a rename that failed — "symbol not found" after the
+    // knot was edited away, "file not loaded", "cannot rename this symbol" —
+    // looks identical to one that worked: the prompt vanishes and nothing is
+    // renamed. This is the same surface the *file* rename's failure path uses
+    // (`applyRename` in studio-store's binder slice), and the same `source`
+    // tag the success path's `applyMoveResult` toast carries, so both outcomes
+    // of one rename report through one channel.
+    //
+    // Guarded by packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts;
+    // the invariant is recorded in docs/studio-shell-spec.md §7.5.
+    //
+    // The frame is "Rename X failed: <reason>", NOT "Cannot rename X: <reason>":
+    // the op's most common refusal is literally "cannot rename this symbol",
+    // which the latter turns into "Cannot rename hello: cannot rename this
+    // symbol". Keep the frame and the op's own wording from colliding.
+    const label = renameLabel(req);
+    state._notify?.({
+      severity: "error",
+      source: "binder",
+      message:
+        result.error != null && result.error !== ""
+          ? `Rename ${label} failed: ${result.error}`
+          : `Rename ${label} failed`,
+    });
     return { applied: false, diagnostics: [], error: result.error };
   }
 
   if (result.safe || force) {
     const oldName = req.currentName ?? req.stitch ?? req.knot;
-    const label = req.currentName ?? (req.stitch ? `${req.knot}.${req.stitch}` : req.knot) ?? "symbol";
+    const label = renameLabel(req);
     await applyMoveResult(
       result,
       `Rename ${label} to ${newName}`,
