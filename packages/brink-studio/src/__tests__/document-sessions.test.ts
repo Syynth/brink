@@ -108,10 +108,17 @@ function docText(view: EditorView): string {
 async function createHarness(
   files: Record<string, string> = { "main.ink": MAIN_INK },
   callbacks: DocumentCallbacks = {},
+  // Defaults to the first loaded file, like every existing call site; a test
+  // exercising a compile refusal (#2589) overrides this to a path the
+  // provider never served, mirroring a constructor `entryFile` naming an
+  // unresolvable path (or an entry file deleted after config resolution) —
+  // NOT a misconfigured `brink.toml` `[project] entry`, since
+  // `ProjectSession.applyProjectConfig` falls back to `hostEntryFile`
+  // instead of adopting an entry that doesn't resolve.
+  entryFile: string = Object.keys(files)[0]!,
 ): Promise<Harness> {
   await initWasm();
   const provider = new InMemoryFileProvider(files);
-  const entryFile = Object.keys(files)[0]!;
   const project = new ProjectSession({ provider, entryFile });
   await project.initialize();
   return new Harness(project, callbacks);
@@ -708,6 +715,31 @@ describe("DocumentSessions", () => {
         h.project.getSession().updateFile("main.ink", "-> END\n");
         h.documents.triggerCompile();
         expect(results).toHaveLength(2);
+      } finally {
+        h.cleanup();
+      }
+    });
+
+    // #2589: `CompileResult { ok: false, error }` — the compile channel's own
+    // refusal shape, distinct from `StructuralResultJs`/`DirMoveResultJs`
+    // (no `safe`/`cross_file_edits` gate). This is the real production path a
+    // refusal reaches the studio through — `mount.tsx`'s `handleCompileResult`
+    // (wired as `onCompileResult` below, exactly as it wires `DocumentSessions`
+    // in the app) branches on `result.ok` to decide whether to surface
+    // `story_bytes`/the story graph/an auto-restarted session, so an
+    // understated mock here would leave that branch permanently untested.
+    it("delivers a CompileResult refusal when the entry file can't be resolved", async () => {
+      const results: unknown[] = [];
+      const h = await createHarness(
+        { "main.ink": MAIN_INK },
+        { onCompileResult: (r) => results.push(r) },
+        "ghost.ink",
+      );
+      try {
+        h.documents.triggerCompile();
+        expect(results).toEqual([
+          { ok: false, warnings: [], error: "entry file not found in session: ghost.ink" },
+        ]);
       } finally {
         h.cleanup();
       }
