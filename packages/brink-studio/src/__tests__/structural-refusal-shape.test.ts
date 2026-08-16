@@ -1112,6 +1112,32 @@ describe("a fresh mock session is seeded the way production is (#2663)", () => {
 });
 
 /**
+ * Regression for a review finding on #2690. `STITCH_FENCE`'s post-`=`
+ * whitespace was `\s*`, documented as "production's `skip_ws` after the
+ * `=`" — but `\s` matches `\n` and `skip_ws` does not (it loops on
+ * `is_trivia()`, and NEWLINE is its own `SyntaxKind`;
+ * `brink-syntax/src/parser/mod.rs`). Harmless in every line-scoped
+ * consumer (the string under test never contains a `\n`), but real in the
+ * one whole-source consumer — the rename rewrite (`new RegExp("(^|\\n)...",
+ * "g")` with no `m` flag) — where a bare `=` line (not a header: production
+ * agrees, see `ALT_STITCHES`/#2684) let the fence's `\s*` swallow the
+ * newline after it and reach into the FOLLOWING line's body text.
+ */
+describe("rename_symbol's rewrite does not cross a newline into the next line (#2690 review)", () => {
+  it("a bare `=` line is not a header, and does not turn the next line into one", () => {
+    const source = "=== one ===\n= b\nB.\n=\nb is mentioned\n";
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": source }).rename_symbol("main.ink", "one", "b", "renamed"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    // Only the real header (`= b`) is rewritten. Production renames nothing
+    // past the bare `=` line, so the body text on the line after it — which
+    // merely contains the word "b" — is untouched.
+    expect(parsed.new_source).toBe("=== one ===\n= renamed\nB.\n=\nb is mentioned\n");
+  });
+});
+
+/**
  * The half acceptance cannot see: an op that ACCEPTS on both sides but
  * rewrites the header differently (#2661).
  *

@@ -637,6 +637,17 @@ the divergence — but `update_source` writes into `files[activePath]`, so a moc
 session that never called `set_active_file` wrote to key `""` where production
 writes to `"main.ink"`.
 
+**Not covered:** production's stitch regions are CST node ranges, not lines,
+so an **indented** header's leading whitespace crosses the region boundary in
+a way this line-based mock cannot reproduce byte-for-byte — only the
+flush-left boundary is pinned in `regions`; the indented case (`  = b` in
+`ALT_STITCHES`) is left unguarded rather than papered over, and the
+divergence is recorded on #2684, not closed here. Separately, `parser/knot.rs`'s
+grammar comment still spells `stitch_header` with `INLINE_WS+` — required
+whitespace — which this PR's driven evidence rejects (whitespace after the
+`=` is optional in practice, per `skip_ws`); the comment has not been
+corrected to match the code it documents.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:

@@ -174,11 +174,17 @@ const KNOT_IS_FUNCTION_RE = new RegExp(`^\\s*${KNOT_FENCE_EQUALS}\\s*function\\s
  * region, and `=> x` ended a region production keeps running straight
  * through.
  */
-const STITCH_FENCE_EQUALS = "=(?!\\s*[=>])";
+// `\s` is not `INLINE_WS`: `\s` matches `\n`, and production's `skip_ws`
+// stops at end of line (it loops on `is_trivia()`, and NEWLINE is its own
+// SyntaxKind — `brink-syntax/src/parser/mod.rs`). Harmless in every
+// line-scoped use below (the string being matched never contains a `\n`),
+// but real in the one whole-source use (the rename rewrite), so both the
+// lookahead and the post-fence whitespace use `[^\S\n]*` rather than `\s*`.
+const STITCH_FENCE_EQUALS = "=(?![^\\S\\n]*[=>])";
 
 /** The fence plus the optional whitespace — everything a stitch header puts
  *  before the declared name. Production's `skip_ws` after the `=`. */
-const STITCH_FENCE = `${STITCH_FENCE_EQUALS}\\s*`;
+const STITCH_FENCE = `${STITCH_FENCE_EQUALS}[^\\S\\n]*`;
 
 /** {@link STITCH_FENCE} anchored at the start of a line, indent allowed. */
 const STITCH_HEADER_PREFIX = `^\\s*${STITCH_FENCE}`;
