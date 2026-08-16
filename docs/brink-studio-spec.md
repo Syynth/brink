@@ -168,6 +168,48 @@ source — the alias-map guard checks the target paths the map declares, not
 just the paths the test run itself resolves through. CI is unaffected: the
 frontend job builds wasm before running any package's tests.
 
+### Mock refusal payloads must equal the Rust payloads (#2568)
+
+Because `studioTestWasmAliases()` repoints `brink-web` at
+`src/__mocks__/brink-web.ts` for every one of this package's unit tests, that
+mock is the only thing the studio suite ever talks to — a payload it
+*understates* makes every test blind to bugs living in the field it omits.
+This is not hypothetical: #2543 shipped because the mock's structural-refusal
+sites answered `{ ok: false, error }` alone, while the real
+`error_json`/`dir_error_json` (`crates/brink-web/src/editor_refactor.rs`)
+serialize the whole `StructuralResultJs`/`DirMoveResultJs`, so a refusal
+still ships `safe: true` with empty `cross_file_edits`/`introduced_diagnostics`
+beside its `ok: false`. Under the understated mock a refusal read as
+*unsafe*; in production it read as *safe* and was committed.
+
+The fix is a shape-parity guard, split across both languages so neither side
+is hand-copied from the other:
+
+- **`crates/brink-web/fixtures/refusal-shapes.json` is GENERATED — never hand-edit
+  it.** It's produced by `#[cfg(test)] mod refusal_shape` in
+  `crates/brink-web/src/editor_refactor.rs`, which runs the real
+  `error_json`/`dir_error_json` and builds a real `AutoImportJs` struct
+  literal, so a field add/rename/`skip_serializing_if` change is a compile
+  error or a failing assertion, not silent drift. Regenerate with:
+
+  ```sh
+  BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape
+  ```
+
+- **Both guard halves must stay green together**, not just the one you
+  touched:
+  - `refusal_shape` (`crates/brink-web/src/editor_refactor.rs`) — asserts the
+    checked-in fixture matches what the real Rust payloads emit right now.
+  - `structural-refusal-shape.test.ts`
+    (`packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts`)
+    — reads that fixture and `toEqual`-compares every mock refusal call site
+    against it, plus a source-scanning case that fails if a new call site
+    answers an inline `{ ok: false, ... }` literal instead of routing through
+    the shared `structuralRefusal`/`autoImportRefusal` helpers in the mock.
+
+  A Rust-side change therefore fails `refusal_shape` first; regenerating the
+  fixture then fails the TypeScript test until the mock is updated to match.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:

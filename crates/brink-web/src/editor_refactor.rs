@@ -302,3 +302,116 @@ pub(crate) fn error_json(msg: &str) -> String {
     };
     serde_json::to_string(&resp).unwrap_or_default()
 }
+
+// ── Refusal-shape parity fixture (#2568) ─────────────────────────────
+
+/// Machine-generated mirror of every *refusal* payload this module can emit,
+/// checked in at `crates/brink-web/fixtures/refusal-shapes.json` and read from
+/// the TypeScript side by
+/// `packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts`.
+///
+/// It exists because the studio's wasm mock understated these payloads: Rust
+/// serializes the WHOLE struct on a refusal — only `path`/`new_source`/`edit`/
+/// `error` carry `skip_serializing_if` — so an `ok: false` still ships
+/// `safe: true` with empty `cross_file_edits`/`introduced_diagnostics`. The
+/// mock answered `{ ok: false, error }` alone, so no studio test could see a
+/// bug living in a field the mock never emitted — which is exactly how #2543
+/// shipped past 1000+ green studio tests.
+///
+/// The fixture is DERIVED, never hand-written: it is produced by running the
+/// real `error_json`/`dir_error_json` and by constructing the real
+/// [`AutoImportJs`] struct, so adding or renaming a field either fails to
+/// compile here or turns this test red. Regenerate with:
+///
+/// ```text
+/// BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape
+/// ```
+#[cfg(test)]
+mod refusal_shape {
+    use super::{AutoImportJs, dir_error_json, error_json};
+
+    const FIXTURE: &str = include_str!("../fixtures/refusal-shapes.json");
+    const FIXTURE_REL_PATH: &str = "fixtures/refusal-shapes.json";
+
+    /// Arbitrary — the fixture pins the *shape* (which keys ship, with which
+    /// defaults), not the message.
+    const REFUSAL_MSG: &str = "REFUSAL";
+
+    const COMMENT: &str = "GENERATED from the Rust refusal payloads — do not hand-edit. \
+Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. \
+Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).";
+
+    fn parse(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).expect("refusal payload is valid JSON")
+    }
+
+    /// Build the fixture document from the real production payloads.
+    fn generated() -> serde_json::Value {
+        // A struct literal, so a new `AutoImportJs` field is a compile error
+        // here rather than a silent shape drift.
+        let auto_import = AutoImportJs {
+            ok: false,
+            already_reachable: false,
+            edit: None,
+            error: Some(REFUSAL_MSG.to_owned()),
+        };
+        let auto_import_json =
+            serde_json::to_string(&auto_import).expect("AutoImportJs serializes");
+        serde_json::json!({
+            "$comment": COMMENT,
+            "error": REFUSAL_MSG,
+            "shapes": {
+                "AutoImportJs": parse(&auto_import_json),
+                "DirMoveResultJs": parse(&dir_error_json(REFUSAL_MSG)),
+                "StructuralResultJs": parse(&error_json(REFUSAL_MSG)),
+            },
+        })
+    }
+
+    #[test]
+    fn refusal_shape_fixture_matches_the_rust_payloads() {
+        let generated = generated();
+
+        if std::env::var_os("BRINK_BLESS_REFUSAL_SHAPES").is_some() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE_REL_PATH);
+            let parent = path.parent().expect("fixture path has a parent");
+            std::fs::create_dir_all(parent).expect("create fixture directory");
+            let mut text = serde_json::to_string_pretty(&generated).expect("fixture serializes");
+            text.push('\n');
+            std::fs::write(&path, text).expect("write fixture");
+            return;
+        }
+
+        let checked_in: serde_json::Value =
+            serde_json::from_str(FIXTURE).expect("fixture is valid JSON");
+        assert!(
+            checked_in == generated,
+            "`{FIXTURE_REL_PATH}` is stale — the Rust refusal payloads changed shape.\n\
+             Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`,\n\
+             then update `packages/brink-studio/src/__mocks__/brink-web.ts` to match (#2568).\n\
+             checked in: {checked_in:#}\n\
+             generated:  {generated:#}"
+        );
+    }
+
+    /// The property the studio mock has to reproduce, stated once here so the
+    /// fixture's point survives even for a reader who only sees the Rust side.
+    #[test]
+    fn a_refusal_still_ships_the_full_gate_fields() {
+        let refusal = parse(&error_json("boom"));
+        assert!(refusal["ok"] == serde_json::json!(false), "{refusal:#}");
+        assert!(refusal["safe"] == serde_json::json!(true), "{refusal:#}");
+        assert!(
+            refusal["cross_file_edits"] == serde_json::json!([]),
+            "{refusal:#}"
+        );
+        assert!(
+            refusal["introduced_diagnostics"] == serde_json::json!([]),
+            "{refusal:#}"
+        );
+        // Only these are omitted on a refusal.
+        assert!(refusal.get("path").is_none(), "{refusal:#}");
+        assert!(refusal.get("new_source").is_none(), "{refusal:#}");
+        assert!(refusal["error"] == serde_json::json!("boom"), "{refusal:#}");
+    }
+}
