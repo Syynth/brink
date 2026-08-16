@@ -40,7 +40,11 @@ const scriptsDir = resolve(fileURLToPath(import.meta.url), "../../../scripts");
 // fails loudly instead of vacuously reporting zero violations. Adding a
 // preflight script means adding its name here — one line — while the guard
 // assertions below apply to it automatically.
-const EXPECTED_SCRIPTS = ["ensure-cli-sidecar.mjs", "ensure-wasm.mjs"];
+const EXPECTED_SCRIPTS = [
+  "assert-real-sidecar.mjs",
+  "ensure-cli-sidecar.mjs",
+  "ensure-wasm.mjs",
+];
 
 // The exact idiom both scripts use verbatim, and the one named in #2478.
 // The leading `process.argv[1] &&` is load-bearing, not decorative: with no

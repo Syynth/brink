@@ -2129,6 +2129,100 @@ mod tests {
         );
     }
 
+    /// This crate's own `tauri.conf.json`.
+    fn tauri_conf() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        assert!(path.is_file(), "tauri.conf.json should exist at {path:?}");
+        std::fs::read_to_string(&path).expect("just asserted tauri.conf.json exists")
+    }
+
+    /// #2631: PR #2626's "a real bundle must ship the real `brink-cli`"
+    /// invariant held for `cargo tauri build --debug` only through step
+    /// ordering — `beforeBuildCommand` -> `pnpm build` happens to stage the
+    /// real binary before `build.rs` ever runs, plus `bundle.active: false`
+    /// making the whole question moot in practice. Nothing asserted it.
+    ///
+    /// `tauri.conf.json`'s `beforeBundleCommand` is the fix: tauri-cli runs
+    /// it immediately before the bundling phase of `tauri build` — after the
+    /// crate has compiled (so `build.rs` already ran) and right before
+    /// tauri-bundler reads `binaries/brink-cli-<triple>` off disk to package
+    /// it. `scripts/assert-real-sidecar.mjs` throws if that file's content
+    /// is `STUB_SIDECAR` rather than a real binary.
+    ///
+    /// Deliberately inert today, not a gap: `bundle.active` below must stay
+    /// `false` (D3 scope, not this issue's — see
+    /// `docs/desktop-shell-spec.md`). That is not the only thing standing
+    /// between this hook and firing, though — tauri-cli's bundling phase
+    /// also runs on an explicit `tauri build --bundles <target>` even with
+    /// `bundle.active: false`, so "flip `bundle.active`" is not this hook's
+    /// only door, just the one this crate's own config controls. What
+    /// actually keeps it inert today is that nothing in this repo invokes
+    /// `tauri build` in any form yet — no `--bundles` flag, no default
+    /// bundle-on config. `bundle.active` flipping to `true` would widen
+    /// which invocation reaches the hook (the bundle-less default `tauri
+    /// build` starts doing so too) but does not, on its own, make the hook
+    /// reachable if nothing still calls `tauri build` — which is what this
+    /// test pins for now.
+    #[test]
+    fn before_bundle_command_asserts_the_staged_sidecar_is_real() {
+        let conf = tauri_conf();
+
+        assert!(
+            conf.contains("\"beforeBundleCommand\""),
+            "tauri.conf.json's `build` block should set `beforeBundleCommand` so tauri-cli \
+             runs a real-sidecar check right before the bundling phase of `tauri build` \
+             (#2631) — PR #2626's \"a real bundle must ship the real brink-cli\" invariant \
+             held for `--debug` bundles only via step ordering until this hook existed"
+        );
+        assert!(
+            conf.contains("scripts/assert-real-sidecar.mjs"),
+            "beforeBundleCommand should invoke packages/brink-desktop/scripts/assert-real-sidecar.mjs"
+        );
+        assert!(
+            repo_root()
+                .join("packages/brink-desktop/scripts/assert-real-sidecar.mjs")
+                .is_file(),
+            "packages/brink-desktop/scripts/assert-real-sidecar.mjs should exist — \
+             tauri.conf.json hard-codes this path as a literal string, so a rename or move \
+             must be caught here"
+        );
+
+        // #2626's review established that the stub payload, host-triple
+        // detection and staged filename live in ensure-cli-sidecar.mjs
+        // ALONE (`build_script_stages_the_dev_sidecar_the_way_ci_does`
+        // above guards build.rs the same way) — the new script must import
+        // `STUB_SIDECAR` from there rather than carry its own copy.
+        let assert_script = std::fs::read_to_string(
+            repo_root().join("packages/brink-desktop/scripts/assert-real-sidecar.mjs"),
+        )
+        .expect("just asserted assert-real-sidecar.mjs exists");
+        assert!(
+            assert_script.contains("STUB_SIDECAR")
+                && assert_script.contains("ensure-cli-sidecar.mjs"),
+            "assert-real-sidecar.mjs should import STUB_SIDECAR from ensure-cli-sidecar.mjs \
+             rather than redefine what the stub looks like"
+        );
+        assert!(
+            !assert_script.contains("#!/bin/sh"),
+            "assert-real-sidecar.mjs should not carry its own copy of the stub payload — \
+             detect it via the STUB_SIDECAR import instead, exactly as this guard requires \
+             of build.rs"
+        );
+
+        // `bundle.active` turning this on is explicitly D3 scope (#2631's
+        // own instruction), not this fix's — this assertion exists to keep
+        // the two from getting conflated by a later, unrelated edit to this
+        // file landing bundle.active: true without anyone noticing it also
+        // silently made this hook load-bearing.
+        assert!(
+            conf.contains("\"active\": false"),
+            "tauri.conf.json's bundle.active should still read false — turning bundling on \
+             is D3 scope (docs/desktop-shell-spec.md), not #2631's; if this now legitimately \
+             reads true, this assertion's job is done and it should be removed here rather \
+             than edited to match"
+        );
+    }
+
     /// Every `.github/workflows/*.yml`/`*.yaml` file, sorted by name so the
     /// test's output order is stable. Enumerated from disk, not a
     /// hard-coded file list, so a brand-new workflow file is automatically
