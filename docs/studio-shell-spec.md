@@ -439,7 +439,11 @@ interface Notification {
   mount.tsx:610`), which since #2564 returns early on `ok: false` so nothing
   gets written, but — like `dispatchSymbolAction` — raises no notification, so
   a refused code action or extract is silently dropped from the host's
-  perspective (#2544). Established
+  perspective (#2544). A third gap, distinct from the two above: `delete_symbol`
+  (`crates/internal/brink-ide/src/structural_delete.rs`) is a real op with real
+  refusals, but as of #2636 no studio surface calls it at all — no context-menu
+  item, no dispatcher branch — so this clause has nothing to apply to yet. That
+  is a reachability gap, not a non-compliant call site. Established
   by the file rename (`applyRename`, studio-store's binder slice); extended to the
   knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
   returned to `SymbolRenamePrompt` and discarded when the prompt closed; and to
