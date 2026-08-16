@@ -59,7 +59,7 @@ The WASM package must exist first — `@brink-lang/web` resolves `brink-web` thr
 wasm-pack build crates/brink-web --target web --out-dir www/pkg
 
 # 2. install + run the studio
-pnpm install
+pnpm install:checked
 pnpm dev            # Vite dev server on http://localhost:5180
 ```
 
