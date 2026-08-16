@@ -29,29 +29,62 @@
  * ## Shape was checked; vocabulary was not (#2603)
  *
  * The generated shapes carry a placeholder message, so every `error` string
- * below was typed by hand — and two of them were typed from the *mock*. Both
- * auto-import doc-handle sites pinned `"unknown handle"` while production
+ * below used to be typed by hand — and two of them were typed from the *mock*.
+ * Both auto-import doc-handle sites pinned `"unknown handle"` while production
  * (`crates/brink-web/src/editor/refactor.rs`) answers
  * `"unknown document handle"`, so those two cases asserted only that the mock
  * agreed with itself. That is the fourth instance of the class in three waves
  * (#2583's invented serde message, #2599's shadowed stub, #2602's invented
  * `entry file '...' not found`).
  *
- * The fixture now also carries a `messages` map, produced by *running* the
- * production ops in `driven_messages()` and reading `error` back out of the
- * payload they answer with — see `productionMessage` below. A site that reads
- * from it cannot drift: changing the Rust wording restales the fixture, and
- * the regenerated fixture fails this file until the mock matches.
+ * #2603 closed it for the three document-handle ops: the fixture carries a
+ * `messages` map produced by *running* the production ops in
+ * `driven_messages()` and reading `error` back out of the payload they answer
+ * with — see `productionMessage` below. A site that reads from it cannot
+ * drift: changing the Rust wording restales the fixture, and the regenerated
+ * fixture fails this file until the mock matches.
  *
- * ⚠ **It covers the document-handle ops only, and it is per-site, not
- * automatic.** Nothing can enumerate the (op, refusing-input) pairs, so each
- * driven message is a driver someone wrote. Every other `error:` string in
- * this file is still HAND-COPIED from the production call path, and most of
- * them originate below `brink-web` (`file not loaded`, `stitch '...' not found
- * in knot`, `entry file not found in session:` come out of `brink-ide` error
- * types), which the Rust-side literal scan cannot see at all. Treat those as
- * what they are — transcriptions to re-verify against the source when touched,
- * not machine-checked facts.
+ * ## The other ~28 were swept, and three of them were wrong (#2620)
+ *
+ * #2603 left every other `error:` string here hand-transcribed, and said so.
+ * The sweep #2620 asked for found that the transcription had been WRONG at
+ * three sites — the mock was answering strings production never emits, and
+ * this file was pinning them:
+ *
+ * | site                            | this file said     | production says               |
+ * | ------------------------------- | ------------------ | ----------------------------- |
+ * | `rename_file` (missing file)    | `file not loaded`  | `file 'ghost.ink' not found`  |
+ * | `delete_symbol` (missing file)  | `file not loaded`  | `source knot not found`       |
+ * | `delete_symbol` (missing knot)  | `symbol not found` | `source knot not found`       |
+ *
+ * `rename_file` has no wasm-level "loaded" guard at all (it delegates to
+ * `brink_ide::file_rename`, whose error is `file '{0}' not found`), and
+ * `delete_symbol` maps BOTH an unloaded path and a missing KNOT onto the same
+ * `MoveError::SourceNotFound` — true only when the knot itself is missing. A
+ * missing STITCH inside a knot that DOES exist is a different variant,
+ * `MoveError::StitchNotFound` (`stitch '<name>' not found in knot`); that case
+ * was undriven at the time of this sweep and is now its own driven site
+ * (`delete_symbol (missing stitch in existing knot)`, #2627) rather than
+ * folded into this table. A fourth site — `resolve_code_action`'s
+ * "no change" case — pinned the right *wording* against an input production
+ * ACCEPTS (`FormatKnot` reindents `TWO_KNOTS` and answers `ok: true`), so the
+ * parity claim was against a question production answers differently; it now
+ * drives `SortKnots` over a single-knot file, which genuinely is a no-op.
+ *
+ * Rather than re-transcribe, every site below now reads its wording from
+ * `driven_messages()`. No `error:` string in the arrays below is typed,
+ * except the one mock-only serde abbreviation noted further down (anchored as
+ * a genuine prefix of the driven production string, never an invention).
+ *
+ * ⚠ **What this does and does not guarantee.** Driving is still PER-SITE, not
+ * automatic: nothing enumerates the (op, refusing-input) pairs, so each entry
+ * is a driver someone wrote against an input someone chose, and a refusal site
+ * nobody lists is invisible to every guard here (#2621 gap 2 — the #2577 wall,
+ * one level up). Two strings are also still hand-written and are marked as
+ * such: the mock-only serde abbreviation below (anchored as a *prefix* of the
+ * driven production message, so it cannot become a fabrication) and the
+ * `structuralRefusal`-family names in the source scan at the bottom of this
+ * file, which are TypeScript identifiers rather than refusal vocabulary.
  */
 
 import { readFileSync } from "node:fs";
@@ -120,6 +153,25 @@ function productionMessage(key: string): string {
   return message!;
 }
 
+/**
+ * The one site whose mock wording is deliberately NOT production's, recorded
+ * so the divergence is measured instead of asserted (#2620).
+ *
+ * serde_json's error for an unknown internally-tagged variant names every
+ * known variant and a source line/column. The mock has no serde, so it emits a
+ * short prefix of that. Pinning the abbreviation alone is how #2583's invented
+ * serde message survived, so this also consumes the driven key and registers
+ * the pair for {@link mockAbbreviations} — a dedicated case asserts the
+ * abbreviation is a genuine PREFIX of what production answered, which fails the
+ * moment the mock's wording becomes an invention rather than a truncation.
+ */
+const mockAbbreviations: Array<{ site: string; abbreviation: string; production: string }> = [];
+
+function mockAbbreviationOf(site: string, key: string, abbreviation: string): string {
+  mockAbbreviations.push({ site, abbreviation, production: productionMessage(key) });
+  return abbreviation;
+}
+
 const MAIN = "=== hello ===\nHi.\n-> END\n";
 
 /** Two knots, the first carrying stitches — enough shape for the reorder /
@@ -133,11 +185,18 @@ function sessionWith(files: Record<string, string>): EditorSession {
   return s;
 }
 
-/** Every call site in the mock that answers with a *refused* structural op. */
+/**
+ * Every call site in the mock that answers with a *refused* structural op.
+ *
+ * Each `error` is read off the fixture's driven `messages` (#2603/#2620) — the
+ * key names the Rust driver in `driven_op_messages()` that produced it, and the
+ * `call` below MUST refuse for the same reason with the same inputs, or the
+ * fixture pins production's answer to a different question.
+ */
 const structuralRefusals: Array<{ site: string; error: string; call: () => string }> = [
   {
     site: "rename_file (read-only library)",
-    error: "cannot rename: file is part of the read-only library",
+    error: productionMessage("rename_file:read-only-mount"),
     call: () => {
       const s = new EditorSession();
       s.__mockMarkReadOnlyForTest("std/lib.ink", MAIN);
@@ -145,56 +204,79 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     },
   },
   {
-    site: "rename_file (file not loaded)",
-    error: "file not loaded",
+    // #2620: pinned `file not loaded` for two waves. Production has no such
+    // guard here — `brink_ide::file_rename` answers `file '{0}' not found`.
+    site: "rename_file (file not found)",
+    error: productionMessage("rename_file:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).rename_file("ghost.ink", "other.ink"),
   },
   {
     site: "rename_file (target exists)",
-    error: "a file already exists at 'other.ink'",
+    error: productionMessage("rename_file:target-exists"),
     call: () =>
       sessionWith({ "main.ink": MAIN, "other.ink": MAIN }).rename_file("main.ink", "other.ink"),
   },
   {
+    // #2620: pinned `file not loaded`. Production folds an unloaded path onto
+    // `MoveError::SourceNotFound` — the same variant as a missing KNOT below,
+    // but NOT the same as a missing STITCH inside a knot that does exist
+    // (`delete_symbol (stitch not found, #2627)` further down) — those are a
+    // different `MoveError` variant with different wording.
     site: "delete_symbol (file not loaded)",
-    error: "file not loaded",
+    error: productionMessage("delete_symbol:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).delete_symbol("ghost.ink", "hello", ""),
   },
   {
-    site: "delete_symbol (symbol not found)",
-    error: "symbol not found",
+    // #2620: pinned `symbol not found`, a string this op never emits. This
+    // case is a missing KNOT specifically — `MoveError::SourceNotFound`, the
+    // same variant as the missing-file case above. A missing STITCH inside an
+    // EXISTING knot is a different variant (`StitchNotFound`); see the
+    // dedicated case below (#2627) rather than reading this one as covering
+    // both.
+    site: "delete_symbol (missing knot)",
+    error: productionMessage("delete_symbol:missing-symbol"),
     call: () => sessionWith({ "main.ink": MAIN }).delete_symbol("main.ink", "nowhere", ""),
   },
   {
+    // #2627 review: the two cases above fold onto `MoveError::SourceNotFound`
+    // because the KNOT itself is missing. A missing STITCH inside a knot that
+    // DOES exist is `MoveError::StitchNotFound` instead — `stitch '<name>'
+    // not found in knot` (structural_move.rs:23) — and was previously
+    // undriven, so this sub-case was invisible to the sweep.
+    site: "delete_symbol (missing stitch in existing knot)",
+    error: productionMessage("delete_symbol:missing-stitch-in-knot"),
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).delete_symbol("main.ink", "one", "nowhere"),
+  },
+  {
     site: "extract_to_knot (file not loaded)",
-    error: "file not loaded",
+    error: productionMessage("extract_to_knot:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).extract_to_knot("ghost.ink", 0, 4, "lifted"),
   },
   {
     site: "extract_to_knot (empty selection)",
-    error: "empty selection: nothing to extract",
+    error: productionMessage("extract_to_knot:empty-selection"),
     call: () => sessionWith({ "main.ink": MAIN }).extract_to_knot("main.ink", 4, 4, "lifted"),
   },
   {
     site: "extract_to_function (file not loaded)",
-    error: "file not loaded",
+    error: productionMessage("extract_to_function:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).extract_to_function("ghost.ink", 0, 4, "lifted"),
   },
   {
     site: "extract_to_function (empty selection)",
-    error: "empty selection: nothing to extract",
+    error: productionMessage("extract_to_function:empty-selection"),
     call: () => sessionWith({ "main.ink": MAIN }).extract_to_function("main.ink", 4, 4, "lifted"),
   },
   // The two sites PR #2564 already fixed — kept here so the guard covers every
   // structural refusal the mock can emit, not only the newly swept ones.
   {
     site: "rename_symbol (file not loaded)",
-    error: "file not loaded",
+    error: productionMessage("rename_symbol:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).rename_symbol("ghost.ink", "hello", "", "hi"),
   },
   {
     site: "rename_symbol_at (cannot rename this symbol)",
-    error: "cannot rename this symbol",
+    error: productionMessage("rename_symbol_at:unrenameable"),
     call: () => sessionWith({ "main.ink": MAIN }).rename_symbol_at("main.ink", 0, "hi"),
   },
   // The seven `dispatchSymbolAction` ops + the code-action resolver, added to
@@ -204,67 +286,72 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
   // literal to be swept later.
   {
     site: "reorder_stitch (file not loaded)",
-    error: "file not loaded",
+    error: productionMessage("reorder_stitch:missing-file"),
     call: () => sessionWith({ "main.ink": MAIN }).reorder_stitch("ghost.ink", "hello", "a", 1),
   },
   {
     site: "reorder_stitch (stitch not found)",
-    error: "stitch 'nowhere' not found in knot",
+    error: productionMessage("reorder_stitch:missing-stitch"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_stitch("main.ink", "one", "nowhere", 1),
   },
   {
     site: "reorder_knot (source knot not found)",
-    error: "source knot not found",
+    error: productionMessage("reorder_knot:missing-knot"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_knot("main.ink", "nowhere", 1),
   },
   {
     site: "reorder_stitches (invalid reorder)",
-    error: "invalid reorder: list is not a permutation of the existing names",
+    error: productionMessage("reorder_stitches:invalid-order"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_stitches("main.ink", "one", ["a"]),
   },
   {
     site: "reorder_knots (invalid reorder)",
-    error: "invalid reorder: list is not a permutation of the existing names",
+    error: productionMessage("reorder_knots:invalid-order"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_knots("main.ink", ["one", "one"]),
   },
   {
     site: "move_stitch (destination knot not found)",
-    error: "destination knot not found",
+    error: productionMessage("move_stitch:missing-dest-knot"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "a", "nope"),
   },
   {
     site: "move_stitch (name collision)",
-    error: "name collision: 'a' already exists in two",
+    error: productionMessage("move_stitch:name-collision"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "a", "two"),
   },
   {
     site: "promote_stitch (name collision with a top-level knot)",
-    error: "name collision: 'two' already exists in top-level knots",
+    error: productionMessage("promote_stitch:name-collision"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).promote_stitch("main.ink", "one", "two"),
   },
   {
     site: "promote_stitch (stitch not found)",
-    error: "stitch 'nowhere' not found in knot",
+    error: productionMessage("promote_stitch:missing-stitch"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).promote_stitch("main.ink", "one", "nowhere"),
   },
   {
     site: "demote_knot (illegal nesting)",
-    error: "illegal nesting: knot has sub-stitches and cannot be demoted",
+    error: productionMessage("demote_knot:illegal-nesting"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).demote_knot("main.ink", "one", "two"),
   },
   {
     site: "demote_knot (destination knot not found)",
-    error: "destination knot not found",
+    error: productionMessage("demote_knot:missing-dest-knot"),
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).demote_knot("main.ink", "two", "nope"),
   },
   {
-    // MOCK-ONLY ABBREVIATION: production's serde_json error for an unknown
-    // internally-tagged variant is `unknown variant \`Nonsense\`, expected one
-    // of \`SortKnots\`, \`SortStitches\`, ...\` at line L column C. This pins the
-    // mock's own (shorter) wording, not a claim that it matches production —
-    // see the comment at the mock's `default:` arm in brink-web.ts.
-    site: "resolve_code_action (unknown variant, mock-only wording)",
-    error: "invalid code-action data: unknown variant `Nonsense`",
+    // The one deliberately-divergent wording left in this file. Production's
+    // serde_json error names every known variant plus a line/column; the mock
+    // has no serde and emits a truncation of it. `mockAbbreviationOf` still
+    // consumes the driven key and registers the pair, so a dedicated case can
+    // assert the truncation really is a prefix of production's answer rather
+    // than an invention (the #2583 failure mode).
+    site: "resolve_code_action (unknown variant, mock-only abbreviation)",
+    error: mockAbbreviationOf(
+      "resolve_code_action (unknown variant)",
+      "resolve_code_action:unknown-variant",
+      "invalid code-action data: unknown variant `Nonsense`",
+    ),
     call: () => {
       const s = sessionWith({ "main.ink": TWO_KNOTS });
       s.set_active_file("main.ink");
@@ -272,16 +359,19 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     },
   },
   {
+    // #2620: this used to drive `FormatKnot` over `TWO_KNOTS`, which production
+    // ACCEPTS (it reindents and answers `ok: true`) — the wording was right but
+    // the question was not one production refuses. `SortKnots` over a
+    // single-knot file is a genuine no-op on both sides.
     site: "resolve_code_action (no change)",
-    error: "code action produced no change",
+    error: productionMessage("resolve_code_action:no-change"),
     call: () => {
-      const s = sessionWith({ "main.ink": TWO_KNOTS });
+      const s = sessionWith({ "main.ink": MAIN });
       s.set_active_file("main.ink");
-      return s.resolve_code_action(JSON.stringify({ action: "FormatKnot", knot: "one" }), 0);
+      return s.resolve_code_action(JSON.stringify({ action: "SortKnots" }), 0);
     },
   },
   {
-    // Vocabulary read off the fixture, not typed — see `productionMessage`.
     site: "resolve_code_action_doc (unknown document handle)",
     error: productionMessage("resolve_code_action_doc:unknown-handle"),
     call: () =>
@@ -300,12 +390,12 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
 const dirMoveRefusals: Array<{ site: string; error: string; call: () => string }> = [
   {
     site: "rename_dir (no files under the directory)",
-    error: "no files found under directory 'ghost'",
+    error: productionMessage("rename_dir:missing-dir"),
     call: () => sessionWith({ "main.ink": MAIN }).rename_dir("ghost", "other"),
   },
   {
     site: "rename_dir (destination occupied)",
-    error: "a file already exists at 'dst/a.ink'",
+    error: productionMessage("rename_dir:destination-occupied"),
     call: () =>
       sessionWith({ "src/a.ink": MAIN, "dst/a.ink": MAIN }).rename_dir("src", "dst"),
   },
@@ -328,6 +418,28 @@ const autoImportRefusals: Array<{ site: string; error: string; call: () => strin
     error: productionMessage("auto_import_apply_include_doc:unknown-handle"),
     call: () => sessionWith({ "main.ink": MAIN }).auto_import_apply_include_doc(999, "other.ink"),
   },
+  {
+    // #2621: production fences a handle on a mounted stdlib file before it
+    // attempts the include, and the mock modelled no fence at all — so the
+    // ~1174-test studio suite could not reach this branch either way.
+    //
+    // Its sibling literal at the same op, `current file source unavailable`,
+    // gets NO mock counterpart: it is a defensive `let ... else` that sits
+    // AFTER `ensure_include` has already resolved the same source, so no input
+    // reaches it (proved by
+    // `removing_a_file_under_an_open_handle_refuses_before_the_source_guard`
+    // in `crates/brink-web/src/editor_refactor.rs`). Mirroring an unreachable
+    // branch would model a production answer nothing can produce — #2577's
+    // lesson that a mock method nothing calls closes nothing.
+    site: "auto_import_apply_include_doc (read-only mounted stdlib)",
+    error: productionMessage("auto_import_apply_include_doc:read-only-mount"),
+    call: () => {
+      const s = new EditorSession();
+      s.__mockMarkReadOnlyForTest("std/lib.ink", MAIN);
+      const doc = s.open_document("std/lib.ink");
+      return s.auto_import_apply_include_doc(doc, "other.ink");
+    },
+  },
 ];
 
 /** The compile-channel refusal, which answers `CompileResult` — a fourth Rust
@@ -341,7 +453,7 @@ const autoImportRefusals: Array<{ site: string; error: string; call: () => strin
 const compileRefusals: Array<{ site: string; error: string; call: () => string }> = [
   {
     site: "compile_project (entry file not found)",
-    error: "entry file not found in session: ghost.ink",
+    error: productionMessage("compile_project:missing-entry"),
     call: () => sessionWith({ "main.ink": MAIN }).compile_project("ghost.ink"),
   },
 ];
@@ -358,12 +470,43 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
     ]);
   });
 
-  it("the driven refusal messages are present and every one has a call site here (#2603)", () => {
+  it("the driven refusal messages are present and every one has a call site here (#2603/#2620)", () => {
     // Same canary for the vocabulary half: a renamed key would otherwise make
-    // `productionMessage` fail once per site with no hint of the cause.
+    // `productionMessage` fail once per site with no hint of the cause. This
+    // list is the ONLY hand-typed thing left about the messages — it names
+    // Rust driver KEYS, never refusal wording.
     expect(Object.keys(fixture.messages).sort()).toEqual([
+      "auto_import_apply_include_doc:read-only-mount",
       "auto_import_apply_include_doc:unknown-handle",
       "auto_import_include_doc:unknown-handle",
+      "compile_project:missing-entry",
+      "delete_symbol:missing-file",
+      "delete_symbol:missing-stitch-in-knot",
+      "delete_symbol:missing-symbol",
+      "demote_knot:illegal-nesting",
+      "demote_knot:missing-dest-knot",
+      "extract_to_function:empty-selection",
+      "extract_to_function:missing-file",
+      "extract_to_knot:empty-selection",
+      "extract_to_knot:missing-file",
+      "move_stitch:missing-dest-knot",
+      "move_stitch:name-collision",
+      "promote_stitch:missing-stitch",
+      "promote_stitch:name-collision",
+      "rename_dir:destination-occupied",
+      "rename_dir:missing-dir",
+      "rename_file:missing-file",
+      "rename_file:read-only-mount",
+      "rename_file:target-exists",
+      "rename_symbol:missing-file",
+      "rename_symbol_at:unrenameable",
+      "reorder_knot:missing-knot",
+      "reorder_knots:invalid-order",
+      "reorder_stitch:missing-file",
+      "reorder_stitch:missing-stitch",
+      "reorder_stitches:invalid-order",
+      "resolve_code_action:no-change",
+      "resolve_code_action:unknown-variant",
       "resolve_code_action_doc:unknown-handle",
     ]);
 
@@ -371,10 +514,33 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
     // fixture, not a guard: it would keep passing while the mock said anything
     // it liked. Tracked by KEY (`consumedMessageKeys`, populated by
     // `productionMessage` as the arrays above are built), not by the string
-    // VALUE it resolved to — all three driven messages currently share the
-    // identical value "unknown document handle", so comparing values would
-    // pass as soon as any one case used it, even with the other two deleted.
+    // VALUE it resolved to — several driven messages share an identical value
+    // ("unknown document handle", "source knot not found"), so comparing values
+    // would pass as soon as any one case used it, even with the others deleted.
     expect([...consumedMessageKeys].sort()).toEqual(Object.keys(fixture.messages).sort());
+  });
+
+  it("the one mock-only wording is a truncation of production's, not an invention (#2620)", () => {
+    // #2583 shipped a serde message that was simply made up. An abbreviation
+    // that is a genuine prefix of the driven production string cannot be: the
+    // moment the mock's wording stops being a truncation — because someone
+    // reworded it, or because serde's own text changed — this goes red.
+    expect(mockAbbreviations.length).toBeGreaterThan(0);
+    for (const { site, abbreviation, production } of mockAbbreviations) {
+      expect(
+        production.startsWith(abbreviation),
+        `${site}: the mock says ${JSON.stringify(abbreviation)}, which is not a prefix of ` +
+          `production's driven ${JSON.stringify(production)} — either fix the mock or, if the ` +
+          "divergence is now more than a truncation, stop calling it an abbreviation",
+      ).toBe(true);
+      // And a truncation, not an equality dressed up as one — if they match
+      // exactly the site should read from `productionMessage` like every other.
+      expect(
+        production.length,
+        `${site}: the mock's wording now equals production's — drop the abbreviation ` +
+          "and read the driven message directly",
+      ).toBeGreaterThan(abbreviation.length);
+    }
   });
 
   for (const { site, error, call } of structuralRefusals) {
