@@ -454,6 +454,21 @@ describe("gateResults over-length is allowed and correctly labelled (#2672)", ()
     assert.equal(gateResults.maxItems, undefined, "gateResults must NOT carry maxItems — see the #2672 ruling in pump.js");
   });
 
+  it("the BUILD prompt states a FLOOR ('AT LEAST'), never an exact count, and forbids deleting rows", () => {
+    // The schema's no-maxItems ruling is only real if the prompt agents
+    // actually read agrees with it. The prompt used to say "MUST have
+    // exactly N entries", which directly contradicts "no ceiling" — an
+    // agent following that literally would trim to N and delete real
+    // evidence to comply, making the OVER-COMPLETE banner near-unreachable.
+    assert.ok(
+      /gateResults.*MUST have AT LEAST \$\{gateCmds\(b\)\.length\}/s.test(source),
+      "the BUILD prompt must state gateResults needs AT LEAST N entries, not exactly N",
+    );
+    assert.ok(!/MUST have exactly \$\{gateCmds\(b\)\.length\}/.test(source), "the old exact-count BUILD prompt wording must be gone");
+    assert.ok(/NEVER delete a row to hit a count/.test(source), "the BUILD prompt must forbid trimming rows to satisfy a count");
+    assert.ok(/extra rows are accepted and are NOT a violation/.test(source), "the BUILD prompt must say extra rows (preflight, re-run legs) are accepted");
+  });
+
   it("an OVER-long gateResults array still validates against the generated schema", () => {
     const schema = helpers.buildSchemaFor(item);
     const overLong = {
@@ -496,6 +511,34 @@ describe("gateResults over-length is allowed and correctly labelled (#2672)", ()
     assert.ok(shown.includes("3 gateResults rows returned for a 2-command gate"), "the banner must name both counts");
     // Every row still renders — the extra row is the information, not noise.
     assert.ok(shown.includes("cargo test") && shown.includes("df -h /") && shown.includes("pnpm run test:scripts"));
+  });
+
+  it("the OVER-COMPLETE banner instructs the reviewer to CHECK coverage, not stand down", () => {
+    // Follow-up finding on #2672: with no maxItems, an over-long gateResults
+    // can satisfy minItems while OMITTING one of the gate's real commands —
+    // extra rows mask a missing one. The old closing line ("do not read this
+    // banner as missing evidence") told the reviewer the opposite of what it
+    // should: it must tell them to verify coverage, not reassure them away
+    // from checking it.
+    const build = {
+      gateGreen: true,
+      gateOutput: "z".repeat(10),
+      gateResults: [
+        { command: "a", result: "ok" },
+        { command: "b", result: "ok" },
+        { command: "c", result: "ok" },
+      ],
+    };
+    const shown = helpers.formatGateEvidence(build, 2);
+    assert.ok(shown.includes("OVER-COMPLETE"));
+    assert.ok(
+      !shown.includes("do not read this banner as missing evidence"),
+      "the old stand-down reassurance must be gone from the over-length banner",
+    );
+    assert.ok(
+      shown.includes("does NOT imply coverage") && shown.includes("CHECK that each"),
+      `expected a coverage-check instruction in the over-length banner, got: ${shown.slice(0, 500)}`,
+    );
   });
 
   it("the UNDER-length direction still reads INCOMPLETE and unsupported", () => {
@@ -612,7 +655,7 @@ describe("MERGE/fix schema carries per-command gate evidence (#2664)", () => {
     // prompts are template literals, so their backticks are written escaped
     // (\`gateResults\`) and a naive backtick match silently matches a nearby
     // COMMENT instead, passing vacuously. This phrase is unique to the two
-    // train prompts (the build prompt says "MUST have exactly N entries").
+    // train prompts (the build prompt says "MUST have AT LEAST N entries").
     const ROW_RULE = "MUST have one entry per command";
     assert.equal((source.match(new RegExp(ROW_RULE, "g")) ?? []).length, 2, "exactly the merge and fix prompts should carry the per-command row rule");
     const chunks = source.split("schema: mergeSchemaFor(b)");
@@ -639,5 +682,26 @@ describe("MERGE/fix schema carries per-command gate evidence (#2664)", () => {
     // unconditionally, `parked` only when a merge/fix agent actually ran.
     const gateEvidenceWirings = source.match(/gateEvidence: landEvidence\(r\)/g) ?? [];
     assert.equal(gateEvidenceWirings.length, 3, "landed, awaitingChecks and parked must each surface the merge gate evidence");
+  });
+
+  it("the retro prompt's table legend explains the 'merge gate rows k/N' column", () => {
+    // trackerFacts (L652) adds a `merge gate rows k/N` ratio per item, but the
+    // retro prompt used to document every OTHER column ("issue -> PR -> merge
+    // state -> what the PR claims to close") and never mentioned this one — so
+    // the retro had no instruction to treat k < N as an under-evidenced
+    // landing claim. A structured field nobody's told to read is dead weight
+    // by this PR's own standard.
+    assert.ok(
+      source.includes("merge gate rows k/N"),
+      "the retro prompt must name the 'merge gate rows k/N' column in its legend",
+    );
+    assert.ok(
+      /merge gate rows k\/N.{0,400}k < N.{0,200}under-evidenced/s.test(source),
+      "the legend must instruct the retro to treat k < N as an under-evidenced landing claim",
+    );
+    assert.ok(
+      /merge gate rows k\/N.{0,600}"-".{0,100}no merge\/fix agent ran/s.test(source),
+      "the legend must explain that '-' means no merge/fix agent ran for that item",
+    );
   });
 });
