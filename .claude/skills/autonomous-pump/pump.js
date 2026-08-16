@@ -235,6 +235,17 @@ const gateCmds = (b) => gateFor(b).split("&&").map((s) => s.trim()).filter(Boole
 // tell the difference. `gateResults` makes a MISSING command a validation
 // error instead of an unaudited sentence.
 //
+// ⚠ THAT REJECTION IS OBSERVED, NOT INFERRED (#2665). All three rounds above
+// rested on the ASSUMPTION that the harness enforces `minItems`; nobody had
+// checked. Probed 2026-08-16 (w169): a live build agent under this exact
+// schema (`minItems: 3`) submitted 2 rows and the harness answered
+//   Output does not match required schema: /gateResults: must NOT have fewer than 3 items
+// — call rejected, result not recorded, agent free to retry. See SKILL.md
+// "Harness enforcement of the build schema" for the full record. Note the
+// boundary: `scripts/pump-gate-schema.test.mjs` guards that THIS FILE keeps
+// emitting the constraint; NO in-tree test can detect a future harness that
+// stops honouring it.
+//
 // ⚠ WHAT THIS DOES NOT BUY: it does NOT verify that a reported `result` is
 // TRUE, and it CANNOT tell a real green from a fabricated one — an agent can
 // still write a false "36 passed" for a command it never ran. It only makes

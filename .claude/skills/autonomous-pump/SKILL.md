@@ -40,7 +40,7 @@ A ready template lives at **`pump.js`** (next to this file). **Copy it and fill 
 
 - **Build** (parallel across items, **worktree-isolated**, one issue → one PR off `origin/main`). Each agent must:
   - read the issue, implement TDD, pass the **gate** (build shared/workspace deps FIRST, then test → typecheck → build);
-  - report gate evidence as a **`gateResults` array, one `{command, result}` row per gate command, `minItems` pinned to that item's own gate command count** (`gateFor(b)` split on `&&`) — a schema-enforced replacement for free-text `gateOutput` (#2645). Two earlier attempts (`required` + `minLength`, then a schema description demanding per-command coverage) were both satisfiable by asserting harder; a short array now fails at the tool-call layer and forces a retry. This makes a MISSING command mechanically impossible to submit — it does **not** verify a reported result is TRUE, and cannot tell a real green from a fabricated one; the adversarial reviewer's job is still to disbelieve it. `gateOutput` stays as a free-text field for preflight/disk notes that belong to no single command; both are shown to the reviewer.
+  - report gate evidence as a **`gateResults` array, one `{command, result}` row per gate command, `minItems` pinned to that item's own gate command count** (`gateFor(b)` split on `&&`) — a schema-enforced replacement for free-text `gateOutput` (#2645). Two earlier attempts (`required` + `minLength`, then a schema description demanding per-command coverage) were both satisfiable by asserting harder; a short array now fails at the tool-call layer and forces a retry (**verified by direct probe, not inferred** — see "Harness enforcement of the build schema" below). This makes a MISSING command mechanically impossible to submit — it does **not** verify a reported result is TRUE, and cannot tell a real green from a fabricated one; the adversarial reviewer's job is still to disbelieve it. `gateOutput` stays as a free-text field for preflight/disk notes that belong to no single command; both are shown to the reviewer.
   - **prove reachability** before opening the PR — state the user path that exercises the feature, not just "tests pass" (catches dead / unwired code);
   - run a **conventions lint** (e.g. grep new design tokens against the real token file; no invented identifiers; house style);
   - **flag scope overflow** — if the real work exceeds the issue (hidden coupling, a missing prerequisite, an under-sized issue, obvious adjacent follow-ups), report it as `scopeNotes` instead of silently growing the PR. Keep `Closes #N` honest; the overflow becomes a candidate issue, not a bloated diff.
@@ -48,6 +48,54 @@ A ready template lives at **`pump.js`** (next to this file). **Copy it and fill 
 - **Review** (per item, starts the moment that item's build returns; one **adversarial** reviewer per PR). Prompt it to REFUTE — find bugs, dead code, scope gaps, regressions; **and call out where the issue/milestone *under-captured* the work** (scope the plan missed); default to "request changes" if materially off. This is your real quality bar and *will* catch what the gate didn't.
 - **Land** (**the train queue** — serial in completion order; keeps main green). An `approve` verdict enqueues a merge agent; a `changes` verdict enqueues a fix agent carrying the reviewer's **exact** findings (apply-fix → re-gate → merge); `reject` parks for the human. Runs in **ONE persistent train worktree** (created once, node_modules survives across stops — a fresh worktree + install per merge was pure critical-path overhead). Per landing: update against main, re-gate, combine additive conflicts (registry/index appends — ⚠ diff3/union styles can duplicate/drop closing braces when combining; recheck brace balance, the gate is the arbiter), merge with `--delete-branch` (detach first so local deletion can't fail). Park what won't cleanly land. `log()` a landed-count pulse per stop.
 - **Reconciliation** (end of run): assert every built+approved PR was **merged OR parked-with-a-reason** — no silent drops. (v3: verdict + landing ride each pipeline item, so this is a per-item read — never match PR identifiers across phases on decorated strings; that once mis-parked approved PRs.)
+
+## Harness enforcement of the build schema — probed, not assumed (#2665)
+
+Three rounds of work (#2612 → #2645 → PR #2657) rested on one unverified
+assumption: that the agent harness's structured-output validator actually
+**rejects** a tool call violating the BUILD schema, rather than accepting it
+and leaving `minItems`/`minLength` decorative. Documented is not verified —
+that distinction is the whole subject of the saga. It was probed directly on
+**2026-08-16 (wave w169, issue #2665)**.
+
+**The probe.** A live build agent whose per-item schema was
+`buildSchemaFor({gate: "node --check … && pnpm run test:scripts"})` —
+`gateResults.minItems: 3` — deliberately submitted its `StructuredOutput` call
+with **2** rows and everything else valid. The harness answered:
+
+```
+Output does not match required schema: /gateResults: must NOT have fewer than 3 items
+```
+
+The call was **rejected**, the result was **not** recorded, and the agent was
+free to retry with a complete 3-row array — exactly the behaviour #2645/#2657
+assumed. **`minItems` is enforced.**
+
+**Corroboration (source, secondary to the probe).** The harness constructs the
+`StructuredOutput` tool by compiling the supplied JSON Schema with Ajv
+(`new Ajv({allErrors: true})`, `validateSchema` then `compile`), and its
+`call()` throws `Output does not match required schema: <instancePath>:
+<message>` when the compiled validator rejects the input — matching the message
+above verbatim in shape. (Seen in the installed CLI bundle at
+`@anthropic-ai/claude-code/cli.js`.) Ajv honours the full draft vocabulary, so
+`minLength` is enforced by the same code path as `minItems`.
+
+**What this does and does not establish.** It establishes that a **missing**
+command row is mechanically impossible to submit. It establishes nothing about
+whether a reported `result` is TRUE — an agent can still write a fabricated
+"36 passed" for a command it never ran. That remains the adversarial reviewer's
+job, and `formatGateEvidence`'s INCOMPLETE banner remains the reviewer-facing
+signal for the shortfall the schema now prevents at the tool-call layer.
+
+**The in-tree / harness boundary.** `scripts/pump-gate-schema.test.mjs` checks
+the half this repo owns — that pump.js *generates* a schema carrying
+`minItems` equal to the item's own gate command count, `minLength` on every
+gate-evidence string, `required` on each row, and no typo'd keyword a validator
+would silently ignore; plus that the build call site passes that schema. It
+**cannot** check the harness's validator: there is nothing to import, and a
+future harness release that stopped honouring `minItems` would go undetected
+in-tree. Re-run the probe if that assumption ever needs re-confirming; the
+recipe is one deliberately-short `gateResults` array.
 
 ## Close the learning loop
 The template now closes it mechanically: a final **Lessons** agent distills the wave's review findings into generalizable, paste-ready house-rule candidates (returned as `lessons`). Feed them into the next wave's `RULES` — with human review, since not every finding generalizes. The pump should get *smarter* each cycle, not repeat the same mistakes (e.g. "use only tokens from tokens.css", "wire the feature into the UI, not just the hook").
