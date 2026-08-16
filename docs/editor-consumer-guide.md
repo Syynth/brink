@@ -481,6 +481,15 @@ styles** (you style all of it).
   `data-decl-kind="knot" | "stitch" | "function"` on `.brink-fold-decl` plus a
   `.brink-fold-decl-icon` slot span, so hosts render the same glyphs their binder rows use.
 
+**Invariant:** every `brink-*` class these placeholders render must carry a rule in a
+workspace style source (`studio-ui`'s stylesheets or a package's embedded CM6 theme) —
+enforced by `packages/brink-studio/src/__tests__/fold-kinds.test.ts`
+(`describe("fold placeholders are styled, not just class-tagged (#2546)")`), which scans
+the rendered placeholder DOM against every style source in the workspace. The same file
+also guards that a decl fold's per-kind tint (`--bs-symbol-knot`/`-stitch`/`-function`)
+is applied to both `.brink-fold-decl-icon` and `.brink-fold-decl-header`, not the icon
+alone.
+
 ## Styling a headless editor — theme opt-out + the class taxonomy (#363)
 
 The editor is **headless-ready**: every element it renders carries a stable class, and the skin is
