@@ -96,7 +96,7 @@ vi.mock("brink-web", () => ({
   diffSnapshots: () => "",
 }));
 
-import { StoryRunnerHandle, FlowHandle } from "./index";
+import { StoryRunnerHandle, FlowHandle } from "../index";
 
 function newRunner(): StoryRunnerHandle {
   hoisted.calls.length = 0;

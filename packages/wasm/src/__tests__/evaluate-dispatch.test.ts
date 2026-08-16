@@ -8,7 +8,7 @@ import {
   expressionWrapSource,
   contentWrapSource,
   type FragmentCompileEntry,
-} from "./evaluate-dispatch";
+} from "../evaluate-dispatch";
 
 // Pure, wasm-free coverage of `evaluate()`'s Tier-0/Tier-1 dispatch logic —
 // the classification, fragment-identity hash, and cache-eviction that decide

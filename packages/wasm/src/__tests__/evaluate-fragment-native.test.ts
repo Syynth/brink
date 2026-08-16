@@ -84,7 +84,7 @@ vi.mock("brink-web", () => ({
   diffSnapshots: () => "",
 }));
 
-import { StoryRunnerHandle } from "./index";
+import { StoryRunnerHandle } from "../index";
 
 describe("evaluate() Tier-1 fragment path uses native wrap syntax for a .brink entry (#1598)", () => {
   it("compiles the fragment as a native `fn` expression wrap, not ink's === ===", async () => {
