@@ -27,45 +27,148 @@ import { describe, expect, it } from "vitest";
 // Scoped to this one file deliberately: a mock class is a hand-maintained
 // mirror of a Rust surface, appended to by many separate PRs, which is what
 // makes silent shadowing likely here and unremarkable elsewhere.
+//
+// ⚠ THIS GUARD IS NOT THE PRIMARY DEFENCE, and should not be read as one.
+// `tsc` catches every shadowing shape as TS2393/TS2300, including several this
+// scanner cannot see (a duplicated arrow-property member, a class expression),
+// and `pnpm --filter @brink-lang/studio typecheck` runs in CI. What this adds
+// is a diagnosis in the suite that observes the *symptom*: the vitest run
+// happily executes a shadowed mock and reports the consequence as an unrelated
+// assertion failure somewhere else, which is how the incident actually
+// presented. Treat a red here as a pointer, and `tsc` as the gate.
 
 const MOCK_PATH = resolve(fileURLToPath(import.meta.url), "../../__mocks__/brink-web.ts");
 
 interface Definition {
   readonly className: string;
+  /** Accessors are keyed separately: a legal `get x`/`set x` pair is not a duplicate. */
   readonly method: string;
   readonly line: number;
 }
 
 /**
- * Collects class-body method definitions, keyed by the class that encloses
- * them. Deliberately a line scanner rather than a parser: it must agree with
- * what a reader sees, and the mock is plain, uniformly-formatted class bodies.
- *
- * Exported for the self-test below — a guard whose detector is never exercised
- * on a known-bad input is the vacuity this repo keeps re-earning.
+ * Blanks out comments and string/template literals, preserving line structure
+ * and brace balance, so the scanner below cannot be fooled by a commented-out
+ * method sitting above its live replacement, or by a `class { … }` inside a
+ * template literal. Replaces content with spaces rather than deleting it, so
+ * reported line numbers still match the file a reader opens.
  */
-export function collectMethodDefinitions(source: string): Definition[] {
-  // A class-body member at exactly two spaces of indentation: `name(`,
-  // optionally preceded by member modifiers. Excludes control-flow keywords,
-  // which can also appear as `  if (` at that indentation.
-  const MEMBER = /^ {2}(?:(?:private|public|protected|static|async|get|set|readonly)\s+)*([A-Za-z_$][\w$]*)\s*\(/;
-  const CLASS = /^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/;
-  const NOT_A_MEMBER = new Set(["if", "for", "while", "switch", "catch", "return", "constructor"]);
+function blankNonCode(source: string): string {
+  const out = source.split("");
+  let mode: "code" | "line" | "block" | '"' | "'" | "`" = "code";
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (mode === "code") {
+      if (c === "/" && next === "/") mode = "line";
+      else if (c === "/" && next === "*") mode = "block";
+      else if (c === '"' || c === "'" || c === "`") mode = c;
+      else continue;
+      // Reached only for `/`, `"`, `'` or a backtick — never a newline.
+      out[i] = " ";
+      continue;
+    }
+    // Inside a non-code run: blank everything but newlines, then look for the end.
+    if (c === "\\") {
+      out[i] = " ";
+      if (next !== undefined && next !== "\n") out[i + 1] = " ";
+      i++;
+      continue;
+    }
+    if (c !== "\n") out[i] = " ";
+    if (mode === "line" && c === "\n") mode = "code";
+    else if (mode === "block" && c === "*" && next === "/") {
+      out[i + 1] = " ";
+      i++;
+      mode = "code";
+    } else if ((mode === '"' || mode === "'" || mode === "`") && c === mode) mode = "code";
+    else if ((mode === '"' || mode === "'") && c === "\n") mode = "code";
+  }
+  return out.join("");
+}
+
+/**
+ * Collects class-body member definitions, keyed by the class that encloses
+ * them. A line scanner rather than a parser — it must agree with what a reader
+ * sees, and the mock is plain, uniformly-formatted class bodies — but it tracks
+ * brace depth so that a member is only recognised at a class body's own depth.
+ * Without that, an ordinary two-space-indented call statement inside a
+ * top-level function further down the file is read as a member of whatever
+ * class was declared last; this file has top-level functions both before and
+ * after its classes, so that vector is live, not hypothetical.
+ *
+ * Not exported: sharing it would require importing this `.test.ts` file, which
+ * re-registers its tests in the importer (CLAUDE.md § Rules, #2516). The
+ * self-tests below live in this same file and need no export.
+ */
+function collectMethodDefinitions(rawSource: string): Definition[] {
+  const source = blankNonCode(rawSource);
+  // A class-body member: `name(`, an accessor, or an arrow-property member,
+  // optionally preceded by member modifiers. Quoted names count — `"name"()`
+  // shadows `name()` just as silently.
+  const MEMBER =
+    /^\s*(?:(?:private|public|protected|static|async|readonly|override|declare)\s+)*(?:(get|set)\s+)?(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$]*))\s*(?:\(|=\s*(?:async\s*)?\()/;
+  const CLASS = /(?:^|[\s=(])(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)?/;
+  const NOT_A_MEMBER = new Set([
+    "if",
+    "for",
+    "while",
+    "switch",
+    "catch",
+    "return",
+    "constructor",
+    "function",
+    "typeof",
+    "await",
+    "new",
+    "do",
+  ]);
 
   const definitions: Definition[] = [];
-  let className: string | null = null;
+  // Stack of open class bodies: the depth at which their members sit.
+  const openClasses: { name: string; bodyDepth: number }[] = [];
+  let depth = 0;
+  let pendingClass: string | null = null;
 
   source.split("\n").forEach((line, index) => {
     const startsClass = CLASS.exec(line);
-    if (startsClass) {
-      className = startsClass[1] ?? null;
-      return;
+    // `class` with no name (a class expression) still opens a body that must be
+    // tracked, so its members are not misattributed to an enclosing class.
+    if (startsClass) pendingClass = startsClass[1] ?? "<anonymous>";
+
+    const enclosing = openClasses[openClasses.length - 1];
+    if (enclosing !== undefined && depth === enclosing.bodyDepth && pendingClass === null) {
+      const member = MEMBER.exec(line);
+      const name = member?.[2] ?? member?.[3] ?? member?.[4];
+      // A TS overload signature (`foo(a: string): void;`) is a DECLARATION, and
+      // several of them legally share one name. A definition opens a body (`{`)
+      // or is an arrow property (`=>`). Where the two are ambiguous, prefer
+      // missing a duplicate over reddening CI on legal code — `tsc` is the gate.
+      const declarationOnly =
+        /;\s*$/.test(line) && !line.includes("{") && !line.includes("=>");
+      if (member && name !== undefined && !NOT_A_MEMBER.has(name) && !declarationOnly) {
+        const accessor = member[1];
+        definitions.push({
+          className: enclosing.name,
+          method: accessor === undefined ? name : `${accessor} ${name}`,
+          line: index + 1,
+        });
+      }
     }
-    const member = MEMBER.exec(line);
-    if (!member) return;
-    const method = member[1];
-    if (method === undefined || NOT_A_MEMBER.has(method) || className === null) return;
-    definitions.push({ className, method, line: index + 1 });
+
+    for (const char of line) {
+      if (char === "{") {
+        depth++;
+        if (pendingClass !== null) {
+          openClasses.push({ name: pendingClass, bodyDepth: depth });
+          pendingClass = null;
+        }
+      } else if (char === "}") {
+        const top = openClasses[openClasses.length - 1];
+        if (top !== undefined && top.bodyDepth === depth) openClasses.pop();
+        depth--;
+      }
+    }
   });
 
   return definitions;
@@ -128,13 +231,80 @@ describe("brink-web mock: one definition per method", () => {
     ]);
   });
 
-  it("does not report the same method name in two different classes", () => {
-    // `free`, `continue_single` and friends legitimately appear in several
-    // mock classes; keying by class is what keeps those out of the report.
-    const planted = ["class EditorSession {", "  free(): void {}", "}", "class Story {", "  free(): void {}", "}"].join(
-      "\n",
-    );
+  it("detects the historical bad state in main's own file", () => {
+    // The strongest anti-vacuity check available: the detector must report the
+    // real incident when run over the real file as it stood while main was red.
+    const beforeRepair = [
+      "class EditorSession {",
+      "  /** Document-handle variant. */",
+      "  resolve_code_action_doc(doc: number, dataJson: string, offset: number): string {",
+      "    return this.resolveCodeActionImpl(d.path, dataJson, offset);",
+      "  }",
+      "  private resolveCodeActionImpl(path: string): string {",
+      '    return "";',
+      "  }",
+      "  code_actions_doc(_doc: number): string {",
+      '    return "[]";',
+      "  }",
+      "  resolve_code_action_doc(doc: number, _dataJson: string, _offset: number): string {",
+      '    return EditorSession.structuralRefusal("unknown handle");',
+      "  }",
+      "}",
+    ].join("\n");
 
-    expect(findDuplicates(collectMethodDefinitions(planted))).toEqual([]);
+    expect(findDuplicates(collectMethodDefinitions(beforeRepair))).toEqual([
+      "EditorSession.resolve_code_action_doc defined 2× (lines 3, 12)",
+    ]);
+  });
+
+  // Each of these was a FALSE POSITIVE in this guard's first draft, found by
+  // the review of PR #2599 by running the detector over hand-built inputs.
+  // Legal TypeScript must not redden CI.
+  const legal: readonly (readonly [string, string])[] = [
+    [
+      "a get/set accessor pair",
+      ["class S {", "  get activePath(): string {", '    return "";', "  }", "  set activePath(v: string) {", "    this.p = v;", "  }", "}"].join("\n"),
+    ],
+    [
+      "overload signatures above their implementation",
+      ["class S {", "  code_actions(offset: number): string;", "  code_actions(doc: number, offset: number): string;", "  code_actions(a: number, b?: number): string {", '    return "[]";', "  }", "}"].join("\n"),
+    ],
+    [
+      "a block-commented-out method above its replacement",
+      ["class S {", "  /*", "  resolve_code_action_doc(doc: number): string {", '    return "old";', "  }", "  */", "  resolve_code_action_doc(doc: number): string {", '    return "new";', "  }", "}"].join("\n"),
+    ],
+    [
+      "repeated call statements in a top-level function after a class",
+      ["class S {", "  initWasm(): void {}", "}", "function boot(): void {", "  initWasm();", "  initWasm();", "}"].join("\n"),
+    ],
+    [
+      "a class inside a template literal",
+      ["class S {", "  real(): void {}", "}", "const src = `", "class Fake {", "  dup(): void {}", "  dup(): void {}", "}", "`;"].join("\n"),
+    ],
+    [
+      "the same method name in two different classes",
+      ["class EditorSession {", "  free(): void {}", "}", "class Story {", "  free(): void {}", "}"].join("\n"),
+    ],
+    [
+      "a nested class expression with a same-named member",
+      ["class Outer {", "  build(): unknown {", "    const Inner = class {", "      build(): void {}", "    };", "    return Inner;", "  }", "}"].join("\n"),
+    ],
+  ];
+
+  it.each(legal)("does not flag legal code: %s", (_name, source) => {
+    expect(findDuplicates(collectMethodDefinitions(source))).toEqual([]);
+  });
+
+  // Shapes the scanner CANNOT see. Recorded so the blind spots are stated
+  // rather than discovered — `tsc` reports every one as TS2393/TS2300, which is
+  // why the header names typecheck as the gate and this guard as the pointer.
+  it("documents its blind spots: duplicate arrow-property members without a call form", () => {
+    const shadowed = ["class S {", "  dup = async (): Promise<void> => {};", "  dup = async (): Promise<void> => {};", "}"].join("\n");
+    // This one the scanner DOES catch (the `= (` alternative)...
+    expect(findDuplicates(collectMethodDefinitions(shadowed))).toHaveLength(1);
+
+    // ...but a non-function duplicate property has no call form at all.
+    const propertyShadow = ["class S {", '  dup = "a";', '  dup = "b";', "}"].join("\n");
+    expect(findDuplicates(collectMethodDefinitions(propertyShadow))).toEqual([]);
   });
 });
