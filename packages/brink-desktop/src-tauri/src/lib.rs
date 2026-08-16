@@ -1629,8 +1629,19 @@ mod tests {
             ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
             ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
             ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
-            ("Typecheck (tsc --noEmit)", &["wasm_build", "pnpm_install"]),
-            ("pnpm build", &["wasm_build", "pnpm_install", "sidecar"]),
+            // `check_wasm_pkg`, not `pnpm_install` (#2514): `pnpm install
+            // --frozen-lockfile`'s own exit code is the lying signal #2479
+            // named, so gating on `steps.pnpm_install.outcome` alone would
+            // let these two steps run over a silently-broken `file:` link.
+            // `check_wasm_pkg` (`pnpm run check:wasm-pkg`) independently
+            // verifies the resolved link and is itself gated on
+            // `pnpm_install`, so both prerequisites are still covered
+            // transitively.
+            (
+                "Typecheck (tsc --noEmit)",
+                &["wasm_build", "check_wasm_pkg"],
+            ),
+            ("pnpm build", &["wasm_build", "check_wasm_pkg", "sidecar"]),
             // Format check needs nothing but the runner's toolchain and the
             // checkout: `actions/checkout` has no `id` to gate the other
             // steps on, but Format check's own `working-directory` does not

@@ -3,14 +3,27 @@
 // script, so `node --test scripts/` (or `pnpm test:scripts`) covers it
 // without adding a root-level test dependency.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { checkWasmPkg, REQUIRED_FILES, BUILD_COMMAND } from "./check-wasm-pkg.mjs";
+import {
+  checkWasmPkg,
+  checkWasmPkgLink,
+  REQUIRED_FILES,
+  LINKED_FILES,
+  BUILD_COMMAND,
+} from "./check-wasm-pkg.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -160,5 +173,199 @@ describe("checkWasmPkg", () => {
         `copy-wasm.mjs's files list has "${file}" but REQUIRED_FILES does not — check-wasm-pkg would miss it`,
       );
     }
+  });
+});
+
+// A real `pnpm install` links a workspace package's `file:` dependency as a
+// symlink chain: `<package>/node_modules/<dep-name>` -> pnpm's virtual
+// store (`node_modules/.pnpm/<dep-name>@file+<encoded-path>/node_modules/<dep-name>`)
+// -> the real target directory. Verified by direct reproduction (`pnpm
+// install --frozen-lockfile` in a worktree, then `readlink` on
+// `packages/wasm/node_modules/brink-web`). `buildResolvedLink` reproduces
+// that exact two-hop shape so these tests exercise the same symlink-following
+// behaviour `checkWasmPkgLink` relies on (`existsSync` follows symlinks by
+// default), not just a plain directory standing in for it. `files` defaults
+// to LINKED_FILES — a real healthy pnpm link never carries the full
+// REQUIRED_FILES set (see LINKED_FILES's comment in check-wasm-pkg.mjs) — a
+// caller opts into a different set (e.g. REQUIRED_FILES, or an empty list)
+// explicitly.
+function buildResolvedLink({ files = LINKED_FILES }) {
+  const root = scratchPkgDir();
+  const target = join(root, "target");
+  mkdirSync(target, { recursive: true });
+  for (const file of files) {
+    writeFileSync(join(target, file), "stub");
+  }
+
+  const store = join(root, "node_modules", ".pnpm", "brink-web@file+stub", "node_modules");
+  mkdirSync(store, { recursive: true });
+  const storeLink = join(store, "brink-web");
+  symlinkSync(target, storeLink, "dir");
+
+  const consumerNodeModules = join(root, "consumer", "node_modules");
+  mkdirSync(consumerNodeModules, { recursive: true });
+  const linkDir = join(consumerNodeModules, "brink-web");
+  symlinkSync(storeLink, linkDir, "dir");
+
+  return linkDir;
+}
+
+describe("checkWasmPkgLink", () => {
+  it("returns true when the resolved link (through pnpm's two-hop symlink chain) has every LINKED_FILES entry", () => {
+    const linkDir = buildResolvedLink({ files: LINKED_FILES });
+
+    const logs = [];
+    const errors = [];
+    const ok = checkWasmPkgLink({
+      linkDir,
+      log: (msg) => logs.push(msg),
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.equal(ok, true);
+    assert.equal(errors.length, 0);
+    assert.ok(logs.some((l) => l.includes("resolves to a complete wasm-pack output")));
+  });
+
+  it("returns true even without brink_web_bg.wasm.d.ts, matching a real healthy pnpm link", () => {
+    // The exact shape a genuinely correct install produces (confirmed by
+    // direct reproduction of `pnpm install --frozen-lockfile` against a
+    // real `wasm-pack build` output): wasm-pack's own generated
+    // package.json `"files"` field never lists `brink_web_bg.wasm.d.ts`,
+    // so pnpm never links it, even when nothing is broken. Asserting
+    // REQUIRED_FILES's full 4-file list here would make this check fail on
+    // every correctly-ordered, correctly-built CI run — this test is what
+    // would go red if `checkWasmPkgLink` regressed to using REQUIRED_FILES
+    // instead of LINKED_FILES as its default.
+    assert.ok(
+      !LINKED_FILES.includes("brink_web_bg.wasm.d.ts"),
+      "LINKED_FILES should exclude brink_web_bg.wasm.d.ts",
+    );
+    const linkDir = buildResolvedLink({ files: LINKED_FILES });
+
+    const errors = [];
+    const ok = checkWasmPkgLink({
+      linkDir,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.equal(ok, true);
+    assert.equal(errors.length, 0);
+  });
+
+  it("returns false and names the missing files when the resolved link's target directory is empty", () => {
+    // This is the exact shape #2514 names: the wasm-pack output (cause) can
+    // be present while the pnpm-resolved link (effect) is empty — a
+    // silently-failed `file:` resolution, not a missing build.
+    const linkDir = buildResolvedLink({ files: [] });
+
+    const errors = [];
+    const ok = checkWasmPkgLink({
+      linkDir,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.equal(ok, false);
+    assert.equal(errors.length, 1);
+    for (const file of LINKED_FILES) {
+      assert.ok(
+        errors[0].includes(file),
+        `expected the error message to name missing file ${file}`,
+      );
+    }
+    assert.ok(
+      !errors[0].includes("brink_web_bg.wasm.d.ts"),
+      "brink_web_bg.wasm.d.ts is not in LINKED_FILES, so it should never be reported missing",
+    );
+  });
+
+  it("returns false when the link path does not exist at all (pnpm never created it)", () => {
+    const linkDir = join(scratchPkgDir(), "does-not-exist", "brink-web");
+
+    const errors = [];
+    const ok = checkWasmPkgLink({
+      linkDir,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.equal(ok, false);
+    for (const file of LINKED_FILES) {
+      assert.ok(errors[0].includes(file));
+    }
+  });
+
+  it("returns false when the symlink is dangling (target directory was removed after linking)", () => {
+    const root = scratchPkgDir();
+    const removedTarget = join(root, "removed-target");
+    // Deliberately never created — the symlink below points at nothing.
+    const linkDir = join(root, "brink-web");
+    symlinkSync(removedTarget, linkDir, "dir");
+
+    const errors = [];
+    const ok = checkWasmPkgLink({
+      linkDir,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.equal(ok, false);
+  });
+
+  it("names `pnpm install --frozen-lockfile` as the remediation, not a wasm-pack build command", () => {
+    // checkWasmPkgLink's failure means the wasm-pack output already exists
+    // (checkWasmPkg already covers that case with its own remediation) —
+    // telling a developer to rebuild wasm here would misdiagnose a link
+    // failure as a missing build.
+    const linkDir = buildResolvedLink({ files: [] });
+
+    const errors = [];
+    checkWasmPkgLink({
+      linkDir,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.ok(errors[0].includes("pnpm install --frozen-lockfile"));
+    assert.ok(
+      !errors[0].includes(BUILD_COMMAND),
+      "checkWasmPkgLink's failure message should not tell the developer to rebuild wasm — " +
+        "the resolved link, not the wasm-pack output, is what's missing",
+    );
+  });
+
+  it("distinguishes the resolved-link path from the wasm-pack output path in its failure message", () => {
+    // The two checks name different locations (packages/wasm/node_modules/
+    // brink-web vs crates/brink-web/www/pkg) — a message that quoted the
+    // wrong one would send a developer looking in the wrong place.
+    const linkDir = buildResolvedLink({ files: [] });
+
+    const errors = [];
+    checkWasmPkgLink({
+      linkDir,
+      log: () => {},
+      error: (msg) => errors.push(msg),
+    });
+
+    assert.ok(errors[0].includes("packages/wasm/node_modules/brink-web"));
+    assert.ok(!errors[0].includes("crates/brink-web/www/pkg is missing"));
+  });
+
+  it("is independent of checkWasmPkg: a complete wasm-pack output does not imply a resolved link", () => {
+    // Reproduces the exact #2514 scenario end to end: the cause check
+    // (wasm-pack output present) passes while the effect check (pnpm's
+    // resolved link) fails, proving the two are checking different things
+    // rather than one being a subset of the other.
+    const pkgDir = scratchPkgDir();
+    writeAllRequiredFiles(pkgDir);
+    const emptyLinkDir = buildResolvedLink({ files: [] });
+
+    const pkgOk = checkWasmPkg({ pkgDir, log: () => {}, error: () => {} });
+    const linkOk = checkWasmPkgLink({ linkDir: emptyLinkDir, log: () => {}, error: () => {} });
+
+    assert.equal(pkgOk, true, "the wasm-pack output (cause) should be complete");
+    assert.equal(linkOk, false, "the resolved pnpm link (effect) should still be reported as broken");
   });
 });

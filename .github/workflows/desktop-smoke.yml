@@ -203,6 +203,21 @@ jobs:
         id: pnpm_install
         run: pnpm install --frozen-lockfile
 
+      # `pnpm install --frozen-lockfile` exits 0 even when the `file:` link
+      # above silently failed to resolve (#2479) — `steps.pnpm_install.outcome`
+      # alone cannot tell the difference, since the step's own exit code is
+      # the lying signal #2479 named. This step checks the ACTUAL resolved
+      # result (`scripts/check-wasm-pkg.mjs`'s `checkWasmPkgLink`, #2514,
+      # follow-up to #2504's item 2 / PR #2509's adversarial review "Scope
+      # gaps" item 2) so "Typecheck"/"pnpm build" below can gate on THIS
+      # step's outcome instead of trusting the install's raw outcome. Same
+      # script ci.yml's `frontend`/`e2e` jobs run as `pnpm run check:wasm-pkg`
+      # right after their own installs (#2504's first bullet).
+      - name: Verify wasm package link (check-wasm-pkg)
+        id: check_wasm_pkg
+        if: "!cancelled() && steps.pnpm_install.outcome == 'success'"
+        run: pnpm run check:wasm-pkg
+
       # Stages the brink-cli sidecar that src-tauri's build.rs requires to
       # exist on disk before it will even `cargo check` — externalBin resource
       # resolution runs unconditionally, not only on `tauri build`
@@ -329,14 +344,16 @@ jobs:
         run: cargo test --locked
         working-directory: packages/brink-desktop/src-tauri
 
-      # `tsc` resolves the "brink-web" alias into the wasm-pack output, so
-      # this needs the wasm build as well as node_modules.
+      # `tsc` resolves the "brink-web" alias into the wasm-pack output
+      # THROUGH node_modules, so this needs the resolved link (#2514) to
+      # have actually verified, not merely `pnpm install`'s own (unreliable,
+      # #2479) exit code.
       - name: Typecheck (tsc --noEmit)
-        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.pnpm_install.outcome == 'success'"
+        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.check_wasm_pkg.outcome == 'success'"
         run: pnpm --filter @brink/desktop typecheck
 
       # `pnpm build` re-runs ensure-cli-sidecar.mjs, so it inherits the
       # sidecar step's prerequisites on top of the frontend ones.
       - name: pnpm build
-        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.pnpm_install.outcome == 'success' && steps.sidecar.outcome == 'success'"
+        if: "!cancelled() && steps.wasm_build.outcome == 'success' && steps.check_wasm_pkg.outcome == 'success' && steps.sidecar.outcome == 'success'"
         run: pnpm --filter @brink/desktop build
