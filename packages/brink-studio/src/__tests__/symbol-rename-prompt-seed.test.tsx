@@ -20,6 +20,15 @@
  * field the user had already typed into — the same defect class, one step
  * later. It fails unless `select()` is skipped once the field no longer
  * holds the seeded name.
+ *
+ * The fourth is a preservation guard added by #2580's deletion-mutation
+ * audit. The first three are all *negative* about the selection — they say
+ * where it must NOT go — so deleting `SymbolRenamePrompt`'s `input.select()`
+ * outright (rather than un-guarding it) left this whole suite green, i.e. the
+ * call site had no assertion that could go red for it. That is the same
+ * vacuity `binder-seed-race.test.tsx` closes with its two "preservation
+ * guard" tests. The fourth test pins the positive half: an untouched prompt
+ * comes back with the whole seeded name selected, so typing replaces it.
  */
 
 import { describe, expect, it, afterEach } from "vitest";
@@ -147,5 +156,43 @@ describe("SymbolRenamePrompt seeding (#2511)", () => {
     // seeded name.
     expect(el.selectionStart).toBe(3);
     expect(el.selectionEnd).toBe(3);
+  });
+
+  it("still selects the seeded name on an untouched field", async () => {
+    renderPrompt("barter");
+    const el = input();
+
+    // jsdom parks the caret at the end of the value on every write to
+    // `.value`, and React seeds an uncontrolled field by writing that
+    // property — so this input arrives here already reading (6, 6) where a
+    // real browser, which gets the seed through the `value` ATTRIBUTE, reads
+    // (0, 0). Measured, not assumed. The park cannot fake `selectionStart ===
+    // 0`, so this test would go red for a deleted `select()` either way — but
+    // it *can* hand `selectionEnd === 6` over for free, so without this reset
+    // half the pair below would be unearned. Resetting is also what the field
+    // an author actually faces looks like. Same trap PR #2574 hit in
+    // `binder-seed-race.test.tsx`, where an end-caret assertion made it
+    // vacuous outright.
+    el.setSelectionRange(0, 0);
+
+    await flushFrames();
+
+    // Preservation guard (#2580): the deferred frame's whole positive purpose
+    // is that an untouched prompt is ready to be typed over. Without this,
+    // deleting `input.select()` from `SymbolRenamePrompt.tsx` left every
+    // other test in this file green — measured in the deletion-mutation
+    // audit. Now it goes red here.
+    expect(el.value).toBe("barter");
+    expect(el.selectionStart).toBe(0);
+    expect(el.selectionEnd).toBe("barter".length);
+
+    // B5 (#2580 follow-up): `input.focus()` sits directly above the guarded
+    // `select()` in the same deferred frame and was pinned by nothing —
+    // deleting it left this whole suite green, this test included, while
+    // the rename prompt opened unfocused and the author's first keystroke
+    // went nowhere. `search-view-focus.test.tsx` (A1) and
+    // `inline-name-input-seed.test.ts` (C3) already assert
+    // `document.activeElement`; this was the one sibling suite missing it.
+    expect(document.activeElement).toBe(el);
   });
 });
