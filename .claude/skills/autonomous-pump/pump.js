@@ -57,6 +57,13 @@ const CLOUD = true;
 // independently reported the command does not exist. Values below are
 // BRINK-CONFIG.md's documented "Rust (default GATE)" and its CACHE prefix; a TS
 // entry still overrides via `gate:` (see BRINK-CONFIG.md "TS entries").
+//
+// ⚠ CONSEQUENCE FOR BATCH AUTHORS: this default is the RUST gate, so a
+// full-lane entry that touches TypeScript and carries no `gate:` now gets no
+// typecheck and no vitest at all. Light-lane entries are safe (they always
+// carry one). Give EVERY TS-touching entry an explicit `gate:` — BRINK-CONFIG's
+// "TS entries" string — regardless of lane. w166's #2603 was exactly this
+// shape: a full-lane entry touching both Rust and TS, with no override.
 const CACHE = "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink CARGO_INCREMENTAL=0";
 const GATE =
   "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots";
