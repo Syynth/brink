@@ -197,7 +197,9 @@ is hand-copied from the other:
   had no mock counterpart when #2577 pinned it — the mock's `compile_project`
   had no refusal path at all — until #2589 gave it one: `entry` not
   resolving to a loaded file, the one failure mode the mock (no compiler) can
-  reproduce, mirroring a real `Project::load` miss. Regenerate with:
+  reproduce, mirroring the real `EditorSession::compile_project`
+  (`crates/brink-web/src/editor/mod.rs`) -> `IdeSession::compile` ->
+  `CompileEntryError::EntryNotFound` path. Regenerate with:
 
   ```sh
   BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape

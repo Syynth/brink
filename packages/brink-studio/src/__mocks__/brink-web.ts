@@ -294,12 +294,18 @@ export class EditorSession {
   }
 
   /**
-   * Mock of the real `compile_project` (`crates/brink-web/src/compile.rs`'s
-   * `compile_over_tree` -> `compile_result_json`). The mock has no compiler,
-   * so it cannot reproduce a diagnostics failure — but it CAN reproduce the
-   * other real failure mode, `Project::load` never finding `entry` in the
-   * tree (a misconfigured `entryFile`/`[project] entry`), by checking
-   * `entry` against the same {@link files} map every other op here reads.
+   * Mock of the real `EditorSession::compile_project`
+   * (`crates/brink-web/src/editor/mod.rs`), the studio's actual compile
+   * channel — `IdeSession::compile` -> `CompileEntryError::EntryNotFound`
+   * when `entry` doesn't resolve to a loaded file. The mock has no
+   * compiler, so it cannot reproduce a diagnostics failure — but it CAN
+   * reproduce that entry-not-found failure mode by checking `entry` against
+   * the same {@link files} map every other op here reads. Reachable via a
+   * constructor `entryFile` naming a path the provider never served, or an
+   * entry file deleted after config resolution (NOT a misconfigured
+   * `brink.toml` `[project] entry` — `ProjectSession.applyProjectConfig`
+   * falls back to `hostEntryFile` instead of adopting an entry that doesn't
+   * resolve, so that route never reaches here).
    * Routed through {@link compileRefusal} so #2568's guard covers this site
    * like every other refusal (#2589 — `CompileResult` was pinned into
    * `refusal-shapes.json` by #2577 with no mock call site to check it
@@ -307,7 +313,7 @@ export class EditorSession {
    */
   compile_project(entry: string): string {
     if (!this.files.has(entry)) {
-      return EditorSession.compileRefusal(`entry file '${entry}' not found`);
+      return EditorSession.compileRefusal(`entry file not found in session: ${entry}`);
     }
     return JSON.stringify({ ok: true, warnings: [] });
   }

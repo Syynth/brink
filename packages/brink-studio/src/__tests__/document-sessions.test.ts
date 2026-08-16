@@ -109,8 +109,12 @@ async function createHarness(
   files: Record<string, string> = { "main.ink": MAIN_INK },
   callbacks: DocumentCallbacks = {},
   // Defaults to the first loaded file, like every existing call site; a test
-  // exercising a compile refusal (#2589) overrides this to a path that was
-  // never loaded, mirroring a misconfigured `entryFile`/`[project] entry`.
+  // exercising a compile refusal (#2589) overrides this to a path the
+  // provider never served, mirroring a constructor `entryFile` naming an
+  // unresolvable path (or an entry file deleted after config resolution) —
+  // NOT a misconfigured `brink.toml` `[project] entry`, since
+  // `ProjectSession.applyProjectConfig` falls back to `hostEntryFile`
+  // instead of adopting an entry that doesn't resolve.
   entryFile: string = Object.keys(files)[0]!,
 ): Promise<Harness> {
   await initWasm();
@@ -734,7 +738,7 @@ describe("DocumentSessions", () => {
       try {
         h.documents.triggerCompile();
         expect(results).toEqual([
-          { ok: false, warnings: [], error: "entry file 'ghost.ink' not found" },
+          { ok: false, warnings: [], error: "entry file not found in session: ghost.ink" },
         ]);
       } finally {
         h.cleanup();

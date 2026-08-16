@@ -269,12 +269,14 @@ const autoImportRefusals: Array<{ site: string; error: string; call: () => strin
  *  struct again (no `safe`/`cross_file_edits`, no `path`; `warnings` always
  *  ships). Its shape was generated into the fixture by #2577 with no mock
  *  call site to check it against; `compile_project` (#2589) is that
- *  counterpart — the mock's only reproducible failure mode is `entry` not
- *  resolving to a loaded file, mirroring a real `Project::load` miss. */
+ *  counterpart — the studio's real channel is `EditorSession::compile_project`
+ *  (`crates/brink-web/src/editor/mod.rs`) -> `IdeSession::compile` ->
+ *  `CompileEntryError::EntryNotFound`, and the mock's only reproducible
+ *  failure mode mirrors that: `entry` not resolving to a loaded file. */
 const compileRefusals: Array<{ site: string; error: string; call: () => string }> = [
   {
     site: "compile_project (entry file not found)",
-    error: "entry file 'ghost.ink' not found",
+    error: "entry file not found in session: ghost.ink",
     call: () => sessionWith({ "main.ink": MAIN }).compile_project("ghost.ink"),
   },
 ];
