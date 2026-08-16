@@ -152,11 +152,26 @@ neither is redundant.
 
 `tsconfig.json`'s `include` is `["src"]`, so the package's root-level config
 modules are not in that program. `tsconfig.node.json` is the program that
-covers them, and `pnpm --filter @brink-lang/studio typecheck` runs both. The
-guard covers root-level `.ts`, `.mts`, and `.cts` modules alike, comparing
-`tsconfig.node.json`'s `include` array against the directory listing name for
-name — no globs, so a config module added later, in any of the three
-extensions, fails the guard until it is added to `include` explicitly.
+covers them, and `pnpm --filter @brink-lang/studio typecheck` runs three
+programs: `tsconfig.json` (`src/`), `tsconfig.node.json` (root-level config
+modules), and `tsconfig.e2e.json` (`e2e/*.spec.ts` plus
+`playwright.config.ts`, #2607). The `tsconfig.node.json` guard covers
+root-level `.ts`, `.mts`, and `.cts` modules alike, comparing its `include`
+array against the directory listing name for name — no globs, so a config
+module added later, in any of the three extensions, fails the guard until it
+is added to `include` explicitly.
+
+The `tsconfig.e2e.json` guard is weaker by design: it does not do a
+name-for-name listing comparison the way the node-program guard does.
+Instead it asserts that `tsconfig.e2e.json`'s `include` array contains
+`"e2e"`, that the `e2e/` directory exists with at least one `*.spec.ts` file,
+and that `package.json`'s `typecheck` script actually references
+`tsconfig.e2e.json`. Because coverage is granted to the whole `e2e/`
+directory via `include`, rather than to files listed by name, a new spec
+added under `e2e/` is automatically covered without the guard needing to
+learn about it — the difference from the node program, where every new
+config module must be added to `include` by hand before the guard stops
+failing.
 
 `src/__tests__/alias-map.test.ts`'s "resolves every alias to a target that
 exists on disk" case runs `existsSync` over `studioWasmAliases()` and
