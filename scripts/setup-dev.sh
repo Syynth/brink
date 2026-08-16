@@ -381,7 +381,8 @@ fi
 
 CARGO_DENY_VERSION="0.19.8"
 
-# Bound applied to each cargo-deny invocation below. 60s covers a warm
+# Bound applied to each cargo-deny invocation below. 300s, raised from the
+# hardcoded 60s this step originally carried (#2531): 60s covers a warm
 # advisory-db cache, but a cold `advisory-db` clone plus a full
 # `--all-features` resolve of the 451-package src-tauri graph can legitimately
 # exceed that on a first run — override via BRINK_SETUP_AUDIT_TIMEOUT if a
