@@ -198,7 +198,12 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     call: () => sessionWith({ "main.ink": TWO_KNOTS }).demote_knot("main.ink", "two", "nope"),
   },
   {
-    site: "resolve_code_action (unknown variant)",
+    // MOCK-ONLY ABBREVIATION: production's serde_json error for an unknown
+    // internally-tagged variant is `unknown variant \`Nonsense\`, expected one
+    // of \`SortKnots\`, \`SortStitches\`, ...\` at line L column C. This pins the
+    // mock's own (shorter) wording, not a claim that it matches production —
+    // see the comment at the mock's `default:` arm in brink-web.ts.
+    site: "resolve_code_action (unknown variant, mock-only wording)",
     error: "invalid code-action data: unknown variant `Nonsense`",
     call: () => {
       const s = sessionWith({ "main.ink": TWO_KNOTS });

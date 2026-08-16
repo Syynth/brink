@@ -306,6 +306,30 @@ describe("renameDir and resolveCodeAction through the wasm wrapper (#2577)", () 
     expect(result.introduced_diagnostics).toEqual([]);
   });
 
+  it("renameDir trims trailing slashes off both prefixes, like the real op", async () => {
+    const { project } = await makeStore({
+      "main.ink": "INCLUDE chapters/one.ink\n-> one\n",
+      "chapters/one.ink": "=== one ===\nHi.\n-> END\n",
+    });
+
+    // brink_ide::dir_rename::rename_dir trims trailing slashes off both
+    // prefixes before matching (crates/internal/brink-ide/src/dir_rename.rs:
+    // 123-124); a trailing slash on either side must still succeed here.
+    const result = project.getSession().renameDir("chapters/", "acts/");
+
+    expect(result.ok).toBe(true);
+    expect(result.moved_files).toEqual([
+      {
+        old_path: "chapters/one.ink",
+        new_path: "acts/one.ink",
+        new_source: "=== one ===\nHi.\n-> END\n",
+      },
+    ]);
+    expect(result.cross_file_edits).toEqual([
+      { path: "main.ink", new_source: "INCLUDE acts/one.ink\n-> one\n" },
+    ]);
+  });
+
   it("renameDir refuses an empty folder in the real op's wording", async () => {
     const { project } = await makeStore({ "main.ink": MAIN });
 

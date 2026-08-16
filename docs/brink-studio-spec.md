@@ -189,9 +189,13 @@ is hand-copied from the other:
 - **`crates/brink-web/fixtures/refusal-shapes.json` is GENERATED — never hand-edit
   it.** It's produced by `#[cfg(test)] mod refusal_shape` in
   `crates/brink-web/src/editor_refactor.rs`, which runs the real
-  `error_json`/`dir_error_json` and builds a real `AutoImportJs` struct
-  literal, so a field add/rename/`skip_serializing_if` change is a compile
-  error or a failing assertion, not silent drift. Regenerate with:
+  `error_json`/`dir_error_json`, builds a real `AutoImportJs` struct literal,
+  and (#2577) also pins `CompileResult` — the compile channel's own `{ ok:
+  false, error }`, whose home is `crates/brink-web/src/compile.rs`, outside
+  `editor_refactor.rs` — so a field add/rename/`skip_serializing_if` change is
+  a compile error or a failing assertion, not silent drift. `CompileResult`
+  has no mock counterpart by design: the mock's `compile_project` has no
+  refusal path. Regenerate with:
 
   ```sh
   BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape
@@ -206,10 +210,30 @@ is hand-copied from the other:
     — reads that fixture and `toEqual`-compares every mock refusal call site
     against it, plus a source-scanning case that fails if a new call site
     answers an inline `{ ok: false, ... }` literal instead of routing through
-    the shared `structuralRefusal`/`autoImportRefusal` helpers in the mock.
+    one of the shared refusal helpers in the mock — `structuralRefusal`,
+    `autoImportRefusal`, and (#2577) `dirMoveRefusal`, checked against the
+    `REFUSAL_HELPERS` list rather than two names hard-coded into the guard.
 
   A Rust-side change therefore fails `refusal_shape` first; regenerating the
   fixture then fails the TypeScript test until the mock is updated to match.
+
+- **The struct enumeration is discovered, not trusted (#2577).**
+  `every_refusal_struct_is_in_the_fixture` (`crates/brink-web/src/editor_refactor.rs`)
+  scans every `.rs` file under this crate's `src/` for a `Serialize` struct
+  carrying both an `ok: bool` field and an `error: Option<String>` field —
+  the signature of a payload that can refuse — and fails if that struct's
+  name is missing from `generated()`. This closes the *omission* gap (a
+  fourth refusal struct landing with every gate green) but does not make
+  construction automatic: Rust has no runtime reflection and this crate has
+  no `inventory`-style registry or derive macro to enumerate types with, so
+  each shape in `generated()` is still hand-constructed from a real struct
+  literal. The scan is textual, not a parse, so it has documented blind
+  spots: a hand-implemented `Serialize` (no `#[derive(Serialize)]` to match
+  on) slips past, as does a struct built by a macro rather than written out
+  field-by-field, and a `#[derive(...)]` line split across multiple lines
+  (the scanner expects the derive and the struct signature on adjacent
+  lines). A struct that hits one of these blind spots ships silently
+  unguarded, the same as before #2577.
 
 ## Visual hierarchy
 

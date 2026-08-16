@@ -948,7 +948,14 @@ export class EditorSession {
    * outside the folder. Note the real op has NO read-only fence here (unlike
    * `rename_file`), so the mock has none either.
    */
-  rename_dir(oldPrefix: string, newPrefix: string): string {
+  rename_dir(oldPrefixRaw: string, newPrefixRaw: string): string {
+    // The real op trims trailing slashes off both prefixes before doing
+    // anything else (`brink_ide::dir_rename::rename_dir`,
+    // crates/internal/brink-ide/src/dir_rename.rs:123-124) — without this,
+    // `renameDir("chapters/", "acts/")` refuses here where production
+    // succeeds, because `startsWith("chapters//")` never matches.
+    const oldPrefix = oldPrefixRaw.replace(/\/+$/, "");
+    const newPrefix = newPrefixRaw.replace(/\/+$/, "");
     const moved = [...this.files.keys()].filter((p) => p.startsWith(`${oldPrefix}/`)).sort();
     if (moved.length === 0) {
       return EditorSession.dirMoveRefusal(`no files found under directory '${oldPrefix}'`);
@@ -1010,6 +1017,14 @@ export class EditorSession {
    * through to `code action produced no change` (the Rust path `.ok()`s the
    * `MoveError` away before the pure resolver returns `None`), NOT to the
    * op's own message.
+   *
+   * ⚠ The two malformed-`data_json` refusals (unknown `action` tag, missing
+   * `action` field) are MOCK-ONLY ABBREVIATIONS of what serde_json actually
+   * produces for `CodeActionData`'s internally-tagged enum — real serde
+   * output names every known variant and a source line/column, which these
+   * strings omit. Unlike `code action produced no change` above, these two
+   * do NOT carry vocabulary parity with production; see the inline comments
+   * at each `return` for the real wording.
    */
   resolve_code_action(dataJson: string, offset: number): string {
     return this.resolveCodeActionImpl(this.activePath, dataJson, offset);
@@ -1039,11 +1054,20 @@ export class EditorSession {
     }
     const action = typeof data.action === "string" ? data.action : null;
     if (action === null) {
+      // MOCK-ONLY ABBREVIATION, not serde's wording: production's serde_json
+      // error for a missing internally-tagged discriminator is `missing field
+      // \`action\` at line L column C`. This string is not that string.
       return EditorSession.structuralRefusal(
         "invalid code-action data: missing `action` discriminator",
       );
     }
     const noChange = EditorSession.structuralRefusal("code action produced no change");
+    // ⚠ Same class as the two comments above: `asString` silently substitutes
+    // `""` for a missing field instead of refusing. Production's serde deserializes
+    // `CodeActionData` as a whole, so e.g. `{ action: "SortStitches" }` with no
+    // `knot` is a hard `missing field \`knot\`` refusal there; here it falls
+    // through to `code action produced no change` instead. Not modelled, same
+    // as the unmodelled action families above.
     const asString = (key: string): string => (typeof data[key] === "string" ? data[key] : "");
     switch (action) {
       case "SortKnots": {
@@ -1103,7 +1127,12 @@ export class EditorSession {
         // Known to the real op, unmodelled here — see this method's doc.
         return noChange;
       default:
-        // What serde answers for a tag it does not know.
+        // MOCK-ONLY ABBREVIATION, not serde's wording: production's serde_json
+        // error for an internally-tagged enum's unknown variant is `unknown
+        // variant \`${action}\`, expected one of \`SortKnots\`, \`SortStitches\`,
+        // ...\` at line L column C` (verified against serde/serde_json directly,
+        // not read off this switch's tag list). This string omits the
+        // `expected one of` clause and the line/column suffix.
         return EditorSession.structuralRefusal(
           `invalid code-action data: unknown variant \`${action}\``,
         );
