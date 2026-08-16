@@ -1,0 +1,31 @@
+{
+  // This package's E2E test program (#2607).
+  //
+  // `tsconfig.json`'s "include" is ["src"], so the e2e/*.spec.ts files were
+  // typechecked by nothing — only transformed at run time by Playwright's
+  // esbuild-based loader. This program ensures e2e specs are typechecked
+  // alongside the other two programs (tsconfig.json and tsconfig.node.json).
+  //
+  // The playwright.config.ts references these specs but does not cause them
+  // to be checked — that configuration sets up the e2e runner but carries no
+  // type information about spec content. The specs are independently checked
+  // by this program, then executed by Playwright's own loader.
+  //
+  // "include" must list the e2e directory. playwright.config.ts is included
+  // too, even though tsconfig.node.json already checks it as one of its six
+  // named entries — that's a deliberate double-check, not an oversight: this
+  // program adds the DOM lib and Playwright's own globals, which the
+  // node-only program does not have.
+  //
+  // src/__tests__/alias-map.test.ts (#2607) guards this program, but not by
+  // a name-for-name listing comparison the way tsconfig.node.json's guard
+  // works. It only asserts that "include" contains "e2e", that e2e/ exists
+  // with at least one *.spec.ts file, and that package.json's typecheck
+  // script references this program.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["@playwright/test", "node"]
+  },
+  "include": ["e2e", "playwright.config.ts"]
+}
