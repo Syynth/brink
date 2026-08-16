@@ -23,6 +23,7 @@ import {
   PACKAGE_JSON_PATH,
   REPO_ROOT,
   SETUP_DEV_PATH,
+  checkActionSetupFollowsCheckout,
   checkPnpmPin,
   checkResolvedVersion,
   checkSetupDevDerivesPin,
@@ -31,6 +32,7 @@ import {
   readPin,
   readWorkflows,
   resolvePnpmVersion,
+  splitJobs,
 } from "./check-pnpm-pin.mjs";
 
 describe("readPin", () => {
@@ -139,6 +141,54 @@ describe("checkWorkflowPins", () => {
   });
 });
 
+describe("checkActionSetupFollowsCheckout", () => {
+  const job = (steps) => ["jobs:", "  frontend:", "    steps:", ...steps].join("\n");
+  const checkout = "      - uses: actions/checkout@abc # v7.0.0";
+  const setup = "      - uses: pnpm/action-setup@0ebf47 # v6.0.9";
+
+  it("is green when checkout precedes action-setup in the same job", () => {
+    assert.deepEqual(checkActionSetupFollowsCheckout([{ name: "ci.yml", text: job([checkout, setup]) }]), {
+      ok: true,
+      problems: [],
+    });
+  });
+
+  // Planted mismatch: without the `version:` input the action has nothing to
+  // read until the repo is on disk.
+  it("goes red when action-setup runs before checkout", () => {
+    const result = checkActionSetupFollowsCheckout([{ name: "ci.yml", text: job([setup, checkout]) }]);
+    assert.equal(result.ok, false);
+    assert.match(result.problems[0], /job "frontend".*without a preceding actions\/checkout/s);
+  });
+
+  it("goes red when the job has no checkout at all", () => {
+    assert.equal(checkActionSetupFollowsCheckout([{ name: "ci.yml", text: job([setup]) }]).ok, false);
+  });
+
+  it("does not credit a checkout from a DIFFERENT job", () => {
+    const text = [
+      "jobs:",
+      "  build:",
+      "    steps:",
+      checkout,
+      "  frontend:",
+      "    steps:",
+      setup,
+    ].join("\n");
+    assert.equal(checkActionSetupFollowsCheckout([{ name: "ci.yml", text }]).ok, false);
+  });
+});
+
+describe("splitJobs", () => {
+  it("skips comment lines shaped like job headers", () => {
+    const text = ["jobs:", "  # a note ending in a colon:", "  frontend:", "    steps:"].join("\n");
+    assert.deepEqual(
+      splitJobs(text).map((j) => j.id),
+      ["frontend"],
+    );
+  });
+});
+
 describe("checkSetupDevDerivesPin", () => {
   it("is green when the script reads packageManager and prepares a variable", () => {
     const script = [
@@ -187,6 +237,11 @@ describe("the real repository", () => {
   it("no workflow lane passes a pnpm/action-setup version that disagrees with the pin", () => {
     assert.equal(pin.ok, true, "pin must resolve before workflows can be checked");
     const result = checkWorkflowPins(readWorkflows(), pin.version);
+    assert.equal(result.ok, true, result.problems.join("\n"));
+  });
+
+  it("every pnpm/action-setup lane checks out the repo first", () => {
+    const result = checkActionSetupFollowsCheckout(readWorkflows());
     assert.equal(result.ok, true, result.problems.join("\n"));
   });
 

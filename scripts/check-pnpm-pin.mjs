@@ -206,6 +206,73 @@ export function checkWorkflowPins(workflows, pinnedVersion) {
 }
 
 /**
+ * Split a workflow's `jobs:` block into `(id, body)` pairs. Same line-based
+ * approach (and the same comment-line caveat) as `jobs()` in
+ * packages/brink-desktop/src-tauri/src/lib.rs, for the same reason: no YAML
+ * parser is available to a check that runs before `pnpm install`.
+ *
+ * @param {string} workflowText
+ * @returns {{id: string, lines: {text: string, line: number}[]}[]}
+ */
+export function splitJobs(workflowText) {
+  const jobs = [];
+  let inJobs = false;
+
+  for (const [index, text] of workflowText.split("\n").entries()) {
+    if (text === "jobs:") {
+      inJobs = true;
+      continue;
+    }
+    if (!inJobs) continue;
+    if (text.trimStart().startsWith("#")) continue;
+
+    const isHeader = text.startsWith("  ") && !text.startsWith("   ") && text.trimEnd().endsWith(":");
+    if (isHeader) {
+      jobs.push({ id: text.trim().replace(/:$/, ""), lines: [] });
+      continue;
+    }
+    if (jobs.length > 0) jobs[jobs.length - 1].lines.push({ text, line: index + 1 });
+  }
+
+  return jobs;
+}
+
+/**
+ * Dropping the `version:` input means each lane's pnpm version now comes from
+ * the CHECKED-OUT root package.json — so `actions/checkout` must precede
+ * `pnpm/action-setup` in the same job, or the action has no `packageManager`
+ * field to read. That precondition was implicit before this change and is
+ * load-bearing after it, so it gets a guard rather than a comment (#2604).
+ *
+ * @param {{name: string, text: string}[]} workflows
+ * @returns {{ok: boolean, problems: string[]}}
+ */
+export function checkActionSetupFollowsCheckout(workflows) {
+  const problems = [];
+
+  for (const workflow of workflows) {
+    if (EXCLUDED_WORKFLOWS.has(workflow.name)) continue;
+
+    for (const job of splitJobs(workflow.text)) {
+      const checkoutAt = job.lines.findIndex((l) => l.text.includes("actions/checkout@"));
+      const setupAt = job.lines.findIndex((l) => l.text.includes("pnpm/action-setup@"));
+      if (setupAt === -1) continue;
+
+      if (checkoutAt === -1 || checkoutAt > setupAt) {
+        problems.push(
+          `${WORKFLOWS_DIR}/${workflow.name}:${job.lines[setupAt].line} (job "${job.id}") runs ` +
+            `pnpm/action-setup without a preceding actions/checkout in the same job. The action ` +
+            `reads root ${PACKAGE_JSON_PATH}'s "packageManager" for its version (#2604), so it ` +
+            `needs the repo on disk first.`,
+        );
+      }
+    }
+  }
+
+  return { ok: problems.length === 0, problems };
+}
+
+/**
  * The drift assertion proper: is the pin the version actually running?
  *
  * @param {string} resolvedVersion
@@ -250,9 +317,11 @@ export function checkPnpmPin({ repoRoot = REPO_ROOT, checkResolved = true } = {}
   const pin = readPin(readFileSync(join(repoRoot, PACKAGE_JSON_PATH), "utf8"));
   if (!pin.ok) return { ok: false, problems: [pin.reason], version: null };
 
+  const workflows = readWorkflows(repoRoot);
   const problems = [
     ...checkSetupDevDerivesPin(readFileSync(join(repoRoot, SETUP_DEV_PATH), "utf8")).problems,
-    ...checkWorkflowPins(readWorkflows(repoRoot), pin.version).problems,
+    ...checkWorkflowPins(workflows, pin.version).problems,
+    ...checkActionSetupFollowsCheckout(workflows).problems,
   ];
 
   if (checkResolved) {
