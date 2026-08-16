@@ -378,7 +378,10 @@ mod refusal_shape {
 (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based \
 guard can express, because a mock that never refuses has no string to compare (#2661); \
 `outlines` are the symbol names/kinds/detail `file_symbols` reports, pinning the header \
-recognizer itself rather than an op built on it (#2662); `diagnostics` are the \
+recognizer itself rather than an op built on it (#2662); `regions` are the surviving \
+`new_source` after a stitch region was deleted, the half neither acceptance nor the \
+outline can see because the op succeeds either way (#2684); `defaults` are session-seed \
+values a fresh production session starts with (#2663); `diagnostics` are the \
 introduced-diagnostic CODES a driven (op, input) pair reports, the half `acceptance`'s \
 ok/error pair cannot see (review finding on #2662). \
 Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. \
@@ -424,6 +427,8 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "acceptance": driven_acceptance(),
             "headers": driven_header_rewrites(),
             "outlines": driven_outlines(),
+            "regions": driven_stitch_regions(),
+            "defaults": driven_defaults(),
             "diagnostics": driven_diagnostics(),
         })
     }
@@ -533,6 +538,52 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// green against all ten sources in this fixture.
     const ALT_FENCES: &str = "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n\n  ==== four ====\nFourth.\n\n=== five\nFifth.\n";
 
+    /// Three stitches, none of them the `= name` shape every other fixture
+    /// uses, plus a `=>` line that is NOT a header (#2684).
+    ///
+    /// The stitch level had #2662's split one rung down. `brink_syntax`'s
+    /// `parser/knot.rs` documents `stitch_header` as
+    ///
+    /// ```text
+    /// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
+    /// ```
+    ///
+    /// but the **code** is `at_stitch` (`current() == EQ && nth(1) != EQ &&
+    /// nth(1) != GT`) followed by `p.skip_ws()`, and `skip_ws` matches
+    /// **zero** or more. So production's real vocabulary is: a **tolerated
+    /// leading indent** (`current()` skips trivia), **exactly one** `=`, a
+    /// negative lookahead excluding `=` and `>`, and **optional** whitespace —
+    /// the `INLINE_WS+` in the doc comment is not what the parser does.
+    ///
+    /// Driven, not read (the whole lesson of #2662): `file_symbols` reports a
+    /// stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and
+    /// `\t= h`, and reports **none** for `=> f` or `  => g`.
+    ///
+    /// The mock had the same two-answer split #2662 fixed for knots:
+    ///
+    /// | consumer | pattern before | `= a` | `  = b` | `=c` | `=> x` |
+    /// |---|---|---|---|---|---|
+    /// | `parseOutline` / `selectionCrossesHeader` | `^=\s+(\w+)` | stitch | invisible | invisible | not a header |
+    /// | `delete_symbol` / `rename_symbol` guards | `^\s*=\s+` | stitch | stitch | invisible | not a header |
+    /// | `opensHeader` (region end) | `^\s*=` | ends region | ends region | ends region | **ends region** |
+    ///
+    /// — so an indented `  = b` was a stitch to the ops and invisible to the
+    /// outline, a tight `=c` was invisible to both yet still ENDED a region,
+    /// and `=> x` ended a region production keeps running through. `a` is the
+    /// positive control: it is the one shape every family already resolved,
+    /// so a widening bought by making everything match is red here.
+    /// The indented `  = b` is deliberately LAST. Production's regions are
+    /// CST node ranges, not lines: deleting `b` leaves its `  ` indent behind
+    /// (`  ` + the next header), and deleting the stitch *before* an indented
+    /// one consumes that indent. The mock's region model is line-based, so
+    /// only a boundary where a line start and a node start coincide can be
+    /// pinned byte-for-byte — see [`driven_stitch_regions`], which drives the
+    /// one flush-left boundary. The indent/node-range divergence is real and
+    /// out of #2684's fence; it is recorded on the issue rather than papered
+    /// over here.
+    const ALT_STITCHES: &str =
+        "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n";
+
     /// Every named source the drivers run against, shipped INTO the fixture.
     ///
     /// The mirroring TypeScript test asserts its own constants are
@@ -544,6 +595,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     fn source_fixtures() -> serde_json::Value {
         serde_json::json!({
             "ALT_FENCES": ALT_FENCES,
+            "ALT_STITCHES": ALT_STITCHES,
             "BLANK_BODY": BLANK_BODY,
             "FUNCTION_KNOT": FUNCTION_KNOT,
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
@@ -1172,13 +1224,139 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         })
     }
 
+    /// The stitch-header VOCABULARY, driven through both mock families
+    /// (#2684) — the sibling of [`driven_fence_acceptance`] one rung down.
+    ///
+    /// Every case runs against [`ALT_STITCHES`]. `c` (`=c`, no whitespace) is
+    /// the shape BOTH mock families missed: `parseOutline`'s `^=\s+` and the
+    /// inline guards' `^\s*=\s+` each required a space production does not.
+    /// `b` (`  = b`, indented) is the shape only the outline family missed,
+    /// which is the point of driving both — a case list covering one family
+    /// would read as though the split had a single victim, exactly the way
+    /// #2662's did before its review.
+    ///
+    /// `a` is the positive control: the one flush-left `= name` shape every
+    /// family already resolved. It has to stay green, so the widening cannot
+    /// be bought by making everything match.
+    fn driven_stitch_acceptance() -> serde_json::Value {
+        let outline_family = session_with(&[("main.ink", ALT_STITCHES)]);
+        let delete_tight = session_with(&[("main.ink", ALT_STITCHES)]);
+        let rename_tight = session_with(&[("main.ink", ALT_STITCHES)]);
+        let delete_indented = session_with(&[("main.ink", ALT_STITCHES)]);
+        let delete_plain = session_with(&[("main.ink", ALT_STITCHES)]);
+
+        serde_json::json!({
+            // The `parseOutline` family. Production counts THREE stitches
+            // under `one`, so this order is a permutation; a mock that sees
+            // fewer than three cannot answer `ok: true` here however it words
+            // its refusal.
+            "reorder_stitches:alt-stitches": outcome(
+                "reorder_stitches (stitches `= a`, indented `  = b`, tight `=c`)",
+                &outline_family.reorder_stitches(
+                    "main.ink",
+                    "one",
+                    vec!["b".to_owned(), "c".to_owned(), "a".to_owned()],
+                ),
+            ),
+            // The inline family. `=c` is where the required `\s+` runs out.
+            "delete_symbol:alt-stitch-tight": outcome(
+                "delete_symbol (stitch declared `=c`, no whitespace)",
+                &delete_tight.delete_symbol("main.ink", "one", "c"),
+            ),
+            "rename_symbol:alt-stitch-tight": outcome(
+                "rename_symbol (stitch declared `=c`, no whitespace)",
+                &rename_tight.rename_symbol("main.ink", "one", "c", "renamed"),
+            ),
+            // Indented: resolved by the inline family before #2684, invisible
+            // to the outline family. Driving it here keeps the asymmetry on
+            // the record rather than letting one family's green stand in.
+            "delete_symbol:alt-stitch-indented": outcome(
+                "delete_symbol (stitch declared `  = b`, indented)",
+                &delete_indented.delete_symbol("main.ink", "one", "b"),
+            ),
+            // Positive control for both families: the plain `= a` shape.
+            "delete_symbol:alt-stitch-plain": outcome(
+                "delete_symbol (stitch declared `= a`)",
+                &delete_plain.delete_symbol("main.ink", "one", "a"),
+            ),
+        })
+    }
+
     /// The whole driven acceptance map.
     fn driven_acceptance() -> serde_json::Value {
         merge_driven(&[
             driven_outline_acceptance(),
             driven_extract_acceptance(),
             driven_fence_acceptance(),
+            driven_stitch_acceptance(),
         ])
+    }
+
+    /// The stitch OWNERSHIP REGION, read out of production's own `new_source`
+    /// (#2684) — the half neither `acceptance` nor `outlines` can see.
+    ///
+    /// A stitch's region runs to the next header of any level, and `opensHeader`
+    /// is the mock's answer to "is this line one". Acceptance cannot see a
+    /// wrong answer: `delete_symbol` reports `ok: true` either way and simply
+    /// removes a shorter span, so the op succeeds with the wrong content.
+    ///
+    /// The case that matters is `=> x`. Production's `stitch_body` breaks on
+    /// `at_knot(p) || at_stitch(p)`, and `at_stitch` excludes a following `>`
+    /// (`nth(1) != GT`) — so a `=>` line does **not** end a stitch, and
+    /// deleting `a` takes `=> x\nStill a.\n` with it. The mock's `opensHeader`
+    /// was a bare `^\s*=` with no such lookahead, so it stopped there and left
+    /// two orphaned lines behind.
+    ///
+    /// The single case carries BOTH directions, which is why one is enough:
+    /// stitch `a`'s body holds a `=> x` line (must NOT end the region) and is
+    /// followed by the tight header `=c` (must end it). An `opensHeader` that
+    /// answered `true` too often stops at `=> x` and leaves two orphan lines;
+    /// one that answered `false` too often runs past `=c` and swallows the
+    /// next stitch. Only the correct vocabulary produces the pinned string, so
+    /// the widening cannot be bought by making everything (or nothing) match.
+    ///
+    /// ⚠ Only a boundary where a LINE start and a CST NODE start coincide can
+    /// be pinned here — see [`ALT_STITCHES`]'s note on the indented `  = b`.
+    fn driven_stitch_regions() -> serde_json::Value {
+        let spans_arrow = session_with(&[("main.ink", ALT_STITCHES)]);
+
+        serde_json::json!({
+            "delete_symbol:alt-stitch-plain": deleted_source(
+                "delete_symbol (stitch `a`: body carries `=> x`, boundary is `=c`)",
+                &spans_arrow.delete_symbol("main.ink", "one", "a"),
+            ),
+        })
+    }
+
+    /// The `new_source` of an op that must have SUCCEEDED — the surviving text
+    /// after a region was removed.
+    fn deleted_source(site: &str, json: &str) -> String {
+        let value = parse(json);
+        assert!(
+            value["ok"] == serde_json::json!(true),
+            "`{site}` refused, so there is no surviving source to pin: {value:#}"
+        );
+        let source = value["new_source"].as_str();
+        assert!(
+            source.is_some(),
+            "`{site}` succeeded without a `new_source`: {value:#}"
+        );
+        source.expect("just asserted above").to_owned()
+    }
+
+    /// Production's own INITIAL `active_file()` (#2663).
+    ///
+    /// `EditorSession::new` seeds `active_path` with `"main.ink"`
+    /// (`crates/brink-web/src/editor/mod.rs`), while the studio mock seeded it
+    /// with `""`. Both reach `file not loaded` for a session that has loaded
+    /// nothing, which is why #2635's driven `resolve_code_action` site stayed
+    /// green over the divergence — but `update_source` writes into
+    /// `files[activePath]`, so a mock session that never calls
+    /// `set_active_file` wrote to key `""` where production writes to
+    /// `"main.ink"`. Driven rather than typed, so a change to production's
+    /// seed moves this fixture instead of silently un-aligning the mock again.
+    fn driven_defaults() -> serde_json::Value {
+        serde_json::json!({ "active_file": EditorSession::new().active_file() })
     }
 
     /// The OUTLINE production reports for a source: each symbol's `name`,
@@ -1233,6 +1411,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     fn driven_outlines() -> serde_json::Value {
         serde_json::json!({
             "ALT_FENCES": outline_of(ALT_FENCES),
+            "ALT_STITCHES": outline_of(ALT_STITCHES),
             "KNOT_AND_FUNCTION": outline_of(KNOT_AND_FUNCTION),
             "TWO_KNOTS": outline_of(TWO_KNOTS),
         })
