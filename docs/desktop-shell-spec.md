@@ -245,9 +245,16 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   dependent steps run and fail too, burying the root cause. Each check now
   reads `!cancelled() && steps.<setup>.outcome == 'success'` for the setup
   steps it needs (`checkout`, `linux_deps`, `wasm_build`, `pnpm_install`,
-  `sidecar`); the format check needs only the runner's toolchain and the
-  checkout, so it is gated on `checkout` alone — `actions/checkout` carries
-  no `id` by default, so this lane gives its checkout step one.
+  `check_wasm_pkg`, `sidecar`); the format check needs only the runner's
+  toolchain and the checkout, so it is gated on `checkout` alone —
+  `actions/checkout` carries no `id` by default, so this lane gives its
+  checkout step one. (`check_wasm_pkg` (#2514) is itself gated on
+  `pnpm_install`, not a setup step other checks read directly — "Typecheck
+  (tsc --noEmit)" and "pnpm build" gate on `check_wasm_pkg` instead of
+  `pnpm_install` because `pnpm install --frozen-lockfile`'s own exit code
+  can report success even when the `file:` link it creates silently failed
+  to resolve; `check_wasm_pkg` verifies the resolved link itself, so
+  `pnpm_install` is no longer a direct prerequisite of any check.)
   `desktop_smoke_gates_dependent_steps_on_setup_success` checks both the
   `if:` text and that every prerequisite id it names still names a real
   step, since a stale id (e.g. from a renamed or `id:`-stripped setup step)
