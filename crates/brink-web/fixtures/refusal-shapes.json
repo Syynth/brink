@@ -1,11 +1,23 @@
 {
-  "$comment": "GENERATED from the Rust refusal payloads — do not hand-edit. `shapes` are the serialized structs (message elided to the placeholder in `error`); `messages` are real refusal strings read back out of the production ops, not typed (#2603); `sources` are the exact inputs those drivers ran against, and `acceptance` is each (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based guard can express, because a mock that never refuses has no string to compare (#2661); `outlines` are the symbol names/kinds/detail `file_symbols` reports, pinning the header recognizer itself rather than an op built on it (#2662); `diagnostics` are the introduced-diagnostic CODES a driven (op, input) pair reports, the half `acceptance`'s ok/error pair cannot see (review finding on #2662). Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).",
+  "$comment": "GENERATED from the Rust refusal payloads — do not hand-edit. `shapes` are the serialized structs (message elided to the placeholder in `error`); `messages` are real refusal strings read back out of the production ops, not typed (#2603); `sources` are the exact inputs those drivers ran against, and `acceptance` is each (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based guard can express, because a mock that never refuses has no string to compare (#2661); `outlines` are the symbol names/kinds/detail `file_symbols` reports, pinning the header recognizer itself rather than an op built on it (#2662); `regions` are the surviving `new_source` after a stitch region was deleted, the half neither acceptance nor the outline can see because the op succeeds either way (#2684); `defaults` are session-seed values a fresh production session starts with (#2663); `diagnostics` are the introduced-diagnostic CODES a driven (op, input) pair reports, the half `acceptance`'s ok/error pair cannot see (review finding on #2662). Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).",
   "acceptance": {
     "delete_symbol:alt-fence-terse": {
       "error": null,
       "ok": true
     },
     "delete_symbol:alt-fence-wide": {
+      "error": null,
+      "ok": true
+    },
+    "delete_symbol:alt-stitch-indented": {
+      "error": null,
+      "ok": true
+    },
+    "delete_symbol:alt-stitch-plain": {
+      "error": null,
+      "ok": true
+    },
+    "delete_symbol:alt-stitch-tight": {
       "error": null,
       "ok": true
     },
@@ -81,6 +93,10 @@
       "error": null,
       "ok": true
     },
+    "rename_symbol:alt-stitch-tight": {
+      "error": null,
+      "ok": true
+    },
     "reorder_knot:function-knot": {
       "error": null,
       "ok": true
@@ -105,10 +121,17 @@
       "error": "stitch 'a' not found in knot",
       "ok": false
     },
+    "reorder_stitches:alt-stitches": {
+      "error": null,
+      "ok": true
+    },
     "reorder_stitches:stitchless-knot": {
       "error": null,
       "ok": true
     }
+  },
+  "defaults": {
+    "active_file": "main.ink"
   },
   "diagnostics": {
     "rename_symbol:collides-with-function-knot": [
@@ -198,6 +221,39 @@
         "name": "five"
       }
     ],
+    "ALT_STITCHES": [
+      {
+        "children": [
+          {
+            "children": [],
+            "detail": null,
+            "kind": "stitch",
+            "name": "a"
+          },
+          {
+            "children": [],
+            "detail": null,
+            "kind": "stitch",
+            "name": "c"
+          },
+          {
+            "children": [],
+            "detail": null,
+            "kind": "stitch",
+            "name": "b"
+          }
+        ],
+        "detail": null,
+        "kind": "knot",
+        "name": "one"
+      },
+      {
+        "children": [],
+        "detail": null,
+        "kind": "knot",
+        "name": "two"
+      }
+    ],
     "KNOT_AND_FUNCTION": [
       {
         "children": [
@@ -254,6 +310,9 @@
       }
     ]
   },
+  "regions": {
+    "delete_symbol:alt-stitch-plain": "=== one ===\nFirst.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n"
+  },
   "shapes": {
     "AutoImportJs": {
       "already_reachable": false,
@@ -283,6 +342,7 @@
   },
   "sources": {
     "ALT_FENCES": "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n\n  ==== four ====\nFourth.\n\n=== five\nFifth.\n",
+    "ALT_STITCHES": "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n",
     "BLANK_BODY": "=== one ===\nFirst.\n\nLast.\n",
     "FUNCTION_KNOT": "=== function greet() ===\n~ return \"hi\"\n",
     "KNOT_AND_FUNCTION": "=== one ===\nFirst.\n= a\nA.\n\n=== function greet() ===\n~ return \"hi\"\n",

@@ -151,6 +151,19 @@ interface RefusalFixture {
    */
   outlines: Record<string, OutlineSymbol[]>;
   /**
+   * The `new_source` left behind after a stitch REGION was deleted (#2684).
+   * The half neither `acceptance` nor `outlines` can see: `delete_symbol`
+   * answers `ok: true` whether or not `opensHeader` picked the right region
+   * boundary, so a wrong answer is a successful op with the wrong content.
+   */
+  regions: Record<string, string>;
+  /**
+   * Values a FRESH production session is seeded with (#2663). `active_file`
+   * is `"main.ink"`; the mock seeded `""`, and `update_source` writes into
+   * `files[activePath]`, so the two wrote to different keys.
+   */
+  defaults: { active_file: string };
+  /**
    * The `introduced_diagnostics` CODES a driven (op, input) pair reports
    * (review finding on #2662). `acceptance` only records the `ok`/`error`
    * pair, which is blind to a call that succeeds on both sides regardless of
@@ -314,6 +327,33 @@ const LEADING_BLANK_LINE = "\n=== a ===\nContent.\n";
  */
 const ALT_FENCES =
   "== one ==\nFirst.\n= a\nA.\n\n===two===\nSecond.\n\n==== three ====\nThird.\n\n  ==== four ====\nFourth.\n\n=== five\nFifth.\n";
+
+/**
+ * Three stitches, only one of them `= name`, plus two `=`-leading lines that
+ * are NOT headers (#2684) — #2662's split one rung down.
+ *
+ * `parser/knot.rs` DOCUMENTS `stitch_header` as `"=" ~ !("=" | ">") ~
+ * INLINE_WS+ ~ identifier`, but the code is `at_stitch` (`current() == EQ &&
+ * nth(1) != EQ && nth(1) != GT`) then `p.skip_ws()`, which matches ZERO or
+ * more. Driven in `driven_outlines()` / `driven_stitch_acceptance()`, not
+ * read off the grammar: production reports a stitch for `= a`, `  = b`, `=c`,
+ * `   =d`, `= e(n)` and `\t= h`, and none for `=> f`, `  => g`, `= > j`,
+ * `= = k` or a bare `=`.
+ *
+ * The mock had three answers to "is this a stitch": `parseOutline` wanted
+ * `^=\s+` (indent and the tight form both invisible), the `delete_symbol` /
+ * `rename_symbol` guards wanted `^\s*=\s+` (indent fine, tight form
+ * invisible), and `opensHeader` was a bare `^\s*=` that ended a region for
+ * anything starting `=` — `=>` included, which production keeps running
+ * through.
+ *
+ * `a` is the positive control: the one shape every family already resolved.
+ * The indented `  = b` is LAST on purpose — production's regions are CST node
+ * ranges, so an indented header's whitespace crosses the boundary and only a
+ * flush-left boundary is comparable byte-for-byte against a line-based mock.
+ */
+const ALT_STITCHES =
+  "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n";
 
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
@@ -884,6 +924,36 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
     key: "delete_symbol:alt-fence-terse",
     call: () => sessionWith({ "main.ink": ALT_FENCES }).delete_symbol("main.ink", "one", ""),
   },
+  // ── One stitch-header vocabulary (#2684). Same both-families discipline
+  // as the knot block above: `=c` was invisible to BOTH families, `  = b`
+  // only to the outline family, and `= a` to neither.
+  {
+    key: "reorder_stitches:alt-stitches",
+    call: () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).reorder_stitches("main.ink", "one", [
+        "b",
+        "c",
+        "a",
+      ]),
+  },
+  {
+    key: "delete_symbol:alt-stitch-tight",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).delete_symbol("main.ink", "one", "c"),
+  },
+  {
+    key: "rename_symbol:alt-stitch-tight",
+    call: () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).rename_symbol("main.ink", "one", "c", "renamed"),
+  },
+  {
+    key: "delete_symbol:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).delete_symbol("main.ink", "one", "b"),
+  },
+  {
+    // Positive control: the flush-left `= a` shape every family resolved.
+    key: "delete_symbol:alt-stitch-plain",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).delete_symbol("main.ink", "one", "a"),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -893,6 +963,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
     // comment on both sides and nothing checked it.
     expect({
       ALT_FENCES,
+      ALT_STITCHES,
       BLANK_BODY,
       FUNCTION_KNOT,
       KNOT_AND_FUNCTION,
@@ -937,6 +1008,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
 describe("the outline reports exactly the symbols production reports (#2662)", () => {
   const outlineSources: Record<string, string> = {
     ALT_FENCES,
+    ALT_STITCHES,
     KNOT_AND_FUNCTION,
     TWO_KNOTS,
   };
@@ -972,6 +1044,71 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
       expect(shape(symbols)).toEqual(fixture.outlines[name]);
     });
   }
+});
+
+/**
+ * The stitch REGION, the half neither acceptance nor the outline can see
+ * (#2684).
+ *
+ * `delete_symbol` answers `ok: true` whichever line `opensHeader` decides the
+ * region ends at, so a wrong boundary is a *successful* op with the wrong
+ * content — invisible to `acceptance`, and invisible to `outlines` because
+ * the recognizer can be right while the region scan is not.
+ *
+ * The one pinned case carries both directions. Stitch `a`'s body holds a
+ * `=> x` line and a `= > y` line, neither of which production treats as a
+ * header (`at_stitch` excludes a following `>` through the trivia-skipping
+ * `nth(1)`), and its region ends at the tight `=c`, which production DOES.
+ * An `opensHeader` that says `true` too often stops early and orphans those
+ * lines; one that says `false` too often runs past `=c` and swallows the next
+ * stitch; one whose lookahead is `=(?![=>])` rather than `=(?!\s*[=>])` stops
+ * at `= > y`. Only the right vocabulary reproduces production's string, so the
+ * widening cannot be bought either way.
+ */
+describe("a deleted stitch takes exactly production's region with it (#2684)", () => {
+  const regionCalls: Record<string, () => string> = {
+    "delete_symbol:alt-stitch-plain": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).delete_symbol("main.ink", "one", "a"),
+  };
+
+  it("every driven region has a call site here", () => {
+    expect(Object.keys(regionCalls).sort()).toEqual(Object.keys(fixture.regions).sort());
+  });
+
+  for (const [key, call] of Object.entries(regionCalls)) {
+    it(`${key}: new_source agrees with production`, () => {
+      const parsed = JSON.parse(call()) as { ok: boolean; new_source?: string };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.new_source).toBe(fixture.regions[key]);
+    });
+  }
+});
+
+/**
+ * Session-seed parity (#2663).
+ *
+ * Production's `EditorSession::new` seeds `active_path` with `"main.ink"`;
+ * the mock seeded `""`. Both answer `file not loaded` for a session that has
+ * loaded nothing, which is why #2635's driven `resolve_code_action` site
+ * stayed green over the divergence — but `update_source` writes into
+ * `files[activePath]`, so a mock session that never calls `set_active_file`
+ * wrote to key `""` where production writes to `"main.ink"`.
+ */
+describe("a fresh mock session is seeded the way production is (#2663)", () => {
+  it("active_file() starts at production's default", () => {
+    expect(new EditorSession().active_file()).toBe(fixture.defaults.active_file);
+  });
+
+  it("update_source on an untouched session writes at that key", () => {
+    // The consequence the default actually has. Before #2663 this landed at
+    // `""`, so a later `set_active_file("main.ink")` refused (the file was
+    // never loaded under that name) where production's would succeed.
+    const s = new EditorSession();
+    s.update_source(MAIN);
+    const paths = (JSON.parse(s.list_files()) as { path: string }[]).map((f) => f.path);
+    expect(paths).toEqual([fixture.defaults.active_file]);
+    expect(s.set_active_file(fixture.defaults.active_file)).toBe(true);
+  });
 });
 
 /**
