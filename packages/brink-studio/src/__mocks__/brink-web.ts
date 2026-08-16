@@ -1071,7 +1071,18 @@ export class EditorSession {
     return this.resolveCodeActionImpl(this.activePath, dataJson, offset);
   }
 
-  /** Document-handle variant of {@link resolve_code_action}. */
+  /**
+   * Document-handle variant of {@link resolve_code_action}.
+   *
+   * ⚠ THIS IS THE ONLY DEFINITION — keep it that way. #2585 added a second
+   * `resolve_code_action_doc` down in the doc-handle block (a stub that always
+   * refused). JS class semantics let the later definition win silently, so the
+   * doc-handle op could no longer succeed at all under the mock, and the
+   * refusal vocabulary changed out from under `structural-refusal-shape.test.ts`.
+   * It reached `main` because #2583 and #2585 were each green against a `main`
+   * that did not yet contain the other. `mock-single-definition.test.ts` now
+   * fails on any duplicated method name in this file.
+   */
   resolve_code_action_doc(doc: number, dataJson: string, offset: number): string {
     const d = this.docs.get(doc);
     if (!d) {
@@ -1488,28 +1499,20 @@ export class EditorSession {
   find_references_doc(_doc: number, _offset: number): string { return "[]"; }
   prepare_rename_doc(_doc: number, _offset: number): string { return "null"; }
   code_actions_doc(_doc: number, _offset: number): string {
-    // One synthetic, non-actionable entry — enough to let a test open the
-    // real code-actions menu and select something. `resolve_code_action_doc`
-    // below is the piece that matters (#2578); this method's shape (title/
-    // kind/data) is not itself under test.
+    // One synthetic entry — enough to let a test open the real code-actions
+    // menu and select something. Its `data: {}` carries no `action`
+    // discriminator, so resolving it lands on the missing-discriminator
+    // refusal in `resolveCodeActionImpl`; that is what lets
+    // `code-actions-apply-reachability.test.ts` (#2578) prove `applyCodeAction`
+    // forwards a refusal to `onApplyStructural` UNCONDITIONALLY. This method's
+    // own shape (title/kind) is not under test.
+    //
+    // ⚠ `resolve_code_action_doc` is NOT defined here. It lives with its
+    // `resolve_code_action` sibling above, sharing `resolveCodeActionImpl` so
+    // both handle variants model production identically. A second definition
+    // here silently overrode that one between #2583 and #2585 — see the
+    // regression note on `resolve_code_action_doc` itself.
     return JSON.stringify([{ title: "Mock quickfix", kind: "quickfix", data: {} }]);
-  }
-  /**
-   * Mock of the real `resolve_code_action_doc` (#321): always answers a
-   * refusal, in the exact #2543 shape. The mock has no real code-action
-   * resolution to model — `code_actions_doc` above returns one synthetic
-   * entry only so a test can drive the menu — this exists to prove
-   * `applyCodeAction` (`document-sessions.ts`) forwards a refusal to
-   * `onApplyStructural` UNCONDITIONALLY (#2578,
-   * `code-actions-apply-reachability.test.ts`). See `error_json` in
-   * `crates/brink-web/src/editor/code_actions.rs` for the real refusal
-   * shapes this mirrors (e.g. `"invalid code-action data: …"`).
-   */
-  resolve_code_action_doc(doc: number, _dataJson: string, _offset: number): string {
-    const d = this.docs.get(doc);
-    if (!d) return EditorSession.structuralRefusal("unknown handle");
-    if (!this.files.has(d.path)) return EditorSession.structuralRefusal("file not loaded");
-    return EditorSession.structuralRefusal("invalid code-action data: mock action");
   }
   inlay_hints_doc(_doc: number, _start: number, _end: number): string { return "[]"; }
   signature_help_doc(_doc: number, _offset: number): string { return "null"; }
