@@ -62,6 +62,11 @@ function refusalShape(name: string, error: string): Record<string, unknown> {
 
 const MAIN = "=== hello ===\nHi.\n-> END\n";
 
+/** Two knots, the first carrying stitches — enough shape for the reorder /
+ *  move / promote / demote refusals to reach past their "not found" guards. */
+const TWO_KNOTS =
+  "=== one ===\nFirst.\n= a\nA.\n= b\nB.\n\n=== two ===\nSecond.\n= a\nOther A.\n";
+
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
   for (const [path, source] of Object.entries(files)) s.update_file(path, source);
@@ -132,6 +137,112 @@ const structuralRefusals: Array<{ site: string; error: string; call: () => strin
     error: "cannot rename this symbol",
     call: () => sessionWith({ "main.ink": MAIN }).rename_symbol_at("main.ink", 0, "hi"),
   },
+  // The seven `dispatchSymbolAction` ops + the code-action resolver, added to
+  // the mock by #2577. These had NO mock method at all before it, so the
+  // studio suite could not reach them either way; they route through
+  // `structuralRefusal` from their first line rather than growing an inline
+  // literal to be swept later.
+  {
+    site: "reorder_stitch (file not loaded)",
+    error: "file not loaded",
+    call: () => sessionWith({ "main.ink": MAIN }).reorder_stitch("ghost.ink", "hello", "a", 1),
+  },
+  {
+    site: "reorder_stitch (stitch not found)",
+    error: "stitch 'nowhere' not found in knot",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_stitch("main.ink", "one", "nowhere", 1),
+  },
+  {
+    site: "reorder_knot (source knot not found)",
+    error: "source knot not found",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_knot("main.ink", "nowhere", 1),
+  },
+  {
+    site: "reorder_stitches (invalid reorder)",
+    error: "invalid reorder: list is not a permutation of the existing names",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_stitches("main.ink", "one", ["a"]),
+  },
+  {
+    site: "reorder_knots (invalid reorder)",
+    error: "invalid reorder: list is not a permutation of the existing names",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).reorder_knots("main.ink", ["one", "one"]),
+  },
+  {
+    site: "move_stitch (destination knot not found)",
+    error: "destination knot not found",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "a", "nope"),
+  },
+  {
+    site: "move_stitch (name collision)",
+    error: "name collision: 'a' already exists in two",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "a", "two"),
+  },
+  {
+    site: "promote_stitch (name collision with a top-level knot)",
+    error: "name collision: 'two' already exists in top-level knots",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).promote_stitch("main.ink", "one", "two"),
+  },
+  {
+    site: "promote_stitch (stitch not found)",
+    error: "stitch 'nowhere' not found in knot",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).promote_stitch("main.ink", "one", "nowhere"),
+  },
+  {
+    site: "demote_knot (illegal nesting)",
+    error: "illegal nesting: knot has sub-stitches and cannot be demoted",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).demote_knot("main.ink", "one", "two"),
+  },
+  {
+    site: "demote_knot (destination knot not found)",
+    error: "destination knot not found",
+    call: () => sessionWith({ "main.ink": TWO_KNOTS }).demote_knot("main.ink", "two", "nope"),
+  },
+  {
+    site: "resolve_code_action (unknown variant)",
+    error: "invalid code-action data: unknown variant `Nonsense`",
+    call: () => {
+      const s = sessionWith({ "main.ink": TWO_KNOTS });
+      s.set_active_file("main.ink");
+      return s.resolve_code_action(JSON.stringify({ action: "Nonsense" }), 0);
+    },
+  },
+  {
+    site: "resolve_code_action (no change)",
+    error: "code action produced no change",
+    call: () => {
+      const s = sessionWith({ "main.ink": TWO_KNOTS });
+      s.set_active_file("main.ink");
+      return s.resolve_code_action(JSON.stringify({ action: "FormatKnot", knot: "one" }), 0);
+    },
+  },
+  {
+    site: "resolve_code_action_doc (unknown document handle)",
+    error: "unknown document handle",
+    call: () =>
+      sessionWith({ "main.ink": TWO_KNOTS }).resolve_code_action_doc(
+        999,
+        JSON.stringify({ action: "SortKnots" }),
+        0,
+      ),
+  },
+];
+
+/** The directory-move refusals, which answer `DirMoveResultJs` — a third Rust
+ *  struct again (multi-file: `moved_files`, no `path`/`new_source`). Its shape
+ *  was generated into the fixture by PR #2573 with no mock counterpart to check
+ *  it against; `rename_dir` (#2577) is that counterpart. */
+const dirMoveRefusals: Array<{ site: string; error: string; call: () => string }> = [
+  {
+    site: "rename_dir (no files under the directory)",
+    error: "no files found under directory 'ghost'",
+    call: () => sessionWith({ "main.ink": MAIN }).rename_dir("ghost", "other"),
+  },
+  {
+    site: "rename_dir (destination occupied)",
+    error: "a file already exists at 'dst/a.ink'",
+    call: () =>
+      sessionWith({ "src/a.ink": MAIN, "dst/a.ink": MAIN }).rename_dir("src", "dst"),
+  },
 ];
 
 /** The doc-handle refusals, which answer with the `AutoImportJs` shape instead
@@ -153,8 +264,17 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
   it("the generated fixture is present and carries the shapes this file reads", () => {
     // Cheap canary: a fixture regenerated after a Rust rename would drop a key
     // here rather than making every case below fail with a confusing diff.
+    //
+    // `CompileResult` (#2577) is generated but has no mock call site: the
+    // mock's `compile_project` has no refusal path to check against. It is
+    // pinned here anyway because the Rust-side discovery scan
+    // (`every_refusal_struct_is_in_the_fixture`) found it — the fixture's job
+    // is to cover every struct that CAN refuse, and a shape landing here ahead
+    // of its mock counterpart is exactly how `DirMoveResultJs` waited for
+    // `rename_dir`.
     expect(Object.keys(fixture.shapes).sort()).toEqual([
       "AutoImportJs",
+      "CompileResult",
       "DirMoveResultJs",
       "StructuralResultJs",
     ]);
@@ -169,6 +289,12 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
   for (const { site, error, call } of autoImportRefusals) {
     it(`${site} answers a full AutoImportResult`, () => {
       expect(JSON.parse(call()) as unknown).toEqual(refusalShape("AutoImportJs", error));
+    });
+  }
+
+  for (const { site, error, call } of dirMoveRefusals) {
+    it(`${site} answers a full DirMoveResult`, () => {
+      expect(JSON.parse(call()) as unknown).toEqual(refusalShape("DirMoveResultJs", error));
     });
   }
 });
@@ -213,7 +339,7 @@ describe("a refused structural op is indistinguishable from an unsafe one (#2568
  * helpers, following the source-scanning precedent in
  * `no-test-file-imports.test.ts`.
  */
-describe("no mock call site answers ok: false outside the two refusal helpers (#2568)", () => {
+describe("no mock call site answers ok: false outside the refusal helpers (#2568)", () => {
   const mockPath = resolve(fileURLToPath(import.meta.url), "../../__mocks__/brink-web.ts");
   const mockSource = readFileSync(mockPath, "utf8");
 
@@ -235,24 +361,31 @@ describe("no mock call site answers ok: false outside the two refusal helpers (#
     return source.slice(braceOpen, end);
   }
 
-  const structuralBody = extractMethodBody(mockSource, "structuralRefusal");
-  const autoImportBody = extractMethodBody(mockSource, "autoImportRefusal");
+  /** One named helper per Rust refusal struct the mock can answer with. Adding
+   *  a fourth helper means adding it here — the arrays above list SITES, this
+   *  lists the seams they are required to route through. */
+  const REFUSAL_HELPERS = ["structuralRefusal", "autoImportRefusal", "dirMoveRefusal"];
 
-  it("structuralRefusal and autoImportRefusal each still emit exactly one ok: false", () => {
+  const helperBodies = REFUSAL_HELPERS.map((name) => ({
+    name,
+    body: extractMethodBody(mockSource, name),
+  }));
+
+  it.each(helperBodies)("$name still emits exactly one ok: false", ({ body }) => {
     // Guards the guard: if a helper refactor stopped emitting `ok: false`,
     // the "nothing outside the helpers" check below would pass vacuously.
-    expect((structuralBody.match(/ok:\s*false/g) ?? []).length).toBe(1);
-    expect((autoImportBody.match(/ok:\s*false/g) ?? []).length).toBe(1);
+    expect((body.match(/ok:\s*false/g) ?? []).length).toBe(1);
   });
 
-  it("no ok: false literal exists in the mock outside those two bodies", () => {
-    // Excise the two known-good bodies, then strip comments — the doc block
+  it("no ok: false literal exists in the mock outside those helper bodies", () => {
+    // Excise the known-good bodies, then strip comments — the doc block
     // above these helpers quotes `{ ok: false, error }` as prose explaining
     // the history this file guards against, and a naive scan would flag its
     // own explanation as a violation of the invariant it documents.
-    const withoutKnownBodies = mockSource
-      .replace(structuralBody, "")
-      .replace(autoImportBody, "");
+    const withoutKnownBodies = helperBodies.reduce(
+      (source, { body }) => source.replace(body, ""),
+      mockSource,
+    );
     const withoutComments = withoutKnownBodies
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/.*$/gm, "");
@@ -260,7 +393,7 @@ describe("no mock call site answers ok: false outside the two refusal helpers (#
     const strayMatches = withoutComments.match(/ok:\s*false/g) ?? [];
     expect(
       strayMatches,
-      "found a raw `ok: false` outside structuralRefusal/autoImportRefusal — " +
+      `found a raw \`ok: false\` outside ${REFUSAL_HELPERS.join("/")} — ` +
         "route the new site through one of those helpers instead of an inline literal",
     ).toEqual([]);
   });
