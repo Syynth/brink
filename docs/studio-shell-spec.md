@@ -671,10 +671,14 @@ writing that property — a freshly mounted `defaultValue={"barter"}` input read
 This was first measured in jsdom, and #2580 recorded the park as a *jsdom*
 behaviour that "a real browser, seeded through the `value` **attribute**,"
 would not show, reading `(0, 0)` instead. **That browser half was inferred, not
-observed, and it is wrong (#2595).** Every cell below is measured — in Chromium
-145.0.7632.6 by `packages/brink-studio/e2e/symbol-rename.spec.ts` ("a
+observed, and it is wrong (#2595).** Every cell below is measured, and every
+cell is pinned by a test that fails if it changes — in Chromium 145.0.7632.6 by
+the control block in `packages/brink-studio/e2e/symbol-rename.spec.ts` ("a
 defaultValue-seeded field parks the caret at the end in a real browser"), and in
-jsdom 29.0.1 by the seed-race suites plus a direct probe of the same four paths:
+jsdom 29.0.1 by `packages/brink-studio/src/__tests__/seed-path-caret-jsdom.test.ts`,
+which drives the same four paths the same way. Both columns are held to the same
+standard deliberately: this section exists because a reading measured once and
+then cited is indistinguishable, later, from one that was assumed.
 
 | how the field is seeded | Chromium 145 | jsdom 29 |
 | --- | --- | --- |
