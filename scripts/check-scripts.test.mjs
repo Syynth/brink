@@ -1,8 +1,8 @@
-// Tests for scripts/check-scripts.mjs (#2648, #2647, #2666, #2667). Node's built-in test
-// runner, matching check-pnpm-pin.test.mjs / check-wasm-pkg.test.mjs /
-// guarded-install.test.mjs: this file runs under `pnpm test:scripts`, which
-// CI's `frontend` job executes BEFORE `pnpm install`, so it must not depend on
-// anything installed.
+// Tests for scripts/check-scripts.mjs (#2648, #2647, #2666, #2667). Node's
+// built-in test runner, matching check-pnpm-pin.test.mjs /
+// check-wasm-pkg.test.mjs / guarded-install.test.mjs: this file runs under
+// `pnpm test:scripts`, which CI's `frontend` job executes BEFORE `pnpm
+// install`, so it must not depend on anything installed.
 //
 // Two halves, the same shape as check-pnpm-pin.test.mjs:
 //

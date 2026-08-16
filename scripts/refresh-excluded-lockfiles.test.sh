@@ -4,7 +4,7 @@
 #
 # The two `cargo update` invocations in that script were BARE until #2667 —
 # the same wedged-proxy hang class #2591/#2638/#2642 bounded in setup-dev.sh,
-# sitting in a script scripts/check-scripts.mjs (then scripts/check-setup-dev.mjs)
+# sitting in a script scripts/check-scripts.mjs (then named scripts/check-setup-dev.mjs)
 # never looked at.
 #
 # This harness follows scripts/setup-dev.test.sh's precedent exactly: it runs
