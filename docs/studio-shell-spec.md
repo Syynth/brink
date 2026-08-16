@@ -533,14 +533,30 @@ arriving, a project reload, a focus-restore effect) would make the same
 `packages/brink-studio/src/__tests__/search-view-focus.test.tsx` pins both
 halves.
 
-**Known outstanding violator.**
-[inline-name-input.ts:171-175](../packages/ink-editor/src/inline-name-input.ts)
+The rule reaches beyond the shell into `@brink-lang/editor`.
+[inline-name-input.ts](../packages/ink-editor/src/inline-name-input.ts)
 (`InlineNameInput`, the shared widget behind F2 rename and extract — exported
-at `ink-editor/src/index.ts`, used from `extract-actions.ts`) runs `focus()`
-and an unguarded `select()` inside a `setTimeout(…, 0)`, which rule 2 above
-forbids. It is not fixed here: `@brink-lang/editor` is a published package
-(0.14.0), so the guard and its regression test need their own changeset
-rather than riding in on this docs-only change. Tracked as #2540.
+at `ink-editor/src/index.ts`, used from `extract-actions.ts`) was the last
+outstanding violator: it ran `focus()` and an unguarded `select()` inside a
+`setTimeout(…, 0)`. Fixed in #2535 by the same guard `SymbolRenamePrompt` uses,
+compared against the widget's seeded `initialValue`. That surface was worse
+than #2511's original mechanism, not milder — the clobbered value there
+degraded the rename to a no-op, whereas an unguarded `select()` here let the
+rename commit *the wrong string*.
+
+The `setTimeout(…, 0)` itself stays, for a reason specific to this call site
+and distinct from `SymbolRenamePrompt`'s (there it was `Overlay`'s
+focus-return effect): `render()` is called from CM6's
+`WidgetType.toDOM()`, which returns the element *before* the view inserts it,
+and `focus()` on a detached element is a no-op. CM6's widget lifecycle is
+`toDOM`/`updateDOM`/`coordsAt`/`destroy` — no post-mount hook exists to move
+the call into. `packages/brink-studio/src/__tests__/inline-name-input-seed.test.ts`
+pins all three halves: the guard, the still-selected untouched field, and the
+deferral.
+
+`select()` now appears exactly once across `packages/ink-editor/src`, at that
+guarded call site; every other deferred call in the package is a bare
+`focus()`, which rule 2 explicitly permits.
 
 ### 7.8 Editor groups & the document-type API
 
