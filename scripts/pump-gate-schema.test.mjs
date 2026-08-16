@@ -203,6 +203,40 @@ describe("pump.js gate-evidence schema (#2645)", () => {
     );
   });
 
+  it("the build-agent call site actually wires buildSchemaFor(b) into the tool-call options", () => {
+    // The helpers block alone proves buildSchemaFor works in isolation; this
+    // guards the OTHER half — that the real prompt-assembly code in pump.js
+    // actually passes it to the agent() call, not just defines it unused.
+    assert.ok(
+      source.includes("schema: buildSchemaFor(b)"),
+      "pump.js's build agent() call must pass `schema: buildSchemaFor(b)`",
+    );
+  });
+
+  it("the review prompt renders formatGateEvidence with this item's own expected command count", () => {
+    // Guards the fix for the reviewer finding that formatGateEvidence(build)
+    // (no `expected` arg) let a short gateResults array self-report as
+    // complete (e.g. "[1/1]" for a 1-row array against a 5-command gate).
+    // The call site must pass gateCmds(b).length so a shortfall renders a
+    // banner instead of a falsely-complete-looking fraction.
+    assert.ok(
+      source.includes("<gate-output>") && source.includes("${formatGateEvidence(build, gateCmds(b).length)}"),
+      "the <gate-output> block in the review prompt must call formatGateEvidence(build, gateCmds(b).length)",
+    );
+  });
+
+  it("the old single-block gateOutput truncation is gone from the prompt path", () => {
+    // The pre-#2645 bug: a single `.slice(0, 2000)` over free-text gateOutput
+    // silently dropped the 4th of 4 rows for PR #2642. Reverting the
+    // call-site fix (while leaving buildSchemaFor/formatGateEvidence intact)
+    // would still pass every other test in this file — this assertion is the
+    // one that catches that specific silent revert.
+    assert.ok(
+      !source.includes('build.gateOutput ?? "(none returned)").slice('),
+      "pump.js must not reintroduce the old single-block `.slice(0, 2000)` truncation on the prompt path",
+    );
+  });
+
   it("formatGateEvidence shows every command row even when the combined text would exceed the old 2000-char cap", () => {
     // Reproduces the #2645 root cause: PR #2642's build reported a COMPLETE
     // 4-row gateResults/gateOutput totalling 3928 chars, but the old
@@ -223,5 +257,33 @@ describe("pump.js gate-evidence schema (#2645)", () => {
     const shown = helpers.formatGateEvidence(build);
     assert.ok(shown.includes("[4/4] step four"), "the 4th row's command must be visible");
     assert.ok(shown.includes("PASS 4/4"), "the 4th row's result must be visible");
+  });
+
+  it("formatGateEvidence prepends an INCOMPLETE banner when gateResults is shorter than the gate's own command count", () => {
+    // Reviewer finding: a 1-row gateResults against a 5-command gate used to
+    // render as "[1/1] cargo nextest run --workspace" — reading to the
+    // reviewer as a COMPLETE one-command gate, strictly LESS detectable than
+    // the free-text "[1/4]...[3/4]" convention it replaced. Passing the
+    // item's own expected count must surface the shortfall explicitly.
+    const build = {
+      gateGreen: true,
+      gateOutput: "z".repeat(100),
+      gateResults: [{ command: "cargo nextest run --workspace", result: "36 passed" }],
+    };
+    const shown = helpers.formatGateEvidence(build, 5);
+    assert.ok(
+      shown.includes("1 gateResults rows returned for a 5-command gate") && shown.includes("INCOMPLETE"),
+      `expected an INCOMPLETE banner naming 1 of 5, got: ${shown.slice(0, 200)}`,
+    );
+    assert.ok(shown.includes("[1/5] cargo nextest run --workspace"), "the single row must still render, denominated against the true 5");
+
+    // The happy path (row count matches expected) must NOT show the banner.
+    const completeBuild = {
+      gateGreen: true,
+      gateOutput: "z".repeat(100),
+      gateResults: [{ command: "a", result: "ok" }],
+    };
+    const completeShown = helpers.formatGateEvidence(completeBuild, 1);
+    assert.ok(!completeShown.includes("INCOMPLETE"), "a complete gateResults array must not show the INCOMPLETE banner");
   });
 });

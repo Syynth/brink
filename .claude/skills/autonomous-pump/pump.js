@@ -290,15 +290,28 @@ const buildSchemaFor = (b) => {
 // longer make an entire command disappear.
 const GATE_ROW_CAP = 600;
 const GATE_NOTES_CAP = 1200;
-const formatGateEvidence = (build) => {
+// `expected` is THIS item's own gate command count (`gateCmds(b).length`),
+// passed in by the caller — NOT re-derived from `results.length`, which
+// would make a short array look self-consistently complete (found in
+// review: a 1-row gateResults against a 5-command gate used to render as
+// "[1/1] ..." — reading as a COMPLETE one-command gate, strictly LESS
+// detectable than the free-text "[1/4]...[3/4]" convention it replaced).
+// When `results.length !== expected`, prepend an explicit banner so the
+// reviewer sees the shortfall before reading a single row.
+const formatGateEvidence = (build, expected) => {
   const results = Array.isArray(build?.gateResults) ? build.gateResults : [];
+  const denom = expected ?? results.length;
+  const banner =
+    expected !== undefined && results.length !== expected
+      ? `⚠ ${results.length} gateResults rows returned for a ${expected}-command gate — evidence is INCOMPLETE; gateGreen is unsupported\n\n`
+      : "";
   const rows = results.length
     ? results
-        .map((r, i) => `[${i + 1}/${results.length}] ${String(r?.command ?? "(missing command)")}\n${String(r?.result ?? "(missing result)").slice(0, GATE_ROW_CAP)}`)
+        .map((r, i) => `[${i + 1}/${denom}] ${String(r?.command ?? "(missing command)")}\n${String(r?.result ?? "(missing result)").slice(0, GATE_ROW_CAP)}`)
         .join("\n\n")
     : "(no gateResults returned — schema should have refused this; treat as unevidenced)";
   const notes = String(build?.gateOutput ?? "(none returned)").slice(0, GATE_NOTES_CAP);
-  return `${rows}\n\n--- free-text notes (preflight/disk; NOT per-command evidence) ---\n${notes}`;
+  return `${banner}${rows}\n\n--- free-text notes (preflight/disk; NOT per-command evidence) ---\n${notes}`;
 };
 // GATE_SCHEMA_HELPERS_END
 
@@ -446,9 +459,9 @@ Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed),
     if (!build || !build.ok || !build.pr) return { build: build ?? null, verdict: null };
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
-⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. \`gateResults\` rows are schema-ENFORCED to number one per gate command, so a missing row is impossible; that does NOT mean a row is true. If a row's result reads as skipped/lost/invented, or the free-text notes below it don't square with a real completed run, that is a FINDING in its own right and gateGreen is unsupported:
+⚠ THE BUILD'S OWN GATE EVIDENCE IS BELOW — read it, do not take gateGreen on trust. This item's gate has ${gateCmds(b).length} command(s), so that many \`gateResults\` rows should appear below — if fewer do, that is a FINDING in its own right and a banner above the rows will say so; gateGreen is unsupported in that case. A row being present also does NOT mean it's true: if a row's result reads as skipped/lost/invented, or the free-text notes below it don't square with a real completed run, that is a FINDING too:
 <gate-output>
-${formatGateEvidence(build)}
+${formatGateEvidence(build, gateCmds(b).length)}
 </gate-output>
 ${GH.pre}
 READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via the GitHub read tools and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
