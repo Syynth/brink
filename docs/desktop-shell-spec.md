@@ -67,6 +67,11 @@ Path discipline: provider keys are project-relative with `/` separators
 (the studio's convention); the provider owns the mapping to absolute OS
 paths and never leaks them into the session.
 
+Adding a save/retire path here (or anywhere else in `src-tauri`) is not
+covered by the TS-only `SAVE_PATHS` enrolment guard — see
+`docs/embedder-api.md`'s "Confirm and retire in ONE synchronous step"
+section, "Enrolment blind spot — Rust-side save paths (issue #2545)".
+
 ## Workspace placement
 
 `packages/brink-desktop/` — a small TS host package (the mount wrapper,

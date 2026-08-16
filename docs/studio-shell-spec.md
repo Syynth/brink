@@ -432,18 +432,23 @@ interface Notification {
   same `source` as its success toast, so both outcomes of one operation report
   through one channel and a failure cannot be mistaken for a success.
   ⚠ This states the TARGET, not the current state of every call site. Known
-  non-compliant paths, all pre-existing: the **inline-rename commit path** —
-  `error_json` (`crates/brink-web/src/editor_refactor.rs`) returns `safe: true`
-  with no `introduced_diagnostics`, so `isSafeRename`
-  (`packages/ink-editor/src/breakage.ts`) treats an `ok: false` refusal as safe,
-  `settleCommit` commits, and `applyMoveResult` raises the ordinary INFO
-  `Rename X to Y` toast with an Undo action although nothing was applied — and
-  the reorder/move/promote/demote ops in `dispatchSymbolAction`, which do not
-  report refusals at all. Established
+  non-compliant path, pre-existing: the reorder/move/promote/demote ops in
+  `dispatchSymbolAction`, which do not report refusals at all (#2544). Established
   by the file rename (`applyRename`, studio-store's binder slice); extended to the
   knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
-  returned to `SymbolRenamePrompt` and discarded when the prompt closed. Guarded by
-  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts`.
+  returned to `SymbolRenamePrompt` and discarded when the prompt closed; and to
+  the editor's inline (F2) rename commit path in #2543, where
+  `applyComputedRename` / `applyMoveResult` applied a refused rename as if it
+  had succeeded. The reason that path's guard is on `ok` and not `safe`:
+  `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes a refusal
+  with `safe: true` and no `introduced_diagnostics`, so `isSafeRename`
+  (`packages/ink-editor/src/breakage.ts`) — which reads only those two fields —
+  calls a refused rename "safe" and `settleCommit` commits it. `safe` describes
+  the breakage of edits that were actually computed; `ok` is the field that
+  says whether the operation happened, so `ok` is what both consumers guard on
+  instead. Guarded by
+  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts` and
+  `packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts`.
   PROVISIONAL: this records where a refused rename reports, which follows the
   existing pattern. Whether the rename prompt should additionally *stay open* on
   failure is an open UX question (#2528) and is not settled here.
