@@ -662,12 +662,43 @@ is read from `input.value` at fire time rather than captured before the frame.
 
 **Those behavioural tests are themselves deletion-mutation audited (#2580).**
 Building `binder-seed-race.test.tsx` surfaced a trap that makes a caret
-assertion silently worthless: **jsdom parks the caret at the end of an input's
-value on every write to `.value`**, so "the caret lands at the end" can hold
+assertion silently worthless: **a write to an input's `.value` property parks
+the caret at the end of that value**, so "the caret lands at the end" can hold
 with the production call site deleted, and React seeds an uncontrolled field by
-writing that property (a freshly mounted `defaultValue={"barter"}` input reads
-`(6, 6)` in jsdom where a real browser, seeded through the `value` *attribute*,
-reads `(0, 0)`). Every caret/selection assertion in the three older suites was
+writing that property — a freshly mounted `defaultValue={"barter"}` input reads
+`(6, 6)`.
+
+This was first measured in jsdom, and #2580 recorded the park as a *jsdom*
+behaviour that "a real browser, seeded through the `value` **attribute**,"
+would not show, reading `(0, 0)` instead. **That browser half was inferred, not
+observed, and it is wrong (#2595.)** Measured in Chromium 145.0.7632.6 by
+`packages/brink-studio/e2e/symbol-rename.spec.ts` ("a defaultValue-seeded field
+parks the caret at the end in a real browser"):
+
+| how the field is seeded | caret in Chromium 145 | caret in jsdom |
+| --- | --- | --- |
+| `value` **attribute** (`<input value="barter">`) | `(0, 0)` | `(0, 0)` |
+| `.value` **property** write | `(6, 6)` | `(6, 6)` |
+| React `defaultValue={"barter"}` at mount | `(6, 6)` | `(6, 6)` |
+
+Both recorded readings were real; the error was joining them to the wrong
+paths. React does **not** seed an uncontrolled field through the `value`
+attribute — the e2e observes it writing the `.value` IDL property on
+`#brink-rename-input`, which is the end-parking path, and per the HTML
+standard the `value` setter is *specified* to "move the text entry cursor
+position to the end of the text control". So the park is **platform behaviour
+that jsdom faithfully reproduces, not a jsdom artifact**, and the field an
+author actually faces on a fresh prompt already reads `(6, 6)` before any
+studio code touches it.
+
+That makes the suites' `setSelectionRange(0, 0)` resets *more* load-bearing,
+not less, and they must not be removed: their job is to stop an assertion
+inheriting its expected answer from the seed — a **vacuity guard**, not a
+correction of jsdom toward browser fidelity. Their earlier justification
+("reset so the test observes the browser's starting state rather than jsdom's")
+was the same inference and is likewise retired.
+
+Every caret/selection assertion in the three older suites was
 therefore re-checked by deleting the production call site it covers and
 confirming the suite goes red. Thirteen mutations across
 `SearchView.tsx`, `SymbolRenamePrompt.tsx`, `inline-name-input.ts` and the
