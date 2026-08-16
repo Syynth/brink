@@ -54,6 +54,35 @@
  * between "text-input select" and "an unrelated method that happens to be
  * named select". `.setSelectionRange(` has no such collision in this
  * codebase today.
+ *
+ * ── Sibling selection APIs (#2571 gap 2) ──────────────────────────────
+ *
+ * `.select()` / `.setSelectionRange(` are not the only ways to clobber a
+ * user's edit. `input.selectionStart = 0; input.selectionEnd = n` reaches the
+ * same end state one property at a time; `document.execCommand("selectAll")`
+ * does it through the legacy editing command; and on a `contenteditable` the
+ * Selection/Range API (`getSelection()` + `selectNodeContents(` /
+ * `setBaseAndExtent(` / `addRange(`) does it with no input element involved
+ * at all. A violator reaching for any of those enrolled nowhere.
+ *
+ * #2571 recorded "verified zero instances on main as of PR #2565" and asked
+ * whether to widen now or wait for a real instance. Re-verified by grep on
+ * 2026-08-16 (`\.(selectionStart|selectionEnd)\s*=[^=]`, `execCommand`,
+ * `getSelection\(`, `createRange\(`, `selectNodeContents`, `setBaseAndExtent`
+ * over every workspace package's `src` tree): still zero — the only
+ * `contenteditable` hits in the tree are CodeMirror's own `contentDOM`
+ * attribute, read (never written) by `document-sessions.ts` and two suites.
+ *
+ * Widened now rather than deferred, and the emptiness is the reason both
+ * ways: the case for deferring is false positives, and with zero matches
+ * there is no false positive to pay for and no marker churn to write — the
+ * per-site checks below still see exactly the same five call sites, which
+ * `EXPECTED_CALL_SITES` pins. Deferring would instead bank on a future author
+ * both knowing the invariant exists and choosing the one spelling the scan
+ * happens to match. If a legitimate future use does trip the widened scan
+ * (a read-only `getSelection()` for a caret coordinate, say), the
+ * `SELECT-INVARIANT-EXEMPT` hatch is the answer — and it is now proven usable
+ * rather than assumed (see the second `describe` in this file).
  */
 
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -71,8 +100,28 @@ const packagesRoot = resolve(here, "../../..");
 const repoRoot = resolve(packagesRoot, "..");
 const workspaceYamlPath = resolve(repoRoot, "pnpm-workspace.yaml");
 
-/** A CALL of the invariant: zero-arg `.select()`, or `.setSelectionRange(`. */
-const CALL = /\.(select)\(\)|\.(setSelectionRange)\(/;
+/**
+ * Every spelling of "programmatically move or widen a text selection" this
+ * invariant enrols — the two originals plus the sibling APIs from #2571 gap
+ * 2 (see this file's header). Order matters only for which name a match
+ * reports; the alternatives are mutually exclusive in practice.
+ *
+ * `\s*=[^=]` on the two property assignments is what keeps them from matching
+ * a comparison (`a.selectionStart === b`, `!==`) — this invariant is about
+ * WRITES.
+ */
+const CALL_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: "select", pattern: /\.select\(\)/ },
+  { method: "setSelectionRange", pattern: /\.setSelectionRange\(/ },
+  { method: "selectionStart=", pattern: /\.selectionStart\s*=[^=]/ },
+  { method: "selectionEnd=", pattern: /\.selectionEnd\s*=[^=]/ },
+  { method: "execCommand", pattern: /\bexecCommand\(/ },
+  { method: "getSelection", pattern: /\bgetSelection\(\)/ },
+  { method: "createRange", pattern: /\bcreateRange\(\)/ },
+  { method: "selectNodeContents", pattern: /\.selectNodeContents\(/ },
+  { method: "setBaseAndExtent", pattern: /\.setBaseAndExtent\(/ },
+  { method: "addRange", pattern: /\.addRange\(/ },
+];
 const MARKER = /^\/\/\s*SELECT-INVARIANT(-EXEMPT)?\s+(\S+):\s*(.+)$/;
 
 /**
@@ -85,8 +134,8 @@ function callLines(text: string): Array<{ index: number; method: string; code: s
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
     if (trimmed.startsWith("//")) continue;
-    const match = CALL.exec(lines[i]);
-    if (match !== null) found.push({ index: i, method: match[1] ?? match[2], code: trimmed });
+    const hit = CALL_PATTERNS.find(({ pattern }) => pattern.test(lines[i]));
+    if (hit !== undefined) found.push({ index: i, method: hit.method, code: trimmed });
   }
   return found;
 }
@@ -262,10 +311,12 @@ describe("every §7.7.1 select-call site is enrolled (#2542)", () => {
 
     expect(
       label(discovered.withCallSite.filter((file) => !expected.includes(file))),
-      "the source scan is AHEAD of SCANNED_FILES: these files call " +
-        ".select()/.setSelectionRange(...) but this test does not know about them, so their " +
-        "call sites are checked by nothing. Add them to SCANNED_FILES and give each call site " +
-        "a SELECT-INVARIANT marker (see this file's header)",
+      "the source scan is AHEAD of SCANNED_FILES: these files move a text selection " +
+        "programmatically (see CALL_PATTERNS — .select(), .setSelectionRange(...), a " +
+        ".selectionStart/.selectionEnd write, execCommand, or the Selection/Range API) but " +
+        "this test does not know about them, so their call sites are checked by nothing. Add " +
+        "them to SCANNED_FILES and give each call site a SELECT-INVARIANT marker (see this " +
+        "file's header)",
     ).toEqual([]);
     expect(
       label(expected.filter((file) => !discovered.withCallSite.includes(file))),
@@ -428,5 +479,59 @@ describe("SELECT-INVARIANT-EXEMPT is actually usable (regression test for the #2
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the sibling selection APIs are really matched (#2571 gap 2)", () => {
+  // Widening CALL_PATTERNS costs nothing precisely BECAUSE it matches nothing
+  // on `main` today (see this file's header) — which is also what makes a
+  // typo in one of the new patterns invisible: the scan would keep finding
+  // the same five real call sites and stay green forever while the sibling
+  // API it claims to cover walked straight through. These cases put a line of
+  // each spelling in front of `callLines` and require a hit.
+  const VIOLATORS: ReadonlyArray<{ method: string; line: string }> = [
+    { method: "select", line: "  input.select();" },
+    { method: "setSelectionRange", line: "  input.setSelectionRange(0, 4);" },
+    { method: "selectionStart=", line: "  input.selectionStart = 0;" },
+    { method: "selectionEnd=", line: "  input.selectionEnd = name.length;" },
+    { method: "execCommand", line: '  document.execCommand("selectAll");' },
+    { method: "getSelection", line: "  const sel = window.getSelection();" },
+    { method: "createRange", line: "  const range = document.createRange();" },
+    { method: "selectNodeContents", line: "  range.selectNodeContents(host);" },
+    { method: "setBaseAndExtent", line: "  sel.setBaseAndExtent(host, 0, host, 1);" },
+    { method: "addRange", line: "  sel.addRange(range);" },
+  ];
+
+  it("every pattern in CALL_PATTERNS has a violator case here", () => {
+    // Otherwise a pattern added later would silently have no coverage.
+    expect(VIOLATORS.map((v) => v.method).sort()).toEqual(CALL_PATTERNS.map((p) => p.method).sort());
+  });
+
+  for (const { method, line } of VIOLATORS) {
+    it(`${method} is seen as a call site`, () => {
+      const found = callLines(`function violate() {\n${line}\n}\n`);
+      expect(
+        found.map((f) => f.method),
+        `${line.trim()} matched nothing`,
+      ).toEqual([method]);
+    });
+  }
+
+  it("a comparison is not a call site (the property patterns match WRITES only)", () => {
+    // `\s*=[^=]` is the whole reason these two patterns are safe to add; a
+    // `=` that starts `==`/`===` is a read, and reads clobber nothing.
+    const reads = [
+      "  if (input.selectionStart === input.selectionEnd) return;",
+      "  if (input.selectionEnd !== end) return;",
+      "  const at = input.selectionStart == null ? 0 : input.selectionStart;",
+    ].join("\n");
+    expect(callLines(reads)).toEqual([]);
+  });
+
+  it("a commented-out call is not a call site", () => {
+    // Preservation guard for the `trimmed.startsWith("//")` filter: markers
+    // and prose about these APIs sit directly above real call sites, and a
+    // scan that counted them would double every site.
+    expect(callLines('  // document.execCommand("selectAll") would clobber it\n')).toEqual([]);
   });
 });

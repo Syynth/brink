@@ -12,7 +12,10 @@
  * This is the allowlist half of that fix, sibling to `save-paths.ts`'s role
  * for the confirm→retire sweep: `select-call-enrolment.test.ts` scans
  * production source for every real `.select()` (zero-argument only — see
- * that file's header for why) / `.setSelectionRange(` call site and requires
+ * that file's header for why) / `.setSelectionRange(` call site — plus, since
+ * #2571, the sibling spellings that reach the same end state (a
+ * `.selectionStart`/`.selectionEnd` write, `execCommand`, and the
+ * Selection/Range API) — and requires
  * a `SELECT-INVARIANT` marker comment above each one naming an id from this
  * list, so a brand-new call site fails loudly until a human names it here
  * and states why it satisfies (or is exempt from) the invariant.
