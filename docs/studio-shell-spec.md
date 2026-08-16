@@ -574,8 +574,12 @@ scans every workspace `src/` tree — roots derived from
 `packages/brink-studio/src/__tests__/workspace-roots.ts`, the same module
 the `SAVE_PATHS` enrolment guard (`docs/embedder-api.md`, "Confirm and
 retire in ONE synchronous step") uses, not a hand-typed
-`studio-ui`/`studio-shell`/`ink-editor` list — for every real
-zero-argument `.select()` / `.setSelectionRange(` call site, and requires a
+`studio-ui`/`studio-shell`/`ink-editor` list — for every real call site of any
+of the **ten** spellings in the suite's `CALL_PATTERNS`: zero-argument
+`.select()`, `.setSelectionRange(`, a `.selectionStart` write, a
+`.selectionEnd` write, `execCommand(`, `getSelection()`, `createRange()`,
+`.selectNodeContents(`, `.setBaseAndExtent(` and `.addRange(`. Each one
+requires a
 `// SELECT-INVARIANT <id>: <justification>` (or `SELECT-INVARIANT-EXEMPT`)
 marker comment directly above each one, naming an id from
 `packages/brink-studio/src/__tests__/select-calls.ts`'s `SELECT_CALL_IDS`.
@@ -594,12 +598,12 @@ required to name exactly one call site (the #2515 reuse loophole, closed
 from the start), and the call-site count pinned exactly so a scan that stops
 matching real calls cannot silently pass every check downstream.
 
-**The scan covers the sibling selection APIs too (#2571).** `.select()` and
-`.setSelectionRange(` are not the only spellings that clobber an edit: a
+**Why the eight sibling spellings are in that list (#2571).** `.select()` and
+`.setSelectionRange(` are not the only ways to clobber an edit: a
 `.selectionStart` / `.selectionEnd` write, `document.execCommand("selectAll")`,
-and the Selection/Range API on a `contenteditable` (`getSelection()` +
-`selectNodeContents(` / `setBaseAndExtent(` / `addRange(`) reach the same end
-state. All of them are in `CALL_PATTERNS` and enrol the same way. There were —
+and the Selection/Range API on a `contenteditable` (`getSelection()` /
+`createRange()` + `selectNodeContents(` / `setBaseAndExtent(` / `addRange(`)
+reach the same end state, so they enrol the same way. There were —
 and still are — zero instances of any of them in the workspace, and that
 emptiness is the argument for widening rather than against it: with nothing to
 match there is no false-positive cost and no marker churn, whereas deferring
@@ -608,6 +612,28 @@ The two property-write patterns match writes only (`\s*=[^=]`), so a
 `selectionStart === selectionEnd` comparison is not a call site. A legitimate
 future use (a read-only `getSelection()` for a caret coordinate) takes the
 `SELECT-INVARIANT-EXEMPT` hatch.
+
+**CodeMirror's `EditorView.dispatch({ selection })` is outside this invariant.**
+It selects text programmatically and matches no `CALL_PATTERNS` entry, so it
+was previously out by omission; this paragraph only writes down what §7.7.1
+already says (#2580), it does not decide anything new. The invariant's subject
+is fixed by its own opening sentence — "Every **text input** in the studio
+obeys two rules" — and rule 1 is stated entirely in `<input>` vocabulary
+("An *uncontrolled input's* initial text… `defaultValue`"; "A *controlled*
+input satisfies this rule by construction"), which a CM6 document has no
+counterpart for. The enrolment paragraph above then names the governed API by
+type when it explains the zero-argument boundary:
+`HTMLInputElement.select()` / `HTMLTextAreaElement.select()`, as against
+same-named methods that "have nothing to do with" them. A CM6 transaction
+moves the selection inside the document the author is *editing*, not the
+pending, unsubmitted value of a field a confirm path later reads; the studio
+drives it through explicit navigation verbs (`editor.reveal`, §6.1) and §7.8
+already classes it as per-view view state ("selection/scroll stay per-view").
+The `contenteditable` spellings above do not pull it back in — those are ways
+of selecting a *field's* text that happens to be built without an `<input>`,
+and CM never reaches for them from workspace `src/`; it owns its own selection
+model. Where a CM surface does host a text input, that input is an `<input>`
+and is enrolled on its own account — `InlineNameInput` is exactly that case.
 
 **A marker's justification is proven, not just present (#2571).** Enrolment
 proves a marker *exists*; it cannot prove the marker is *true* — the same gap
@@ -625,6 +651,27 @@ The new-file field's call *is* deferred into a `requestAnimationFrame` and is
 raced directly; its narrower claim is that the range stays zero-width
 (`start === end`) — a caret placement, with nothing to clobber — and that `end`
 is read from `input.value` at fire time rather than captured before the frame.
+
+**Those behavioural tests are themselves deletion-mutation audited (#2580).**
+Building `binder-seed-race.test.tsx` surfaced a trap that makes a caret
+assertion silently worthless: **jsdom parks the caret at the end of an input's
+value on every write to `.value`**, so "the caret lands at the end" can hold
+with the production call site deleted, and React seeds an uncontrolled field by
+writing that property (a freshly mounted `defaultValue={"barter"}` input reads
+`(6, 6)` in jsdom where a real browser, seeded through the `value` *attribute*,
+reads `(0, 0)`). Every caret/selection assertion in the three older suites was
+therefore re-checked by deleting the production call site it covers and
+confirming the suite goes red. Thirteen mutations across
+`SearchView.tsx`, `SymbolRenamePrompt.tsx`, `inline-name-input.ts` and the
+search store's `setSearchQuery`; twelve reddened the intended assertion. The
+one that did not
+was not a jsdom park but a missing *positive* half:
+`symbol-rename-prompt-seed.test.tsx` asserted only where the selection must
+NOT go, so deleting `SymbolRenamePrompt`'s `input.select()` outright — as
+opposed to un-guarding it — left the suite green. It now carries the same
+shape of preservation guard the binder suite uses. A caret assertion whose
+expected position coincides with the end of the value must reset the selection
+before the act under test, exactly as `binder-seed-race.test.tsx` does.
 
 Rule 1 ("seed synchronously at mount") still has no structural enforcement of
 its own; #2571 tracks the design for a companion guard.
