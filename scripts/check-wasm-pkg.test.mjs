@@ -331,11 +331,13 @@ describe("checkWasmPkgLink", () => {
     assert.equal(ok, false);
   });
 
-  it("names `pnpm install --frozen-lockfile` as the remediation, not a wasm-pack build command", () => {
+  it("names `pnpm install:checked` as the remediation, not a wasm-pack build command", () => {
     // checkWasmPkgLink's failure means the wasm-pack output already exists
     // (checkWasmPkg already covers that case with its own remediation) —
     // telling a developer to rebuild wasm here would misdiagnose a link
-    // failure as a missing build.
+    // failure as a missing build. The remediation must also point at the
+    // GUARDED entry point, not a bare `pnpm install --frozen-lockfile` whose
+    // exit code this whole family of fixes (#2593) says not to trust.
     const linkDir = buildResolvedLink({ files: [] });
 
     const errors = [];
@@ -345,7 +347,11 @@ describe("checkWasmPkgLink", () => {
       error: (msg) => errors.push(msg),
     });
 
-    assert.ok(errors[0].includes("pnpm install --frozen-lockfile"));
+    assert.ok(errors[0].includes("pnpm install:checked"));
+    assert.ok(
+      !errors[0].includes("pnpm install --frozen-lockfile"),
+      "the remediation must not recommend the unguarded command (#2593)",
+    );
     assert.ok(
       !errors[0].includes(BUILD_COMMAND),
       "checkWasmPkgLink's failure message should not tell the developer to rebuild wasm — " +

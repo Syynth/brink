@@ -324,15 +324,24 @@ fi
 echo "==> Done. Next steps:"
 echo "    cargo check --workspace"
 # @brink-lang/web (packages/wasm) has a file: dependency on this build
-# output. Build it BEFORE `pnpm install` — ordering that matters because
+# output. Build it BEFORE installing — ordering that matters because a bare
 # `pnpm install --frozen-lockfile` does NOT reliably fail loudly when it's
-# skipped (confirmed: it can exit 0 with the link silently unresolved,
-# surfacing later and confusingly as e.g. "vitest: not found" in a
-# downstream `pnpm --filter ... test` step; #2479). `check:wasm-pkg` runs
-# BEFORE `pnpm install` (not after) so a skipped build fails fast, before
-# any half-linked node_modules gets written — running it after install
-# would be green by construction on this printed sequence and would only
-# report the problem once the broken tree already existed.
+# skipped. Two distinct shapes have been observed for that same skipped
+# ordering: an install that exits 0 with the link silently unresolved
+# (#2479), and an install that writes NO node_modules at all (#2593, where
+# the only visible symptom was a bare "vitest: not found" from the NEXT
+# command). Which one a given machine gets depends on the pnpm 10.x that
+# corepack resolved there, so the printed sequence must not rely on pnpm's
+# exit code at all.
+#
+# `pnpm install:checked` (scripts/guarded-install.mjs) is what makes this
+# ENFORCED rather than merely printed: it runs check:wasm-pkg's cause check
+# BEFORE spawning pnpm — refusing to install at all, so no half-written tree
+# appears — and re-verifies afterwards that an installed tree actually
+# materialised, exiting non-zero when it did not even if pnpm reported
+# success. A pnpm `preinstall` hook cannot do this job: pnpm skips every
+# project lifecycle script when a per-package link fails, so the hook is
+# dead code in exactly this case (re-verified on pnpm 10.34.5 for #2593).
 echo "    wasm-pack build crates/brink-web --target web --out-dir www/pkg"
-echo "    pnpm check:wasm-pkg && pnpm install --frozen-lockfile"
+echo "    pnpm install:checked -- --frozen-lockfile   # guarded; see #2479/#2593"
 echo "    cargo nextest run --workspace     # the pump's per-round gate"
