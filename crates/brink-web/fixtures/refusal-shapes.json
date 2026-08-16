@@ -45,6 +45,10 @@
       "error": "name collision: 'hello' already exists as a top-level knot",
       "ok": false
     },
+    "extract_to_knot:leading-blank-line": {
+      "error": "empty selection: nothing to extract",
+      "ok": false
+    },
     "extract_to_knot:var-collision": {
       "error": "name collision: 'score' already exists as a variable, const, or list",
       "ok": false
@@ -160,6 +164,7 @@
     "BLANK_BODY": "=== one ===\nFirst.\n\nLast.\n",
     "FUNCTION_KNOT": "=== function greet() ===\n~ return \"hi\"\n",
     "KNOT_AND_FUNCTION": "=== one ===\nFirst.\n= a\nA.\n\n=== function greet() ===\n~ return \"hi\"\n",
+    "LEADING_BLANK_LINE": "\n=== a ===\nContent.\n",
     "MAIN": "=== hello ===\nHi.\n-> END\n",
     "PARAM_STITCH": "=== one ===\nFirst.\n= deal(n)\nD.\n",
     "STITCHLESS_KNOTS": "=== one ===\nFirst.\n\n=== two ===\nSecond.\n",

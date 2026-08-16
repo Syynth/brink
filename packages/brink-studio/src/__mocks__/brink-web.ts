@@ -31,7 +31,7 @@ interface MockSymbol {
  *
  * ⚠ Can a real name reach it? **Not through the studio today.** Both the
  * parser's knot/stitch header rules and the mock's own `parseOutline`
- * (`/^===\s+(\w+)\s*===/`, `/^=\s+(\w+)/`) admit `\w+` only, so every name the
+ * (`KNOT_HEADER_RE`, `STITCH_HEADER_RE`) admit `\w+` only, so every name the
  * outline — and therefore the symbol menu — can hand these ops is
  * metacharacter-free. The escape is defence for the *mock's own* callers:
  * `delete_symbol` takes its `knot`/`stitch` as free strings, and a test (or a
@@ -65,10 +65,10 @@ function escapeForRegex(s: string): string {
  * The optional group backtracks, so a knot legitimately NAMED `function`
  * (`=== function ===`) still resolves to `function`.
  */
-const KNOT_HEADER_RE = /^===\s+(?:function\s+)?(\w+)\s*(?:\([^)]*\))?\s*===/;
+const KNOT_HEADER_RE = /^===\s+(?:function\s+)?(\w+)\s*(?:\([^)]*\))?\s*===/d;
 
 /** A stitch header line (`= name`, `= name(params)`), capturing the name. */
-const STITCH_HEADER_RE = /^=\s+(\w+)/;
+const STITCH_HEADER_RE = /^=\s+(\w+)/d;
 
 /** Parse knot/stitch headers from ink source for outline generation. */
 function parseOutline(source: string): MockSymbol[] {
@@ -78,10 +78,10 @@ function parseOutline(source: string): MockSymbol[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    const knotMatch = line.match(KNOT_HEADER_RE);
+    const knotMatch = KNOT_HEADER_RE.exec(line);
     if (knotMatch) {
       const name = knotMatch[1]!;
-      const nameStart = offset + line.indexOf(name);
+      const nameStart = offset + knotMatch.indices![1]![0];
       const nameEnd = nameStart + name.length;
       symbols.push({
         name,
@@ -94,10 +94,10 @@ function parseOutline(source: string): MockSymbol[] {
       });
     }
 
-    const stitchMatch = line.match(STITCH_HEADER_RE);
+    const stitchMatch = STITCH_HEADER_RE.exec(line);
     if (stitchMatch && !knotMatch) {
       const name = stitchMatch[1]!;
-      const nameStart = offset + line.indexOf(name);
+      const nameStart = offset + stitchMatch.indices![1]![0];
       const nameEnd = nameStart + name.length;
       const parent = symbols[symbols.length - 1];
       if (parent) {
@@ -280,7 +280,7 @@ function isValidExtractionName(name: string): boolean {
 function snapToLines(source: string, lo: number, hi: number): [number, number] {
   const l = Math.min(lo, source.length);
   const h = Math.min(hi, source.length);
-  const start = source.lastIndexOf("\n", l - 1) + 1;
+  const start = l === 0 ? 0 : source.lastIndexOf("\n", l - 1) + 1;
   let end: number;
   if (h > start && source[h - 1] === "\n") {
     end = h;

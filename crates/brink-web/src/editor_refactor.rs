@@ -489,6 +489,14 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// `(n)` inside the new fences, not strand it after them.
     const PARAM_STITCH: &str = "=== one ===\nFirst.\n= deal(n)\nD.\n";
 
+    /// A source whose very first character is a blank line (review finding
+    /// on #2670). `snap_to_lines`'s line-start search runs `source[..lo]`,
+    /// so an empty prefix answers `None` -> `0` for `lo == 0`; the mock's
+    /// `source.lastIndexOf("\n", l - 1)` used to pass `-1`, which JS clamps
+    /// to `0` and finds the LEADING newline itself instead of "no newline
+    /// before here", answering `start = 1`.
+    const LEADING_BLANK_LINE: &str = "\n=== a ===\nContent.\n";
+
     /// Every named source the drivers run against, shipped INTO the fixture.
     ///
     /// The mirroring TypeScript test asserts its own constants are
@@ -504,6 +512,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
             "MAIN": MAIN,
             "PARAM_STITCH": PARAM_STITCH,
+            "LEADING_BLANK_LINE": LEADING_BLANK_LINE,
             "STITCHLESS_KNOTS": STITCHLESS_KNOTS,
             "STITCH_SHADOWS_FUNCTION": STITCH_SHADOWS_FUNCTION,
             "TWO_KNOTS": TWO_KNOTS,
@@ -989,6 +998,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         let two = session_with(&[("main.ink", TWO_KNOTS)]);
         let vars = session_with(&[("main.ink", VAR_AND_KNOT)]);
         let blank = session_with(&[("main.ink", BLANK_BODY)]);
+        let leading_blank = session_with(&[("main.ink", LEADING_BLANK_LINE)]);
 
         let hi = at(MAIN, "Hi.");
         let end_divert = at(MAIN, "-> END");
@@ -1022,6 +1032,15 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "extract_to_knot:accepted": outcome(
                 "extract_to_knot (ordinary success)",
                 &main.extract_to_knot("main.ink", hi, hi + 3, "lifted"),
+            ),
+            // Review finding on #2670: a source whose FIRST character is a
+            // blank line, selected at [0, 1). `snap_to_lines`'s `lo == 0`
+            // never finds a preceding newline (start stays 0), so the
+            // snapped window is just that leading blank line — empty
+            // content, not a real extraction.
+            "extract_to_knot:leading-blank-line": outcome(
+                "extract_to_knot (selection at offset 0, source starts with a blank line)",
+                &leading_blank.extract_to_knot("main.ink", 0, 1, "lifted"),
             ),
             // Functions cannot divert; `-> END` is flow control.
             "extract_to_function:flow-control": outcome(

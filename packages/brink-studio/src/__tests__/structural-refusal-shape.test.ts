@@ -240,6 +240,27 @@ const BLANK_BODY = "=== one ===\nFirst.\n\nLast.\n";
 /** A stitch carrying parameters, for the promote rewrite. */
 const PARAM_STITCH = "=== one ===\nFirst.\n= deal(n)\nD.\n";
 
+/**
+ * A function knot whose declared name is a single letter that also occurs as
+ * the FIRST character of the `function` keyword itself (review finding on
+ * #2670): `line.indexOf(name)` for `name = "f"` finds the `f` of `function`
+ * at offset 4, not the declared name at offset 13. `FUNCTION_KNOT`
+ * (`greet`) and `PARAM_STITCH` (`deal`) both happen to use names with no
+ * overlapping character in that position, so neither exercised this —
+ * `parseOutline`'s nameStart bug was invisible to every existing fixture.
+ */
+const FUNCTION_KNOT_SHORT_NAME = '=== function f() ===\n~ return "hi"\n';
+
+/** The offset of the real declared name `f` in {@link FUNCTION_KNOT_SHORT_NAME}
+ *  — i.e. NOT the `f` inside `function`. */
+const FUNCTION_KNOT_SHORT_NAME_OFFSET = FUNCTION_KNOT_SHORT_NAME.indexOf("f(");
+
+/** A source whose very first character is a blank line (review finding on
+ *  #2670): `snapToLines`' old `source.lastIndexOf("\n", l - 1) + 1` passes
+ *  `l - 1 === -1` to `lastIndexOf`, which JS clamps to `0` — so it finds the
+ *  leading `\n` itself and answers `start = 1` instead of `0`. */
+const LEADING_BLANK_LINE = "\n=== a ===\nContent.\n";
+
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
   for (const [path, source] of Object.entries(files)) s.update_file(path, source);
@@ -730,6 +751,12 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
       ),
   },
   {
+    // Review finding on #2670: a source whose first character is a blank
+    // line, selected at [0, 1) — see LEADING_BLANK_LINE above.
+    key: "extract_to_knot:leading-blank-line",
+    call: () => sessionWith({ "main.ink": LEADING_BLANK_LINE }).extract_to_knot("main.ink", 0, 1, "lifted"),
+  },
+  {
     key: "extract_to_function:flow-control",
     call: () =>
       sessionWith({ "main.ink": MAIN }).extract_to_function(
@@ -780,6 +807,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
       BLANK_BODY,
       FUNCTION_KNOT,
       KNOT_AND_FUNCTION,
+      LEADING_BLANK_LINE,
       MAIN,
       PARAM_STITCH,
       STITCHLESS_KNOTS,
@@ -1084,6 +1112,64 @@ describe("rename_symbol refuses a symbol the file does not declare (#2634)", () 
     ) as { ok: boolean; new_source?: string };
     expect(parsed.ok).toBe(true);
     expect(parsed.new_source).toContain("=== function hail() ===");
+  });
+});
+
+/**
+ * `parseOutline`'s name-offset regression (review finding on #2670).
+ *
+ * The widened `KNOT_HEADER_RE` (`(?:function\s+)?`) fixed WHICH knots
+ * `parseOutline` sees, but `nameStart = offset + line.indexOf(name)` was
+ * still wrong for any of them: `line.indexOf(name)` finds the FIRST
+ * occurrence of the name's characters anywhere in the line, not the
+ * matched declaration. For `=== function f() ===` that is the `f` inside
+ * `function` itself (offset 4), not the declared name (offset 13). Every
+ * existing fixture (`FUNCTION_KNOT` -> `greet`, `PARAM_STITCH` -> `deal`)
+ * happened to use a name that shares no such prefix with `function`, so
+ * none of them could catch it — this fixture's whole reason to exist is
+ * that its name starts with the same letter `function` does.
+ *
+ * This feeds `file_symbols`, `project_outline`, `story_graph` node spans,
+ * and `rename_symbol_at` (the F2 road) — a caret placed on the real name
+ * would answer `cannot rename this symbol` under the old offset.
+ */
+describe("parseOutline reports the real name offset, not the first character match (#2670 review)", () => {
+  it("file_symbols reports the knot's name span at the declared name", () => {
+    const symbols = JSON.parse(
+      sessionWith({ "main.ink": FUNCTION_KNOT_SHORT_NAME }).file_symbols("main.ink"),
+    ) as Array<{ name: string; start: number; end: number }>;
+    expect(symbols).toHaveLength(1);
+    expect(symbols[0]!.name).toBe("f");
+    expect(symbols[0]!.start).toBe(FUNCTION_KNOT_SHORT_NAME_OFFSET);
+    expect(symbols[0]!.end).toBe(FUNCTION_KNOT_SHORT_NAME_OFFSET + 1);
+  });
+
+  it("rename_symbol_at resolves a caret on the real name", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": FUNCTION_KNOT_SHORT_NAME }).rename_symbol_at(
+        "main.ink",
+        FUNCTION_KNOT_SHORT_NAME_OFFSET,
+        "hail",
+      ),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain("=== function hail() ===");
+  });
+
+  it("rename_symbol_at does NOT resolve a caret sitting on the `function` keyword", () => {
+    // The old, wrong offset (4) lived inside the `function` keyword, so a
+    // caret there used to resolve as if it were on the declared name. It
+    // is not the declaration and must refuse like any other non-symbol
+    // offset.
+    const keywordOffset = FUNCTION_KNOT_SHORT_NAME.indexOf("function");
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": FUNCTION_KNOT_SHORT_NAME }).rename_symbol_at(
+        "main.ink",
+        keywordOffset,
+        "hail",
+      ),
+    ) as { ok: boolean };
+    expect(parsed.ok).toBe(false);
   });
 });
 

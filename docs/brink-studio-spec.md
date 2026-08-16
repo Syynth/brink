@@ -441,7 +441,7 @@ side. That does not scale and does not recur reliably, so #2661 audited the
 remaining structural ops for the same shape and — more importantly — gave the
 class a driven guard instead of another pair of hand-written cases.
 
-**The mechanism.** The generated fixture carries two more machine-produced
+**The mechanism.** The generated fixture carries three more machine-produced
 maps beside `shapes` and `messages`:
 
 - **`sources`** — the exact source text every driver ran against.
