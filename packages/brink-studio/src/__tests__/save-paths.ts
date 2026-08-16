@@ -23,6 +23,10 @@
  * Adding a save path means: add its id here, add its driver to `SAVE_PATHS`,
  * and put a `// SAVE-PATH markFilesSaved: <id>` marker above the call site
  * (`docs/embedder-api.md`, "Confirm and retire in ONE synchronous step").
+ *
+ * The double-registration trap this file exists to avoid is guarded
+ * workspace-wide by `packages/brink-studio/src/__tests__/no-test-file-imports.test.ts`
+ * (#2516), which scans for any import of a `*.test.ts(x)` file.
  */
 export const SAVE_PATH_IDS = [
   "OverlayPersistence.saveAll",

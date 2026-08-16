@@ -109,18 +109,29 @@
    the same --bs-symbol-* tokens the binder's outline icons use, so a
    collapsed knot and its binder entry read as the same symbol. The glyph is
    empty when the header's kind could not be classified — :not(:empty) keeps
-   an unclassified fold from carrying a dead gap. */
+   an unclassified fold from carrying a dead gap.
+
+   Every brink-* class rendered here must carry a rule in a workspace style
+   source, and the per-kind tint must cover both the icon and the header —
+   both guarded by fold-kinds.test.ts (#2546); see
+   docs/editor-consumer-guide.md "Summary pills — JetBrains-style fold
+   placeholders". The header keeps the unclassified-default --bs-symbol-knot
+   from the base .brink-fold-decl-header rule above when no data-decl-kind
+   is set. */
 .brink-studio .brink-fold-decl-icon:not(:empty) {
   margin-right: 5px;
   opacity: 0.85;
 }
-.brink-studio .brink-fold-decl[data-decl-kind="knot"] .brink-fold-decl-icon {
+.brink-studio .brink-fold-decl[data-decl-kind="knot"] .brink-fold-decl-icon,
+.brink-studio .brink-fold-decl[data-decl-kind="knot"] .brink-fold-decl-header {
   color: var(--bs-symbol-knot);
 }
-.brink-studio .brink-fold-decl[data-decl-kind="stitch"] .brink-fold-decl-icon {
+.brink-studio .brink-fold-decl[data-decl-kind="stitch"] .brink-fold-decl-icon,
+.brink-studio .brink-fold-decl[data-decl-kind="stitch"] .brink-fold-decl-header {
   color: var(--bs-symbol-stitch);
 }
-.brink-studio .brink-fold-decl[data-decl-kind="function"] .brink-fold-decl-icon {
+.brink-studio .brink-fold-decl[data-decl-kind="function"] .brink-fold-decl-icon,
+.brink-studio .brink-fold-decl[data-decl-kind="function"] .brink-fold-decl-header {
   color: var(--bs-symbol-function);
 }
 /* Collapsed leading INCLUDE block: "INCLUDE … (N files)" */
@@ -136,7 +147,12 @@
    Sized and tinted like the other inline chips above the fold — the same
    0.85em / muted-fill / 1px-border language as .brink-host-chip and
    .brink-value-chip — so a collapsed run reads as one collapsed object
-   rather than loose glyphs spliced into the line (#2546). */
+   rather than loose glyphs spliced into the line (#2546).
+
+   Every brink-* class rendered here must carry a rule in a workspace style
+   source — guarded by fold-kinds.test.ts ("fold placeholders are styled,
+   not just class-tagged (#2546)"); see docs/editor-consumer-guide.md
+   "Summary pills — JetBrains-style fold placeholders". */
 .brink-studio .brink-fold-pill {
   display: inline-flex;
   align-items: baseline;
