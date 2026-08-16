@@ -28,6 +28,43 @@
 # publishes them: building nextest + wasm-pack from source costs minutes each,
 # which matters when this runs as a cloud-session setup script on every start.
 #
+# Every network fetch below is bounded by run_with_timeout. Knobs, in the
+# order their steps run, all overridable via environment variable:
+#
+#   Knob                              Default  On timeout
+#   ---------------------------------------------------------------------
+#   BRINK_SETUP_RUSTUP_TIMEOUT           120s   FAIL (exit 1) — nothing
+#                                                else works without cargo/
+#                                                rustc on PATH.
+#   BRINK_SETUP_WASM_PACK_TIMEOUT         60s   WARN, fall back to a
+#                                                from-source `cargo install`
+#                                                (see CARGO_INSTALL below).
+#   BRINK_SETUP_BINARYEN_TIMEOUT          60s   WARN, continue — this
+#                                                binary is a pure
+#                                                accelerator; wasm-pack
+#                                                downloads it itself
+#                                                otherwise.
+#   BRINK_SETUP_NEXTEST_TIMEOUT           60s   WARN, fall back to a
+#                                                from-source `cargo install`
+#                                                (see CARGO_INSTALL below).
+#   BRINK_SETUP_CARGO_INSTALL_TIMEOUT    300s   Shared by the three
+#                                                from-source `cargo install`
+#                                                fallbacks (wasm-pack,
+#                                                cargo-nextest, cargo-deny).
+#                                                wasm-pack/nextest: FAIL
+#                                                (exit 1). cargo-deny: WARN,
+#                                                skip the audit.
+#   BRINK_SETUP_AUDIT_TIMEOUT            300s   The two `cargo deny check`
+#                                                audits themselves
+#                                                (BRINK_SETUP_FULL=1 only).
+#                                                Root workspace: FAIL.
+#                                                src-tauri workspace: WARN
+#                                                (matches desktop-smoke.yml's
+#                                                continue-on-error, #2470).
+#
+# Also see BRINK_SETUP_FULL (below, and CLAUDE.md "Cloud / fresh-environment
+# sessions") — gates whether cargo-deny installs/audits at all.
+#
 # Safe to re-run: every step checks current state before acting.
 
 set -euo pipefail
@@ -62,7 +99,7 @@ run_with_timeout() {
   fi
 
   if [ -z "$timeout_bin" ]; then
-    echo "⚠  timeout command not found — running audit without timeout protection"
+    echo "⚠  timeout command not found — running without timeout protection"
     "$@"
     return $?
   fi
@@ -97,8 +134,17 @@ if ! command -v rustup >/dev/null 2>&1; then
   # cold toolchain fetch). FAILS on timeout: every later step in this script,
   # and the workspace itself, needs cargo/rustc on PATH.
   BRINK_SETUP_RUSTUP_TIMEOUT="${BRINK_SETUP_RUSTUP_TIMEOUT:-120}"
+  # `-o pipefail` here is load-bearing, not decoration: SHELLOPTS is not
+  # exported, so the outer script's `set -euo pipefail` does NOT propagate
+  # into this `bash -c` subshell on its own — without repeating it here, a
+  # failing `curl` (403/407/TLS from a proxy) is masked by `sh`'s own exit
+  # code reading empty stdin as success, and `rustup_install_rc` reads 0
+  # instead of curl's real failure (verified: dies later at
+  # `source $HOME/.cargo/env` with no diagnostic, or at `rustup: command not
+  # found` if a stale `.cargo/env` is already present — either way silently,
+  # never through the "rustup install failed" branch below).
   rustup_install_rc=0
-  run_with_timeout "${BRINK_SETUP_RUSTUP_TIMEOUT}" bash -c \
+  run_with_timeout "${BRINK_SETUP_RUSTUP_TIMEOUT}" bash -o pipefail -c \
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none" ||
     rustup_install_rc=$?
   if [ "$rustup_install_rc" -eq 124 ]; then

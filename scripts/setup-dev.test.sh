@@ -12,7 +12,7 @@
 # string/grep match on the script source would not catch this: the bug is in
 # *control flow*, not in text that's present or absent.
 #
-# Part 2 (Tests 5-12 — #2591): the remaining network fetches #2531/#2584 left
+# Part 2 (Tests 5-15 — #2591): the remaining network fetches #2531/#2584 left
 # unbounded (rustup installer, wasm-pack tarball, binaryen/wasm-opt tarball,
 # get.nexte.st tarball, and the three from-source `cargo install` fallbacks),
 # plus a full end-to-end run of the script against a completely fresh,
@@ -274,6 +274,14 @@ real_cargo="$(command -v cargo)"
 #   HANG_NEXTEST_CURL, HANG_CARGO_INSTALL_WASM_PACK,
 #   HANG_CARGO_INSTALL_NEXTEST, HANG_CARGO_INSTALL_DENY
 #
+# The rustup/wasm-pack/nextest curl fetches also each have a FAIL_* twin
+# (FAIL_RUSTUP_CURL, FAIL_WASM_PACK_CURL, FAIL_NEXTEST_CURL) that makes the
+# stub exit 35 immediately instead of hanging — simulating a proxy rejecting
+# the connection (403/407/TLS) rather than stalling it, which is the shape
+# that exposed the `bash -c` pipefail-not-inherited bug in the rustup
+# install step (a HANG_* toggle alone never would: a real `timeout`-induced
+# 124 does not go through the code path that bug lived in).
+#
 # `preseed_rustup=1` drops a working `rustup` stub straight into the stub
 # dir (bypassing the curl-based install flow entirely) for tests that are
 # about some OTHER step and want rustup out of the way with minimal fuss.
@@ -305,6 +313,7 @@ url="${*: -1}"
 case "${url}" in
   *sh.rustup.rs*)
     if [ "${HANG_RUSTUP_CURL:-0}" = "1" ]; then sleep 5; exit 0; fi
+    if [ "${FAIL_RUSTUP_CURL:-0}" = "1" ]; then echo "stub curl: simulated failure (rustup)" >&2; exit 35; fi
     # A fake "installer script" for `sh -s -- ...` to run: plants a working
     # stub `rustup` and a PATH-extending env file under $HOME, simulating a
     # successful rustup-init run with no real network activity.
@@ -324,6 +333,7 @@ RUSTUP_INSTALLER
     ;;
   *wasm-pack-v0.14.0*)
     if [ "${HANG_WASM_PACK_CURL:-0}" = "1" ]; then sleep 5; exit 0; fi
+    if [ "${FAIL_WASM_PACK_CURL:-0}" = "1" ]; then echo "stub curl: simulated failure (wasm-pack)" >&2; exit 35; fi
     t="$(mktemp -d)"
     mkdir -p "${t}/wasm-pack-v0.14.0-x86_64-unknown-linux-musl"
     cat > "${t}/wasm-pack-v0.14.0-x86_64-unknown-linux-musl/wasm-pack" <<'WP'
@@ -354,6 +364,7 @@ WO
     ;;
   *get.nexte.st*)
     if [ "${HANG_NEXTEST_CURL:-0}" = "1" ]; then sleep 5; exit 0; fi
+    if [ "${FAIL_NEXTEST_CURL:-0}" = "1" ]; then echo "stub curl: simulated failure (nextest)" >&2; exit 35; fi
     t="$(mktemp -d)"
     cat > "${t}/cargo-nextest" <<'NX'
 #!/usr/bin/env bash
@@ -624,6 +635,65 @@ if printf '%s' "${out}" | grep -q "pnpm ready"; then
   pass "cargo-deny install timeout: script reached the pnpm section"
 else
   fail "cargo-deny install timeout: script never reached the pnpm section:\n${out}"
+fi
+
+# --- Test 13: the rustup installer curl FAILING FAST (not hanging) must be
+# detected and reported — this is the specific regression this test guards:
+# `bash -c` does not inherit the outer script's `set -euo pipefail` (SHELLOPTS
+# is not exported), so without `-o pipefail` on the inner `bash -c` itself, a
+# failing `curl` in `curl | sh -s -- ...` is masked by `sh` reading empty
+# stdin and exiting 0 — `rustup_install_rc` reads 0 instead of curl's real
+# failure, and this test's "exits non-zero" + "rustup install failed"
+# assertions both fail on that regressed behavior (the run instead dies
+# later, silently, at `source $HOME/.cargo/env`). A HANG_* toggle can't catch
+# this: a `timeout`-induced 124 doesn't go through the code path the bug
+# lived in. ---
+out="$(run_full_script 0 FAIL_RUSTUP_CURL=1)"
+rc=$?
+if [ "${rc}" -ne 0 ]; then
+  pass "rustup install fetch failure: script exits non-zero (got ${rc})"
+else
+  fail "rustup install fetch failure: script exited 0 — the failure was not detected:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "rustup install failed"; then
+  pass "rustup install fetch failure: prints a 'rustup install failed' message"
+else
+  fail "rustup install fetch failure: no 'rustup install failed' in output:\n${out}"
+fi
+
+# --- Test 14: the wasm-pack tarball fetch FAILING FAST (not hanging) must
+# WARN and fall back to a from-source `cargo install`, which succeeds — same
+# expected behavior as the HANG_WASM_PACK_CURL case (Test 7), proven here via
+# curl's OTHER real failure shape (a proxy actively rejecting the connection,
+# not stalling it) now that the fail-toggle plumbing exists. ---
+out="$(run_full_script 1 FAIL_WASM_PACK_CURL=1)"
+rc=$?
+if [ "${rc}" -eq 0 ]; then
+  pass "wasm-pack fetch failure (fallback succeeds): script exits 0"
+else
+  fail "wasm-pack fetch failure (fallback succeeds): script exited ${rc}:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "Prebuilt wasm-pack unavailable"; then
+  pass "wasm-pack fetch failure (fallback succeeds): names the failure and falls back"
+else
+  fail "wasm-pack fetch failure (fallback succeeds): no fallback message in output:\n${out}"
+fi
+
+# --- Test 15: the get.nexte.st fetch FAILING FAST (not hanging) must WARN
+# and fall back to a from-source `cargo install`, which succeeds — same
+# expected behavior as the HANG_NEXTEST_CURL case (Test 10), proven here via
+# curl's OTHER real failure shape. ---
+out="$(run_full_script 1 FAIL_NEXTEST_CURL=1)"
+rc=$?
+if [ "${rc}" -eq 0 ]; then
+  pass "nextest fetch failure (fallback succeeds): script exits 0"
+else
+  fail "nextest fetch failure (fallback succeeds): script exited ${rc}:\n${out}"
+fi
+if printf '%s' "${out}" | grep -q "Prebuilt cargo-nextest unavailable"; then
+  pass "nextest fetch failure (fallback succeeds): names the failure and falls back"
+else
+  fail "nextest fetch failure (fallback succeeds): no fallback message in output:\n${out}"
 fi
 
 if [ "${failures}" -gt 0 ]; then
