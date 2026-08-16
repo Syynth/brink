@@ -622,8 +622,13 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// own invented wording and nothing above would notice. This scans the
     /// crate for every refusal-message literal that talks about a handle and
     /// asserts the vocabulary is exactly the two strings production uses today
-    /// — so `"unknown handle"`, `"bad doc handle"` or any other coinage is red
-    /// at the source, before it can reach a mock.
+    /// — so any coinage that still contains the word `"handle"` (`"unknown
+    /// handle"`, `"bad doc handle"`, ...) is red at the source, before it can
+    /// reach a mock. The filter is the literal substring `"handle"`
+    /// (`refusal_message_literals_in`'s callers filter on `m.contains
+    /// ("handle")`): a handle refusal worded without that word — `"unknown
+    /// document id"`, `"no such document"` — has no literal for the scan to
+    /// catch and is invisible to it.
     #[test]
     fn doc_handle_refusal_vocabulary_is_uniform() {
         let mut handle_words: Vec<String> = crate_sources()

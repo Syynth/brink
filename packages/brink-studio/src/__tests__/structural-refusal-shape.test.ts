@@ -90,6 +90,16 @@ function refusalShape(name: string, error: string): Record<string, unknown> {
 }
 
 /**
+ * Every `fixture.messages` key that a case below has actually pulled through
+ * `productionMessage`. Tracked by KEY, not by the string value it resolved
+ * to — three driven messages currently share the identical value ("unknown
+ * document handle"), so a value-keyed set would pass as soon as any one case
+ * used it, silently tolerating another case being deleted. See the coverage
+ * assertion below, which compares this against `Object.keys(fixture.messages)`.
+ */
+const consumedMessageKeys = new Set<string>();
+
+/**
  * Production's own wording for a refusal site, read off the generated fixture
  * rather than transcribed (#2603).
  *
@@ -106,6 +116,7 @@ function productionMessage(key: string): string {
     `fixture has no driven message for "${key}" — add a driver to driven_messages() ` +
       "and regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`",
   ).toBeTypeOf("string");
+  consumedMessageKeys.add(key);
   return message!;
 }
 
@@ -358,22 +369,12 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
 
     // A driven message with no site exercising it is a string parked in a
     // fixture, not a guard: it would keep passing while the mock said anything
-    // it liked. Every value must be the expectation of some case above.
-    const pinned = new Set(
-      [
-        ...structuralRefusals,
-        ...autoImportRefusals,
-        ...dirMoveRefusals,
-        ...compileRefusals,
-      ].map((c) => c.error),
-    );
-    for (const [key, message] of Object.entries(fixture.messages)) {
-      expect(
-        pinned.has(message),
-        `the fixture drives "${key}" = ${JSON.stringify(message)} but no case above ` +
-          "asserts it — wire it into a refusal case or drop the driver",
-      ).toBe(true);
-    }
+    // it liked. Tracked by KEY (`consumedMessageKeys`, populated by
+    // `productionMessage` as the arrays above are built), not by the string
+    // VALUE it resolved to — all three driven messages currently share the
+    // identical value "unknown document handle", so comparing values would
+    // pass as soon as any one case used it, even with the other two deleted.
+    expect([...consumedMessageKeys].sort()).toEqual(Object.keys(fixture.messages).sort());
   });
 
   for (const { site, error, call } of structuralRefusals) {
