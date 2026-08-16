@@ -160,7 +160,33 @@ export interface DocumentCallbacks {
    *  side): the host writes `new_source` + cross-file edits through its apply
    *  seam (`applyMoveResult`), surfacing a toast + Undo. `description` labels
    *  the undo step / toast. When absent, the code-actions menu resolves nothing
-   *  (the pre-#315 dismiss-only behavior). */
+   *  (the pre-#315 dismiss-only behavior).
+   *
+   *  ⚠ `result` carries the same `ok: false`/`safe: true` refusal hazard
+   *  documented on `onRenameCommit` above — `result.ok`, not `result.safe`,
+   *  is what tells a refusal apart from a clean success. The two paths that
+   *  feed this callback reach it differently, though:
+   *
+   *  - **Extract** (`computeExtract`/`applyExtract`): a refusal never makes
+   *    it here. `computeExtract` returns `null` on `!result.ok`, and
+   *    `InlineNameInput` (`inline-name-input.ts`) treats a `null` query
+   *    result as "no commit" — so `applyExtract`, and therefore this
+   *    callback, only ever sees `ok: true` extract results.
+   *  - **Code actions** (`applyCodeAction`, #321): forwards
+   *    `resolveCodeAction`'s result to this callback UNCONDITIONALLY, with
+   *    no `ok` filter. A stale pick (the source or doc changed between the
+   *    menu opening and the selection) reaches `resolve_code_action_impl`
+   *    (`crates/brink-web/src/editor/code_actions.rs`), which can refuse
+   *    with `error_json("file not loaded")`, `error_json("no source")`,
+   *    `error_json("invalid code-action data: …")`, or
+   *    `error_json("code action produced no change")` — all `ok: false`,
+   *    `safe: true`. This is the path that actually needs the guard below.
+   *
+   *  **Check `result.ok` before applying anything** — the same rule
+   *  `onRenameCommit` requires, for the same reason (`docs/studio-shell-spec.md`
+   *  §7.5). `@brink-lang/studio`'s own apply seam (`applyMoveResult`) already
+   *  has this guard (#2543/#2564); every other host of this callback needs
+   *  it in its own apply seam too. */
   onApplyStructural?(req: {
     path: string;
     description: string;

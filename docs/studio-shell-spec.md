@@ -433,7 +433,13 @@ interface Notification {
   through one channel and a failure cannot be mistaken for a success.
   ⚠ This states the TARGET, not the current state of every call site. Known
   non-compliant path, pre-existing: the reorder/move/promote/demote ops in
-  `dispatchSymbolAction`, which do not report refusals at all (#2544). Established
+  `dispatchSymbolAction`, which do not report refusals at all (#2544). A second
+  known non-compliant path, also pre-existing: the code-actions/extract apply
+  seam (`onApplyStructural` → `applyMoveResult`, `packages/brink-studio/src/
+  mount.tsx:610`), which since #2564 returns early on `ok: false` so nothing
+  gets written, but — like `dispatchSymbolAction` — raises no notification, so
+  a refused code action or extract is silently dropped from the host's
+  perspective (#2544). Established
   by the file rename (`applyRename`, studio-store's binder slice); extended to the
   knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
   returned to `SymbolRenamePrompt` and discarded when the prompt closed; and to

@@ -450,6 +450,15 @@ export class EditorSession {
     if (lo === hi) {
       return EditorSession.structuralRefusal("empty selection: nothing to extract");
     }
+    // Name collision (#2578): mirrors the real op's "name collision" refusal
+    // class named in `document-sessions.ts`'s doc-comment ("name collision,
+    // header crossing, illegal function body") — enough to drive a genuine
+    // `ok: false` extract result in tests without reimplementing the Rust
+    // scope-analysis. The precise collision math is covered by Rust tests.
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`^\\s*={2,3}\\s*(function\\s+)?${esc}\\b`, "m").test(source)) {
+      return EditorSession.structuralRefusal(`a knot or function named '${name}' already exists`);
+    }
     // Snap to whole lines.
     const selStart = source.lastIndexOf("\n", lo - 1) + 1;
     const nextNl = source.indexOf("\n", hi);
@@ -1446,7 +1455,30 @@ export class EditorSession {
   goto_definition_doc(_doc: number, _offset: number): string { return "null"; }
   find_references_doc(_doc: number, _offset: number): string { return "[]"; }
   prepare_rename_doc(_doc: number, _offset: number): string { return "null"; }
-  code_actions_doc(_doc: number, _offset: number): string { return "[]"; }
+  code_actions_doc(_doc: number, _offset: number): string {
+    // One synthetic, non-actionable entry — enough to let a test open the
+    // real code-actions menu and select something. `resolve_code_action_doc`
+    // below is the piece that matters (#2578); this method's shape (title/
+    // kind/data) is not itself under test.
+    return JSON.stringify([{ title: "Mock quickfix", kind: "quickfix", data: {} }]);
+  }
+  /**
+   * Mock of the real `resolve_code_action_doc` (#321): always answers a
+   * refusal, in the exact #2543 shape. The mock has no real code-action
+   * resolution to model — `code_actions_doc` above returns one synthetic
+   * entry only so a test can drive the menu — this exists to prove
+   * `applyCodeAction` (`document-sessions.ts`) forwards a refusal to
+   * `onApplyStructural` UNCONDITIONALLY (#2578,
+   * `code-actions-apply-reachability.test.ts`). See `error_json` in
+   * `crates/brink-web/src/editor/code_actions.rs` for the real refusal
+   * shapes this mirrors (e.g. `"invalid code-action data: …"`).
+   */
+  resolve_code_action_doc(doc: number, _dataJson: string, _offset: number): string {
+    const d = this.docs.get(doc);
+    if (!d) return EditorSession.structuralRefusal("unknown handle");
+    if (!this.files.has(d.path)) return EditorSession.structuralRefusal("file not loaded");
+    return EditorSession.structuralRefusal("invalid code-action data: mock action");
+  }
   inlay_hints_doc(_doc: number, _start: number, _end: number): string { return "[]"; }
   signature_help_doc(_doc: number, _offset: number): string { return "null"; }
   folding_ranges_doc(_doc: number): string { return "[]"; }
