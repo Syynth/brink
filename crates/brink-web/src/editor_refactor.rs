@@ -441,9 +441,30 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         message.expect("just asserted above").to_owned()
     }
 
+    /// The two source fixtures the drivers refuse against, byte-identical to
+    /// `structural-refusal-shape.test.ts`'s `MAIN` / `TWO_KNOTS` — the driven
+    /// message and the mock call it pins must be produced from the same input,
+    /// or the fixture pins production's answer to a *different* question.
+    const MAIN: &str = "=== hello ===\nHi.\n-> END\n";
+    const TWO_KNOTS: &str =
+        "=== one ===\nFirst.\n= a\nA.\n= b\nB.\n\n=== two ===\nSecond.\n= a\nOther A.\n";
+
+    fn session_with(files: &[(&str, &str)]) -> EditorSession {
+        let mut session = EditorSession::new();
+        for (path, source) in files {
+            session.update_file(path, source);
+        }
+        session
+    }
+
     /// The refusal *vocabulary* of the document-handle ops, obtained by calling
     /// the real production methods on a real [`EditorSession`] and reading the
     /// `error` field back out of the JSON they answer with.
+    ///
+    /// Kept separate from [`driven_op_messages`] because
+    /// [`doc_handle_refusal_vocabulary_is_uniform`] cross-checks *these* against
+    /// the crate's handle literals: an op refusing for some other reason has no
+    /// business being measured against the handle vocabulary.
     ///
     /// Nothing here types a message. Change
     /// `crates/brink-web/src/editor/refactor.rs`'s or `code_actions.rs`'s
@@ -455,9 +476,8 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     ///
     /// Keys are `<op>:<refusing-input>`. Every key must have a consumer on the
     /// TS side; adding one without a mock counterpart just parks a string.
-    fn driven_messages() -> serde_json::Value {
-        let mut session = EditorSession::new();
-        session.update_file("main.ink", "=== hello ===\nHi.\n-> END\n");
+    fn driven_doc_handle_messages() -> serde_json::Value {
+        let mut session = session_with(&[("main.ink", MAIN)]);
 
         let include_doc = refusal_message(
             "auto_import_include_doc",
@@ -476,11 +496,239 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             ),
         );
 
+        // The read-only-mount fence (#2621). `EditorSession::new()` mounts the
+        // stdlib, so its first key is read-only in a session nobody shadowed —
+        // the same route `is_read_only_true_for_mount_...` uses.
+        let mut mounted = session_with(&[("main.ink", MAIN)]);
+        let std_key = brink_environment::stdlib_sources()[0].0;
+        let std_doc = mounted.open_document(std_key);
+        assert!(
+            std_doc != 0,
+            "the mounted stdlib key `{std_key}` has no document handle, so the \
+             read-only fence cannot be driven"
+        );
+        let apply_read_only = refusal_message(
+            "auto_import_apply_include_doc (read-only mount)",
+            &mounted.auto_import_apply_include_doc(std_doc, "main.ink"),
+        );
+
         serde_json::json!({
             "auto_import_include_doc:unknown-handle": include_doc,
             "auto_import_apply_include_doc:unknown-handle": apply_include_doc,
+            "auto_import_apply_include_doc:read-only-mount": apply_read_only,
             "resolve_code_action_doc:unknown-handle": code_action_doc,
         })
+    }
+
+    /// The rest of the refusal vocabulary, driven the same way (#2620).
+    ///
+    /// Before this, ~28 of ~30 `error:` strings in
+    /// `structural-refusal-shape.test.ts` were hand-transcribed from a reading
+    /// of the production call path — and three of them were transcribed
+    /// *wrongly*, so the mock had been lying and the mirroring test had been
+    /// asserting the lie (see that file's header table). Every site below is
+    /// now produced by running the op, so no reading is involved.
+    ///
+    /// This is still **per-site, not automatic**: nothing enumerates the
+    /// (op, refusing-input) pairs, so a site nobody writes a driver for stays
+    /// unpinned. What changed is that the pinned set is now nearly all of them
+    /// rather than three.
+    fn driven_op_messages() -> serde_json::Value {
+        merge_driven(&[driven_file_and_symbol_messages(), driven_outline_messages()])
+    }
+
+    /// Concatenate driven-message maps, refusing a key claimed twice — two
+    /// drivers for the same site would let one silently win, pinning whichever
+    /// input happened to be listed last.
+    fn merge_driven(parts: &[serde_json::Value]) -> serde_json::Value {
+        let mut merged = serde_json::Map::new();
+        for part in parts {
+            for (key, value) in part.as_object().cloned().unwrap_or_default() {
+                assert!(
+                    merged.insert(key.clone(), value).is_none(),
+                    "duplicate driven-message key `{key}` — two drivers claim the \
+                     same site, so one silently wins"
+                );
+            }
+        }
+        serde_json::Value::Object(merged)
+    }
+
+    /// File-level and symbol-level ops, plus the two non-`StructuralResultJs`
+    /// channels (`rename_dir`, `compile_project`) and the code-action resolver.
+    /// Split from [`driven_outline_messages`] only to keep either function
+    /// under the crate's line limit.
+    fn driven_file_and_symbol_messages() -> serde_json::Value {
+        let main = session_with(&[("main.ink", MAIN)]);
+
+        // `rename_file`'s read-only fence, driven off the real stdlib mount
+        // rather than a test seam.
+        let mounted = session_with(&[("main.ink", MAIN)]);
+        let std_key = brink_environment::stdlib_sources()[0].0;
+
+        let mut active = session_with(&[("main.ink", TWO_KNOTS)]);
+        assert!(
+            active.set_active_file("main.ink"),
+            "`main.ink` must be settable as the active file for the \
+             `resolve_code_action` drivers"
+        );
+        let mut single = session_with(&[("main.ink", MAIN)]);
+        assert!(
+            single.set_active_file("main.ink"),
+            "`main.ink` must be settable as the active file for the \
+             `resolve_code_action` no-change driver"
+        );
+
+        let mut compile = session_with(&[("main.ink", MAIN)]);
+
+        serde_json::json!({
+            "rename_file:read-only-mount": refusal_message(
+                "rename_file (read-only mount)",
+                &mounted.rename_file(std_key, "mine.ink"),
+            ),
+            "rename_file:missing-file": refusal_message(
+                "rename_file (missing file)",
+                &main.rename_file("ghost.ink", "other.ink"),
+            ),
+            "rename_file:target-exists": refusal_message(
+                "rename_file (target exists)",
+                &session_with(&[("main.ink", MAIN), ("other.ink", MAIN)])
+                    .rename_file("main.ink", "other.ink"),
+            ),
+            "delete_symbol:missing-file": refusal_message(
+                "delete_symbol (missing file)",
+                &main.delete_symbol("ghost.ink", "hello", ""),
+            ),
+            "delete_symbol:missing-symbol": refusal_message(
+                "delete_symbol (missing symbol)",
+                &main.delete_symbol("main.ink", "nowhere", ""),
+            ),
+            // #2627 review: the missing-KNOT case above and a missing STITCH
+            // inside a knot that DOES exist are different `MoveError`
+            // variants in production (`SourceNotFound` vs `StitchNotFound`),
+            // so they need their own driven input — `active` is already
+            // loaded with `TWO_KNOTS`, whose knot `one` is real but has no
+            // stitch `nowhere`.
+            "delete_symbol:missing-stitch-in-knot": refusal_message(
+                "delete_symbol (missing stitch in existing knot)",
+                &active.delete_symbol("main.ink", "one", "nowhere"),
+            ),
+            "extract_to_knot:missing-file": refusal_message(
+                "extract_to_knot (missing file)",
+                &main.extract_to_knot("ghost.ink", 0, 4, "lifted"),
+            ),
+            "extract_to_knot:empty-selection": refusal_message(
+                "extract_to_knot (empty selection)",
+                &main.extract_to_knot("main.ink", 4, 4, "lifted"),
+            ),
+            "extract_to_function:missing-file": refusal_message(
+                "extract_to_function (missing file)",
+                &main.extract_to_function("ghost.ink", 0, 4, "lifted"),
+            ),
+            "extract_to_function:empty-selection": refusal_message(
+                "extract_to_function (empty selection)",
+                &main.extract_to_function("main.ink", 4, 4, "lifted"),
+            ),
+            "rename_symbol:missing-file": refusal_message(
+                "rename_symbol (missing file)",
+                &main.rename_symbol("ghost.ink", "hello", "", "hi"),
+            ),
+            "rename_symbol_at:unrenameable": refusal_message(
+                "rename_symbol_at (unrenameable offset)",
+                &main.rename_symbol_at("main.ink", 0, "hi"),
+            ),
+            "resolve_code_action:unknown-variant": refusal_message(
+                "resolve_code_action (unknown variant)",
+                &active.resolve_code_action(
+                    &serde_json::json!({ "action": "Nonsense" }).to_string(),
+                    0,
+                ),
+            ),
+            // `SortKnots` over a single-knot file: the rewrite is a genuine
+            // no-op, so the pure resolver answers `None`. The previously
+            // hand-copied site used `FormatKnot` on `TWO_KNOTS`, which
+            // production *accepts* (it reindents) — see #2620's table.
+            "resolve_code_action:no-change": refusal_message(
+                "resolve_code_action (no change)",
+                &single.resolve_code_action(
+                    &serde_json::json!({ "action": "SortKnots" }).to_string(),
+                    0,
+                ),
+            ),
+            "rename_dir:missing-dir": refusal_message(
+                "rename_dir (missing directory)",
+                &main.rename_dir("ghost", "other"),
+            ),
+            "rename_dir:destination-occupied": refusal_message(
+                "rename_dir (destination occupied)",
+                &session_with(&[("src/a.ink", MAIN), ("dst/a.ink", MAIN)])
+                    .rename_dir("src", "dst"),
+            ),
+            "compile_project:missing-entry": refusal_message(
+                "compile_project (missing entry)",
+                &compile.compile_project("ghost.ink"),
+            ),
+        })
+    }
+
+    /// The outline-reshaping ops (`reorder_*`, `move_stitch`,
+    /// `promote_stitch`, `demote_knot`) — the seven `dispatchSymbolAction`
+    /// sites the studio's symbol menu drives.
+    fn driven_outline_messages() -> serde_json::Value {
+        let main = session_with(&[("main.ink", MAIN)]);
+        let two = session_with(&[("main.ink", TWO_KNOTS)]);
+
+        serde_json::json!({
+            "reorder_stitch:missing-file": refusal_message(
+                "reorder_stitch (missing file)",
+                &main.reorder_stitch("ghost.ink", "hello", "a", 1),
+            ),
+            "reorder_stitch:missing-stitch": refusal_message(
+                "reorder_stitch (missing stitch)",
+                &two.reorder_stitch("main.ink", "one", "nowhere", 1),
+            ),
+            "reorder_knot:missing-knot": refusal_message(
+                "reorder_knot (missing knot)",
+                &two.reorder_knot("main.ink", "nowhere", 1),
+            ),
+            "reorder_stitches:invalid-order": refusal_message(
+                "reorder_stitches (invalid order)",
+                &two.reorder_stitches("main.ink", "one", vec!["a".to_owned()]),
+            ),
+            "reorder_knots:invalid-order": refusal_message(
+                "reorder_knots (invalid order)",
+                &two.reorder_knots("main.ink", vec!["one".to_owned(), "one".to_owned()]),
+            ),
+            "move_stitch:missing-dest-knot": refusal_message(
+                "move_stitch (missing destination knot)",
+                &two.move_stitch("main.ink", "one", "a", "nope"),
+            ),
+            "move_stitch:name-collision": refusal_message(
+                "move_stitch (name collision)",
+                &two.move_stitch("main.ink", "one", "a", "two"),
+            ),
+            "promote_stitch:name-collision": refusal_message(
+                "promote_stitch (name collision)",
+                &two.promote_stitch("main.ink", "one", "two"),
+            ),
+            "promote_stitch:missing-stitch": refusal_message(
+                "promote_stitch (missing stitch)",
+                &two.promote_stitch("main.ink", "one", "nowhere"),
+            ),
+            "demote_knot:illegal-nesting": refusal_message(
+                "demote_knot (illegal nesting)",
+                &two.demote_knot("main.ink", "one", "two"),
+            ),
+            "demote_knot:missing-dest-knot": refusal_message(
+                "demote_knot (missing destination knot)",
+                &two.demote_knot("main.ink", "two", "nope"),
+            ),
+        })
+    }
+
+    /// The whole driven map: doc-handle vocabulary plus every other site.
+    fn driven_messages() -> serde_json::Value {
+        merge_driven(&[driven_doc_handle_messages(), driven_op_messages()])
     }
 
     // ── Discovery: which structs can refuse at all (#2577) ───────────
@@ -660,8 +908,11 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
 
         // The driven map is the other half: the strings the fixture ships must
         // be members of the vocabulary just scanned, not something a driver
-        // picked up elsewhere.
-        let driven = driven_messages();
+        // picked up elsewhere. Only the DOC-HANDLE half is measured against the
+        // handle vocabulary — `driven_op_messages` (#2620) drives refusals that
+        // have nothing to do with handles, and asserting those are handle
+        // literals would be nonsense.
+        let driven = driven_doc_handle_messages();
         let entries = driven.as_object().expect("driven messages is an object");
         assert!(
             !entries.is_empty(),
@@ -675,6 +926,50 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                  doc-handle refusal literals found in this crate's source: {handle_words:?}"
             );
         }
+    }
+
+    /// `"current file source unavailable"` (`editor/refactor.rs`) is a
+    /// DEFENSIVE branch with no reaching input, so it gets no driver and no
+    /// mock counterpart (#2621).
+    ///
+    /// #2621 recorded it as "reachable in real Rust usage (`open_document` +
+    /// `remove_file`)". It is not. `auto_import_apply_include_doc` only reaches
+    /// that `let ... else` after `ensure_include` has already answered `Ok`, and
+    /// `ensure_include` itself resolves `session.source(current_id)` — mapping a
+    /// missing one to `AutoImportError::CurrentNotFound`. So removing the file
+    /// out from under an open handle refuses one layer earlier, with
+    /// `brink-ide`'s wording, and the `source_of` guard below it can only fire
+    /// if those two disagree about the same session.
+    ///
+    /// This test pins the *actual* refusal for that route. If a refactor ever
+    /// makes the defensive branch reachable, this goes red and the branch earns
+    /// a driver plus a mock counterpart — mirroring it into the mock today
+    /// would model a branch production cannot produce (#2577's lesson: a mock
+    /// method nothing can reach closes nothing).
+    #[test]
+    fn removing_a_file_under_an_open_handle_refuses_before_the_source_guard() {
+        let mut session = session_with(&[("main.ink", MAIN), ("other.ink", MAIN)]);
+        let doc = session.open_document("main.ink");
+        assert!(doc != 0, "`main.ink` must have a document handle");
+        assert!(
+            session.remove_file("main.ink"),
+            "`main.ink` must be removable"
+        );
+
+        let message = refusal_message(
+            "auto_import_apply_include_doc (file removed under the handle)",
+            &session.auto_import_apply_include_doc(doc, "other.ink"),
+        );
+        assert!(
+            message != "current file source unavailable",
+            "the defensive `source_of` guard is now reachable — give it a driver \
+             in `driven_op_messages` and a mock counterpart (#2621)"
+        );
+        assert!(
+            message.contains("main.ink"),
+            "expected `brink-ide`'s CurrentNotFound wording naming the removed \
+             file, got {message:?}"
+        );
     }
 
     /// The scanner above is load-bearing, so it is exercised on inputs it must
