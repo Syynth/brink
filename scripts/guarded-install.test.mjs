@@ -405,4 +405,57 @@ describe("the documented entry point actually exists", () => {
 
     assert.match(claudeMd, /pnpm install:checked/);
   });
+
+  it("docs/publishing.md's first-publish workflow names it", () => {
+    const publishing = readFileSync(join(repoRoot, "docs/publishing.md"), "utf8");
+
+    assert.match(
+      publishing,
+      /pnpm install:checked -- --frozen-lockfile/,
+      "the manual first-publish instructions must use the guarded install",
+    );
+    assert.doesNotMatch(
+      publishing,
+      /^pnpm install --frozen-lockfile$/m,
+      "the old unguarded sequence must not come back — it relies on pnpm's exit code (#2593)",
+    );
+  });
+
+  it("justfile's book-assets recipe names it", () => {
+    const justfile = readFileSync(join(repoRoot, "justfile"), "utf8");
+    const bookAssets = justfile.slice(justfile.indexOf("book-assets:"));
+
+    assert.match(
+      bookAssets,
+      /pnpm install:checked -- --frozen-lockfile/,
+      "book-assets builds the embedded playground; it must use the guarded install",
+    );
+    assert.doesNotMatch(
+      bookAssets.slice(0, bookAssets.indexOf("pnpm --filter @brink-lang/studio build:embed")),
+      /^\s*pnpm install --frozen-lockfile\s*$/m,
+      "the old unguarded sequence must not come back — it relies on pnpm's exit code (#2593)",
+    );
+  });
+
+  it("BRINK-CONFIG.md's TS gate override names it", () => {
+    const brinkConfig = readFileSync(
+      join(repoRoot, ".claude/skills/autonomous-pump/BRINK-CONFIG.md"),
+      "utf8",
+    );
+    const tsGateLine = brinkConfig
+      .split("\n")
+      .find((line) => line.includes("TS entries (gate override)"));
+
+    assert.ok(tsGateLine, "BRINK-CONFIG.md must have a 'TS entries (gate override)' bullet");
+    assert.match(
+      tsGateLine,
+      /pnpm install:checked -- --frozen-lockfile/,
+      "the TS gate override runs unattended in fresh worktrees — it must use the guarded install",
+    );
+    assert.doesNotMatch(
+      tsGateLine,
+      /pnpm install --frozen-lockfile(?! -- )/,
+      "the old unguarded sequence must not come back — it relies on pnpm's exit code (#2593)",
+    );
+  });
 });
