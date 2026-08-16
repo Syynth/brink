@@ -62,7 +62,7 @@ needed):
 ```sh
 # Build the wasm bundle, install, build both packages
 just wasm
-pnpm install --frozen-lockfile
+pnpm install:checked -- --frozen-lockfile
 pnpm --filter @brink-lang/web build
 pnpm --filter @brink-lang/studio build
 
