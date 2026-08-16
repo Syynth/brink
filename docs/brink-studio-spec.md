@@ -194,8 +194,10 @@ is hand-copied from the other:
   false, error }`, whose home is `crates/brink-web/src/compile.rs`, outside
   `editor_refactor.rs` — so a field add/rename/`skip_serializing_if` change is
   a compile error or a failing assertion, not silent drift. `CompileResult`
-  has no mock counterpart by design: the mock's `compile_project` has no
-  refusal path. Regenerate with:
+  had no mock counterpart when #2577 pinned it — the mock's `compile_project`
+  had no refusal path at all — until #2589 gave it one: `entry` not
+  resolving to a loaded file, the one failure mode the mock (no compiler) can
+  reproduce, mirroring a real `Project::load` miss. Regenerate with:
 
   ```sh
   BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape
@@ -211,8 +213,9 @@ is hand-copied from the other:
     against it, plus a source-scanning case that fails if a new call site
     answers an inline `{ ok: false, ... }` literal instead of routing through
     one of the shared refusal helpers in the mock — `structuralRefusal`,
-    `autoImportRefusal`, and (#2577) `dirMoveRefusal`, checked against the
-    `REFUSAL_HELPERS` list rather than two names hard-coded into the guard.
+    `autoImportRefusal`, (#2577) `dirMoveRefusal`, and (#2589) `compileRefusal`
+    — checked against the `REFUSAL_HELPERS` list rather than names hard-coded
+    into the guard.
 
   A Rust-side change therefore fails `refusal_shape` first; regenerating the
   fixture then fails the TypeScript test until the mock is updated to match.

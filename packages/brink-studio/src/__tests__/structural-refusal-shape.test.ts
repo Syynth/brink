@@ -265,18 +265,24 @@ const autoImportRefusals: Array<{ site: string; error: string; call: () => strin
   },
 ];
 
+/** The compile-channel refusal, which answers `CompileResult` — a fourth Rust
+ *  struct again (no `safe`/`cross_file_edits`, no `path`; `warnings` always
+ *  ships). Its shape was generated into the fixture by #2577 with no mock
+ *  call site to check it against; `compile_project` (#2589) is that
+ *  counterpart — the mock's only reproducible failure mode is `entry` not
+ *  resolving to a loaded file, mirroring a real `Project::load` miss. */
+const compileRefusals: Array<{ site: string; error: string; call: () => string }> = [
+  {
+    site: "compile_project (entry file not found)",
+    error: "entry file 'ghost.ink' not found",
+    call: () => sessionWith({ "main.ink": MAIN }).compile_project("ghost.ink"),
+  },
+];
+
 describe("mock refusal payloads match the Rust structs (#2568)", () => {
   it("the generated fixture is present and carries the shapes this file reads", () => {
     // Cheap canary: a fixture regenerated after a Rust rename would drop a key
     // here rather than making every case below fail with a confusing diff.
-    //
-    // `CompileResult` (#2577) is generated but has no mock call site: the
-    // mock's `compile_project` has no refusal path to check against. It is
-    // pinned here anyway because the Rust-side discovery scan
-    // (`every_refusal_struct_is_in_the_fixture`) found it — the fixture's job
-    // is to cover every struct that CAN refuse, and a shape landing here ahead
-    // of its mock counterpart is exactly how `DirMoveResultJs` waited for
-    // `rename_dir`.
     expect(Object.keys(fixture.shapes).sort()).toEqual([
       "AutoImportJs",
       "CompileResult",
@@ -300,6 +306,12 @@ describe("mock refusal payloads match the Rust structs (#2568)", () => {
   for (const { site, error, call } of dirMoveRefusals) {
     it(`${site} answers a full DirMoveResult`, () => {
       expect(JSON.parse(call()) as unknown).toEqual(refusalShape("DirMoveResultJs", error));
+    });
+  }
+
+  for (const { site, error, call } of compileRefusals) {
+    it(`${site} answers a full CompileResult`, () => {
+      expect(JSON.parse(call()) as unknown).toEqual(refusalShape("CompileResult", error));
     });
   }
 });
@@ -367,9 +379,14 @@ describe("no mock call site answers ok: false outside the refusal helpers (#2568
   }
 
   /** One named helper per Rust refusal struct the mock can answer with. Adding
-   *  a fourth helper means adding it here — the arrays above list SITES, this
+   *  a fifth helper means adding it here — the arrays above list SITES, this
    *  lists the seams they are required to route through. */
-  const REFUSAL_HELPERS = ["structuralRefusal", "autoImportRefusal", "dirMoveRefusal"];
+  const REFUSAL_HELPERS = [
+    "structuralRefusal",
+    "autoImportRefusal",
+    "dirMoveRefusal",
+    "compileRefusal",
+  ];
 
   const helperBodies = REFUSAL_HELPERS.map((name) => ({
     name,

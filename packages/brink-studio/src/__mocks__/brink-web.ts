@@ -293,8 +293,23 @@ export class EditorSession {
     this.readOnlyPaths.add(path);
   }
 
-  compile_project(_entry: string): string {
-    return JSON.stringify({ ok: true });
+  /**
+   * Mock of the real `compile_project` (`crates/brink-web/src/compile.rs`'s
+   * `compile_over_tree` -> `compile_result_json`). The mock has no compiler,
+   * so it cannot reproduce a diagnostics failure — but it CAN reproduce the
+   * other real failure mode, `Project::load` never finding `entry` in the
+   * tree (a misconfigured `entryFile`/`[project] entry`), by checking
+   * `entry` against the same {@link files} map every other op here reads.
+   * Routed through {@link compileRefusal} so #2568's guard covers this site
+   * like every other refusal (#2589 — `CompileResult` was pinned into
+   * `refusal-shapes.json` by #2577 with no mock call site to check it
+   * against until now).
+   */
+  compile_project(entry: string): string {
+    if (!this.files.has(entry)) {
+      return EditorSession.compileRefusal(`entry file '${entry}' not found`);
+    }
+    return JSON.stringify({ ok: true, warnings: [] });
   }
 
   /**
@@ -572,6 +587,17 @@ export class EditorSession {
    */
   private static autoImportRefusal(error: string): string {
     return JSON.stringify({ ok: false, already_reachable: false, error });
+  }
+
+  /**
+   * A refused compile (`CompileResult`, the compile channel's own refusal
+   * struct — `crates/brink-web/src/compile.rs`, distinct from every other
+   * shape here: no `safe`/`cross_file_edits` gate, no `path`. `warnings` has
+   * no `skip_serializing_if` on the real struct, so it always ships — even
+   * empty, unlike `story_bytes`, which is omitted entirely on refusal (#2589).
+   */
+  private static compileRefusal(error: string): string {
+    return JSON.stringify({ ok: false, warnings: [], error });
   }
 
   /**
