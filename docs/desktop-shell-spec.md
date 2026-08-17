@@ -796,20 +796,52 @@ needed no change: it already resolves to `"macho"` (the triple contains
 magics alongside the thin ones (#2691) — only the smoke check's
 executability test was narrower than it should have been.
 
-**Reachability caveat: staging, not executability, is the remaining
-blocker.** Nothing in-repo actually stages
-`binaries/brink-cli-universal-apple-darwin` today. `ensureCliSidecar`
-(`ensure-cli-sidecar.mjs`) defaults `triple = hostTriple(runCommand)`, and
-`build.rs` only auto-stages when `HOST == TARGET` — neither path ever
-produces a `universal-apple-darwin`-suffixed file. `assertRealSidecarStaged`
-does default `triple` to `TAURI_ENV_TARGET_TRIPLE`, which tauri-cli sets to
-`universal-apple-darwin` for a real `--target universal-apple-darwin`
-build, but that build would hit the missing-file backstop above (or fail
-earlier still, in tauri-bundler's own per-arch `externalBin` resolution)
-before `canExecuteStagedSidecar`'s widened branch ever gets a chance to
-run. So this fix is not yet reachable by any build this repo actually
-produces — the executability comparison is no longer the blocker for a
-universal build once something stages one, but staging one is.
+**Reachability caveat, RESOLVED by #2715 for the staging mechanism (the
+two-target build itself still is not).** As of #2714, nothing in-repo
+actually staged `binaries/brink-cli-universal-apple-darwin` — a real gap,
+stated plainly rather than softened: `canExecuteStagedSidecar`'s widened
+branch was correct code that nothing could ever reach.
+`ensureCliSidecar`/`ensure-cli-sidecar.mjs`'s standalone invocation (what
+`pnpm build`, i.e. tauri.conf.json's `beforeBuildCommand`, runs) never
+consulted `TAURI_ENV_TARGET_TRIPLE` at all — its default `triple` came only
+from `hostTriple()` — so a real `tauri build --target
+universal-apple-darwin` would have staged a mislabeled single-arch sidecar
+under the wrong name (or, before #2481, nothing sensible) rather than a
+universal one, and hit the missing-file backstop (or tauri-bundler's own
+`externalBin` resolution) long before `canExecuteStagedSidecar`'s widened
+branch got a chance to run.
+
+#2715 adds `stageUniversalCliSidecar` to `ensure-cli-sidecar.mjs`: it builds
+both `x86_64-apple-darwin` and `aarch64-apple-darwin` slices for real (each
+via its own `cargo build -p brink-cli --release --target <triple>`, staged
+under its own triple-suffixed sidecar name), then runs `lipo -create` to
+combine them into `binaries/brink-cli-universal-apple-darwin`. The script's
+main-guard now dispatches to it instead of the ordinary host-triple
+`ensureCliSidecar()` whenever `TAURI_ENV_TARGET_TRIPLE ===
+"universal-apple-darwin"` — the same env var tauri-cli sets for
+`beforeBuildCommand` that `assertRealSidecarStaged` already reads for
+`beforeBundleCommand` (#2687), so a real `tauri build --target
+universal-apple-darwin` now reaches `stageUniversalCliSidecar` via `pnpm
+build` before `assertRealSidecarStaged` ever runs against the result.
+`BRINK_SIDECAR_STUB=1` short-circuits straight to `ensureCliSidecar({
+triple: "universal-apple-darwin", stub: true })` — no slice builds, no
+`lipo` — for lanes that only need the file to exist.
+
+**What #2715 did NOT do, stated plainly.** This is a Linux container with no
+Apple toolchain: `lipo`, the `x86_64-apple-darwin`/`aarch64-apple-darwin`
+rustc targets, and a real `tauri build --target universal-apple-darwin`
+invocation are all unavailable here, so none of that was run for real. What
+was verified: `stageUniversalCliSidecar`'s logic — which two `cargo build
+--target` commands it issues, in what order, and the exact `lipo -create
+-output … ‹slice1› ‹slice2›` argv it hands to its `runLipo` seam — driven
+with injected `runCommand`/`runLipo` fakes standing in for cargo and lipo
+(`stage-universal-cli-sidecar.test.ts`), plus the main-guard dispatch
+driven as a real subprocess with `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin`
+in its env (the stub path, so no toolchain is needed to prove the dispatch
+itself fires). Building both real slices on a real macOS host, and running a
+real `tauri build --target universal-apple-darwin` end to end, remain D3
+work — this PR delivers the staging mechanism and the wiring that lets
+`tauri build` reach it, not a verified two-target macOS build.
 
 Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
 checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`
