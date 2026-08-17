@@ -938,6 +938,97 @@ fn lambda_takes_a_colon_return_annotation_before_a_braced_body() {
     assert!(has_node_kind(lambda.syntax(), SyntaxKind::STMT_BLOCK));
 }
 
+/// Issue #2775: `lambda_param` calls the exact same `types::type_annotation`
+/// entry point `VAR`/`CONST`/fn-params/return-types use, so a generic-typed
+/// annotation was never lambda-specific — pin it so the coverage gap that
+/// let `|y: Option[int]|` get mistaken for a real gap doesn't reopen.
+/// `Option<int>` (angle brackets) is the RULED spelling
+/// (`docs/decision-log.md` 2026-07-27 "Type-name surface ruled: angle
+/// brackets"); `Option[int]` fails everywhere in this grammar, not just
+/// here — see `lambda_param_square_bracket_generic_still_fails_everywhere`.
+#[test]
+fn lambda_param_takes_a_generic_type_annotation() {
+    let p = assert_lossless("var f = |y: Option<int>| { y }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let params = lambda_params_of(&lambda);
+    let param = params.children().find_map(ast::Param::cast).expect("PARAM");
+    let te = param
+        .type_annotation()
+        .expect("annotation")
+        .type_expr()
+        .expect("type expr");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Option".to_string()));
+    assert_eq!(g.args().count(), 1);
+}
+
+/// Same shape on the lambda's own return annotation — `type_expr` is
+/// reached identically from the return-annotation call site
+/// (`lambda_expr`) as from the per-param one (`lambda_param`).
+#[test]
+fn lambda_return_annotation_takes_a_generic_type() {
+    let p = assert_lossless("var f = |y: int|: Option<int> { none }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let annotation = lambda
+        .syntax()
+        .children()
+        .find_map(ast::TypeAnnotation::cast)
+        .expect("the lambda's own return annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Option".to_string()));
+    assert_eq!(g.args().count(), 1);
+}
+
+/// The full annotation surface #2775 asked to be enumerated, not just
+/// `Option<int>`: `Array<T>`, `Map<K, V>`, a nested `Option<Array<int>>`,
+/// and a bare `Option` (no type args) all parse cleanly in lambda-param
+/// position, exactly as they do in every other annotation position.
+#[test]
+fn lambda_param_generic_annotation_surface() {
+    for src in [
+        "var f = |y: Array<int>| { y }\n",
+        "var f = |y: Map<string, int>| { y }\n",
+        "var f = |y: Option<Array<int>>| { y }\n",
+        "var f = |y: Option| { y }\n",
+    ] {
+        let p = assert_lossless(src);
+        assert!(
+            p.errors().is_empty(),
+            "src={src:?} errors: {:?}",
+            p.errors()
+        );
+    }
+}
+
+/// Negative control, pinning the *other* half of #2775's determination:
+/// `[…]` is not a valid type-argument delimiter anywhere in this grammar
+/// (reserved for array literals, `[1, 2, 3]`, #1490) — it fails identically
+/// whether it appears in a lambda param, a `fn` param, or a return type.
+/// This is why the fix is documentation, not parser acceptance of `[…]`:
+/// widening only the lambda position would make it the one place `[…]`
+/// silently meant something, instead of consistently meaning nothing.
+#[test]
+fn lambda_param_square_bracket_generic_still_fails_everywhere() {
+    let lambda = assert_lossless("var f = |y: Option[int]| { y }\n");
+    assert!(
+        !lambda.errors().is_empty(),
+        "square-bracket generics were never valid syntax"
+    );
+
+    let fn_param = parse("fn f(x: Option[int]) {}\n");
+    assert!(!fn_param.errors().is_empty());
+
+    let fn_return = parse("fn f(): Option[int] { none }\n");
+    assert!(!fn_return.errors().is_empty());
+}
+
 #[test]
 fn zero_arg_lambda_takes_a_return_annotation() {
     let p = assert_lossless("var f = ||: int { 1 }\n");

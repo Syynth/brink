@@ -121,6 +121,77 @@ fn annotated_params_and_the_colon_return_lower() {
     ));
 }
 
+/// Issue #2775: `|y: Option<int>| { y }` — the RULED generic-type spelling
+/// (`docs/decision-log.md` 2026-07-27 "Type-name surface ruled: angle
+/// brackets") — lowers a lambda param's annotation to `TypeExpr::Generic`
+/// exactly like any other annotation position (`VAR`/`CONST`, `fn` params,
+/// return types). #2775 found no lambda-specific parser gap: `lambda_param`
+/// (`brink-syntax-native/src/parser/expr.rs`) calls the identical
+/// `types::type_annotation` entry point `fn`/`flow` params and
+/// `VAR`/`CONST` use, so a generic-typed lambda param already worked before
+/// this test — this pins it. `Option[int]` (square brackets) is a
+/// different, invalid spelling everywhere in the grammar, not a
+/// lambda-specific omission — square brackets are reserved for array
+/// literals (`[1, 2, 3]`, #1490) and were never a valid type-argument
+/// delimiter (the 2026-07-27 ruling explicitly retracts `Option[T]`).
+#[test]
+fn generic_typed_param_lowers_through_the_shared_type_annotation_entry_point() {
+    let (lambda, diags) = lower_lambda("|y: Option<int>| { y }");
+    assert_eq!(codes(&diags), Vec::<&str>::new(), "no diagnostics expected");
+    assert_eq!(lambda.params.len(), 1);
+    let Some(TypeExpr::Generic { name, args, .. }) = &lambda.params[0].annotation else {
+        unreachable!(
+            "expected TYPE_GENERIC, got {:?}",
+            lambda.params[0].annotation
+        );
+    };
+    assert_eq!(name, "Option");
+    assert_eq!(args.len(), 1);
+    assert!(matches!(
+        &args[0],
+        TypeExpr::Named { name, .. } if name == "int"
+    ));
+}
+
+/// Same shape on the lambda's own return annotation (`|y: int|: Option<int>
+/// { some(y) }`) — the return clause routes through the same `type_expr`
+/// call as the param annotation (`lambda_expr`, `expr.rs`), so it inherits
+/// generic-type support identically.
+#[test]
+fn generic_typed_return_annotation_lowers_too() {
+    let (lambda, diags) = lower_lambda("|y: int|: Option<int> { some(y) }");
+    assert_eq!(codes(&diags), Vec::<&str>::new(), "no diagnostics expected");
+    let Some(TypeExpr::Generic { name, args, .. }) = &lambda.return_type else {
+        unreachable!("expected TYPE_GENERIC, got {:?}", lambda.return_type);
+    };
+    assert_eq!(name, "Option");
+    assert_eq!(args.len(), 1);
+    assert!(matches!(
+        &args[0],
+        TypeExpr::Named { name, .. } if name == "int"
+    ));
+}
+
+/// A nested generic (`Option<Array<int>>`) — enumerating the annotation
+/// surface #2775 asked for, not just the single-level case.
+#[test]
+fn nested_generic_typed_param_lowers() {
+    let (lambda, diags) = lower_lambda("|y: Option<Array<int>>| { y }");
+    assert_eq!(codes(&diags), Vec::<&str>::new(), "no diagnostics expected");
+    let Some(TypeExpr::Generic { name, args, .. }) = &lambda.params[0].annotation else {
+        unreachable!(
+            "expected TYPE_GENERIC, got {:?}",
+            lambda.params[0].annotation
+        );
+    };
+    assert_eq!(name, "Option");
+    assert_eq!(args.len(), 1);
+    assert!(matches!(
+        &args[0],
+        TypeExpr::Generic { name, .. } if name == "Array"
+    ));
+}
+
 #[test]
 fn a_lambda_lowers_in_a_top_level_var_initializer_too() {
     // The other reachable expression position: a hoisted declaration
