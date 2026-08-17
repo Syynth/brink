@@ -54,14 +54,18 @@ function escapeForRegex(s: string): string {
  * `parser/knot.rs::knot_header`):
  *
  * ```text
- * knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+ * knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS*)? ~ identifier
  *                 ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
  * ```
  *
  * so the fence is **two or more** `=` (`at_knot` is `current() == EQ_EQ`, then
  * `eat_extra_equals` takes the rest), the space after it is **optional**
  * (`skip_ws` matches zero), the leading indent is tolerated, and the trailing
- * fence is optional and of any width. Driven, not read: `file_symbols` reports
+ * fence is optional and of any width. The `function` keyword's trailing
+ * whitespace is optional too, though that zero-whitespace form is lexically
+ * unreachable — `==functionGreet==` lexes as a single `IDENT`, i.e. a knot
+ * named `functionGreet`, never the `function` keyword plus a name (#2712).
+ * Driven, not read: `file_symbols` reports
  * one knot named `a` for every one of `== a ==`, `===a===`, `==a==`,
  * `==== a ====`, `  === a ===`, `=== a` and `=== a ==`.
  *

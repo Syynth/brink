@@ -39,9 +39,20 @@ pub(crate) fn knot_definition(p: &mut Parser<'_, '_>) {
 /// Parse a knot header.
 ///
 /// ```text
-/// knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+/// knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS*)? ~ identifier
 ///                 ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
 /// ```
+///
+/// Whitespace after `function` is **optional** (`INLINE_WS*`, not `+`) —
+/// the same notation-vs-code gap #2695 fixed for `stitch_header` below,
+/// found as a sibling still present in this very function while sweeping
+/// for #2707: the body is `p.bump()` then `p.skip_ws()` (zero or more).
+/// The zero-whitespace form is lexically unreachable, though, for the same
+/// reason `VAR`/`CONST`/`LIST`/`EXTERNAL` are in `declaration.rs`:
+/// `function` and the knot name that follows are both scanned by the same
+/// identifier-character loop, so `functionGreet` lexes as one `IDENT`
+/// token, never `KW_FUNCTION` + `IDENT` — pinned by
+/// `function_keyword_no_whitespace_fuses` in `tests/knot/cst.rs`.
 fn knot_header(p: &mut Parser<'_, '_>) {
     p.start_node(KNOT_HEADER);
     // Opening equals: `==` followed by optional extra `=` or `==` tokens
