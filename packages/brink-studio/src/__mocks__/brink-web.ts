@@ -234,7 +234,38 @@ function stitchHeaderFor(name: string): RegExp {
   return new RegExp(`${STITCH_HEADER_PREFIX}${escapeForRegex(name)}\\b`);
 }
 
-/** Parse knot/stitch headers from ink source for outline generation. */
+/**
+ * A line's leading whitespace length — the amount `^\s*` at the front of
+ * {@link KNOT_HEADER_PREFIX}/{@link STITCH_HEADER_PREFIX} consumes before the
+ * fence itself starts.
+ */
+function leadingWhitespaceLength(line: string): number {
+  return /^\s*/.exec(line)![0].length;
+}
+
+/** Parse knot/stitch headers from ink source for outline generation.
+ *
+ * ## `full_start` skips the header's own leading indent (#2685 Gap 3)
+ *
+ * A symbol's ownership range has to agree with production's, because the
+ * seven structural ops (`planKnots`/`renderKnots` below) slice by it — and
+ * `acceptance` cannot see a boundary that is merely WRONG, only one that
+ * changes whether the op runs at all. Production's `knot_body` calls
+ * `p.skip_ws()` at the top of its loop, BEFORE checking whether it has
+ * reached the next header — so a header line's leading indent is consumed
+ * into the PRECEDING symbol's body node before the parser even notices a new
+ * header started. The indent therefore belongs to the symbol BEFORE it, not
+ * the indented header's own leading edge (driven against
+ * `document_symbols` for `ALT_FENCES`'s indented `  ==== four ====` and
+ * `ALT_STITCHES`'s indented `  = b`, not read off the grammar).
+ *
+ * `full_start` used to be the offset of the LINE start (including any
+ * indent), which put the indent on the wrong side of the boundary: the
+ * indented header's own ownership range, rather than its predecessor's
+ * trailing trivia. Skipping the indent here — so `full_start` lands on the
+ * fence character itself — fixes both ends at once, since `full_end` is
+ * simply "the next symbol's `full_start`".
+ */
 function parseOutline(source: string): MockSymbol[] {
   const symbols: MockSymbol[] = [];
   const lines = source.split("\n");
@@ -253,7 +284,7 @@ function parseOutline(source: string): MockSymbol[] {
         detail: KNOT_IS_FUNCTION_RE.test(line) ? "function" : undefined,
         start: nameStart,
         end: nameEnd,
-        full_start: offset,
+        full_start: offset + leadingWhitespaceLength(line),
         full_end: 0, // filled in below
         children: [],
       });
@@ -271,7 +302,7 @@ function parseOutline(source: string): MockSymbol[] {
           kind: "stitch",
           start: nameStart,
           end: nameEnd,
-          full_start: offset,
+          full_start: offset + leadingWhitespaceLength(line),
           full_end: 0,
           children: [],
         });
@@ -294,6 +325,77 @@ function parseOutline(source: string): MockSymbol[] {
   }
 
   return symbols;
+}
+
+/**
+ * The ONE var/const/list declaration vocabulary — mirrors {@link
+ * KNOT_HEADER_PREFIX} / {@link STITCH_HEADER_PREFIX}: everything between the
+ * start of a top-level declaration line and its captured keyword and name.
+ * `declaredGlobals` and `topLevelDeclSymbols` (#2685 Gap 2) both read off
+ * this ONE regex — before this fix they carried two independently written
+ * vocabularies for the same question (`^\s*(?:VAR|CONST|LIST)\s+(\w+)` vs.
+ * `^\s*(VAR|CONST|LIST)\s+(\w+)`), exactly the split-constant class #2662's
+ * rule ("exactly ONE knot-header vocabulary in the mock, and every consumer
+ * is built from it") and #2684's opening lesson exist to prevent: widening
+ * one recognizer silently misses the other.
+ */
+const DECL_HEADER_PREFIX = `^\\s*(VAR|CONST|LIST)\\s+`;
+
+/** {@link DECL_HEADER_PREFIX} plus the captured declared name. */
+const DECL_HEADER_RE = new RegExp(`${DECL_HEADER_PREFIX}(\\w+)`, "d");
+
+/**
+ * Every top-level `VAR`/`CONST`/`LIST` declaration in `source`, in the shape
+ * `file_symbols` reports them (#2685 Gap 2).
+ *
+ * Production's `document_symbols` (`crates/internal/brink-ide/src/
+ * document.rs`) appends these AFTER every knot — in
+ * `variables`/`constants`/`lists`/`structs`/`externals` order — regardless of
+ * where they sit in the source: `VAR_AND_KNOT` declares `score` textually
+ * BEFORE knot `one`, and production's driven answer (`driven_outlines()` in
+ * `crates/brink-web/src/editor_refactor.rs`) still puts `one` first. A
+ * `DeclaredSymbol`'s `full_range` is `decl.range` verbatim (`document.rs`'s
+ * `decl_groups` loop) — unlike a knot/stitch, a top-level decl claims no
+ * ownership beyond its own NAME token, so `full_start`/`full_end` here equal
+ * `start`/`end`.
+ *
+ * `STRUCT` and `EXTERNAL` declarations are NOT modelled: their header grammar
+ * is more involved (TM-4 typed-mode shapes / external function signatures)
+ * and nothing in the studio suite drives either through this path yet. Only
+ * `VAR`/`CONST`/`LIST` are recognized here, which is what `VAR_AND_KNOT`
+ * exercises.
+ */
+function topLevelDeclSymbols(source: string): MockSymbol[] {
+  const ORDER: Record<string, number> = { VAR: 0, CONST: 1, LIST: 2 };
+  const KIND: Record<string, string> = { VAR: "variable", CONST: "constant", LIST: "list" };
+
+  const found: { keyword: string; name: string; start: number; end: number }[] = [];
+  let offset = 0;
+  for (const line of source.split("\n")) {
+    const m = DECL_HEADER_RE.exec(line);
+    if (m) {
+      const keyword = m[1]!;
+      const name = m[2]!;
+      const nameStart = offset + m.indices![2]![0];
+      found.push({ keyword, name, start: nameStart, end: nameStart + name.length });
+    }
+    offset += line.length + 1;
+  }
+
+  // Stable sort into production's fixed `decl_groups` order (VAR, CONST,
+  // LIST), not source order — matching `VAR_AND_KNOT`'s driven answer.
+  return found
+    .slice()
+    .sort((a, b) => ORDER[a.keyword]! - ORDER[b.keyword]!)
+    .map((d) => ({
+      name: d.name,
+      kind: KIND[d.keyword]!,
+      start: d.start,
+      end: d.end,
+      full_start: d.start,
+      full_end: d.end,
+      children: [],
+    }));
 }
 
 // ── Structural region model (#2577) ──────────────────────────────────
@@ -475,12 +577,14 @@ function selectionCrossesHeader(source: string, selStart: number, selEnd: number
 }
 
 /** Every `VAR` / `CONST` / `LIST` name declared in `source`. Production reads
- *  these off the CST (`var_decls`/`const_decls`/`list_decls`). */
+ *  these off the CST (`var_decls`/`const_decls`/`list_decls`). Built from
+ *  {@link DECL_HEADER_RE}, the same vocabulary {@link topLevelDeclSymbols}
+ *  uses, so the two can't drift apart (#2685 Gap 2 review finding). */
 function declaredGlobals(source: string): string[] {
   const names: string[] = [];
   for (const line of source.split("\n")) {
-    const m = line.match(/^\s*(?:VAR|CONST|LIST)\s+(\w+)/);
-    if (m) names.push(m[1]!);
+    const m = DECL_HEADER_RE.exec(line);
+    if (m) names.push(m[2]!);
   }
   return names;
 }
@@ -497,6 +601,72 @@ function selectionHasFlowControl(selected: string): boolean {
     if (first === "*" || first === "+" || first === "-") return true;
   }
   return false;
+}
+
+/**
+ * Whether `selected` reads as a single inline value expression — one
+ * non-empty logical line with no statement (`~`), divert (`->`), choice
+ * (`*`/`+`), or gather (`-`) marker. Mirrors `extract.rs::
+ * is_value_expression` exactly (including its `=` exclusion, which keeps a
+ * bare header line from being read as a value): used to pick `{name()}`
+ * over `~ name()` for `extract_to_function` (#2675 Gap A).
+ *
+ * The mock ALWAYS chose `~ name()` before this — invisible to `acceptance`
+ * because both forms answer `ok: true`, and invisible to the ALREADY-DRIVEN
+ * `extract_to_function:accepted` case (which selects `"Hi."` from `MAIN`,
+ * a value expression) because nothing looked past its `ok` flag either.
+ */
+function isValueExpression(selected: string): boolean {
+  const lines = selected.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length !== 1) return false;
+  const t = lines[0]!.trimStart();
+  return !(
+    t.startsWith("~") ||
+    t.startsWith("->") ||
+    t.startsWith("*") ||
+    t.startsWith("+") ||
+    t.startsWith("-") ||
+    t.startsWith("=")
+  );
+}
+
+/**
+ * The leading whitespace of the line containing `offset` — mirrors
+ * `extract.rs::leading_indent`. `extractImpl` snaps the selection to whole
+ * lines first, so `offset` here is always a line start; production reuses
+ * this whitespace to prefix the replacement call line so it lands at the
+ * extracted content's own nesting (#2675 Gap C review finding: the mock
+ * dropped it entirely, always emitting the call flush-left).
+ */
+function leadingIndentAt(source: string, offset: number): string {
+  const line = source.slice(offset);
+  const m = /^[ \t]*/.exec(line);
+  return m ? m[0] : "";
+}
+
+/**
+ * Strip the common leading indentation from every non-blank line of `text` —
+ * mirrors `extract.rs::dedent`, byte-for-byte including its trailing-newline
+ * handling (Rust's `str::lines()` yields no trailing empty element for a
+ * final `\n`; `split("\n")` does, so that element is set aside and restored
+ * rather than dedented as if it were a line).
+ *
+ * `rebuild` dedents the extracted body before appending it as a new
+ * declaration (a top-level decl body is not nested); the mock used to append
+ * the raw selection instead, so an indented selection kept its indentation
+ * doubled — once on the call line via {@link leadingIndentAt}, once left
+ * behind in the body (#2675 Gap C review finding).
+ */
+function dedent(text: string): string {
+  const endsWithNewline = text.endsWith("\n");
+  const lines = endsWithNewline ? text.slice(0, -1).split("\n") : text.split("\n");
+  const indents = lines
+    .filter((l) => l.trim() !== "")
+    .map((l) => l.length - l.trimStart().length);
+  const minIndent = indents.length > 0 ? Math.min(...indents) : 0;
+  if (minIndent === 0) return text;
+  const out = lines.map((l) => (l.trim() === "" ? l.trimStart() : l.slice(minIndent))).join("\n");
+  return endsWithNewline ? `${out}\n` : out;
 }
 
 interface MockDoc {
@@ -941,9 +1111,29 @@ export class EditorSession {
       );
     }
 
-    const call = kind === "knot" ? `-> ${name} ->\n` : `~ ${name}()\n`;
+    // #2675 Gap A: production's `is_value_expression` picks the inline
+    // `{name()}` form for a single value-expression selection and `~ name()`
+    // for anything else — the mock always emitted the statement form.
+    //
+    // #2675 Gap C review finding: the replacement call line carries the
+    // selection's own indentation (`extract.rs::leading_indent`, checked
+    // against `selStart` — snapping already put it at a line start), and the
+    // mock omitted it entirely for all three call forms.
+    const indent = leadingIndentAt(source, selStart);
+    const call =
+      kind === "knot"
+        ? `${indent}-> ${name} ->\n`
+        : isValueExpression(selected)
+          ? `${indent}{${name}()}\n`
+          : `${indent}~ ${name}()\n`;
     const header = kind === "knot" ? `=== ${name} ===\n` : `=== function ${name}() ===\n`;
-    let body = selected.endsWith("\n") ? selected : `${selected}\n`;
+    // #2675 Gap C review finding: the appended body is DEDENTED
+    // (`extract.rs::rebuild` calls `dedent(&plan.selected)`), not the raw
+    // selection — a top-level declaration body is not nested, so the
+    // selection's own indentation (already reproduced on the call line above)
+    // must not also survive inside the new declaration.
+    let body = dedent(selected);
+    if (!body.endsWith("\n")) body += "\n";
     if (kind === "knot") body += "->->\n";
 
     let out = source.slice(0, selStart) + call + source.slice(selEnd);
@@ -2068,10 +2258,17 @@ export class EditorSession {
   convert_element_doc(_doc: number, _offset: number, _target: string): string { return "null"; }
   format_document_doc(_doc: number): string { return '""'; }
 
-  /** Outline-shaped symbols for one file (used by symbol-range resolution). */
+  /**
+   * Outline-shaped symbols for one file (used by symbol-range resolution).
+   *
+   * Knots (with their stitch children) first, then top-level `VAR`/`CONST`/
+   * `LIST` declarations — the same order `document_symbols` reports them in
+   * (#2685 Gap 2), regardless of which comes first in the source.
+   */
   file_symbols(path: string): string {
     const source = this.files.get(path);
-    return JSON.stringify(source == null ? [] : parseOutline(source));
+    if (source == null) return JSON.stringify([]);
+    return JSON.stringify([...parseOutline(source), ...topLevelDeclSymbols(source)]);
   }
 
   semantic_tokens(): string { return "[]"; }

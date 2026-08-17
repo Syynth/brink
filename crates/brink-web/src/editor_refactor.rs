@@ -377,13 +377,16 @@ mod refusal_shape {
 `sources` are the exact inputs those drivers ran against, and `acceptance` is each \
 (op, input) pair's own `ok` FLAG plus the `error` beside it — the half no wording-based \
 guard can express, because a mock that never refuses has no string to compare (#2661); \
-`outlines` are the symbol names/kinds/detail `file_symbols` reports, pinning the header \
-recognizer itself rather than an op built on it (#2662); `regions` are the surviving \
-`new_source` after a stitch region was deleted, the half neither acceptance nor the \
-outline can see because the op succeeds either way (#2684); `defaults` are session-seed \
-values a fresh production session starts with (#2663); `diagnostics` are the \
-introduced-diagnostic CODES a driven (op, input) pair reports, the half `acceptance`'s \
-ok/error pair cannot see (review finding on #2662). \
+`outlines` are the symbol names/kinds/detail/OWNERSHIP-RANGE `file_symbols` reports, pinning \
+the header recognizer itself rather than an op built on it (#2662, ranges added #2685 Gap 3); \
+`regions` are the surviving `new_source` after a stitch region was deleted, the half neither \
+acceptance nor the outline can see because the op succeeds either way (#2684); `payloads` are \
+the same half for `reorder_knots`/`reorder_stitches`/`move_stitch` generally (#2675 Gap C, \
+#2685 Gap 3); `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
+`{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
+`ok: true` (#2675 Gap A); `defaults` are session-seed values a fresh production session \
+starts with (#2663); `diagnostics` are the introduced-diagnostic CODES a driven (op, input) \
+pair reports, the half `acceptance`'s ok/error pair cannot see (review finding on #2662). \
 Regenerate with `BRINK_BLESS_REFUSAL_SHAPES=1 cargo test -p brink-web --lib refusal_shape`. \
 Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts (#2568).";
 
@@ -428,6 +431,8 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "headers": driven_header_rewrites(),
             "outlines": driven_outlines(),
             "regions": driven_stitch_regions(),
+            "payloads": driven_payloads(),
+            "call_forms": driven_call_forms(),
             "defaults": driven_defaults(),
             "diagnostics": driven_diagnostics(),
         })
@@ -495,6 +500,18 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// A knot body with a blank line in it, so a selection can be non-empty in
     /// offsets yet whitespace-only in content.
     const BLANK_BODY: &str = "=== one ===\nFirst.\n\nLast.\n";
+
+    /// A stitch body carrying one INDENTED line — the input that drives
+    /// `extract_to_function`/`extract_to_knot`'s two indent-handling steps
+    /// review found undriven (#2675 Gap C follow-up): `extract.rs`'s
+    /// `plan.indent` (the selected line's own leading whitespace) prefixes
+    /// the replacement call line (`extract.rs:121-125`), and `rebuild`'s
+    /// `dedent(&plan.selected)` (`extract.rs:246`) strips that same
+    /// indentation from the appended body. Both answered `ok: true` under the
+    /// mock's un-indented call line and un-dedented raw-selection body, so
+    /// `acceptance` never caught either — see [`driven_payloads`]'s
+    /// `extract_to_function:indented` / `extract_to_knot:indented`.
+    const INDENTED_LINE: &str = "=== one ===\nFirst.\n= a\n  Indented.\n";
 
     /// A stitch carrying parameters — the promote rewrite has to keep the
     /// `(n)` inside the new fences, not strand it after them.
@@ -600,6 +617,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "ALT_STITCHES": ALT_STITCHES,
             "BLANK_BODY": BLANK_BODY,
             "FUNCTION_KNOT": FUNCTION_KNOT,
+            "INDENTED_LINE": INDENTED_LINE,
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
             "MAIN": MAIN,
             "PARAM_STITCH": PARAM_STITCH,
@@ -1153,6 +1171,156 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         })
     }
 
+    /// `extract_to_function`'s call-FORM choice, the half `acceptance` cannot
+    /// see (#2675 Gap A).
+    ///
+    /// Both cases below answer `ok: true` on both sides — `acceptance`'s
+    /// `outcome()` is structurally blind to them. `extract.rs::
+    /// is_value_expression` picks `{name()}` for a single inline value
+    /// expression and `~ name()` for anything else (a statement, a multi-line
+    /// selection, ...), but the studio mock ALWAYS emitted `~ name()`. The
+    /// value-expression case reuses `extract_to_function:accepted`'s own
+    /// input (`MAIN`, selecting `"Hi."`, name `lifted`) rather than a new
+    /// source — that selection already IS a single-line value expression, so
+    /// the divergence was sitting in an already-driven case the whole time,
+    /// invisible only because nothing looked past `ok`.
+    fn driven_call_forms() -> serde_json::Value {
+        let main = session_with(&[("main.ink", MAIN)]);
+        let mixed = session_with(&[("main.ink", KNOT_AND_FUNCTION)]);
+        let hi = at(MAIN, "Hi.");
+        let stmt = at(KNOT_AND_FUNCTION, "~ return");
+        let stmt_end = stmt + u32::try_from("~ return \"hi\"".len()).expect("fixture is tiny");
+
+        serde_json::json!({
+            "extract_to_function:value-expression": call_line(
+                "extract_to_function (single-line value-expression selection)",
+                &main.extract_to_function("main.ink", hi, hi + 3, "lifted"),
+                "lifted",
+            ),
+            "extract_to_function:statement": call_line(
+                "extract_to_function (`~`-statement selection)",
+                &mixed.extract_to_function("main.ink", stmt, stmt_end, "lifted2"),
+                "lifted2",
+            ),
+        })
+    }
+
+    /// The single line of a successful extraction's `new_source` that calls
+    /// `name` — `{name()}` or `~ name()` — the call-form half
+    /// [`driven_call_forms`] pins.
+    fn call_line(site: &str, json: &str, name: &str) -> String {
+        let value = parse(json);
+        assert!(
+            value["ok"] == serde_json::json!(true),
+            "`{site}` refused, so there is no call line to read: {value:#}"
+        );
+        let source = value["new_source"].as_str().unwrap_or_default();
+        // The call site is `{name()}` or `~ name()` — never `=== function
+        // name() ===`, which also contains the substring `name(` and would
+        // otherwise double-match the appended declaration.
+        let value_form = format!("{{{name}()}}");
+        let stmt_form = format!("~ {name}()");
+        let lines: Vec<&str> = source
+            .lines()
+            .map(str::trim)
+            .filter(|l| *l == value_form || *l == stmt_form)
+            .collect();
+        assert!(
+            lines.len() == 1,
+            "`{site}` produced {} line(s) matching the call form of `{name}`, so \
+             there is no single call line to pin: {lines:?}",
+            lines.len()
+        );
+        (*lines.first().expect("just asserted above")).to_owned()
+    }
+
+    /// `new_source` payload fidelity for the outline-reshaping ops, beyond the
+    /// `ok`/`error` flag `acceptance` pins (#2675 Gap C, #2685 Gap 3).
+    ///
+    /// `acceptance` cannot see a wrong-but-successful rewrite — the same shape
+    /// `driven_stitch_regions` closed for `delete_symbol`'s ONE case. This is
+    /// the same mechanism for `reorder_knots`/`reorder_stitches`/`move_stitch`,
+    /// run against the SAME alt-fenced/alt-stitched sources
+    /// `driven_fence_acceptance`/`driven_stitch_acceptance` already exercise
+    /// for `ok`/`error` alone: `ALT_FENCES`'s indented `  ==== four ====` and
+    /// `ALT_STITCHES`'s indented `  = b` are exactly where a symbol's
+    /// OWNERSHIP RANGE can disagree with production without any acceptance
+    /// case noticing, because production's parser attaches a header's leading
+    /// indent to the PRECEDING symbol's trailing trivia (`knot_body`'s
+    /// `skip_ws()` runs before the at-knot/at-stitch check that ends the
+    /// loop), not to the indented header's own leading edge — driven and
+    /// confirmed against `document_symbols`, not read off the grammar.
+    fn driven_payloads() -> serde_json::Value {
+        let alt_fences = session_with(&[("main.ink", ALT_FENCES)]);
+        let alt_stitches = session_with(&[("main.ink", ALT_STITCHES)]);
+        let two = session_with(&[("main.ink", TWO_KNOTS)]);
+        let indented_start = at(INDENTED_LINE, "Indented.");
+        let indented_end =
+            indented_start + u32::try_from("Indented.".len()).expect("fixture is tiny");
+
+        serde_json::json!({
+            "reorder_knots:alt-fences": payload_source(
+                "reorder_knots (knots fenced ==, ===tight, ====, indented ====, bare ===)",
+                &alt_fences.reorder_knots(
+                    "main.ink",
+                    vec![
+                        "five".to_owned(),
+                        "four".to_owned(),
+                        "three".to_owned(),
+                        "two".to_owned(),
+                        "one".to_owned(),
+                    ],
+                ),
+            ),
+            "reorder_stitches:alt-stitches": payload_source(
+                "reorder_stitches (stitches `= a`, indented `  = b`, tight `=c`)",
+                &alt_stitches.reorder_stitches(
+                    "main.ink",
+                    "one",
+                    vec!["b".to_owned(), "c".to_owned(), "a".to_owned()],
+                ),
+            ),
+            "move_stitch:accepted": payload_source(
+                "move_stitch (ordinary success)",
+                &two.move_stitch("main.ink", "one", "b", "two"),
+            ),
+            // Review finding on #2675 Gap C: extract.rs's call-line indent
+            // (`extract.rs:121-125`, `plan.indent` prefixing the call) and
+            // body dedent (`extract.rs:246`, `dedent(&plan.selected)`) were
+            // both structurally invisible to `call_forms` — its own
+            // `call_line` helper `.map(str::trim)`s before matching, so an
+            // indent bug on the call line cannot show up there, and neither
+            // helper looks at the appended body at all. `new_source` payload
+            // fidelity is the only place either is visible.
+            "extract_to_function:indented": payload_source(
+                "extract_to_function (indented selected line — call-line indent + body dedent)",
+                &session_with(&[("main.ink", INDENTED_LINE)]).extract_to_function(
+                    "main.ink",
+                    indented_start,
+                    indented_end,
+                    "lifted3",
+                ),
+            ),
+            "extract_to_knot:indented": payload_source(
+                "extract_to_knot (indented selected line — call-line indent + body dedent)",
+                &session_with(&[("main.ink", INDENTED_LINE)]).extract_to_knot(
+                    "main.ink",
+                    indented_start,
+                    indented_end,
+                    "lifted4",
+                ),
+            ),
+        })
+    }
+
+    /// Alias for [`deleted_source`] (defined further below, alongside
+    /// `driven_stitch_regions`) — the same "must have succeeded" contract,
+    /// used by [`driven_payloads`]'s non-delete sites. Named separately
+    /// because "deleted" would misdescribe a reorder/move's `new_source`.
+    fn payload_source(site: &str, json: &str) -> String {
+        deleted_source(site, json)
+    }
+
     /// The knot-header VOCABULARY, driven through both mock families (#2662).
     ///
     /// Every case runs against [`ALT_FENCES`], whose five knots are fenced
@@ -1329,6 +1497,22 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "delete_symbol (stitch `a`: body carries `=> x`, boundary is `=c`)",
                 &spans_arrow.delete_symbol("main.ink", "one", "a"),
             ),
+            // NOT `delete_symbol:alt-stitch-indented` (review finding on
+            // #2685 Gap 3, checked rather than assumed): `parseOutline`'s
+            // `full_start` fix reattributes an indented header's leading
+            // whitespace to the PRECEDING symbol's trailing trivia — which
+            // fixes every op built ON `parseOutline` (the seven
+            // `dispatchSymbolAction` ops, pinned in `outlines`/`payloads`) —
+            // but the mock's `delete_symbol` does NOT go through
+            // `parseOutline`'s ranges at all; it is its own independent
+            // line-based scan (`lines.findIndex` + `opensHeader`) that
+            // deletes the WHOLE physical line `  = b` sits on, indent
+            // included. Driven and confirmed, not assumed: production's
+            // answer for this exact call keeps the two-space indent behind,
+            // glued onto the following line — `...C.\n  === two ===\n...` —
+            // while the mock answers `...C.\n=== two ===\n...`. Pinning this
+            // here would pin a mismatch as a match. The divergence stays
+            // open — see the spec's "Not covered" note.
         })
     }
 
@@ -1364,22 +1548,24 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     }
 
     /// The OUTLINE production reports for a source: each symbol's `name`,
-    /// `kind`, and `detail`, nested (#2662).
+    /// `kind`, `detail`, and OWNERSHIP RANGE (`full_start`/`full_end`), nested
+    /// (#2662, ranges added #2685 Gap 3).
     ///
     /// Acceptance pins whether an op runs; this pins the recognizer's own
-    /// answer — which symbols `file_symbols` reports at all — for the studio's
-    /// Binder, symbol menu and story graph, all of which read the mock's
-    /// `parseOutline` through this entry point. Ranges are deliberately NOT
-    /// pinned: the question here is "is this a knot", and a range mismatch is
-    /// already covered by the `#2670` offset guards.
+    /// answer — which symbols `file_symbols` reports at all, and the exact
+    /// span each one owns — for the studio's Binder, symbol menu and story
+    /// graph, all of which read the mock's `parseOutline` through this entry
+    /// point. The NAME range (`start`/`end`) is deliberately still left out —
+    /// that one is pinned elsewhere, by the `#2670` offset guards.
     fn outline_of(source: &str) -> serde_json::Value {
         let session = session_with(&[("main.ink", source)]);
         let symbols = parse(&session.file_symbols("main.ink"));
         outline_shape(&symbols)
     }
 
-    /// `name`/`kind`/`detail`/`children`, recursively. Ranges are the only
-    /// thing left out — they are pinned elsewhere (the `#2670` offset guards).
+    /// `name`/`kind`/`detail`/`full_start`/`full_end`/`children`, recursively.
+    /// The NAME range (`start`/`end`) is the only thing left out — it is
+    /// pinned elsewhere (the `#2670` offset guards).
     ///
     /// `detail` is NOT a range: it is `DocumentSymbolJs.detail`
     /// (`crates/brink-web/src/editor_dto.rs`), set to `Some("function")` for a
@@ -1388,6 +1574,17 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// marker renders off exactly `knot.detail === "function"` — so dropping
     /// it here would leave that control asserting nothing (review finding on
     /// #2662).
+    ///
+    /// `full_start`/`full_end` are the OWNERSHIP range every one of the seven
+    /// structural ops slices by (#2685 Gap 3) — the #2670 offset guards cover
+    /// only the NAME span, so a mock whose ownership boundary disagreed with
+    /// production passed both that guard and #2682's fixture. `ALT_FENCES`'s
+    /// indented `  ==== four ====` and `ALT_STITCHES`'s indented `  = b` are
+    /// exactly where that boundary is non-obvious: production's parser
+    /// attaches a header's leading indent to the PRECEDING symbol's trailing
+    /// trivia, not to the indented header's own leading edge (driven and
+    /// confirmed against `document_symbols`, not read off the grammar — see
+    /// [`driven_payloads`] for the end-to-end consequence on a reorder).
     fn outline_shape(symbols: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::Array(
             symbols
@@ -1399,6 +1596,8 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                         "name": sym["name"],
                         "kind": sym["kind"],
                         "detail": sym["detail"],
+                        "full_start": sym["full_start"],
+                        "full_end": sym["full_end"],
                         "children": outline_shape(&sym["children"]),
                     })
                 })
@@ -1409,15 +1608,26 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// The outlines the mock's `parseOutline` has to reproduce.
     ///
     /// [`ALT_FENCES`] is the point — every knot in it uses a legal fence the
-    /// mock's outline regex rejected. The other two are controls: the ordinary
-    /// `=== name ===` shape and a function knot, both of which already worked,
-    /// so a widening that broke them is red here.
+    /// mock's outline regex rejected. [`KNOT_AND_FUNCTION`]/[`TWO_KNOTS`] are
+    /// controls: the ordinary `=== name ===` shape and a function knot, both
+    /// of which already worked, so a widening that broke them is red here.
+    ///
+    /// [`VAR_AND_KNOT`] is a different question (#2685 Gap 2):
+    /// `document_symbols` (`crates/internal/brink-ide/src/document.rs`) also
+    /// reports top-level `Variable`/`Constant`/`List`/`Struct`/`External`
+    /// declarations from the manifest, appended AFTER every knot regardless of
+    /// where they sit in the source — `score` is declared before knot `one`
+    /// textually, but the driven answer puts `one` first. The studio mock's
+    /// `parseOutline` had no concept of a non-knot/non-stitch top-level
+    /// symbol at all, so `file_symbols` on a file with a `VAR` never reported
+    /// it.
     fn driven_outlines() -> serde_json::Value {
         serde_json::json!({
             "ALT_FENCES": outline_of(ALT_FENCES),
             "ALT_STITCHES": outline_of(ALT_STITCHES),
             "KNOT_AND_FUNCTION": outline_of(KNOT_AND_FUNCTION),
             "TWO_KNOTS": outline_of(TWO_KNOTS),
+            "VAR_AND_KNOT": outline_of(VAR_AND_KNOT),
         })
     }
 
@@ -1437,6 +1647,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     fn driven_header_rewrites() -> serde_json::Value {
         let mixed = session_with(&[("main.ink", KNOT_AND_FUNCTION)]);
         let params = session_with(&[("main.ink", PARAM_STITCH)]);
+        let alt_fences = session_with(&[("main.ink", ALT_FENCES)]);
 
         serde_json::json!({
             "demote_knot:function-knot": rewritten_header(
@@ -1448,6 +1659,16 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "promote_stitch (stitch with parameters)",
                 &params.promote_stitch("main.ink", "one", "deal"),
                 "deal",
+            ),
+            // #2685 Gap 1: `knotHeaderToStitch`'s `^=+`/`=+$` strip LOOKED
+            // fence-width-agnostic, but #2682 drove no case past a plain
+            // `===` knot. `three` is fenced `====` (four `=`) and carries no
+            // stitches of its own, so demoting it into `one` reaches the
+            // rewrite rather than refusing on `IllegalNesting` first.
+            "demote_knot:alt-fence-knot": rewritten_header(
+                "demote_knot (source knot fenced with four `=`)",
+                &alt_fences.demote_knot("main.ink", "three", "one"),
+                "three",
             ),
         })
     }
