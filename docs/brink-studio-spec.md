@@ -694,10 +694,30 @@ where production inserts a separating newline first
 (`structural_move.rs`'s `promote_stitch_to_knot`: `if !new_source
 .ends_with('\n') { new_source.push('\n'); }`), answering `"...C.\n
 \n=== b ==="`. So `full_start` closing the region boundary was necessary but
-not sufficient for `promote_stitch` specifically — it still needed its own
-guard. Fixed by mirroring the same guard in `packages/brink-studio/src
+not sufficient on its own — `promote_stitch` needed its own guard too, and
+(per #2730 below) it was not the only op that did. Fixed by mirroring the
+same guard in `packages/brink-studio/src
 /__mocks__/brink-web.ts`'s `promote_stitch`; pinned by
 `payloads["promote_stitch:alt-stitch-indented"]`.
+
+**The same gap, still open in `move_stitch`/`demote_knot` (#2730, follow-up
+from #2725's review).** `structural_move.rs` carries this "insert a
+separating newline before appended content when the destination doesn't
+already end in `\n`" shape in exactly three places: `promote_stitch_to_knot`
+(closed above, #2721), `move_stitch`'s `needs_newline_before`, and
+`demote_knot_to_stitch`'s `needs_nl` — and the mock's `move_stitch`/
+`demote_knot` still lacked it. `ALT_STITCHES`'s indented `  = b`, the input
+the existing `move_stitch`/`demote_knot` coverage from #2721 already drove,
+cannot exercise either guard: its insertion point always lands right after a
+byte that is already `\n`, so the guard is a no-op whether or not the mock
+has it. `ALT_FENCES`'s `three` is where it shows instead — `four`'s indented
+`  ==== four ====` header glues its own leading whitespace onto `three`'s
+trailing trivia (same #2703 mechanism as above), leaving `three`'s region
+ending in a bare `"  "` with no trailing newline, so inserting into `three`
+is where a missing guard would actually change `new_source`. Fixed by
+mirroring the same guard in both mock ops; driven end-to-end and pinned by
+`payloads["move_stitch:alt-fence-three-boundary"]` /
+`payloads["demote_knot:alt-fence-three-boundary"]`.
 
 **The indented-FIRST-knot header answer, driven (#2706).** #2703 left one
 shape of this boundary undriven on both sides: an indented header with no

@@ -387,9 +387,9 @@ the same half for every `dispatchSymbolAction` op — `reorder_knots`/`reorder_s
 #2685 Gap 3) — an indented-FIRST-knot header's end-to-end preamble behavior \
 (`reorder_knots:indented-first-knot`, #2706), plus `rename_symbol`'s own answer on that same \
 source and `move_stitch`/`promote_stitch`/`demote_knot` driven on ALT_STITCHES's indented \
-`  = b` (#2721), plus `move_stitch`/`demote_knot` driven on ALT_FENCES's non-newline- \
-terminated `three` boundary — the input shape that stresses their own `needs_newline_before`/ \
-`needs_nl` guards, which ALT_STITCHES's `  = b` does not (#2730); \
+`  = b` (#2721), plus `move_stitch`/`demote_knot` driven on ALT_FENCES's \
+non-newline-terminated `three` boundary — the input shape that stresses their own \
+`needs_newline_before`/`needs_nl` guards, which ALT_STITCHES's `  = b` does not (#2730); \
 `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
 `{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
 `ok: true` (#2675 Gap A); `defaults` are session-seed values a fresh production session \
