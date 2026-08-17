@@ -477,11 +477,16 @@ exposed.
 `acceptance`'s `ok`/`error` flag has the same blind spot one level up: an op
 that answers `ok: true` with the WRONG `new_source` is invisible to it too. A
 fifth map, **`payloads`** (#2675 Gap C, #2685 Gap 3), pins the full
-`new_source` for `reorder_knots`/`reorder_stitches`/`move_stitch`/
-`extract_to_knot`/`extract_to_function`, run on the same alt-fenced,
-alt-stitched, and indented-selection inputs the other maps already exercise —
-so a fixed ownership-range boundary shows up as newly-pinned content on the
-same source, not as a new case that could itself be wrong. A sixth map,
+`new_source` for `reorder_knots`/`reorder_stitches`/`move_stitch`, run on the
+same alt-fenced, alt-stitched, and indented-selection inputs the other maps
+already exercise, plus the two extract editor commands `extract_to_knot`/
+`extract_to_function` — so a fixed ownership-range boundary shows up as
+newly-pinned content on the same source, not as a new case that could itself
+be wrong. #2706 extended `payloads` to the four `dispatchSymbolAction` ops
+#2703 (the PR that introduced the map) did not reach — `demote_knot`,
+`promote_stitch`, `reorder_knot` (singular), `reorder_stitch` (singular) —
+including a case that drives an actual reorder (not just an out-of-range
+clamp) for the singular ops, per a follow-up review finding. A sixth map,
 **`call_forms`** (#2675 Gap A), pins the exact call-site line
 `extract_to_function` writes — `{name()}` for a single value-expression
 selection, `~ name()` for a statement — the choice `acceptance` cannot see
@@ -554,13 +559,18 @@ op a test happened to call.
 `parser/knot.rs::knot_header` is
 
 ```text
-knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS*)? ~ identifier
                 ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
 ```
 
 — **two or more** `=` (`at_knot` tests `EQ_EQ`, then `eat_extra_equals` takes
 the rest), **zero or more** spaces after it (`skip_ws`), an indent tolerated, a
-trailing fence that is optional and of any width. Driven, not read:
+trailing fence that is optional and of any width. The `function` keyword's own
+trailing whitespace is `INLINE_WS*` for the same reason, though the
+zero-whitespace form is lexically unreachable: `classify_keyword` scans
+`function` with the same identifier-character loop as the name that follows
+it, so `==functionGreet==` lexes as one `IDENT` token (a knot literally named
+`functionGreet`), never `KW_FUNCTION` + `IDENT` (#2712). Driven, not read:
 `file_symbols` reports one knot `a` for each of `== a ==`, `===a===`, `==a==`,
 `==== a ====`, `  === a ===`, `=== a` and `=== a ==`. So the outline's form was
 wrong three ways and the inline form one way (it caps at three `=`).
@@ -613,13 +623,15 @@ tight `=c` was invisible to both yet still *ended* a region, and a `=>` divert
 ended a region production runs straight through.
 
 **Production is the tiebreak, and the grammar comment is not production.**
-`brink_syntax`'s `parser/knot.rs` documents `stitch_header` as
+`brink_syntax`'s `parser/knot.rs` used to document `stitch_header` as
 
 ```text
 stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ knot_params? }
 ```
 
-with `INLINE_WS+` — **required** whitespace. The code is `at_stitch`
+with `INLINE_WS+` — **required** whitespace (the comment now says `INLINE_WS*`
+instead, matching the code — mismatch fixed separately by #2695; see the note
+further down). The code is `at_stitch`
 (`current() == EQ && nth(1) != EQ && nth(1) != GT`) followed by `p.skip_ws()`,
 and `skip_ws` matches **zero** or more. Driven, not read: `file_symbols`
 reports one stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and
@@ -671,6 +683,38 @@ and `payloads`'s `reorder_knots:alt-fences`.) This closes the boundary for the
 seven `dispatchSymbolAction` ops, which all rearrange whole `parseOutline`
 regions.
 
+**Not closed by `full_start` alone — `promote_stitch`'s own newline guard,
+driven and fixed (#2721).** Promoting `ALT_STITCHES`'s indented `  = b`
+leaves the source knot `one`'s remainder — its last surviving stitch, `c` —
+ending in the bare `"  "` that used to be `b`'s own leading indent, glued
+onto `c`'s trailing trivia by the `full_start` fix above, rather than in a
+newline. The mock's `renderKnots` concatenated the promoted header directly
+onto that non-newline-terminated tail, answering `"...C.\n  === b ==="`,
+where production inserts a separating newline first
+(`structural_move.rs`'s `promote_stitch_to_knot`: `if !new_source
+.ends_with('\n') { new_source.push('\n'); }`), answering `"...C.\n
+\n=== b ==="`. So `full_start` closing the region boundary was necessary but
+not sufficient for `promote_stitch` specifically — it still needed its own
+guard. Fixed by mirroring the same guard in `packages/brink-studio/src
+/__mocks__/brink-web.ts`'s `promote_stitch`; pinned by
+`payloads["promote_stitch:alt-stitch-indented"]`.
+
+**The indented-FIRST-knot header answer, driven (#2706).** #2703 left one
+shape of this boundary undriven on both sides: an indented header with no
+PRECEDING symbol for the "glue the indent to the predecessor's trailing
+trivia" rule to attach to, because it is the file's very first symbol. A new
+`INDENTED_FIRST_KNOT` fixture (`"  === one ===\nFirst.\n= a\nA.\n\n=== two
+===\nSecond.\n"`) drives the answer: `source_file`'s own parse loop calls
+`p.skip_ws()` before dispatching to `knot_definition`, so the indent is
+consumed as `SOURCE_FILE`'s own leading trivia — never reaching `KNOT_DEF`'s
+range — the same general mechanism as the non-first case, just with the root
+node doing the swallowing instead of a knot body. `outlines.INDENTED_FIRST_KNOT`
+pins `full_start` for knot `one` at `2`; `payloads`'s
+`reorder_knots:indented-first-knot` drives the end-to-end consequence —
+moving `one` out of first place — and confirms the indent stays behind as
+untouched file preamble, agreeing with both `structural_move.rs`'s
+`decl_region_start` and the mock's `renderKnots` preamble-slicing model.
+
 **Not covered, and checked rather than assumed (#2703):** `delete_symbol`
 does **not** read `parseOutline`'s ranges — it is its own independent
 line-based scan (`lines.findIndex` + `opensHeader`) that deletes the WHOLE
@@ -684,6 +728,25 @@ ranges and that whitespace belongs to the PRECEDING stitch `c`, not to `b`)
 instead. `regions` still carries only the flush-left `delete_symbol:alt-
 stitch-plain` control; an `alt-stitch-indented` entry was tried and reverted
 once driving it showed the mismatch above, rather than left unattempted.
+
+**A second instance of the same class, on `INDENTED_FIRST_KNOT` (#2721).**
+The divergence above is not specific to a stitch header — it recurs on an
+indented *knot* header with the same shape. On `INDENTED_FIRST_KNOT`
+(`"  === one ===\n..."`), `decl_region_start` places knot `one`'s region at
+`[2, 29)`, so production's `delete_symbol("one", "")` keeps the two-space
+indent behind, glued onto the FOLLOWING knot's header —
+`"  === two ===\nSecond.\n"` — while the mock's `delete_symbol`, still
+deleting whole physical lines (`lines.findIndex` matches line 0, `"
+=== one ==="`, tolerated by `KNOT_HEADER_RE`), splices out the entire line
+indent included: `"=== two ===\nSecond.\n"`. Driven and recorded rather than
+decided, per the same discipline as the `  = b` case: `acceptance` is pinned
+(`delete_symbol:indented-first-knot`, both sides agree `ok: true`) but the
+`new_source` half is deliberately left out of `payloads`/`regions`, since
+pinning it would pin a mismatch as a match. This instance's driven evidence
+lives in a `#[cfg(test)]` doc comment on `driven_stitch_regions`
+(`crates/brink-web/src/editor_refactor.rs`) rather than here; #2694 is still
+the open ruling for both instances of the class.
+
 (`parser/knot.rs`'s grammar comment used to spell `stitch_header` with
 `INLINE_WS+` — required whitespace — contradicting the optional-whitespace
 behavior this section's own driven evidence established; that mismatch was

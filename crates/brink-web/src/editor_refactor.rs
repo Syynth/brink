@@ -381,8 +381,14 @@ guard can express, because a mock that never refuses has no string to compare (#
 the header recognizer itself rather than an op built on it (#2662, ranges added #2685 Gap 3); \
 `regions` are the surviving `new_source` after a stitch region was deleted, the half neither \
 acceptance nor the outline can see because the op succeeds either way (#2684); `payloads` are \
-the same half for `reorder_knots`/`reorder_stitches`/`move_stitch` generally (#2675 Gap C, \
-#2685 Gap 3); `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
+the same half for every `dispatchSymbolAction` op — `reorder_knots`/`reorder_stitches`/`move_stitch` \
+(#2675 Gap C, #2685 Gap 3), plus `demote_knot`/`promote_stitch`/`reorder_knot`/`reorder_stitch` \
+(#2706), plus the two extract editor commands `extract_to_function`/`extract_to_knot` (#2675 Gap C, \
+#2685 Gap 3) — an indented-FIRST-knot header's end-to-end preamble behavior \
+(`reorder_knots:indented-first-knot`, #2706), plus `rename_symbol`'s own answer on that same \
+source and `move_stitch`/`promote_stitch`/`demote_knot` driven on ALT_STITCHES's indented \
+`  = b` (#2721); \
+`call_forms` are the exact call-site LINE `extract_to_function` chooses — \
 `{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
 `ok: true` (#2675 Gap A); `defaults` are session-seed values a fresh production session \
 starts with (#2663); `diagnostics` are the introduced-diagnostic CODES a driven (op, input) \
@@ -528,14 +534,19 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// Five knots whose `=` fences are all legal and none of them the
     /// `=== name ===` shape every other fixture uses (#2662).
     ///
-    /// `brink_syntax`'s `knot_header` rule is
-    /// `"==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
-    /// … ~ INLINE_WS* ~ ("==" ~ "="*)?`, so production's vocabulary is **two or
-    /// more** `=`, **zero or more** spaces, **tolerated leading indent**
-    /// (`skip_ws` runs before the fence is even looked for), and an **optional**
-    /// trailing fence of **any width** — `== one ==`, `===two===`,
-    /// `==== three ====`, `  ==== four ====` and `=== five` are all ordinary
-    /// top-level knots, and `one` still carries its stitch `a`.
+    /// `brink_syntax`'s `parser/knot.rs` used to document the `knot_header`
+    /// rule as `"==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~
+    /// identifier … ~ INLINE_WS* ~ ("==" ~ "="*)?` (the comment now says
+    /// `INLINE_WS*` after `function` too, mismatch fixed separately by
+    /// #2707), but the **code**'s `p.bump()` + `p.skip_ws()` after `function`
+    /// has always matched **zero or more**, same as every other whitespace
+    /// step in the rule — only the doc comment changed. So production's real
+    /// vocabulary is **two or more** `=`, **zero or more** spaces,
+    /// **tolerated leading indent** (`skip_ws` runs before the fence is even
+    /// looked for), and an **optional** trailing fence of **any width** —
+    /// `== one ==`, `===two===`, `==== three ====`, `  ==== four ====` and
+    /// `=== five` are all ordinary top-level knots, and `one` still carries
+    /// its stitch `a`.
     ///
     /// The studio mock had two narrower answers to that question, and which
     /// one applied depended on which op a test happened to call: `parseOutline`
@@ -559,7 +570,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// uses, plus two `=`-leading lines that are NOT headers (#2684).
     ///
     /// The stitch level had #2662's split one rung down. `brink_syntax`'s
-    /// `parser/knot.rs` documents `stitch_header` as
+    /// `parser/knot.rs` used to document `stitch_header` as
     ///
     /// ```text
     /// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
@@ -570,7 +581,9 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// **zero** or more. So production's real vocabulary is: a **tolerated
     /// leading indent** (`current()` skips trivia), **exactly one** `=`, a
     /// negative lookahead excluding `=` and `>`, and **optional** whitespace —
-    /// the `INLINE_WS+` in the doc comment is not what the parser does.
+    /// the `INLINE_WS+` that used to be in the doc comment was never what the
+    /// parser does (the comment now says `INLINE_WS*`, mismatch fixed
+    /// separately by #2695).
     ///
     /// Driven, not read (the whole lesson of #2662): `file_symbols` reports a
     /// stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and
@@ -603,6 +616,33 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// over here.
     const ALT_STITCHES: &str = "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n";
 
+    /// A file whose very FIRST knot header is itself indented (#2706) — the
+    /// case #2703's `full_start` fix left undriven on both sides.
+    ///
+    /// #2703 found that an indented header's leading whitespace is glued to
+    /// the PRECEDING symbol's trailing trivia: `knot_body`'s loop calls
+    /// `p.skip_ws()` before checking `at_knot`, so the still-open predecessor
+    /// swallows the indent before the parser notices a new header started.
+    /// A FIRST knot has no preceding symbol, so that mechanism cannot apply
+    /// to it — but `source_file`'s own loop has the identical shape: it also
+    /// calls `p.skip_ws()` before dispatching to `knot_definition`, and that
+    /// call happens while `SOURCE_FILE` (not `KNOT_DEF`) is the open node.
+    /// So the indent is consumed as `SOURCE_FILE`'s own leading trivia,
+    /// never reaching `KNOT_DEF`'s range at all — the general rule ("an
+    /// indent belongs to whatever precedes the header, in the CST") holds
+    /// even with no preceding symbol, it is simply the root node doing the
+    /// swallowing instead of another knot's body.
+    ///
+    /// Driven here rather than assumed, per the general #2703/#2685 Gap 3
+    /// lesson that a symbol's ownership boundary can be WRONG in a way no
+    /// `ok`/`error` flag sees: [`driven_outlines`] pins `full_start` for
+    /// `one` against `document_symbols`'s `doc_extended_start`, and
+    /// [`driven_payloads`]'s `reorder_knots:indented-first-knot` pins the
+    /// end-to-end consequence — whether the leading indent stays behind as
+    /// untouched file preamble (like `structural_move.rs`'s
+    /// `decl_region_start`) when knot `one` is moved out of first place.
+    const INDENTED_FIRST_KNOT: &str = "  === one ===\nFirst.\n= a\nA.\n\n=== two ===\nSecond.\n";
+
     /// Every named source the drivers run against, shipped INTO the fixture.
     ///
     /// The mirroring TypeScript test asserts its own constants are
@@ -617,6 +657,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "ALT_STITCHES": ALT_STITCHES,
             "BLANK_BODY": BLANK_BODY,
             "FUNCTION_KNOT": FUNCTION_KNOT,
+            "INDENTED_FIRST_KNOT": INDENTED_FIRST_KNOT,
             "INDENTED_LINE": INDENTED_LINE,
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
             "MAIN": MAIN,
@@ -1095,6 +1136,54 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         })
     }
 
+    /// The ACCEPTANCE half of #2721's two indent-bearing coverage gaps —
+    /// whether each op even RUNS on these inputs, driven the same way
+    /// [`driven_outline_acceptance`] is (#2661). The `new_source` payload
+    /// half lives in [`driven_payloads`] (and, for `delete_symbol`,
+    /// deliberately does not — see [`driven_stitch_regions`]'s doc).
+    ///
+    /// Gap 1: `delete_symbol`/`rename_symbol` were never driven on
+    /// [`INDENTED_FIRST_KNOT`] at all. #2703 established that neither op
+    /// reads `parseOutline`'s ranges — `delete_symbol` runs its own
+    /// line-based scan and `rename_symbol` substitutes the declared name
+    /// token in place — so #2713's `full_start`/`payloads` fix for the
+    /// seven `dispatchSymbolAction` ops says nothing about whether either of
+    /// these two agrees with production here.
+    ///
+    /// Gap 2: `move_stitch`/`promote_stitch`/`demote_knot` were never driven
+    /// on [`ALT_STITCHES`]'s indented `  = b`, the input shape #2703's fix
+    /// was made for, though the other four `dispatchSymbolAction` ops were.
+    fn driven_indent_acceptance() -> serde_json::Value {
+        let delete_indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
+        let rename_indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
+        let move_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
+        let promote_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
+        let demote_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
+
+        serde_json::json!({
+            "delete_symbol:indented-first-knot": outcome(
+                "delete_symbol (source's FIRST knot header is itself indented)",
+                &delete_indented_first.delete_symbol("main.ink", "one", ""),
+            ),
+            "rename_symbol:indented-first-knot": outcome(
+                "rename_symbol (source's FIRST knot header is itself indented)",
+                &rename_indented_first.rename_symbol("main.ink", "one", "", "renamed"),
+            ),
+            "move_stitch:alt-stitch-indented": outcome(
+                "move_stitch (moving ALT_STITCHES's indented `  = b` itself)",
+                &move_indented_stitch.move_stitch("main.ink", "one", "b", "two"),
+            ),
+            "promote_stitch:alt-stitch-indented": outcome(
+                "promote_stitch (promoting ALT_STITCHES's indented `  = b`)",
+                &promote_indented_stitch.promote_stitch("main.ink", "one", "b"),
+            ),
+            "demote_knot:alt-stitch-indented": outcome(
+                "demote_knot (demoting `two` into `one`, landing after the indented `  = b`)",
+                &demote_indented_stitch.demote_knot("main.ink", "two", "one"),
+            ),
+        })
+    }
+
     /// `extract_to_knot` / `extract_to_function` acceptance (#2661).
     ///
     /// `brink_ide::extract::ExtractError` has EIGHT variants; the studio mock
@@ -1250,10 +1339,34 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// `skip_ws()` runs before the at-knot/at-stitch check that ends the
     /// loop), not to the indented header's own leading edge — driven and
     /// confirmed against `document_symbols`, not read off the grammar.
+    ///
+    /// #2706 extends the same fidelity to the four `dispatchSymbolAction` ops
+    /// #2703 did not reach — `demote_knot`, `promote_stitch`, `reorder_knot`
+    /// (singular), `reorder_stitch` (singular) — including a full
+    /// `new_source` pin for `demote_knot:alt-fence-knot` (previously pinned
+    /// only on its header line, in [`driven_header_rewrites`]). It also adds
+    /// `reorder_knots:indented-first-knot`, driving [`INDENTED_FIRST_KNOT`]'s
+    /// leading-indent-on-the-first-knot question end-to-end: whether that
+    /// indent stays behind as untouched preamble when the knot it visually
+    /// belongs to moves out of first place.
+    ///
+    /// #2721 closes two coverage gaps #2713 left: `rename_symbol:indented-
+    /// first-knot` (the sibling of `reorder_knots:indented-first-knot`, on
+    /// the same [`INDENTED_FIRST_KNOT`] source) and three cases run on
+    /// [`ALT_STITCHES`]'s indented `  = b` — `move_stitch:alt-stitch-
+    /// indented`, `promote_stitch:alt-stitch-indented`,
+    /// `demote_knot:alt-stitch-indented` — exercising the exact input shape
+    /// #2703's `full_start` fix was made for, on the three
+    /// `dispatchSymbolAction` ops #2713 had not yet driven there.
+    /// `delete_symbol:indented-first-knot` is deliberately NOT among them —
+    /// see [`driven_stitch_regions`]'s doc for why.
     fn driven_payloads() -> serde_json::Value {
         let alt_fences = session_with(&[("main.ink", ALT_FENCES)]);
         let alt_stitches = session_with(&[("main.ink", ALT_STITCHES)]);
         let two = session_with(&[("main.ink", TWO_KNOTS)]);
+        let mixed = session_with(&[("main.ink", KNOT_AND_FUNCTION)]);
+        let function_only = session_with(&[("main.ink", FUNCTION_KNOT)]);
+        let indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
         let indented_start = at(INDENTED_LINE, "Indented.");
         let indented_end =
             indented_start + u32::try_from("Indented.".len()).expect("fixture is tiny");
@@ -1283,6 +1396,91 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "move_stitch:accepted": payload_source(
                 "move_stitch (ordinary success)",
                 &two.move_stitch("main.ink", "one", "b", "two"),
+            ),
+            // #2706: the four ops #2703 did not reach. `alt-fence-knot` reuses
+            // the same (op, input) pair `driven_header_rewrites` already
+            // pins the header line for — this is the SAME fidelity gap
+            // #2703 fixed for the other three ops, present here in a fixture
+            // #2703 itself introduced.
+            "demote_knot:alt-fence-knot": payload_source(
+                "demote_knot (source knot fenced with four `=`, into `one`)",
+                &alt_fences.demote_knot("main.ink", "three", "one"),
+            ),
+            "demote_knot:function-knot-source": payload_source(
+                "demote_knot (demoting a function knot)",
+                &mixed.demote_knot("main.ink", "greet", "one"),
+            ),
+            "promote_stitch:alt-fence-terse": payload_source(
+                "promote_stitch (stitch under a `==`-fenced knot)",
+                &alt_fences.promote_stitch("main.ink", "one", "a"),
+            ),
+            // Review finding on #2706: the `function-knot` case below pins the
+            // OUT-OF-RANGE CLAMP (the single-knot source has no `target` to
+            // move to, so `structuralOk(path, source)` returns it unchanged)
+            // — it never exercises `planKnots`/`renderKnots`'s actual swap.
+            // This case drives the real move: `one` past `two` on `TWO_KNOTS`,
+            // which carries stitches on both sides, so the head+stitches
+            // reassembly the payloads map exists to pin is inside this
+            // singular op's pin too.
+            "reorder_knot:two-knots": payload_source(
+                "reorder_knot (ordinary success — the only other knot is past it)",
+                &two.reorder_knot("main.ink", "one", 1),
+            ),
+            "reorder_knot:function-knot": payload_source(
+                "reorder_knot (the only knot is a function knot — out-of-range clamp)",
+                &function_only.reorder_knot("main.ink", "greet", 1),
+            ),
+            "reorder_stitch:accepted": payload_source(
+                "reorder_stitch (ordinary success)",
+                &two.reorder_stitch("main.ink", "one", "a", 1),
+            ),
+            // #2706: the indented-FIRST-knot question, driven end-to-end.
+            // `one`'s two-space indent has no preceding SYMBOL to glue to
+            // (unlike `ALT_FENCES`'s `four`/`ALT_STITCHES`'s `b`) — moving
+            // `one` out of first place is the only way to see whether the
+            // indent stayed behind as untouched file preamble (matching
+            // `structural_move.rs`'s `decl_region_start`) or moved with the
+            // knot.
+            "reorder_knots:indented-first-knot": payload_source(
+                "reorder_knots (source's FIRST knot header is itself indented)",
+                &indented_first
+                    .reorder_knots("main.ink", vec!["two".to_owned(), "one".to_owned()]),
+            ),
+            // #2721 Gap 1: `rename_symbol` never rewrites the header's leading
+            // trivia at all — it substitutes the declared NAME token in place
+            // (`brink_ide::rename::rename_safe`), so the first-knot indent
+            // question `reorder_knots:indented-first-knot` answers for a
+            // region MOVE has no analogue here to diverge on. Driven rather
+            // than assumed, per the same #2703/#2685 Gap 3 lesson every other
+            // entry in this map follows.
+            "rename_symbol:indented-first-knot": payload_source(
+                "rename_symbol (source's FIRST knot header is itself indented)",
+                &indented_first.rename_symbol("main.ink", "one", "", "renamed"),
+            ),
+            // #2721 Gap 2: `move_stitch`/`promote_stitch`/`demote_knot` driven
+            // on ALT_STITCHES's indented `  = b` — precisely the input shape
+            // #2703's `full_start` fix matters for, on the three
+            // `dispatchSymbolAction` ops #2713's payload coverage did not
+            // reach with it. All three resolve `b`'s ownership region through
+            // `decl_region_start`/`full_start` exactly as `reorder_stitches:
+            // alt-stitches` above already does, so this end-to-end pin is
+            // confirmation the fix generalizes to these three ops too, not a
+            // new mechanism.
+            "move_stitch:alt-stitch-indented": payload_source(
+                "move_stitch (moving ALT_STITCHES's indented `  = b` itself)",
+                &alt_stitches.move_stitch("main.ink", "one", "b", "two"),
+            ),
+            "promote_stitch:alt-stitch-indented": payload_source(
+                "promote_stitch (promoting ALT_STITCHES's indented `  = b`)",
+                &alt_stitches.promote_stitch("main.ink", "one", "b"),
+            ),
+            // `two` has no stitches of its own, so demoting it into `one`
+            // lands the new stitch immediately AFTER `one`'s existing last
+            // stitch — the indented `b` — rather than colliding with the
+            // nesting/collision checks another source would trip first.
+            "demote_knot:alt-stitch-indented": payload_source(
+                "demote_knot (demoting `two` into `one`, landing after the indented `  = b`)",
+                &alt_stitches.demote_knot("main.ink", "two", "one"),
             ),
             // Review finding on #2675 Gap C: extract.rs's call-line indent
             // (`extract.rs:121-125`, `plan.indent` prefixing the call) and
@@ -1459,6 +1657,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             driven_extract_acceptance(),
             driven_fence_acceptance(),
             driven_stitch_acceptance(),
+            driven_indent_acceptance(),
         ])
     }
 
@@ -1513,6 +1712,22 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             // while the mock answers `...C.\n=== two ===\n...`. Pinning this
             // here would pin a mismatch as a match. The divergence stays
             // open — see the spec's "Not covered" note.
+            //
+            // NOT `delete_symbol:indented-first-knot` either (#2721 Gap 1,
+            // same check rather than assumption): on `INDENTED_FIRST_KNOT`
+            // (`"  === one ===\n..."`), `decl_region_start` — the same
+            // function `full_start` is built from — places knot `one`'s
+            // region at [2, 29), so production's `delete_symbol("one", "")`
+            // keeps the two-space indent behind, glued onto the FOLLOWING
+            // knot's header: `"  === two ===\nSecond.\n"`. The mock's
+            // `delete_symbol` still deletes whole physical LINES — `lines
+            // .findIndex` matches line 0 (`"  === one ==="`, `KNOT_HEADER_RE`
+            // tolerates the indent), so the entire line, indent included, is
+            // spliced out: `"=== two ===\nSecond.\n"`, no leading indent at
+            // all. Same divergence class as the `  = b` case above, a
+            // SECOND instance of it rather than a new one — driven and
+            // recorded per #2721's ask, not decided; #2694 is still the open
+            // ruling for both.
         })
     }
 
@@ -1625,6 +1840,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         serde_json::json!({
             "ALT_FENCES": outline_of(ALT_FENCES),
             "ALT_STITCHES": outline_of(ALT_STITCHES),
+            "INDENTED_FIRST_KNOT": outline_of(INDENTED_FIRST_KNOT),
             "KNOT_AND_FUNCTION": outline_of(KNOT_AND_FUNCTION),
             "TWO_KNOTS": outline_of(TWO_KNOTS),
             "VAR_AND_KNOT": outline_of(VAR_AND_KNOT),

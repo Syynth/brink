@@ -20,6 +20,7 @@ import {
 } from "../../scripts/ensure-cli-sidecar.mjs";
 import {
   assertRealSidecarStaged,
+  canExecuteStagedSidecar,
   EXECUTABLE_MAGIC,
   looksLikeBrinkCliVersionOutput,
   looksLikeNativeExecutable,
@@ -604,6 +605,134 @@ describe("assertRealSidecarStaged's --version smoke check (#2699)", () => {
     expect(result).toBe(destBin);
     expect(logs.some((line) => line.includes("skipped the --version smoke check"))).toBe(true);
     expect(logs.some((line) => line.includes("rustc unavailable"))).toBe(true);
+  });
+});
+
+// #2708: a UNIVERSAL macOS build stages under the triple
+// `universal-apple-darwin`, which never equals `hostTriple()`'s output
+// (`x86_64-apple-darwin`/`aarch64-apple-darwin`) even when run ON a real
+// macOS host that unambiguously CAN execute it — a universal binary is a
+// fat Mach-O carrying both slices and runs natively on either arch. Before
+// this fix `smokeCheckSidecar`'s bare `host !== triple` comparison took the
+// "cross-build, skip" branch for that case unconditionally, so the
+// `--version` smoke check never once executed against the exact artifact
+// macOS users install.
+describe("canExecuteStagedSidecar (#2708)", () => {
+  it("accepts an exact triple/host match", () => {
+    expect(canExecuteStagedSidecar("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu")).toBe(
+      true,
+    );
+  });
+
+  it("accepts a universal-apple-darwin sidecar on either real macOS host triple", () => {
+    expect(canExecuteStagedSidecar("universal-apple-darwin", "x86_64-apple-darwin")).toBe(true);
+    expect(canExecuteStagedSidecar("universal-apple-darwin", "aarch64-apple-darwin")).toBe(true);
+  });
+
+  it("does NOT widen the reverse direction — a universal triple on a non-Darwin host is still a genuine cross-build", () => {
+    // The house-rule trap named in #2708's own warning: "do not turn
+    // 'universal on a non-darwin host' into a rejection" is about
+    // `smokeCheckSidecar` (it must still SKIP, not throw) — but this
+    // function itself must not report that combination as executable
+    // either, or the skip branch above would stop firing for it.
+    expect(canExecuteStagedSidecar("universal-apple-darwin", "x86_64-unknown-linux-gnu")).toBe(
+      false,
+    );
+  });
+
+  it("treats an undeterminable host as not executable, same as any other mismatch", () => {
+    expect(canExecuteStagedSidecar("universal-apple-darwin", undefined)).toBe(false);
+    expect(canExecuteStagedSidecar("x86_64-unknown-linux-gnu", undefined)).toBe(false);
+  });
+
+  it("rejects a mismatched non-universal pair", () => {
+    expect(canExecuteStagedSidecar("aarch64-apple-darwin", "x86_64-apple-darwin")).toBe(false);
+  });
+});
+
+// Verifies the OTHER half of #2708's ask directly, rather than only citing
+// #2691: `executableFormatFor` already resolves `universal-apple-darwin` to
+// `"macho"` (the triple contains "apple"), and `EXECUTABLE_MAGIC.macho`
+// already carries the FAT/universal magics alongside the thin ones (pinned
+// above by "accepts every Mach-O header magic, in both byte orders, thin
+// and fat") — so the magic-byte identity check needed no widening. Only
+// `smokeCheckSidecar`'s host-triple comparison did.
+describe("executableFormatFor(\"universal-apple-darwin\") (#2708 audit)", () => {
+  it("resolves to macho, same as every other Apple target", () => {
+    expect(executableFormatFor("universal-apple-darwin")).toBe("macho");
+  });
+});
+
+describe("assertRealSidecarStaged's --version smoke check for a universal macOS build (#2708)", () => {
+  // `hostTriple()` shells out to `rustc -vV` on PATH — shimming a fake
+  // `rustc` there is the same technique the main-guard tests below use to
+  // fake a host without a real toolchain, applied here to fake a
+  // MACOS host specifically, which this test runner is not guaranteed to
+  // be running on.
+  function withShimmedHost<T>(hostTriple: string, run: () => T): T {
+    const shims = scratch();
+    writeFileSync(join(shims, "rustc"), `#!/bin/sh\necho 'host: ${hostTriple}'\n`);
+    chmodSync(join(shims, "rustc"), 0o755);
+    const original = process.env.PATH;
+    process.env.PATH = shims;
+    try {
+      return run();
+    } finally {
+      process.env.PATH = original;
+    }
+  }
+
+  it("executes --version and passes for a universal-apple-darwin sidecar on a real macOS host", () => {
+    const srcTauriDir = scratch();
+    const triple = "universal-apple-darwin";
+    const destBin = stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    const logs: string[] = [];
+    const calls: Array<{ file: string; args: string[] }> = [];
+    const result = withShimmedHost("aarch64-apple-darwin", () =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple,
+        log: (message: string) => logs.push(message),
+        runFile: (file: string, args: string[]) => {
+          calls.push({ file, args });
+          return "brink 0.1.0\n";
+        },
+      }),
+    );
+
+    expect(result).toBe(destBin);
+    expect(calls).toEqual([{ file: destBin, args: ["--version"] }]);
+    // The log must name which branch ran — never claim "verified the
+    // sidecar runs" when the execute branch was skipped, and never claim
+    // the skip branch ran when it actually executed (house rule, w172).
+    expect(logs.some((line) => line.includes("ran successfully"))).toBe(true);
+    expect(logs.some((line) => line.includes("skipped the --version smoke check"))).toBe(false);
+  });
+
+  it("still skips — never widening the other direction — for a universal-apple-darwin sidecar on a non-Darwin host", () => {
+    const srcTauriDir = scratch();
+    const triple = "universal-apple-darwin";
+    const destBin = stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    let executed = false;
+    const logs: string[] = [];
+    const result = withShimmedHost("x86_64-unknown-linux-gnu", () =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple,
+        log: (message: string) => logs.push(message),
+        runFile: () => {
+          executed = true;
+          return "";
+        },
+      }),
+    );
+
+    expect(result).toBe(destBin);
+    expect(executed).toBe(false);
+    expect(logs.some((line) => line.includes("skipped the --version smoke check"))).toBe(true);
+    expect(logs.some((line) => line.includes("ran successfully"))).toBe(false);
   });
 });
 

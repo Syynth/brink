@@ -2,6 +2,7 @@
 	"packageManager": "pnpm@10.34.5",
 	"scripts": {
 		"release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/studio build && pnpm changeset publish",
+		"check:grammar-drift": "node scripts/check-grammar-drift.mjs",
 		"check:pnpm-pin": "node scripts/check-pnpm-pin.mjs",
 		"check:scripts": "node scripts/check-scripts.mjs",
 		"check:wasm-pkg": "node scripts/check-wasm-pkg.mjs",

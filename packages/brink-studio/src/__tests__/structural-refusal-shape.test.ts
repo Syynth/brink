@@ -364,8 +364,9 @@ const ALT_FENCES =
  * Three stitches, only one of them `= name`, plus two `=`-leading lines that
  * are NOT headers (#2684) — #2662's split one rung down.
  *
- * `parser/knot.rs` DOCUMENTS `stitch_header` as `"=" ~ !("=" | ">") ~
- * INLINE_WS+ ~ identifier`, but the code is `at_stitch` (`current() == EQ &&
+ * `parser/knot.rs` USED TO DOCUMENT `stitch_header` as `"=" ~ !("=" | ">") ~
+ * INLINE_WS+ ~ identifier` (the comment now says `INLINE_WS*`, mismatch fixed
+ * separately by #2695), but the code is `at_stitch` (`current() == EQ &&
  * nth(1) != EQ && nth(1) != GT`) then `p.skip_ws()`, which matches ZERO or
  * more. Driven in `driven_outlines()` / `driven_stitch_acceptance()`, not
  * read off the grammar: production reports a stitch for `= a`, `  = b`, `=c`,
@@ -386,6 +387,25 @@ const ALT_FENCES =
  */
 const ALT_STITCHES =
   "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n";
+
+/**
+ * A file whose very FIRST knot header is itself indented (#2706), byte-
+ * identical to the Rust driver's `INDENTED_FIRST_KNOT`.
+ *
+ * #2703 fixed `parseOutline`'s `full_start` to skip an indented header's own
+ * leading whitespace, glued instead to the PRECEDING symbol's trailing
+ * trivia (`knot_body`'s `skip_ws()` runs before the at-knot/at-stitch check
+ * that ends the loop). A FIRST knot has no preceding symbol for that
+ * mechanism to glue the indent to — driven rather than assumed: production's
+ * `full_start` for `one` here is `2` (same rule, `source_file`'s own loop
+ * calls `skip_ws()` before dispatching to `knot_definition`, so the indent
+ * is `SOURCE_FILE`'s own leading trivia, never reaching `KNOT_DEF`'s range),
+ * exactly matching `parseOutline`'s `leadingWhitespaceLength` skip. See
+ * `fixture.outlines["INDENTED_FIRST_KNOT"]` and
+ * `fixture.payloads["reorder_knots:indented-first-knot"]` for the driven
+ * answers, both confirmed to agree with the mock.
+ */
+const INDENTED_FIRST_KNOT = "  === one ===\nFirst.\n= a\nA.\n\n=== two ===\nSecond.\n";
 
 function sessionWith(files: Record<string, string>): EditorSession {
   const s = new EditorSession();
@@ -986,6 +1006,41 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
     key: "delete_symbol:alt-stitch-plain",
     call: () => sessionWith({ "main.ink": ALT_STITCHES }).delete_symbol("main.ink", "one", "a"),
   },
+  // ── #2721 Gap 1: `delete_symbol`/`rename_symbol` on an indented FIRST
+  // knot header, never driven at all. Neither op reads `parseOutline`'s
+  // ranges (#2703), so #2713's `full_start`/`payloads` fix for the seven
+  // `dispatchSymbolAction` ops says nothing about either of these two.
+  {
+    key: "delete_symbol:indented-first-knot",
+    call: () => sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).delete_symbol("main.ink", "one", ""),
+  },
+  {
+    key: "rename_symbol:indented-first-knot",
+    call: () =>
+      sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).rename_symbol(
+        "main.ink",
+        "one",
+        "",
+        "renamed",
+      ),
+  },
+  // ── #2721 Gap 2: `move_stitch`/`promote_stitch`/`demote_knot` driven on
+  // ALT_STITCHES's indented `  = b` — the four other `dispatchSymbolAction`
+  // ops (`reorder_knots`/`reorder_stitches`/`reorder_knot`/`reorder_stitch`)
+  // were already driven on an indented input by #2703/#2713; these three
+  // were not.
+  {
+    key: "move_stitch:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).move_stitch("main.ink", "one", "b", "two"),
+  },
+  {
+    key: "promote_stitch:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).promote_stitch("main.ink", "one", "b"),
+  },
+  {
+    key: "demote_knot:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).demote_knot("main.ink", "two", "one"),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -998,6 +1053,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
       ALT_STITCHES,
       BLANK_BODY,
       FUNCTION_KNOT,
+      INDENTED_FIRST_KNOT,
       INDENTED_LINE,
       KNOT_AND_FUNCTION,
       LEADING_BLANK_LINE,
@@ -1044,6 +1100,10 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
   const outlineSources: Record<string, string> = {
     ALT_FENCES,
     ALT_STITCHES,
+    // #2706: the FIRST knot header itself indented — no preceding symbol for
+    // #2703's "glue to the predecessor" rule to apply to, driven separately
+    // rather than assumed to generalize.
+    INDENTED_FIRST_KNOT,
     KNOT_AND_FUNCTION,
     TWO_KNOTS,
     // #2685 Gap 2: the only source here whose top-level symbol is NOT a
@@ -1325,8 +1385,47 @@ describe("extract_to_function chooses the call form production does (#2675 Gap A
  * invisible to `call_forms` — its `call_line` helper `.map(str::trim)`s
  * before matching an indent bug off the call line, and it never reads the
  * appended body at all.
+ *
+ * #2706 extends the same fidelity to the four ops #2703 did not reach —
+ * `demote_knot`, `promote_stitch`, `reorder_knot` (singular), `reorder_stitch`
+ * (singular) — including a FULL `new_source` pin for `demote_knot:alt-fence-
+ * knot` (previously pinned only on its header line, by
+ * `fixture.headers["demote_knot:alt-fence-knot"]` below). Hand-verified
+ * against `structural_move.rs`'s `demote_knot_to_stitch`/
+ * `promote_stitch_to_knot`: every one of these five new cases reproduces the
+ * mock's existing `planKnots`/`renderKnots` model exactly, including the
+ * "insert a newline if the rewritten region didn't already end in one" rule
+ * both `demote_knot`/`promote_stitch` share with `structural_move.rs`'s
+ * `insert_text.push('\n')` — so this PR pins, it does not fix.
+ *
+ * `reorder_knots:indented-first-knot` drives the OTHER half of #2706: an
+ * indented FIRST knot header, which has no preceding SYMBOL for #2703's
+ * "glue the indent to the predecessor" rule to attach to. Moving `one` out
+ * of first place is the only way to see where the indent ends up — driven
+ * against production rather than assumed, and confirmed (by hand and by this
+ * test) to match `renderKnots`'s existing preamble-slicing behavior: the
+ * indent stays behind as untouched file preamble, in front of whichever knot
+ * is now first.
+ *
+ * #2721 closes the two gaps #2713 left: `rename_symbol:indented-first-knot`
+ * (the sibling of `reorder_knots:indented-first-knot`, same source, no
+ * divergence expected since `rename_symbol` only substitutes the declared
+ * NAME token and never touches header trivia) and `move_stitch`/
+ * `promote_stitch`/`demote_knot` on `ALT_STITCHES`'s indented `  = b`.
+ * `move_stitch`/`demote_knot` reproduce the mock's existing model exactly
+ * (their insertion points both land right after a byte that is already
+ * `\n`, so no separating newline is even needed here). `promote_stitch` did
+ * NOT: removing `b` leaves `one`'s last remaining stitch (`c`) ending in the
+ * bare `"  "` that used to be `b`'s leading indent (attached to `c`'s
+ * trailing trivia, per #2703), and the mock's `renderKnots` concatenated the
+ * promoted knot directly onto that non-newline-terminated tail —
+ * `"...C.\n  === b ==="` where production answers `"...C.\n  \n=== b ==="`
+ * (`structural_move.rs`'s `promote_stitch_to_knot` guards exactly this with
+ * `if !new_source.ends_with('\n') { new_source.push('\n'); }`). Fixed in
+ * `promote_stitch` (`packages/brink-studio/src/__mocks__/brink-web.ts`) with
+ * the same guard, scoped to the one call site actually driven here.
  */
-describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3)", () => {
+describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3, #2706)", () => {
   const payloadCalls: Record<string, () => string> = {
     "reorder_knots:alt-fences": () =>
       sessionWith({ "main.ink": ALT_FENCES }).reorder_knots("main.ink", [
@@ -1344,6 +1443,29 @@ describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees
       ]),
     "move_stitch:accepted": () =>
       sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "b", "two"),
+    // #2706: the four ops #2703 did not reach.
+    "demote_knot:alt-fence-knot": () =>
+      sessionWith({ "main.ink": ALT_FENCES }).demote_knot("main.ink", "three", "one"),
+    "demote_knot:function-knot-source": () =>
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).demote_knot("main.ink", "greet", "one"),
+    "promote_stitch:alt-fence-terse": () =>
+      sessionWith({ "main.ink": ALT_FENCES }).promote_stitch("main.ink", "one", "a"),
+    // Review finding on #2706: `function-knot` below pins the out-of-range
+    // clamp (single knot, nowhere to move — `structuralOk(path, source)`
+    // returns the source unchanged), never the actual `planKnots`/
+    // `renderKnots` swap. This one drives the real move.
+    "reorder_knot:two-knots": () =>
+      sessionWith({ "main.ink": TWO_KNOTS }).reorder_knot("main.ink", "one", 1),
+    "reorder_knot:function-knot": () =>
+      sessionWith({ "main.ink": FUNCTION_KNOT }).reorder_knot("main.ink", "greet", 1),
+    "reorder_stitch:accepted": () =>
+      sessionWith({ "main.ink": TWO_KNOTS }).reorder_stitch("main.ink", "one", "a", 1),
+    // #2706: the indented-FIRST-knot question, driven end-to-end.
+    "reorder_knots:indented-first-knot": () =>
+      sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).reorder_knots("main.ink", [
+        "two",
+        "one",
+      ]),
     // Review finding on #2675 Gap C: the call-line indent and body dedent
     // extract.rs applies (extract.rs:121-125, extract.rs:246) were invisible
     // to `call_forms` (its `call_line` helper trims before matching) and to
@@ -1363,6 +1485,22 @@ describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees
         INDENTED_LINE.indexOf("Indented.") + "Indented.".length,
         "lifted4",
       ),
+    // #2721: `rename_symbol`'s own answer on the indented-FIRST-knot source.
+    "rename_symbol:indented-first-knot": () =>
+      sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).rename_symbol(
+        "main.ink",
+        "one",
+        "",
+        "renamed",
+      ),
+    // #2721: the three `dispatchSymbolAction` ops #2713 did not drive on
+    // ALT_STITCHES's indented `  = b`.
+    "move_stitch:alt-stitch-indented": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).move_stitch("main.ink", "one", "b", "two"),
+    "promote_stitch:alt-stitch-indented": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).promote_stitch("main.ink", "one", "b"),
+    "demote_knot:alt-stitch-indented": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).demote_knot("main.ink", "two", "one"),
   };
 
   it("every driven payload has a call site here", () => {

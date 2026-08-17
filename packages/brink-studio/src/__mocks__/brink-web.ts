@@ -54,14 +54,18 @@ function escapeForRegex(s: string): string {
  * `parser/knot.rs::knot_header`):
  *
  * ```text
- * knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+ * knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS*)? ~ identifier
  *                 ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
  * ```
  *
  * so the fence is **two or more** `=` (`at_knot` is `current() == EQ_EQ`, then
  * `eat_extra_equals` takes the rest), the space after it is **optional**
  * (`skip_ws` matches zero), the leading indent is tolerated, and the trailing
- * fence is optional and of any width. Driven, not read: `file_symbols` reports
+ * fence is optional and of any width. The `function` keyword's trailing
+ * whitespace is optional too, though that zero-whitespace form is lexically
+ * unreachable — `==functionGreet==` lexes as a single `IDENT`, i.e. a knot
+ * named `functionGreet`, never the `function` keyword plus a name (#2712).
+ * Driven, not read: `file_symbols` reports
  * one knot named `a` for every one of `== a ==`, `===a===`, `==a==`,
  * `==== a ====`, `  === a ===`, `=== a` and `=== a ==`.
  *
@@ -145,13 +149,14 @@ const KNOT_IS_FUNCTION_RE = new RegExp(`^\\s*${KNOT_FENCE_EQUALS}\\s*function\\s
  * file, which is why #2684 exists at all.
  *
  * Read off production's `parser/knot.rs` — but only after DRIVING it, because
- * the doc comment there and the code disagree. The comment says
+ * the doc comment there and the code used to disagree. The comment used to say
  *
  * ```text
  * stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
  * ```
  *
- * with `INLINE_WS+` — REQUIRED whitespace. The code is `at_stitch`
+ * with `INLINE_WS+` — REQUIRED whitespace (the comment now says `INLINE_WS*`,
+ * mismatch fixed separately by #2695, matching the code below). The code is `at_stitch`
  * (`current() == EQ && nth(1) != EQ && nth(1) != GT`) followed by
  * `p.skip_ws()`, and `skip_ws` matches **zero** or more. So the real
  * vocabulary is: a tolerated leading indent (`current()` skips trivia,
@@ -1622,6 +1627,21 @@ export class EditorSession {
     const [moved] = plan[ki]!.stitches.splice(si, 1);
     let promoted = stitchHeaderToKnot(moved!.text);
     if (!promoted.endsWith("\n")) promoted += "\n";
+    // #2721: mirrors `structural_move::promote_stitch_to_knot`'s own guard
+    // (`if !new_source.ends_with('\n') { new_source.push('\n'); }`) — a
+    // separating newline before the promoted knot, needed when the SOURCE
+    // knot's own remaining content does not already end in one. Ordinarily it
+    // always does (a region boundary lands right after a `\n`), but not when
+    // an indented header's leading whitespace got glued onto the trailing
+    // stitch's own trivia (#2703): promoting ALT_STITCHES's `  = b` leaves
+    // `one`'s last remaining stitch (`c`) ending in bare `"  "`, and without
+    // this guard the mock glued the new header onto that same line —
+    // `"...C.\n  === b ==="` where production answers `"...C.\n  \n=== b
+    // ==="`. Driven and confirmed via `promote_stitch:alt-stitch-indented` in
+    // `crates/brink-web/fixtures/refusal-shapes.json`, not assumed to already
+    // hold from the `full_start` fix alone.
+    const sourceRemainder = plan[ki]!.head + plan[ki]!.stitches.map((s) => s.text).join("");
+    if (!sourceRemainder.endsWith("\n")) promoted = `\n${promoted}`;
     plan.splice(ki + 1, 0, { name: stitch, head: promoted, stitches: [] });
     const rendered = renderKnots(source, knots, plan);
     const oldQual = `${knot}.${stitch}`;
