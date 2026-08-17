@@ -24,23 +24,31 @@ import assert from "node:assert/strict";
 
 import {
   BENCHMARKS_SETUP_PATH,
+  CHECK_SCRIPTS_NPM_SCRIPT,
+  EXEC_CALL_NAMES,
   JUSTFILE_PATH,
   KNOB_TABLES,
   LOCAL_COMMANDS,
   MIN_WAIVER_REASON,
   NETWORK_COMMANDS,
+  PACKAGE_JSON_PATH,
   POINTER_DOCS,
   REFRESH_LOCKFILES_PATH,
   REPO_ROOT,
   SETUP_DEV_PATH,
   checkDocPointers,
   checkKnobTable,
+  checkPackageScriptPath,
   checkScripts,
   commandHead,
+  discoverNodeOrBashScriptNames,
+  discoverPackageScriptSources,
   discoverShellScripts,
   discoverShellSources,
+  extractBalancedArgs,
   findFunctionNames,
   findKnobAssignments,
+  findUnboundedExecCalls,
   findUnboundedFetches,
   findUnclassifiedCommands,
   findUnregisteredKnobTables,
@@ -52,6 +60,7 @@ import {
   parseKnobTable,
   sliceSection,
   splitSegmentsQuoteAware,
+  stripJsComments,
   toLogicalLines,
 } from "./check-scripts.mjs";
 
@@ -1276,6 +1285,387 @@ describe("checkKnobTable, generalized by (script, prefix) — #2678", () => {
       POINTER_DOCS.map((doc) => doc.path),
       ["CLAUDE.md", "docs/desktop-shell-spec.md", "docs/releasing.md"],
     );
+  });
+});
+
+describe("checkPackageScriptPath — the #2688 gap 2 self-consistency check", () => {
+  it("passes when the named script exists", () => {
+    const result = checkPackageScriptPath(
+      JSON.stringify({ scripts: { "check:scripts": "node scripts/check-scripts.mjs" } }),
+    );
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.ok, true);
+  });
+
+  it("goes red when the named script does not exist on disk — the #2681-style drift", () => {
+    const result = checkPackageScriptPath(
+      JSON.stringify({ scripts: { "check:scripts": "node scripts/does-not-exist.mjs" } }),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /does-not-exist\.mjs.*does not exist on disk/s);
+  });
+
+  it("goes red when package.json is not valid JSON", () => {
+    const result = checkPackageScriptPath("{ not json");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /not valid JSON/);
+  });
+
+  it("goes red when the script is missing entirely", () => {
+    const result = checkPackageScriptPath(JSON.stringify({ scripts: {} }));
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /has no "check:scripts" script/);
+  });
+
+  it("goes red on a shape it does not recognise, rather than silently passing", () => {
+    const result = checkPackageScriptPath(
+      JSON.stringify({ scripts: { "check:scripts": "node scripts/check-scripts.mjs --strict" } }),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /not a bare `node <path>` \/ `bash <path>` invocation/);
+  });
+
+  it("respects a custom scriptName option", () => {
+    const result = checkPackageScriptPath(JSON.stringify({ scripts: { "check:pnpm-pin": "node scripts/check-pnpm-pin.mjs" } }), {
+      scriptName: "check:pnpm-pin",
+    });
+    assert.equal(result.ok, true);
+  });
+});
+
+describe("checkPackageScriptPath — the REAL root package.json", () => {
+  const realPackageJson = readFileSync(join(REPO_ROOT, PACKAGE_JSON_PATH), "utf8");
+
+  it("passes today", () => {
+    const result = checkPackageScriptPath(realPackageJson);
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.ok, true);
+  });
+
+  it("names the real script this repo currently uses", () => {
+    const parsed = JSON.parse(realPackageJson);
+    assert.equal(parsed.scripts[CHECK_SCRIPTS_NPM_SCRIPT], "node scripts/check-scripts.mjs");
+  });
+
+  // Non-vacuity, the #2688 house rule ("make it fail before you make it
+  // pass"): a real desync — package.json still pointing at the PRE-#2681
+  // filename — must be caught, not just a synthetic fixture shaped to suit
+  // the check.
+  it("goes red on the real #2681 desync shape, reproduced", () => {
+    const desynced = realPackageJson.replace(
+      '"check:scripts": "node scripts/check-scripts.mjs"',
+      '"check:scripts": "node scripts/check-setup-dev.mjs"',
+    );
+    assert.notEqual(desynced, realPackageJson, "the real package.json must still name check-scripts.mjs");
+
+    const result = checkPackageScriptPath(desynced);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /check-setup-dev\.mjs.*does not exist on disk/s);
+  });
+
+  it("discovers every node/bash <path> sibling, not just check:scripts (#2702 review)", () => {
+    const names = discoverNodeOrBashScriptNames(realPackageJson);
+    for (const expected of [
+      "check:pnpm-pin",
+      "check:scripts",
+      "check:wasm-pkg",
+      "install:checked",
+      "test:setup-dev",
+      "test:refresh-lockfiles",
+    ]) {
+      assert.equal(names.includes(expected), true, `expected ${expected} in ${JSON.stringify(names)}`);
+    }
+    // Sorted, for deterministic output — this module's own discipline.
+    assert.deepEqual([...names].sort(), names);
+  });
+
+  it("skips scripts.json entries in a shape this check cannot resolve (e.g. `vitest run`)", () => {
+    const names = discoverNodeOrBashScriptNames(
+      JSON.stringify({ scripts: { test: "vitest run", "check:scripts": "node scripts/check-scripts.mjs" } }),
+    );
+    assert.deepEqual(names, ["check:scripts"]);
+  });
+
+  // Non-vacuity for the sibling enumeration gap itself (#2702 review): a
+  // renamed `test:refresh-lockfiles` — the exact scenario named in the
+  // review, since this PR wires that script into ci.yml by name — must be
+  // caught by checkPackageScriptPath once discovered, not silently passed
+  // because only "check:scripts" was ever hardcoded.
+  it("catches a renamed test:refresh-lockfiles sibling once discovered", () => {
+    const desynced = realPackageJson.replace(
+      '"test:refresh-lockfiles": "bash scripts/refresh-excluded-lockfiles.test.sh"',
+      '"test:refresh-lockfiles": "bash scripts/does-not-exist.test.sh"',
+    );
+    assert.notEqual(
+      desynced,
+      realPackageJson,
+      "the real package.json must still name refresh-excluded-lockfiles.test.sh",
+    );
+
+    const names = discoverNodeOrBashScriptNames(desynced);
+    assert.equal(names.includes("test:refresh-lockfiles"), true);
+
+    const result = checkPackageScriptPath(desynced, { scriptName: "test:refresh-lockfiles" });
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /does-not-exist\.test\.sh.*does not exist on disk/s);
+  });
+
+  it("is wired into checkScripts() end-to-end", () => {
+    // Same non-vacuity proof, through the aggregate entry point rather than
+    // the unit function, over a REAL temp checkout so `checkScripts`'s own
+    // `readFileSync(join(repoRoot, PACKAGE_JSON_PATH), ...)` reads the
+    // planted drift rather than this repo's real, healthy package.json.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "check-scripts-pkg-"));
+    try {
+      mkdirSync(join(tmpRoot, "scripts"), { recursive: true });
+      writeFileSync(
+        join(tmpRoot, "package.json"),
+        JSON.stringify({ scripts: { "check:scripts": "node scripts/does-not-exist.mjs" } }),
+      );
+      // checkScripts() also requires setup-dev.sh + the three POINTER_DOCS
+      // to exist under repoRoot; stub them minimally so the ONLY problem
+      // produced is the package.json one this test cares about.
+      writeFileSync(join(tmpRoot, "scripts", "setup-dev.sh"), "#!/usr/bin/env bash\n");
+      for (const doc of POINTER_DOCS) {
+        mkdirSync(join(tmpRoot, doc.path, ".."), { recursive: true });
+        writeFileSync(join(tmpRoot, doc.path), "no pointer here");
+      }
+
+      const result = checkScripts({ repoRoot: tmpRoot });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.problems.join("\n"),
+        /does-not-exist\.mjs.*does not exist on disk/s,
+        `expected checkScripts() to surface the planted package.json drift; problems: ${JSON.stringify(result.problems)}`,
+      );
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("catches a sibling drift through checkScripts() end-to-end, not only check:scripts (#2702 review)", () => {
+    // Same shape as the test above, but the PLANTED drift is on a sibling
+    // ("test:refresh-lockfiles") while "check:scripts" itself stays healthy
+    // — proving checkScripts() enumerates every node/bash <path> script
+    // rather than only ever looking at the one hardcoded name.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "check-scripts-pkg-sibling-"));
+    try {
+      mkdirSync(join(tmpRoot, "scripts"), { recursive: true });
+      writeFileSync(join(tmpRoot, "scripts", "check-scripts.mjs"), "// stub\n");
+      writeFileSync(
+        join(tmpRoot, "package.json"),
+        JSON.stringify({
+          scripts: {
+            "check:scripts": "node scripts/check-scripts.mjs",
+            "test:refresh-lockfiles": "bash scripts/does-not-exist.test.sh",
+          },
+        }),
+      );
+      writeFileSync(join(tmpRoot, "scripts", "setup-dev.sh"), "#!/usr/bin/env bash\n");
+      for (const doc of POINTER_DOCS) {
+        mkdirSync(join(tmpRoot, doc.path, ".."), { recursive: true });
+        writeFileSync(join(tmpRoot, doc.path), "no pointer here");
+      }
+
+      const result = checkScripts({ repoRoot: tmpRoot });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.problems.join("\n"),
+        /test:refresh-lockfiles.*does-not-exist\.test\.sh.*does not exist on disk/s,
+        `expected checkScripts() to surface the planted sibling drift; problems: ${JSON.stringify(result.problems)}`,
+      );
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("stripJsComments (#2697)", () => {
+  it("blanks a line comment but keeps the newline", () => {
+    const out = stripJsComments('const x = 1; // timeout: 5000\nconst y = 2;');
+    assert.equal(out.includes("timeout"), false);
+    assert.equal(out.split("\n").length, 2);
+  });
+
+  it("blanks a block comment, preserving embedded newlines for line counting", () => {
+    const out = stripJsComments("const x = 1;\n/* timeout:\n   5000 */\nconst y = 2;");
+    assert.equal(out.includes("timeout"), false);
+    assert.equal(out.split("\n").length, 4);
+  });
+
+  it("leaves // and /* inside string/template literals alone", () => {
+    const out = stripJsComments('const url = "https://example.com"; const s = `a/*b`;');
+    assert.match(out, /https:\/\/example\.com/);
+    assert.match(out, /a\/\*b/);
+  });
+});
+
+describe("extractBalancedArgs (#2697)", () => {
+  it("extracts a simple call's args", () => {
+    const text = 'execSync("cmd", { timeout: 5000 })';
+    const call = extractBalancedArgs(text, text.indexOf("("));
+    assert.equal(call.args, '"cmd", { timeout: 5000 }');
+  });
+
+  it("does not unbalance on a paren inside a string argument", () => {
+    const text = 'execSync("echo (hi)", { timeout: 5000 })';
+    const call = extractBalancedArgs(text, text.indexOf("("));
+    assert.equal(call.args, '"echo (hi)", { timeout: 5000 }');
+  });
+
+  it("returns null for an unclosed call", () => {
+    const text = 'execSync("cmd", { timeout: 5000 }';
+    assert.equal(extractBalancedArgs(text, text.indexOf("(")), null);
+  });
+});
+
+describe("findUnboundedExecCalls — planted red and green, one per shape (#2697)", () => {
+  it("reports a bare execSync call with no options at all", () => {
+    const result = findUnboundedExecCalls('execSync("cargo build --release");', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execSync.*no `timeout` option/);
+  });
+
+  it("reports execSync with an options object that omits timeout", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("cargo build --release", { cwd: repoRoot, stdio: "inherit" });',
+      "fixture.mjs",
+    );
+    assert.equal(result.ok, false);
+  });
+
+  it("reports spawnSync the same way execSync is reported", () => {
+    const result = findUnboundedExecCalls('spawnSync("wasm-pack", ["build"]);', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /spawnSync/);
+  });
+
+  it("passes when the call's own args carry a literal timeout key", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("cargo build --release", { cwd: repoRoot, timeout: 1200000, stdio: "inherit" });',
+      "fixture.mjs",
+    );
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.ok, true);
+  });
+
+  it("passes when timeout is set before a spread — the real defaultRunCommand shape", () => {
+    const result = findUnboundedExecCalls(
+      'function defaultRunCommand(command, options = {}) {\n' +
+        "  return execSync(command, { encoding: 'utf8', timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });\n" +
+        "}",
+      "fixture.mjs",
+    );
+    assert.deepEqual(result.problems, []);
+  });
+
+  // The #2689 house rule: prove the heuristic does not cry wolf on
+  // legitimate output — here, a comment that merely MENTIONS "timeout:"
+  // must not satisfy the check. Comments are stripped before scanning
+  // specifically so this cannot happen.
+  it("does NOT treat a comment mentioning timeout as bounding the call", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("cargo build --release", {\n' +
+        "  // no timeout: set intentionally, revisit later\n" +
+        '  stdio: "inherit",\n' +
+        "});",
+      "fixture.mjs",
+    );
+    assert.equal(result.ok, false);
+  });
+
+  it("reports the real line number, comments and all", () => {
+    const text = '// header comment\n\nfunction f() {\n  execSync("cmd");\n}\n';
+    const result = findUnboundedExecCalls(text, "fixture.mjs");
+    assert.equal(result.findings[0].line, 4);
+  });
+
+  it("is non-vacuous: a healthy fixture with two bounded calls reports nothing", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("a", { timeout: 1000 });\nspawnSync("b", { timeout: 2000 });',
+      "fixture.mjs",
+    );
+    assert.deepEqual(result.problems, []);
+  });
+});
+
+describe("EXEC_CALL_NAMES / discoverPackageScriptSources (#2697)", () => {
+  it("names all six node:child_process spawn APIs (#2702 review)", () => {
+    assert.deepEqual(
+      [...EXEC_CALL_NAMES].sort(),
+      ["exec", "execFile", "execFileSync", "execSync", "spawn", "spawnSync"],
+    );
+  });
+
+  it("catches an unbounded execFileSync call (previously invisible — #2702 review)", () => {
+    const result = findUnboundedExecCalls('execFileSync("cargo", ["build"]);', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execFileSync/);
+  });
+
+  it("catches unbounded async exec/spawn calls (previously invisible — #2702 review)", () => {
+    const result = findUnboundedExecCalls('exec("a");\nspawn("b");', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.equal(result.findings.length, 2);
+  });
+
+  it("discovers the real packages/*/scripts/*.mjs sources, non-recursively", () => {
+    const sources = discoverPackageScriptSources();
+    const paths = sources.map((s) => s.path);
+    assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-wasm.mjs"), true, paths.join(", "));
+    assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"), true, paths.join(", "));
+    // Sorted, for deterministic output.
+    assert.deepEqual([...paths].sort(), paths);
+  });
+
+  it("is silent (empty) for a repoRoot with no packages/ directory", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "check-scripts-nopkgs-"));
+    try {
+      assert.deepEqual(discoverPackageScriptSources(tmpRoot), []);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("findUnboundedExecCalls — the REAL packages/*/scripts/*.mjs (#2697)", () => {
+  const realSources = discoverPackageScriptSources();
+
+  it("passes on the real tree today", () => {
+    for (const source of realSources) {
+      const result = findUnboundedExecCalls(source.text, source.path);
+      assert.deepEqual(result.problems, [], `${source.path}: ${JSON.stringify(result.problems)}`);
+    }
+  });
+
+  it("is non-vacuous: stripping the real timeout out of ensure-wasm.mjs goes red", () => {
+    const source = realSources.find((s) => s.path.endsWith("ensure-wasm.mjs"));
+    assert.notEqual(source, undefined, "expected to discover ensure-wasm.mjs");
+
+    const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
+    assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");
+
+    const result = findUnboundedExecCalls(stripped, source.path);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execSync/);
+  });
+
+  it("is non-vacuous: stripping the real timeout out of ensure-cli-sidecar.mjs goes red", () => {
+    const source = realSources.find((s) => s.path.endsWith("ensure-cli-sidecar.mjs"));
+    assert.notEqual(source, undefined, "expected to discover ensure-cli-sidecar.mjs");
+
+    const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
+    assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");
+
+    const result = findUnboundedExecCalls(stripped, source.path);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execSync/);
+  });
+
+  it("is wired into checkScripts() end-to-end", () => {
+    const result = checkScripts();
+    assert.equal(result.ok, true);
+    assert.equal(result.packageScripts.includes("packages/brink-desktop/scripts/ensure-wasm.mjs"), true);
   });
 });
 

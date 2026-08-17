@@ -1,5 +1,6 @@
-// Three mechanical checks over this repo's shell sources (#2648, #2647,
-// #2666, #2667, #2677, #2678).
+// Four mechanical checks over this repo's shell sources, plus a package.json
+// self-consistency check (#2648, #2647, #2666, #2667, #2677, #2678, #2688,
+// #2697).
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY THIS FILE EXISTS (#2648)
@@ -54,10 +55,18 @@
 //                                        delegating docs are #2640's, and
 //                                        #2640 was about that one script
 //   Check 3  findUnclassifiedCommands    every discovered source
+//   Check 4  findUnboundedExecCalls      packages/*/scripts/*.mjs (Node ESM,
+//                                        NOT part of "every discovered
+//                                        source" above — see CHECK 4's own
+//                                        section)
+//   —        checkPackageScriptPath      root package.json's "check:scripts"
+//                                        entry, against CHECK_SCRIPTS_NPM_
+//                                        SCRIPT
 //
 // "Every discovered source" is defined by `discoverShellSources`, and the
 // things it deliberately does NOT discover are listed in their own section
-// below. Check 2b is the one check that is still about a single file.
+// below. Check 2b and checkPackageScriptPath are the checks that are still
+// about a single file.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // EXACTLY WHAT CHECK 1 (`findUnboundedFetches`) DOES
@@ -109,18 +118,23 @@
 //     step with a full log — not the SILENT hang at a developer's first
 //     session start that this file exists for. The right guard for a workflow
 //     is an explicit `timeout-minutes`, which is a different check over a
-//     different file type; #2677's scope note records it.
+//     different file type — `every_workflow_job_sets_timeout_minutes`
+//     (packages/brink-desktop/src-tauri/src/lib.rs, #2697 gap 1); #2677's
+//     scope note records the split.
 //     NOTE what this does NOT fix: `every_pnpm_install_lane_builds_wasm_first_
 //     in_the_same_job` (packages/brink-desktop/src-tauri) still cannot see
 //     into `just book-assets`. Scanning the justfile puts that recipe inside
 //     THIS file's checks; it does not extend that Rust ordering test.
-//   - `packages/*/scripts/*.mjs`. Not scanned, because they are Node ESM and
-//     every check here is a shell-line tokenizer — running it over JavaScript
-//     is a category error, not a conservative approximation. They DO invoke
-//     fetch-capable commands (`ensure-wasm.mjs` and `ensure-cli-sidecar.mjs`
-//     shell out to `wasm-pack`/`cargo` via `execSync`), and the bound for
-//     those is `execSync`'s own `timeout` option — a different mechanism
-//     needing a different check. Recorded in #2677's scope note.
+//   - `packages/*/scripts/*.mjs`. NOT scanned by checks 1-3, because they are
+//     Node ESM and every check above is a shell-line tokenizer — running one
+//     over JavaScript is a category error, not a conservative approximation.
+//     They DO invoke fetch-capable commands (`ensure-wasm.mjs` and
+//     `ensure-cli-sidecar.mjs` shell out to `wasm-pack`/`cargo` via
+//     `execSync`), and the bound for those is `execSync`'s/`spawnSync`'s own
+//     `timeout` option — a different mechanism, which is why check 4
+//     (`findUnboundedExecCalls`, #2697 gap 2) scans this directory
+//     separately at the JS level instead of trying to fold it into checks
+//     1-3. Recorded in #2677's scope note.
 //   - `*.test.sh`. Excluded from discovery, with a cost that is now MEASURED
 //     rather than asserted. Heredoc-awareness alone does not make them
 //     scannable: blanking every heredoc body in the two harnesses still
@@ -1116,6 +1130,261 @@ export function splitSegmentsQuoteAware(line) {
   return segments;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CHECK 4 (`findUnboundedExecCalls`) — #2697 gap 2
+//
+// The rest of this file's checks are a SHELL tokenizer, stated in the header
+// as deliberately NOT covering `packages/*/scripts/*.mjs`: those are Node
+// ESM, and running a shell-line scanner over JavaScript is a category error,
+// not a conservative approximation. But `packages/brink-desktop/scripts/
+// ensure-wasm.mjs` and `ensure-cli-sidecar.mjs` shell out to `wasm-pack`/
+// `cargo`/`rustc` via `execSync` with no bound, on the exact same
+// `pnpm --filter @brink/desktop dev` preflight path a wedged proxy can hang
+// forever — the same hazard class check 1 exists for, one language over. The
+// bound here is each `node:child_process` spawn API's own `timeout` option,
+// so the check has to be JS-level: does this call's own argument text carry
+// a `timeout` key?
+//
+// WHAT THIS DOES: a lexical scan of `packages/*/scripts/*.mjs`, block/line
+// comments blanked first (`stripJsComments`, preserving line numbers) so a
+// comment merely MENTIONING "timeout:" cannot satisfy the check. Every call
+// to one of the six names in `EXEC_CALL_NAMES` (`execSync`, `execFileSync`,
+// `spawnSync`, `exec`, `execFile`, `spawn`) is found by name, its balanced
+// argument list extracted (`extractBalancedArgs`, quote-aware so a paren
+// inside a string doesn't unbalance the count), and the raw argument text is
+// searched for a literal `timeout` key.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO: trace call-site indirection. Both real
+// files route every invocation through one local wrapper —
+// `defaultRunCommand(command, options) { execSync(command, { ...,
+// ...options }) }` — and callers pass a `runCommand` PARAMETER, not the
+// literal name `execSync`. A checker that tried to resolve "does the caller's
+// options eventually carry a timeout" would need real scope/data-flow
+// analysis, which this file has never attempted for shell and should not
+// start attempting for JS. Instead the fix baked into `defaultRunCommand`
+// puts a literal `timeout: DEFAULT_EXEC_TIMEOUT_MS` INSIDE the `execSync`
+// call itself, before the `...options` spread — visible to this lexical scan
+// at the one place the child process actually gets spawned, and still
+// override-able by a caller that spreads its own `timeout` in after it. A
+// future wrapper that reads differently (no literal `timeout:` in its own
+// `execSync`/`spawnSync` call) is reported, same as an unbounded shell fetch
+// — the prompt is "put a real bound at the actual spawn site", not "restate
+// the same default at every call site".
+//
+// EXACTLY WHAT THIS CANNOT SEE:
+//   - A `timeout:` key that is only true SEMANTICALLY, not lexically — e.g.
+//     one merged in from a spread object this scan does not evaluate
+//     (`...TIMEOUT_OPTS` where `TIMEOUT_OPTS = { timeout: 5000 }` lives
+//     elsewhere). Over-permissive in that direction: a call with a spread and
+//     no literal `timeout:` key anywhere in its own argument text is still
+//     reported, even if the spread WOULD have supplied one — the literal
+//     `timeout:` bake-in above is what makes the two real files pass without
+//     hitting this hole.
+//   - A `timeout:` key whose VALUE is unreasonable (`0`, a negative number, a
+//     value so large it is not really a bound). Presence is all that is
+//     checked, exactly like check 1's "bounded" is lexical presence of
+//     `run_with_timeout`, not a sanity check on the duration passed to it.
+//   - Deeply nested strings/template literals inside the argument list that
+//     defeat `extractBalancedArgs`'s quote tracking (a backtick template
+//     containing an unescaped backtick via `${...}` interpolation, for
+//     instance) — over-scans rather than under-scans, the same safe
+//     direction check 1 takes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * All six `node:child_process` spawn APIs (sync: `execSync`, `execFileSync`,
+ * `spawnSync`; async: `exec`, `execFile`, `spawn`) — each one's own `timeout`
+ * option is the bound this check looks for. Probed against the merged
+ * checker at 96a5f15 (PR #2702 review): `execFileSync("cargo", ["build"])`
+ * and bare `exec(...)`/`spawn(...)` calls all passed with no finding when
+ * only `execSync`/`spawnSync` were listed here — `execFileSync` is a
+ * synchronous spawn with the exact same unbounded-hang hazard shape as
+ * `execSync`, so covering only two of the six left a real hole.
+ */
+export const EXEC_CALL_NAMES = ["execSync", "execFileSync", "spawnSync", "exec", "execFile", "spawn"];
+
+/**
+ * Strip `//` line comments and `/* … *\/` block comments from JS source,
+ * quote-aware (single, double, template) so a `//` or `/*` inside a string
+ * literal is left alone. Every stripped character that was a newline is
+ * PRESERVED, so line numbers computed against the stripped text still match
+ * the original file — the same "line-preserving view" approach
+ * `justfileShellView` above uses for the justfile.
+ *
+ * Not a real JS lexer: a template literal's `${ … }` interpolation is not
+ * specially tracked, so a `//`/`/*` written inside one is treated as still
+ * "in a string" and left alone (under-stripped, not over-stripped — the safe
+ * direction, since the goal is never to blank out a REAL `timeout:` key).
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripJsComments(text) {
+  let out = "";
+  let quote = null;
+  let i = 0;
+
+  while (i < text.length) {
+    const char = text[i];
+
+    if (quote) {
+      out += char;
+      if (char === "\\" && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (char === quote) quote = null;
+      i += 1;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      out += char;
+      i += 1;
+      continue;
+    }
+
+    if (char === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      continue;
+    }
+
+    if (char === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
+        if (text[i] === "\n") out += "\n";
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+
+    out += char;
+    i += 1;
+  }
+
+  return out;
+}
+
+/**
+ * The text between a call's opening `(` (at `openIndex`) and its matching
+ * `)`, quote-aware so a paren inside a string/template literal does not
+ * unbalance the count. Returns `null` when the parens never balance (an
+ * unclosed call — over-scanning a false find is worse than skipping one this
+ * check cannot make sense of).
+ *
+ * @param {string} text
+ * @param {number} openIndex index of the `(` itself
+ * @returns {{args: string, end: number} | null} `end` is the index of the closing `)`
+ */
+export function extractBalancedArgs(text, openIndex) {
+  let depth = 0;
+  let quote = null;
+
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (quote) {
+      if (char === "\\" && i + 1 < text.length) {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return { args: text.slice(openIndex + 1, i), end: i };
+    }
+  }
+
+  return null;
+}
+
+/** A literal `timeout` key, e.g. `timeout: 5000` — comma/brace/whitespace before, `:` after. */
+const TIMEOUT_KEY = /(?:^|[{,\s])timeout\s*:/;
+
+/**
+ * Every `execSync(…)` / `spawnSync(…)` call in `text` whose own argument list
+ * carries no literal `timeout` key (#2697 gap 2). See the header above this
+ * section for exactly what "own argument list" means and does not trace.
+ *
+ * @param {string} text
+ * @param {string} path label used in problem messages
+ * @returns {{ok: boolean, problems: string[], findings: {line: number, name: string}[]}}
+ */
+export function findUnboundedExecCalls(text, path) {
+  const stripped = stripJsComments(text);
+  const findings = [];
+
+  for (const name of EXEC_CALL_NAMES) {
+    const callPattern = new RegExp(`\\b${name}\\s*\\(`, "g");
+    let match;
+    while ((match = callPattern.exec(stripped))) {
+      const openIndex = match.index + match[0].length - 1;
+      const call = extractBalancedArgs(stripped, openIndex);
+      if (!call) continue; // unclosed call — nothing sensible to report
+
+      const line = stripped.slice(0, match.index).split("\n").length;
+      const bounded = TIMEOUT_KEY.test(call.args);
+      findings.push({ line, name, bounded });
+      callPattern.lastIndex = call.end;
+    }
+  }
+
+  const unbounded = findings.filter((finding) => !finding.bounded);
+  const problems = unbounded.map(
+    (finding) =>
+      `${path}:${finding.line} calls ${finding.name}(...) with no \`timeout\` option — an unbounded child ` +
+      `process hangs this preflight forever on a wedged proxy or toolchain fetch, the same hazard class ` +
+      `check 1 bounds for shell scripts, one language over (#2697). Pass \`{ timeout: <ms>, ...options }\` at ` +
+      `the actual ${finding.name}(...) call site, not only at a caller several layers up.`,
+  );
+
+  return { ok: problems.length === 0, problems, findings };
+}
+
+/**
+ * Every `*.mjs` directly under a `packages/<name>/scripts/` directory,
+ * DISCOVERED rather than hand-listed (matching `discoverShellScripts`'s own
+ * discipline above) — a hardcoded two-file list would be exactly the
+ * enumeration failure this whole module exists to end, one surface over.
+ * Non-recursive: `packages/*\/scripts/*.mjs` is the shape #2697 named, not
+ * `packages/**\/scripts/**\/*.mjs`.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{path: string, text: string}[]}
+ */
+export function discoverPackageScriptSources(repoRoot = REPO_ROOT) {
+  const packagesDir = join(repoRoot, "packages");
+  if (!existsSync(packagesDir)) return [];
+
+  const sources = [];
+  for (const pkg of readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    const scriptsDir = join(packagesDir, pkg.name, "scripts");
+    if (!existsSync(scriptsDir)) continue;
+
+    for (const entry of readdirSync(scriptsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".mjs")) continue;
+      const relative = `packages/${pkg.name}/scripts/${entry.name}`;
+      sources.push({ path: relative, text: readFileSync(join(scriptsDir, entry.name), "utf8") });
+    }
+  }
+
+  sources.sort((a, b) => a.path.localeCompare(b.path));
+  return sources;
+}
+
 /**
  * Text inside every `$( … )` in a segment.
  *
@@ -1603,6 +1872,125 @@ export function checkKnobTable(text, options = {}) {
   return { ok: problems.length === 0, problems };
 }
 
+/**
+ * The root `package.json` "check:scripts" npm script (#2688 gap 2).
+ *
+ * The #2681 rename (`check-setup-dev.mjs` → `check-scripts.mjs`) kept
+ * `package.json`'s `"check:scripts": "node scripts/check-scripts.mjs"` in
+ * sync with the file move BY HAND. Nothing pinned the two together, so a
+ * FUTURE rename desyncs them silently: no CI step runs `pnpm check:scripts`
+ * standalone — CI only reaches this module through `test:scripts`'s `node
+ * --test scripts/*.test.mjs`, which imports the module by its real path
+ * regardless of what package.json's script text says. CI would stay green
+ * while the standalone `pnpm run check:scripts` command was broken for
+ * every human and every doc that tells them to run it.
+ */
+export const PACKAGE_JSON_PATH = "package.json";
+
+/** The npm script this check resolves and verifies (#2688 gap 2). */
+export const CHECK_SCRIPTS_NPM_SCRIPT = "check:scripts";
+
+/**
+ * Check 2688-2: `package.json`'s `"check:scripts"` script names a file that
+ * actually exists on disk.
+ *
+ * Deliberately narrow, matching this file's own lexical-scan discipline:
+ * it recognises exactly the `node <path>` shape every script in this
+ * package.json's `scripts` block uses (see `check:pnpm-pin`,
+ * `check:wasm-pkg`, `install:checked` — all bare `node scripts/*.mjs`), and
+ * reports rather than guesses when the script text doesn't match that shape
+ * (extra flags, a non-`node` interpreter, `&&`-chained commands) — an
+ * unrecognised shape is exactly as suspicious as a missing file, since this
+ * check exists to catch drift, not to grow into a shell parser.
+ *
+ * @param {string} packageJsonText
+ * @param {{repoRoot?: string, scriptName?: string}} [options]
+ * @returns {{ok: boolean, problems: string[]}}
+ */
+export function checkPackageScriptPath(packageJsonText, options = {}) {
+  const { repoRoot = REPO_ROOT, scriptName = CHECK_SCRIPTS_NPM_SCRIPT } = options;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(packageJsonText);
+  } catch (error) {
+    return { ok: false, problems: [`root ${PACKAGE_JSON_PATH} is not valid JSON: ${error.message}`] };
+  }
+
+  const command = parsed.scripts?.[scriptName];
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return {
+      ok: false,
+      problems: [
+        `root ${PACKAGE_JSON_PATH} has no "${scriptName}" script — #2688's self-consistency check has ` +
+          `nothing to verify against. Restore the script, or update CHECK_SCRIPTS_NPM_SCRIPT in ` +
+          `scripts/check-scripts.mjs if it was intentionally renamed.`,
+      ],
+    };
+  }
+
+  // `node`, per the ORIGINAL #2688 shape (check:scripts, check:pnpm-pin,
+  // check:wasm-pkg, install:checked), or `bash`, per #2702's review: the
+  // enumeration fix below (discoverNodeOrBashScriptNames) also covers
+  // test:setup-dev / test:refresh-lockfiles, which are `bash <path>`.
+  const match = /^(?:node|bash)\s+(\S+)\s*$/.exec(command.trim());
+  if (!match) {
+    return {
+      ok: false,
+      problems: [
+        `root ${PACKAGE_JSON_PATH}'s "${scriptName}" script is "${command}", not a bare \`node <path>\` / ` +
+          `\`bash <path>\` invocation — this check only knows how to resolve those shapes (#2688, #2702), so ` +
+          `it cannot verify the file it names exists. Keep it a bare \`node <path>\` or \`bash <path>\`, or ` +
+          `extend checkPackageScriptPath if the shape has a legitimate reason to change.`,
+      ],
+    };
+  }
+
+  const relativePath = match[1];
+  const resolved = join(repoRoot, relativePath);
+  if (!existsSync(resolved)) {
+    return {
+      ok: false,
+      problems: [
+        `root ${PACKAGE_JSON_PATH}'s "${scriptName}" script points at "${relativePath}", which does not ` +
+          `exist on disk (resolved to ${resolved}). No CI step runs \`pnpm run ${scriptName}\` standalone — ` +
+          `it only rides \`pnpm test:scripts\`'s import of the module by its REAL path, so this drift stays ` +
+          `invisible to CI while the standalone command is broken for every human and doc that runs it ` +
+          `(#2688).`,
+      ],
+    };
+  }
+
+  return { ok: true, problems: [] };
+}
+
+/**
+ * Every root `package.json` script whose command is the plain `node <path>`
+ * / `bash <path>` shape `checkPackageScriptPath` already knows how to
+ * resolve — DISCOVERED by shape, not hand-listed (PR #2702 review):
+ * `checkPackageScriptPath` originally resolved exactly one hardcoded name
+ * (`check:scripts`) while five siblings — `check:pnpm-pin`, `check:wasm-pkg`,
+ * `install:checked` (`node`), `test:setup-dev`, `test:refresh-lockfiles`
+ * (`bash`) — carried identical desync exposure and identical shape.
+ * `test:refresh-lockfiles` is the live case: this same PR wires it into
+ * ci.yml by name, so renaming that harness would break the new CI step
+ * while a hand-picked allowlist here stayed green. A hardcoded sibling list
+ * would just be this module's own enumeration failure one level up — the
+ * same lesson "WHY THIS FILE EXISTS" already draws about `scripts/` itself —
+ * so this discovers every matching entry from `package.json` directly.
+ *
+ * @param {string} packageJsonText
+ * @returns {string[]} script names, sorted
+ */
+export function discoverNodeOrBashScriptNames(packageJsonText) {
+  const parsed = JSON.parse(packageJsonText);
+  const names = Object.entries(parsed.scripts ?? {})
+    .filter(([, command]) => typeof command === "string" && /^(node|bash)\s+\S+\s*$/.test(command.trim()))
+    .map(([name]) => name);
+  names.sort();
+  return names;
+}
+
 /** Slice a markdown section out by heading text, to the next heading of the same level. */
 export function sliceSection(markdown, headingText) {
   const lines = markdown.split("\n");
@@ -1749,7 +2137,36 @@ export function checkScripts({ repoRoot = REPO_ROOT } = {}) {
     problems.push(...checkDocPointers(docs).problems);
   }
 
-  return { ok: problems.length === 0, problems, scripts: scripts.map((script) => script.path) };
+  // #2688 gap 2: package.json's "check:scripts" script still names a real
+  // file. Not gated on any other check's success — a broken standalone
+  // command is its own problem regardless of what else is true.
+  const packageJsonText = readFileSync(join(repoRoot, PACKAGE_JSON_PATH), "utf8");
+  problems.push(...checkPackageScriptPath(packageJsonText, { repoRoot }).problems);
+
+  // Same class, every OTHER package.json script with identical desync
+  // exposure (#2702 review) — discovered by shape rather than hand-listed;
+  // see discoverNodeOrBashScriptNames's own doc comment. Excludes
+  // CHECK_SCRIPTS_NPM_SCRIPT: already checked explicitly above, with the
+  // stricter "must exist and match the shape at all" semantics a drift that
+  // changes the shape entirely still needs.
+  for (const scriptName of discoverNodeOrBashScriptNames(packageJsonText)) {
+    if (scriptName === CHECK_SCRIPTS_NPM_SCRIPT) continue;
+    problems.push(...checkPackageScriptPath(packageJsonText, { repoRoot, scriptName }).problems);
+  }
+
+  // #2697 gap 2: packages/*/scripts/*.mjs — a different check over a
+  // different file type (JS, not shell), same hazard class check 1 covers.
+  const packageScripts = discoverPackageScriptSources(repoRoot);
+  for (const script of packageScripts) {
+    problems.push(...findUnboundedExecCalls(script.text, script.path).problems);
+  }
+
+  return {
+    ok: problems.length === 0,
+    problems,
+    scripts: scripts.map((script) => script.path),
+    packageScripts: packageScripts.map((script) => script.path),
+  };
 }
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
@@ -1763,9 +2180,11 @@ if (invokedDirectly) {
         `invoked is classified as network or local. The ${KNOB_TABLES.length} registered knob tables ` +
         `(${KNOB_TABLES.map((entry) => `${entry.path}:${entry.prefix}*`).join(", ")}) each match their own ` +
         `script, no unregistered script assigns a BRINK_*_TIMEOUT, and ${SETUP_DEV_PATH}'s three delegating ` +
-        `docs still point at it. ` +
-        `(Read this file's header for what these scans CANNOT see — workflow run: blocks, packages/*/scripts, ` +
-        `heredocs and *.test.sh are NOT scanned, and the header says why for each.)`,
+        `docs still point at it. package.json's "${CHECK_SCRIPTS_NPM_SCRIPT}" script still resolves to this ` +
+        `file, and across ${result.packageScripts.length} packages/*/scripts/*.mjs source(s) ` +
+        `(${result.packageScripts.join(", ")}) every execSync/spawnSync call sets a timeout. ` +
+        `(Read this file's header for what these scans CANNOT see — workflow run: blocks, heredocs and ` +
+        `*.test.sh are NOT scanned, and the header says why for each.)`,
     );
   } else {
     console.error(`shell-source checks FAILED (#2648/#2647/#2666/#2667/#2677/#2678):`);

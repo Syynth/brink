@@ -41,12 +41,79 @@ const here = resolve(fileURLToPath(import.meta.url), "..");
 const defaultRepoRoot = resolve(here, "../../..");
 
 /**
+ * Default bound for every command this module shells out to (#2697). Before
+ * this, `wasm-pack build` ran on no clock at all on the `pnpm --filter
+ * @brink/desktop dev` preflight path — the same wedged-proxy hang class
+ * scripts/check-scripts.mjs bounds for shell scripts via `run_with_timeout`,
+ * one language over: `wasm-pack build` fetches binaryen/wasm-opt from GitHub
+ * releases on a cache miss, and a stalled fetch there hung the whole preflight
+ * forever with no diagnostic. Baked into `defaultRunCommand`'s own `execSync`
+ * call (before `...options`) rather than into each call site, so it is the
+ * one real bound instead of something every future caller has to remember to
+ * pass — a caller can still override it by spreading its own `timeout` in
+ * afterward.
+ *
+ * Overridable via BRINK_ENSURE_WASM_TIMEOUT_MS (#2702 review), matching
+ * scripts/setup-dev.sh's BRINK_SETUP_*_TIMEOUT convention one language over
+ * (milliseconds here, not seconds, matching `execSync`'s own `timeout`
+ * option's unit):
+ *
+ *   Knob                           Default              On timeout
+ *   ---------------------------------------------------------------------
+ *   BRINK_ENSURE_WASM_TIMEOUT_MS   20 * 60 * 1000 (20m)  FAIL — `ensureWasm`
+ *                                                         rethrows a
+ *                                                         diagnostic naming
+ *                                                         the bound and this
+ *                                                         env var.
+ *
+ * Sized against the COLD case, not the warm one it used to be defended
+ * against alone: `ensureWasm`'s `built === 0` branch ("no wasm pkg found —
+ * building") is exactly the fresh-clone path, where a release-mode
+ * `wasm-pack build` of the whole compiler graph plus `wasm-opt` is the slow
+ * case, not an incremental rebuild on a warm toolchain cache. 20 minutes is
+ * an estimate — no measured cold-build number was available at review time
+ * (#2702) — sized to at least match `ensure-cli-sidecar.mjs`'s real
+ * `cargo build --release` of a comparable dependency graph; raise
+ * BRINK_ENSURE_WASM_TIMEOUT_MS if it proves short on a real fresh clone.
+ */
+export const DEFAULT_EXEC_TIMEOUT_MS = Number(process.env.BRINK_ENSURE_WASM_TIMEOUT_MS) || 20 * 60 * 1000;
+
+/**
  * Run a command and capture its stdout. The single seam through which this
  * module talks to `wasm-pack`, so a caller can drive the freshness logic
  * without a toolchain.
+ *
+ * On a timeout (the `execSync` `timeout` option firing), rethrows with a
+ * house-style diagnostic naming the bound and the env var to raise (#2702
+ * review): a bare `Error: Command failed: wasm-pack build …` left a
+ * developer with no indication this was a bound firing rather than a real
+ * build failure.
+ *
+ * The discriminator is `code === "ETIMEDOUT"`, NOT `killed`. Probed on this
+ * Node rather than assumed: `execSync("sleep 5", { timeout: 30 })` throws a
+ * spawnSync system error with `code: "ETIMEDOUT"`, `errno: -110`,
+ * `signal: "SIGTERM"`, message `spawnSync /bin/sh ETIMEDOUT` — and
+ * `killed` UNDEFINED, because `killed` lives on spawnSync's RESULT object,
+ * not on the error it throws. A `killed`-only predicate never fires and
+ * leaves this whole branch dead; `killed` is kept as a second arm for the
+ * spawn paths that do set it.
  */
-function defaultRunCommand(command, options = {}) {
-  return execSync(command, { encoding: "utf8", ...options });
+export function defaultRunCommand(command, options = {}) {
+  try {
+    return execSync(command, { encoding: "utf8", timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });
+  } catch (error) {
+    if (error && (error.code === "ETIMEDOUT" || error.killed)) {
+      const effectiveTimeout = options.timeout ?? DEFAULT_EXEC_TIMEOUT_MS;
+      throw new Error(
+        `[ensure-wasm] ✗ \`${command}\` TIMED OUT after ${effectiveTimeout}ms — likely a stalled ` +
+          `proxy, or a slow cold build (a release-mode wasm build of the whole compiler graph plus wasm-opt, ` +
+          `on the "no wasm pkg found" fresh-clone path, is the case this bound has to cover). Retry when ` +
+          `network is stable, or raise BRINK_ENSURE_WASM_TIMEOUT_MS.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 /** Newest mtime of any .rs / Cargo.toml under `dir`, skipping build output. */

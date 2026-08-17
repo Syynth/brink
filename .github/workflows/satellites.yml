@@ -57,6 +57,9 @@ jobs:
   satellites:
     name: Satellites (locked)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): three
+    # `cargo check --locked` runs (one with bevy's dependency graph).
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:

@@ -51,6 +51,9 @@ jobs:
   demo-gate:
     name: DEMO_GATE
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): fmt +
+    # clippy + test + workspace-exclusion check of one satellite crate.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
