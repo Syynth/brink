@@ -501,6 +501,18 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// offsets yet whitespace-only in content.
     const BLANK_BODY: &str = "=== one ===\nFirst.\n\nLast.\n";
 
+    /// A stitch body carrying one INDENTED line — the input that drives
+    /// `extract_to_function`/`extract_to_knot`'s two indent-handling steps
+    /// review found undriven (#2675 Gap C follow-up): `extract.rs`'s
+    /// `plan.indent` (the selected line's own leading whitespace) prefixes
+    /// the replacement call line (`extract.rs:121-125`), and `rebuild`'s
+    /// `dedent(&plan.selected)` (`extract.rs:246`) strips that same
+    /// indentation from the appended body. Both answered `ok: true` under the
+    /// mock's un-indented call line and un-dedented raw-selection body, so
+    /// `acceptance` never caught either — see [`driven_payloads`]'s
+    /// `extract_to_function:indented` / `extract_to_knot:indented`.
+    const INDENTED_LINE: &str = "=== one ===\nFirst.\n= a\n  Indented.\n";
+
     /// A stitch carrying parameters — the promote rewrite has to keep the
     /// `(n)` inside the new fences, not strand it after them.
     const PARAM_STITCH: &str = "=== one ===\nFirst.\n= deal(n)\nD.\n";
@@ -605,6 +617,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "ALT_STITCHES": ALT_STITCHES,
             "BLANK_BODY": BLANK_BODY,
             "FUNCTION_KNOT": FUNCTION_KNOT,
+            "INDENTED_LINE": INDENTED_LINE,
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
             "MAIN": MAIN,
             "PARAM_STITCH": PARAM_STITCH,
@@ -1241,6 +1254,9 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         let alt_fences = session_with(&[("main.ink", ALT_FENCES)]);
         let alt_stitches = session_with(&[("main.ink", ALT_STITCHES)]);
         let two = session_with(&[("main.ink", TWO_KNOTS)]);
+        let indented_start = at(INDENTED_LINE, "Indented.");
+        let indented_end =
+            indented_start + u32::try_from("Indented.".len()).expect("fixture is tiny");
 
         serde_json::json!({
             "reorder_knots:alt-fences": payload_source(
@@ -1267,6 +1283,32 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "move_stitch:accepted": payload_source(
                 "move_stitch (ordinary success)",
                 &two.move_stitch("main.ink", "one", "b", "two"),
+            ),
+            // Review finding on #2675 Gap C: extract.rs's call-line indent
+            // (`extract.rs:121-125`, `plan.indent` prefixing the call) and
+            // body dedent (`extract.rs:246`, `dedent(&plan.selected)`) were
+            // both structurally invisible to `call_forms` — its own
+            // `call_line` helper `.map(str::trim)`s before matching, so an
+            // indent bug on the call line cannot show up there, and neither
+            // helper looks at the appended body at all. `new_source` payload
+            // fidelity is the only place either is visible.
+            "extract_to_function:indented": payload_source(
+                "extract_to_function (indented selected line — call-line indent + body dedent)",
+                &session_with(&[("main.ink", INDENTED_LINE)]).extract_to_function(
+                    "main.ink",
+                    indented_start,
+                    indented_end,
+                    "lifted3",
+                ),
+            ),
+            "extract_to_knot:indented": payload_source(
+                "extract_to_knot (indented selected line — call-line indent + body dedent)",
+                &session_with(&[("main.ink", INDENTED_LINE)]).extract_to_knot(
+                    "main.ink",
+                    indented_start,
+                    indented_end,
+                    "lifted4",
+                ),
             ),
         })
     }
@@ -1455,6 +1497,22 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "delete_symbol (stitch `a`: body carries `=> x`, boundary is `=c`)",
                 &spans_arrow.delete_symbol("main.ink", "one", "a"),
             ),
+            // NOT `delete_symbol:alt-stitch-indented` (review finding on
+            // #2685 Gap 3, checked rather than assumed): `parseOutline`'s
+            // `full_start` fix reattributes an indented header's leading
+            // whitespace to the PRECEDING symbol's trailing trivia — which
+            // fixes every op built ON `parseOutline` (the seven
+            // `dispatchSymbolAction` ops, pinned in `outlines`/`payloads`) —
+            // but the mock's `delete_symbol` does NOT go through
+            // `parseOutline`'s ranges at all; it is its own independent
+            // line-based scan (`lines.findIndex` + `opensHeader`) that
+            // deletes the WHOLE physical line `  = b` sits on, indent
+            // included. Driven and confirmed, not assumed: production's
+            // answer for this exact call keeps the two-space indent behind,
+            // glued onto the following line — `...C.\n  === two ===\n...` —
+            // while the mock answers `...C.\n=== two ===\n...`. Pinning this
+            // here would pin a mismatch as a match. The divergence stays
+            // open — see the spec's "Not covered" note.
         })
     }
 

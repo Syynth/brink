@@ -328,6 +328,23 @@ function parseOutline(source: string): MockSymbol[] {
 }
 
 /**
+ * The ONE var/const/list declaration vocabulary — mirrors {@link
+ * KNOT_HEADER_PREFIX} / {@link STITCH_HEADER_PREFIX}: everything between the
+ * start of a top-level declaration line and its captured keyword and name.
+ * `declaredGlobals` and `topLevelDeclSymbols` (#2685 Gap 2) both read off
+ * this ONE regex — before this fix they carried two independently written
+ * vocabularies for the same question (`^\s*(?:VAR|CONST|LIST)\s+(\w+)` vs.
+ * `^\s*(VAR|CONST|LIST)\s+(\w+)`), exactly the split-constant class #2662's
+ * rule ("exactly ONE knot-header vocabulary in the mock, and every consumer
+ * is built from it") and #2684's opening lesson exist to prevent: widening
+ * one recognizer silently misses the other.
+ */
+const DECL_HEADER_PREFIX = `^\\s*(VAR|CONST|LIST)\\s+`;
+
+/** {@link DECL_HEADER_PREFIX} plus the captured declared name. */
+const DECL_HEADER_RE = new RegExp(`${DECL_HEADER_PREFIX}(\\w+)`, "d");
+
+/**
  * Every top-level `VAR`/`CONST`/`LIST` declaration in `source`, in the shape
  * `file_symbols` reports them (#2685 Gap 2).
  *
@@ -349,14 +366,13 @@ function parseOutline(source: string): MockSymbol[] {
  * exercises.
  */
 function topLevelDeclSymbols(source: string): MockSymbol[] {
-  const DECL_KEYWORD_RE = new RegExp(String.raw`^\s*(VAR|CONST|LIST)\s+(\w+)`, "d");
   const ORDER: Record<string, number> = { VAR: 0, CONST: 1, LIST: 2 };
   const KIND: Record<string, string> = { VAR: "variable", CONST: "constant", LIST: "list" };
 
   const found: { keyword: string; name: string; start: number; end: number }[] = [];
   let offset = 0;
   for (const line of source.split("\n")) {
-    const m = DECL_KEYWORD_RE.exec(line);
+    const m = DECL_HEADER_RE.exec(line);
     if (m) {
       const keyword = m[1]!;
       const name = m[2]!;
@@ -561,12 +577,14 @@ function selectionCrossesHeader(source: string, selStart: number, selEnd: number
 }
 
 /** Every `VAR` / `CONST` / `LIST` name declared in `source`. Production reads
- *  these off the CST (`var_decls`/`const_decls`/`list_decls`). */
+ *  these off the CST (`var_decls`/`const_decls`/`list_decls`). Built from
+ *  {@link DECL_HEADER_RE}, the same vocabulary {@link topLevelDeclSymbols}
+ *  uses, so the two can't drift apart (#2685 Gap 2 review finding). */
 function declaredGlobals(source: string): string[] {
   const names: string[] = [];
   for (const line of source.split("\n")) {
-    const m = line.match(/^\s*(?:VAR|CONST|LIST)\s+(\w+)/);
-    if (m) names.push(m[1]!);
+    const m = DECL_HEADER_RE.exec(line);
+    if (m) names.push(m[2]!);
   }
   return names;
 }
@@ -610,6 +628,45 @@ function isValueExpression(selected: string): boolean {
     t.startsWith("-") ||
     t.startsWith("=")
   );
+}
+
+/**
+ * The leading whitespace of the line containing `offset` — mirrors
+ * `extract.rs::leading_indent`. `extractImpl` snaps the selection to whole
+ * lines first, so `offset` here is always a line start; production reuses
+ * this whitespace to prefix the replacement call line so it lands at the
+ * extracted content's own nesting (#2675 Gap C review finding: the mock
+ * dropped it entirely, always emitting the call flush-left).
+ */
+function leadingIndentAt(source: string, offset: number): string {
+  const line = source.slice(offset);
+  const m = /^[ \t]*/.exec(line);
+  return m ? m[0] : "";
+}
+
+/**
+ * Strip the common leading indentation from every non-blank line of `text` —
+ * mirrors `extract.rs::dedent`, byte-for-byte including its trailing-newline
+ * handling (Rust's `str::lines()` yields no trailing empty element for a
+ * final `\n`; `split("\n")` does, so that element is set aside and restored
+ * rather than dedented as if it were a line).
+ *
+ * `rebuild` dedents the extracted body before appending it as a new
+ * declaration (a top-level decl body is not nested); the mock used to append
+ * the raw selection instead, so an indented selection kept its indentation
+ * doubled — once on the call line via {@link leadingIndentAt}, once left
+ * behind in the body (#2675 Gap C review finding).
+ */
+function dedent(text: string): string {
+  const endsWithNewline = text.endsWith("\n");
+  const lines = endsWithNewline ? text.slice(0, -1).split("\n") : text.split("\n");
+  const indents = lines
+    .filter((l) => l.trim() !== "")
+    .map((l) => l.length - l.trimStart().length);
+  const minIndent = indents.length > 0 ? Math.min(...indents) : 0;
+  if (minIndent === 0) return text;
+  const out = lines.map((l) => (l.trim() === "" ? l.trimStart() : l.slice(minIndent))).join("\n");
+  return endsWithNewline ? `${out}\n` : out;
 }
 
 interface MockDoc {
@@ -1057,14 +1114,26 @@ export class EditorSession {
     // #2675 Gap A: production's `is_value_expression` picks the inline
     // `{name()}` form for a single value-expression selection and `~ name()`
     // for anything else — the mock always emitted the statement form.
+    //
+    // #2675 Gap C review finding: the replacement call line carries the
+    // selection's own indentation (`extract.rs::leading_indent`, checked
+    // against `selStart` — snapping already put it at a line start), and the
+    // mock omitted it entirely for all three call forms.
+    const indent = leadingIndentAt(source, selStart);
     const call =
       kind === "knot"
-        ? `-> ${name} ->\n`
+        ? `${indent}-> ${name} ->\n`
         : isValueExpression(selected)
-          ? `{${name}()}\n`
-          : `~ ${name}()\n`;
+          ? `${indent}{${name}()}\n`
+          : `${indent}~ ${name}()\n`;
     const header = kind === "knot" ? `=== ${name} ===\n` : `=== function ${name}() ===\n`;
-    let body = selected.endsWith("\n") ? selected : `${selected}\n`;
+    // #2675 Gap C review finding: the appended body is DEDENTED
+    // (`extract.rs::rebuild` calls `dedent(&plan.selected)`), not the raw
+    // selection — a top-level declaration body is not nested, so the
+    // selection's own indentation (already reproduced on the call line above)
+    // must not also survive inside the new declaration.
+    let body = dedent(selected);
+    if (!body.endsWith("\n")) body += "\n";
     if (kind === "knot") body += "->->\n";
 
     let out = source.slice(0, selStart) + call + source.slice(selEnd);

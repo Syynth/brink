@@ -466,7 +466,26 @@ A fourth, **`outlines`** (#2662), pins the header **recognizer** rather than an
 op built on it: production's own `file_symbols` output for a named source,
 names and kinds only. Acceptance can only see ops; the Binder, the symbol menu
 and the story graph read the outline directly, so a knot every structural op
-resolves can still be missing from the tree the author looks at.
+resolves can still be missing from the tree the author looks at. `outlines`
+gained a second half in #2685 Gap 3: each symbol's `full_start`/`full_end`
+OWNERSHIP RANGE, not just its `name`/`kind`/`detail` — `acceptance` and the
+name-only `outlines` shape both stay green under a boundary that resolves the
+right symbol but claims the wrong span for it, which is exactly the class an
+indented header (`ALT_FENCES`'s `  ==== four ====`, `ALT_STITCHES`'s `  = b`)
+exposed.
+
+`acceptance`'s `ok`/`error` flag has the same blind spot one level up: an op
+that answers `ok: true` with the WRONG `new_source` is invisible to it too. A
+fifth map, **`payloads`** (#2675 Gap C, #2685 Gap 3), pins the full
+`new_source` for `reorder_knots`/`reorder_stitches`/`move_stitch`/
+`extract_to_knot`/`extract_to_function`, run on the same alt-fenced,
+alt-stitched, and indented-selection inputs the other maps already exercise —
+so a fixed ownership-range boundary shows up as newly-pinned content on the
+same source, not as a new case that could itself be wrong. A sixth map,
+**`call_forms`** (#2675 Gap A), pins the exact call-site line
+`extract_to_function` writes — `{name()}` for a single value-expression
+selection, `~ name()` for a statement — the choice `acceptance` cannot see
+because both forms answer `ok: true`.
 
 **What the audit found.** Seventeen of the twenty-one driven cases were red
 against the pre-#2661 mock (the four greens were deliberate positive controls).
@@ -637,16 +656,38 @@ the divergence — but `update_source` writes into `files[activePath]`, so a moc
 session that never called `set_active_file` wrote to key `""` where production
 writes to `"main.ink"`.
 
-**Not covered:** production's stitch regions are CST node ranges, not lines,
-so an **indented** header's leading whitespace crosses the region boundary in
-a way this line-based mock cannot reproduce byte-for-byte — only the
-flush-left boundary is pinned in `regions`; the indented case (`  = b` in
-`ALT_STITCHES`) is left unguarded rather than papered over, and the
-divergence is recorded on #2684, not closed here. Separately, `parser/knot.rs`'s
-grammar comment still spells `stitch_header` with `INLINE_WS+` — required
-whitespace — which this PR's driven evidence rejects (whitespace after the
-`=` is optional in practice, per `skip_ws`); the comment has not been
-corrected to match the code it documents.
+**The indented boundary is now reproduced byte-for-byte for every op built ON
+`parseOutline` (closed by #2703).** `parseOutline`'s `full_start` used to
+attribute an indented header's leading whitespace to the header's own leading
+edge — the line-start reading, not production's. Production's parser
+(`knot_body`'s `skip_ws()` running before the at-knot/at-stitch check that
+ends the loop) attaches that whitespace to the PRECEDING symbol's trailing
+trivia instead. `full_start` was fixed to match — `outlines.ALT_STITCHES` now
+pins stitch `b` at 67–75 (the boundary in question), and `payloads`'s
+`reorder_stitches:alt-stitches` pins the resulting `new_source` byte-for-byte
+on this same source. (The sibling fix on the knot side — `ALT_FENCES`'s
+indented `  ==== four ====` — is pinned the same way, by `outlines.ALT_FENCES`
+and `payloads`'s `reorder_knots:alt-fences`.) This closes the boundary for the
+seven `dispatchSymbolAction` ops, which all rearrange whole `parseOutline`
+regions.
+
+**Not covered, and checked rather than assumed (#2703):** `delete_symbol`
+does **not** read `parseOutline`'s ranges — it is its own independent
+line-based scan (`lines.findIndex` + `opensHeader`) that deletes the WHOLE
+physical line an indented header sits on, indent included, so the
+`full_start` fix above does not reach it. Driven and confirmed: production's
+own answer for `delete_symbol("one", "b")` on `ALT_STITCHES` keeps the
+indented stitch's two-space indent behind, glued onto the *following* line
+(`...C.\n  === two ===\n...`, since production's regions are CST node
+ranges and that whitespace belongs to the PRECEDING stitch `c`, not to `b`)
+— the mock, deleting a whole line at a time, answers `...C.\n=== two ===\n...`
+instead. `regions` still carries only the flush-left `delete_symbol:alt-
+stitch-plain` control; an `alt-stitch-indented` entry was tried and reverted
+once driving it showed the mismatch above, rather than left unattempted.
+Separately, `parser/knot.rs`'s grammar comment still spells `stitch_header`
+with `INLINE_WS+` — required whitespace — which this PR's driven evidence
+rejects (whitespace after the `=` is optional in practice, per `skip_ws`);
+the comment has not been corrected to match the code it documents.
 
 ## Visual hierarchy
 

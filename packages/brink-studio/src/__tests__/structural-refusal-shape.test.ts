@@ -308,6 +308,13 @@ const BLANK_BODY = "=== one ===\nFirst.\n\nLast.\n";
 const PARAM_STITCH = "=== one ===\nFirst.\n= deal(n)\nD.\n";
 
 /**
+ * A stitch body carrying one INDENTED line — drives `extract_to_function`'s
+ * and `extract_to_knot`'s call-line indent and body dedent (#2675 Gap C
+ * review finding), byte-identical to the Rust driver's `INDENTED_LINE`.
+ */
+const INDENTED_LINE = "=== one ===\nFirst.\n= a\n  Indented.\n";
+
+/**
  * A function knot whose declared name is a single letter that also occurs as
  * the FIRST character of the `function` keyword itself (review finding on
  * #2670): `line.indexOf(name)` for `name = "f"` finds the `f` of `function`
@@ -991,6 +998,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
       ALT_STITCHES,
       BLANK_BODY,
       FUNCTION_KNOT,
+      INDENTED_LINE,
       KNOT_AND_FUNCTION,
       LEADING_BLANK_LINE,
       MAIN,
@@ -1101,6 +1109,17 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
  * stitch; one whose lookahead is `=(?![=>])` rather than `=(?!\s*[=>])` stops
  * at `= > y`. Only the right vocabulary reproduces production's string, so the
  * widening cannot be bought either way.
+ *
+ * NOT `delete_symbol:alt-stitch-indented` (review finding on #2685 Gap 3,
+ * checked rather than assumed): `parseOutline`'s `full_start` fix fixes every
+ * op built ON `parseOutline`'s ranges (the seven `dispatchSymbolAction` ops,
+ * pinned in `outlines`/`payloads`), but `delete_symbol` does not read those
+ * ranges at all — it is its own independent line-based scan that deletes the
+ * WHOLE physical line `  = b` sits on, indent included. Driven and confirmed:
+ * production's answer for this call keeps the two-space indent behind, glued
+ * onto the following line (`...C.\n  === two ===\n...`); the mock answers
+ * `...C.\n=== two ===\n...`. Pinning it here would pin a mismatch as a match.
+ * See the spec's "Not covered" note — this divergence stays open.
  */
 describe("a deleted stitch takes exactly production's region with it (#2684)", () => {
   const regionCalls: Record<string, () => string> = {
@@ -1284,8 +1303,8 @@ describe("extract_to_function chooses the call form production does (#2675 Gap A
 });
 
 /**
- * `new_source` payload fidelity for the outline-reshaping ops, beyond the
- * `ok`/`error` flag `acceptance` pins (#2675 Gap C, #2685 Gap 3).
+ * `new_source` payload fidelity beyond the `ok`/`error` flag `acceptance`
+ * pins (#2675 Gap C, #2685 Gap 3).
  *
  * `reorder_knots:alt-fences` and `reorder_stitches:alt-stitches` are the
  * SAME (op, input) pairs `acceptance` already exercises — reused here rather
@@ -1298,8 +1317,16 @@ describe("extract_to_function chooses the call form production does (#2675 Gap A
  * guard and #2682's fixture (#2685 Gap 3's own framing). `move_stitch` is
  * included too, on an unindented input, as the "ordinary case, no boundary
  * quirk" control for a third op family.
+ *
+ * `extract_to_function:indented`/`extract_to_knot:indented` close a review
+ * finding on #2675 Gap C itself: `extract.rs`'s call-line indent
+ * (`plan.indent` prefixing `{name()}`/`~ name()`/`-> name ->`) and body
+ * dedent (`dedent(&plan.selected)`) were both live divergences that stayed
+ * invisible to `call_forms` — its `call_line` helper `.map(str::trim)`s
+ * before matching an indent bug off the call line, and it never reads the
+ * appended body at all.
  */
-describe("reorder_knots/reorder_stitches/move_stitch new_source agrees with production (#2675 Gap C, #2685 Gap 3)", () => {
+describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3)", () => {
   const payloadCalls: Record<string, () => string> = {
     "reorder_knots:alt-fences": () =>
       sessionWith({ "main.ink": ALT_FENCES }).reorder_knots("main.ink", [
@@ -1317,6 +1344,25 @@ describe("reorder_knots/reorder_stitches/move_stitch new_source agrees with prod
       ]),
     "move_stitch:accepted": () =>
       sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "b", "two"),
+    // Review finding on #2675 Gap C: the call-line indent and body dedent
+    // extract.rs applies (extract.rs:121-125, extract.rs:246) were invisible
+    // to `call_forms` (its `call_line` helper trims before matching) and to
+    // every other `acceptance`/`payloads` case (none selected an indented
+    // line). `INDENTED_LINE` drives both in one input.
+    "extract_to_function:indented": () =>
+      sessionWith({ "main.ink": INDENTED_LINE }).extract_to_function(
+        "main.ink",
+        INDENTED_LINE.indexOf("Indented."),
+        INDENTED_LINE.indexOf("Indented.") + "Indented.".length,
+        "lifted3",
+      ),
+    "extract_to_knot:indented": () =>
+      sessionWith({ "main.ink": INDENTED_LINE }).extract_to_knot(
+        "main.ink",
+        INDENTED_LINE.indexOf("Indented."),
+        INDENTED_LINE.indexOf("Indented.") + "Indented.".length,
+        "lifted4",
+      ),
   };
 
   it("every driven payload has a call site here", () => {

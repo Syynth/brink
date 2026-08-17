@@ -372,6 +372,8 @@
     ]
   },
   "payloads": {
+    "extract_to_function:indented": "=== one ===\nFirst.\n= a\n  {lifted3()}\n\n=== function lifted3() ===\nIndented.\n",
+    "extract_to_knot:indented": "=== one ===\nFirst.\n= a\n  -> lifted4 ->\n\n=== lifted4 ===\nIndented.\n->->\n",
     "move_stitch:accepted": "=== one ===\nFirst.\n= a\nA.\n=== two ===\nSecond.\n= a\nOther A.\n= b\nB.\n\n",
     "reorder_knots:alt-fences": "=== five\nFifth.\n==== four ====\nFourth.\n\n==== three ====\nThird.\n\n  ===two===\nSecond.\n\n== one ==\nFirst.\n= a\nA.\n\n",
     "reorder_stitches:alt-stitches": "=== one ===\nFirst.\n= b\nB.\n\n=c\nC.\n  = a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=== two ===\nSecond.\n"
@@ -411,6 +413,7 @@
     "ALT_STITCHES": "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n",
     "BLANK_BODY": "=== one ===\nFirst.\n\nLast.\n",
     "FUNCTION_KNOT": "=== function greet() ===\n~ return \"hi\"\n",
+    "INDENTED_LINE": "=== one ===\nFirst.\n= a\n  Indented.\n",
     "KNOT_AND_FUNCTION": "=== one ===\nFirst.\n= a\nA.\n\n=== function greet() ===\n~ return \"hi\"\n",
     "LEADING_BLANK_LINE": "\n=== a ===\nContent.\n",
     "MAIN": "=== hello ===\nHi.\n-> END\n",
