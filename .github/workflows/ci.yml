@@ -692,6 +692,16 @@ jobs:
       # thing a red CI shows, so it must not describe a subset.
       - name: Unit tests (scripts/setup-dev.sh)
         run: pnpm run test:setup-dev
+      # #2688 gap 1: scripts/refresh-excluded-lockfiles.test.sh already ran in
+      # CI before this step existed — it rides `pnpm test:scripts`'s glob
+      # (`node --test scripts/*.test.mjs`) via its refresh-excluded-lockfiles.
+      # test.mjs wrapper (#2671/#2667), so this step adds NO new coverage.
+      # What it adds is a NAMED, separately-reportable step: a red run of
+      # this harness previously surfaced only as part of the "Unit tests
+      # (node --test, scripts)" step's aggregate result, indistinguishable
+      # from a failure in any other scripts/*.test.mjs file.
+      - name: Unit tests (scripts/refresh-excluded-lockfiles.test.sh)
+        run: pnpm run test:refresh-lockfiles
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       # `pnpm install --frozen-lockfile` exits 0 even when the file: link
