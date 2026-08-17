@@ -60,16 +60,21 @@ export interface SymbolMenuSlice {
   closeRenamePrompt(): void;
 
   /**
-   * A human-readable description of the gated structural op (`moveStitch`/
-   * `promoteStitch`/`demoteKnot`, #2767) currently running off the paint
-   * path, or `null` when none is in flight. This is a LOCAL busy-state
-   * affordance (spec §7.3), not a notification: §7.5 states progress
-   * notifications are out of scope for the notification service, so the
-   * pending state for these one-shot context-menu/drag-drop actions renders
-   * in the status bar (`StructuralOpSegment`) instead of the notification
-   * stack. Set synchronously by `runGatedStructuralOp`
-   * (`packages/studio-ui/src/symbolMenuActions.ts`) before it defers the
-   * heavy call via `scheduleIdleWork`, and cleared once that call settles.
+   * A human-readable description of the gated structural op currently
+   * running off the paint path, or `null` when none is in flight. Started
+   * as `moveStitch`/`promoteStitch`/`demoteKnot` only (#2767); #2776 reuses
+   * the same field for the Binder's file/folder rename-and-move (`applyRename`,
+   * `packages/studio-store/src/slices/binder.ts`) — both defer the same
+   * shape of full-project breakage-gate call, so this is one generic
+   * "a gated structural op is in flight" signal, not a symbol-menu-specific
+   * one. This is a LOCAL busy-state affordance (spec §7.3), not a
+   * notification: §7.5 states progress notifications are out of scope for
+   * the notification service, so the pending state for these one-shot
+   * actions renders in the status bar (`StructuralOpSegment`) instead of the
+   * notification stack. Set synchronously by the caller (`runGatedStructuralOp`
+   * in `packages/studio-ui/src/symbolMenuActions.ts`, or `applyRename` above)
+   * before it defers the heavy call via `scheduleIdleWork`, and cleared once
+   * that call settles.
    */
   structuralOpPending: string | null;
   /** Set (or clear, with `null`) the pending structural-op description. */

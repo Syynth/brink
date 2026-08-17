@@ -1,7 +1,8 @@
 /**
- * Static enrolment check for the off-paint-path invariant #2767 audits
+ * Static enrolment check for the off-paint-path invariant #2767/#2776 audit
  * (issue #2767, "studio: audit remaining synchronous wasm calls made inline
- * from React event handlers with no pending UI").
+ * from React event handlers with no pending UI"; issue #2776, the two
+ * call sites #2769's own audit found but left outside its fence).
  *
  * ## The defect class
  *
@@ -22,14 +23,20 @@
  * call via `scheduleIdleWork` and trust the op's own refusal for staleness;
  * no shell notification and no `session.generation` re-check, both tried in
  * an earlier draft and removed in review — see §7.7.4's "Third enrolment"
- * paragraph for why).
+ * paragraph for why). #2776 fixes the fourth occurrence, `ProjectSession
+ * .renameFile`'s `this.session.renameFile(...)` call (`project-session.ts`),
+ * the same way — see that file's doc comment on `renameFile` and
+ * `applyRename` in `binder.ts` for the split between "defer the call"
+ * (`project-session.ts`, which has no store to commit busy-state into) and
+ * "commit the busy state" (`binder.ts`, the store-aware caller).
  *
  * ## Deliberately narrow scope
  *
- * This guard enrols exactly the three method names #2767 found and fixed —
- * `moveStitch`, `promoteStitch`, `demoteKnot` — not every wasm call the
- * studio makes, and not even every call that runs the same breakage gate.
- * That is a stated, not accidental, narrowing:
+ * This guard enrols exactly the four method-call shapes #2767/#2776 found
+ * and fixed — `moveStitch`, `promoteStitch`, `demoteKnot`, and
+ * `session.renameFile` — not every wasm call the studio makes, and not even
+ * every call that runs the same breakage gate. That is a stated, not
+ * accidental, narrowing:
  *
  *  - `renameSymbol`/`renameSymbolAt` (rename) and `extractToKnot`/
  *    `extractToFunction` (extract) already carry the off-paint-path
@@ -41,21 +48,62 @@
  *    file's marker convention. Enrolling their literal method names here
  *    would require retrofitting markers onto already-correct code with a
  *    different (and already-tested) remedy shape, for no new coverage.
- *  - `renameFile`/`renameDir` (`crates/internal/brink-ide/src/file_rename.rs`
- *    / `dir_rename.rs`) run the SAME gate and are called synchronously from
- *    `project-session.ts`'s `ProjectSession.renameFile` with no pending
- *    state — a same-shape site #2767's audit found but did not fix (see the
- *    issue's tracking comment). Adding them here would make this guard red
- *    on a known, tracked, un-fixed gap instead of on a NEW regression, which
- *    is a worse signal than leaving them out and naming the gap explicitly
- *    (this comment, and the #2767 issue thread).
+ *  - `renameDir` (`crates/internal/brink-ide/src/dir_rename.rs`) runs the
+ *    SAME gate as `rename_file` and was named alongside it in #2776's ask,
+ *    but audited (not assumed) to have **no studio caller at all** — the
+ *    Binder's folder rename (`renameFolder` in `binder.ts`) loops per-file
+ *    `renameFile` calls instead of calling the wasm `renameDir`/`rename_dir`
+ *    op, so nothing in the production TS tree reaches
+ *    `EditorSessionHandle.renameDir`/`session.rename_dir` today (confirmed:
+ *    every non-test `.renameDir(`/`.rename_dir(` call in the workspace is in
+ *    `crates/brink-web/src/editor/mod.rs`'s own Rust unit tests or
+ *    `symbol-structural-ops.test.ts`'s "no studio consumer yet" describe
+ *    block, never from `packages/*\/src`). Wrapping an unreached call would
+ *    add a marker for code no user path exercises — nothing to enrol until a
+ *    caller exists. If a `renameDir`/folder-rename-as-one-op caller is ever
+ *    added, it needs this same treatment and belongs in this guard then.
+ *  - `applyCodeAction` (`document-sessions.ts`'s `resolveCodeAction`
+ *    callback, routing to `crates/brink-web/src/editor/code_actions.rs`'s
+ *    `resolve_code_action_impl`) was #2776's other named site. Audited, not
+ *    assumed: `resolve_code_action_impl` only takes the gated
+ *    `gated_move_json` branch for a `MoveStitch`/`PromoteStitch`/
+ *    `DemoteKnot`-tagged `CodeActionData`, and `brink_ide::code_actions
+ *    ::code_actions` (the ONLY function that builds the list the studio's
+ *    code-actions menu offers) never constructs any of those three variants
+ *    — nor do the import-fix/creation-site-fix/value-call-fix generators
+ *    `code_actions_impl` merges in. (The LSP backend's own resolver,
+ *    `crates/brink-lsp/src/backend.rs`, does construct them — but that is a
+ *    different transport with no synchronous-main-thread-in-a-browser paint
+ *    hazard, not a path through this callback.) Every code action the studio
+ *    menu can actually offer today resolves through the cheap
+ *    `move_result_json_simple` pure-rewrite branch. Wrapping this call would
+ *    add an idle-hop and a pending-indicator flash to a call site that is
+ *    cheap on every reachable input — the exact regression spec §7.7.4 warns
+ *    against, not a fix. Left synchronous; enrol it if a future code action
+ *    ever offers a structural move (the `resolve_structural_action` branch
+ *    stops being dead weight the moment that happens).
  *
  * A new site matching this file's narrow scope — a bare `.moveStitch(`,
- * `.promoteStitch(`, or `.demoteKnot(` call added anywhere in the workspace
- * — fails this suite immediately, before any marker check, because
- * {@link SCANNED_FILES} goes stale. That is the guard's actual job: stop a
- * FOURTH occurrence of this exact three-method shape, not police every wasm
- * call in the codebase.
+ * `.promoteStitch(`, `.demoteKnot(`, or `.session.renameFile(` call added
+ * anywhere in the workspace — fails this suite immediately, before any
+ * marker check, because {@link SCANNED_FILES} goes stale. That is the
+ * guard's actual job: stop a recurrence of one of these exact shapes, not
+ * police every wasm call in the codebase.
+ *
+ * That narrowness has a known limitation for the fourth pattern: unlike the
+ * three `moveStitch`/`promoteStitch`/`demoteKnot` patterns, which match on
+ * the bare method name regardless of receiver,
+ * `session.renameFile`'s `/\.session\.renameFile\(/` is scoped to the
+ * literal `.session.` receiver so it does not also catch
+ * `project.renameFile(...)` (`applyRename`'s call into `ProjectSession`) or
+ * `this.provider.renameFile(...)` (host I/O). That precision is deliberate
+ * for today's code, but it means a future wrapper that reaches the same raw
+ * gated call through a differently-named receiver — e.g. a helper calling
+ * `this.handle.renameFile(...)` or `sess.renameFile(...)` on
+ * `EditorSessionHandle` — passes this guard silently, with no marker
+ * required and no failure. This scan cannot see through a rename or an
+ * indirection; only a receiver-agnostic pattern (or a control-flow-aware
+ * check) would catch that case.
  *
  * ## What a false negative looks like
  *
@@ -96,13 +144,19 @@ const repoRoot = resolve(packagesRoot, "..");
 const workspaceYamlPath = resolve(repoRoot, "pnpm-workspace.yaml");
 
 /**
- * The three call-site names #2767 found and fixed — see this file's header
- * for why the scope stops here rather than covering every gated wasm op.
+ * The four call-site shapes #2767/#2776 found and fixed — see this file's
+ * header for why the scope stops here rather than covering every gated wasm
+ * op. `session.renameFile` is scoped to the receiver `.session.` specifically
+ * (not a bare `.renameFile(`) so this pattern matches only the raw gated wasm
+ * call inside `ProjectSession.renameFile` — not `ProjectSession`'s own method
+ * name as seen by its callers (`project.renameFile(...)` in `binder.ts`) nor
+ * the unrelated host-I/O `this.provider.renameFile(...)` in the same file.
  */
 const CALL_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: "moveStitch", pattern: /\.moveStitch\(/ },
   { method: "promoteStitch", pattern: /\.promoteStitch\(/ },
   { method: "demoteKnot", pattern: /\.demoteKnot\(/ },
+  { method: "session.renameFile", pattern: /\.session\.renameFile\(/ },
 ];
 
 const MARKER = /^\/\/\s*PAINT-PATH-(DEFERRED|EXEMPT)\s+(\S+):\s*(.+)$/;
@@ -165,17 +219,22 @@ function discoverCallSiteFiles(): { scanned: string[]; withCallSite: string[] } 
 /**
  * Every file today holding a real call site matched by {@link CALL_PATTERNS}
  * (grep-verified against this branch — see #2767's fix in
- * `symbolMenuActions.ts`). NOT the source of truth: {@link discoverCallSiteFiles}
- * re-derives it from every workspace `src/` root on every run, and the first
- * `it()` below fails the moment the two disagree.
+ * `symbolMenuActions.ts` and #2776's fix in `project-session.ts`). NOT the
+ * source of truth: {@link discoverCallSiteFiles} re-derives it from every
+ * workspace `src/` root on every run, and the first `it()` below fails the
+ * moment the two disagree.
  */
-const SCANNED_FILES = [resolve(packagesRoot, "studio-ui/src/symbolMenuActions.ts")];
+const SCANNED_FILES = [
+  resolve(packagesRoot, "ink-editor/src/project-session.ts"),
+  resolve(packagesRoot, "studio-ui/src/symbolMenuActions.ts"),
+].sort();
 
-/** `moveStitch` + `promoteStitch` + `demoteKnot`, one call site each, all in
- *  `symbolMenuActions.ts`'s `dispatchSymbolAction`. Asserted exactly, not as
- *  "more than zero" — a scan that stops matching real calls must not leave
- *  every per-site check below vacuously green. */
-const EXPECTED_CALL_SITES = 3;
+/** `moveStitch` + `promoteStitch` + `demoteKnot` (one call site each, in
+ *  `symbolMenuActions.ts`'s `dispatchSymbolAction`) plus `session.renameFile`
+ *  (one call site in `project-session.ts`'s `ProjectSession.renameFile`).
+ *  Asserted exactly, not as "more than zero" — a scan that stops matching
+ *  real calls must not leave every per-site check below vacuously green. */
+const EXPECTED_CALL_SITES = 4;
 
 interface CallSite {
   file: string;
@@ -205,7 +264,7 @@ function scanCallSites(file: string): CallSite[] {
   });
 }
 
-describe("moveStitch/promoteStitch/demoteKnot call sites carry a paint-path marker (#2767)", () => {
+describe("moveStitch/promoteStitch/demoteKnot/session.renameFile call sites carry a paint-path marker (#2767/#2776)", () => {
   it("SCANNED_FILES matches a fresh workspace-wide scan", () => {
     const { withCallSite } = discoverCallSiteFiles();
     expect(withCallSite).toEqual([...SCANNED_FILES].sort());
@@ -232,10 +291,12 @@ describe("moveStitch/promoteStitch/demoteKnot call sites carry a paint-path mark
               "symbolMenuActions.ts's runGatedStructuralOp for the established remedy.",
           ).not.toBeNull();
           // Every known call site today is DEFERRED (wrapped by
-          // runGatedStructuralOp), not EXEMPT — there is no legitimately cheap
-          // call to these three specific methods (the pure ops that back them
-          // always run the gate; see structural_result.rs). An EXEMPT marker
-          // here would mean either a mis-scoped call this file should not be
+          // runGatedStructuralOp or, for session.renameFile, by the
+          // scheduleIdleWork yield in ProjectSession.renameFile), not EXEMPT
+          // — there is no legitimately cheap call matching these four
+          // patterns (the pure ops that back them always run the gate; see
+          // structural_result.rs / file_rename.rs). An EXEMPT marker here
+          // would mean either a mis-scoped call this file should not be
           // matching, or a real regression pretending otherwise — so, unlike
           // select-call-enrolment.test.ts, this suite does not carry a
           // "prove the exempt hatch is usable" case: there is nothing today
@@ -258,7 +319,12 @@ describe("moveStitch/promoteStitch/demoteKnot call sites carry a paint-path mark
     for (const [id, count] of counts) {
       expect(count, `PAINT-PATH-DEFERRED id "${id}" is reused by ${count} call sites`).toBe(1);
     }
-    expect([...counts.keys()].sort()).toEqual(["demote-knot", "move-stitch", "promote-stitch"]);
+    expect([...counts.keys()].sort()).toEqual([
+      "demote-knot",
+      "move-stitch",
+      "promote-stitch",
+      "rename-file",
+    ]);
   });
 });
 

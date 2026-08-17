@@ -9,6 +9,16 @@
  * INCLUDE names the old basename — enough to exercise the apply/egress
  * plumbing. (The real inbound/outbound INCLUDE math is covered by Rust unit
  * tests in brink-ide.)
+ *
+ * `ProjectSession.renameFile` runs off the paint path (#2776, spec §7.7.4):
+ * it yields via `scheduleIdleWork` before calling the gated wasm op, so
+ * under this file's `vi.useFakeTimers()` every call below must let the
+ * pending timer run (`await vi.runAllTimersAsync()`) before awaiting the
+ * returned promise — otherwise it never settles. The paint-path ordering
+ * itself (busy-state committed before the deferred call runs) is pinned in
+ * `symbol-structural-ops.test.ts`'s "run off the paint path" describe block
+ * and this file's own "renames off the paint path" block below; these tests
+ * cover the rename/move/undo *behavior*, not that ordering.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -56,13 +66,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/**
+ * Every rename/move/undo call below is blocked on `ProjectSession.renameFile`'s
+ * `scheduleIdleWork` yield (#2776) — under this file's fake timers that yield
+ * never fires on its own, so `pending` would hang forever without this. Runs
+ * every due timer (looping until none remain, so a batch like `moveFiles`'
+ * per-file re-scheduling still drains) and then awaits the now-settled
+ * result — a promise rejection included, so `.rejects` matchers compose with
+ * this normally.
+ */
+async function settleRename<T>(pending: Promise<T>): Promise<T> {
+  // Attach a handler to `pending` SYNCHRONOUSLY (before the first `await`
+  // below) so a rejection settled while `runAllTimersAsync` is draining
+  // timers is never briefly unobserved — Node/Vitest flags that window as
+  // an unhandled rejection even though `return pending` below does
+  // eventually attach its own handler once this function is awaited.
+  pending.catch(() => {});
+  await vi.runAllTimersAsync();
+  return pending;
+}
+
 // ── ProjectSession.renameFile ───────────────────────────────────────
 
 describe("ProjectSession.renameFile", () => {
   it("re-keys the file, rewrites referrers, and emits created/deleted/modified", async () => {
     const { provider, project, batches } = await makeProject();
 
-    const referrers = await project.renameFile("lib.ink", "util.ink");
+    const referrers = await settleRename(project.renameFile("lib.ink", "util.ink"));
     expect(referrers).toEqual(["main.ink"]);
 
     const session = project.getSession();
@@ -89,7 +119,7 @@ describe("ProjectSession.renameFile", () => {
     const project = new ProjectSession({ provider, entryFile: "main.ink" });
     await project.initialize();
 
-    await project.renameFile("lib.ink", "util.ink");
+    await settleRename(project.renameFile("lib.ink", "util.ink"));
     expect(await provider.requestFile("util.ink")).toBe(LIB);
     expect(await provider.requestFile("lib.ink")).toBeNull();
   });
@@ -101,7 +131,7 @@ describe("ProjectSession.renameFile", () => {
 
   it("throws when the destination already exists", async () => {
     const { project } = await makeProject();
-    await expect(project.renameFile("lib.ink", "main.ink")).rejects.toThrow();
+    await expect(settleRename(project.renameFile("lib.ink", "main.ink"))).rejects.toThrow();
   });
 });
 
@@ -118,7 +148,7 @@ describe("store.renameFile", () => {
       _renameDocPath: renameDoc,
     });
 
-    await store.getState().renameFile("lib.ink", "util.ink");
+    await settleRename(store.getState().renameFile("lib.ink", "util.ink"));
 
     expect(renameDoc).toHaveBeenCalledWith("lib.ink", "util.ink");
     const session = project.getSession();
@@ -129,7 +159,9 @@ describe("store.renameFile", () => {
     expect(store.getState().undoStack[0]!.kind).toBe("rename");
 
     // Undo is the inverse rename — file back at lib.ink, INCLUDE restored.
-    await store.getState().undo();
+    // (Undo replays through the same `applyRename` helper, so it is blocked
+    // on the same deferred wasm call and needs the same timer-settle.)
+    await settleRename(store.getState().undo());
     expect(session.getFileSource("lib.ink")).toBe(LIB);
     expect(session.getFileSource("util.ink")).toBeNull();
     expect(project.getFiles()["main.ink"]).toBe(MAIN);
@@ -149,7 +181,7 @@ describe("store.renameFile", () => {
     });
 
     // lib.ink → main.ink collides; the rename must fail without side effects.
-    await store.getState().renameFile("lib.ink", "main.ink");
+    await settleRename(store.getState().renameFile("lib.ink", "main.ink"));
 
     expect(renameDoc).not.toHaveBeenCalled(); // tabs untouched
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ severity: "error" }));
@@ -164,7 +196,7 @@ describe("store.renameFile", () => {
     const store = createStudioStore();
     store.setState({ _project: project, _documents: stubDocuments() });
 
-    await store.getState().moveFile("lib.ink", "scenes/lib.ink");
+    await settleRename(store.getState().moveFile("lib.ink", "scenes/lib.ink"));
     const session = project.getSession();
     expect(session.getFileSource("scenes/lib.ink")).toBe(LIB);
     expect(session.getFileSource("lib.ink")).toBeNull();
@@ -172,7 +204,7 @@ describe("store.renameFile", () => {
     // mock only rewrites by basename, so the move's referrer edit is a no-op
     // here — this test covers the session re-key + undo round-trip.)
 
-    await store.getState().undo();
+    await settleRename(store.getState().undo());
     expect(session.getFileSource("lib.ink")).toBe(LIB);
     expect(session.getFileSource("scenes/lib.ink")).toBeNull();
     expect(store.getState().undoStack).toHaveLength(0);
@@ -193,7 +225,7 @@ describe("store.moveFiles (batch)", () => {
     store.setState({ _project: project, _documents: stubDocuments() });
     const session = project.getSession();
 
-    await store.getState().moveFiles(["a.ink", "b.ink"], "scenes/");
+    await settleRename(store.getState().moveFiles(["a.ink", "b.ink"], "scenes/"));
 
     expect(session.getFileSource("scenes/a.ink")).toBe(A);
     expect(session.getFileSource("scenes/b.ink")).toBe(B);
@@ -202,7 +234,7 @@ describe("store.moveFiles (batch)", () => {
     expect(store.getState().undoStack).toHaveLength(1); // one batch entry
 
     // One undo restores both.
-    await store.getState().undo();
+    await settleRename(store.getState().undo());
     expect(session.getFileSource("a.ink")).toBe(A);
     expect(session.getFileSource("b.ink")).toBe(B);
     expect(session.getFileSource("scenes/a.ink")).toBeNull();
@@ -221,10 +253,79 @@ describe("store.moveFiles (batch)", () => {
     const session = project.getSession();
 
     // a.ink → scenes/a.ink collides; b.ink → scenes/b.ink succeeds.
-    await store.getState().moveFiles(["a.ink", "b.ink"], "scenes/");
+    await settleRename(store.getState().moveFiles(["a.ink", "b.ink"], "scenes/"));
 
     expect(session.getFileSource("a.ink")).toBe(A); // collision: stayed put
     expect(session.getFileSource("scenes/b.ink")).toBe(B); // moved
     expect(store.getState().undoStack).toHaveLength(1); // the one success, batched
+  });
+});
+
+// ── Off the paint path (#2776) ───────────────────────────────────────
+
+describe("store.renameFile runs off the paint path (#2776)", () => {
+  it("commits the pending busy-state synchronously, before the deferred wasm call runs", async () => {
+    // Same load-bearing property `symbol-structural-ops.test.ts` pins for
+    // moveStitch/promoteStitch/demoteKnot (#2767): the paint-worthy state
+    // change must land in the SAME synchronous tick as the triggering call,
+    // before the gated wasm rename (deferred to the next idle slot) ever
+    // runs. Checking `structuralOpPending` before any timer/microtask has
+    // been allowed to fire proves the ordering directly.
+    const { project } = await makeProject();
+    const store = createStudioStore();
+    store.setState({ _project: project, _documents: stubDocuments() });
+
+    const pending = store.getState().renameFile("lib.ink", "util.ink");
+
+    expect(store.getState().structuralOpPending).toBe("Renaming lib.ink → util.ink");
+    // The heavy call has NOT run yet: the file is untouched.
+    expect(project.getSession().getFileSource("lib.ink")).toBe(LIB);
+    expect(project.getSession().getFileSource("util.ink")).toBeNull();
+
+    await settleRename(pending);
+
+    expect(project.getSession().getFileSource("util.ink")).toBe(LIB);
+    // The busy state clears once the deferred call settles.
+    expect(store.getState().structuralOpPending).toBeNull();
+  });
+
+  it("clears the busy state on a refused rename too", async () => {
+    const { project } = await makeProject();
+    const store = createStudioStore();
+    store.setState({ _project: project, _documents: stubDocuments(), _notify: vi.fn() });
+
+    // lib.ink → main.ink collides — the deferred call refuses.
+    await settleRename(store.getState().renameFile("lib.ink", "main.ink"));
+
+    expect(store.getState().structuralOpPending).toBeNull();
+  });
+
+  it("does not drop a queued rename when an unrelated edit lands on a different file while it is pending", async () => {
+    // Mirrors the #2769-review lesson `symbol-structural-ops.test.ts` pins
+    // for moveStitch: the wasm mock's `rename_file` reads `this.files` live
+    // when the deferred call actually runs, never a snapshot captured before
+    // the idle wait, so an edit to a file the rename does not touch must not
+    // cause the queued rename to be dropped or corrupted.
+    const { project } = await makeProject({
+      "main.ink": MAIN,
+      "lib.ink": LIB,
+      "scratch.ink": "// untouched\n",
+    });
+    const store = createStudioStore();
+    store.setState({ _project: project, _documents: stubDocuments() });
+    const session = project.getSession();
+
+    const pending = store.getState().renameFile("lib.ink", "util.ink");
+
+    // A concurrent, unrelated edit lands before the deferred call fires.
+    session.updateFile("scratch.ink", "// a concurrent edit\n");
+
+    await settleRename(pending);
+
+    // The queued rename landed...
+    expect(session.getFileSource("util.ink")).toBe(LIB);
+    expect(session.getFileSource("lib.ink")).toBeNull();
+    // ...and the unrelated edit was not reverted either.
+    expect(session.getFileSource("scratch.ink")).toBe("// a concurrent edit\n");
   });
 });

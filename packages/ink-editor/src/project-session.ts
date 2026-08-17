@@ -20,6 +20,7 @@ import type { FileProvider } from "./provider.js";
 import { EditorSessionHandle } from "@brink-lang/web";
 import type { CompileResult } from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
+import { scheduleIdleWork } from "./idle-schedule.js";
 
 // The config filename `discoverProjectConfig`'s walk-up looks for (mirrors
 // `brink_project_config::CONFIG_FILE_NAME` — see crates/internal/brink-project-config/src/lib.rs).
@@ -374,9 +375,25 @@ export class ProjectSession {
    * follows. Returns the referrer paths whose `INCLUDE`s were rewritten (so the
    * caller can refresh their views). Throws if the op fails (unknown source, or
    * `newPath` taken).
+   *
+   * Off the paint path (#2776, generalizing #2767's `runGatedStructuralOp`
+   * remedy — spec §7.7.4): `rename_file` runs the same op-agnostic breakage
+   * gate as `moveStitch`/`promoteStitch`/`demoteKnot` (`gate_with_source`,
+   * `crates/internal/brink-ide/src/file_rename.rs`) — an overlay re-analysis
+   * of the whole project — so the wasm call below is deferred to the next
+   * idle slot via `scheduleIdleWork` rather than run inline. This method
+   * stays async either way, so every existing caller gets the deferral for
+   * free; the synchronous busy-state commit a caller needs to paint BEFORE
+   * this yields lives one layer up, in the caller that has store access
+   * (`applyRename`, `packages/studio-store/src/slices/binder.ts`) — this
+   * class has no UI-state concept of its own to commit one.
    */
   async renameFile(oldPath: string, newPath: string): Promise<string[]> {
     if (oldPath === newPath) return [];
+    await new Promise<void>((resolve) => scheduleIdleWork(resolve));
+    // PAINT-PATH-DEFERRED rename-file: gated (structural_result::gate_with_source
+    // via crates/internal/brink-ide/src/file_rename.rs) — deferred by the
+    // scheduleIdleWork yield immediately above (#2776).
     const result = this.session.renameFile(oldPath, newPath);
     if (!result.ok) {
       throw new Error(result.error ?? `cannot rename ${oldPath}`);
