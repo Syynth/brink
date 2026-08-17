@@ -559,6 +559,109 @@ mod tests {
         );
     }
 
+    // ── Per-attribute provenance (issue #1829) ───────────────────────────
+
+    #[test]
+    fn two_undeclared_attributes_on_one_span_get_distinct_squiggle_ranges() {
+        // Before #1829, `SpanPart::attrs` had no per-attribute provenance,
+        // so every `E165` for a span pointed at the *whole span* — a
+        // consumer saw two identical-range squiggles instead of one per
+        // undeclared attribute. `wave_manifest()` allows only `amount` on
+        // `wave`, so both `speed` and `decay` are undeclared.
+        let src = "flow a() {\n  <wave amount=\"1\" speed=\"2\" decay=\"3\">shimmer</wave>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E165", "E165"], "{diags:?}");
+        // Distinguishability, not merely "a snapshot changed": the two
+        // ranges must actually differ, AND each must cover only its own
+        // attribute's text — asserting equal-but-wrong ranges would pass a
+        // snapshot-only test just as happily.
+        assert_ne!(
+            diags[0].range, diags[1].range,
+            "two undeclared attributes on one span must not share a range: {diags:?}"
+        );
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "speed=\"2\"",
+            "range must cover only the offending attribute, not the whole span"
+        );
+        assert_eq!(
+            &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
+            "decay=\"3\"",
+            "range must cover only the offending attribute, not the whole span"
+        );
+    }
+
+    #[test]
+    fn repeated_undeclared_attribute_name_on_one_span_still_gets_per_occurrence_ranges() {
+        // The sharper case, mirroring `repeated_undeclared_tag_on_one_line_
+        // still_gets_per_occurrence_ranges` above: the *same* undeclared
+        // attribute name twice on one span used to produce two
+        // byte-identical diagnostics (same code, same whole-span range,
+        // same message) — indistinguishable to a consumer. §1829's fence:
+        // this does NOT diagnose the duplicate attribute *name* itself
+        // (that is a separate, unfiled diagnostic) — it only proves each
+        // occurrence's `E165` now gets its own range.
+        let src = "flow a() {\n  <wave speed=\"1\" speed=\"2\">shimmer</wave>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E165", "E165"], "{diags:?}");
+        assert_eq!(
+            diags[0].message, diags[1].message,
+            "same undeclared attribute name -> same message text: {diags:?}"
+        );
+        assert_ne!(
+            diags[0].range, diags[1].range,
+            "repeated undeclared attribute name must still get per-occurrence ranges: {diags:?}"
+        );
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "speed=\"1\""
+        );
+        assert_eq!(
+            &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
+            "speed=\"2\""
+        );
+    }
+
+    #[test]
+    fn a_single_undeclared_attribute_still_reports_e165_narrowed_to_that_attribute() {
+        // Positive control alongside the #1820 tests above: the
+        // single-undeclared-attribute case (already pinned by
+        // `an_undeclared_attribute_on_a_declared_tag_reports_e165`, message
+        // only) keeps working — and now also gets a range narrower than
+        // the whole span, which is strictly more precise, not a
+        // regression.
+        let src = "flow a() {\n  <wave speed=\"2\">shimmer</wave>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E165"], "{diags:?}");
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "speed=\"2\""
+        );
+    }
+
+    #[test]
+    fn a_missing_required_attribute_stays_span_ranged_not_attribute_ranged() {
+        // E173 (issue #1997) reports a *missing* attribute, which has no
+        // `SpanAttr` syntax node in source to point at — unlike E165, it
+        // must keep pointing at the whole span. Guards against #1829's fix
+        // accidentally narrowing E173 too.
+        let manifest = HostManifest {
+            markup: vec![ManifestSpanKind {
+                name: "sfx".to_string(),
+                attrs: vec![required_attr("volume")],
+            }],
+            ..HostManifest::default()
+        };
+        let src = "flow a() {\n  <sfx>clank</sfx>\n}\n";
+        let diags = run(src, Some(&manifest));
+        assert_eq!(codes(&diags), ["E173"], "{diags:?}");
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "<sfx>clank</sfx>",
+            "a missing attribute has no node of its own; E173 must stay span-ranged"
+        );
+    }
+
     // ── Severity is configurable, which needs a `Warning` base ──────────
 
     #[test]
