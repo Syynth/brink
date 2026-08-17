@@ -21,7 +21,9 @@ import {
 import {
   assertRealSidecarStaged,
   EXECUTABLE_MAGIC,
+  looksLikeBrinkCliVersionOutput,
   looksLikeNativeExecutable,
+  runVersionSmokeTest,
 } from "../../scripts/assert-real-sidecar.mjs";
 
 // #2631: PR #2626's "a real bundle must ship the real brink-cli" invariant
@@ -121,10 +123,16 @@ describe("assertRealSidecarStaged", () => {
       "\x7fELF-not-really-but-not-the-stub-either",
     );
 
+    // "x86_64-unknown-linux-gnu" is this test runner's own host triple, so
+    // the #2699 smoke check's host-match branch fires for real; the content
+    // above is not an actually-runnable executable, so `runFile` stands in
+    // for a working `--version` the same way the sibling hostTriple() test
+    // above does.
     const result = assertRealSidecarStaged({
       srcTauriDir,
       triple: "x86_64-unknown-linux-gnu",
       log: () => {},
+      runFile: () => "brink 0.1.0\n",
     });
     expect(result).toBe(destBin);
   });
@@ -155,8 +163,16 @@ describe("assertRealSidecarStaged", () => {
       fakeNativeBinary("aarch64-apple-darwin"),
     );
 
+    // On a host whose own triple happens to be aarch64-apple-darwin, the
+    // #2699 smoke check's host-match branch fires for real; the content
+    // above is not an actually-runnable executable, so `runFile` stands in
+    // for a working `--version`, the same way the sibling tests above do.
     process.env.TAURI_ENV_TARGET_TRIPLE = "aarch64-apple-darwin";
-    const result = assertRealSidecarStaged({ srcTauriDir, log: () => {} });
+    const result = assertRealSidecarStaged({
+      srcTauriDir,
+      log: () => {},
+      runFile: () => "brink 0.1.0\n",
+    });
     expect(result).toBe(destBin);
   });
 
@@ -166,11 +182,22 @@ describe("assertRealSidecarStaged", () => {
     // hostTriple() exactly as it did before this default existed. Real
     // `rustc -vV` on PATH, same as the sibling "asks rustc for the host
     // triple" case below, just without emptying PATH first.
+    //
+    // Since the default triple here IS the real host triple (#2699), the
+    // smoke check's host-match branch fires for real — `fakeNativeBinary`'s
+    // content is not an actually-runnable executable, so `runFile` is
+    // stubbed to stand in for a working `--version`. That branch is what
+    // the dedicated "--version smoke check" describe block below exercises
+    // directly; this test only needs the default-triple resolution to work.
     const srcTauriDir = scratch();
     const destBin = stageSidecar(srcTauriDir, hostTriple(), fakeNativeBinary(hostTriple()));
 
     expect(process.env.TAURI_ENV_TARGET_TRIPLE).toBeUndefined();
-    const result = assertRealSidecarStaged({ srcTauriDir, log: () => {} });
+    const result = assertRealSidecarStaged({
+      srcTauriDir,
+      log: () => {},
+      runFile: () => "brink 0.1.0\n",
+    });
     expect(result).toBe(destBin);
   });
 
@@ -312,11 +339,16 @@ describe("assertRealSidecarStaged's positive identity check", () => {
     );
     expect(destBin.endsWith(".exe")).toBe(true);
 
+    // On a host whose own triple happens to be x86_64-pc-windows-msvc, the
+    // #2699 smoke check's host-match branch fires for real; `fakeNativeBinary`
+    // is not an actually-runnable executable, so `runFile` stands in for a
+    // working `--version`.
     expect(
       assertRealSidecarStaged({
         srcTauriDir,
         triple: "x86_64-pc-windows-msvc",
         log: () => {},
+        runFile: () => "brink 0.1.0\n",
       }),
     ).toBe(destBin);
   });
@@ -329,8 +361,17 @@ describe("assertRealSidecarStaged's positive identity check", () => {
       fakeNativeBinary("aarch64-apple-darwin"),
     );
 
+    // On a host whose own triple happens to be aarch64-apple-darwin, the
+    // #2699 smoke check's host-match branch fires for real; `fakeNativeBinary`
+    // is not an actually-runnable executable, so `runFile` stands in for a
+    // working `--version`.
     expect(
-      assertRealSidecarStaged({ srcTauriDir, triple: "aarch64-apple-darwin", log: () => {} }),
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "aarch64-apple-darwin",
+        log: () => {},
+        runFile: () => "brink 0.1.0\n",
+      }),
     ).toBe(destBin);
   });
 
@@ -396,16 +437,217 @@ describe("assertRealSidecarStaged's positive identity check", () => {
 
       // A plausible-looking binary — real ELF magic — must still PASS: this
       // is exactly the "cannot judge" case, and rejecting it would be worse
-      // than not checking (#2687).
+      // than not checking (#2687). `triple` here is a real, common host
+      // triple, so on a matching CI runner the #2699 smoke check's
+      // host-match branch fires for real (the fallback path runs it too,
+      // per that same review) — the staged content is not an actually-
+      // runnable executable, so `runFile` stands in for a working
+      // `--version`.
       const destBin = stageSidecar(
         srcTauriDir,
         triple,
         Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
       );
-      expect(assertRealSidecarStaged({ srcTauriDir, triple, log: () => {} })).toBe(destBin);
+      expect(
+        assertRealSidecarStaged({
+          srcTauriDir,
+          triple,
+          log: () => {},
+          runFile: () => "brink 0.1.0\n",
+        }),
+      ).toBe(destBin);
     } finally {
       EXECUTABLE_MAGIC.elf = savedElfMagic;
     }
+  });
+});
+
+// #2699: the magic check above proves the staged file's FORMAT, not that it
+// IS `brink-cli` or that it runs — #2691's own passing observation stood in
+// `/bin/true` for a real `brink-cli`, and that would pass the magic check
+// exactly as a genuine wrong-build binary would. These cases pin the
+// `--version` smoke check that closes that gap, and — per the issue's own
+// warning — that cross-compilation is the trap: a sidecar staged for a
+// non-host triple cannot be executed here at all, so the check must degrade
+// to "verified via magic only" rather than fail a legitimate cross-build or
+// silently claim to have run something it did not.
+describe("assertRealSidecarStaged's --version smoke check (#2699)", () => {
+  it("executes --version and passes when the staged triple matches this machine's host triple", () => {
+    const srcTauriDir = scratch();
+    const triple = hostTriple();
+    const destBin = stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    const logs: string[] = [];
+    const calls: Array<{ file: string; args: string[] }> = [];
+    const result = assertRealSidecarStaged({
+      srcTauriDir,
+      triple,
+      log: (message: string) => logs.push(message),
+      runFile: (file: string, args: string[]) => {
+        calls.push({ file, args });
+        return "brink 0.1.0\n";
+      },
+    });
+
+    expect(result).toBe(destBin);
+    expect(calls).toEqual([{ file: destBin, args: ["--version"] }]);
+    // The log must name which branch ran — never claim "verified" without
+    // saying whether execution actually happened.
+    expect(logs.some((line) => line.includes("ran successfully"))).toBe(true);
+    expect(logs.some((line) => line.includes("host-triple match"))).toBe(true);
+  });
+
+  it("throws — refusing the bundle — when a host-triple-matched sidecar carries valid magic but fails to run", () => {
+    const srcTauriDir = scratch();
+    const triple = hostTriple();
+    stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    expect(() =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple,
+        log: () => {},
+        runFile: () => {
+          throw new Error("spawn ENOEXEC");
+        },
+      }),
+    ).toThrow(/failed to run/);
+  });
+
+  it("throws — refusing the bundle — when a host-triple-matched sidecar runs but prints output that is not a brink-cli version string", () => {
+    // The exact `/bin/true` scenario #2699 exists to close: something that
+    // RUNS and exits 0 on `--version` but is not brink-cli. GNU coreutils'
+    // `true` — #2691's own stand-in for brink-cli — prints exactly this.
+    const srcTauriDir = scratch();
+    const triple = hostTriple();
+    stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    expect(() =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple,
+        log: () => {},
+        runFile: () => "true (GNU coreutils) 9.4\n",
+      }),
+    ).toThrow(/not a brink-cli version string/);
+  });
+
+  it("skips the smoke check — without failing — for a non-host triple, and names the branch it took", () => {
+    const srcTauriDir = scratch();
+    // Guaranteed to differ from this test runner's real host triple,
+    // whichever platform that happens to be — the cross-compilation case
+    // the issue calls out as the trap: this sidecar CANNOT be executed on
+    // this machine, so the check must not even try.
+    const actualHost = hostTriple();
+    const triple = actualHost.includes("windows")
+      ? "x86_64-unknown-linux-gnu"
+      : "x86_64-pc-windows-msvc";
+    expect(triple).not.toBe(actualHost);
+    const destBin = stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    let executed = false;
+    const logs: string[] = [];
+    const result = assertRealSidecarStaged({
+      srcTauriDir,
+      triple,
+      log: (message: string) => logs.push(message),
+      runFile: () => {
+        executed = true;
+        return "";
+      },
+    });
+
+    expect(result).toBe(destBin);
+    expect(executed).toBe(false);
+    expect(logs.some((line) => line.includes("skipped the --version smoke check"))).toBe(true);
+    expect(logs.some((line) => line.includes("does not match this machine's host triple"))).toBe(
+      true,
+    );
+    // Must not also claim it ran successfully — no branch may claim more
+    // than it actually did.
+    expect(logs.some((line) => line.includes("ran successfully"))).toBe(false);
+  });
+
+  it("treats an undeterminable host triple as a skip, never a rejection (tri-state audit, #2699)", () => {
+    // Mirrors the #2687 lesson directly: `looksLikeNativeExecutable`
+    // returns `undefined` for "cannot judge", and a `!== true` call site
+    // was caught collapsing that into "rejected". The host-triple lookup
+    // here has the same three-way shape (match / mismatch / undeterminable)
+    // — this pins that "rustc unavailable" degrades exactly like a genuine
+    // cross-build mismatch, not like a failed run.
+    const srcTauriDir = scratch();
+    const triple = "x86_64-unknown-linux-gnu";
+    const destBin = stageSidecar(srcTauriDir, triple, fakeNativeBinary(triple));
+
+    const emptyPath = scratch();
+    const original = process.env.PATH;
+    process.env.PATH = emptyPath;
+    const logs: string[] = [];
+    let result: string;
+    try {
+      // `triple` is passed explicitly so the emptied PATH only defeats the
+      // smoke check's own internal host lookup, not assertRealSidecarStaged's
+      // default-triple parameter (which would throw first and prove nothing
+      // about the smoke check itself).
+      result = assertRealSidecarStaged({
+        srcTauriDir,
+        triple,
+        log: (message: string) => logs.push(message),
+        runFile: () => {
+          throw new Error("should never be called — host triple is undeterminable");
+        },
+      });
+    } finally {
+      process.env.PATH = original;
+    }
+
+    expect(result).toBe(destBin);
+    expect(logs.some((line) => line.includes("skipped the --version smoke check"))).toBe(true);
+    expect(logs.some((line) => line.includes("rustc unavailable"))).toBe(true);
+  });
+});
+
+describe("runVersionSmokeTest", () => {
+  it("reports ok:true with the trimmed stdout on a successful run", () => {
+    const result = runVersionSmokeTest({
+      destBin: "/fake/brink-cli",
+      runFile: () => "brink 0.1.0\n",
+    });
+    expect(result).toEqual({ ok: true, output: "brink 0.1.0" });
+  });
+
+  it("reports ok:false with a detail message rather than throwing, on a failed run", () => {
+    const result = runVersionSmokeTest({
+      destBin: "/fake/brink-cli",
+      runFile: () => {
+        throw new Error("ENOEXEC");
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result).toHaveProperty("detail");
+    expect((result as { detail: string }).detail).toContain("ENOEXEC");
+  });
+});
+
+describe("looksLikeBrinkCliVersionOutput", () => {
+  it("accepts clap's `<name> <version>` format for a real brink-cli build", () => {
+    expect(looksLikeBrinkCliVersionOutput("brink 0.0.11")).toBe(true);
+  });
+
+  it("accepts the bare name with no version suffix", () => {
+    expect(looksLikeBrinkCliVersionOutput("brink")).toBe(true);
+  });
+
+  it("rejects GNU coreutils' `true --version` output — #2691's own stand-in for brink-cli", () => {
+    expect(looksLikeBrinkCliVersionOutput("true (GNU coreutils) 9.4")).toBe(false);
+  });
+
+  it("rejects a name that merely starts with the same letters", () => {
+    expect(looksLikeBrinkCliVersionOutput("brinkly 1.0")).toBe(false);
+  });
+
+  it("rejects empty output", () => {
+    expect(looksLikeBrinkCliVersionOutput("")).toBe(false);
   });
 });
 
