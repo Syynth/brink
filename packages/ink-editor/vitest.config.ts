@@ -21,8 +21,9 @@ import { defineConfig } from "vitest/config";
 // wasm-bindgen glue and are exactly what makes the studio suite slow to
 // start. Test files here should import their subject directly from its
 // source module (e.g. `../inline-name-input.js`, `../rename.js`), never
-// through `./index.js` or `@brink-lang/editor`, so this suite never needs a
-// built `crates/brink-web/www/pkg` at all. If a future test genuinely needs
+// through `./index.js` or `@brink-lang/editor`, so this suite needs no built
+// `crates/brink-web/www/pkg` at all AT TEST-RUN TIME; the workspace install
+// still does (#2479). If a future test genuinely needs
 // the wasm-backed surface, add the alias then and say why in this comment —
 // don't add it speculatively.
 export default defineConfig({
