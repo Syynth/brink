@@ -2099,6 +2099,21 @@ mod tests {
              build` (release) must keep failing loudly on a missing sidecar rather than \
              bundling a placeholder that exits 127 in a shipped app"
         );
+        // #2715 review: this function probes per-arch `brink-cli-<TARGET>`
+        // (`host_matches_target` above), but ensure-cli-sidecar.mjs's
+        // main-guard stages under `universal-apple-darwin` whenever
+        // `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin` is in its env. An
+        // ambient inherited value from an enclosing `tauri build --target
+        // universal-apple-darwin` would make the child stage the wrong
+        // triple for no benefit — the HOST == TARGET guard exists to
+        // prevent exactly this. Must scrub it before spawning the child.
+        assert!(
+            build_rs.contains("env_remove(\"TAURI_ENV_TARGET_TRIPLE\")"),
+            "build.rs should env_remove(\"TAURI_ENV_TARGET_TRIPLE\") before spawning \
+             ensure-cli-sidecar.mjs — an inherited universal-apple-darwin value would stage \
+             the wrong-triple sidecar while this function keeps probing brink-cli-<TARGET> \
+             (#2715 review)"
+        );
     }
 
     /// The doc half of #2617. CLAUDE.md's "Key commands" block is where

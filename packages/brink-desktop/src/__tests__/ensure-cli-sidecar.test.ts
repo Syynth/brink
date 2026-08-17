@@ -535,6 +535,11 @@ describe("the main-guard", () => {
       // invocation ever reaching `cargo build -p brink-cli --release` — the
       // exact path this test exists to cover.
       delete env.BRINK_SIDECAR_STUB;
+      // An ambient TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin (#2715's
+      // main-guard dispatch) would route this invocation to
+      // `stageUniversalCliSidecar` instead of the plain host-triple
+      // `ensureCliSidecar` this test exists to cover.
+      delete env.TAURI_ENV_TARGET_TRIPLE;
       execFileSync(process.execPath, [join(packageDir, "scripts", "ensure-cli-sidecar.mjs")], {
         encoding: "utf8",
         env,

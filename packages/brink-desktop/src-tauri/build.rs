@@ -123,6 +123,22 @@ fn stage_dev_sidecar_if_missing() {
                 .arg("scripts/ensure-cli-sidecar.mjs")
                 .current_dir(&package_dir)
                 .env("BRINK_SIDECAR_STUB", "1")
+                // `ensure-cli-sidecar.mjs`'s main-guard dispatches to
+                // `stageUniversalCliSidecar()` (staging under the
+                // `universal-apple-darwin` name) whenever
+                // `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin` is in its
+                // env (#2715). This function probes per-arch `TARGET`
+                // (`host_matches_target` above), so an inherited
+                // `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin` — e.g. a
+                // universal `cargo build` invoked from within a `tauri
+                // build --target universal-apple-darwin` environment —
+                // would stage the wrong-triple `brink-cli-universal-apple-darwin`
+                // file while this function keeps looking for
+                // `brink-cli-<TARGET>` (review finding; mirrors the same
+                // ambient-leak guard the vitest caller already takes at
+                // `ensure-cli-sidecar.test.ts:538`, `delete
+                // env.TAURI_ENV_TARGET_TRIPLE`).
+                .env_remove("TAURI_ENV_TARGET_TRIPLE")
                 // The child's `console.log` output would otherwise land in
                 // cargo's build-script directive channel (stdout) — harmless
                 // today since none of its lines start with `cargo:`, but
