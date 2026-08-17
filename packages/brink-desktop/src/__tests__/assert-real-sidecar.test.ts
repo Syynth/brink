@@ -12,8 +12,17 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { hostTriple, sidecarPaths, STUB_SIDECAR } from "../../scripts/ensure-cli-sidecar.mjs";
-import { assertRealSidecarStaged } from "../../scripts/assert-real-sidecar.mjs";
+import {
+  executableFormatFor,
+  hostTriple,
+  sidecarPaths,
+  STUB_SIDECAR,
+} from "../../scripts/ensure-cli-sidecar.mjs";
+import {
+  assertRealSidecarStaged,
+  EXECUTABLE_MAGIC,
+  looksLikeNativeExecutable,
+} from "../../scripts/assert-real-sidecar.mjs";
 
 // #2631: PR #2626's "a real bundle must ship the real brink-cli" invariant
 // held for `tauri build --debug` only through step-ordering — `pnpm build`
@@ -31,12 +40,26 @@ function scratch(): string {
   return dir;
 }
 
-function stageSidecar(srcTauriDir: string, triple: string, content: string): string {
+function stageSidecar(
+  srcTauriDir: string,
+  triple: string,
+  content: string | Uint8Array,
+): string {
   const { binariesDir, destBin } = sidecarPaths({ triple, repoRoot: "/unused", srcTauriDir });
   mkdirSync(binariesDir, { recursive: true });
   writeFileSync(destBin, content);
   chmodSync(destBin, 0o755);
   return destBin;
+}
+
+// Stand-in for what `cargo build -p brink-cli --release` would have staged
+// for `triple`: the executable magic that triple's loader requires, plus
+// filler. Since #2687 the assertion is a POSITIVE identity check, so a
+// "real binary" fixture can no longer be an arbitrary non-stub string.
+function fakeNativeBinary(triple: string): Uint8Array {
+  const format = executableFormatFor(triple);
+  const magic: number[] = format === null ? [] : EXECUTABLE_MAGIC[format][0];
+  return Uint8Array.from([...magic, ...Buffer.from("\0\0not-really-a-binary-but-not-the-stub")]);
 }
 
 // `assertRealSidecarStaged`'s `triple` default reads
@@ -89,7 +112,9 @@ describe("assertRealSidecarStaged", () => {
 
   it("passes when the staged sidecar's content differs from the stub", () => {
     const srcTauriDir = scratch();
-    // Stand-in for a real compiled binary: content that is not STUB_SIDECAR.
+    // Stand-in for a real compiled binary: content that is not STUB_SIDECAR
+    // and — since #2687 — also carries the target's executable magic. The
+    // `\x7fELF` prefix below is exactly that magic for a linux triple.
     const destBin = stageSidecar(
       srcTauriDir,
       "x86_64-unknown-linux-gnu",
@@ -124,7 +149,11 @@ describe("assertRealSidecarStaged", () => {
     // under that triple, not the host's, so the assertion has to read the
     // same one or it would check the wrong file.
     const srcTauriDir = scratch();
-    const destBin = stageSidecar(srcTauriDir, "aarch64-apple-darwin", "not-the-stub");
+    const destBin = stageSidecar(
+      srcTauriDir,
+      "aarch64-apple-darwin",
+      fakeNativeBinary("aarch64-apple-darwin"),
+    );
 
     process.env.TAURI_ENV_TARGET_TRIPLE = "aarch64-apple-darwin";
     const result = assertRealSidecarStaged({ srcTauriDir, log: () => {} });
@@ -138,7 +167,7 @@ describe("assertRealSidecarStaged", () => {
     // `rustc -vV` on PATH, same as the sibling "asks rustc for the host
     // triple" case below, just without emptying PATH first.
     const srcTauriDir = scratch();
-    const destBin = stageSidecar(srcTauriDir, hostTriple(), "not-the-stub");
+    const destBin = stageSidecar(srcTauriDir, hostTriple(), fakeNativeBinary(hostTriple()));
 
     expect(process.env.TAURI_ENV_TARGET_TRIPLE).toBeUndefined();
     const result = assertRealSidecarStaged({ srcTauriDir, log: () => {} });
@@ -162,6 +191,220 @@ describe("assertRealSidecarStaged", () => {
       expect(() => assertRealSidecarStaged({ srcTauriDir, log: () => {} })).toThrow();
     } finally {
       process.env.PATH = original;
+    }
+  });
+});
+
+// #2687: the stub comparison alone is a BLOCKLIST — it refuses the one
+// placeholder that exists today and passes everything else, including an
+// empty or truncated or wrong-architecture file, because `tauri_build`'s
+// externalBin resolution only tests existence. These cases pin the positive
+// half: the staged file must actually be a native executable for the target.
+describe("looksLikeNativeExecutable", () => {
+  it("accepts ELF magic for an ELF target and rejects it for a PE one", () => {
+    const elf = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]);
+    expect(looksLikeNativeExecutable(elf, "elf")).toBe(true);
+    expect(looksLikeNativeExecutable(elf, "pe")).toBe(false);
+    expect(looksLikeNativeExecutable(elf, "macho")).toBe(false);
+  });
+
+  it("accepts every Mach-O header magic, in both byte orders, thin and fat", () => {
+    // A real macOS release binary can legitimately be a universal (fat)
+    // wrapper rather than a thin Mach-O; rejecting one would be a false
+    // negative on a real binary, which is worse than not checking at all.
+    for (const magic of EXECUTABLE_MAGIC.macho as number[][]) {
+      expect(looksLikeNativeExecutable(Uint8Array.from([...magic, 0x00]), "macho")).toBe(true);
+    }
+  });
+
+  it("accepts the DOS `MZ` stub for PE", () => {
+    expect(looksLikeNativeExecutable(Uint8Array.from([0x4d, 0x5a, 0x90, 0x00]), "pe")).toBe(true);
+  });
+
+  it("rejects a truncated file that only has part of the magic", () => {
+    expect(looksLikeNativeExecutable(Uint8Array.from([0x7f, 0x45]), "elf")).toBe(false);
+    expect(looksLikeNativeExecutable(Uint8Array.from([]), "elf")).toBe(false);
+  });
+
+  it("reports `undefined` — not `false` — for a format with no rule", () => {
+    // "Cannot judge" must be distinguishable from "judged and rejected":
+    // a positive check that rejects a REAL binary on an unanticipated
+    // platform is worse than the blocklist it replaces.
+    expect(looksLikeNativeExecutable(Uint8Array.from([0x00]), "wasm")).toBeUndefined();
+  });
+});
+
+describe("assertRealSidecarStaged's positive identity check", () => {
+  it("rejects an EMPTY file, which the stub blocklist alone let through", () => {
+    const srcTauriDir = scratch();
+    stageSidecar(srcTauriDir, "x86_64-unknown-linux-gnu", Uint8Array.from([]));
+
+    expect(() =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        log: () => {},
+      }),
+    ).toThrow(/does not begin with ELF executable magic/);
+  });
+
+  it("rejects a truncated copy of a real binary", () => {
+    const srcTauriDir = scratch();
+    // Two bytes of ELF magic — a half-finished `copyFileSync`, say. Not
+    // equal to STUB_SIDECAR, so the blocklist would have passed it.
+    stageSidecar(srcTauriDir, "x86_64-unknown-linux-gnu", Uint8Array.from([0x7f, 0x45]));
+
+    expect(() =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        log: () => {},
+      }),
+    ).toThrow(/does not begin with ELF executable magic/);
+  });
+
+  it("rejects a binary built for the WRONG platform's loader", () => {
+    const srcTauriDir = scratch();
+    // A genuine Mach-O binary staged for a Windows bundle: a real
+    // executable, just not one the target can run.
+    stageSidecar(
+      srcTauriDir,
+      "x86_64-pc-windows-msvc",
+      fakeNativeBinary("aarch64-apple-darwin"),
+    );
+
+    expect(() =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "x86_64-pc-windows-msvc",
+        log: () => {},
+      }),
+    ).toThrow(/does not begin with PE executable magic/);
+  });
+
+  it("names the offending bytes and the target so the message is actionable", () => {
+    const srcTauriDir = scratch();
+    stageSidecar(srcTauriDir, "x86_64-unknown-linux-gnu", Uint8Array.from([0xde, 0xad]));
+
+    try {
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        log: () => {},
+      });
+      throw new Error("expected assertRealSidecarStaged to throw");
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toContain("de ad");
+      expect(message).toContain("x86_64-unknown-linux-gnu");
+    }
+  });
+
+  it("accepts a real PE binary staged for a Windows triple", () => {
+    // The `.exe` suffix `sidecarPaths` adds for Windows triples (#2481) is
+    // not a reason to reject: this check must pass the real thing on every
+    // platform the shell can bundle for.
+    const srcTauriDir = scratch();
+    const destBin = stageSidecar(
+      srcTauriDir,
+      "x86_64-pc-windows-msvc",
+      fakeNativeBinary("x86_64-pc-windows-msvc"),
+    );
+    expect(destBin.endsWith(".exe")).toBe(true);
+
+    expect(
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "x86_64-pc-windows-msvc",
+        log: () => {},
+      }),
+    ).toBe(destBin);
+  });
+
+  it("accepts a real Mach-O binary staged for an Apple triple", () => {
+    const srcTauriDir = scratch();
+    const destBin = stageSidecar(
+      srcTauriDir,
+      "aarch64-apple-darwin",
+      fakeNativeBinary("aarch64-apple-darwin"),
+    );
+
+    expect(
+      assertRealSidecarStaged({ srcTauriDir, triple: "aarch64-apple-darwin", log: () => {} }),
+    ).toBe(destBin);
+  });
+
+  it("still names the STUB specifically, rather than degrading to 'not an executable'", () => {
+    // The stub comparison is kept ALONGSIDE the magic check, not replaced by
+    // it: STUB_SIDECAR is a `#!` script and would fail the ELF magic too, but
+    // only the blocklist can say WHICH placeholder it is and what to rebuild.
+    const srcTauriDir = scratch();
+    stageSidecar(srcTauriDir, "x86_64-unknown-linux-gnu", STUB_SIDECAR);
+
+    expect(() =>
+      assertRealSidecarStaged({
+        srcTauriDir,
+        triple: "x86_64-unknown-linux-gnu",
+        log: () => {},
+      }),
+    ).toThrow(/STUB brink-cli placeholder/);
+  });
+
+  it("falls back to weaker checks — never a rejection — on a triple with no format rule", () => {
+    const srcTauriDir = scratch();
+    const triple = "aarch64-unknown-mysteryos";
+    expect(executableFormatFor(triple)).toBeNull();
+
+    // A real binary for an unanticipated target must still bundle.
+    const destBin = stageSidecar(srcTauriDir, triple, Uint8Array.from([0x01, 0x02, 0x03, 0x04]));
+    expect(assertRealSidecarStaged({ srcTauriDir, triple, log: () => {} })).toBe(destBin);
+
+    // …but the obviously-wrong cases are still refused.
+    stageSidecar(srcTauriDir, triple, Uint8Array.from([]));
+    expect(() => assertRealSidecarStaged({ srcTauriDir, triple, log: () => {} })).toThrow(
+      /is empty/,
+    );
+
+    stageSidecar(srcTauriDir, triple, Uint8Array.from([0x23, 0x21, 0x2f, 0x62]));
+    expect(() => assertRealSidecarStaged({ srcTauriDir, triple, log: () => {} })).toThrow(
+      /interpreter script/,
+    );
+  });
+
+  it("falls back to weaker checks — never a rejection — when EXECUTABLE_MAGIC has no entry for a format executableFormatFor names", () => {
+    // #2687 review: `executableFormatFor` (ensure-cli-sidecar.mjs) and
+    // `EXECUTABLE_MAGIC` (this file) are maintained in different files, and
+    // nothing enforces that every format the former can return has an entry
+    // in the latter's table — today they happen to line up (elf/macho/pe in
+    // both), but that agreement is a cross-file invariant, not something the
+    // type system or a shared constant guarantees. If they ever drift,
+    // `looksLikeNativeExecutable` returns `undefined` (not `false`) for the
+    // orphaned format, and `assertRealSidecarStaged` MUST treat that the
+    // same as "no rule for this triple at all" — never as a rejection. This
+    // simulates the drift directly, rather than only asserting
+    // `looksLikeNativeExecutable`'s return value in isolation.
+    const srcTauriDir = scratch();
+    const triple = "x86_64-unknown-linux-gnu";
+    expect(executableFormatFor(triple)).toBe("elf");
+
+    const savedElfMagic = EXECUTABLE_MAGIC.elf;
+    delete (EXECUTABLE_MAGIC as Record<string, unknown>).elf;
+    try {
+      expect(
+        looksLikeNativeExecutable(Uint8Array.from([0x7f, 0x45, 0x4c, 0x46]), "elf"),
+      ).toBeUndefined();
+
+      // A plausible-looking binary — real ELF magic — must still PASS: this
+      // is exactly the "cannot judge" case, and rejecting it would be worse
+      // than not checking (#2687).
+      const destBin = stageSidecar(
+        srcTauriDir,
+        triple,
+        Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]),
+      );
+      expect(assertRealSidecarStaged({ srcTauriDir, triple, log: () => {} })).toBe(destBin);
+    } finally {
+      EXECUTABLE_MAGIC.elf = savedElfMagic;
     }
   });
 });

@@ -2149,20 +2149,19 @@ mod tests {
     /// it. `scripts/assert-real-sidecar.mjs` throws if that file's content
     /// is `STUB_SIDECAR` rather than a real binary.
     ///
-    /// Deliberately inert today, not a gap: `bundle.active` below must stay
-    /// `false` (D3 scope, not this issue's — see
+    /// Deliberately inert by default, not a gap: `bundle.active` below must
+    /// stay `false` (D3 scope, not this issue's — see
     /// `docs/desktop-shell-spec.md`). That is not the only thing standing
     /// between this hook and firing, though — tauri-cli's bundling phase
     /// also runs on an explicit `tauri build --bundles <target>` even with
     /// `bundle.active: false`, so "flip `bundle.active`" is not this hook's
-    /// only door, just the one this crate's own config controls. What
-    /// actually keeps it inert today is that nothing in this repo invokes
-    /// `tauri build` in any form yet — no `--bundles` flag, no default
-    /// bundle-on config. `bundle.active` flipping to `true` would widen
-    /// which invocation reaches the hook (the bundle-less default `tauri
-    /// build` starts doing so too) but does not, on its own, make the hook
-    /// reachable if nothing still calls `tauri build` — which is what this
-    /// test pins for now.
+    /// only door, just the one this crate's own config controls. No CI lane
+    /// and no documented developer command invokes `tauri build` today — but
+    /// an ad-hoc `--bundles` invocation does reach the hook, as #2687's
+    /// observation (docs/desktop-shell-spec.md "Bundle-time sidecar
+    /// assertion (#2631)") demonstrated. This test below pins only that
+    /// `bundle.active` stays `false`; it does not and cannot pin the absence
+    /// of a CI lane or developer command that calls `tauri build`.
     #[test]
     fn before_bundle_command_asserts_the_staged_sidecar_is_real() {
         let conf = tauri_conf();
@@ -2207,6 +2206,42 @@ mod tests {
             "assert-real-sidecar.mjs should not carry its own copy of the stub payload — \
              detect it via the STUB_SIDECAR import instead, exactly as this guard requires \
              of build.rs"
+        );
+
+        // #2687: comparing against STUB_SIDECAR alone is a BLOCKLIST — it
+        // refuses the one placeholder that exists today and passes an
+        // empty, truncated or wrong-architecture file, because
+        // `tauri_build`'s externalBin resolution only tests that the path
+        // exists. The hook must also POSITIVELY identify the staged file as
+        // a native executable for the target.
+        assert!(
+            assert_script.contains("looksLikeNativeExecutable"),
+            "assert-real-sidecar.mjs should positively identify the staged sidecar as a \
+             native executable (ELF/Mach-O/PE magic), not merely differ from STUB_SIDECAR \
+             (#2687) — a blocklist fails open on every placeholder that is not \
+             byte-identical to the one we happen to have"
+        );
+        assert!(
+            assert_script.contains("executableFormatFor"),
+            "assert-real-sidecar.mjs should ask ensure-cli-sidecar.mjs's \
+             `executableFormatFor` which executable format the target triple expects, \
+             rather than deciding that for itself (#2626's single-mechanism rule, #2687)"
+        );
+        assert!(
+            !assert_script.contains("includes(\"windows\")"),
+            "assert-real-sidecar.mjs should not re-derive platform facts from the triple \
+             string — `ensure-cli-sidecar.mjs` owns triple detection and the `.exe`/PE rule \
+             (#2481, #2626); import `executableFormatFor` instead of testing the triple here"
+        );
+        let ensure_script = std::fs::read_to_string(
+            repo_root().join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"),
+        )
+        .expect("ensure-cli-sidecar.mjs should exist");
+        assert!(
+            ensure_script.contains("export function executableFormatFor"),
+            "`executableFormatFor` should be defined in ensure-cli-sidecar.mjs — the one \
+             module #2626's review allows to hold triple-derived knowledge about the \
+             staged sidecar (#2687)"
         );
 
         // `bundle.active` turning this on is explicitly D3 scope (#2631's
