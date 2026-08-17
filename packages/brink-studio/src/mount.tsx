@@ -861,7 +861,9 @@ export async function mountStudio(
   // affordance, not a notification (spec §7.5's "out of scope: progress
   // notifications"). Sits between story status and the session picker;
   // renders nothing (StructuralOpSegment returns null) outside the brief
-  // window one of moveStitch/promoteStitch/demoteKnot is deferred.
+  // window one of moveStitch/promoteStitch/demoteKnot is deferred, or the
+  // Binder's file/folder rename-and-move (#2776, `applyRename` in
+  // `binder.ts`) is.
   statusBarItems.register({
     id: "status.structural-op",
     alignment: "left",

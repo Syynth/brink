@@ -448,6 +448,23 @@ async function deleteFilesWithUndo(
  * it at the new path, refresh referrer views, and recompile. Returns false
  * (with an error notification) on failure. Pushes no undo entry — callers
  * manage the stack.
+ *
+ * Off the paint path (#2776, generalizing #2767's remedy — spec §7.7.4):
+ * `project.renameFile` runs the same op-agnostic breakage gate as
+ * `moveStitch`/`promoteStitch`/`demoteKnot`, and defers its own heavy wasm
+ * call internally via `scheduleIdleWork` (`ProjectSession.renameFile`,
+ * `packages/ink-editor/src/project-session.ts`). This function is the
+ * store-aware layer that call has none of, so the synchronous half of the
+ * remedy lives here: commit `structuralOpPending` BEFORE the first `await`,
+ * so React has something to paint before the deferred call can block the
+ * main thread. Reuses the same status-bar affordance #2767 introduced
+ * (`StructuralOpSegment`) rather than a notification (spec §7.5) — the
+ * Binder has no per-row busy indicator to prefer instead. No staleness
+ * re-check against a pre-idle snapshot: `renameFile` calls the wasm op fresh
+ * against the session's live source when it actually runs and already
+ * refuses cleanly (the catch below) if its target moved out from under it —
+ * the same trust-the-op's-own-refusal reasoning `runGatedStructuralOp`
+ * documents for the sibling ops.
  */
 async function applyRename(
   get: () => StudioState,
@@ -459,6 +476,7 @@ async function applyRename(
   const documents = state._documents;
   if (!project || !documents) return false;
 
+  state.setStructuralOpPending(`Renaming ${oldPath} → ${newPath}`);
   let referrers: string[];
   try {
     referrers = await project.renameFile(oldPath, newPath);
@@ -479,6 +497,8 @@ async function applyRename(
       message: e instanceof Error ? e.message : `cannot rename ${oldPath}`,
     });
     return false;
+  } finally {
+    state.setStructuralOpPending(null);
   }
 
   // Re-key any open tabs/views for the file in place (preserve pin/split/

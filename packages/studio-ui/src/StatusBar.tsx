@@ -150,15 +150,16 @@ export function StorySegment() {
 }
 
 /**
- * Local busy-state affordance for a gated structural op (`moveStitch`/
- * `promoteStitch`/`demoteKnot`, #2767) running off the paint path
- * (`runGatedStructuralOp` in `symbolMenuActions.ts`, spec §7.7.4). Renders
- * only while `structuralOpPending` is set — quiet, non-modal, and gone the
- * moment the deferred wasm call settles. This is deliberately a status-bar
- * segment and NOT a shell notification: spec §7.5 states progress
+ * Local busy-state affordance for a gated structural op running off the
+ * paint path — `moveStitch`/`promoteStitch`/`demoteKnot` (#2767,
+ * `runGatedStructuralOp` in `symbolMenuActions.ts`) and the Binder's file/
+ * folder rename-and-move (#2776, `applyRename` in `binder.ts`); spec §7.7.4.
+ * Renders only while `structuralOpPending` is set — quiet, non-modal, and
+ * gone the moment the deferred wasm call settles. This is deliberately a
+ * status-bar segment and NOT a shell notification: spec §7.5 states progress
  * notifications are out of scope for the notification service, so progress
- * for these one-shot context-menu/drag-drop actions lives here per §7.3
- * instead.
+ * for these one-shot context-menu/drag-drop/rename actions lives here per
+ * §7.3 instead.
  */
 export function StructuralOpSegment() {
   const pending = useStudioStore((s) => s.structuralOpPending);
