@@ -390,9 +390,9 @@ source and `move_stitch`/`promote_stitch`/`demote_knot` driven on ALT_STITCHES's
 `  = b` (#2721), plus `move_stitch`/`demote_knot` driven on ALT_FENCES's \
 non-newline-terminated `three` boundary — the input shape that stresses their own \
 `needs_newline_before`/`needs_nl` guards, which ALT_STITCHES's `  = b` does not (#2730), plus \
-`move_stitch`/`promote_stitch` driven on NO_TRAILING_NEWLINE — a source with no trailing `\n` \
-at all — the input shape that stresses their own TRAILING `needs_newline_after`/ \
-`!promoted_text.ends_with('\n')` guards, which ALT_FENCES's `three` boundary does not, since \
+`move_stitch`/`promote_stitch` driven on NO_TRAILING_NEWLINE — a source with no trailing `\\n` \
+at all — the input shape that stresses their own TRAILING `needs_newline_after`/\
+`!promoted_text.ends_with('\\n')` guards, which ALT_FENCES's `three` boundary does not, since \
 `three` is only ever the destination there, never the thing moved (#2739); \
 `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
 `{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
