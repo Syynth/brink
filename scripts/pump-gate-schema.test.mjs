@@ -351,7 +351,7 @@ describe("pump.js gate-evidence schema (#2645)", () => {
 describe("pump.js build schema keeps enforceable constraints (#2665)", () => {
   // Every gate shape BRINK-CONFIG.md actually uses. `{}` is the default
   // (Rust) gate; the TS override is BRINK-CONFIG.md:10's real "TS entries"
-  // gate string verbatim (7 pnpm/wasm-pack legs -> minItems 8 with CACHE).
+  // gate string verbatim (8 pnpm/wasm-pack legs -> minItems 9 with CACHE).
   // The single-command override is a two-leg gate once CACHE is prepended —
   // no shape here yields minItems 1.
   const GATE_SHAPES = [
@@ -359,7 +359,7 @@ describe("pump.js build schema keeps enforceable constraints (#2665)", () => {
     {
       label: "TS override",
       item: {
-        gate: "wasm-pack build crates/brink-web --target web --out-dir www/pkg && wasm-pack test --node crates/brink-web && pnpm install:checked -- --frozen-lockfile && pnpm --filter @brink-lang/editor typecheck && pnpm --filter @brink-lang/studio typecheck && pnpm --filter @brink-lang/studio test && pnpm --filter @brink-lang/editor build",
+        gate: "wasm-pack build crates/brink-web --target web --out-dir www/pkg && wasm-pack test --node crates/brink-web && pnpm install:checked -- --frozen-lockfile && pnpm --filter @brink-lang/editor typecheck && pnpm --filter @brink-lang/studio typecheck && pnpm --filter @brink-lang/editor test && pnpm --filter @brink-lang/studio test && pnpm --filter @brink-lang/editor build",
       },
     },
     { label: "single-command override (two legs once CACHE is prepended)", item: { gate: "pnpm run test:scripts" } },

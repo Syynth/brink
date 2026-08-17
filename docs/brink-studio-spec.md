@@ -719,6 +719,28 @@ mirroring the same guard in both mock ops; driven end-to-end and pinned by
 `payloads["move_stitch:alt-fence-three-boundary"]` /
 `payloads["demote_knot:alt-fence-three-boundary"]`.
 
+**The same shape has a TRAILING half too, and it was down to one gap, not
+three (#2739).** The "exactly three places" sentence above scopes to the
+LEADING half only — `structural_move.rs` carries a second, TRAILING
+`needs_newline_after` shape at `move_stitch` (`structural_move.rs:666`),
+`promote_stitch_to_knot` (`:791`) and `demote_knot_to_stitch` (`:874`), and
+unlike the leading half its three sites are not uniform: `move_stitch`'s is
+**conditional** (skipped when the moved text already ends in `\n`, the
+insertion point is EOF, or the following byte is already `\n`), while
+`promote_stitch_to_knot`'s and `demote_knot_to_stitch`'s are both
+**unconditional**. Checked rather than assumed, driving all three against a
+new fixture built for the shape: `promote_stitch_to_knot`'s mock line has
+matched production's unconditional form since #2721, and
+`demote_knot_to_stitch`'s equivalent line was already exercised (green) by
+the pre-existing `demote_knot:alt-fence-knot` payload from #2706. Only
+`move_stitch`'s mock had no trailing-guard code at all. A new
+`NO_TRAILING_NEWLINE` fixture (`"=== one ===\nFirst.\n=== two
+===\nSecond.\n= b\nB."`, no trailing newline — no existing fixture had this
+shape, the same reason #2730's own gap above stayed invisible) drives
+`move_stitch`/`promote_stitch` end-to-end and pins the fix at
+`payloads["move_stitch:no-trailing-newline"]` /
+`payloads["promote_stitch:no-trailing-newline"]`.
+
 **The indented-FIRST-knot header answer, driven (#2706).** #2703 left one
 shape of this boundary undriven on both sides: an indented header with no
 PRECEDING symbol for the "glue the indent to the predecessor's trailing

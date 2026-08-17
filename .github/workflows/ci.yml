@@ -742,8 +742,18 @@ jobs:
       # only checks the workflow's step ORDER, not that the install
       # actually linked correctly at that order.
       - run: pnpm run check:wasm-pkg
+      - name: Typecheck (@brink-lang/editor)
+        run: pnpm --filter @brink-lang/editor typecheck
       - name: Typecheck
         run: pnpm --filter @brink-lang/studio typecheck
+      # ink-editor's own suite (#2559) — runs before the studio suite so a
+      # regression in the published editor package is attributed to the
+      # right package's CI step rather than surfacing only as a studio
+      # failure. Its vitest.config.ts needs no wasm alias (see that file's
+      # header comment), so this step needs no built wasm AT TEST-RUN TIME;
+      # the workspace install in this job still does (#2479).
+      - name: Unit tests (vitest, @brink-lang/editor)
+        run: pnpm --filter @brink-lang/editor test
       - name: Unit tests (vitest)
         run: pnpm --filter @brink-lang/studio test
       - name: Unit tests (vitest, @brink-lang/web wrapper)

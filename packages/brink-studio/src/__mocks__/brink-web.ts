@@ -1589,7 +1589,8 @@ export class EditorSession {
     }
     const plan = planKnots(source, knots);
     const [moved] = plan.find((p) => p.name === srcKnot)!.stitches.splice(si, 1);
-    const destPlan = plan.find((p) => p.name === destKnot)!;
+    const destKi = plan.findIndex((p) => p.name === destKnot);
+    const destPlan = plan[destKi]!;
     // #2730 (follow-up from #2725's review): mirrors `structural_move::
     // move_stitch`'s own `needs_newline_before` guard (`insert_offset > 0 &&
     // source.as_bytes().get(insert_offset - 1) != Some(&b'\n')`) — a
@@ -1610,6 +1611,30 @@ export class EditorSession {
     const destTail = destPlan.head + destPlan.stitches.map((s) => s.text).join("");
     let movedText = moved!.text;
     if (!destTail.endsWith("\n")) movedText = `\n${movedText}`;
+    // #2739 (the TRAILING half of #2730 — that fixture named only the LEADING
+    // guard above): mirrors `structural_move::move_stitch`'s own
+    // `needs_newline_after` guard (`crates/internal/brink-ide/src/
+    // structural_move.rs:653-655` — true when the moved text already ends in
+    // `\n`, OR the insertion point is EOF, OR the byte right after it is
+    // already `\n`), a separating newline AFTER the moved stitch, needed when
+    // NEITHER the moved text nor whatever follows the destination already
+    // supplies one. This guard had NO mock counterpart at all (not merely a
+    // wrong condition) until now — `move_stitch` into `one` on
+    // `NO_TRAILING_NEWLINE` (whose stitch `b` is the file's own last byte,
+    // with no `\n` to it) glued the moved stitch directly onto the following
+    // knot's header — `"...First.\nB.=== two ===..."` — where production
+    // separates them — `"...First.\n= b\nB.\n=== two ===..."`. `plan` is
+    // never reordered by this op (only its `.stitches` sub-arrays are), so
+    // `plan[destKi + 1]` is the SAME "whatever comes next" `renderKnots`
+    // concatenates onto here that production's `insert_offset` byte would
+    // read from in the original source; `undefined` means the destination is
+    // the file's last knot, mirroring `insert_offset >= source.len()`.
+    // Driven and confirmed via `move_stitch:no-trailing-newline` in
+    // `crates/brink-web/fixtures/refusal-shapes.json`.
+    const followingHead = plan[destKi + 1]?.head;
+    const needsNewlineAfter =
+      movedText.endsWith("\n") || followingHead === undefined || followingHead.startsWith("\n");
+    if (!needsNewlineAfter) movedText += "\n";
     destPlan.stitches.push({ name: moved!.name, text: movedText });
     const rendered = renderKnots(source, knots, plan);
     const oldQual = `${srcKnot}.${stitch}`;
