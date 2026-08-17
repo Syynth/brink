@@ -29,14 +29,24 @@
 //! `{expr: - val: …}` switch *case* values are compared with `==`, not
 //! evaluated for truthiness — neither the scrutinee nor the case values are
 //! condition positions, so a switch is only recursed into for nested bodies.
+//!
+//! A condition is reached at any expression depth a lambda literal can sit
+//! at — a VAR/CONST default, a temp initializer, an assignment, a return
+//! value, a divert/tunnel/thread-start argument, a content interpolation,
+//! or a condition expression itself can all hold a lambda whose own
+//! `|…| { … }` block body has a condition; [`walk_expr_for_lambdas`] finds
+//! every such lambda and hands its block statements to
+//! [`check_block_stmt`], the same check a top-level knot/stitch body's
+//! statements get (issue #2764, mirroring `protocols.rs`'s identical
+//! lambda-descent fix for E113, issue #1773).
 
 use std::collections::BTreeMap;
 
 use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, Diagnostic,
-    DiagnosticCode, ElseBranch, Expr, FileId, HirFile, IfStmt, PrefixOp, ResolutionMap, Stmt,
-    SymbolIndex, SymbolKind,
+    DiagnosticCode, ElseBranch, Expr, FileId, HirFile, IfStmt, LambdaBody, PrefixOp, ResolutionMap,
+    Stmt, StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -61,6 +71,27 @@ pub(crate) fn check(
     let mut out = Vec::new();
     for &(file, hir) in files {
         let resolution_by_range = resolution_index(resolutions, file);
+        // File-scope `VAR`/`CONST` initializers (issue #2764): no enclosing
+        // knot/stitch here, so no `locals` — mirrors `protocols.rs`'s own
+        // VAR/CONST walk. A declaration's own value is never itself a
+        // condition position, but it can hold a lambda literal whose own
+        // block body is one (the issue's own repro shape:
+        // `var f = |x| { if x { 0 } else { 1 } }`) — `check` never looked at
+        // `hir.variables`/`hir.constants` at all before this fix, so this
+        // position was unreachable regardless of lambda-body descent.
+        let file_scope_ctx = MistypeCtx {
+            index,
+            globals: &globals,
+            signatures: &inference.signatures,
+            resolution_by_range: &resolution_by_range,
+            locals: None,
+        };
+        for var in &hir.variables {
+            walk_expr_for_lambdas(&var.value, file, &file_scope_ctx, &mut out);
+        }
+        for cst in &hir.constants {
+            walk_expr_for_lambdas(&cst.value, file, &file_scope_ctx, &mut out);
+        }
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             let knot_locals = annotations::def_id_for(index, file, kind, &knot.name.text)
@@ -120,22 +151,55 @@ fn check_stmt(stmt: &Stmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Dia
         // truthiness to decide when to wake — condition position.
         Stmt::Await(a) => {
             if let Some(cond) = &a.condition {
+                walk_expr_for_lambdas(cond, file, ctx, out);
                 check_condition(cond, a.ptr.text_range(), file, ctx, out);
             }
         }
-        Stmt::Divert(_)
-        | Stmt::TunnelCall(_)
-        | Stmt::ThreadStart(_)
-        | Stmt::TempDecl(_)
-        | Stmt::Assignment(_)
-        | Stmt::Return(_)
-        | Stmt::ExprStmt(_)
-        | Stmt::EndOfLine
+        // Issue #2764 (same family as #1773/#2762): none of these positions
+        // is itself a condition, but each can hold a lambda literal whose
+        // own block body has one — `check_stmt`/`check_block_stmt` never
+        // inspected any `Expr` at all before this fix, so a condition
+        // inside a lambda's own body was unreachable regardless of where
+        // the lambda sat.
+        Stmt::Divert(d) => {
+            for arg in &d.target.args {
+                walk_expr_for_lambdas(arg, file, ctx, out);
+            }
+        }
+        Stmt::TunnelCall(tc) => {
+            for target in &tc.targets {
+                for arg in &target.args {
+                    walk_expr_for_lambdas(arg, file, ctx, out);
+                }
+            }
+        }
+        Stmt::ThreadStart(ts) => {
+            for arg in &ts.target.args {
+                walk_expr_for_lambdas(arg, file, ctx, out);
+            }
+        }
+        Stmt::TempDecl(t) => {
+            if let Some(v) = &t.value {
+                walk_expr_for_lambdas(v, file, ctx, out);
+            }
+        }
+        Stmt::Assignment(a) => {
+            walk_expr_for_lambdas(&a.target, file, ctx, out);
+            walk_expr_for_lambdas(&a.value, file, ctx, out);
+        }
+        Stmt::Return(r) => {
+            if let Some(v) = &r.value {
+                walk_expr_for_lambdas(v, file, ctx, out);
+            }
+            for arg in &r.onwards_args {
+                walk_expr_for_lambdas(arg, file, ctx, out);
+            }
+        }
         // Issue #2108: an attach handler's call is not a condition
         // position — no `Option[T]` truthiness check applies here, same as
-        // `ExprStmt`.
-        | Stmt::AttachElement(_)
-        | Stmt::EndElementRun => {}
+        // `ExprStmt`. Still walked for an embedded lambda's own body.
+        Stmt::ExprStmt(e) | Stmt::AttachElement(e) => walk_expr_for_lambdas(e, file, ctx, out),
+        Stmt::EndOfLine | Stmt::EndElementRun => {}
     }
 }
 
@@ -167,10 +231,10 @@ fn check_content_part(
                 check_content_part(child, file, ctx, out);
             }
         }
-        ContentPart::Interpolation(_)
-        | ContentPart::Text(_)
-        | ContentPart::Glue
-        | ContentPart::Spring => {}
+        // Issue #2764: not itself a condition position, but can hold a
+        // lambda whose own block body has one.
+        ContentPart::Interpolation(e) => walk_expr_for_lambdas(e, file, ctx, out),
+        ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
     }
 }
 
@@ -252,21 +316,156 @@ fn check_block_stmt(bs: &BlockStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mu
             }
         }
         BlockStmt::For(f) => {
+            walk_expr_for_lambdas(&f.iterable, file, ctx, out);
             for s in &f.body {
                 check_block_stmt(s, file, ctx, out);
             }
         }
         BlockStmt::Await(a) => {
             if let Some(cond) = &a.condition {
+                walk_expr_for_lambdas(cond, file, ctx, out);
                 check_condition(cond, a.ptr.text_range(), file, ctx, out);
             }
         }
-        BlockStmt::TempDecl(_)
-        | BlockStmt::Assignment(_)
-        | BlockStmt::Return(_)
-        | BlockStmt::ExprStmt(_)
-        | BlockStmt::Break(_)
-        | BlockStmt::Continue(_) => {}
+        // Issue #2764: mirrors `check_stmt`'s identical wiring — none of
+        // these is a condition position itself, but each can hold a lambda
+        // whose own block body has one.
+        BlockStmt::TempDecl(t) => {
+            if let Some(v) = &t.value {
+                walk_expr_for_lambdas(v, file, ctx, out);
+            }
+        }
+        BlockStmt::Assignment(a) => {
+            walk_expr_for_lambdas(&a.target, file, ctx, out);
+            walk_expr_for_lambdas(&a.value, file, ctx, out);
+        }
+        BlockStmt::Return(r) => {
+            if let Some(v) = &r.value {
+                walk_expr_for_lambdas(v, file, ctx, out);
+            }
+            for arg in &r.onwards_args {
+                walk_expr_for_lambdas(arg, file, ctx, out);
+            }
+        }
+        BlockStmt::ExprStmt(e) => walk_expr_for_lambdas(e, file, ctx, out),
+        BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
+    }
+}
+
+/// Issue #2764 (same family as #1773/#2762's `protocols.rs::walk_expr_for_lambdas`):
+/// find every `Expr::Lambda` reachable from `expr` — including nested
+/// arbitrarily deep inside another expression, and nested inside a
+/// lambda's *own* body — and, for each one found whose body is a braced
+/// block, check that block's own statements for Option-truthiness
+/// conditions the exact same way [`check_block_stmt`] checks a top-level
+/// knot/stitch body's statements. A single-expression lambda body
+/// (`|x| x.next()`) has no statement to check, only further nested
+/// expressions to search — handled via the plain recursive walk below via
+/// `LambdaBody::Expr`'s own arm, not `LambdaBody::Block`'s.
+///
+/// Deliberately does not use `LambdaBody::all_exprs()` for the `Block`
+/// case: that helper flattens an `if`/`while` condition down to a bare
+/// `Expr`, losing the "this is a condition position" tag `check_block_stmt`
+/// needs to route it through [`check_condition_or_binding`] rather than
+/// treating it as an arbitrary expression. Handing the block's real
+/// `BlockStmt`s to `check_block_stmt` keeps that position information —
+/// and, since `check_block_stmt` now itself calls back into this function
+/// for every expr-bearing position it visits (the wiring immediately
+/// above), a lambda nested inside *this* lambda's own body is found too,
+/// without a second, parallel recursion.
+///
+/// Mirrors the shape of `protocols.rs`'s own walker (and `hir::visit`'s
+/// `walk_expr`) — every `Expr` variant that can hold a nested expression is
+/// descended; the only ones skipped (`Int`/`Float`/`Bool`/`Null`/`Path`/
+/// `DivertTarget`/`ListLiteral`) are leaves that can never contain a lambda
+/// literal.
+fn walk_expr_for_lambdas(
+    expr: &Expr,
+    file: FileId,
+    ctx: &MistypeCtx<'_>,
+    out: &mut Vec<Diagnostic>,
+) {
+    match expr {
+        Expr::Lambda(l) => match &l.body {
+            LambdaBody::Block { stmts, tail } => {
+                for bs in stmts {
+                    check_block_stmt(bs, file, ctx, out);
+                }
+                if let Some(t) = tail {
+                    walk_expr_for_lambdas(t, file, ctx, out);
+                }
+            }
+            LambdaBody::Expr(e) => walk_expr_for_lambdas(e, file, ctx, out),
+        },
+        Expr::Call(_path, args) => {
+            for arg in args {
+                walk_expr_for_lambdas(arg, file, ctx, out);
+            }
+        }
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => {
+            walk_expr_for_lambdas(inner, file, ctx, out);
+        }
+        Expr::Infix(ie) => {
+            walk_expr_for_lambdas(&ie.lhs, file, ctx, out);
+            walk_expr_for_lambdas(&ie.rhs, file, ctx, out);
+        }
+        Expr::String(s) => {
+            for part in &s.parts {
+                if let StringPart::Interpolation(e) = part {
+                    walk_expr_for_lambdas(e, file, ctx, out);
+                }
+            }
+        }
+        Expr::ArrayLiteral(a) => {
+            for e in &a.elements {
+                walk_expr_for_lambdas(e, file, ctx, out);
+            }
+        }
+        Expr::MapLiteral(m) => {
+            for (k, v) in &m.entries {
+                walk_expr_for_lambdas(k, file, ctx, out);
+                walk_expr_for_lambdas(v, file, ctx, out);
+            }
+        }
+        Expr::Index(idx) => {
+            walk_expr_for_lambdas(&idx.base, file, ctx, out);
+            walk_expr_for_lambdas(&idx.index, file, ctx, out);
+        }
+        Expr::StructLiteral(sl) => {
+            for (_name, val) in &sl.fields {
+                walk_expr_for_lambdas(val, file, ctx, out);
+            }
+        }
+        Expr::FieldAccess(fa) => walk_expr_for_lambdas(&fa.base, file, ctx, out),
+        // T1c `#fn(target, args…)`: the target is a static path, not an
+        // `Expr` child (same shape as `Call`'s path) — only bound args
+        // descend.
+        Expr::FnLiteral(fl) => {
+            for arg in &fl.args {
+                walk_expr_for_lambdas(arg, file, ctx, out);
+            }
+        }
+        Expr::RefArg(ra) => walk_expr_for_lambdas(&ra.operand, file, ctx, out),
+        Expr::Range(r) => {
+            walk_expr_for_lambdas(&r.start, file, ctx, out);
+            walk_expr_for_lambdas(&r.end, file, ctx, out);
+        }
+        // Block-capture fragment (issue #1839): not constructible from
+        // surface syntax, but it embeds real `Stmt`s the ordinary weave
+        // walk already knows how to visit — reuse `check_stmt` rather than
+        // growing a second statement vocabulary here.
+        Expr::Fragment(stmts) => {
+            for s in stmts {
+                check_stmt(s, file, ctx, out);
+            }
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Path(_)
+        | Expr::DivertTarget(_)
+        | Expr::ListLiteral(_) => {}
     }
 }
 
@@ -307,6 +506,11 @@ fn check_condition_or_binding(
     ctx: &MistypeCtx<'_>,
     out: &mut Vec<Diagnostic>,
 ) {
+    // Issue #2764: every condition position funnels through here (or
+    // through the two `Await` call sites, which walk it themselves) — one
+    // walk finds a lambda embedded *within* the condition expression itself
+    // (independent of the binding/non-binding classification below).
+    walk_expr_for_lambdas(cond, file, ctx, out);
     match binding {
         Some(_) => check_binding_condition(cond, fallback_range, file, ctx, out),
         None => check_condition(cond, fallback_range, file, ctx, out),
@@ -556,5 +760,77 @@ mod tests {
         let diags = check_all("=== main ===\n~ temp r = find(\"ab\", \"b\")\n~ await r\n-> END\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    fn check_all_native(src: &str) -> Vec<Diagnostic> {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    /// Issue #2764: same family as #1773/#2762, in this file's own E116
+    /// walk — an `if` condition on an `Option[T]`-returning intrinsic call
+    /// sitting inside a lambda's own block body was never reached, unlike
+    /// the identical condition at top level. Positive control alongside
+    /// [`lambda_body_condition_on_option_is_e116`]/
+    /// [`var_lambda_body_condition_on_option_is_e116`]: the top-level
+    /// version must keep firing exactly as before.
+    #[test]
+    fn top_level_condition_on_option_is_e116_native() {
+        let diags = check_all_native(
+            "fn heal(x) {\n  if find(\"ab\", \"b\") {\n    return 0;\n  } else {\n    return 1;\n  }\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// The lambda sits inside a knot/fn body's own `~ temp`-equivalent
+    /// (`let`) — reached via [`check_block_stmt`]'s `TempDecl` arm now
+    /// descending into the value expression to find the lambda, then
+    /// checking its block body's own statements the same way a top-level
+    /// body is checked.
+    #[test]
+    fn lambda_body_condition_on_option_is_e116() {
+        let diags = check_all_native(
+            "fn heal(x) {\n  let f = |y| {\n    if find(\"ab\", \"b\") {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return 0;\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// The issue's own literal repro shape: a *file-scope* `var`'s lambda
+    /// default. `check` didn't even walk `hir.variables`/`hir.constants`
+    /// before this fix — the lambda-descent fix alone doesn't reach this
+    /// position without also driving `walk_expr_for_lambdas` over each
+    /// declaration's initializer.
+    #[test]
+    fn var_lambda_body_condition_on_option_is_e116() {
+        let diags = check_all_native(
+            "var f = |y| {\n  if find(\"ab\", \"b\") {\n    0\n  } else {\n    1\n  }\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Negative control (mirrors `int_truthiness_idiom_stays_clean`): a
+    /// non-Option condition inside a lambda body must not start firing just
+    /// because the walk now reaches it.
+    #[test]
+    fn lambda_body_non_option_condition_stays_clean() {
+        let diags = check_all_native(
+            "fn heal(x) {\n  let f = |y| {\n    if y {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return 0;\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
     }
 }
