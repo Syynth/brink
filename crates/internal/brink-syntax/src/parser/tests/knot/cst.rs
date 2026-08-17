@@ -856,6 +856,165 @@ fn stitch_multi_line_body() {
     );
 }
 
+// ── C2. `at_stitch`/`stitch_header` whitespace-around-`=` regression (#2695) ──
+//
+// Guards the doc-comment claims fixed in #2695: whitespace after `=` is
+// optional (not required), and the `!("=" | ">")` lookahead is
+// trivia-skipping, so inserting whitespace between `=` and the excluded
+// character does not rescue `=>`/`==` from exclusion. Corroborated by real
+// whitespace-free/leading-whitespace stitch headers already in the
+// `tests_github`/`tests_patched` corpus (see `knot.rs`'s `stitch_header` doc
+// comment for the specific files).
+
+/// `=c` — no whitespace at all between `=` and the identifier still parses
+/// as a stitch header.
+#[test]
+fn stitch_header_no_whitespace_after_eq() {
+    assert_equivalent(
+        parse("== k ==\n=c\nContent.\n"),
+        cst!(SOURCE_FILE {
+            KNOT_DEF {
+                KNOT_HEADER {
+                    IDENTIFIER
+                }
+                KNOT_BODY {
+                    STITCH_DEF {
+                        STITCH_HEADER {
+                            IDENTIFIER
+                        }
+                        STITCH_BODY {
+                            CONTENT_LINE {
+                                MIXED_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `   =d` — leading whitespace before `=` (indentation), no whitespace
+/// after it, still parses as a stitch header.
+#[test]
+fn stitch_header_leading_whitespace_before_eq() {
+    assert_equivalent(
+        parse("== k ==\n   =d\nContent.\n"),
+        cst!(SOURCE_FILE {
+            KNOT_DEF {
+                KNOT_HEADER {
+                    IDENTIFIER
+                }
+                KNOT_BODY {
+                    STITCH_DEF {
+                        STITCH_HEADER {
+                            IDENTIFIER
+                        }
+                        STITCH_BODY {
+                            CONTENT_LINE {
+                                MIXED_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `\t= h` — a tab before `=` and a single space after it still parses as
+/// a stitch header (whitespace after `=` is optional, not forbidden).
+#[test]
+fn stitch_header_tab_before_eq_space_after() {
+    assert_equivalent(
+        parse("== k ==\n\t= h\nContent.\n"),
+        cst!(SOURCE_FILE {
+            KNOT_DEF {
+                KNOT_HEADER {
+                    IDENTIFIER
+                }
+                KNOT_BODY {
+                    STITCH_DEF {
+                        STITCH_HEADER {
+                            IDENTIFIER
+                        }
+                        STITCH_BODY {
+                            CONTENT_LINE {
+                                MIXED_CONTENT {
+                                    TEXT
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `= > j` — whitespace inserted between `=` and `>` does NOT rescue it
+/// from the `at_stitch` exclusion; the lookahead is trivia-skipping, so
+/// this is excluded exactly like the tight `=>` form and falls through to
+/// plain content instead of a stitch header.
+#[test]
+fn stitch_header_excludes_whitespace_separated_divert_arrow() {
+    assert_equivalent(
+        parse("== k ==\n= > j\nContent.\n"),
+        cst!(SOURCE_FILE {
+            KNOT_DEF {
+                KNOT_HEADER {
+                    IDENTIFIER
+                }
+                KNOT_BODY {
+                    CONTENT_LINE {
+                        MIXED_CONTENT {
+                            TEXT
+                        }
+                    }
+                    CONTENT_LINE {
+                        MIXED_CONTENT {
+                            TEXT
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// `= = k` — whitespace inserted between the two `=` does NOT rescue it
+/// from the `at_stitch` exclusion; excluded exactly like the tight `==`
+/// form and falls through to plain content instead of a stitch header.
+#[test]
+fn stitch_header_excludes_whitespace_separated_double_eq() {
+    assert_equivalent(
+        parse("== k ==\n= = k\nContent.\n"),
+        cst!(SOURCE_FILE {
+            KNOT_DEF {
+                KNOT_HEADER {
+                    IDENTIFIER
+                }
+                KNOT_BODY {
+                    CONTENT_LINE {
+                        MIXED_CONTENT {
+                            TEXT
+                        }
+                    }
+                    CONTENT_LINE {
+                        MIXED_CONTENT {
+                            TEXT
+                        }
+                    }
+                }
+            }
+        }),
+    );
+}
+
 // ── D. Knot body content ──────────────────────────────────────────
 
 /// Plain content line in knot body.
