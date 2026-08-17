@@ -130,13 +130,19 @@ export const PRUNED_DIRS = new Set([".git", "node_modules", "target", "dist", "d
  * `.mjs`/`.js`/`.mdx` are deliberately NOT in this list, not an oversight:
  * this file's own `STALE_TOKEN = "INLINE_WS+"` literal and
  * `check-grammar-drift.test.mjs`'s deliberately-unmarked planted fixtures
- * would both trip the guard the moment `.mjs` were scanned (verified:
- * scanning this file and its test as `.mjs` sources reports 4 and 7
- * unmarked occurrences respectively). If `.mjs`/`.js`/`.mdx` is ever added
- * here, exempt `scripts/check-grammar-drift*.mjs` by path first. No test
- * covers this extension-selection choice today.
+ * would both trip the guard the moment `.mjs` were scanned — measured, not
+ * just asserted, by check-grammar-drift.test.mjs's "SCANNED_EXTENSIONS"
+ * suite (#2741), which runs `checkFileForGrammarDrift` directly over each
+ * file's own text and asserts a NONZERO problem count. Deliberately not a
+ * fixed number: this comment used to claim "4 and 7" (measured once, at
+ * #2718/#2719 authoring time) and that exact count had already drifted —
+ * to 10 and 7 — by the time #2741 checked, because both counts move every
+ * time either file's own prose does, which any exact pin would fight on
+ * every unrelated edit to this very paragraph. If `.mjs`/`.js`/`.mdx` is
+ * ever added here, exempt `scripts/check-grammar-drift*.mjs` by path
+ * first.
  */
-const SCANNED_EXTENSIONS = [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"];
+export const SCANNED_EXTENSIONS = [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"];
 
 /**
  * ── Whitespace-primitive premise pin (#2728) ────────────────────────────
@@ -175,6 +181,24 @@ const SCANNED_EXTENSIONS = [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"];
  * `KNOWN_UNCOVERED_TRIVIA_PRIMITIVES`) rather than by this pin's census, so
  * either one turning required is still caught — just not through the same
  * mechanism as `skip_ws`.
+ *
+ * A further, DIFFERENT bound (#2741): this whole pin — the name-based
+ * census above AND its two named siblings — only sees required whitespace
+ * gated behind a dedicated function. Required whitespace written inline at
+ * a parser call site, with no dedicated function at all — e.g. a bare
+ * `if !trivia { self.error(...) }` sitting directly in the calling code
+ * rather than inside a named `expect_ws`-shaped helper — has no function
+ * name for any census to match, so it is invisible to this pin by
+ * construction. This is a known, accepted bound, not a bug in the pin. It
+ * is deliberately NOT covered by a test the way `KNOWN_UNCOVERED_TRIVIA_
+ * PRIMITIVES` is: that list names two REAL functions whose current bodies
+ * can be asserted zero-or-more against the live repo. An inline check with
+ * no dedicated function doesn't exist anywhere in the parser today — a
+ * test for it would have to plant synthetic prose and assert the census
+ * logic ignores it, which only proves the census wasn't asked to parse
+ * something it was never designed to see, and gives zero coverage of the
+ * real repo. Recorded here in prose because that is the honest state of
+ * the bound, not pinned by a test that would be theater.
  */
 
 /** Parser source directory whose census pins the "one primitive" premise. */
