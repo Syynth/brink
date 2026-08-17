@@ -66,6 +66,15 @@
 // Exported as pure functions over text so check-grammar-drift.test.mjs can
 // drive them with synthetic planted-drift input; the CLI at the bottom
 // applies them to the real repo.
+//
+// #2728 follow-up: everything above rests on a premise stated only in prose
+// until now — "brink-syntax's parser has exactly ONE whitespace-consuming
+// primitive, `Parser::skip_ws`, matching zero-or-more". Nothing checked
+// that claim, so a future required-whitespace primitive (a `skip_ws_
+// required`, an `expect_ws`) would silently invalidate this guard: it would
+// keep banning `INLINE_WS+` comments that had become TRUE, with no signal
+// the founding premise had changed. See "Whitespace-primitive premise pin"
+// below for the mechanical check that pins it.
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -126,6 +135,176 @@ export const PRUNED_DIRS = new Set([".git", "node_modules", "target", "dist", "d
  * covers this extension-selection choice today.
  */
 const SCANNED_EXTENSIONS = [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"];
+
+/**
+ * ── Whitespace-primitive premise pin (#2728) ────────────────────────────
+ *
+ * This guard's entire `STALE_TOKEN` ban rests on a premise: `brink-syntax`'s
+ * parser exposes exactly ONE whitespace-consuming primitive —
+ * `Parser::skip_ws` (`crates/internal/brink-syntax/src/parser/mod.rs`) —
+ * and it matches ZERO-OR-MORE. That premise is what makes `INLINE_WS+`
+ * (one-or-more) always a lie about current parser behavior. Add a second
+ * primitive (a `skip_ws_required`, an `expect_ws`) and the ban silently
+ * becomes wrong: it would keep flagging `INLINE_WS+` comments that had
+ * become TRUE.
+ *
+ * `censusWhitespacePrimitives` pins it mechanically: a grep-based census of
+ * every function under the parser's PRODUCTION sources (files directly in
+ * `PARSER_SRC_DIR`, excluding its `tests/` subtree — a test helper named
+ * `*_ws*` changes nothing about what the parser itself does) whose
+ * snake_case name has a `ws` or `whitespace` segment. `checkGrammarDrift`
+ * folds `checkWhitespacePrimitivePremise`'s verdict into its own — a
+ * premise violation is reported as a PROBLEM, not a silent pass, so both
+ * `pnpm check:grammar-drift` and the fixture test in
+ * check-grammar-drift.test.mjs go red the moment a second primitive
+ * appears, the sole primitive is renamed, or it stops matching zero-or-more
+ * (its body loses its `while` loop, or starts calling `.error(...)` when
+ * whitespace is absent — the shape a *required* primitive would have).
+ */
+
+/** Parser source directory whose census pins the "one primitive" premise. */
+export const PARSER_SRC_DIR = "crates/internal/brink-syntax/src/parser";
+
+/** The one primitive this guard's premise names. */
+export const EXPECTED_WHITESPACE_PRIMITIVE = "skip_ws";
+
+const FN_DEF_RE = /\bfn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)[^{;]*\{/g;
+
+/**
+ * Whether a snake_case function name has `ws` or `whitespace` as one of its
+ * underscore-separated segments — not merely a substring, which would also
+ * match an unrelated name like a hypothetical `rows_seen`.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+function nameHasWhitespaceSegment(name) {
+  const segments = name.split("_");
+  return segments.includes("ws") || segments.includes("whitespace");
+}
+
+/**
+ * Given the index of an opening `{`, return the text up to and including
+ * its matching `}`, via brace-depth counting. Good enough for Rust function
+ * bodies with no unbalanced `{`/`}` inside string/char literals — true of
+ * every whitespace-named function in this parser today.
+ *
+ * @param {string} text
+ * @param {number} openBraceIndex
+ * @returns {string}
+ */
+function extractBracedBody(text, openBraceIndex) {
+  let depth = 0;
+  for (let i = openBraceIndex; i < text.length; i += 1) {
+    if (text[i] === "{") depth += 1;
+    else if (text[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openBraceIndex, i + 1);
+    }
+  }
+  return text.slice(openBraceIndex);
+}
+
+/**
+ * Repo-relative `.rs` files directly under `PARSER_SRC_DIR` — its `tests/`
+ * subtree is excluded on purpose, since a test helper's name says nothing
+ * about what the parser itself does.
+ *
+ * @param {string} [repoRoot]
+ * @returns {string[]} sorted, repo-relative paths
+ */
+export function discoverParserSourceFiles(repoRoot = REPO_ROOT) {
+  const dir = join(repoRoot, PARSER_SRC_DIR);
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".rs"))
+    .map((entry) => `${PARSER_SRC_DIR}/${entry.name}`)
+    .sort();
+}
+
+/**
+ * Find every function definition in `text` whose name census-matches as a
+ * whitespace primitive, along with its brace-matched body.
+ *
+ * @param {string} text
+ * @returns {{name: string, body: string}[]}
+ */
+export function censusWhitespacePrimitivesInText(text) {
+  const found = [];
+  for (const match of text.matchAll(FN_DEF_RE)) {
+    const name = match[1];
+    if (!nameHasWhitespaceSegment(name)) continue;
+    const braceStart = match.index + match[0].length - 1; // index of the `{`
+    found.push({ name, body: extractBracedBody(text, braceStart) });
+  }
+  return found;
+}
+
+/**
+ * Census every whitespace-primitive-named function across the parser's
+ * production sources.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{name: string, body: string, path: string}[]}
+ */
+export function censusWhitespacePrimitives(repoRoot = REPO_ROOT) {
+  const found = [];
+  for (const path of discoverParserSourceFiles(repoRoot)) {
+    const text = readFileSync(join(repoRoot, path), "utf8");
+    for (const entry of censusWhitespacePrimitivesInText(text)) {
+      found.push({ ...entry, path });
+    }
+  }
+  return found;
+}
+
+/**
+ * Check the "exactly one, zero-or-more whitespace primitive" premise this
+ * guard's `STALE_TOKEN` ban rests on.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{ok: boolean, problems: string[]}}
+ */
+export function checkWhitespacePrimitivePremise(repoRoot = REPO_ROOT) {
+  const census = censusWhitespacePrimitives(repoRoot);
+  const problems = [];
+  const reexamine =
+    "re-examine scripts/check-grammar-drift.mjs's premise (see its header, " +
+    '"Whitespace-primitive premise pin") before trusting this guard\'s INLINE_WS+ ban.';
+
+  if (census.length !== 1) {
+    const names = census.map((c) => `${c.name} (${c.path})`).join(", ") || "none found";
+    problems.push(
+      `PREMISE VIOLATION: expected exactly one whitespace-consuming primitive in ${PARSER_SRC_DIR} ` +
+        `(this guard assumes \`Parser::${EXPECTED_WHITESPACE_PRIMITIVE}\` is the ONLY one, matching ` +
+        `zero-or-more), but found ${census.length}: ${names}. A second whitespace primitive can make a ` +
+        `previously-stale \`INLINE_WS+\` grammar-comment quote TRUE again — ${reexamine}`,
+    );
+  } else if (census[0].name !== EXPECTED_WHITESPACE_PRIMITIVE) {
+    problems.push(
+      `PREMISE VIOLATION: the sole whitespace-consuming primitive in ${PARSER_SRC_DIR} is now ` +
+        `\`${census[0].name}\` (${census[0].path}), not \`${EXPECTED_WHITESPACE_PRIMITIVE}\` — ${reexamine}`,
+    );
+  } else if (!/\bwhile\b/.test(census[0].body)) {
+    problems.push(
+      `PREMISE VIOLATION: \`Parser::${EXPECTED_WHITESPACE_PRIMITIVE}\` (${census[0].path}) no longer has ` +
+        `a \`while\`-loop body, so it may no longer match zero-or-more — ${reexamine}`,
+    );
+  } else if (/\.error\s*\(/.test(census[0].body)) {
+    problems.push(
+      `PREMISE VIOLATION: \`Parser::${EXPECTED_WHITESPACE_PRIMITIVE}\` (${census[0].path}) now calls ` +
+        `\`.error(...)\` in its body — the shape of REQUIRED (one-or-more) whitespace, not the zero-or-more ` +
+        `this guard assumes — ${reexamine}`,
+    );
+  }
+
+  return { ok: problems.length === 0, problems };
+}
 
 /**
  * Strip a line's leading comment marker (`///`, `//`, `/**`, ` * `) before
@@ -265,7 +444,7 @@ export function checkFileForGrammarDrift(path, text) {
  */
 export function checkGrammarDrift({ repoRoot = REPO_ROOT } = {}) {
   const files = discoverScanFiles(repoRoot);
-  const problems = [];
+  const problems = [...checkWhitespacePrimitivePremise(repoRoot).problems];
 
   for (const path of files) {
     const text = readFileSync(join(repoRoot, path), "utf8");
