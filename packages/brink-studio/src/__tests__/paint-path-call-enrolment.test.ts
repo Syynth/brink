@@ -90,6 +90,21 @@
  * guard's actual job: stop a recurrence of one of these exact shapes, not
  * police every wasm call in the codebase.
  *
+ * That narrowness has a known limitation for the fourth pattern: unlike the
+ * three `moveStitch`/`promoteStitch`/`demoteKnot` patterns, which match on
+ * the bare method name regardless of receiver,
+ * `session.renameFile`'s `/\.session\.renameFile\(/` is scoped to the
+ * literal `.session.` receiver so it does not also catch
+ * `project.renameFile(...)` (`applyRename`'s call into `ProjectSession`) or
+ * `this.provider.renameFile(...)` (host I/O). That precision is deliberate
+ * for today's code, but it means a future wrapper that reaches the same raw
+ * gated call through a differently-named receiver — e.g. a helper calling
+ * `this.handle.renameFile(...)` or `sess.renameFile(...)` on
+ * `EditorSessionHandle` — passes this guard silently, with no marker
+ * required and no failure. This scan cannot see through a rename or an
+ * indirection; only a receiver-agnostic pattern (or a control-flow-aware
+ * check) would catch that case.
+ *
  * ## What a false negative looks like
  *
  * This is a marker-presence scan, not a control-flow analysis — it cannot
