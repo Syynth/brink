@@ -2244,6 +2244,27 @@ mod tests {
              staged sidecar (#2687)"
         );
 
+        // #2699: the magic check above proves the staged file's FORMAT, not
+        // that it IS brink-cli or that it runs — PR #2691's own passing
+        // observation stood in GNU coreutils' `true` for a real brink-cli,
+        // and that would satisfy the magic check exactly as a genuine
+        // wrong-build binary would. A `--version` smoke check closes that
+        // gap for the one case it is safe to attempt: the staged triple
+        // matching the triple actually running the check.
+        assert!(
+            assert_script.contains("--version"),
+            "assert-real-sidecar.mjs should run a `--version` smoke check against the \
+             staged sidecar, in addition to the magic-bytes check (#2699) — the magic check \
+             alone proves the file's FORMAT, not that it is brink-cli or that it runs"
+        );
+        assert!(
+            assert_script.contains("looksLikeBrinkCliVersionOutput"),
+            "assert-real-sidecar.mjs's --version smoke check should verify the PRINTED \
+             OUTPUT identifies as brink-cli, not just the exit code (#2699) — GNU coreutils' \
+             `true` (PR #2691's own stand-in for brink-cli) also exits 0 on `--version`, so \
+             an exit-code-only check would catch nothing new"
+        );
+
         // `bundle.active` turning this on is explicitly D3 scope (#2631's
         // own instruction), not this fix's — this assertion exists to keep
         // the two from getting conflated by a later, unrelated edit to this
