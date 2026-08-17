@@ -1,10 +1,12 @@
 /**
  * Studio-owned modal chrome for argument-widget editors (argument-widget-spec
- * §1 / §6.4). A full-overlay alternative to the popover, for heavy host editors
+ * §1 / §6 item 2 "Chrome ownership"). A full-overlay alternative to the popover, for heavy host editors
  * (the map-editor case) declared with `surface: "modal"`. A backdrop centers the
  * panel; Escape or a backdrop click dismisses. The widget fills the panel; the
  * chrome owns placement + dismissal.
  */
+
+import { registerDismissible } from "./dismiss-registry.js";
 
 export interface ModalHandle {
   close(): void;
@@ -33,10 +35,15 @@ export function openModal(
   render(panel);
 
   let closed = false;
+  // Global Escape safety net (#279) — a second, independent registration
+  // alongside the modal's own Escape listener below (see dismiss-registry.ts).
+  const unregisterDismiss = registerDismissible(() => close());
+
   const close = (): void => {
     if (closed) return;
     closed = true;
     document.removeEventListener("keydown", onKeyDown, true);
+    unregisterDismiss();
     backdrop.remove();
     onClose();
   };

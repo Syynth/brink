@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { DocumentSymbol, FileOutline } from "@brink/wasm-types";
+import { registerDismissible } from "@brink/studio-shell";
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -76,15 +77,25 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
   const menuRef = useRef<HTMLDivElement>(null);
   const [submenuFor, setSubmenuFor] = useState<string | null>(null);
 
-  // Close on click-outside or Escape
+  // Close on click-outside or Escape. Capture-phase, matching Overlay's
+  // dismiss contract (docs/studio-shell-spec.md §7.7.3) — this menu predates
+  // that primitive and used to listen on the bubble phase instead, which let
+  // any inner element's `stopPropagation()` (a submenu item, a nested
+  // interactive widget) silently defeat BOTH Escape and outside-dismiss at
+  // once, since they shared a single un-capturing pair of listeners. That
+  // was exactly the shape of #279's stuck menu: capture-phase listeners run
+  // before any bubble-phase `stopPropagation()` can block them.
   useEffect(() => {
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
+    const handlePointerDown = (e: PointerEvent) => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (menuRef.current?.contains(target)) return;
+      onClose();
     };
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      onClose();
     };
     // The menu is fixed-positioned at the click coords, so a page scroll / resize
     // / focus loss would strand it — close on those. Use a *non-capturing*
@@ -92,19 +103,25 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
     // also fires on inner-element scrolls (e.g. CodeMirror's scroller emits one
     // on right-click), which would dismiss the menu the instant it opens.
     const close = () => onClose();
-    document.addEventListener("mousedown", handleClick);
-    document.addEventListener("keydown", handleKey);
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKey, true);
     window.addEventListener("scroll", close);
     window.addEventListener("resize", close);
     window.addEventListener("blur", close);
     return () => {
-      document.removeEventListener("mousedown", handleClick);
-      document.removeEventListener("keydown", handleKey);
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKey, true);
       window.removeEventListener("scroll", close);
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
     };
   }, [onClose]);
+
+  // Global Escape safety net (#279) — registered in a SEPARATE, minimal
+  // effect from the listener logic above, so a bug in that logic (or a
+  // re-render that orphans it) can't take this registration down with it.
+  // See dismiss-registry.ts.
+  useEffect(() => registerDismissible(onClose), [onClose]);
 
   const items: MenuItem[] = buildItems(target, outline, onAction);
 

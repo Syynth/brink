@@ -264,6 +264,16 @@ form affordance at `name_span`, and on invoke opens the editor / composes the fo
    keeps the source line studio-owned and styling-bounded.
 2. **Chrome ownership — DECIDED: studio owns the chrome, host fills the body.** Uniform positioning,
    focus management, esc/click-outside, consistent apply/cancel; the host writes only its domain UI.
+   The popover (`packages/ink-editor/src/widget-popover.ts`) and modal
+   (`packages/ink-editor/src/widget-modal.ts`) chrome are DOM-level, not
+   `Overlay`-hosted (the anchor is a CodeMirror decoration living in plain
+   editor DOM), so each owns its own `document`-level capture-phase
+   Escape/outside-pointerdown listeners directly — matching `Overlay`'s
+   contract without inheriting it (`docs/studio-shell-spec.md` §7.7.3). Both
+   also register with the global dismiss safety net (`registerDismissible`,
+   `packages/ink-editor/src/dismiss-registry.ts`, #279): resilience against
+   their own listener being orphaned by a re-render/error while the chrome
+   stays mounted, independent of the per-instance listeners above.
 3. **Seam shape — DECIDED: mount-callback (`(ctx, host, container) => teardown`)** for the editor, so
    the host isn't tied to the studio's React instance. (Inline is data-only per fork 1.)
 4. **Surface selection — DECIDED: declared in the manifest** (`surface: "popover" | "modal"`); the

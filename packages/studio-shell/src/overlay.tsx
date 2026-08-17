@@ -20,6 +20,7 @@ import {
   useFloating,
   type Placement,
 } from "@floating-ui/react-dom";
+import { registerDismissible } from "./dismiss-registry.js";
 
 export interface OverlayProps {
   open: boolean;
@@ -92,6 +93,15 @@ export function Overlay({
       document.removeEventListener("keydown", onKeyDown, true);
     };
   }, [open, onClose, anchored, anchor]);
+
+  // Global Escape safety net (#279) — registered in a SEPARATE, minimal
+  // effect from the dismiss-listener effect above, so a bug in that logic
+  // (or a re-render that orphans it while this overlay stays mounted) can't
+  // take this registration down with it. See dismiss-registry.ts.
+  useEffect(() => {
+    if (!open) return;
+    return registerDismissible(onClose);
+  }, [open, onClose]);
 
   if (!open) return null;
 
