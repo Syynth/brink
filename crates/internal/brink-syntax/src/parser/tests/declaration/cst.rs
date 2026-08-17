@@ -628,3 +628,125 @@ fn error_include_missing_filename() {
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
 }
+
+// ── C. `INLINE_WS+` notation-vs-code gap (#2695 sibling sweep, #2707) ──
+//
+// #2695 fixed `knot.rs`'s `stitch_header` doc comment, which claimed
+// `INLINE_WS+` (required whitespace) after `=` when the actual parser body
+// (`p.bump()` + `p.skip_ws()`) accepts zero-or-more. #2701's review found
+// the same shape, un-fixed, in every declaration parser in this file. Each
+// function's doc comment above now says `INLINE_WS*`; these tests drive
+// the boundary directly so a future comment/code drift fails a test
+// instead of waiting for another retro to notice.
+//
+// `INCLUDE` and `IMPORT`'s bare-list form can actually present a
+// whitespace-free input to their respective parse functions (the token
+// right after the keyword isn't an identifier character, so it doesn't
+// fuse with the keyword) — those two get a real "parses to the expected
+// node with zero whitespace" test. `EXTERNAL`/`VAR`/`CONST`/`LIST` (and
+// `IMPORT`'s qualified form) are always followed by a bare identifier,
+// which *does* fuse with the keyword at the lexer level (`EXTERNALfoo`
+// lexes as one `IDENT` token, never `KW_EXTERNAL` + `IDENT` — the same
+// shape as the `VARx` example in #2707's own issue body) — those get a
+// "confirms the fusion, so no declaration node is produced" pinning test
+// instead, which is the acceptance-surface fact the corrected comment
+// actually relies on.
+
+/// `INCLUDE../shared.ink` — no whitespace between `INCLUDE` and the file
+/// path. Reachable because `.` isn't an identifier character, so `INCLUDE`
+/// still lexes as `KW_INCLUDE` on its own.
+#[test]
+fn include_no_whitespace_after_keyword() {
+    assert_equivalent(
+        parse("INCLUDE../shared.ink\n"),
+        cst!(SOURCE_FILE {
+            INCLUDE_STMT {
+                FILE_PATH
+            }
+        }),
+    );
+}
+
+/// `IMPORT{a} FROM mod` — no whitespace between `IMPORT` and the bare-list
+/// form's opening `{`. Reachable because `{` isn't an identifier character.
+#[test]
+fn import_no_whitespace_after_keyword() {
+    assert_equivalent(
+        parse("IMPORT{a} FROM mod\n"),
+        cst!(SOURCE_FILE {
+            IMPORT_STMT {
+                IMPORT_LIST {
+                    IMPORT_ITEM {
+                        IDENTIFIER
+                    }
+                }
+                IMPORT_MODULE {
+                    IDENTIFIER
+                }
+            }
+        }),
+    );
+}
+
+/// `EXTERNALfoo(a)` — `EXTERNAL` and the following identifier are both
+/// scanned by the same identifier-character loop, so this lexes as a
+/// single `IDENT` token `EXTERNALfoo`, not `KW_EXTERNAL` + `IDENT`. No
+/// `EXTERNAL_DECL` is produced — the zero-whitespace form of
+/// `external_declaration`'s `INLINE_WS*` claim is real but unreachable.
+#[test]
+fn external_no_whitespace_keyword_fuses() {
+    let src = "EXTERNALfoo(a)\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::EXTERNAL_DECL),
+        "`EXTERNALfoo` should fuse into one identifier, not start an EXTERNAL_DECL"
+    );
+}
+
+/// `VARfoo = 5` — same keyword/identifier fusion as `EXTERNALfoo` above;
+/// no `VAR_DECL` is produced.
+#[test]
+fn var_no_whitespace_keyword_fuses() {
+    let src = "VARfoo = 5\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::VAR_DECL),
+        "`VARfoo` should fuse into one identifier, not start a VAR_DECL"
+    );
+}
+
+/// `CONSTfoo = 5` — same keyword/identifier fusion; no `CONST_DECL` is
+/// produced.
+#[test]
+fn const_no_whitespace_keyword_fuses() {
+    let src = "CONSTfoo = 5\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::CONST_DECL),
+        "`CONSTfoo` should fuse into one identifier, not start a CONST_DECL"
+    );
+}
+
+/// `LISTfoo = a` — same keyword/identifier fusion; no `LIST_DECL` is
+/// produced.
+#[test]
+fn list_no_whitespace_keyword_fuses() {
+    let src = "LISTfoo = a\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::LIST_DECL),
+        "`LISTfoo` should fuse into one identifier, not start a LIST_DECL"
+    );
+}
