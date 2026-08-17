@@ -141,13 +141,15 @@ interface RefusalFixture {
   sources: Record<string, string>;
   /** Each driven (op, input) pair's own `ok` flag and `error` (#2661). */
   acceptance: Record<string, { ok: boolean; error: string | null }>;
-  /** Header lines production's promote/demote rewrites produced (#2661). */
+  /** Header lines production's promote/demote rewrites produced (#2661,
+   *  extended to a four-`=` alt-fence knot by #2685 Gap 1). */
   headers: Record<string, string>;
   /**
-   * The symbols `file_symbols` reports for a named source — name/kind, nested
-   * (#2662). Pins the header RECOGNIZER itself rather than an op built on it,
-   * so a mock that resolves a knot for `delete_symbol` but hides it from the
-   * Binder is red here even when every acceptance flag agrees.
+   * The symbols `file_symbols` reports for a named source — name/kind/
+   * ownership-range, nested (#2662, ranges added #2685 Gap 3). Pins the
+   * header RECOGNIZER itself rather than an op built on it, so a mock that
+   * resolves a knot for `delete_symbol` but hides it from the Binder is red
+   * here even when every acceptance flag agrees.
    */
   outlines: Record<string, OutlineSymbol[]>;
   /**
@@ -157,6 +159,19 @@ interface RefusalFixture {
    * boundary, so a wrong answer is a successful op with the wrong content.
    */
   regions: Record<string, string>;
+  /**
+   * The same "successful op, possibly wrong content" half as `regions`, for
+   * `reorder_knots`/`reorder_stitches`/`move_stitch` generally (#2675 Gap C,
+   * #2685 Gap 3) — driven against the SAME alt-fenced/alt-stitched inputs
+   * `acceptance` already exercises for the `ok` flag alone.
+   */
+  payloads: Record<string, string>;
+  /**
+   * The exact call-site LINE `extract_to_function` chooses for a driven
+   * (op, input) pair — `{name()}` or `~ name()` (#2675 Gap A). The half
+   * `acceptance` cannot see: both forms answer `ok: true`.
+   */
+  call_forms: Record<string, string>;
   /**
    * Values a FRESH production session is seeded with (#2663). `active_file`
    * is `"main.ink"`; the mock seeded `""`, and `update_source` writes into
@@ -184,6 +199,16 @@ interface OutlineSymbol {
    * non-function knot's `detail` comes through as an explicit `null`.
    */
   detail: string | null;
+  /**
+   * The symbol's OWNERSHIP range (#2685 Gap 3) — what every one of the seven
+   * structural ops actually slices by, as opposed to `start`/`end` (the bare
+   * NAME span, pinned separately by the `#2670 review` offset tests further
+   * down). Absent from a top-level `VAR`/`CONST`/`LIST` decl's own
+   * `full_range`-equals-`range` contract only in the sense that they happen
+   * to be numerically equal there — the field always ships.
+   */
+  full_start: number;
+  full_end: number;
   children: OutlineSymbol[];
 }
 
@@ -281,6 +306,13 @@ const BLANK_BODY = "=== one ===\nFirst.\n\nLast.\n";
 
 /** A stitch carrying parameters, for the promote rewrite. */
 const PARAM_STITCH = "=== one ===\nFirst.\n= deal(n)\nD.\n";
+
+/**
+ * A stitch body carrying one INDENTED line — drives `extract_to_function`'s
+ * and `extract_to_knot`'s call-line indent and body dedent (#2675 Gap C
+ * review finding), byte-identical to the Rust driver's `INDENTED_LINE`.
+ */
+const INDENTED_LINE = "=== one ===\nFirst.\n= a\n  Indented.\n";
 
 /**
  * A function knot whose declared name is a single letter that also occurs as
@@ -966,6 +998,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
       ALT_STITCHES,
       BLANK_BODY,
       FUNCTION_KNOT,
+      INDENTED_LINE,
       KNOT_AND_FUNCTION,
       LEADING_BLANK_LINE,
       MAIN,
@@ -1002,8 +1035,10 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
  * `delete_symbol` and absent from the outline.
  *
  * `fixture.outlines` is production's own `file_symbols` output, harvested by
- * `driven_outlines()` in `crates/brink-web/src/editor_refactor.rs`. Names and
- * kinds only: ranges are pinned by the #2670 offset guards below.
+ * `driven_outlines()` in `crates/brink-web/src/editor_refactor.rs`. Name,
+ * kind, detail, AND the ownership range (`full_start`/`full_end`, #2685 Gap
+ * 3) — the NAME-only span (`start`/`end`) stays pinned separately by the
+ * `#2670 review` offset tests further down.
  */
 describe("the outline reports exactly the symbols production reports (#2662)", () => {
   const outlineSources: Record<string, string> = {
@@ -1011,6 +1046,12 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
     ALT_STITCHES,
     KNOT_AND_FUNCTION,
     TWO_KNOTS,
+    // #2685 Gap 2: the only source here whose top-level symbol is NOT a
+    // knot or stitch — `document_symbols` also reports `VAR`/`CONST`/`LIST`/
+    // `STRUCT`/`EXTERNAL` declarations, and `VAR_AND_KNOT` (declared BEFORE
+    // its knot, textually) is what pins that production puts every knot
+    // first regardless of source order.
+    VAR_AND_KNOT,
   };
 
   it("every driven outline has a source here", () => {
@@ -1018,10 +1059,12 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
   });
 
   /**
-   * Strip everything but the recognizer's answer: which symbols, nested, and
-   * whether each is a function knot (`detail`) — the field `KNOT_AND_FUNCTION`
-   * exists to control (review finding on #2662). Normalized to `null` rather
-   * than left `undefined`: the fixture is JSON, where an absent Rust `Option`
+   * Everything the recognizer answers: which symbols, nested, whether each is
+   * a function knot (`detail` — the field `KNOT_AND_FUNCTION` exists to
+   * control, review finding on #2662), and each one's OWNERSHIP range
+   * (`full_start`/`full_end`, #2685 Gap 3 — what the seven structural ops
+   * actually slice by). `detail` is normalized to `null` rather than left
+   * `undefined`: the fixture is JSON, where an absent Rust `Option`
    * serializes as an explicit `detail: null` (via `serde_json::Value`'s
    * `Index`, not `skip_serializing_if`, since `outline_shape` on the Rust
    * side always emits the key), and `toEqual` treats `undefined` and `null`
@@ -1032,6 +1075,8 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
       name: s.name,
       kind: s.kind,
       detail: s.detail ?? null,
+      full_start: s.full_start,
+      full_end: s.full_end,
       children: shape(s.children),
     }));
   }
@@ -1064,6 +1109,17 @@ describe("the outline reports exactly the symbols production reports (#2662)", (
  * stitch; one whose lookahead is `=(?![=>])` rather than `=(?!\s*[=>])` stops
  * at `= > y`. Only the right vocabulary reproduces production's string, so the
  * widening cannot be bought either way.
+ *
+ * NOT `delete_symbol:alt-stitch-indented` (review finding on #2685 Gap 3,
+ * checked rather than assumed): `parseOutline`'s `full_start` fix fixes every
+ * op built ON `parseOutline`'s ranges (the seven `dispatchSymbolAction` ops,
+ * pinned in `outlines`/`payloads`), but `delete_symbol` does not read those
+ * ranges at all — it is its own independent line-based scan that deletes the
+ * WHOLE physical line `  = b` sits on, indent included. Driven and confirmed:
+ * production's answer for this call keeps the two-space indent behind, glued
+ * onto the following line (`...C.\n  === two ===\n...`); the mock answers
+ * `...C.\n=== two ===\n...`. Pinning it here would pin a mismatch as a match.
+ * See the spec's "Not covered" note — this divergence stays open.
  */
 describe("a deleted stitch takes exactly production's region with it (#2684)", () => {
   const regionCalls: Record<string, () => string> = {
@@ -1172,12 +1228,154 @@ describe("promote/demote rewrite the header the way production does (#2661)", ()
     expect(parsed.new_source).toContain(fixture.headers["promote_stitch:parameterised"]);
   });
 
+  // #2685 Gap 1: `knotHeaderToStitch`'s `^=+`/`=+$` strip LOOKED
+  // fence-width-agnostic (it doesn't count `=` characters, just strips a run
+  // of them at each end), but #2682 drove no case past a plain `===` knot —
+  // "I read the regex and it looks right" was exactly #2662's own lesson.
+  // `three` in `ALT_FENCES` is fenced with four `=` and has no stitches of
+  // its own, so demoting it into `one` reaches the rewrite.
+  it("demoting a knot fenced with four `=` strips the fence regardless of width", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": ALT_FENCES }).demote_knot("main.ink", "three", "one"),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain(fixture.headers["demote_knot:alt-fence-knot"]);
+    expect(parsed.new_source).not.toContain("==== three ====");
+  });
+
   it("every driven header rewrite has a call site here", () => {
     expect(Object.keys(fixture.headers).sort()).toEqual([
+      "demote_knot:alt-fence-knot",
       "demote_knot:function-knot",
       "promote_stitch:parameterised",
     ]);
   });
+});
+
+/**
+ * `extract_to_function`'s call-FORM choice, the half `acceptance` cannot see
+ * (#2675 Gap A).
+ *
+ * Both cases here answer `ok: true` on both sides — `acceptance` only pins
+ * whether the op runs, not which of `{name()}` / `~ name()` it wrote. The
+ * value-expression case reuses `extract_to_function:accepted`'s own input
+ * (`MAIN`, selecting `"Hi."`, name `lifted`): that selection already IS a
+ * single-line value expression, so the divergence was sitting in an
+ * already-driven, already-green case the entire time.
+ */
+describe("extract_to_function chooses the call form production does (#2675 Gap A)", () => {
+  it("a single value-expression selection becomes an inline `{name()}` call", () => {
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": MAIN }).extract_to_function(
+        "main.ink",
+        MAIN.indexOf("Hi."),
+        MAIN.indexOf("Hi.") + 3,
+        "lifted",
+      ),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain(fixture.call_forms["extract_to_function:value-expression"]);
+    // And the mock's old always-statement answer is gone.
+    expect(parsed.new_source).not.toContain("~ lifted()");
+  });
+
+  it("a `~`-statement selection stays a statement `~ name()` call", () => {
+    const stmt = KNOT_AND_FUNCTION.indexOf('~ return "hi"');
+    const parsed = JSON.parse(
+      sessionWith({ "main.ink": KNOT_AND_FUNCTION }).extract_to_function(
+        "main.ink",
+        stmt,
+        stmt + '~ return "hi"'.length,
+        "lifted2",
+      ),
+    ) as { ok: boolean; new_source?: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.new_source).toContain(fixture.call_forms["extract_to_function:statement"]);
+    expect(parsed.new_source).not.toContain("{lifted2()}");
+  });
+
+  it("every driven call form has a call site here", () => {
+    expect(Object.keys(fixture.call_forms).sort()).toEqual([
+      "extract_to_function:statement",
+      "extract_to_function:value-expression",
+    ]);
+  });
+});
+
+/**
+ * `new_source` payload fidelity beyond the `ok`/`error` flag `acceptance`
+ * pins (#2675 Gap C, #2685 Gap 3).
+ *
+ * `reorder_knots:alt-fences` and `reorder_stitches:alt-stitches` are the
+ * SAME (op, input) pairs `acceptance` already exercises — reused here rather
+ * than new sources, so a fixed boundary shows up as newly-pinned content, not
+ * as a new case that could itself be wrong. Both touch an INDENTED header
+ * (`ALT_FENCES`'s `  ==== four ====`, `ALT_STITCHES`'s `  = b`), which is
+ * exactly where a symbol's ownership range can silently disagree with
+ * production: the #2670 offset guards below only cover the NAME span, so a
+ * mock whose `full_start`/`full_end` boundary was wrong passed both that
+ * guard and #2682's fixture (#2685 Gap 3's own framing). `move_stitch` is
+ * included too, on an unindented input, as the "ordinary case, no boundary
+ * quirk" control for a third op family.
+ *
+ * `extract_to_function:indented`/`extract_to_knot:indented` close a review
+ * finding on #2675 Gap C itself: `extract.rs`'s call-line indent
+ * (`plan.indent` prefixing `{name()}`/`~ name()`/`-> name ->`) and body
+ * dedent (`dedent(&plan.selected)`) were both live divergences that stayed
+ * invisible to `call_forms` — its `call_line` helper `.map(str::trim)`s
+ * before matching an indent bug off the call line, and it never reads the
+ * appended body at all.
+ */
+describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3)", () => {
+  const payloadCalls: Record<string, () => string> = {
+    "reorder_knots:alt-fences": () =>
+      sessionWith({ "main.ink": ALT_FENCES }).reorder_knots("main.ink", [
+        "five",
+        "four",
+        "three",
+        "two",
+        "one",
+      ]),
+    "reorder_stitches:alt-stitches": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).reorder_stitches("main.ink", "one", [
+        "b",
+        "c",
+        "a",
+      ]),
+    "move_stitch:accepted": () =>
+      sessionWith({ "main.ink": TWO_KNOTS }).move_stitch("main.ink", "one", "b", "two"),
+    // Review finding on #2675 Gap C: the call-line indent and body dedent
+    // extract.rs applies (extract.rs:121-125, extract.rs:246) were invisible
+    // to `call_forms` (its `call_line` helper trims before matching) and to
+    // every other `acceptance`/`payloads` case (none selected an indented
+    // line). `INDENTED_LINE` drives both in one input.
+    "extract_to_function:indented": () =>
+      sessionWith({ "main.ink": INDENTED_LINE }).extract_to_function(
+        "main.ink",
+        INDENTED_LINE.indexOf("Indented."),
+        INDENTED_LINE.indexOf("Indented.") + "Indented.".length,
+        "lifted3",
+      ),
+    "extract_to_knot:indented": () =>
+      sessionWith({ "main.ink": INDENTED_LINE }).extract_to_knot(
+        "main.ink",
+        INDENTED_LINE.indexOf("Indented."),
+        INDENTED_LINE.indexOf("Indented.") + "Indented.".length,
+        "lifted4",
+      ),
+  };
+
+  it("every driven payload has a call site here", () => {
+    expect(Object.keys(payloadCalls).sort()).toEqual(Object.keys(fixture.payloads).sort());
+  });
+
+  for (const [key, call] of Object.entries(payloadCalls)) {
+    it(`${key}: new_source agrees with production`, () => {
+      const parsed = JSON.parse(call()) as { ok: boolean; new_source?: string };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.new_source).toBe(fixture.payloads[key]);
+    });
+  }
 });
 
 /**
