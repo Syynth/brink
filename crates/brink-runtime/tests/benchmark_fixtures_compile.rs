@@ -45,7 +45,7 @@ use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
 /// The dialect/`TypePolicy` combination a fixture's owning bench scenario
 /// compiles it under (mirrors `runtime.rs`'s `compile_story`/
 /// `compile_story_brink`/`compile_story_brink_typed` helpers exactly).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum FixturePolicy {
     /// `compile_story` — default `AnalysisOptions` (dialect `StrictInk`,
     /// `types: None`, which `resolve_type_policy` keys to `Gradual` for
@@ -58,6 +58,21 @@ enum FixturePolicy {
     /// `compile_story_brink_typed(.., TypePolicy::Strict)` — used only by
     /// `struct_field_access_bench`'s strict half.
     BrinkStrict,
+}
+
+impl FixturePolicy {
+    /// Human-readable name for failure messages — distinguishes the two
+    /// `struct-field-access-10k` entries (`BrinkGradual` vs `BrinkStrict`),
+    /// which otherwise produce byte-identical assert messages since only
+    /// `dir` was interpolated (E063 is Warning under gradual, Error under
+    /// strict, so #2138 was strict-only — the message should say so).
+    const fn name(self) -> &'static str {
+        match self {
+            FixturePolicy::Default => "Default",
+            FixturePolicy::BrinkGradual => "BrinkGradual",
+            FixturePolicy::BrinkStrict => "BrinkStrict",
+        }
+    }
 }
 
 /// One `benchmarks/stories/<dir>/story.ink` fixture and the policy its
@@ -99,6 +114,11 @@ fn benchmarks_stories_dir() -> PathBuf {
 
 #[test]
 fn every_benchmark_fixture_compiles_under_its_bench_scenarios_policy() {
+    // Collect every failure instead of aborting on the first fixture: a
+    // diagnostic tightening that breaks several fixtures at once should
+    // report all of them in one run, not cost several fix-and-rerun
+    // cycles to discover one at a time.
+    let mut failures = Vec::new();
     for (dir, policy) in FIXTURES {
         let path = benchmarks_stories_dir().join(dir).join("story.ink");
         let result = match policy {
@@ -120,15 +140,22 @@ fn every_benchmark_fixture_compiles_under_its_bench_scenarios_policy() {
                 },
             ),
         };
-        assert!(
-            result.is_ok(),
-            "benchmarks/stories/{dir}/story.ink failed to compile under its \
-             bench scenario's policy — this is the #2138 class (issue \
-             #2777): a fixture broke and nothing on the normal PR gate \
-             noticed. Compile error: {:?}",
-            result.err()
-        );
+        if let Err(err) = result {
+            failures.push(format!(
+                "benchmarks/stories/{dir}/story.ink failed to compile under \
+                 its bench scenario's {policy_name} policy — this is the \
+                 #2138 class (issue #2777): a fixture broke and nothing on \
+                 the normal PR gate noticed. Compile error: {err:?}",
+                policy_name = policy.name(),
+            ));
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "{} benchmark fixture(s) failed to compile:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// `FIXTURES` is a hand-maintained list; this pins it against the actual
