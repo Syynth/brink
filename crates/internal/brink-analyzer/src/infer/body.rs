@@ -352,7 +352,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         })
         .collect();
 
-    let mut pass = new_pass(ctx, def, annotated);
+    let mut pass = new_pass(ctx, def, annotated.clone());
     // NS-A2 fault dimension (issue #1108, from #1097): a `ref` parameter's
     // dereference inside this body goes through a pointer/projection whose
     // resolution can raise `ProjectionInvalidated` (docs/t1e-spec.md §1(2))
@@ -365,6 +365,41 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
     }
     pass.infer_block(def.body);
     pass.finish_walk();
+    // Issue #2782: overlay each param's own written annotation onto
+    // `pass.locals` itself wherever the body walk left it absent — the
+    // exact same "body wins, annotation only covers Unknown" firewall the
+    // `param_types` overlay just below already applies to `InferredSig`,
+    // just applied here to the bare-name-keyed `locals` map that becomes
+    // `BodyTypes::locals`. Every body-level classifier reads THAT map (not
+    // `param_types`) for a param/temp's type — `option_conditions.rs`'s
+    // `resolved_symbol_ty` chief among them (`ctx.locals?.get(&info.name)`)
+    // — so without this overlay a written `: Option<T>` param annotation
+    // never reached E116's truthiness check: only an inference-derived
+    // Option type (one the body walk's own `observe` calls actually wrote
+    // into `locals`) did. `annotated` here is the same param-only map
+    // built above, cloned before `new_pass` moved the original into
+    // `pass.annotated` — deliberately narrower than `pass.annotated` as it
+    // stands post-walk, which can also hold `~ temp name: T = …`
+    // ascriptions (`register_ascription`) this fix does not touch.
+    //
+    // Deliberately keyed on absence (`contains_key`), not on the stored
+    // type being `Unknown`: a body that re-binds the param via a fresh
+    // same-spelled `let` (`fn heal(x: Option<int>, y) { let x = y; ... }`)
+    // already wrote an entry for `x` into `pass.locals` during the walk —
+    // one for the *re-bound* temp, which is legitimately `Unknown` on its
+    // own. An `is_unknown()` check can't tell that entry apart from a param
+    // that was simply never observed, so it clobbered the re-bound temp's
+    // type with the outer param's annotation. `contains_key` only overlays
+    // when the body never wrote an entry for this name at all, mirroring
+    // the lambda half's `body_bound_names.contains` guard on its own
+    // `self.annotated` seed (docs/typed-mode-spec.md §2's RULED #1912
+    // firewall: an unascribed temp merely copying an annotated parameter
+    // does not inherit the annotation transitively).
+    for (name, ty) in &annotated {
+        if !pass.locals.contains_key(name) {
+            pass.locals.insert(name.clone(), ty.clone());
+        }
+    }
     let param_types = def
         .params
         .iter()
