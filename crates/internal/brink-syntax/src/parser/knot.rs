@@ -200,10 +200,26 @@ pub(crate) fn stitch_definition(p: &mut Parser<'_, '_>) {
 ///   the excluded character doesn't rescue it: `= > j` and `= = k` are
 ///   excluded exactly like the tight `=>`/`==` forms are, not just those.
 ///
-/// Whether stitch headers *should* require whitespace after `=` is a
-/// parser-semantics question this comment does not decide — `at_stitch` is
-/// unchanged here. The in-tree corpus (`tests/tier{1,2,3}/**/story.ink`)
-/// contains no whitespace-free stitch header to settle it either way.
+/// Whitespace-free (and leading-whitespace) stitch headers are not
+/// hypothetical: they're checked in as real-world ink in the `tests_github`
+/// corpus (`crates/internal/brink-test-harness/tests/corpus_report.rs:169`
+/// walks `["tier1", "tier2", "tier3", "tests_github"]`) —
+/// `tests/tests_github/mifu67__august/Assets/Dialogue/home-clues.ink:13`
+/// (`=julian`) and `:9` (` =no_julian`), both divert targets from the block
+/// above, plus
+/// `tests/tests_patched/Boyquotes__signal_creek/assets/alpha/ink_alpha/bandn/rina.ink:60`
+/// (`=saynothing`, target of `-> saynothing` on line 58) and seven more
+/// whitespace-free/indented headers in that same file. The current code's
+/// optional-whitespace behavior above is corroborated by that real ink, not
+/// merely un-contradicted by tier1-3.
+///
+/// `at_stitch` is unchanged here — whether stitch headers *should* require
+/// whitespace after `=` stays out of this comment's fence. But tightening
+/// `at_stitch` to require whitespace (matching the old, wrong `INLINE_WS+`
+/// prose) would be a corpus regression, not an open design question: it
+/// would fail to parse the `tests_github`/`tests_patched` files cited above,
+/// which parser smoke tests and lossless roundtrip validation already cover
+/// (`docs/book/src/contributing/test-corpus.md` §"GitHub corpus").
 fn stitch_header(p: &mut Parser<'_, '_>) {
     p.start_node(STITCH_HEADER);
     p.bump(); // EQ (we already checked it's not `==` or `=>`)
