@@ -802,7 +802,9 @@ fn a_span_lowers_to_content_part_span_with_name_attrs_and_children() {
         panic!("expected Span, got {:?}", c.parts[1]);
     };
     assert_eq!(span.name, "item");
-    assert_eq!(span.attrs, vec![("id".to_string(), "lantern".to_string())]);
+    assert_eq!(span.attrs.len(), 1);
+    assert_eq!(span.attrs[0].name, "id");
+    assert_eq!(span.attrs[0].value, "lantern");
     assert_eq!(span.children.len(), 1);
     assert!(matches!(&span.children[0], ContentPart::Text(t) if t == "the lantern"));
     assert!(matches!(&c.parts[2], ContentPart::Text(t) if t == "."));

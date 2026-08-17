@@ -51,6 +51,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rowan::TextRange;
+
 use brink_ir::hir::{Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HostManifest, Provenance};
 
@@ -127,18 +129,21 @@ struct SpanWalker<'a> {
 }
 
 impl SpanWalker<'_> {
-    /// Report against the span's own range (issue #1782: `SpanPart::ptr`).
+    /// Report against a caller-chosen range — the span's own (issue #1782:
+    /// `SpanPart::ptr`) or, for `E165`, an individual attribute's own
+    /// (issue #1829: `SpanAttr::ptr`).
     ///
-    /// Every `SpanPart` is lowered from a real `SPAN` syntax node (native is
-    /// the only frontend that can spell markup), so this always has
-    /// somewhere precise to point — no enclosing-line or enclosing-choice
-    /// fallback needed. This is what makes several spans on one line, even
-    /// repeats of the same undeclared tag, distinguishable: each gets its
-    /// own range instead of sharing the whole content line's.
-    fn report(&mut self, span: &SpanPart, code: DiagnosticCode, message: String) {
+    /// Every `SpanPart`/`SpanAttr` is lowered from a real syntax node
+    /// (native is the only frontend that can spell markup), so a caller
+    /// always has somewhere precise to point — no enclosing-line or
+    /// enclosing-choice fallback needed. This is what makes several spans
+    /// on one line, or several undeclared attributes on one span, even
+    /// repeats of the same name, distinguishable: each gets its own range
+    /// instead of sharing its container's.
+    fn report(&mut self, range: TextRange, code: DiagnosticCode, message: String) {
         self.out.push(Diagnostic {
             file: self.file,
-            range: Provenance::text_range(&span.ptr),
+            range,
             message,
             code,
         });
@@ -147,7 +152,7 @@ impl SpanWalker<'_> {
     fn check_span(&mut self, span: &SpanPart) {
         match self.vocab.get(span.name.as_str()) {
             None => self.report(
-                span,
+                Provenance::text_range(&span.ptr),
                 DiagnosticCode::E164,
                 format!(
                     "unknown markup tag `<{}>`: the host manifest's markup vocabulary does not declare it",
@@ -155,14 +160,19 @@ impl SpanWalker<'_> {
                 ),
             ),
             Some(kind_vocab) => {
-                for (attr, _value) in &span.attrs {
-                    if !kind_vocab.allowed.contains(attr.as_str()) {
+                for attr in &span.attrs {
+                    if !kind_vocab.allowed.contains(attr.name.as_str()) {
+                        // Issue #1829: ranged against the attribute's own
+                        // provenance (`SpanAttr::ptr`), not the whole
+                        // enclosing span — two undeclared attributes on one
+                        // span used to collapse into two diagnostics with
+                        // identical range *and* identical message.
                         self.report(
-                            span,
+                            Provenance::text_range(&attr.ptr),
                             DiagnosticCode::E165,
                             format!(
-                                "unknown attribute `{attr}` on markup tag `<{}>`: the host manifest does not declare it for this span kind",
-                                span.name
+                                "unknown attribute `{}` on markup tag `<{}>`: the host manifest does not declare it for this span kind",
+                                attr.name, span.name
                             ),
                         );
                     }
@@ -177,11 +187,14 @@ impl SpanWalker<'_> {
                 // missing several required attributes gets one report per
                 // name rather than a single combined message.
                 let present: BTreeSet<&str> =
-                    span.attrs.iter().map(|(attr, _)| attr.as_str()).collect();
+                    span.attrs.iter().map(|attr| attr.name.as_str()).collect();
                 for &required_attr in &kind_vocab.required {
                     if !present.contains(required_attr) {
+                        // Stays span-ranged, unlike E165 above: a *missing*
+                        // attribute has no `SpanAttr` node of its own to
+                        // point at — the span is the narrowest real range.
                         self.report(
-                            span,
+                            Provenance::text_range(&span.ptr),
                             DiagnosticCode::E173,
                             format!(
                                 "markup tag `<{}>` is missing required attribute `{required_attr}`: the host manifest declares it required for this span kind",

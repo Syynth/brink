@@ -78,13 +78,14 @@ pub struct SpanHarvest {
     /// default; `markup_check` is the separate pass that diagnoses it).
     ///
     /// The recorded site is the *enclosing span's* range, not the
-    /// attribute's own — HIR's `SpanPart::attrs` is a flat
-    /// `Vec<(String, String)>` with no per-attribute provenance, so there
-    /// is no narrower range to record. A consumer highlighting or renaming
-    /// a specific attribute will select the whole `<tag …>` node, and two
-    /// occurrences of the same attribute name on one tag (e.g.
-    /// `<wave a="1" a="2">`) report two byte-identical sites. This is a
-    /// stated limitation of the current HIR shape, not a bug in this pass.
+    /// attribute's own, even though HIR's `SpanPart::attrs` (`SpanAttr`,
+    /// issue #1829) now carries per-attribute provenance — narrowing this
+    /// harvest's ranges to it is a deliberately separate, unrequested
+    /// change, kept out of #1829's diagnostic-ranging fix. A consumer
+    /// highlighting or renaming a specific attribute will select the whole
+    /// `<tag …>` node, and two occurrences of the same attribute name on
+    /// one tag (e.g. `<wave a="1" a="2">`) report two byte-identical
+    /// sites. This is a stated limitation of this harvest pass, not a bug.
     pub attrs: BTreeMap<String, Vec<HarvestSite>>,
     /// The host manifest's own declaration of this kind, when registered —
     /// the "declaration upgrades" half of §5's ruling, carried verbatim
@@ -246,10 +247,17 @@ impl SpanHarvestWalker<'_> {
         // static text by construction (`SyntaxKind::SPAN_ATTR_VALUE`), and
         // §4.2's schema (mirrored by `ManifestSpanAttr`) never models them
         // either; only the attribute *name* is a completion candidate.
-        for (attr, _value) in &span.attrs {
+        //
+        // Recorded at the enclosing span's range, not `attr.ptr`, even
+        // though `SpanAttr` now carries its own provenance (issue #1829) —
+        // that fix is scoped to diagnostic ranging (`E165`) only; widening
+        // completion sites to attribute-level ranges is a separate,
+        // unrequested change (see this struct's doc for the stated
+        // limitation this choice keeps in place).
+        for attr in &span.attrs {
             entry
                 .attrs
-                .entry(attr.clone())
+                .entry(attr.name.clone())
                 .or_default()
                 .push(HarvestSite {
                     file: self.file,

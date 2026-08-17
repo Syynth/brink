@@ -1770,10 +1770,29 @@ pub struct SpanPart {
     /// `name="value"` pairs, in source order. Static text only — see
     /// `SyntaxKind::SPAN_ATTR_VALUE`'s doc for why attribute values don't
     /// support `{expr}` interpolation.
-    pub attrs: Vec<(String, String)>,
+    pub attrs: Vec<SpanAttr>,
     /// The span's content — empty for a self-closing / point-marker span
     /// (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
     pub children: Vec<ContentPart>,
+}
+
+/// One `name="value"` attribute on a [`SpanPart`] (issue #1829).
+///
+/// Carries its own [`Provenance`] the same way [`SpanPart`] itself does
+/// (issue #1782) — the whole `name="value"` node's range, `NodeClass::SpanAttr`
+/// — so `E165` (undeclared attribute) can anchor to the exact attribute
+/// instead of the whole enclosing span. Before this, two undeclared
+/// attributes on one span produced two diagnostics with identical range
+/// *and* identical message, indistinguishable in the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanAttr {
+    /// This attribute's own provenance — the `name="value"` pair's range.
+    pub ptr: Provenance,
+    /// The attribute name.
+    pub name: String,
+    /// The attribute's static text value (no `{expr}` interpolation — see
+    /// [`SpanPart::attrs`]'s doc).
+    pub value: String,
 }
 
 // ─── Sequence types ─────────────────────────────────────────────────
