@@ -7,11 +7,18 @@
 // (crates/brink-compiler/tests/tm4c_structs_codegen.rs's
 // `strict_and_gradual_produce_equivalent_output_for_well_formed_program`).
 //
-// The `VAR p: Point = 0` annotation is what makes strict-mode codegen
-// eligible for static-offset field ops: under `types = strict`,
+// The `VAR p: Point` declared-type annotation is what makes strict-mode
+// codegen eligible for static-offset field ops: under `types = strict`,
 // `expr::static_offset_for` (brink-ir's lir/lower/expr.rs) sees the
 // annotation, resolves `p`'s shape at compile time, and emits
 // `RecordGet`/`RecordSet` (flat-offset ops, no shape lookup at runtime).
+// `known_shape` (same file) resolves this from the `: Point` annotation
+// itself — not from the initializer's shape — so the concrete zero-value
+// literal below doesn't affect static-offset eligibility (issue #2138:
+// the previous `= 0` placeholder was a bogus int initializer for a
+// struct-typed VAR and now fails E063 post-#2085's initializer-type
+// check; a real `Point#{...}` literal is both a valid initializer and an
+// equally-eligible `known_shape` root).
 // Under `types = gradual` the *same* annotated source still only ever
 // emits `RecordGetDyn`/`RecordSetDyn` (by-name ops, one shape lookup by
 // `NameId` per access) — the annotation-driven static path is strict-only
@@ -31,7 +38,7 @@ STRUCT Point = #{
     y: float,
 }
 
-VAR p: Point = 0
+VAR p: Point = Point#{x: 0.0, y: 0.0}
 VAR total = 0
 
 ~ {
