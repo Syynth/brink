@@ -236,6 +236,19 @@ The fixture now initializes `p` with a real `Point#{x: 0.0, y: 0.0}`
 literal instead of the placeholder — see that file's header for why this
 doesn't change static-offset eligibility.
 
+**This class of break is now guarded on the normal PR gate, not just here.**
+`crates/brink-runtime/tests/benchmark_fixtures_compile.rs` (issue #2777)
+compiles every `benchmarks/stories/*/story.ink` fixture — including this
+one, under both the strict and gradual policies — as a plain `#[test]`
+under `cargo test -p brink-runtime`, which already runs on every PR; it
+does not run any bench itself. A second test in the same file,
+`all_benchmarks_stories_fixtures_are_covered`, fails if a fixture
+directory is added to `benchmarks/stories/` without a matching entry in
+that file's `FIXTURES` list, so a new fixture can no longer sit uncovered
+the way `struct-field-access-10k` did before this guard existed. The
+table above ("The programs") stays the hand-maintained description of
+what each fixture measures; the guard file is what keeps them compiling.
+
 The snapshot-retention row is the §8 bounded-retention proof: g10-m10 and
 g10-m100 (same G=10, 10x different M) both report `cow_copies=11`;
 g100-m10 and g10-m100 (same 1,000 total mutations, 10x different G)
