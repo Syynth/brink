@@ -77,12 +77,35 @@ export interface SymbolMenuSlice {
    * that call settles.
    */
   structuralOpPending: string | null;
-  /** Set (or clear, with `null`) the pending structural-op description. */
-  setStructuralOpPending(description: string | null): void;
+  /** Set the pending structural-op description (the start of a gated call).
+   *  Takes only `string` (issue #2794 review) — clearing goes exclusively
+   *  through {@link clearStructuralOpPending}'s compare-and-clear; no
+   *  production or test caller passes `null` here, and narrowing the
+   *  signature turns a future unconditional-clear regression into a
+   *  `pnpm --filter @brink-lang/studio typecheck` failure instead of relying
+   *  on review attention to catch it. */
+  setStructuralOpPending(description: string): void;
+  /**
+   * Compare-and-clear (issue #2794): clears {@link structuralOpPending} only
+   * if it still equals `description` — the exact string this call's own
+   * `setStructuralOpPending` set. A no-op when another op's `set` has since
+   * overwritten it, so a call that settles after being superseded cannot
+   * erase the newer op's still-live indicator. TWO WRITERS share this field
+   * (`runGatedStructuralOp` in `symbolMenuActions.ts`, and `applyRename` in
+   * `binder.ts`) as independent fire-and-forget (`void`) dispatches — an
+   * overlapping Binder drag-move and symbol-menu op is a real case, not a
+   * hypothetical one. Every caller that commits a pending description before
+   * deferring a gated call MUST clear through this, never through
+   * {@link setStructuralOpPending} directly in a `finally` — that
+   * unconditional-clear shape is exactly the last-writer-wins race #2794
+   * fixed, and (as of this review) is no longer even typeable with `null`.
+   */
+  clearStructuralOpPending(description: string): void;
 }
 
 export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenuSlice> = (
   set,
+  get,
 ) => ({
   symbolMenu: null,
   openSymbolMenu(request) {
@@ -103,5 +126,13 @@ export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenu
   structuralOpPending: null,
   setStructuralOpPending(description) {
     set({ structuralOpPending: description });
+  },
+  clearStructuralOpPending(description) {
+    // Compare-and-clear (#2794): only the writer whose own description is
+    // still live may clear it — a superseded writer settling late must not
+    // erase whatever op is live now.
+    if (get().structuralOpPending === description) {
+      set({ structuralOpPending: null });
+    }
   },
 });
