@@ -677,6 +677,46 @@ No CI lane runs any of this — a `tauri build --debug --bundles deb` lane is
 still the standing follow-up, and this observation does not substitute for
 one, it only removes the doubt about *where* the hook fires.
 
+**The `--version` executable smoke check (#2699).** The magic check above
+proves the staged file's FORMAT (ELF/Mach-O/PE); it cannot prove the file
+IS `brink-cli` or that it runs — PR #2691's own passing observation of this
+hook stood in **GNU coreutils' `true`** for a real `brink-cli`, and that
+binary satisfies the magic check exactly as a genuine wrong-build binary
+would. `assertRealSidecarStaged` now runs `destBin --version` in addition
+to the magic check, and requires BOTH exit `0` AND that the printed output
+starts with `brink` — clap's `#[command(name = "brink", version)]` on `Cli`
+(`crates/brink-cli/src/main.rs`) formats every real build's output that
+way. The content half of that check is load-bearing, not decoration: exit
+code alone is not sufficient evidence, because `true --version` *also*
+exits `0`.
+
+This is gated on the staged triple matching the triple the check is
+actually running on (`smokeCheckSidecar` in `assert-real-sidecar.mjs`): a
+sidecar staged for any other triple is a cross-build and **cannot be
+executed on this machine at all** — trying would fail for a reason that has
+nothing to do with whether the binary is a genuine `brink-cli`, and
+treating that as a rejection would refuse a legitimate cross-compiled
+bundle. That case — and the case where the host triple itself cannot be
+determined (no `rustc` on PATH) — degrades to "verified via magic only,"
+and the log line says so explicitly rather than silently claiming to have
+run something it did not.
+
+Driven directly (not merely argued) via `assertRealSidecarStaged` in a
+scratch tree, mirroring the shape of the table above:
+
+| staged at `binaries/brink-cli-<triple>`, triple = host | observed |
+|---|---|
+| a real release build of `brink-cli` | `--version` exited 0, printed `brink 0.0.11` → logged `ran successfully … confirmed a working brink-cli`, then `proceeding with the bundle` |
+| `/bin/true` (GNU coreutils, #2691's own stand-in) | `--version` exited 0, printed `true (GNU coreutils) 9.4…` → **refused**: `ran (--version exited 0) but printed "…" — that is not a brink-cli version string`, `exit 1` |
+| a synthetic Mach-O-magic file staged for `aarch64-apple-darwin` while running on `x86_64-unknown-linux-gnu` | smoke check **not executed** — logged `skipped the --version smoke check: staged triple … does not match this machine's host triple …`, then still `proceeding with the bundle` on the magic check alone |
+
+The middle row is the one that matters: it is the exact scenario #2691's PR
+body disclosed as its own limit (`/bin/true` standing in for `brink-cli`),
+and it is now refused where it previously would have passed. No CI lane
+exercises any of this either — same standing gap as the magic check itself,
+and now also named in "CI coverage blind spots" for the macho/pe/.exe
+formats this smoke check's execute branch never reaches in CI.
+
 Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
 checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`
 before staging anything — a cross-compiled `cargo test/check --target
@@ -724,6 +764,26 @@ mobile target, `tauri-macros`' `mobile_entry_point` expansion discards
 per-site `#[expect]`. A ⚠ marker above `opened_url_to_path` in
 `src-tauri/src/lib.rs` carries the detail next to the cfg gate that will
 first switch on.
+
+The same blind spot reaches `executableFormatFor`'s `macho`/`pe` branches
+and the `.exe`-suffixed staging path in `sidecarPaths` (#2699): both are
+exercised only by unit tests over synthetic byte arrays
+(`src/__tests__/assert-real-sidecar.test.ts`,
+`src/__tests__/ensure-cli-sidecar.test.ts`) — the ubuntu-only smoke lane
+never observes the real magic bytes of an actual cross-built `brink-cli`
+for either format, and never stages anything under a real `.exe` name. The
+`--version` smoke check added alongside the positive magic check (above,
+"Bundle-time sidecar assertion") inherits the same gap one layer up: its
+host-triple-match branch — the one that actually executes the staged
+binary — is likewise proven only by unit tests with a mocked `runFile`
+plus the ad-hoc, by-hand `node scripts/assert-real-sidecar.mjs` drive
+recorded in that section, not by any CI lane; the macho/pe/.exe paths
+specifically only ever reach the check's cross-build skip branch, which
+never executes anything at all. Documenting this here does not close it —
+it names the same "which formats does `ubuntu-latest` actually observe"
+gap the file-association surface above has, for the sidecar-verification
+surface instead. Whether to buy a macOS/Windows runner is the same
+unsettled cost question as above.
 
 ## Menus
 

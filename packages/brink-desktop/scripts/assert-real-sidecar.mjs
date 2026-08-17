@@ -62,7 +62,30 @@
 // specifically — it asserts this file carries no shell-shebang payload of its own,
 // the same way `build_script_stages_the_dev_sidecar_the_way_ci_does` guards
 // `build.rs` (a different file; that guard does not read this one).
+//
+// #2699 (follow-up from #2691's own review of #2687): the magic check above
+// proves the staged file's FORMAT — ELF/Mach-O/PE — not that it IS
+// `brink-cli` or that it runs. #2691's own passing observation stood in
+// `/bin/true` for a real `brink-cli`, and that stand-in would sail through
+// the magic check exactly as a genuine wrong-build binary would. So a
+// second, ADDITIONAL check runs `destBin --version`, requires exit 0, AND
+// requires the printed output to actually start with `brink` (clap's
+// `#[command(name = "brink", version)]` on `Cli` formats it that way for
+// every real build — crates/brink-cli/src/main.rs). The content check is
+// not optional decoration: GNU coreutils' `true` — #2691's own stand-in —
+// ALSO accepts `--version` and exits 0 (`true (GNU coreutils) 9.4`,
+// observed directly for #2699), so exit code alone would have caught
+// nothing new. The whole smoke check is gated on the staged triple
+// equalling the triple this process is actually running on
+// (`smokeCheckSidecar`): a cross-compiled sidecar CANNOT be executed on the
+// build machine at all, and treating that failure as "not a real brink-cli"
+// would reject a legitimate cross-build for the wrong reason. The
+// non-host-triple case — and the case where the host triple itself cannot
+// be determined — degrades to "verified via magic only," and SAYS SO in the
+// log, rather than either failing a legitimate cross-build or silently
+// claiming to have verified more than it did.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -192,6 +215,149 @@ function weakFallbackCheck({ staged, destBin, triple, log, reasonNote }) {
 }
 
 /**
+ * Run `file` with `args` and return its captured stdout. The single seam
+ * through which `runVersionSmokeTest` executes the staged sidecar, so a
+ * caller can drive the smoke-check logic without actually spawning a
+ * process (see `assert-real-sidecar.test.ts`'s `runFile` injections).
+ * `execFileSync` (not `execSync`) deliberately — `destBin` is a real
+ * filesystem path, not a shell command line, and going through a shell
+ * would add quoting hazards this check has no reason to accept.
+ */
+function defaultRunFile(file, args) {
+  return execFileSync(file, args, { encoding: "utf8" });
+}
+
+/**
+ * The triple `rustc` reports for the machine actually running this script —
+ * queried independently of whatever `triple` the caller is checking a
+ * staged sidecar against. `undefined` (never thrown) when it cannot be
+ * determined, e.g. no `rustc` on PATH: `smokeCheckSidecar` treats that the
+ * same as a genuine cross-build — "cannot safely execute this," not
+ * "reject" — since a script that cannot even find `rustc` has no basis for
+ * either running the binary or judging it broken for not running.
+ */
+function actualHostTriple() {
+  try {
+    return hostTriple();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Execute the staged sidecar as `destBin --version` and report success or
+ * failure. Never throws itself — `smokeCheckSidecar`, its only caller,
+ * decides what a failure means. Exported for direct unit coverage of the
+ * success/failure summarizing; NOT meant to be called on a binary staged
+ * for a different triple than this process is running on — see
+ * `smokeCheckSidecar`, which is the only place that decides it is safe to
+ * call this at all.
+ */
+export function runVersionSmokeTest({ destBin, runFile = defaultRunFile }) {
+  try {
+    const stdout = runFile(destBin, ["--version"]);
+    return { ok: true, output: String(stdout).trim() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const stderr =
+      error && typeof error === "object" && "stderr" in error && error.stderr
+        ? String(error.stderr).trim()
+        : "";
+    return { ok: false, detail: stderr ? `${message}: ${stderr}` : message };
+  }
+}
+
+/**
+ * Whether `output` — the trimmed stdout from `destBin --version` — plausibly
+ * identifies the binary as `brink-cli`, not merely as SOME program that
+ * happens to accept `--version` and exit 0. `clap`'s
+ * `#[command(name = "brink", version)]` (crates/brink-cli/src/main.rs)
+ * formats `--version` output as `<name> <version>` (e.g. `brink 0.0.11`),
+ * so the check is the leading token, not a full-string match against a
+ * version number this script has no business pinning.
+ *
+ * This exists because exit code ALONE is not sufficient evidence: GNU
+ * coreutils' `true` — the exact stand-in #2691's own passing observation
+ * used for `brink-cli` — ALSO accepts `--version` and exits 0. Observed
+ * directly for #2699: `true --version` prints `true (GNU coreutils) 9.4`
+ * and exits 0; `brink --version` (a real release build) prints
+ * `brink 0.0.11` and exits 0. An exit-code-only smoke check would pass
+ * both, which defeats the entire point of adding it.
+ */
+export function looksLikeBrinkCliVersionOutput(output) {
+  return output === "brink" || output.startsWith("brink ");
+}
+
+/**
+ * Runs (or explains skipping) the `--version` executable smoke check for a
+ * sidecar that has already passed the magic-byte identity check above, and
+ * logs exactly which branch ran. Throws only when the sidecar WAS executed
+ * and failed; a skip is never a failure (#2699).
+ *
+ * The magic check proves the staged file's FORMAT; it cannot prove the file
+ * IS `brink-cli` or that it runs — any correctly-formatted binary of the
+ * wrong build passes it, exactly as #2691's own `/bin/true` stand-in did.
+ * This closes that gap for the one case where actually running the binary
+ * is safe to attempt: `destBin`'s triple matches the triple this process is
+ * running on RIGHT NOW. Any other triple is a cross-build — the staged
+ * binary cannot be executed on this machine at all, and a failure to do so
+ * says nothing about whether the binary is a genuine, working `brink-cli`.
+ * Collapsing that "cannot execute here" case into a rejection would refuse
+ * a legitimate cross-compiled bundle for the wrong reason, so it instead
+ * degrades to the magic check alone and logs that it did — never silently.
+ *
+ * Deliberately the ONLY call site that inspects host-triple-match at all:
+ * #2687's review caught a `looksLikeNativeExecutable !== true` call site
+ * elsewhere in this file silently collapsing "cannot judge" into "reject."
+ * This function returns nothing to its caller — success is "returned
+ * normally," a skip is also "returned normally," and only an executed
+ * failure throws — so there is no boolean for a second call site to ever
+ * mis-test the same way.
+ */
+function smokeCheckSidecar({ destBin, triple, runFile, log }) {
+  const host = actualHostTriple();
+  if (host !== triple) {
+    log(
+      `[assert-real-sidecar] skipped the --version smoke check: staged triple ${triple} ` +
+        (host === undefined
+          ? "cannot be compared against a host triple (rustc unavailable)"
+          : `does not match this machine's host triple (${host})`) +
+        " — a sidecar built for a different target cannot be executed here, so running it " +
+        "would prove nothing about whether it is a real brink-cli. Verified via " +
+        "executable-format magic only (#2699).",
+    );
+    return;
+  }
+
+  const result = runVersionSmokeTest({ destBin, runFile });
+  if (!result.ok) {
+    throw new Error(
+      `[assert-real-sidecar] ${destBin} carries valid ${triple} executable magic but failed ` +
+        `to run (\`--version\`: ${result.detail}) — refusing to let this bundle ship a binary ` +
+        "that does not work (#2699). Rebuild it: `pnpm --filter @brink/desktop build` (or " +
+        "`cargo build -p brink-cli --release` directly), and check BRINK_SIDECAR_STUB is unset.",
+    );
+  }
+
+  if (!looksLikeBrinkCliVersionOutput(result.output)) {
+    throw new Error(
+      `[assert-real-sidecar] ${destBin} ran (\`--version\` exited 0) but printed ` +
+        `"${result.output}" — that is not a brink-cli version string, so whatever executed is ` +
+        "not brink-cli even though it runs and carries valid executable magic (#2699; exit " +
+        "code alone would have missed this — GNU coreutils' `true`, #2691's own stand-in for " +
+        "brink-cli, also accepts --version and exits 0). Refusing to let this bundle ship it. " +
+        "Rebuild it: `pnpm --filter @brink/desktop build`, and check BRINK_SIDECAR_STUB is unset.",
+    );
+  }
+
+  log(
+    `[assert-real-sidecar] ${destBin} ran successfully (host-triple match, \`--version\` ` +
+      `exited 0 and printed "${result.output}") — confirmed a working brink-cli, not merely a ` +
+      "correctly-formatted file (#2699).",
+  );
+}
+
+/**
  * Throw unless the brink-cli sidecar staged for `triple` is a real native
  * executable for that triple — i.e. it is not `STUB_SIDECAR`, AND it begins
  * with the executable magic `triple`'s loader requires (#2687). Returns the
@@ -218,12 +384,20 @@ function weakFallbackCheck({ staged, destBin, triple, log, reasonNote }) {
  * `build.rs`/`ensure-cli-sidecar.mjs`, which have no better source for a
  * triple than the host they're running on — it is not a limit this hook
  * inherits or needs to repeat.
+ *
+ * Once the magic check accepts the staged file, `smokeCheckSidecar` (#2699)
+ * additionally runs `destBin --version` when `triple` matches the triple
+ * this process is running on, closing the "correctly-formatted but not
+ * actually `brink-cli`" gap the magic check alone leaves open. `runFile` is
+ * that check's process-execution seam, defaulted to a real `execFileSync`
+ * call and overridable for tests the same way `log` is.
  */
 export function assertRealSidecarStaged({
   repoRoot = defaultRepoRoot,
   srcTauriDir = defaultSrcTauriDir,
   triple = process.env.TAURI_ENV_TARGET_TRIPLE ?? hostTriple(),
   log = console.log,
+  runFile = defaultRunFile,
 } = {}) {
   const { destBin } = sidecarPaths({ triple, repoRoot, srcTauriDir });
 
@@ -294,6 +468,8 @@ export function assertRealSidecarStaged({
         "run `pnpm --filter @brink/desktop build`, and check BRINK_SIDECAR_STUB is unset.",
     );
   }
+
+  smokeCheckSidecar({ destBin, triple, runFile, log });
 
   log(
     `[assert-real-sidecar] ${destBin} is not the stub and carries ${FORMAT_DISPLAY[format]} ` +
