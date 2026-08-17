@@ -1627,6 +1627,21 @@ export class EditorSession {
     const [moved] = plan[ki]!.stitches.splice(si, 1);
     let promoted = stitchHeaderToKnot(moved!.text);
     if (!promoted.endsWith("\n")) promoted += "\n";
+    // #2721: mirrors `structural_move::promote_stitch_to_knot`'s own guard
+    // (`if !new_source.ends_with('\n') { new_source.push('\n'); }`) — a
+    // separating newline before the promoted knot, needed when the SOURCE
+    // knot's own remaining content does not already end in one. Ordinarily it
+    // always does (a region boundary lands right after a `\n`), but not when
+    // an indented header's leading whitespace got glued onto the trailing
+    // stitch's own trivia (#2703): promoting ALT_STITCHES's `  = b` leaves
+    // `one`'s last remaining stitch (`c`) ending in bare `"  "`, and without
+    // this guard the mock glued the new header onto that same line —
+    // `"...C.\n  === b ==="` where production answers `"...C.\n  \n=== b
+    // ==="`. Driven and confirmed via `promote_stitch:alt-stitch-indented` in
+    // `crates/brink-web/fixtures/refusal-shapes.json`, not assumed to already
+    // hold from the `full_start` fix alone.
+    const sourceRemainder = plan[ki]!.head + plan[ki]!.stitches.map((s) => s.text).join("");
+    if (!sourceRemainder.endsWith("\n")) promoted = `\n${promoted}`;
     plan.splice(ki + 1, 0, { name: stitch, head: promoted, stitches: [] });
     const rendered = renderKnots(source, knots, plan);
     const oldQual = `${knot}.${stitch}`;

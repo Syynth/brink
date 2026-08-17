@@ -683,6 +683,22 @@ and `payloads`'s `reorder_knots:alt-fences`.) This closes the boundary for the
 seven `dispatchSymbolAction` ops, which all rearrange whole `parseOutline`
 regions.
 
+**Not closed by `full_start` alone — `promote_stitch`'s own newline guard,
+driven and fixed (#2721).** Promoting `ALT_STITCHES`'s indented `  = b`
+leaves the source knot `one`'s remainder — its last surviving stitch, `c` —
+ending in the bare `"  "` that used to be `b`'s own leading indent, glued
+onto `c`'s trailing trivia by the `full_start` fix above, rather than in a
+newline. The mock's `renderKnots` concatenated the promoted header directly
+onto that non-newline-terminated tail, answering `"...C.\n  === b ==="`,
+where production inserts a separating newline first
+(`structural_move.rs`'s `promote_stitch_to_knot`: `if !new_source
+.ends_with('\n') { new_source.push('\n'); }`), answering `"...C.\n
+\n=== b ==="`. So `full_start` closing the region boundary was necessary but
+not sufficient for `promote_stitch` specifically — it still needed its own
+guard. Fixed by mirroring the same guard in `packages/brink-studio/src
+/__mocks__/brink-web.ts`'s `promote_stitch`; pinned by
+`payloads["promote_stitch:alt-stitch-indented"]`.
+
 **The indented-FIRST-knot header answer, driven (#2706).** #2703 left one
 shape of this boundary undriven on both sides: an indented header with no
 PRECEDING symbol for the "glue the indent to the predecessor's trailing
@@ -712,6 +728,25 @@ ranges and that whitespace belongs to the PRECEDING stitch `c`, not to `b`)
 instead. `regions` still carries only the flush-left `delete_symbol:alt-
 stitch-plain` control; an `alt-stitch-indented` entry was tried and reverted
 once driving it showed the mismatch above, rather than left unattempted.
+
+**A second instance of the same class, on `INDENTED_FIRST_KNOT` (#2721).**
+The divergence above is not specific to a stitch header — it recurs on an
+indented *knot* header with the same shape. On `INDENTED_FIRST_KNOT`
+(`"  === one ===\n..."`), `decl_region_start` places knot `one`'s region at
+`[2, 29)`, so production's `delete_symbol("one", "")` keeps the two-space
+indent behind, glued onto the FOLLOWING knot's header —
+`"  === two ===\nSecond.\n"` — while the mock's `delete_symbol`, still
+deleting whole physical lines (`lines.findIndex` matches line 0, `"
+=== one ==="`, tolerated by `KNOT_HEADER_RE`), splices out the entire line
+indent included: `"=== two ===\nSecond.\n"`. Driven and recorded rather than
+decided, per the same discipline as the `  = b` case: `acceptance` is pinned
+(`delete_symbol:indented-first-knot`, both sides agree `ok: true`) but the
+`new_source` half is deliberately left out of `payloads`/`regions`, since
+pinning it would pin a mismatch as a match. This instance's driven evidence
+lives in a `#[cfg(test)]` doc comment on `driven_stitch_regions`
+(`crates/brink-web/src/editor_refactor.rs`) rather than here; #2694 is still
+the open ruling for both instances of the class.
+
 (`parser/knot.rs`'s grammar comment used to spell `stitch_header` with
 `INLINE_WS+` — required whitespace — contradicting the optional-whitespace
 behavior this section's own driven evidence established; that mismatch was

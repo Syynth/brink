@@ -1006,6 +1006,41 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
     key: "delete_symbol:alt-stitch-plain",
     call: () => sessionWith({ "main.ink": ALT_STITCHES }).delete_symbol("main.ink", "one", "a"),
   },
+  // ── #2721 Gap 1: `delete_symbol`/`rename_symbol` on an indented FIRST
+  // knot header, never driven at all. Neither op reads `parseOutline`'s
+  // ranges (#2703), so #2713's `full_start`/`payloads` fix for the seven
+  // `dispatchSymbolAction` ops says nothing about either of these two.
+  {
+    key: "delete_symbol:indented-first-knot",
+    call: () => sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).delete_symbol("main.ink", "one", ""),
+  },
+  {
+    key: "rename_symbol:indented-first-knot",
+    call: () =>
+      sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).rename_symbol(
+        "main.ink",
+        "one",
+        "",
+        "renamed",
+      ),
+  },
+  // ── #2721 Gap 2: `move_stitch`/`promote_stitch`/`demote_knot` driven on
+  // ALT_STITCHES's indented `  = b` — the four other `dispatchSymbolAction`
+  // ops (`reorder_knots`/`reorder_stitches`/`reorder_knot`/`reorder_stitch`)
+  // were already driven on an indented input by #2703/#2713; these three
+  // were not.
+  {
+    key: "move_stitch:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).move_stitch("main.ink", "one", "b", "two"),
+  },
+  {
+    key: "promote_stitch:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).promote_stitch("main.ink", "one", "b"),
+  },
+  {
+    key: "demote_knot:alt-stitch-indented",
+    call: () => sessionWith({ "main.ink": ALT_STITCHES }).demote_knot("main.ink", "two", "one"),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -1371,6 +1406,24 @@ describe("extract_to_function chooses the call form production does (#2675 Gap A
  * test) to match `renderKnots`'s existing preamble-slicing behavior: the
  * indent stays behind as untouched file preamble, in front of whichever knot
  * is now first.
+ *
+ * #2721 closes the two gaps #2713 left: `rename_symbol:indented-first-knot`
+ * (the sibling of `reorder_knots:indented-first-knot`, same source, no
+ * divergence expected since `rename_symbol` only substitutes the declared
+ * NAME token and never touches header trivia) and `move_stitch`/
+ * `promote_stitch`/`demote_knot` on `ALT_STITCHES`'s indented `  = b`.
+ * `move_stitch`/`demote_knot` reproduce the mock's existing model exactly
+ * (their insertion points both land right after a byte that is already
+ * `\n`, so no separating newline is even needed here). `promote_stitch` did
+ * NOT: removing `b` leaves `one`'s last remaining stitch (`c`) ending in the
+ * bare `"  "` that used to be `b`'s leading indent (attached to `c`'s
+ * trailing trivia, per #2703), and the mock's `renderKnots` concatenated the
+ * promoted knot directly onto that non-newline-terminated tail —
+ * `"...C.\n  === b ==="` where production answers `"...C.\n  \n=== b ==="`
+ * (`structural_move.rs`'s `promote_stitch_to_knot` guards exactly this with
+ * `if !new_source.ends_with('\n') { new_source.push('\n'); }`). Fixed in
+ * `promote_stitch` (`packages/brink-studio/src/__mocks__/brink-web.ts`) with
+ * the same guard, scoped to the one call site actually driven here.
  */
 describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3, #2706)", () => {
   const payloadCalls: Record<string, () => string> = {
@@ -1432,6 +1485,22 @@ describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees
         INDENTED_LINE.indexOf("Indented.") + "Indented.".length,
         "lifted4",
       ),
+    // #2721: `rename_symbol`'s own answer on the indented-FIRST-knot source.
+    "rename_symbol:indented-first-knot": () =>
+      sessionWith({ "main.ink": INDENTED_FIRST_KNOT }).rename_symbol(
+        "main.ink",
+        "one",
+        "",
+        "renamed",
+      ),
+    // #2721: the three `dispatchSymbolAction` ops #2713 did not drive on
+    // ALT_STITCHES's indented `  = b`.
+    "move_stitch:alt-stitch-indented": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).move_stitch("main.ink", "one", "b", "two"),
+    "promote_stitch:alt-stitch-indented": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).promote_stitch("main.ink", "one", "b"),
+    "demote_knot:alt-stitch-indented": () =>
+      sessionWith({ "main.ink": ALT_STITCHES }).demote_knot("main.ink", "two", "one"),
   };
 
   it("every driven payload has a call site here", () => {
