@@ -479,7 +479,16 @@ fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
 /// binding collection is concerned): a nested lambda's own body binds its
 /// own names, shadowed (and — since #1770 — escape-checked) by *its own*
 /// `infer_lambda` call when that literal is walked, not this one's.
-fn lambda_own_bindings(
+///
+/// `pub(crate)` (issue #2764 review) so `option_conditions::walk_expr_for_
+/// lambdas` can reuse the identical name set to *prune* a lambda's own
+/// bindings out of the enclosing def's `MistypeCtx::locals` before checking
+/// the lambda's block body: `structs::resolved_symbol_ty` looks up a
+/// Param/Temp by bare name, and a lambda-own binding that shadows an outer
+/// same-named local must not resolve to the outer binding's type while its
+/// own block body is being checked — this function is exactly the set that
+/// needs to disappear from the lookup for that body's own checks.
+pub(crate) fn lambda_own_bindings(
     stmts: &[brink_ir::BlockStmt],
     out: &mut BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)>,
 ) {
