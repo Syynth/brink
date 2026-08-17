@@ -36,16 +36,26 @@
 // the correctness hazard at the same time. Per-package fingerprint
 // dep-info (`.d`) files under a shared target dir use paths RELATIVE to
 // the invoking worktree, so this script cannot prove after the fact which
-// worktree produced a given cached artifact. What it CAN check cheaply and
-// unambiguously is the actual HAZARD CONDITION itself: is the configured
-// `CARGO_TARGET_DIR` (a) outside this worktree (so another worktree's path
-// could legitimately point at the same directory) AND (b) is at least one
-// OTHER git worktree currently live (`git worktree list`, which reports
-// only real, still-registered worktrees — stale leftover directories that
-// were never `git worktree add`-ed, or were pruned, do not appear)? When
-// both hold, ANY measurement taken right now is suspect: some other agent
-// may rebuild a shared package out from under this one at any moment. That
-// is exactly the "so a suspect number announces itself" ask from #2054.
+// worktree produced a given cached artifact. What it CAN check cheaply is
+// the actual HAZARD CONDITION: is at least one OTHER git worktree
+// currently live (`git worktree list`, which reports only real,
+// still-registered worktrees — stale leftover directories that were never
+// `git worktree add`-ed, or were pruned, do not appear), AND does a build
+// artifact already exist for at least one tracked package (nothing built
+// yet means nothing can have been served stale)? Whether the configured
+// `CARGO_TARGET_DIR` happens to sit inside THIS worktree's own path is
+// NOT part of that test — path containment only tells us about this
+// worktree, never about whether some OTHER live worktree points its own
+// `CARGO_TARGET_DIR` at the very same absolute directory (the
+// BRINK-CONFIG.md-mandated shared cache, `<repo>/target`, is exactly this:
+// "worktree-local" from the main checkout's own point of view, while every
+// other agent worktree also targets it). When a sibling is live and a
+// cached artifact exists, ANY measurement taken right now is suspect: some
+// other agent may rebuild a shared package out from under this one at any
+// moment. That is the collision precondition this script exists to
+// surface before a suspect number gets trusted — a synthesis of #2054's
+// ask, not a quote from it (#2054's own option (a) is "Targeted clean
+// before measuring").
 //
 // A "safe" result here does not prove the CURRENT artifacts are fresh viz a
 // vis a worktree that has since been removed — only that the collision
@@ -56,8 +66,8 @@
 // before trusting any `corpus_report` / `full_corpus_sweep` output. On a
 // RISK result, run `cargo clean -p <pkg>` for the reported packages (or
 // fall back to a private/worktree-local target dir for just that
-// measurement — never a third shared path, per BRINK-CONFIG.md's "House
-// rules") before re-measuring.
+// measurement — never a third shared path, per BRINK-CONFIG.md's "Disk
+// rule" section) before re-measuring.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -117,7 +127,11 @@ export function listLiveWorktrees({
  * intentionally NOT matched exactly — any hash for this package name
  * counts as evidence). Returns `null` if nothing has been built yet.
  */
-export function findNewestArtifact(targetDir, pkg, { profiles = ["debug", "release"] } = {}) {
+export function findNewestArtifact(
+  targetDir,
+  pkg,
+  { profiles = ["debug", "release"], stat = statSync } = {},
+) {
   const normalized = pkg.replace(/-/g, "_");
   const pattern = new RegExp(`^${normalized}-[0-9a-f]+\\.d$`);
 
@@ -128,7 +142,18 @@ export function findNewestArtifact(targetDir, pkg, { profiles = ["debug", "relea
     for (const entry of readdirSync(depsDir)) {
       if (!pattern.test(entry)) continue;
       const full = join(depsDir, entry);
-      const mtimeMs = statSync(full).mtimeMs;
+      let mtimeMs;
+      try {
+        mtimeMs = stat(full).mtimeMs;
+      } catch (err) {
+        // The entry can vanish between readdirSync and statSync — a sibling
+        // worktree rebuilding, or a `cargo clean -p` (this tool's own
+        // remediation) racing us. That is exactly the kind of concurrent
+        // mutation this tool exists to be safe under, so skip the vanished
+        // entry rather than throwing.
+        if (err && err.code === "ENOENT") continue;
+        throw err;
+      }
       if (!newest || mtimeMs > newest.mtimeMs) {
         newest = { path: full, mtimeMs };
       }
@@ -169,13 +194,28 @@ export function checkTargetFreshness({
     return { safe: true, shared: false, siblingWorktrees: [], evidence: [] };
   }
 
+  // Path containment tells us whether OUR target dir sits inside OUR
+  // worktree — it does NOT tell us whether some OTHER live worktree points
+  // its own CARGO_TARGET_DIR at this same absolute path (e.g. the
+  // BRINK-CONFIG.md-mandated shared cache at the main checkout's own
+  // `<repo>/target`, which every other agent worktree also targets, is
+  // "worktree-local" only from the main checkout's point of view). So
+  // locality is informational only, folded into the messages below — it
+  // must never gate the verdict by itself; only actual sibling-worktree
+  // presence, and actual cached-artifact evidence, does.
   const isWorktreeLocal =
     targetDirAbs === repoRootAbs || targetDirAbs.startsWith(repoRootAbs + sep);
+  const localityNote = isWorktreeLocal
+    ? " (this path is worktree-local, but that does not rule out another live worktree pointing at the same absolute directory)"
+    : "";
 
-  if (isWorktreeLocal) {
+  const siblingWorktrees = listWorktrees().filter((w) => resolve(w.path) !== repoRootAbs);
+
+  if (siblingWorktrees.length === 0) {
     log(
-      `[check-target-freshness] CARGO_TARGET_DIR (${targetDirAbs}) lives inside this worktree — ` +
-        "a different worktree has a different absolute path here, so it cannot collide. Safe.",
+      `[check-target-freshness] ${targetDirAbs} has no other live worktree right now${localityNote} — ` +
+        "safe for the moment. Re-run this immediately before trusting a measurement if a " +
+        "sibling worktree could have appeared since.",
     );
     return { safe: true, shared: false, siblingWorktrees: [], evidence: [] };
   }
@@ -185,22 +225,20 @@ export function checkTargetFreshness({
     artifact: findNewestArtifact(targetDirAbs, pkg),
   }));
 
-  const siblingWorktrees = listWorktrees().filter((w) => resolve(w.path) !== repoRootAbs);
-
-  if (siblingWorktrees.length === 0) {
+  if (evidence.every((e) => e.artifact === null)) {
     log(
-      `[check-target-freshness] ${targetDirAbs} is outside this worktree, but no other live ` +
-        "worktree exists right now — safe for the moment. Re-run this immediately before " +
-        "trusting a measurement if a sibling worktree could have appeared since.",
+      `[check-target-freshness] ${targetDirAbs}: no build artifact found yet for any tracked ` +
+        `package${localityNote} — nothing built, no staleness risk, even though ` +
+        `${siblingWorktrees.length} other worktree(s) are live.`,
     );
-    return { safe: true, shared: true, siblingWorktrees: [], evidence };
+    return { safe: true, shared: true, siblingWorktrees, evidence };
   }
 
   warn(
     [
-      "[check-target-freshness] RISK: CARGO_TARGET_DIR is shared with another live worktree.",
+      "[check-target-freshness] RISK: CARGO_TARGET_DIR may be shared with another live worktree.",
       "",
-      `    target dir:  ${targetDirAbs}`,
+      `    target dir:  ${targetDirAbs}${localityNote}`,
       `    this worktree: ${repoRootAbs}`,
       "    other live worktree(s):",
       ...siblingWorktrees.map((w) => `      - ${w.path}${w.locked ? " (locked)" : ""}`),
@@ -221,7 +259,7 @@ export function checkTargetFreshness({
         `${packages.join(" -p ")}` +
         "` (or the specific package(s) you changed), then re-measure. Never point",
       "at a third ad-hoc target dir — see .claude/skills/autonomous-pump/BRINK-CONFIG.md's",
-      '"House rules".',
+      '"Disk rule" section ("never a third path").',
       "",
     ].join("\n"),
   );

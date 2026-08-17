@@ -3,7 +3,15 @@
 // worktrees or cargo cache are touched; `listWorktrees`/`repoRoot`/
 // `targetDir` are all injected against scratch temp directories.
 
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -69,6 +77,58 @@ describe("findNewestArtifact", () => {
     writeArtifact(targetDir, "brink_respell_extra", "0e4243ba15ba10cd");
     assert.equal(findNewestArtifact(targetDir, "brink-respell"), null);
   });
+
+  it("skips an entry that vanishes between readdirSync and statSync instead of throwing", () => {
+    // Reproduces the concurrent-mutation race this tool is meant to be safe
+    // under: a sibling worktree rebuilding, or `cargo clean -p` (this
+    // tool's own remediation), removing a dep-info file after it was
+    // listed but before it was stat'd. `stat` is injected so the race is
+    // deterministic rather than relying on real timing.
+    const targetDir = scratchDir("check-target-freshness-");
+    const vanished = writeArtifact(targetDir, "brink_respell", "aaaaaaaaaaaaaaaa");
+    const survivor = writeArtifact(targetDir, "brink_respell", "bbbbbbbbbbbbbbbb", { ageMs: 1_000 });
+
+    const found = findNewestArtifact(targetDir, "brink-respell", {
+      stat: (path) => {
+        if (path === vanished) {
+          const err = new Error(`ENOENT: no such file or directory, stat '${path}'`);
+          err.code = "ENOENT";
+          throw err;
+        }
+        return statSync(path);
+      },
+    });
+
+    assert.ok(found);
+    assert.equal(found.path, survivor);
+  });
+
+  it("re-throws a non-ENOENT stat error rather than silently skipping it", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    const file = writeArtifact(targetDir, "brink_respell", "0e4243ba15ba10cd");
+
+    assert.throws(
+      () =>
+        findNewestArtifact(targetDir, "brink-respell", {
+          stat: (path) => {
+            if (path === file) {
+              const err = new Error("EACCES: permission denied");
+              err.code = "EACCES";
+              throw err;
+            }
+            return statSync(path);
+          },
+        }),
+      /EACCES/,
+    );
+  });
+
+  it("does not throw against a real vanished file (integration, no injected stat)", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    const vanished = writeArtifact(targetDir, "brink_respell", "aaaaaaaaaaaaaaaa");
+    unlinkSync(vanished);
+    assert.equal(findNewestArtifact(targetDir, "brink-respell"), null);
+  });
 });
 
 describe("listLiveWorktrees", () => {
@@ -116,7 +176,13 @@ describe("checkTargetFreshness", () => {
     assert.equal(result.shared, false);
   });
 
-  it("is safe when the target dir lives inside this worktree, regardless of siblings", () => {
+  it("is safe when the target dir lives inside this worktree AND nothing has been built yet, even with a live sibling", () => {
+    // Locality alone must never be the verdict (the false-negative this
+    // guards): a worktree-local path does not rule out another live
+    // worktree pointing its own CARGO_TARGET_DIR at the same absolute
+    // directory (e.g. the BRINK-CONFIG.md shared cache at the main
+    // checkout's own `<repo>/target`). This case is genuinely safe only
+    // because no artifact exists yet, not because of the path shape.
     const repoRoot = scratchDir("check-target-freshness-repo-");
     const targetDir = join(repoRoot, "target");
     mkdirSync(targetDir, { recursive: true });
@@ -124,16 +190,46 @@ describe("checkTargetFreshness", () => {
     const result = checkTargetFreshness({
       repoRoot,
       targetDir,
-      listWorktrees: () => [{ path: "/some/other/worktree", locked: false }],
+      listWorktrees: () => [
+        { path: repoRoot, locked: false },
+        { path: "/some/other/worktree", locked: false },
+      ],
       log: () => {},
       warn: () => {},
     });
 
     assert.equal(result.safe, true);
-    assert.equal(result.shared, false);
+    assert.equal(result.shared, true);
   });
 
-  it("is safe when the target dir is shared but no other worktree is currently live", () => {
+  it("reports RISK when the target dir lives inside this worktree but a build artifact exists AND a sibling is live", () => {
+    // The reproduction of the false-negative: a worktree-local target dir
+    // (e.g. the main checkout running against its own `<repo>/target`,
+    // which is exactly the BRINK-CONFIG.md shared-cache convention) must
+    // NOT short-circuit to "safe" purely from path containment once a
+    // sibling worktree is live and a cached artifact actually exists.
+    const repoRoot = scratchDir("check-target-freshness-repo-");
+    const targetDir = join(repoRoot, "target");
+    const siblingPath = scratchDir("check-target-freshness-sibling-");
+    writeArtifact(targetDir, "brink_respell", "0e4243ba15ba10cd");
+
+    const result = checkTargetFreshness({
+      repoRoot,
+      targetDir,
+      packages: ["brink-respell"],
+      listWorktrees: () => [
+        { path: repoRoot, locked: false },
+        { path: siblingPath, locked: false },
+      ],
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(result.safe, false);
+    assert.equal(result.shared, true);
+  });
+
+  it("is safe when the target dir is outside this worktree but no other worktree is currently live", () => {
     const repoRoot = scratchDir("check-target-freshness-repo-");
     const targetDir = scratchDir("check-target-freshness-shared-target-");
 
@@ -146,8 +242,37 @@ describe("checkTargetFreshness", () => {
     });
 
     assert.equal(result.safe, true);
-    assert.equal(result.shared, true);
+    assert.equal(result.shared, false);
     assert.deepEqual(result.siblingWorktrees, []);
+  });
+
+  it("is safe when the target dir is shared with a live sibling but nothing has been built yet for any tracked package", () => {
+    // The false-positive this guards: an existing-but-empty target dir
+    // must not take the RISK path just because a sibling worktree is
+    // live — its own evidence (every package null) says nothing has been
+    // built, so there is nothing that could have been served stale.
+    const repoRoot = scratchDir("check-target-freshness-repo-");
+    const targetDir = scratchDir("check-target-freshness-shared-target-");
+    const siblingPath = scratchDir("check-target-freshness-sibling-");
+
+    const result = checkTargetFreshness({
+      repoRoot,
+      targetDir,
+      packages: ["brink-respell", "brink-ir"],
+      listWorktrees: () => [
+        { path: repoRoot, locked: false },
+        { path: siblingPath, locked: false },
+      ],
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(result.safe, true);
+    assert.equal(result.shared, true);
+    assert.deepEqual(
+      result.evidence.map((e) => e.artifact),
+      [null, null],
+    );
   });
 
   it("reports RISK — not safe — when the target dir is shared with another live worktree", () => {
