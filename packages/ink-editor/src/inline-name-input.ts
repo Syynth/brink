@@ -38,6 +38,7 @@
 import type { StructuralResult } from "@brink/wasm-types";
 import { isSafeRename, breakageCount, breakageEntries } from "./breakage.js";
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
+import { registerDismissible } from "./dismiss-registry.js";
 
 /** Context handed to a host `onBreakage` override. */
 export interface InlineNameBreakageContext {
@@ -120,6 +121,14 @@ export class InlineNameInput {
   private disposed = false;
   private readonly cache = new Map<string, StructuralResult>();
   private readonly keyHandler: (e: KeyboardEvent) => void;
+  /** Global Escape safety net (#279) — a second, independent registration
+   *  alongside `keyHandler` below (see dismiss-registry.ts). Needed because
+   *  `keyHandler` is scoped to `input`, not `document`: it never sees an
+   *  Escape pressed while focus is elsewhere in this widget's own subtree —
+   *  concretely, the breakage report's force-override button (`report`, a
+   *  sibling of `input`, gets focused when the report opens) — or anywhere
+   *  outside it. */
+  private unregisterDismiss: (() => void) | null = null;
 
   constructor(
     private readonly options: InlineNameInputOptions,
@@ -173,6 +182,9 @@ export class InlineNameInput {
     this.input = input;
     this.badge = badge;
     this.report = report;
+    // Registered here, separate from `input`'s own keydown listener above —
+    // see the field doc comment on `unregisterDismiss`.
+    this.unregisterDismiss = registerDismissible(() => this.cancel());
     // Focus + select after CM mounts the widget. The deferral is load-bearing
     // for `focus()`: `render()` is called from `WidgetType.toDOM()`, which
     // returns the element *before* CM inserts it, and `focus()` on a detached
@@ -494,6 +506,12 @@ export class InlineNameInput {
 
   private close(): void {
     if (this.disposed) return;
+    // Unregistered here — the shared teardown point behind both `cancel()`
+    // and `commit()` — before notifying the host.
+    if (this.unregisterDismiss) {
+      this.unregisterDismiss();
+      this.unregisterDismiss = null;
+    }
     this.onClose();
   }
 
@@ -506,6 +524,15 @@ export class InlineNameInput {
    *  with the removed node; we null our refs so a late callback is inert). */
   dispose(): void {
     this.disposed = true;
+    // Belt-and-suspenders: a host that tears this widget down without going
+    // through `cancel()`/`commit()` (e.g. `dispose()` called directly, CM6
+    // removing the decoration on a doc change) would otherwise leave the
+    // registry holding a callback into an instance that now considers itself
+    // torn down.
+    if (this.unregisterDismiss) {
+      this.unregisterDismiss();
+      this.unregisterDismiss = null;
+    }
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;

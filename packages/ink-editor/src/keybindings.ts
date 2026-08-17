@@ -6,6 +6,7 @@ import { sigilBypass, characterName } from "./screenplay.js";
 import { findTransition, lineHasContent, executeAction, buildContext, tryDialectTransition } from "./transitions.js";
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
+import { registerDismissible } from "./dismiss-registry.js";
 
 const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab", "Backspace", "Delete"] as const;
 
@@ -324,12 +325,21 @@ function showInlineElementPicker(view: EditorView): boolean {
   renderItems();
   document.body.appendChild(dropdown);
   document.addEventListener("keydown", handleKeydown, true);
-  document.addEventListener("mousedown", handleClick);
+  // Capture-phase `pointerdown`, matching Overlay's dismiss contract
+  // (docs/studio-shell-spec.md §7.7.3) — this used to be a bubble-phase
+  // `mousedown`, which an unrelated ancestor's `stopPropagation()` could
+  // silently defeat (the same shape as the BinderContextMenu/CodeActionsMenu
+  // bugs this PR fixes; see those for the full rationale).
+  document.addEventListener("pointerdown", handleClick, true);
+  // Global Escape safety net (#279) — a second, independent registration
+  // alongside this picker's own Escape listener above (see dismiss-registry.ts).
+  const unregisterDismiss = registerDismissible(() => dismissInlineElementPicker());
 
   // Store cleanup references
   (dropdown as any).__cleanup = () => {
     document.removeEventListener("keydown", handleKeydown, true);
-    document.removeEventListener("mousedown", handleClick);
+    document.removeEventListener("pointerdown", handleClick, true);
+    unregisterDismiss();
   };
 
   return true;

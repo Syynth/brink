@@ -2,6 +2,7 @@ import { type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import type { CodeAction } from "@brink/wasm-types";
 import { ensureStructuralStyles } from "./structural-styles.js";
+import { registerDismissible } from "./dismiss-registry.js";
 
 export interface CodeActionsOptions {
   /** Actions available at `offset` (cursor). Resolved + applied via `onSelect`. */
@@ -25,14 +26,16 @@ export interface CodeActionsOptions {
 }
 
 /**
- * Owns the code-actions popup menu and its outside-click dismiss listener so
- * both are torn down in `destroy()` — otherwise an open menu (and its
- * `document` click listener) would leak when the editor unmounts.
+ * Owns the code-actions popup menu and its dismiss listeners so both are
+ * torn down in `destroy()` — otherwise an open menu (and its `document`
+ * listeners) would leak when the editor unmounts.
  */
 class CodeActionsMenu {
   private menu: HTMLElement | null = null;
-  private dismiss: ((e: MouseEvent) => void) | null = null;
-  private keyNav: ((e: KeyboardEvent) => void) | null = null;
+  private onPointerDown: ((e: PointerEvent) => void) | null = null;
+  private onKeyDown: ((e: KeyboardEvent) => void) | null = null;
+  private navKeyDown: ((e: KeyboardEvent) => void) | null = null;
+  private unregisterDismiss: (() => void) | null = null;
 
   constructor(
     private readonly view: EditorView,
@@ -75,13 +78,10 @@ class CodeActionsMenu {
       items.push(item);
     }
 
-    const dismiss = (e: MouseEvent) => {
-      if (!menu.contains(e.target as Node)) this.close();
-    };
-    // Keyboard reachability: ↑/↓ move between items, Enter activates, Esc
-    // dismisses. Focus starts on the first item so the menu is usable with no
-    // pointer.
-    const keyNav = (e: KeyboardEvent) => {
+    // Keyboard reachability within the menu: ↑/↓ move between items. Scoped
+    // to `menu` (not document) on purpose — it only matters once focus is
+    // already inside.
+    const navKeyDown = (e: KeyboardEvent) => {
       const active = document.activeElement;
       const idx = items.indexOf(active as HTMLButtonElement);
       if (e.key === "ArrowDown") {
@@ -90,22 +90,49 @@ class CodeActionsMenu {
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         items[(idx - 1 + items.length) % items.length]?.focus();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        this.close();
-        this.view.focus();
       }
     };
 
+    // Dismissal: Escape anywhere, pointerdown outside the menu — `document`,
+    // capture phase, matching Overlay's dismiss contract (#279). The
+    // previous shape scoped Escape to the menu ELEMENT itself
+    // (`menu.addEventListener("keydown", ...)`) and deferred attaching an
+    // outside-CLICK listener by one tick to dodge the opening keystroke —
+    // but a keydown dispatched anywhere other than the menu's own subtree
+    // (including, in the real bug, any Escape pressed before that deferred
+    // tick moved focus in) never reached it: the menu was unescapable. Both
+    // listeners here are safe to attach immediately: they're a different
+    // event type (pointerdown/keydown-Escape) from the Ctrl-./Cmd-. keydown
+    // that opened the menu, so there's no risk of the opening keystroke
+    // self-triggering a dismiss.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      this.close();
+      this.view.focus();
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target;
+      if (target instanceof Node && menu.contains(target)) return;
+      this.close();
+    };
+
     this.menu = menu;
-    this.dismiss = dismiss;
-    this.keyNav = keyNav;
-    // Defer attaching so the opening keystroke/click doesn't immediately close it.
+    this.onPointerDown = onPointerDown;
+    this.onKeyDown = onKeyDown;
+    this.navKeyDown = navKeyDown;
+    document.addEventListener("keydown", onKeyDown, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    menu.addEventListener("keydown", navKeyDown);
+    // Global Escape safety net (#279) — registered separately from the
+    // listeners above so a bug in that logic (or a re-render that orphans
+    // it) can't take this registration down with it. See dismiss-registry.ts.
+    this.unregisterDismiss = registerDismissible(() => this.close());
+    // Defer moving focus so the opening keystroke doesn't get re-delivered
+    // to the first item.
     setTimeout(() => {
-      if (this.dismiss === dismiss) document.addEventListener("click", dismiss);
-      items[0]?.focus();
+      if (this.menu === menu) items[0]?.focus();
     }, 0);
-    menu.addEventListener("keydown", keyNav);
 
     document.body.appendChild(menu);
   }
@@ -117,16 +144,24 @@ class CodeActionsMenu {
   }
 
   private close(): void {
-    if (this.dismiss) {
-      document.removeEventListener("click", this.dismiss);
-      this.dismiss = null;
+    if (this.onKeyDown) {
+      document.removeEventListener("keydown", this.onKeyDown, true);
+      this.onKeyDown = null;
+    }
+    if (this.onPointerDown) {
+      document.removeEventListener("pointerdown", this.onPointerDown, true);
+      this.onPointerDown = null;
+    }
+    if (this.unregisterDismiss) {
+      this.unregisterDismiss();
+      this.unregisterDismiss = null;
     }
     if (this.menu) {
-      if (this.keyNav) this.menu.removeEventListener("keydown", this.keyNav);
+      if (this.navKeyDown) this.menu.removeEventListener("keydown", this.navKeyDown);
       this.menu.remove();
       this.menu = null;
     }
-    this.keyNav = null;
+    this.navKeyDown = null;
   }
 
   destroy(): void {

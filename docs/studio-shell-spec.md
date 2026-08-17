@@ -800,7 +800,83 @@ call that would orphan the first handle absent the clear-before-set guard,
 teardown via `dispose()`, then `vi.runAllTimers()` asserting the spy was
 never called.
 
-#### 7.7.3 Off-paint-path analysis deferral (invariant)
+#### 7.7.3 Dismiss contract for non-`Overlay` surfaces, and the global net (#279)
+
+`Overlay` (§7.7) owns Escape/outside-pointerdown dismissal for anything that
+routes through it. A handful of transient surfaces are DOM-level by design
+and do not — [`widget-popover.ts`](../packages/ink-editor/src/widget-popover.ts)
+and [`widget-modal.ts`](../packages/ink-editor/src/widget-modal.ts) (argument-
+widget chrome anchored to CodeMirror decorations; see
+`docs/argument-widget-spec.md` §6), the code-actions menu
+([`code-actions.ts`](../packages/ink-editor/src/code-actions.ts)), the inline
+element-type picker (`keybindings.ts`, Alt+Enter), and
+[`BinderContextMenu.tsx`](../packages/studio-ui/src/BinderContextMenu.tsx)
+(reused by `SymbolContextMenuHost` for the editor/Story-Graph symbol menu).
+Every one of these owes `Overlay`'s dismiss contract without inheriting it for
+free: a `document`-level, **capture-phase** `pointerdown` (outside-target) and
+`keydown` (Escape) listener pair, attached directly by the surface and torn
+down with it. Capture-phase, not bubble — a bubble-phase listener is
+defeated by any unrelated ancestor's `stopPropagation()` sharing the bubble
+path (#279's original stuck-menu shape: `BinderContextMenu` used bubble-phase
+`mousedown`/`keydown` before this fix).
+
+**The global dismiss registry** (`dismiss-registry.ts`) is a second,
+independent layer on top of that per-surface contract, not a replacement for
+it: a surface registers a close callback (`registerDismissible`, in a
+separate effect/lifecycle hook from its own listener setup) while open, and
+one shared listener closes everything still registered when nothing else
+handled the key. It exists specifically for the failure #279 named — a
+surface's own dismiss listener orphaned by a re-render/error while the
+surface stays visibly mounted — and is deliberately structured so a bug in
+the per-surface listener setup cannot take the registry registration down
+with it. **Two independent module instances** exist — `packages/studio-shell/src/dismiss-registry.ts`
+(re-exported from that package's `index.ts`) and `packages/ink-editor/src/dismiss-registry.ts`
+— because `ink-editor` has no dependency on `studio-shell`; there is no
+cross-package net, only two same-shaped ones, each covering the surfaces in
+its own package.
+
+**Listener ordering (load-bearing).** The registry's shared listener attaches
+on `window`, in the **bubble** phase — not `document`/capture, which is what
+every individual surface's own listener uses. This is not incidental: the
+registry installs its listener once, the first time anything in the process
+ever calls `registerDismissible()`, and never re-attaches after that — so on
+every surface opened afterward, the registry's listener was almost always
+registered *before* that surface's own (which only gets attached fresh each
+time the surface opens). Two same-phase, same-target listeners fire in
+registration order; if the registry listener were also `document`-capture, it
+would then run *first* on most opens, calling every registered `onClose` —
+including the surface's own — before that surface's own capture-phase
+handler ever got a chance to run its `preventDefault()`/focus-return logic.
+Concretely, that shape stripped `CodeActionsMenu.close()`'s
+`this.view.focus()` call on the second-and-later open of the menu, and let
+Escape leak to CodeMirror's keymap; and it made
+`dismissAllTransientSurfaces()` — which closes *every* registered surface
+unconditionally — tear down a whole surface stack on one Escape instead of
+just the surface that should have handled it.
+
+Attaching on `window`/bubble instead fixes this by construction, not by
+relying on registration order: every `document`-capture listener (every
+surface's own) runs to completion in the capture phase strictly *before* any
+bubble-phase `window` listener gets a turn, regardless of which was attached
+first. A surface that handles Escape itself calls `preventDefault()`, which
+the registry listener's `event.defaultPrevented` guard then honors; a surface
+that calls `stopPropagation()` keeps the event from reaching `window` at all.
+The registry listener fires — and only then sweeps whatever is left
+registered — exactly when nothing in the dispatch path already handled the
+key, which is the orphan case it exists for.
+
+A regression test for this ordering must not call the test-only
+`resetDismissRegistryForTests()` immediately before every mount: doing so
+forces the registry's listener to install *after* the surface under test on
+every single case, which is the inverse of the production shape above and
+cannot expose an ordering bug. The regression coverage
+(`overlay-dismiss-safety-net.test.tsx`, `binder-context-menu-dismiss.test.tsx`,
+`dismiss-registry-orphan.test.ts`) resets once per `describe` and then opens
+a surface a *second* time with the registry listener already live, asserting
+the surface's own handler ran (`event.defaultPrevented`, a focus-return spy)
+rather than a bare fallback from the net.
+
+#### 7.7.4 Off-paint-path analysis deferral (invariant)
 
 A third, related hazard: a synchronous call that is not merely deferred (§7.7.2)
 but *heavy* — expensive enough to itself block the main thread, and therefore
