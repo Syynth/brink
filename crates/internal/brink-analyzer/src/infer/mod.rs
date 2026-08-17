@@ -55,7 +55,7 @@ mod graph;
 mod intrinsics;
 mod ty;
 
-pub(crate) use body::is_string_numeric_concat;
+pub(crate) use body::{is_string_numeric_concat, lambda_own_bindings};
 pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
