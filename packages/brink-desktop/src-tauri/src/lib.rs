@@ -2692,13 +2692,52 @@ mod tests {
     /// covers, pinned by exact-list equality below, so a SIXTH job escaping
     /// this guard by simply existing next to them is impossible — it would
     /// fail the allowlist-contents assertion, not merely go unnoticed.
+    ///
+    /// #2710 gap 1, checked directly against upstream rather than assumed:
+    /// the cargo-dist version this workspace pins (`cargo-dist-version =
+    /// "0.32.0"`, root `Cargo.toml`'s `[workspace.metadata.dist]`) ships a
+    /// `release.yml.j2` template (`cargo-dist/templates/ci/github/` in the
+    /// `axodotdev/cargo-dist` repo, tag `v0.32.0`) with exactly ONE
+    /// occurrence of the string "timeout" in the whole file: a conditional
+    /// `timeout-minutes: {{{ step.timeout_minutes }}}` nested inside the
+    /// `build-local-artifacts` job's per-step "custom build setup steps"
+    /// loop, gated on `if step.timeout_minutes is not undefined`. That is
+    /// STEP-level timeout support for a dist-config-supplied optional setup
+    /// step — not a JOB-level `timeout-minutes:` on any of the five jobs
+    /// this allowlist actually covers (`plan`, `build-local-artifacts`,
+    /// `build-global-artifacts`, `host`, `announce` all still lack one in
+    /// the upstream template itself). So as of this PR neither exit
+    /// condition (a) nor (b) above holds: upstream does not yet support
+    /// what would make this allowlist entry removable via regeneration.
+    /// Re-check this comment (and the pinned version above) whenever
+    /// `cargo-dist-version` bumps — this is a point-in-time finding, not a
+    /// standing guarantee, and nothing here re-verifies it automatically.
+    ///
+    /// #2710 gap 2: an explicit ceiling, not just presence. A job could set
+    /// `timeout-minutes: 4320` (3 days) and this guard would previously have
+    /// passed it — the presence check alone caps nothing. `TIMEOUT_MINUTES_CEILING`
+    /// below is 120 (2 hours), re-measured against this repo's real job
+    /// durations for this PR (GitHub Actions API, 2026-08-17, `syynth/brink`)
+    /// rather than trusted from the issue's own figures: `ci.yml`'s heaviest
+    /// job ("Fuzz (smoke)", 30-minute cap) ran 7m32s in the most recent
+    /// completed run (run 32002443794) — about 4x headroom under its own cap,
+    /// consistent with the issue's "≥3.7x headroom" claim. The highest
+    /// `timeout-minutes` actually set anywhere in the tree today is 60
+    /// (`desktop-bundle-smoke.yml`, a real `cargo build -p brink-cli
+    /// --release` + Tauri bundle) — and that job's last five completed runs
+    /// took 5.8/6.1/9.8/7.0/8.2 minutes, i.e. ≥6x headroom under its own cap.
+    /// 120 sits at 2x the highest cap this repo has ever needed, leaving room
+    /// for a future legitimately-long lane without moving the ceiling, while
+    /// still rejecting a multi-day value by more than an order of magnitude.
     #[test]
     fn every_workflow_job_sets_timeout_minutes() {
         const ALLOWLISTED_FILE: &str = "release.yml";
+        const TIMEOUT_MINUTES_CEILING: u32 = 120;
 
         let mut checked_jobs: Vec<String> = Vec::new();
         let mut missing: Vec<String> = Vec::new();
         let mut allowlisted: Vec<String> = Vec::new();
+        let mut too_high: Vec<String> = Vec::new();
 
         for file in workflow_files() {
             let contents = workflow(&file);
@@ -2714,17 +2753,30 @@ mod tests {
                 // contain the substring in prose is not mistaken for the
                 // real key, the same discipline `run_commands` applies to
                 // comment lines.
-                let has_timeout = body.lines().any(|l| l.starts_with("    timeout-minutes:"));
-                if has_timeout {
-                    continue;
-                }
+                let timeout_line = body
+                    .lines()
+                    .find(|l| l.starts_with("    timeout-minutes:"));
 
-                if file == ALLOWLISTED_FILE {
-                    allowlisted.push(lane);
+                let Some(timeout_line) = timeout_line else {
+                    if file == ALLOWLISTED_FILE {
+                        allowlisted.push(lane);
+                        continue;
+                    }
+                    missing.push(lane);
                     continue;
-                }
+                };
 
-                missing.push(lane);
+                let value = timeout_line
+                    .trim_start_matches("    timeout-minutes:")
+                    .trim();
+                // A value this guard cannot parse is exactly the kind of
+                // thing it exists to catch, not something to skip past —
+                // treat it as violating the ceiling rather than silently
+                // passing an unrecognised format through.
+                let minutes: u32 = value.parse().unwrap_or(u32::MAX);
+                if minutes > TIMEOUT_MINUTES_CEILING {
+                    too_high.push(format!("{lane} ({minutes}m)"));
+                }
             }
         }
 
@@ -2736,6 +2788,16 @@ mod tests {
              `timeout-minutes` value based on what it actually does, or — ONLY if it is \
              release.yml — add it to this test's narrow cargo-dist allowlist with the same \
              justification as the other five entries."
+        );
+
+        assert!(
+            too_high.is_empty(),
+            "these jobs set a `timeout-minutes` above this guard's {TIMEOUT_MINUTES_CEILING}-minute \
+             ceiling (#2710 gap 1): {too_high:?}. The ceiling exists so an absurd value (e.g. \
+             4320 for 3 days) cannot pass this guard just by being present — every job's real \
+             `timeout-minutes` in this tree today is 60 or less; if a job genuinely needs more \
+             than {TIMEOUT_MINUTES_CEILING} minutes, raise the ceiling here with a fresh \
+             measurement justifying it, don't just accept the job's own oversized value."
         );
 
         assert_eq!(
@@ -2762,6 +2824,51 @@ mod tests {
             "expected to see jobs beyond release.yml's allowlisted five, proving this walked \
              every job in every workflow file; jobs seen: {checked_jobs:?}"
         );
+    }
+
+    /// #2717: branch protection's required-checks list lives in GitHub
+    /// SETTINGS, not in this repository — nothing under `.github/` or
+    /// anywhere else in the tree contains it, and this crate's tests run
+    /// with no GitHub API token wired in (a repo-admin-scoped token would be
+    /// needed to read it, which is itself the open design/cost question the
+    /// issue leaves to the maintainer). BE HONEST about what that means:
+    /// **this test cannot see, and does not attempt to assert, GitHub's
+    /// actual required-checks list stays free of these two lanes.** That
+    /// half of the fence — a maintainer (or automation) adding
+    /// `desktop-smoke` / `Desktop bundle smoke (tauri build --debug
+    /// --bundles deb)` to required checks via the Settings UI — is
+    /// UNTESTABLE from in-tree code today, exactly the class of gap #2610
+    /// and #2613 warn against papering over with a guard whose docstring
+    /// outruns its filter.
+    ///
+    /// What IS checkable in-tree, and what this test actually guards, is the
+    /// documented invariant each lane already carries in its own workflow
+    /// file: a comment naming its NON-REQUIRED standing and the ruling that
+    /// backs it (#2346/#2402, "no required CI lane may grow a Tauri
+    /// build"). #2714 added that comment to `desktop-bundle-smoke.yml`
+    /// alongside `desktop-smoke.yml`'s preexisting one; this test is what
+    /// stops either comment from being silently deleted or reworded past
+    /// the point of naming the ruling, which is the smallest thing this
+    /// tree CAN enforce until repo-admin API access lands.
+    #[test]
+    fn non_required_desktop_lanes_document_their_standing() {
+        for file in ["desktop-smoke.yml", "desktop-bundle-smoke.yml"] {
+            let contents = workflow(file);
+
+            assert!(
+                contents.contains("NON-REQUIRED"),
+                "{file} should carry a comment naming its NON-REQUIRED standing (#2346/#2402) — \
+                 this is the in-tree half of the fence keeping it out of branch protection's \
+                 required-checks list; actual GitHub required-checks state is not readable from \
+                 this tree (#2717) and is NOT what this assertion checks"
+            );
+            assert!(
+                contents.contains("#2346") && contents.contains("#2402"),
+                "{file}'s NON-REQUIRED comment should cite both rulings it stands on (#2346 and \
+                 #2402) so the standing traces back to a real decision, not just an unattributed \
+                 claim"
+            );
+        }
     }
 
     #[test]
