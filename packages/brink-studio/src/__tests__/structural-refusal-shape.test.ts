@@ -1396,6 +1396,12 @@ describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees
       sessionWith({ "main.ink": KNOT_AND_FUNCTION }).demote_knot("main.ink", "greet", "one"),
     "promote_stitch:alt-fence-terse": () =>
       sessionWith({ "main.ink": ALT_FENCES }).promote_stitch("main.ink", "one", "a"),
+    // Review finding on #2706: `function-knot` below pins the out-of-range
+    // clamp (single knot, nowhere to move — `structuralOk(path, source)`
+    // returns the source unchanged), never the actual `planKnots`/
+    // `renderKnots` swap. This one drives the real move.
+    "reorder_knot:two-knots": () =>
+      sessionWith({ "main.ink": TWO_KNOTS }).reorder_knot("main.ink", "one", 1),
     "reorder_knot:function-knot": () =>
       sessionWith({ "main.ink": FUNCTION_KNOT }).reorder_knot("main.ink", "greet", 1),
     "reorder_stitch:accepted": () =>

@@ -381,10 +381,11 @@ guard can express, because a mock that never refuses has no string to compare (#
 the header recognizer itself rather than an op built on it (#2662, ranges added #2685 Gap 3); \
 `regions` are the surviving `new_source` after a stitch region was deleted, the half neither \
 acceptance nor the outline can see because the op succeeds either way (#2684); `payloads` are \
-the same half for every `dispatchSymbolAction` op — `reorder_knots`/`reorder_stitches`/ \
-`move_stitch`/`extract_to_function`/`extract_to_knot` (#2675 Gap C, #2685 Gap 3), plus \
-`demote_knot`/`promote_stitch`/`reorder_knot`/`reorder_stitch` (#2706) — and an indented-FIRST- \
-knot header's end-to-end preamble behavior (`reorder_knots:indented-first-knot`, #2706); \
+the same half for every `dispatchSymbolAction` op — `reorder_knots`/`reorder_stitches`/`move_stitch` \
+(#2675 Gap C, #2685 Gap 3), plus `demote_knot`/`promote_stitch`/`reorder_knot`/`reorder_stitch` \
+(#2706), plus the two extract editor commands `extract_to_function`/`extract_to_knot` (#2675 Gap C, \
+#2685 Gap 3) — and an indented-FIRST-knot header's end-to-end preamble behavior \
+(`reorder_knots:indented-first-knot`, #2706); \
 `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
 `{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
 `ok: true` (#2675 Gap A); `defaults` are session-seed values a fresh production session \
@@ -1345,8 +1346,20 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "promote_stitch (stitch under a `==`-fenced knot)",
                 &alt_fences.promote_stitch("main.ink", "one", "a"),
             ),
+            // Review finding on #2706: the `function-knot` case below pins the
+            // OUT-OF-RANGE CLAMP (the single-knot source has no `target` to
+            // move to, so `structuralOk(path, source)` returns it unchanged)
+            // — it never exercises `planKnots`/`renderKnots`'s actual swap.
+            // This case drives the real move: `one` past `two` on `TWO_KNOTS`,
+            // which carries stitches on both sides, so the head+stitches
+            // reassembly the payloads map exists to pin is inside this
+            // singular op's pin too.
+            "reorder_knot:two-knots": payload_source(
+                "reorder_knot (ordinary success — the only other knot is past it)",
+                &two.reorder_knot("main.ink", "one", 1),
+            ),
             "reorder_knot:function-knot": payload_source(
-                "reorder_knot (the only knot is a function knot)",
+                "reorder_knot (the only knot is a function knot — out-of-range clamp)",
                 &function_only.reorder_knot("main.ink", "greet", 1),
             ),
             "reorder_stitch:accepted": payload_source(

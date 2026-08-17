@@ -477,11 +477,16 @@ exposed.
 `acceptance`'s `ok`/`error` flag has the same blind spot one level up: an op
 that answers `ok: true` with the WRONG `new_source` is invisible to it too. A
 fifth map, **`payloads`** (#2675 Gap C, #2685 Gap 3), pins the full
-`new_source` for `reorder_knots`/`reorder_stitches`/`move_stitch`/
-`extract_to_knot`/`extract_to_function`, run on the same alt-fenced,
-alt-stitched, and indented-selection inputs the other maps already exercise —
-so a fixed ownership-range boundary shows up as newly-pinned content on the
-same source, not as a new case that could itself be wrong. A sixth map,
+`new_source` for `reorder_knots`/`reorder_stitches`/`move_stitch`, run on the
+same alt-fenced, alt-stitched, and indented-selection inputs the other maps
+already exercise, plus the two extract editor commands `extract_to_knot`/
+`extract_to_function` — so a fixed ownership-range boundary shows up as
+newly-pinned content on the same source, not as a new case that could itself
+be wrong. #2706 extended `payloads` to the four `dispatchSymbolAction` ops
+#2703 (the PR that introduced the map) did not reach — `demote_knot`,
+`promote_stitch`, `reorder_knot` (singular), `reorder_stitch` (singular) —
+including a case that drives an actual reorder (not just an out-of-range
+clamp) for the singular ops, per a follow-up review finding. A sixth map,
 **`call_forms`** (#2675 Gap A), pins the exact call-site line
 `extract_to_function` writes — `{name()}` for a single value-expression
 selection, `~ name()` for a statement — the choice `acceptance` cannot see
@@ -670,6 +675,22 @@ indented `  ==== four ====` — is pinned the same way, by `outlines.ALT_FENCES`
 and `payloads`'s `reorder_knots:alt-fences`.) This closes the boundary for the
 seven `dispatchSymbolAction` ops, which all rearrange whole `parseOutline`
 regions.
+
+**The indented-FIRST-knot header answer, driven (#2706).** #2703 left one
+shape of this boundary undriven on both sides: an indented header with no
+PRECEDING symbol for the "glue the indent to the predecessor's trailing
+trivia" rule to attach to, because it is the file's very first symbol. A new
+`INDENTED_FIRST_KNOT` fixture (`"  === one ===\nFirst.\n= a\nA.\n\n=== two
+===\nSecond.\n"`) drives the answer: `source_file`'s own parse loop calls
+`p.skip_ws()` before dispatching to `knot_definition`, so the indent is
+consumed as `SOURCE_FILE`'s own leading trivia — never reaching `KNOT_DEF`'s
+range — the same general mechanism as the non-first case, just with the root
+node doing the swallowing instead of a knot body. `outlines.INDENTED_FIRST_KNOT`
+pins `full_start` for knot `one` at `2`; `payloads`'s
+`reorder_knots:indented-first-knot` drives the end-to-end consequence —
+moving `one` out of first place — and confirms the indent stays behind as
+untouched file preamble, agreeing with both `structural_move.rs`'s
+`decl_region_start` and the mock's `renderKnots` preamble-slicing model.
 
 **Not covered, and checked rather than assumed (#2703):** `delete_symbol`
 does **not** read `parseOutline`'s ranges — it is its own independent
