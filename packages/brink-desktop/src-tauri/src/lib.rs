@@ -2753,9 +2753,7 @@ mod tests {
                 // contain the substring in prose is not mistaken for the
                 // real key, the same discipline `run_commands` applies to
                 // comment lines.
-                let timeout_line = body
-                    .lines()
-                    .find(|l| l.starts_with("    timeout-minutes:"));
+                let timeout_line = body.lines().find(|l| l.starts_with("    timeout-minutes:"));
 
                 let Some(timeout_line) = timeout_line else {
                     if file == ALLOWLISTED_FILE {
