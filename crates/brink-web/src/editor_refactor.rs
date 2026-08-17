@@ -532,14 +532,19 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// Five knots whose `=` fences are all legal and none of them the
     /// `=== name ===` shape every other fixture uses (#2662).
     ///
-    /// `brink_syntax`'s `knot_header` rule is
-    /// `"==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
-    /// … ~ INLINE_WS* ~ ("==" ~ "="*)?`, so production's vocabulary is **two or
-    /// more** `=`, **zero or more** spaces, **tolerated leading indent**
-    /// (`skip_ws` runs before the fence is even looked for), and an **optional**
-    /// trailing fence of **any width** — `== one ==`, `===two===`,
-    /// `==== three ====`, `  ==== four ====` and `=== five` are all ordinary
-    /// top-level knots, and `one` still carries its stitch `a`.
+    /// `brink_syntax`'s `parser/knot.rs` used to document the `knot_header`
+    /// rule as `"==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~
+    /// identifier … ~ INLINE_WS* ~ ("==" ~ "="*)?` (the comment now says
+    /// `INLINE_WS*` after `function` too, mismatch fixed separately by
+    /// #2707), but the **code**'s `p.bump()` + `p.skip_ws()` after `function`
+    /// has always matched **zero or more**, same as every other whitespace
+    /// step in the rule — only the doc comment changed. So production's real
+    /// vocabulary is **two or more** `=`, **zero or more** spaces,
+    /// **tolerated leading indent** (`skip_ws` runs before the fence is even
+    /// looked for), and an **optional** trailing fence of **any width** —
+    /// `== one ==`, `===two===`, `==== three ====`, `  ==== four ====` and
+    /// `=== five` are all ordinary top-level knots, and `one` still carries
+    /// its stitch `a`.
     ///
     /// The studio mock had two narrower answers to that question, and which
     /// one applied depended on which op a test happened to call: `parseOutline`
@@ -563,7 +568,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// uses, plus two `=`-leading lines that are NOT headers (#2684).
     ///
     /// The stitch level had #2662's split one rung down. `brink_syntax`'s
-    /// `parser/knot.rs` documents `stitch_header` as
+    /// `parser/knot.rs` used to document `stitch_header` as
     ///
     /// ```text
     /// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
@@ -574,7 +579,9 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// **zero** or more. So production's real vocabulary is: a **tolerated
     /// leading indent** (`current()` skips trivia), **exactly one** `=`, a
     /// negative lookahead excluding `=` and `>`, and **optional** whitespace —
-    /// the `INLINE_WS+` in the doc comment is not what the parser does.
+    /// the `INLINE_WS+` that used to be in the doc comment was never what the
+    /// parser does (the comment now says `INLINE_WS*`, mismatch fixed
+    /// separately by #2695).
     ///
     /// Driven, not read (the whole lesson of #2662): `file_symbols` reports a
     /// stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and
