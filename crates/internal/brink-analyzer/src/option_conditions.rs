@@ -51,6 +51,23 @@
 //! unclassifiable shape; only a *captured* outer local/global/intrinsic
 //! call inside the lambda body gets the identical check a top-level
 //! condition gets.
+//!
+//! **Every container `HirFile` exposes that can hold a condition, walked
+//! exhaustively (issue #2772, the third gap found in this same walk after
+//! #2764/PR #2768's other two — `Expr` descent and the VAR/CONST scan):**
+//! `hir.knots` (each `Knot`, function or not per `is_function`, plus every
+//! `stitch` on it), `hir.variables`/`hir.constants` (initializer values,
+//! for an embedded lambda body only — see above), and `hir.root_content`
+//! (file-scope content before the first knot/stitch header — this fix).
+//! The remaining `HirFile` fields (`lists`, `structs`, `externals`,
+//! `includes`, `module`, `imports`, `visibility`, `was_directives`,
+//! `allow_scopes`, `element_matches`, `cue_names`, `native`,
+//! `claim_handlers`) carry no `Stmt`/`Expr` tree of their own and so can
+//! never hold a condition or a lambda body — `native` is a bare `bool` and
+//! `claim_handlers` is a `Vec<ClaimHandlerDecl>` whose own fields are only
+//! `Name`/`TextRange`/`Vec<String>`/`String`/`bool`/`i64`/`Option<String>`
+//! (`crates/internal/brink-ir/src/hir/types.rs`) — there is nothing left in
+//! `HirFile` for this walk to reach.
 
 use std::collections::BTreeMap;
 
@@ -104,6 +121,37 @@ pub(crate) fn check(
         for cst in &hir.constants {
             walk_expr_for_lambdas(&cst.value, file, &file_scope_ctx, &mut out);
         }
+        // File-scope root content (issue #2772): the statements sitting
+        // before the first knot/stitch header. `check()` never walked
+        // `hir.root_content` at all before this fix, mirroring
+        // `protocols.rs::check_reserved_names`'s own
+        // `walk_stmts(&hir.root_content.stmts, …)` call, which is the
+        // template this walk is missing relative to. Unlike the VAR/CONST
+        // walk above, root content is *not* a bare declaration value — it's
+        // real executable content that can declare its own `~ temp` locals
+        // and reference them in a condition (the issue's own repro shape),
+        // so `locals: None` would be wrong here: it would leave every
+        // root-scope temp unclassifiable. Instead this looks up root
+        // content's own inferred locals via `infer::root_content_def_id`
+        // (issue #1903, factored out for #2772 so this and `strict.rs`'s
+        // own root-content lookups share one derivation rather than each
+        // re-deriving the id inline) — `collect_defs` synthesizes that same
+        // id for inference, so a body-level check must look it up under
+        // the identical scheme.
+        let root_locals = if hir.root_content.stmts.is_empty() {
+            None
+        } else {
+            let synthetic_id = crate::infer::root_content_def_id(file);
+            inference.bodies.get(&synthetic_id).map(|b| &b.locals)
+        };
+        let root_ctx = MistypeCtx {
+            index,
+            globals: &globals,
+            signatures: &inference.signatures,
+            resolution_by_range: &resolution_by_range,
+            locals: root_locals,
+        };
+        check_block(&hir.root_content, file, &root_ctx, &mut out);
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             let knot_locals = annotations::def_id_for(index, file, kind, &knot.name.text)
@@ -753,6 +801,55 @@ mod tests {
     #[test]
     fn direct_option_intrinsic_call_in_condition_is_e116() {
         let diags = check_all("=== main ===\n{find(\"ab\", \"b\"): found.}\n-> END\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Issue #2772: third gap in this same walk. `option_conditions::check`
+    /// never visited `hir.root_content` at all, so a condition on an
+    /// `Option[T]` value sitting in file-scope content *before the first
+    /// knot* got no E116, while the byte-identical condition sitting
+    /// inside a knot (see
+    /// [`option_temp_in_inline_conditional_guard_is_e116`], which this
+    /// mirrors exactly, just with the `~ temp`/conditional pair moved
+    /// above the first `=== main ===` header) fired correctly. Positive
+    /// control: root content must now fire E116 exactly like knot content
+    /// does.
+    #[test]
+    fn root_content_condition_on_option_is_e116() {
+        let diags =
+            check_all("~ temp r = find(\"ab\", \"b\")\n{r: found.}\n=== main ===\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Negative control alongside
+    /// [`root_content_condition_on_option_is_e116`] (mirrors
+    /// `int_truthiness_idiom_stays_clean`): a non-Option root-content
+    /// condition must not start firing just because the walk now reaches
+    /// it.
+    #[test]
+    fn root_content_non_option_condition_stays_clean() {
+        let diags = check_all("~ temp n = 3\n{n: nonzero.}\n=== main ===\n-> DONE\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Issue #2772's own literal repro shape (review finding): a
+    /// **file-scope global** `VAR … : Option<T> = none` conditioned on in
+    /// root content, not a `~ temp`. [`root_content_condition_on_option_is_e116`]
+    /// above only exercises the `root_locals` half of this fix (a local
+    /// declared *within* root content); a condition on a project-wide
+    /// global reads through `ctx.globals` instead (`condition_is_option`'s
+    /// `structs::classify_expr_ty` fallback), which was already reachable
+    /// before this fix via `infer::collect_globals` — but `check()` never
+    /// walked `hir.root_content` at all, so the condition *statement*
+    /// itself was unreachable regardless of which lookup would have
+    /// classified it. Pins that the globals-through-root-content path gets
+    /// covered too, not just the new `root_locals` path.
+    #[test]
+    fn root_content_global_option_condition_is_e116() {
+        let diags =
+            check_all("VAR opt: Option<int> = none\n{opt: has value.}\n=== main ===\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E116);
     }
