@@ -83,6 +83,14 @@ function symbolDeclarationOffset(
  * `InlineNameInput`/`SymbolRenamePrompt` do — a context-menu click and a
  * drag-drop drop are one-shot, not an open editing surface — so there is no
  * staleness guard to run here at all; the op's own refusal is sufficient.
+ *
+ * Clears via `clearStructuralOpPending(description)`, not
+ * `setStructuralOpPending(null)` (issue #2794): `structuralOpPending` has a
+ * second writer (`applyRename` in `binder.ts`'s Binder rename/move), and
+ * both are independent fire-and-forget `void` dispatches that can overlap —
+ * an unconditional clear here could erase a Binder rename's still-live
+ * indicator if this op happens to settle after that one started. The
+ * compare-and-clear only removes the description THIS call set.
  */
 async function runGatedStructuralOp(
   state: StudioState,
@@ -96,7 +104,7 @@ async function runGatedStructuralOp(
     });
     return compute();
   } finally {
-    state.setStructuralOpPending(null);
+    state.clearStructuralOpPending(description);
   }
 }
 

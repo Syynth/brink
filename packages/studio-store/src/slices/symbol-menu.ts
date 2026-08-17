@@ -77,12 +77,29 @@ export interface SymbolMenuSlice {
    * that call settles.
    */
   structuralOpPending: string | null;
-  /** Set (or clear, with `null`) the pending structural-op description. */
+  /** Set the pending structural-op description (the start of a gated call). */
   setStructuralOpPending(description: string | null): void;
+  /**
+   * Compare-and-clear (issue #2794): clears {@link structuralOpPending} only
+   * if it still equals `description` — the exact string this call's own
+   * `setStructuralOpPending` set. A no-op when another op's `set` has since
+   * overwritten it, so a call that settles after being superseded cannot
+   * erase the newer op's still-live indicator. TWO WRITERS share this field
+   * (`runGatedStructuralOp` in `symbolMenuActions.ts`, and `applyRename` in
+   * `binder.ts`) as independent fire-and-forget (`void`) dispatches — an
+   * overlapping Binder drag-move and symbol-menu op is a real case, not a
+   * hypothetical one. Every caller that commits a pending description before
+   * deferring a gated call MUST clear through this, never by calling
+   * `setStructuralOpPending(null)` directly in a `finally` — that
+   * unconditional-clear shape is exactly the last-writer-wins race #2794
+   * fixed.
+   */
+  clearStructuralOpPending(description: string): void;
 }
 
 export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenuSlice> = (
   set,
+  get,
 ) => ({
   symbolMenu: null,
   openSymbolMenu(request) {
@@ -103,5 +120,13 @@ export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenu
   structuralOpPending: null,
   setStructuralOpPending(description) {
     set({ structuralOpPending: description });
+  },
+  clearStructuralOpPending(description) {
+    // Compare-and-clear (#2794): only the writer whose own description is
+    // still live may clear it — a superseded writer settling late must not
+    // erase whatever op is live now.
+    if (get().structuralOpPending === description) {
+      set({ structuralOpPending: null });
+    }
   },
 });

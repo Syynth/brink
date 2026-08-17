@@ -480,6 +480,92 @@ describe("moveStitch/promoteStitch/demoteKnot run off the paint path (#2767)", (
   });
 });
 
+describe("structuralOpPending compare-and-clear (#2794)", () => {
+  // `packages/brink-studio/src/__tests__/structural-op-pending-overlap.test.ts`
+  // exercises a genuinely concurrent overlap between the two writers (real
+  // time separation, via a controllable idle-queue mock) and is the primary
+  // regression coverage for the race itself. These two tests instead pin the
+  // pieces that make that fix correct without needing to fight fake-timer
+  // batching: the primitive's exact semantics, and that each production
+  // writer is actually wired to it (not to the old unconditional clear).
+
+  it("clearStructuralOpPending only clears when the live value still equals the description this call set", () => {
+    // Direct simulation of the hazardous sequence, at the primitive level:
+    // op A sets "A"; op B starts before A finishes and overwrites to "B"; A's
+    // own clear (called from ITS finally) must be a no-op since "A" is no
+    // longer live; B's own clear (from ITS finally) must apply, since "B"
+    // still is. Before #2794 there was no `clearStructuralOpPending` at
+    // all — every caller called `setStructuralOpPending(null)` unconditionally,
+    // which this sequence would have made a no-op on nothing (there is no
+    // unconditional-clear equivalent left to call), i.e. this test could not
+    // even be written against the pre-fix shape.
+    const store = createStudioStore();
+    store.getState().setStructuralOpPending("A");
+    store.getState().setStructuralOpPending("B");
+
+    store.getState().clearStructuralOpPending("A");
+    expect(store.getState().structuralOpPending).toBe("B");
+
+    store.getState().clearStructuralOpPending("B");
+    expect(store.getState().structuralOpPending).toBeNull();
+  });
+
+  it("clearing a description that was never (or is no longer) live is a no-op", () => {
+    const store = createStudioStore();
+    store.getState().setStructuralOpPending("A");
+    store.getState().clearStructuralOpPending("something else entirely");
+    expect(store.getState().structuralOpPending).toBe("A");
+
+    // Nothing pending at all — clearing whatever description is still a
+    // harmless no-op, not an error.
+    const empty = createStudioStore();
+    empty.getState().clearStructuralOpPending("A");
+    expect(empty.getState().structuralOpPending).toBeNull();
+  });
+
+  it("runGatedStructuralOp (symbol-menu ops) clears via clearStructuralOpPending with its own description", async () => {
+    const { store, project } = await makeStore({ "main.ink": MAIN });
+    const state = store.getState();
+    const clearSpy = vi.spyOn(state, "clearStructuralOpPending");
+    const setSpy = vi.spyOn(state, "setStructuralOpPending");
+
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
+      type: "moveStitch",
+      path: "main.ink",
+      srcKnot: "one",
+      stitch: "alpha",
+      destKnot: "two",
+    });
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(project.getSession().getFileSource("main.ink")).toBeDefined();
+    expect(setSpy).toHaveBeenCalledExactlyOnceWith("Move alpha to two");
+    // Not `setStructuralOpPending(null)` in a `finally` — that unconditional
+    // shape is exactly the last-writer-wins race #2794 fixed.
+    expect(clearSpy).toHaveBeenCalledExactlyOnceWith("Move alpha to two");
+  });
+
+  it("applyRename (Binder rename/move) clears via clearStructuralOpPending with its own description", async () => {
+    await initWasm();
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n", "lib.ink": "-> END\n" });
+    const project = new ProjectSession({ provider, entryFile: "main.ink" });
+    await project.initialize();
+    const store = createStudioStore();
+    store.setState({ _project: project, _documents: stubDocuments() });
+    const state = store.getState();
+    const clearSpy = vi.spyOn(state, "clearStructuralOpPending");
+    const setSpy = vi.spyOn(state, "setStructuralOpPending");
+
+    const pending = state.renameFile("lib.ink", "util.ink");
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(setSpy).toHaveBeenCalledExactlyOnceWith("Renaming lib.ink → util.ink");
+    expect(clearSpy).toHaveBeenCalledExactlyOnceWith("Renaming lib.ink → util.ink");
+  });
+});
+
 /**
  * The two remaining ops #2577 added, driven through the real `@brink-lang/web`
  * wrapper (`ProjectSession.getSession()`) rather than the mock class directly,
