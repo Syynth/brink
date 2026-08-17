@@ -191,8 +191,15 @@ const FORMAT_DISPLAY = {
  * return has an entry in the second's table — today they happen to line up,
  * but a future format added to one and not the other must degrade here too,
  * not silently reject a real binary.
+ *
+ * Lacking format evidence is not a reason to also skip execution evidence
+ * (#2699 review): this path still runs `smokeCheckSidecar`, which self-gates
+ * on the staged triple matching this machine's host triple, so it cannot
+ * false-reject a legitimate cross-build here any more than it can on the
+ * magic-confirmed path below — it only ever adds evidence, never removes
+ * the fallback's "never a rejection on format alone" guarantee.
  */
-function weakFallbackCheck({ staged, destBin, triple, log, reasonNote }) {
+function weakFallbackCheck({ staged, destBin, triple, runFile, log, reasonNote }) {
   if (staged.length === 0) {
     throw new Error(
       `[assert-real-sidecar] ${destBin} is empty — refusing to let this bundle ship a ` +
@@ -207,6 +214,9 @@ function weakFallbackCheck({ staged, destBin, triple, log, reasonNote }) {
         "first: run `pnpm --filter @brink/desktop build`.",
     );
   }
+
+  smokeCheckSidecar({ destBin, triple, runFile, log });
+
   log(
     `[assert-real-sidecar] ${destBin} is not the stub — proceeding with the bundle. ` +
       `(${reasonNote}, so its magic bytes were not checked; triple ${triple}.)`,
@@ -222,9 +232,17 @@ function weakFallbackCheck({ staged, destBin, triple, log, reasonNote }) {
  * `execFileSync` (not `execSync`) deliberately — `destBin` is a real
  * filesystem path, not a shell command line, and going through a shell
  * would add quoting hazards this check has no reason to accept.
+ *
+ * `timeout`/`killSignal` are load-bearing, not defensive decoration: this
+ * deliberately executes a staged binary of unknown provenance at bundle
+ * time, and a staged file that ignores `--version` and loops would hang the
+ * bundle indefinitely without them — against the repo's "guard against
+ * unbounded growth" rule. A blocked stdin read is not the risk (the child's
+ * stdin is a closed pipe here, so a `cat`-shaped blocker returns almost
+ * immediately) — an infinite-looping binary is.
  */
 function defaultRunFile(file, args) {
-  return execFileSync(file, args, { encoding: "utf8" });
+  return execFileSync(file, args, { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
 }
 
 /**
@@ -385,12 +403,17 @@ function smokeCheckSidecar({ destBin, triple, runFile, log }) {
  * triple than the host they're running on — it is not a limit this hook
  * inherits or needs to repeat.
  *
- * Once the magic check accepts the staged file, `smokeCheckSidecar` (#2699)
- * additionally runs `destBin --version` when `triple` matches the triple
- * this process is running on, closing the "correctly-formatted but not
- * actually `brink-cli`" gap the magic check alone leaves open. `runFile` is
- * that check's process-execution seam, defaulted to a real `execFileSync`
- * call and overridable for tests the same way `log` is.
+ * Once the staged file clears the stub comparison, `smokeCheckSidecar`
+ * (#2699) additionally runs `destBin --version` when `triple` matches the
+ * triple this process is running on — on BOTH the magic-confirmed path
+ * below and the weak-fallback path (`weakFallbackCheck`, for a triple with
+ * no format rule or a format `EXECUTABLE_MAGIC` has no entry for), closing
+ * the "correctly-formatted but not actually `brink-cli`" gap the magic
+ * check alone leaves open, and — on the fallback path — closing the "zero
+ * format evidence AND zero execution evidence" gap that lacking a magic
+ * rule would otherwise leave wide open. `runFile` is that check's
+ * process-execution seam, defaulted to a real `execFileSync` call and
+ * overridable for tests the same way `log` is.
  */
 export function assertRealSidecarStaged({
   repoRoot = defaultRepoRoot,
@@ -433,6 +456,7 @@ export function assertRealSidecarStaged({
       staged,
       destBin,
       triple,
+      runFile,
       log,
       reasonNote:
         "no executable-format rule for this triple (see executableFormatFor in " +
@@ -450,6 +474,7 @@ export function assertRealSidecarStaged({
       staged,
       destBin,
       triple,
+      runFile,
       log,
       reasonNote: `no executable magic is known for format "${format}"`,
     });

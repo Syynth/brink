@@ -617,11 +617,16 @@ triple substring themselves, so the rule is stated once.
 
 `executableFormatFor` returns `null` for a triple it has no rule for, and the
 hook then falls back to rejecting only an empty file or an interpreter
-script. That asymmetry is deliberate and load-bearing: **a positive check
-that rejects a REAL binary on an unanticipated platform would be worse than
-the blocklist it replaces**, so "no rule known" must stay distinguishable
-from "judged and rejected" (`looksLikeNativeExecutable` returns `undefined`,
-not `false`, for an unknown format) and must never harden into a guess.
+script — it does **not** fall back to skipping the `--version` smoke check
+below too: `weakFallbackCheck` still calls `smokeCheckSidecar`, which
+self-gates on the staged triple matching this machine's host triple, so
+lacking format evidence is never a reason to also forgo execution evidence
+when execution is actually possible (#2699 review). That asymmetry on the
+magic side is deliberate and load-bearing: **a positive check that rejects a
+REAL binary on an unanticipated platform would be worse than the blocklist
+it replaces**, so "no rule known" must stay distinguishable from "judged and
+rejected" (`looksLikeNativeExecutable` returns `undefined`, not `false`, for
+an unknown format) and must never harden into a guess.
 
 Like the two preflight scripts it joins, it is main-guarded and exports its
 core logic (`assertRealSidecarStaged`), so
@@ -689,6 +694,15 @@ starts with `brink` — clap's `#[command(name = "brink", version)]` on `Cli`
 way. The content half of that check is load-bearing, not decoration: exit
 code alone is not sufficient evidence, because `true --version` *also*
 exits `0`.
+
+This is not limited to the magic-confirmed acceptance path: the weak-fallback
+path above (an unrecognised triple, or a format `EXECUTABLE_MAGIC` has no
+entry for) runs the same smoke check too, not just the stub/empty/script
+checks it already had. Skipping it there would have meant the one path with
+*zero* format evidence also shipped with zero execution evidence, accepting
+on "not the stub, not empty, not a `#!` script" alone (#2699 review).
+`smokeCheckSidecar` is the single call site both paths share, so this is one
+behavior, not two copies that could drift.
 
 This is gated on the staged triple matching the triple the check is
 actually running on (`smokeCheckSidecar` in `assert-real-sidecar.mjs`): a
