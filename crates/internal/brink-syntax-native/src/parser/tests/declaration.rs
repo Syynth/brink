@@ -495,7 +495,7 @@ fn const_without_initializer_shape_is_prose_not_a_decl() {
 }
 
 /// Issue #2781: `var x: Option[int] = none` used to produce **zero**
-/// diagnostics — `type_name_or_generic` stops at the bare `Option` (since
+/// diagnostics — `type_name_or_generic` stopped at the bare `Option` (since
 /// `[` isn't part of the type-annotation grammar), and with no `expect`
 /// left to catch the leftover `[int] = none`, `var_decl` finished cleanly
 /// and the caller silently reinterpreted the rest of the line as an
@@ -503,11 +503,18 @@ fn const_without_initializer_shape_is_prose_not_a_decl() {
 /// (CLAUDE.md: "flag silent data drops... silent drops are always bugs
 /// until proven otherwise"). `[…]` is not the type-argument delimiter
 /// (`docs/decision-log.md` 2026-07-27 retracted `Option[T]`; angle
-/// brackets are RULED, `[…]` is reserved for array literals, #1490) — this
-/// now fails loudly here the same way it already does in `fn`/`flow`
-/// params, return types, and lambda params (pinned by
+/// brackets are RULED, `[…]` is reserved for array literals, #1490) — #2785
+/// fixed this position with a `var`/`const`-only check right after
+/// `binding_annotation`.
+///
+/// Issue #2792 moved that check into `type_name_or_generic` itself
+/// (`types::reject_bracket_after_type_name`) so every position that reads a
+/// type name gets the identical diagnostic, not just this one — see
 /// `lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position`
-/// in `expression.rs`, which this position was previously carved out of).
+/// in `expression.rs` for the cross-position pin. This test still exists to
+/// pin `var`'s own diagnostic text and to prove the initializer (`= none`)
+/// is at least attempted once the error fires, unchanged in shape from
+/// #2785.
 #[test]
 fn var_decl_square_bracket_after_type_name_fails_loudly_instead_of_dropping_to_content() {
     let p = parse("var x: Option[int] = none\n");
@@ -529,6 +536,111 @@ fn const_decl_square_bracket_after_type_name_fails_loudly_instead_of_dropping_to
         p.errors().first().map(|e| e.message.as_str()),
         Some("expected `<` or end of type name, found L_BRACKET"),
         "errors: {:?}",
+        p.errors()
+    );
+}
+
+/// `fn`/`flow` param position (#2792): before this fix, `param_list`'s own
+/// `expect(R_PAREN)` produced the *only* diagnostic mentioning the `[` —
+/// generic, and phrased around the parser's local expectation rather than
+/// the actual mistake. The unified message now comes first; `param_list`'s
+/// `expect(R_PAREN)` (and the fn body's own missing-brace check right
+/// after it) still fire too — recovery is unchanged by #2792, only the
+/// first diagnostic's wording is (see `types::reject_bracket_after_type_name`'s
+/// doc for why recovery is out of scope here).
+#[test]
+fn fn_param_square_bracket_after_type_name_gets_the_unified_message_first() {
+    let p = parse("fn f(x: Option[int]) {}\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+    assert!(
+        p.errors().len() > 1,
+        "recovery cascade is unchanged by #2792 (message-only fix): {:?}",
+        p.errors()
+    );
+}
+
+/// Same shape, `flow` position — `flow` and `fn` share `param_list`.
+#[test]
+fn flow_param_square_bracket_after_type_name_gets_the_unified_message_first() {
+    let p = parse("flow f(x: Option[int]) {}\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+}
+
+/// `fn`/`flow` return-type position (#2792): before this fix, the *only*
+/// diagnostic was `decl_body`'s generic "expected a braced body after the
+/// fn header" — it didn't even name `L_BRACKET`, let alone the real
+/// mistake. The unified message now comes first.
+#[test]
+fn fn_return_type_square_bracket_after_type_name_gets_the_unified_message_first() {
+    let p = parse("fn f(): Option[int] { none }\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+}
+
+/// Struct-field position (#2792): `struct_field` calls `type_annotation`
+/// unconditionally (a field's type is mandatory, unlike every other
+/// position's optional `: type` clause), so before this fix the leftover
+/// `[int]` was picked up by `struct_decl`'s body loop as an entirely
+/// unrelated "unexpected token in struct body" on the *next* iteration —
+/// nothing at the point of the actual mistake named `L_BRACKET` at all.
+#[test]
+fn struct_field_square_bracket_after_type_name_gets_the_unified_message_first() {
+    let p = parse("struct S { x: Option[int] }\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+}
+
+/// #2792 review (BLOCKING, small): `[` after a NESTED type argument's own
+/// name must be reported exactly once, not once by the inner type name's
+/// own check and again by the outer generic that never got to close.
+///
+/// Before this fix: `type_name_or_generic` parsing `Option` (the type
+/// argument inside `List<…>`) hits the bare `Option[` mistake and fires the
+/// unified diagnostic — correctly, once. But that leaves `p`'s position
+/// still sitting on `[` (the check is a pure lookahead, never consumes),
+/// so back in the OUTER `List<…>` call, the `while` loop's `eat(COMMA)`
+/// fails (current token is `[`, not `,`), the loop breaks, `expect(GT)`
+/// then also fails on the same `[`, and the outer call's own *unconditional*
+/// `reject_bracket_after_type_name(p)` call — added by #2792, sitting right
+/// after the `TYPE_GENERIC` branch — fires a SECOND, textually IDENTICAL
+/// diagnostic at the same offset. Two identical Problems-panel rows on one
+/// caret. Fixed by only running the outer call's own check when its `<…>`
+/// actually closed (see `types::type_name_or_generic`'s `generic_closed`
+/// guard) — the inner position that actually saw the mistake still reports
+/// it, just not a second time from the outer position that never got past
+/// it.
+#[test]
+fn nested_type_argument_square_bracket_mistake_is_reported_once_not_twice() {
+    let p = parse("var x: List<Option[int]> = none\n");
+    let unified: Vec<_> = p
+        .errors()
+        .iter()
+        .filter(|e| e.message == "expected `<` or end of type name, found L_BRACKET")
+        .collect();
+    assert_eq!(
+        unified.len(),
+        1,
+        "the unified diagnostic should fire once, from the inner `Option[` \
+         mistake, not again from the outer `List<…>` that never closed; \
+         errors: {:?}",
         p.errors()
     );
 }
