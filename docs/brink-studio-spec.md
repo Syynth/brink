@@ -623,13 +623,15 @@ tight `=c` was invisible to both yet still *ended* a region, and a `=>` divert
 ended a region production runs straight through.
 
 **Production is the tiebreak, and the grammar comment is not production.**
-`brink_syntax`'s `parser/knot.rs` documents `stitch_header` as
+`brink_syntax`'s `parser/knot.rs` used to document `stitch_header` as
 
 ```text
 stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ knot_params? }
 ```
 
-with `INLINE_WS+` — **required** whitespace. The code is `at_stitch`
+with `INLINE_WS+` — **required** whitespace (the comment now says `INLINE_WS*`
+instead, matching the code — mismatch fixed separately by #2695; see the note
+further down). The code is `at_stitch`
 (`current() == EQ && nth(1) != EQ && nth(1) != GT`) followed by `p.skip_ws()`,
 and `skip_ws` matches **zero** or more. Driven, not read: `file_symbols`
 reports one stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and
