@@ -80,6 +80,61 @@ export function hostTriple(runCommand = defaultRunCommand) {
 }
 
 /**
+ * The native executable format a binary staged for `triple` has to be in:
+ * `"pe"` for Windows targets, `"macho"` for Apple ones, `"elf"` for the
+ * ELF-based Unixes, and `null` for a triple this script has no rule for.
+ *
+ * This lives here, next to `sidecarPaths`, because it IS the rule
+ * `sidecarPaths` already encoded implicitly for the `.exe` suffix (#2481) —
+ * "what kind of file does this triple's loader expect?" — and #2626's review
+ * established that triple-derived knowledge about the staged sidecar lives
+ * in this module ALONE. `assert-real-sidecar.mjs` imports this rather than
+ * re-testing `triple.includes("windows")` itself (#2687);
+ * `before_bundle_command_asserts_the_staged_sidecar_is_real` in
+ * src-tauri/src/lib.rs fails if a second copy appears there.
+ *
+ * `null` is deliberate, not an oversight: a positive identity check that
+ * rejects a REAL binary on some platform is worse than no check at all, so
+ * an unrecognised triple must be reported as "no rule known" and let the
+ * caller fall back to a weaker test, never guessed at.
+ */
+export function executableFormatFor(triple) {
+  if (triple.includes("windows")) {
+    return "pe";
+  }
+  // Every Apple target triple (macos/ios/tvos/watchos/visionos) carries the
+  // `apple` vendor field, so one substring covers the whole family.
+  if (triple.includes("apple") || triple.includes("darwin")) {
+    return "macho";
+  }
+  if (ELF_TARGET_MARKERS.some((marker) => triple.includes(marker))) {
+    return "elf";
+  }
+  return null;
+}
+
+/**
+ * OS fields of the rustc target triples whose binaries are ELF. Not
+ * exhaustive over every tier-3 target rustc knows — deliberately a list of
+ * the ones a `brink-cli` sidecar could plausibly be staged for, since
+ * anything absent falls through to `null` ("no rule known") rather than to a
+ * wrong answer.
+ */
+const ELF_TARGET_MARKERS = [
+  "linux",
+  "android",
+  "freebsd",
+  "netbsd",
+  "openbsd",
+  "dragonfly",
+  "solaris",
+  "illumos",
+  "fuchsia",
+  "redox",
+  "haiku",
+];
+
+/**
  * Where the sidecar is built and where it has to land, for one host triple.
  *
  * The `brink-cli` package's `[[bin]]` target is named `brink` (see
@@ -98,8 +153,11 @@ export function sidecarPaths({
   // The `.exe` suffix below is a hard Tauri `externalBin` requirement on
   // Windows triples, not a filename decoration — `ensureCliSidecar`'s `stub`
   // option has to respect that when deciding what it is safe to stage under
-  // this name (see the guard next to `STUB_SIDECAR`, #2481).
-  const exeSuffix = triple.includes("windows") ? ".exe" : "";
+  // this name (see the guard next to `STUB_SIDECAR`, #2481). Asked through
+  // `executableFormatFor` so "this triple's loader wants a PE" is stated
+  // once in this module rather than as a bare substring test per site
+  // (#2687).
+  const exeSuffix = executableFormatFor(triple) === "pe" ? ".exe" : "";
   const binariesDir = join(srcTauriDir, "binaries");
   return {
     binariesDir,
@@ -171,7 +229,7 @@ export function ensureCliSidecar({
     targetDir,
   });
 
-  if (stub && triple.includes("windows")) {
+  if (stub && executableFormatFor(triple) === "pe") {
     throw new Error(
       `[ensure-cli-sidecar] BRINK_SIDECAR_STUB has no Windows-compatible payload yet (#2481): ` +
         `${triple} stages under a \`.exe\`-suffixed name (see sidecarPaths), and Windows loads ` +
