@@ -389,7 +389,11 @@ the same half for every `dispatchSymbolAction` op — `reorder_knots`/`reorder_s
 source and `move_stitch`/`promote_stitch`/`demote_knot` driven on ALT_STITCHES's indented \
 `  = b` (#2721), plus `move_stitch`/`demote_knot` driven on ALT_FENCES's \
 non-newline-terminated `three` boundary — the input shape that stresses their own \
-`needs_newline_before`/`needs_nl` guards, which ALT_STITCHES's `  = b` does not (#2730); \
+`needs_newline_before`/`needs_nl` guards, which ALT_STITCHES's `  = b` does not (#2730), plus \
+`move_stitch`/`promote_stitch` driven on NO_TRAILING_NEWLINE — a source with no trailing `\n` \
+at all — the input shape that stresses their own TRAILING `needs_newline_after`/ \
+`!promoted_text.ends_with('\n')` guards, which ALT_FENCES's `three` boundary does not, since \
+`three` is only ever the destination there, never the thing moved (#2739); \
 `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
 `{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
 `ok: true` (#2675 Gap A); `defaults` are session-seed values a fresh production session \
@@ -618,6 +622,28 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// over here.
     const ALT_STITCHES: &str = "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n";
 
+    /// A file with NO trailing newline at all — every other source fixture in
+    /// this module ends in `\n` (`#2730`'s own doc noted this is "structurally
+    /// why this gap ... stayed invisible"), so nothing here previously
+    /// exercised the shape that `crates/internal/brink-ide/src/
+    /// structural_move.rs`'s `move_stitch` names `needs_newline_after`
+    /// (`structural_move.rs:653/666`) and `promote_stitch_to_knot` names `if
+    /// !promoted_text.ends_with('\n')` (`structural_move.rs:791`) for: a
+    /// stitch that is the file's own LAST byte, with no `\n` to its name.
+    /// (Path corrected here per #2739's review finding on #2730/#2734: the
+    /// production ops live under `crates/internal/brink-ide/src/`, not
+    /// `crates/brink-web/src/` as those two PRs' own descriptions said.)
+    ///
+    /// #2739 (follow-up from #2734's review — the TRAILING half of #2730,
+    /// which named only the LEADING `needs_newline_before`/`needs_nl` guard):
+    /// moving `two`'s stitch `b` into `one` lands it right before `two`'s own
+    /// header, which does not start with `\n` either — production inserts a
+    /// separating newline (`"...First.\n= b\nB.\n=== two ===..."`) that the
+    /// mock, having no trailing guard on `move_stitch` at all, drops
+    /// (`"...First.\n= b\nB.=== two ===..."`) — empirically confirmed during
+    /// #2734's review, reproduced here as a driven pin.
+    const NO_TRAILING_NEWLINE: &str = "=== one ===\nFirst.\n=== two ===\nSecond.\n= b\nB.";
+
     /// A file whose very FIRST knot header is itself indented (#2706) — the
     /// case #2703's `full_start` fix left undriven on both sides.
     ///
@@ -663,6 +689,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "INDENTED_LINE": INDENTED_LINE,
             "KNOT_AND_FUNCTION": KNOT_AND_FUNCTION,
             "MAIN": MAIN,
+            "NO_TRAILING_NEWLINE": NO_TRAILING_NEWLINE,
             "PARAM_STITCH": PARAM_STITCH,
             "LEADING_BLANK_LINE": LEADING_BLANK_LINE,
             "STITCHLESS_KNOTS": STITCHLESS_KNOTS,
@@ -1171,6 +1198,27 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// guard would show. This is acceptance only (`ok`/`error`, both sides
     /// agree here); [`driven_payloads`]'s pair of the same name carries the
     /// `new_source` byte-level answer the guard actually changes.
+    ///
+    /// Gap 4 (#2739, the TRAILING half of #2730's Gap 3 — #2730 named only
+    /// the LEADING `needs_newline_before`/`needs_nl` guard, and review on
+    /// #2734 found the TRAILING counterpart, `structural_move.rs`'s
+    /// `move_stitch:653/666` (`needs_newline_after`), was still unmirrored.
+    /// [`ALT_FENCES`]'s `three` (used for the leading guard above) cannot
+    /// stress it: its region ends in a bare `"  "`, which is not the file's
+    /// last byte, so nothing inserted there ever needs the TRAILING check —
+    /// only the LEADING one. [`NO_TRAILING_NEWLINE`] is the shape that does:
+    /// the moved stitch `b` is the file's actual last byte, with no `\n`
+    /// after it at all. `demote_knot_to_stitch`'s own trailing guard
+    /// (`structural_move.rs:874`) is unconditional on its own text ending —
+    /// it does not branch on what follows, unlike `move_stitch`'s — and is
+    /// already exercised (and confirmed passing) by the pre-existing
+    /// `demote_knot:alt-fence-knot` payload (#2706): demoting `three` forces
+    /// the identical trailing `\n` onto that same bare `"  "` this fixture's
+    /// doc references. `promote_stitch_to_knot`'s own trailing guard
+    /// (`structural_move.rs:791`) is *also* unconditional the same way, so
+    /// this fixture's `promote_stitch:no-trailing-newline` case below is
+    /// confirmation, not a fix — see [`driven_payloads`]'s doc for why only
+    /// `move_stitch` needed one.
     fn driven_indent_acceptance() -> serde_json::Value {
         let delete_indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
         let rename_indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
@@ -1179,6 +1227,8 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         let demote_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
         let move_into_alt_fence_boundary = session_with(&[("main.ink", ALT_FENCES)]);
         let demote_into_alt_fence_boundary = session_with(&[("main.ink", ALT_FENCES)]);
+        let move_no_trailing_newline = session_with(&[("main.ink", NO_TRAILING_NEWLINE)]);
+        let promote_no_trailing_newline = session_with(&[("main.ink", NO_TRAILING_NEWLINE)]);
 
         serde_json::json!({
             "delete_symbol:indented-first-knot": outcome(
@@ -1210,6 +1260,16 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "demote_knot (demoting `two` into `three`, whose region ends in a bare \
                  two-space indent glued from `four`'s header)",
                 &demote_into_alt_fence_boundary.demote_knot("main.ink", "two", "three"),
+            ),
+            "move_stitch:no-trailing-newline": outcome(
+                "move_stitch (moving `two`'s stitch `b` — the file's own last byte, \
+                 with no trailing `\\n` — into `one`)",
+                &move_no_trailing_newline.move_stitch("main.ink", "two", "b", "one"),
+            ),
+            "promote_stitch:no-trailing-newline": outcome(
+                "promote_stitch (promoting `two`'s stitch `b` — the file's own last \
+                 byte, with no trailing `\\n`)",
+                &promote_no_trailing_newline.promote_stitch("main.ink", "two", "b"),
             ),
         })
     }
@@ -1402,6 +1462,27 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// INTO `three` does: `three`'s region ends in the bare `"  "` left
     /// behind by `four`'s indented header (same #2703 mechanism), so the
     /// byte immediately before the insertion point is a space, not `\n`.
+    ///
+    /// #2739 (the TRAILING half of #2730, per that fixture's own doc): adds
+    /// `move_stitch:no-trailing-newline` and `promote_stitch:no-trailing-
+    /// newline` on [`NO_TRAILING_NEWLINE`]. `ALT_FENCES`'s `three` above
+    /// stresses `move_stitch`/`demote_knot`'s LEADING guard (inserting INTO a
+    /// region lacking `\n`); it cannot stress either op's TRAILING guard,
+    /// because `three`'s own bare-`"  "` boundary is never itself the thing
+    /// being MOVED — only ever the destination. `NO_TRAILING_NEWLINE`'s
+    /// stitch `b` is the file's actual last byte with no `\n`, so moving (or
+    /// promoting) IT is what exercises `structural_move.rs`'s
+    /// `needs_newline_after` (`move_stitch:653/666`) and its unconditional
+    /// counterpart (`promote_stitch_to_knot:791`). Confirmed by hand against
+    /// `structural_move.rs` and by running this driver: `move_stitch` was
+    /// missing the guard entirely in the mock (no code at all, not merely a
+    /// wrong condition) and is fixed here; `promote_stitch_to_knot`'s mock
+    /// counterpart (`if (!promoted.endsWith("\n")) promoted += "\n";`,
+    /// present since #2721) already matches — this pin is new coverage
+    /// confirming that, not a fix. `demote_knot_to_stitch`'s own trailing
+    /// guard needs no new case: `demote_knot:alt-fence-knot` above already
+    /// drives it (demoting `three` forces the same unconditional trailing
+    /// `\n` onto its bare `"  "` boundary) and is already green.
     #[expect(
         clippy::too_many_lines,
         reason = "driven fixture table — one block per (op, input) pair; splitting it would scatter cases that are read together"
@@ -1413,6 +1494,8 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         let mixed = session_with(&[("main.ink", KNOT_AND_FUNCTION)]);
         let function_only = session_with(&[("main.ink", FUNCTION_KNOT)]);
         let indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
+        let no_trailing_newline_move = session_with(&[("main.ink", NO_TRAILING_NEWLINE)]);
+        let no_trailing_newline_promote = session_with(&[("main.ink", NO_TRAILING_NEWLINE)]);
         let indented_start = at(INDENTED_LINE, "Indented.");
         let indented_end =
             indented_start + u32::try_from("Indented.".len()).expect("fixture is tiny");
@@ -1552,6 +1635,19 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
                 "demote_knot (demoting `two` into `three`'s non-newline-terminated \
                  region)",
                 &alt_fences.demote_knot("main.ink", "two", "three"),
+            ),
+            // #2739 (the TRAILING half of #2730): `two`'s stitch `b` is the
+            // file's own last byte, with no `\n` after it at all — the shape
+            // that stresses `move_stitch`/`promote_stitch_to_knot`'s own
+            // TRAILING guard (`needs_newline_after` /
+            // `!promoted_text.ends_with('\n')`), which nothing above does.
+            "move_stitch:no-trailing-newline": payload_source(
+                "move_stitch (moving `two`'s non-newline-terminated stitch `b` into `one`)",
+                &no_trailing_newline_move.move_stitch("main.ink", "two", "b", "one"),
+            ),
+            "promote_stitch:no-trailing-newline": payload_source(
+                "promote_stitch (promoting `two`'s non-newline-terminated stitch `b`)",
+                &no_trailing_newline_promote.promote_stitch("main.ink", "two", "b"),
             ),
             // Review finding on #2675 Gap C: extract.rs's call-line indent
             // (`extract.rs:121-125`, `plan.indent` prefixing the call) and
