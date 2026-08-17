@@ -944,6 +944,84 @@ fallback, and with fake timers the test asserts the pending indicator is
 already in the DOM *before advancing any timer at all* — i.e. before the
 deferred analysis could possibly have run.
 
+**Third enrolment (#2767): the Binder's structural symbol menu.** The same
+hazard recurred a third time in `dispatchSymbolAction`'s `moveStitch` /
+`promoteStitch` / `demoteKnot` branches (`packages/studio-ui/src/
+symbolMenuActions.ts`), reached from the Binder's context menu and its
+drag-drop `onDrop` — one-shot dispatches with no open editing surface, unlike
+the two enrolments above. `runGatedStructuralOp` applies the same shape
+(commit pending state synchronously, defer via `scheduleIdleWork`) with two
+differences from the rename enrolments, both intentional:
+
+- **The pending state renders in the status bar, not a notification.**
+  `moveStitch`/`promoteStitch`/`demoteKnot` have no persistent widget to hold
+  component-local `busy` state, so the pending description lives in the store
+  (`structuralOpPending: string | null`, `symbol-menu` slice) and renders via
+  `StructuralOpSegment` (`packages/studio-ui/src/StatusBar.tsx`, registered
+  left-group priority 9 in `mount.tsx`). It is deliberately NOT raised through
+  `state._notify`/the shell notification service: §7.5 states progress
+  notifications are out of scope for that service, and an earlier draft of
+  this fix raised one anyway, which both violated §7.5 and double-toasted on
+  the success path (`applyMoveResult` already raises its own "Move X to Y"
+  notification with Undo).
+- **No staleness re-check.** The rename enrolments re-validate that the
+  captured request/session state is still current before applying a result
+  computed after the idle wait (#2761's lesson). `runGatedStructuralOp` does
+  not: its `compute` thunk calls the wasm op fresh, against whatever the
+  session's live source is at invocation time, never against a pre-idle
+  snapshot — and the op itself already refuses cleanly when its target has
+  moved out from under it. A `session.generation` equality check was tried
+  and removed: `generation` bumps on every content-mutating call, including
+  one keystroke in a *different, unrelated* mounted editor view
+  (`ink-editor`'s `elementTypeField` pushes the document on every changed
+  transaction), so the check silently dropped legitimate queued moves on
+  totally unrelated edits far more often than it caught a genuine staleness
+  hazard — and there was no genuine hazard on this path for it to catch.
+  Trust `result.ok` instead.
+
+**Which structural ops are gated vs cheap** (`crates/brink-web/src/editor/
+refactor.rs`, backed by `crates/internal/brink-ide/src/structural_result.rs`):
+the op-agnostic breakage gate (`gate_with_source`, wired through
+`gated_move_json`/`structural_result_json`/`dir_move_result_json`) runs a
+full-project overlay reanalysis and is therefore in this invariant's scope;
+`move_result_json_simple` skips it (`StructuralResult::safe_source` — a
+reorder changes no qualification, so it is genuinely cheap, not merely
+assumed so).
+
+| op | helper | gated? | off-paint-path? |
+|---|---|---|---|
+| `move_stitch` / `promote_stitch` / `demote_knot` | `gated_move_json` | yes | yes (`runGatedStructuralOp`, #2767) |
+| `rename_file` / `rename_dir` | `structural_result_json` / `dir_move_result_json` | yes | **no — tracked gap, see below** |
+| `rename_symbol` / `rename_symbol_at` | `structural_result_json` | yes | yes (#722 inline, #696/#2761 modal) |
+| `extract_to_knot` / `extract_to_function` | `structural_result_json` | yes | yes, transitively (built on `InlineNameInput`, #722) |
+| `reorder_stitch` / `reorder_knot` / `reorder_stitches` / `reorder_knots` | `move_result_json_simple` | no | n/a — not heavy, runs inline |
+
+**Marker convention and its guard.** A call site enrolled in this invariant
+carries a `// PAINT-PATH-DEFERRED <id>: <reason>` (wrapped by the remedy) or
+`// PAINT-PATH-EXEMPT <id>: <reason>` (genuinely cheap, matched by pattern but
+out of scope) comment directly above it. `packages/brink-studio/src/
+__tests__/paint-path-call-enrolment.test.ts` statically scans every
+`packages/*/src` file (roots derived from `pnpm-workspace.yaml`, same pattern
+as `select-call-enrolment.test.ts`) for `.moveStitch(`/`.promoteStitch(`/
+`.demoteKnot(` call sites and fails if one lacks a marker with a real (>10
+char) reason — deliberately scoped to exactly those three method names, not
+every gated op in the table above (see the test file's own header for why).
+It is a marker-presence scan, not a control-flow check: it cannot verify a
+`DEFERRED` site is actually wrapped correctly, only that a human wrote a
+marker and so had to look. Real behavioral verification is
+`symbol-structural-ops.test.ts`'s "run off the paint path" describe block.
+
+**Known, un-fixed gap: `renameFile`/`renameDir`.** `packages/ink-editor/src/
+project-session.ts`'s `ProjectSession.renameFile`/`renameDir` — the Binder's
+file-tree rename/move surface — call the same gated ops synchronously with no
+pending state at all. #2767's audit found this site but left it unfixed: it
+is a different UI surface (the file tree, not the symbol menu) whose fix
+would touch `project-session.ts` and `binder.ts`, both shared/central files
+that PR deliberately did not expand into. Tracked as a follow-up, not
+enrolled in the `paint-path-call-enrolment.test.ts` guard (enrolling it would
+make the guard red on a known gap instead of a new regression — see that
+file's header).
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*

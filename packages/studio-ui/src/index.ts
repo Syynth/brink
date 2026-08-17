@@ -94,6 +94,7 @@ export {
   KeyHintsSegment,
   SessionPicker,
   StorySegment,
+  StructuralOpSegment,
 } from "./StatusBar.js";
 export {
   OPEN_PLAYER_COMMAND_ID,
