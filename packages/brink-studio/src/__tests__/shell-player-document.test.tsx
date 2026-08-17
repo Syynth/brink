@@ -4,10 +4,14 @@
  * Covers: the story.openPlayer command opening/focusing the singleton tab,
  * the default-layout bootstrap helper (Inky two-up: player split right,
  * focus back on the editor group), split-duplicating the player tab (two
- * views over one session document), and the component contract — session
+ * views over one session document), the component contract — session
  * placeholder with a Start affordance, command-only interactions (the
  * provider-agnostic rule: session data in, command dispatches out, never a
- * runner handle).
+ * runner handle) — and #280: reopening the player after it was closed
+ * restores the two-up split instead of dropping the tab into the focused
+ * group, and the hamburger menu (landed #2690, after this issue was filed)
+ * already gives a second, mouse-discoverable route to `story.openPlayer`
+ * beyond the command palette.
  */
 
 import { describe, expect, it, afterEach } from "vitest";
@@ -20,6 +24,7 @@ import {
   documentKey,
   findTab,
   focusedGroup,
+  groupCommandsForMenu,
 } from "@brink/studio-shell";
 import { createStudioStore, type StudioStore } from "@brink/studio-store";
 import {
@@ -51,6 +56,9 @@ describe("story.openPlayer", () => {
     expect(found!.tab.ref.typeId).toBe(PLAYER_TYPE_ID);
     expect(found!.tab.ref.title).toBe("Player");
     expect(found!.group.activeKey).toBe(key);
+    // A genuinely empty single group (nothing open yet — not #280's
+    // "the split collapsed" case) opens in place; it does not force a split.
+    expect(groups.getState().groups).toHaveLength(1);
   });
 
   it("re-dispatch focuses the existing tab instead of duplicating", () => {
@@ -76,6 +84,100 @@ describe("story.openPlayer", () => {
       g.tabs.filter((t) => documentKey(t.ref) === key),
     );
     expect(copies).toHaveLength(1);
+  });
+
+  // #280: closing the player used to feel permanent — the only route back
+  // (the palette/hamburger command) dropped the tab into whichever group
+  // happened to be focused instead of restoring the two-up split a fresh
+  // load gives you, and there is no drag-to-split to repair it by hand.
+  it("reopening after the player tab was closed restores the two-up split", () => {
+    const commands = new CommandRegistry();
+    const groups = createEditorGroupsStore();
+    registerOpenPlayerCommand(commands, groups);
+
+    // Bootstrap, as mount.tsx does: entry file in group 1, player split
+    // right via openPlayerSplit (not the command), focus back on the entry.
+    groups
+      .getState()
+      .openDocument({ typeId: "ink-file", docId: "main.ink", title: "main.ink" });
+    const entryGroupId = groups.getState().focusedGroupId;
+    openPlayerSplit(groups);
+    expect(groups.getState().groups).toHaveLength(2);
+    expect(groups.getState().focusedGroupId).toBe(entryGroupId);
+
+    // User closes the player tab — its group collapses (last tab gone),
+    // leaving a single group again, same shape as a fresh unsplit load.
+    const playerGroupId = groups
+      .getState()
+      .groups.find((g) => g.id !== entryGroupId)!.id;
+    groups.getState().closeTab(playerGroupId, documentKey(playerRef()));
+    expect(groups.getState().groups).toHaveLength(1);
+    expect(groups.getState().groups[0].id).toBe(entryGroupId);
+
+    // Reopen via the command (palette or hamburger menu) — not manually.
+    commands.dispatch(OPEN_PLAYER_COMMAND_ID);
+
+    const s = groups.getState();
+    expect(s.groups).toHaveLength(2);
+    expect(s.groups[0].id).toBe(entryGroupId);
+    expect(s.groups[0].tabs.map((t) => t.ref.typeId)).toEqual(["ink-file"]);
+    expect(s.groups[1].tabs.map((t) => t.ref.typeId)).toEqual([PLAYER_TYPE_ID]);
+    expect(s.groups[1].activeKey).toBe(documentKey(playerRef()));
+    // Focus hands back to the editor, exactly like the fresh-load bootstrap.
+    expect(s.focusedGroupId).toBe(entryGroupId);
+  });
+
+  // Once the editor area is already split beyond the two-up, there is no
+  // "missing" layout to restore — reopening should not keep stacking new
+  // columns, so it falls back to the normal reveal/open-in-focused policy.
+  it("does not force another split when multiple groups already exist", () => {
+    const commands = new CommandRegistry();
+    const groups = createEditorGroupsStore();
+    registerOpenPlayerCommand(commands, groups);
+
+    groups
+      .getState()
+      .openDocument({ typeId: "ink-file", docId: "main.ink", title: "main.ink" });
+    groups.getState().openDocument(
+      { typeId: "ink-file", docId: "other.ink", title: "other.ink" },
+      { group: "split-right" },
+    );
+    const focusedBefore = groups.getState().focusedGroupId;
+    expect(groups.getState().groups).toHaveLength(2);
+
+    commands.dispatch(OPEN_PLAYER_COMMAND_ID);
+
+    const s = groups.getState();
+    expect(s.groups).toHaveLength(2);
+    expect(s.focusedGroupId).toBe(focusedBefore);
+    const found = findTab(s.groups, documentKey(playerRef()));
+    expect(found).not.toBeNull();
+    expect(found!.group.id).toBe(focusedBefore);
+  });
+});
+
+// ── Discoverability (#280 premise check) ─────────────────────────────
+//
+// The issue's other half — "the only way back is the undiscoverable palette
+// command" — predates the hamburger menu (#2684/#2690, merged the day this
+// issue was re-dispatched). registerOpenPlayerCommand sets no `when` gate,
+// so groupCommandsForMenu (what HamburgerMenu renders) always lists it under
+// "Story" — closed or open — giving a second, mouse-discoverable route.
+
+describe("hamburger menu surfaces story.openPlayer (#280 premise check)", () => {
+  it("lists 'Story: Open Player' under the Story group even while closed", () => {
+    const commands = new CommandRegistry();
+    const groups = createEditorGroupsStore();
+    registerOpenPlayerCommand(commands, groups);
+
+    // Nothing opened yet — the player tab is closed/never-opened.
+    const menuGroups = groupCommandsForMenu(commands.list());
+    const story = menuGroups.find((g) => g.label === "Story");
+    expect(story).toBeDefined();
+    expect(story!.commands.map((c) => c.id)).toContain(OPEN_PLAYER_COMMAND_ID);
+    expect(
+      story!.commands.find((c) => c.id === OPEN_PLAYER_COMMAND_ID)!.title,
+    ).toBe("Story: Open Player");
   });
 });
 
