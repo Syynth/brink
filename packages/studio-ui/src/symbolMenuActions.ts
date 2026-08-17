@@ -11,6 +11,7 @@ import type {
   RenameDiagnostic,
 } from "@brink/wasm-types";
 import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
+import { scheduleIdleWork } from "@brink-lang/editor";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
 
 /** The declaration-name offset (whole-file UTF-16) of a knot or stitch in the
@@ -30,6 +31,64 @@ function symbolDeclarationOffset(
   if (stitch === undefined) return knotSym.start;
   const stitchSym = knotSym.children.find((c) => c.kind === "stitch" && c.name === stitch);
   return stitchSym ? stitchSym.start : null;
+}
+
+/**
+ * Off the paint path (#722/#2761's remedy, generalized here for #2767):
+ * `moveStitch` / `promoteStitch` / `demoteKnot` are the three
+ * `dispatchSymbolAction` branches whose Rust op runs the full op-agnostic
+ * breakage gate (`gated_move_json` → `structural_result::gate_with_source`,
+ * `crates/brink-web/src/editor_refactor.rs` / `crates/internal/brink-ide/src/
+ * structural_result.rs`) — an overlay re-analysis of the whole project, the
+ * same cost class as the rename collision check #722 and #2761 already
+ * cover. Called synchronously and inline from a React event handler (the
+ * context-menu click, the drag-drop `onDrop`) with no yield point, it can
+ * block the main thread — and therefore paint — under load exactly like the
+ * two prior incidents.
+ *
+ * The four `reorder*` branches deliberately do NOT go through this: they
+ * change no qualification, so the pure op returns `StructuralResult::
+ * safe_source` and skips the gate entirely (see that type's doc comment) —
+ * genuinely cheap, not merely assumed so. Wrapping them here would add an
+ * idle-hop and a pending-toast flash for zero benefit.
+ *
+ * This commits a pending notification synchronously (so React can paint it
+ * before the heavy call runs) and defers `compute` to the next idle slot via
+ * `scheduleIdleWork`. It then re-validates `session.generation` — a counter
+ * every content-mutating wasm call bumps (`packages/wasm/src/index.ts`) —
+ * against the value captured before scheduling: if anything else mutated the
+ * session while this was queued (a doc edit landing, another structural op),
+ * `compute` is skipped rather than run against content that may no longer
+ * match what triggered the action. This is #2761's non-obvious lesson
+ * carried forward: a user action during the deferred window must not let
+ * stale work land after the fact.
+ *
+ * There is no widget instance to `cancelIdleWork` on unmount/close the way
+ * `InlineNameInput`/`SymbolRenamePrompt` do — a context-menu click and a
+ * drag-drop drop are one-shot, not an open editing surface — so the
+ * generation re-check is this call's only staleness guard; there is nothing
+ * else to cancel.
+ */
+async function runGatedStructuralOp<S extends { generation: number }>(
+  state: StudioState,
+  session: S,
+  description: string,
+  compute: () => StructuralResult,
+): Promise<StructuralResult | null> {
+  state._notify?.({ severity: "info", source: "binder", message: `${description}…` });
+  const generation = session.generation;
+  await new Promise<void>((resolve) => {
+    scheduleIdleWork(resolve);
+  });
+  if (session.generation !== generation) {
+    state._notify?.({
+      severity: "warning",
+      source: "binder",
+      message: `${description} skipped — the project changed while this was pending`,
+    });
+    return null;
+  }
+  return compute();
 }
 
 export async function dispatchSymbolAction(
@@ -89,18 +148,39 @@ export async function dispatchSymbolAction(
       result = session.reorderKnots(action.path, action.order);
       description = `Reorder knots`;
       break;
-    case "moveStitch":
-      result = session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot);
+    case "moveStitch": {
       description = `Move ${action.stitch} to ${action.destKnot}`;
+      const deferred = await runGatedStructuralOp(state, session, description, () =>
+        // PAINT-PATH-DEFERRED move-stitch: gated (structural_result::gate_with_source)
+        // — run off the paint path by runGatedStructuralOp above (#2767).
+        session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot),
+      );
+      if (deferred === null) return;
+      result = deferred;
       break;
-    case "promoteStitch":
-      result = session.promoteStitch(action.path, action.knot, action.stitch);
+    }
+    case "promoteStitch": {
       description = `Promote ${action.stitch} to knot`;
+      const deferred = await runGatedStructuralOp(state, session, description, () =>
+        // PAINT-PATH-DEFERRED promote-stitch: gated (structural_result::gate_with_source)
+        // — run off the paint path by runGatedStructuralOp above (#2767).
+        session.promoteStitch(action.path, action.knot, action.stitch),
+      );
+      if (deferred === null) return;
+      result = deferred;
       break;
-    case "demoteKnot":
-      result = session.demoteKnot(action.path, action.knot, action.destKnot);
+    }
+    case "demoteKnot": {
       description = `Demote ${action.knot} into ${action.destKnot}`;
+      const deferred = await runGatedStructuralOp(state, session, description, () =>
+        // PAINT-PATH-DEFERRED demote-knot: gated (structural_result::gate_with_source)
+        // — run off the paint path by runGatedStructuralOp above (#2767).
+        session.demoteKnot(action.path, action.knot, action.destKnot),
+      );
+      if (deferred === null) return;
+      result = deferred;
       break;
+    }
     default:
       // File/folder actions are owned by the Binder and never reach here.
       return;

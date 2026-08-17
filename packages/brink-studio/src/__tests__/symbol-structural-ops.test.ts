@@ -144,13 +144,20 @@ describe("dispatchSymbolAction: the structural ops the mock had no method for (#
     });
     const state = store.getState();
 
-    await dispatchSymbolAction(state, state.applyMoveResult, {
+    // moveStitch is gated (runs the full breakage reanalysis, #2767) and now
+    // defers its wasm call to the next idle slot — see symbolMenuActions.ts's
+    // runGatedStructuralOp. Under fake timers that deferred macrotask never
+    // fires on its own; runAllTimersAsync both advances it and drains the
+    // microtask queue so the awaited dispatch settles.
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "moveStitch",
       path: "main.ink",
       srcKnot: "one",
       stitch: "alpha",
       destKnot: "two",
     });
+    await vi.runAllTimersAsync();
+    await pending;
 
     const session = project.getSession();
     const src = session.getFileSource("main.ink")!;
@@ -168,12 +175,15 @@ describe("dispatchSymbolAction: the structural ops the mock had no method for (#
     });
     const state = store.getState();
 
-    await dispatchSymbolAction(state, state.applyMoveResult, {
+    // promoteStitch is gated too — see the moveStitch test's comment above.
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "promoteStitch",
       path: "main.ink",
       knot: "one",
       stitch: "alpha",
     });
+    await vi.runAllTimersAsync();
+    await pending;
 
     const session = project.getSession();
     const src = session.getFileSource("main.ink")!;
@@ -190,12 +200,15 @@ describe("dispatchSymbolAction: the structural ops the mock had no method for (#
     });
     const state = store.getState();
 
-    await dispatchSymbolAction(state, state.applyMoveResult, {
+    // demoteKnot is gated too — see the moveStitch test's comment above.
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "demoteKnot",
       path: "main.ink",
       knot: "two",
       destKnot: "one",
     });
+    await vi.runAllTimersAsync();
+    await pending;
 
     const session = project.getSession();
     const src = session.getFileSource("main.ink")!;
@@ -218,24 +231,34 @@ describe("a refused structural op applies nothing (#2577; reporting is #2544)", 
     const state = store.getState();
     const before = project.getSession().getFileSource("main.ink")!;
 
-    await dispatchSymbolAction(state, state.applyMoveResult, {
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "moveStitch",
       path: "main.ink",
       srcKnot: "one",
       stitch: "alpha",
       destKnot: "two",
     });
+    await vi.runAllTimersAsync();
+    await pending;
 
     expect(project.getSession().getFileSource("main.ink")).toBe(before);
     // Nothing partial: the cross-file requalification did not happen either.
     expect(project.getSession().getFileSource("other.ink")).toBe(OTHER);
 
     // ⚠ #2544: the dispatcher's `if (result.ok && result.path)` swallows the
-    // refusal — no notification, no toast, nothing distinguishes "destination
-    // knot not found" from "you clicked and nothing needed doing". The rename
-    // surfaces DO report (`notifyRenameRefusal`, #2528/#2543); these seven do
-    // not. Pinned, not endorsed — flipping it is #2544's ruling to make.
-    expect(raised).toEqual([]);
+    // refusal itself — no DISTINCT refusal notification, nothing telling the
+    // user *why* nothing happened. The rename surfaces DO report
+    // (`notifyRenameRefusal`, #2528/#2543); these seven do not. Pinned, not
+    // endorsed — flipping it is #2544's ruling to make.
+    //
+    // #2767 changes what IS raised, though: moveStitch is gated (runs the
+    // full breakage reanalysis), so `runGatedStructuralOp` now commits a
+    // synchronous "Move …" pending notification before deferring the actual
+    // wasm call off the paint path — see symbolMenuActions.ts. That pending
+    // toast fires regardless of whether the op later refuses; it is not the
+    // #2544 refusal report this comment is about.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]).toMatchObject({ severity: "info", message: "Move alpha to two…" });
   });
 
   it("promoteStitch onto an existing knot name refuses without a partial write", async () => {
@@ -245,15 +268,19 @@ describe("a refused structural op applies nothing (#2577; reporting is #2544)", 
 
     // Promoting `alpha` is fine, but a stitch named `two` would collide with
     // the existing top-level knot — the real op's first check.
-    await dispatchSymbolAction(state, state.applyMoveResult, {
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "promoteStitch",
       path: "main.ink",
       knot: "one",
       stitch: "two",
     });
+    await vi.runAllTimersAsync();
+    await pending;
 
     expect(project.getSession().getFileSource("main.ink")).toBe(before);
-    expect(raised).toEqual([]);
+    // Same #2767 pending-toast note as the moveStitch refusal test above.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]).toMatchObject({ severity: "info", message: "Promote two to knot…" });
   });
 
   it("reorderStitches with a non-permutation refuses", async () => {
@@ -269,6 +296,117 @@ describe("a refused structural op applies nothing (#2577; reporting is #2544)", 
     });
 
     expect(project.getSession().getFileSource("main.ink")).toBe(before);
+  });
+});
+
+describe("moveStitch/promoteStitch/demoteKnot run off the paint path (#2767)", () => {
+  it("commits the pending notification synchronously, before the deferred wasm call runs", async () => {
+    // The load-bearing property #722/#2761 established and #2767 extends
+    // here: a paint-worthy state change must land in the SAME synchronous
+    // tick as the triggering event, before the heavy analysis call (deferred
+    // to the next idle slot) ever executes. Asserting `raised` has the
+    // pending toast BEFORE awaiting anything proves that ordering directly,
+    // rather than trusting it because the final state looks right.
+    const { store, project, raised } = await makeStore({
+      "main.ink": MAIN,
+      "other.ink": "-> one.alpha\n",
+    });
+    const state = store.getState();
+
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
+      type: "moveStitch",
+      path: "main.ink",
+      srcKnot: "one",
+      stitch: "alpha",
+      destKnot: "two",
+    });
+
+    // No timer/microtask has been allowed to run yet — this is still the
+    // original synchronous call stack.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]).toMatchObject({ severity: "info", message: "Move alpha to two…" });
+    // ...and the heavy call has NOT run yet: the file is untouched.
+    expect(project.getSession().getFileSource("main.ink")).toContain("=== one ===");
+    expect(stitchOrder(project.getSession().getFileSource("main.ink")!)).toEqual([
+      "alpha",
+      "beta",
+    ]);
+
+    await vi.runAllTimersAsync();
+    await pending;
+
+    // Now the deferred call has landed: `alpha` moved out from under `one`
+    // (whose only remaining stitch is `beta`) into `two`. `stitchOrder` scans
+    // the whole file, so this is "beta, then alpha" — `two`'s header still
+    // follows `one`'s in the file — not "just beta"; the moveStitch test
+    // above pins the same move with `indexOf` position checks instead.
+    expect(stitchOrder(project.getSession().getFileSource("main.ink")!)).toEqual([
+      "beta",
+      "alpha",
+    ]);
+    expect(project.getSession().getFileSource("other.ink")).toContain("-> two.alpha");
+  });
+
+  it("drops a queued move if the project changed while it was pending, instead of applying stale edits", async () => {
+    // The #2761 lesson this test pins: a user action during the deferred
+    // window must not let stale work land after the fact. Here "a user
+    // action" is a second edit landing on the same file (any content
+    // mutation bumps EditorSessionHandle.generation) while moveStitch's
+    // wasm call is still queued in the idle slot.
+    const { store, project, raised } = await makeStore({ "main.ink": MAIN });
+    const state = store.getState();
+    const session = project.getSession();
+    const beforeMove = session.getFileSource("main.ink")!;
+
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
+      type: "moveStitch",
+      path: "main.ink",
+      srcKnot: "one",
+      stitch: "alpha",
+      destKnot: "two",
+    });
+
+    // A concurrent edit lands before the deferred call fires — any
+    // content-mutating wasm call bumps `generation`.
+    session.updateFile("main.ink", `${beforeMove}\n// a concurrent edit\n`);
+    const afterConcurrentEdit = session.getFileSource("main.ink")!;
+
+    await vi.runAllTimersAsync();
+    await pending;
+
+    // The queued move was dropped, not silently applied over the concurrent
+    // edit — the file holds exactly what the concurrent edit left it as.
+    expect(session.getFileSource("main.ink")).toBe(afterConcurrentEdit);
+    expect(stitchOrder(session.getFileSource("main.ink")!)).toEqual(["alpha", "beta"]);
+
+    // The pending toast fired; a warning explaining the drop follows it.
+    expect(raised.map((n) => n.severity)).toEqual(["info", "warning"]);
+    expect(raised[1]!.message).toContain("Move alpha to two");
+    expect(raised[1]!.message).toContain("skipped");
+  });
+
+  it("reorderStitch (a non-gated op) runs synchronously with no pending toast", async () => {
+    // Control case: reorders skip the gate entirely (StructuralResult::
+    // safe_source), so they must NOT go through the idle-deferred path —
+    // no pending toast, no idle hop, the file changes before `await`
+    // resolves anything beyond the dispatcher's own promise.
+    const { store, project, raised } = await makeStore({ "main.ink": MAIN });
+    const state = store.getState();
+
+    await dispatchSymbolAction(state, state.applyMoveResult, {
+      type: "reorderStitch",
+      path: "main.ink",
+      knot: "one",
+      stitch: "alpha",
+      direction: 1,
+    });
+
+    expect(stitchOrder(project.getSession().getFileSource("main.ink")!)).toEqual([
+      "beta",
+      "alpha",
+    ]);
+    // No "Reorder …" pending toast — only applyMoveResult's own success toast.
+    expect(raised.every((n) => n.severity === "info" && !n.message.endsWith("…"))).toBe(true);
   });
 });
 
