@@ -22,8 +22,8 @@
 //! `docs/decision-log.md` 2026-07-27 "Type-name surface ruled").
 
 use crate::SyntaxKind::{
-    COLON, COMMA, GT, IDENT, KW_FN, L_PAREN, LT, R_PAREN, TYPE_ANNOTATION, TYPE_EXPR, TYPE_FN,
-    TYPE_GENERIC, TYPE_NAME,
+    COLON, COMMA, GT, IDENT, KW_FN, L_BRACKET, L_PAREN, LT, R_PAREN, TYPE_ANNOTATION, TYPE_EXPR,
+    TYPE_FN, TYPE_GENERIC, TYPE_NAME,
 };
 
 use super::Parser;
@@ -89,30 +89,76 @@ fn type_name_or_generic(p: &mut Parser<'_, '_>) {
     let checkpoint = p.checkpoint();
     p.expect(IDENT);
 
-    if !p.at(LT) {
+    if p.at(LT) {
+        p.start_node_at(checkpoint, TYPE_GENERIC);
+        p.expect(LT);
+        p.skip_ws_and_newlines();
+        while p.peek_skip_nl() != GT && !p.at_eof() {
+            let before = p.pos();
+            type_expr(p);
+            if p.pos() == before {
+                p.error_recover("unexpected token in type argument list");
+                continue;
+            }
+            p.skip_ws_and_newlines();
+            if !p.eat(COMMA) {
+                break;
+            }
+            p.skip_ws_and_newlines();
+        }
+        p.expect(GT);
+        p.finish_node();
+    } else {
         p.start_node_at(checkpoint, TYPE_NAME);
         p.finish_node();
-        return;
     }
+    reject_bracket_after_type_name(p);
+}
 
-    p.start_node_at(checkpoint, TYPE_GENERIC);
-    p.expect(LT);
-    p.skip_ws_and_newlines();
-    while p.peek_skip_nl() != GT && !p.at_eof() {
-        let before = p.pos();
-        type_expr(p);
-        if p.pos() == before {
-            p.error_recover("unexpected token in type argument list");
-            continue;
-        }
-        p.skip_ws_and_newlines();
-        if !p.eat(COMMA) {
-            break;
-        }
-        p.skip_ws_and_newlines();
+/// Issue #2792: `[` is not the type-argument delimiter — angle brackets are
+/// RULED (`docs/decision-log.md` 2026-07-27, retracting the older
+/// `Option[T]` spelling), and `[…]` is reserved for the array/sequence
+/// literal (#1490). Every position in this grammar that reads a type name
+/// funnels through [`type_name_or_generic`] (params, return clauses,
+/// lambda params/returns, `let`/`var`/`const` bindings, struct fields), so
+/// checking here — right after a `TYPE_NAME`/`TYPE_GENERIC` finishes — gives
+/// every one of them the same targeted diagnostic "for free", instead of
+/// each position's own incidental fallout from whatever hard `expect` (or
+/// worse, none at all) happened to sit next in that position's grammar.
+///
+/// Before this, only `var`/`const` had an explicit check (#2781/#2785,
+/// called separately right after `binding_annotation` in `decl.rs`) — every
+/// other position either happened to fail loudly for an unrelated reason
+/// (`fn`/`flow` params trip their own `expect(R_PAREN)`; lambda params trip
+/// `expect(PIPE)`) with a generic, position-specific message, or — for a
+/// lambda's own return annotation — didn't fail at all: `expression(p)`
+/// (`parser/expr.rs::lambda_expr`) happily reads a leftover `[int]` as an
+/// `ARRAY_LITERAL` lambda body, silently dropping the real body that
+/// followed (a silent data drop, CLAUDE.md: "always bugs until proven
+/// otherwise" — the exact shape #2781 found for `var`/`const`'s
+/// initializer, just in a different position). Centralizing the check here
+/// fixes that silent drop the same way it unifies the other three
+/// messages, with no new per-position wiring to keep in sync.
+///
+/// Only fires when the `[` sits on the same source line as the type name
+/// just parsed — `Parser::at` never crosses a `NEWLINE`, so a legitimate
+/// array literal starting fresh on the next line is untouched.
+///
+/// Deliberately narrow, matching #2792's scope: this only ever *adds* the
+/// targeted diagnostic ahead of whatever recovery already ran at a given
+/// position; it never consumes the `[`, so a position with its own hard
+/// `expect` immediately afterward (`fn`/`flow` params, lambda params) still
+/// separately reports its prior generic message too, and the leftover
+/// `[…]` still lands as parser-generated garbage exactly as it did before.
+/// Unifying that recovery is a bigger, separate design question (#2792's
+/// own text) — out of scope here.
+fn reject_bracket_after_type_name(p: &mut Parser<'_, '_>) {
+    if p.at(L_BRACKET) {
+        p.error(format!(
+            "expected `<` or end of type name, found {:?}",
+            p.current()
+        ));
     }
-    p.expect(GT);
-    p.finish_node();
 }
 
 /// Parse `fn(type, …): type` — a function type.

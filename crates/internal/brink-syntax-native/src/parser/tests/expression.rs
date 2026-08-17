@@ -1086,34 +1086,90 @@ fn lambda_param_generic_annotation_surface() {
 /// applies; the dedicated regression tests for the exact diagnostic text
 /// live in `declaration.rs`
 /// (`var_decl_square_bracket_after_type_name_fails_loudly_instead_of_dropping_to_content`
-/// / the `const` sibling next to it) — this test only checks that *some*
-/// error fires here, matching the `fn`-param/`fn`-return style below.
+/// / the `const` sibling next to it).
 ///
-/// The lambda case additionally pins the exact diagnostic shape (rather
-/// than just "some error fired") so a regression to an unrelated failure
-/// mode — e.g. a depth-limit or generic recovery diagnostic — doesn't slip
-/// through silently.
+/// **Issue #2792 unified the message itself**, not just "some error fires":
+/// before #2792, `lambda`/`fn`-param/`fn`-return each failed for an
+/// unrelated, incidental reason (a hard `expect` for the *next* required
+/// token — `PIPE`, `R_PAREN` — that happened to trip on `[`), so each
+/// produced a different, generic "expected X, found `L_BRACKET`" message,
+/// while only `var`/`const` (#2785) had a real, targeted diagnostic. Every
+/// position's `errors().first()` is now that same targeted message —
+/// `types::reject_bracket_after_type_name` (`parser/types.rs`) fires it
+/// once, right where `type_name_or_generic` finishes reading the bare type
+/// name, so every calling position gets it "for free" with no per-site
+/// wiring. What #2792 deliberately left alone is *recovery*: each
+/// position's own pre-existing hard-`expect` cascade (unrelated additional
+/// diagnostics, a stray `CONTENT_LINE`/`INTERPOLATION` holding the leftover
+/// `[int]…` text) still fires exactly as before — this test only pins the
+/// first, unified diagnostic, not the full cascade (see `declaration.rs`'s
+/// sibling tests for `fn`-param/`fn`-return/struct-field cascades, and
+/// `statement.rs` for `let`).
 #[test]
 fn lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position() {
+    const UNIFIED_MESSAGE: &str = "expected `<` or end of type name, found L_BRACKET";
+
     let lambda = assert_lossless("var f = |y: Option[int]| { y }\n");
     assert_eq!(
         lambda.errors().first().map(|e| e.message.as_str()),
-        Some("expected PIPE, found L_BRACKET"),
+        Some(UNIFIED_MESSAGE),
         "errors: {:?}",
         lambda.errors()
     );
 
     let fn_param = parse("fn f(x: Option[int]) {}\n");
-    assert!(!fn_param.errors().is_empty());
+    assert_eq!(
+        fn_param.errors().first().map(|e| e.message.as_str()),
+        Some(UNIFIED_MESSAGE),
+        "errors: {:?}",
+        fn_param.errors()
+    );
 
     let fn_return = parse("fn f(): Option[int] { none }\n");
-    assert!(!fn_return.errors().is_empty());
+    assert_eq!(
+        fn_return.errors().first().map(|e| e.message.as_str()),
+        Some(UNIFIED_MESSAGE),
+        "errors: {:?}",
+        fn_return.errors()
+    );
 
     let var_decl = parse("var x: Option[int] = none\n");
-    assert!(!var_decl.errors().is_empty());
+    assert_eq!(
+        var_decl.errors().first().map(|e| e.message.as_str()),
+        Some(UNIFIED_MESSAGE),
+        "errors: {:?}",
+        var_decl.errors()
+    );
 
     let const_decl = parse("const MAX: Option[int] = none\n");
-    assert!(!const_decl.errors().is_empty());
+    assert_eq!(
+        const_decl.errors().first().map(|e| e.message.as_str()),
+        Some(UNIFIED_MESSAGE),
+        "errors: {:?}",
+        const_decl.errors()
+    );
+}
+
+/// A lambda's *own* return annotation (as opposed to a per-param one, above)
+/// used to have the worst behavior of any of the four positions, worse even
+/// than pre-#2781 `var`/`const`: `expression(p)` (`lambda_expr`) reads
+/// whatever follows the return annotation as the lambda's body, and `[` is a
+/// legal expression atom (the array-literal grammar, #1490) — so
+/// `|y: int|: Option[int] { none }` silently parsed `[int]` as an
+/// `ARRAY_LITERAL` *body*, with the real ` { none }` body dropped with
+/// **zero** diagnostics. #2792's shared check (`types::
+/// reject_bracket_after_type_name`) fires regardless of what a given
+/// position does with its post-annotation tokens, so this now fails loudly
+/// with the same unified message as every other position.
+#[test]
+fn lambda_return_annotation_square_bracket_fails_loudly_instead_of_silently_eating_the_body() {
+    let p = parse("var f = |y: int|: Option[int] { none }\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
 }
 
 #[test]

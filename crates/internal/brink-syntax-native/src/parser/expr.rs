@@ -283,12 +283,14 @@ fn paren_expr(p: &mut Parser<'_, '_>) {
 /// annotation parser: `|y: Option<int>| { y }` already parses (angle
 /// brackets are the RULED type-argument delimiter,
 /// `docs/decision-log.md` 2026-07-27 "Type-name surface ruled: angle
-/// brackets"). `|y: Option[int]| { y }` fails with `expected PIPE, found
-/// L_BRACKET` — not because this position is missing generic support, but
-/// because `[…]` is not a valid type-argument delimiter *anywhere* in this
-/// grammar (it is reserved for array literals, `[1, 2, 3]`, #1490; the
-/// 2026-07-27 ruling explicitly retracts the older `Option[T]` spelling).
-/// See `brink-ir/tests/native_lambdas.rs`'s
+/// brackets"). `|y: Option[int]| { y }` fails with `` expected `<` or end
+/// of type name, found L_BRACKET `` — the same targeted diagnostic every
+/// annotation position gets (issue #2792 unified it; before that, this
+/// position's own `expect(PIPE)` produced a generic message purely
+/// incidentally) — because `[…]` is not a valid type-argument delimiter
+/// *anywhere* in this grammar (it is reserved for array literals,
+/// `[1, 2, 3]`, #1490; the 2026-07-27 ruling explicitly retracts the older
+/// `Option[T]` spelling). See `brink-ir/tests/native_lambdas.rs`'s
 /// `generic_typed_param_lowers_through_the_shared_type_annotation_entry_point`
 /// for the lowering-level proof.
 fn lambda_expr(p: &mut Parser<'_, '_>) {
