@@ -12,6 +12,15 @@
   color: var(--bs-fg-muted);
 }
 
+/* Pending (#696/#722): shown while the deferred collision analysis is in
+   flight — committed and painted before the (still synchronous) wasm call
+   runs, so it's a deterministic signal distinct from the eventual verdict. */
+.brink-studio .brink-rename-pending {
+  margin: 0;
+  font-size: 12px;
+  color: var(--bs-fg-muted);
+}
+
 /* Breakage report — wider than the bare input, scrollable list of diagnostics. */
 .brink-studio .brink-rename-report {
   display: flex;
