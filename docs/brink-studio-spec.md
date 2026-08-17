@@ -684,10 +684,12 @@ ranges and that whitespace belongs to the PRECEDING stitch `c`, not to `b`)
 instead. `regions` still carries only the flush-left `delete_symbol:alt-
 stitch-plain` control; an `alt-stitch-indented` entry was tried and reverted
 once driving it showed the mismatch above, rather than left unattempted.
-Separately, `parser/knot.rs`'s grammar comment still spells `stitch_header`
-with `INLINE_WS+` — required whitespace — which this PR's driven evidence
-rejects (whitespace after the `=` is optional in practice, per `skip_ws`);
-the comment has not been corrected to match the code it documents.
+(`parser/knot.rs`'s grammar comment used to spell `stitch_header` with
+`INLINE_WS+` — required whitespace — contradicting the optional-whitespace
+behavior this section's own driven evidence established; that mismatch was
+fixed separately, on main, ahead of this PR — see #2695/#2700's `docs: fix
+stitch_header grammar comment and trust-hierarchy reachability` and #2701's
+follow-up corpus citations.)
 
 ## Visual hierarchy
 
