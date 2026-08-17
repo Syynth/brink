@@ -554,8 +554,25 @@ export function stageUniversalCliSidecar({
 // `beforeBuildCommand` always staged a single-arch, host-triple-suffixed
 // sidecar no matter what `--target` was requested, and
 // `stageUniversalCliSidecar` had no caller.
+// #2729: `TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"` above is the
+// only entry point into `stageUniversalCliSidecar` — set only by tauri-cli's
+// `beforeBuildCommand` hook during a real `tauri build --target
+// universal-apple-darwin`. A macOS developer who wants to dry-run this
+// staging path by hand (with or without `BRINK_SIDECAR_STUB=1`) had no way
+// to reach it without faking that env var themselves. `--universal` is that
+// documented entry point: `node scripts/ensure-cli-sidecar.mjs --universal`
+// (wired to `pnpm --filter @brink/desktop stage:universal` in
+// package.json) dispatches here the same way tauri-cli's real hook would,
+// without needing a `tauri build` invocation at all. It does NOT make the
+// non-stub branch runnable anywhere this repo's CI/dev containers reach —
+// `lipo` and the Apple slice rustc targets are still required for that, see
+// `docs/desktop-shell-spec.md` "CI coverage blind spots".
+const requestsUniversal =
+  process.argv.includes("--universal") ||
+  process.env.TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin";
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  if (process.env.TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin") {
+  if (requestsUniversal) {
     stageUniversalCliSidecar();
   } else {
     ensureCliSidecar();

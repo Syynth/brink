@@ -964,6 +964,51 @@ skip branch, because there is still no macOS/Windows runner in CI. Buying
 one is the same unsettled cost question as the file-association surface
 above — not decided by this lane either.
 
+**#2729: the `universal-apple-darwin` staging path is a blind spot of its
+own, distinct from — and deeper than — the macho/pe skip-branch gap above.**
+PR #2722 (delivering #2715) added `stageUniversalCliSidecar` in
+`ensure-cli-sidecar.mjs` — two real `cargo build -p brink-cli --release
+--target <triple>` slice builds (`x86_64-apple-darwin` and
+`aarch64-apple-darwin`), then a real `lipo -create` combining them into one
+fat Mach-O — and wired the script's main-guard to dispatch there whenever
+`TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"`, the value tauri-cli's
+`beforeBuildCommand` hook sets for a `tauri build --target
+universal-apple-darwin` invocation. That dispatch is what gives #2708's
+widened `canExecuteStagedSidecar` branch (assert-real-sidecar.mjs) an actual
+path to fire on. Every assertion about any of this —
+`stage-universal-cli-sidecar.test.ts`'s whole suite, this section's own
+description above — was verified against injected `runCommand`/`runLipo`
+fakes standing in for `cargo`/`lipo`, the same disclosed constraint as the
+rest of this section: this repo's CI/dev containers are Linux, with neither
+the Apple slice rustc targets nor `lipo` on PATH. So, precisely:
+
+- **No CI lane, and no machine this repo's automation can see, has ever run
+  the real two-slice build, the real `lipo -create` invocation, or #2708's
+  widened `canExecuteStagedSidecar` branch it exists to feed.** This is a
+  strictly narrower and unexecuted-so-far claim than the macho/pe paragraph
+  above — that one is about `executableFormatFor`'s classification logic
+  reaching only its skip branch; this one is about a whole staging
+  mechanism (real cross-compiled builds plus an external Apple-toolchain
+  binary) that has never run anywhere, on any input, real or synthetic.
+- **The `TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"` dispatch
+  condition itself is a read of tauri-cli source** (#2687/#2714), not an
+  in-repo confirmation from a real `tauri build --target
+  universal-apple-darwin` run — consistent with `assert-real-sidecar.mjs`'s
+  own default for that same env var, but not independently verified here.
+- `pnpm --filter @brink/desktop stage:universal` (`node
+  scripts/ensure-cli-sidecar.mjs --universal`, #2729) now gives a macOS
+  developer a documented dry-run entry point into this path without faking
+  `TAURI_ENV_TARGET_TRIPLE` by hand — closing the "no explicit way to
+  request universal staging" half of #2729's ask. It does not, and cannot,
+  close either bullet above: running it on this repo's Linux CI/dev
+  containers still only reaches the `BRINK_SIDECAR_STUB` stub branch (no
+  `lipo`, no Apple rustc targets to build the slices with), and the first
+  real confirmation still needs a macOS host. Buying a macOS CI runner (or
+  a maintainer's one-time manual verification) is the same unsettled cost
+  question this section already declines to rule on for the file-
+  association surface and the macho/pe bundle targets — not decided here
+  either. **Documenting this gap is not closing it.**
+
 ## Menus
 
 Generated from the studio's **command registry**, per

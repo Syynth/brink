@@ -1601,6 +1601,56 @@ mod tests {
         );
     }
 
+    /// The entries of the `paths:` filter nested under `pull_request:`,
+    /// specifically. `path_filter` alone returns the FIRST `paths:` block
+    /// found in the file — which, in `desktop-bundle-smoke.yml` since
+    /// #2716, is `push`'s (declared first in `on:`), not `pull_request`'s.
+    /// Slicing the workflow text from the `pull_request:` trigger line
+    /// onward makes ITS `paths:` block the first one `path_filter` finds.
+    fn pull_request_path_filter(workflow: &str) -> Vec<String> {
+        let idx = workflow
+            .find("\n  pull_request:")
+            .expect("workflow should have a top-level `pull_request:` trigger");
+        path_filter(&workflow[idx..])
+    }
+
+    /// #2716: `desktop-bundle-smoke.yml`'s `push` trigger had NO `paths:`
+    /// filter at all — every push to `main` re-ran the whole lane (a real
+    /// `cargo build -p brink-cli --release` plus the full `src-tauri`
+    /// Tauri build graph) and re-saved its ~784 MB rust-cache entry
+    /// (`Cache Size: ~784 MB (822197295 B)`, confirmed against a real run,
+    /// job 95324823667), against ci.yml's shared 10 GB repo-wide cache
+    /// quota, regardless of whether the push touched anything this lane
+    /// exercises. The fix mirrors `pull_request`'s own `paths:` list onto
+    /// `push`. This test is what keeps that mirror honest going forward:
+    /// `path_filter` alone (used by `desktop_smoke_path_filter_covers_its_shared_inputs`
+    /// above, for `desktop-smoke.yml`) only ever sees the FIRST `paths:`
+    /// block in a file, so a silent edit to `push`'s list here that failed
+    /// to also update `pull_request`'s (or vice versa) would drift the two
+    /// triggers apart with no other test noticing — one of the two lists
+    /// would then be watching real inputs the other one has stopped
+    /// watching.
+    #[test]
+    fn desktop_bundle_smoke_push_and_pull_request_paths_match() {
+        let contents = workflow("desktop-bundle-smoke.yml");
+        let push_paths = path_filter(&contents);
+        let pull_request_paths = pull_request_path_filter(&contents);
+        assert!(
+            !push_paths.is_empty(),
+            "desktop-bundle-smoke.yml's push trigger should carry a real paths filter (#2716); \
+             an empty filter here would mean path_filter's parsing broke, not that the fix \
+             was reverted on purpose"
+        );
+        assert_eq!(
+            push_paths, pull_request_paths,
+            "desktop-bundle-smoke.yml's push and pull_request paths filters must stay \
+             identical (#2716) — push: {push_paths:?}, pull_request: {pull_request_paths:?}. \
+             If one legitimately needs a new entry the other doesn't, that's a deliberate \
+             design change this test should be updated to reflect explicitly, not a silent \
+             drift"
+        );
+    }
+
     /// Each check in the smoke lane must stay non-blocking for its SIBLINGS
     /// (`!cancelled()`, so a clippy failure cannot hide a failing test)
     /// while still being gated on the SETUP steps it depends on. A bare

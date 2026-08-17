@@ -43,10 +43,64 @@ name: Desktop bundle smoke
 # desktop-smoke.yml's `--locked` cargo steps (see its own ⚠ block) remain
 # the lane that catches that lockfile drifting stale; this one only proves
 # the bundle builds and runs.
+# #2716: the `push` trigger below used to have NO `paths:` filter, unlike
+# `pull_request`'s (below) — every push to `main` re-ran this lane (a real
+# `cargo build -p brink-cli --release` plus the full `src-tauri` Tauri build
+# graph) and re-saved its rust-cache entry, no matter what the push touched.
+# Verified against a real run (job 95324823667, 2026-08-17, a cache HIT so
+# no upload, but the entry it restored is the same one a change to these
+# paths would re-save): `Cache Size: ~784 MB (822197295 B)` — matches the
+# ~822 MB figure #2716 reported. Against ci.yml's 10 GB repo-wide cache
+# quota (shared across ~11 separate rust-cache keys today, several with
+# their own `shared-key`), GitHub LRU-evicts beyond quota — the failure
+# mode is another lane's cache silently getting evicted and that lane
+# going cold on its next run, not a visible error anywhere.
+#
+# Fix chosen: mirror `pull_request`'s own `paths:` list onto `push` too
+# (below) rather than touch the cache key or its content. Trade-off, stated
+# plainly: a push to `main` whose commit touches NONE of these paths no
+# longer re-runs this lane or re-saves its ~784 MB cache entry — but such a
+# push could not have changed this lane's output either, so nothing real is
+# lost, and `pull_request` already worked this way before this change.
+# Restricting to `pull_request`-only (dropping `push` entirely) was
+# considered and rejected: a direct push to `main` that DOES touch these
+# paths (no PR, or a squash-merge whose base diverged from what its PR
+# lane actually ran against) would then go fully unverified by this lane
+# until the next matching change — the exact real-build coverage this lane
+# exists to buy, and gutting it risks the lane being disabled later for
+# looking useless. Narrowing the cache key itself was also considered and
+# rejected here: the two workspaces cached (root + `src-tauri`) are both
+# genuinely large, real build graphs this lane needs warm to stay fast, and
+# shrinking what's cached without a push-path filter to also cut save
+# FREQUENCY would only trade "an 822 MB save every push" for "a smaller-but-
+# still-frequent save every push" — the frequency was the actual problem.
 on:
   push:
     branches: [main]
+    paths:
+      - "packages/brink-desktop/**"
+      - "crates/brink-cli/**"
+      - "crates/brink-web/**"
+      - "packages/wasm/**"
+      - "packages/wasm-types/**"
+      - "packages/ink-editor/**"
+      - "packages/brink-studio/**"
+      - "packages/ink-operations/**"
+      - "packages/studio-shell/**"
+      - "packages/studio-store/**"
+      - "packages/studio-ui/**"
+      - "pnpm-lock.yaml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "clippy.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/desktop-bundle-smoke.yml"
+      - ".github/workflows/**"
   pull_request:
+    # Kept identical to `push`'s list above on purpose (#2716) — if one
+    # changes, mirror the edit onto the other, or the two triggers drift
+    # out of sync on which real changes this lane actually verifies.
     paths:
       - "packages/brink-desktop/**"
       # Unlike desktop-smoke.yml (#2477), this lane's sidecar build is NOT
