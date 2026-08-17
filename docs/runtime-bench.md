@@ -213,6 +213,7 @@ struct-access pair.
 ```
 loop-append-10k:                    cow_copies=     1  arc_clones= 10001
 share-then-mutate-5k:                cow_copies=  5000  arc_clones= 10001
+loop-append-field-10k:               cow_copies=     1  arc_clones= 10001
 struct-field-access-10k (strict):    cow_copies=     0  arc_clones= 40002
 struct-field-access-10k (gradual):   cow_copies=     0  arc_clones= 40002
 
@@ -225,13 +226,15 @@ save-state-medium save_state():      cow_copies=     0  arc_clones=     1
 save-state-medium load_state():      cow_copies=     0  arc_clones=     1
 ```
 
-This block predates `loop-append-field-10k` (issue #2123) and does not yet
-have a row for it: `cargo bench -p brink-runtime --features bench-counters`
-currently panics before any bench runs (`struct-field-access-10k`'s
-`VAR p: Point = 0` placeholder fails to compile under E063, unrelated to
-#2123 — see that PR's description), so a real captured number isn't
-available yet. Don't fabricate one here; add the row once that's
-unblocked.
+The `loop-append-field-10k` row (issue #2123) was captured for the first
+time closing issue #2138: `cargo bench -p brink-runtime --features
+bench-counters` had panicked before any bench ran since `c158cc89c`
+(#2085) tightened `VAR`/`CONST` initializer type-checking against
+`struct-field-access-10k/story.ink`'s `VAR p: Point = 0` placeholder (a
+bogus `int` initializer for a struct-typed `VAR`, rejected under E063).
+The fixture now initializes `p` with a real `Point#{x: 0.0, y: 0.0}`
+literal instead of the placeholder — see that file's header for why this
+doesn't change static-offset eligibility.
 
 The snapshot-retention row is the §8 bounded-retention proof: g10-m10 and
 g10-m100 (same G=10, 10x different M) both report `cow_copies=11`;
