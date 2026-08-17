@@ -24,18 +24,28 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   CONTEXT_WINDOW_LINES,
+  EXPECTED_WHITESPACE_PRIMITIVE,
   HISTORICAL_MARKER_RE,
+  KNOWN_UNCOVERED_TRIVIA_PRIMITIVES,
+  PARSER_SRC_DIR,
   REPO_ROOT,
   STALE_TOKEN,
+  censusWhitespacePrimitives,
+  censusWhitespacePrimitivesInText,
   checkFileForGrammarDrift,
   checkGrammarDrift,
+  checkWhitespacePrimitivePremise,
+  discoverParserSourceFiles,
   discoverScanFiles,
+  findFunctionBodyByName,
   findGrammarDriftOccurrences,
+  stripCfgTestModules,
   stripCommentPrefix,
 } from "./check-grammar-drift.mjs";
 
@@ -210,6 +220,346 @@ describe("discoverScanFiles", () => {
       files.some((f) => f.split("/").includes("node_modules") || f.split("/").includes("target")),
       false,
     );
+  });
+});
+
+describe("Whitespace-primitive premise pin (#2728)", () => {
+  // This guard's whole STALE_TOKEN ban rests on "brink-syntax's parser has
+  // exactly ONE whitespace-consuming primitive, matching zero-or-more".
+  // These tests pin that premise mechanically: they must go RED the moment
+  // a second primitive appears, the sole one is renamed away from
+  // `skip_ws`, or its body stops looking like zero-or-more.
+
+  describe("censusWhitespacePrimitivesInText — synthetic input", () => {
+    it("finds a single zero-or-more `skip_ws`-shaped function", () => {
+      const text = [
+        "impl<'a, 'b> Parser<'a, 'b> {",
+        "    fn skip_ws(&mut self) {",
+        "        while self.pos < self.tokens.len() && self.tokens[self.pos].0.is_trivia() {",
+        "            self.bump();",
+        "        }",
+        "    }",
+        "}",
+      ].join("\n");
+
+      const census = censusWhitespacePrimitivesInText(text);
+      assert.equal(census.length, 1);
+      assert.equal(census[0].name, "skip_ws");
+      assert.match(census[0].body, /while/);
+      assert.doesNotMatch(census[0].body, /\.error\s*\(/);
+    });
+
+    it("ignores functions whose name merely CONTAINS \"ws\" as a substring, not a segment", () => {
+      // A hypothetical `rows_seen` must not be mistaken for a whitespace
+      // primitive — "ws" only counts when it is its own underscore-
+      // separated segment (`skip_ws`, `ws_required`, `expect_whitespace`).
+      const text = ["fn rows_seen(&self) -> usize {", "    self.rows", "}"].join("\n");
+      assert.deepEqual(censusWhitespacePrimitivesInText(text), []);
+    });
+
+    it("MAKE IT FAIL: detects a planted SECOND whitespace primitive", () => {
+      const text = [
+        "fn skip_ws(&mut self) {",
+        "    while self.tokens[self.pos].0.is_trivia() {",
+        "        self.bump();",
+        "    }",
+        "}",
+        "",
+        "fn expect_ws(&mut self) {",
+        "    if !self.tokens[self.pos].0.is_trivia() {",
+        "        self.error(\"expected whitespace\".into());",
+        "    }",
+        "    self.skip_ws();",
+        "}",
+      ].join("\n");
+
+      const census = censusWhitespacePrimitivesInText(text);
+      assert.equal(census.length, 2, "a second whitespace-named function must be counted");
+      assert.deepEqual(
+        census.map((c) => c.name).sort(),
+        ["expect_ws", "skip_ws"],
+      );
+    });
+
+    it("MAKE IT FAIL: detects the sole primitive turning REQUIRED (one-or-more)", () => {
+      const text = [
+        "fn skip_ws(&mut self) {",
+        "    let mut consumed = false;",
+        "    while self.tokens[self.pos].0.is_trivia() {",
+        "        self.bump();",
+        "        consumed = true;",
+        "    }",
+        "    if !consumed {",
+        "        self.error(\"expected whitespace\".into());",
+        "    }",
+        "}",
+      ].join("\n");
+
+      const census = censusWhitespacePrimitivesInText(text);
+      assert.equal(census.length, 1);
+      assert.match(census[0].body, /\.error\s*\(/, "a required-whitespace body must be detected as such");
+    });
+  });
+
+  describe("checkWhitespacePrimitivePremise — synthetic repoRoot fixtures", () => {
+    // End-to-end through the real filesystem (mkdtempSync + a planted
+    // parser/mod.rs), not just the pure censusWhitespacePrimitivesInText
+    // above — this exercises discoverParserSourceFiles's directory walk and
+    // checkWhitespacePrimitivePremise's message-building together, the same
+    // path `pnpm check:grammar-drift` runs against the real repo.
+
+    /** @param {string} modRsBody */
+    function withScratchParserDir(modRsBody, fn) {
+      const scratchRoot = mkdtempSync(join(tmpdir(), "grammar-drift-premise-"));
+      try {
+        const parserDir = join(scratchRoot, PARSER_SRC_DIR);
+        mkdirSync(parserDir, { recursive: true });
+        writeFileSync(join(parserDir, "mod.rs"), modRsBody, "utf8");
+        fn(scratchRoot);
+      } finally {
+        rmSync(scratchRoot, { recursive: true, force: true });
+      }
+    }
+
+    it("MAKE IT FAIL: a second whitespace primitive fails the premise check", () => {
+      withScratchParserDir(
+        [
+          "fn skip_ws(&mut self) {",
+          "    while self.tokens[self.pos].0.is_trivia() {",
+          "        self.bump();",
+          "    }",
+          "}",
+          "",
+          "fn expect_ws(&mut self) {",
+          "    self.error(\"expected whitespace\".into());",
+          "}",
+        ].join("\n"),
+        (scratchRoot) => {
+          const result = checkWhitespacePrimitivePremise(scratchRoot);
+          assert.equal(result.ok, false);
+          assert.equal(result.problems.length, 1);
+          assert.match(result.problems[0], /PREMISE VIOLATION/);
+          assert.match(result.problems[0], /found 2/);
+        },
+      );
+    });
+
+    it("MAKE IT FAIL: the sole primitive turning required (one-or-more) fails the premise check", () => {
+      withScratchParserDir(
+        [
+          "fn skip_ws(&mut self) {",
+          "    let mut consumed = false;",
+          "    while self.tokens[self.pos].0.is_trivia() {",
+          "        self.bump();",
+          "        consumed = true;",
+          "    }",
+          "    if !consumed {",
+          "        self.error(\"expected whitespace\".into());",
+          "    }",
+          "}",
+        ].join("\n"),
+        (scratchRoot) => {
+          const result = checkWhitespacePrimitivePremise(scratchRoot);
+          assert.equal(result.ok, false);
+          assert.equal(result.problems.length, 1);
+          assert.match(result.problems[0], /now calls `\.error\(\.\.\.\)`/);
+        },
+      );
+    });
+
+    it("MAKE IT FAIL: renaming the sole primitive away from skip_ws fails the premise check", () => {
+      withScratchParserDir(
+        ["fn skip_whitespace(&mut self) {", "    while self.tokens[self.pos].0.is_trivia() {", "        self.bump();", "    }", "}"].join(
+          "\n",
+        ),
+        (scratchRoot) => {
+          const result = checkWhitespacePrimitivePremise(scratchRoot);
+          assert.equal(result.ok, false);
+          assert.match(result.problems[0], /is now `skip_whitespace`/);
+        },
+      );
+    });
+
+    it("REVERT TO GREEN: a single skip_ws with a zero-or-more body passes", () => {
+      withScratchParserDir(
+        ["fn skip_ws(&mut self) {", "    while self.tokens[self.pos].0.is_trivia() {", "        self.bump();", "    }", "}"].join("\n"),
+        (scratchRoot) => {
+          const result = checkWhitespacePrimitivePremise(scratchRoot);
+          assert.deepEqual(result.problems, []);
+          assert.equal(result.ok, true);
+        },
+      );
+    });
+  });
+
+  describe("discoverParserSourceFiles — recursion and tests/ exclusion", () => {
+    it(`finds ${PARSER_SRC_DIR}'s production files and excludes known real tests/ files, at the top level and nested`, () => {
+      // Non-vacuous version of the old assertion: rather than only checking
+      // a property of the walk's OWN output (which can never fail for a
+      // non-recursive walk that structurally can't reach tests/), assert
+      // specific real files that DO exist under the tests/ subtree — some
+      // nested two levels deep — are NOT present in the result.
+      const files = discoverParserSourceFiles(REPO_ROOT);
+      assert.ok(files.length > 5, "sanity: several parser source files expected");
+      assert.ok(files.includes(`${PARSER_SRC_DIR}/mod.rs`));
+      assert.equal(files.includes(`${PARSER_SRC_DIR}/tests/mod.rs`), false);
+      assert.equal(files.includes(`${PARSER_SRC_DIR}/tests/choice/mod.rs`), false);
+      assert.equal(files.includes(`${PARSER_SRC_DIR}/tests/choice/cst.rs`), false);
+      for (const path of files) {
+        assert.equal(path.includes("/tests/"), false, `${path} should not be under the tests/ subtree`);
+      }
+    });
+
+    it("MAKE IT FAIL: recursively finds a production .rs file in a nested subdirectory, while still excluding a nested tests/ dir", () => {
+      const scratchRoot = mkdtempSync(join(tmpdir(), "grammar-drift-discover-"));
+      try {
+        const parserDir = join(scratchRoot, PARSER_SRC_DIR);
+        mkdirSync(join(parserDir, "sub"), { recursive: true });
+        mkdirSync(join(parserDir, "tests", "nested"), { recursive: true });
+        writeFileSync(join(parserDir, "mod.rs"), "fn skip_ws(&mut self) {}\n", "utf8");
+        writeFileSync(join(parserDir, "sub", "extra.rs"), "fn helper() {}\n", "utf8");
+        writeFileSync(join(parserDir, "tests", "mod.rs"), "fn skip_ws_smoke() {}\n", "utf8");
+        writeFileSync(join(parserDir, "tests", "nested", "more.rs"), "fn skip_ws_smoke2() {}\n", "utf8");
+
+        const files = discoverParserSourceFiles(scratchRoot);
+        assert.deepEqual(
+          [...files].sort(),
+          [`${PARSER_SRC_DIR}/mod.rs`, `${PARSER_SRC_DIR}/sub/extra.rs`].sort(),
+          "a nested production subdirectory file must be found; anything under tests/, at any depth, must not be",
+        );
+      } finally {
+        rmSync(scratchRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("inline #[cfg(test)] module exclusion", () => {
+    it("MAKE IT FAIL: stripCfgTestModules removes an inline #[cfg(test)] mod body", () => {
+      const text = [
+        "fn skip_ws(&mut self) {",
+        "    while self.tokens[self.pos].0.is_trivia() {",
+        "        self.bump();",
+        "    }",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    fn skip_ws_smoke() {}",
+        "}",
+        "",
+        "fn after_the_test_mod() {}",
+      ].join("\n");
+
+      const stripped = stripCfgTestModules(text);
+      assert.doesNotMatch(stripped, /skip_ws_smoke/);
+      assert.match(stripped, /fn skip_ws\(/);
+      assert.match(stripped, /fn after_the_test_mod\(/);
+    });
+
+    it("MAKE IT FAIL: censusWhitespacePrimitivesInText excludes a whitespace-named function inside an inline #[cfg(test)] module", () => {
+      const text = [
+        "fn skip_ws(&mut self) {",
+        "    while self.tokens[self.pos].0.is_trivia() {",
+        "        self.bump();",
+        "    }",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    fn skip_ws_smoke() {}",
+        "}",
+      ].join("\n");
+
+      const census = censusWhitespacePrimitivesInText(text);
+      assert.equal(census.length, 1, "the inline #[cfg(test)] module's skip_ws_smoke must not be censused");
+      assert.equal(census[0].name, "skip_ws");
+    });
+
+    it("MAKE IT FAIL: checkWhitespacePrimitivePremise stays green with a planted #[cfg(test)] whitespace-named helper", () => {
+      const scratchRoot = mkdtempSync(join(tmpdir(), "grammar-drift-cfgtest-"));
+      try {
+        const parserDir = join(scratchRoot, PARSER_SRC_DIR);
+        mkdirSync(parserDir, { recursive: true });
+        writeFileSync(
+          join(parserDir, "mod.rs"),
+          [
+            "fn skip_ws(&mut self) {",
+            "    while self.tokens[self.pos].0.is_trivia() {",
+            "        self.bump();",
+            "    }",
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    fn skip_ws_smoke() {}",
+            "",
+            "    #[test]",
+            "    fn skip_ws_eats_block_comments() {}",
+            "}",
+          ].join("\n"),
+          "utf8",
+        );
+
+        const result = checkWhitespacePrimitivePremise(scratchRoot);
+        assert.deepEqual(result.problems, []);
+        assert.equal(result.ok, true);
+      } finally {
+        rmSync(scratchRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("checkWhitespacePrimitivePremise — the real repo, as it exists today", () => {
+    it(`finds exactly one whitespace primitive, named "${EXPECTED_WHITESPACE_PRIMITIVE}"`, () => {
+      const census = censusWhitespacePrimitives(REPO_ROOT);
+      assert.equal(census.length, 1, `expected exactly one primitive, found: ${JSON.stringify(census.map((c) => c.name))}`);
+      assert.equal(census[0].name, EXPECTED_WHITESPACE_PRIMITIVE);
+      assert.equal(census[0].path, `${PARSER_SRC_DIR}/mod.rs`);
+    });
+
+    it("the sole primitive's body still matches zero-or-more (while loop, no error-on-missing)", () => {
+      const census = censusWhitespacePrimitives(REPO_ROOT);
+      assert.equal(census.length, 1);
+      assert.match(census[0].body, /\bwhile\b/);
+      assert.doesNotMatch(census[0].body, /\.error\s*\(/);
+    });
+
+    it("the premise holds at HEAD, so checkWhitespacePrimitivePremise is green", () => {
+      const result = checkWhitespacePrimitivePremise(REPO_ROOT);
+      assert.deepEqual(result.problems, []);
+      assert.equal(result.ok, true);
+    });
+  });
+
+  describe("KNOWN_UNCOVERED_TRIVIA_PRIMITIVES — real-repo siblings the name-based census can't see", () => {
+    it("skip_struct_body_trivia and skip_blank_lines exist and still match zero-or-more today", () => {
+      assert.ok(KNOWN_UNCOVERED_TRIVIA_PRIMITIVES.length > 0);
+      for (const { name, path } of KNOWN_UNCOVERED_TRIVIA_PRIMITIVES) {
+        const text = readFileSync(join(REPO_ROOT, path), "utf8");
+        const body = findFunctionBodyByName(text, name);
+        assert.ok(body, `expected to find fn ${name} in ${path}`);
+        assert.doesNotMatch(
+          body,
+          /\.error\s*\(/,
+          `${name} (${path}) now calls .error(...) — it may have become REQUIRED trivia/blank-line ` +
+            "consumption, which this guard's ws/whitespace name-based census can't see. Re-examine " +
+            "scripts/check-grammar-drift.mjs's premise pin.",
+        );
+      }
+    });
+
+    it("neither known sibling is accidentally matched by the ws/whitespace name-based census (confirms they're genuinely uncovered)", () => {
+      for (const { name, path } of KNOWN_UNCOVERED_TRIVIA_PRIMITIVES) {
+        const text = readFileSync(join(REPO_ROOT, path), "utf8");
+        const matched = censusWhitespacePrimitivesInText(text).some((c) => c.name === name);
+        assert.equal(
+          matched,
+          false,
+          `${name} unexpectedly matched the ws/whitespace census — update KNOWN_UNCOVERED_TRIVIA_PRIMITIVES ` +
+            "or the header prose in check-grammar-drift.mjs if that's now intentional",
+        );
+      }
+    });
   });
 });
 
