@@ -387,7 +387,9 @@ the same half for every `dispatchSymbolAction` op — `reorder_knots`/`reorder_s
 #2685 Gap 3) — an indented-FIRST-knot header's end-to-end preamble behavior \
 (`reorder_knots:indented-first-knot`, #2706), plus `rename_symbol`'s own answer on that same \
 source and `move_stitch`/`promote_stitch`/`demote_knot` driven on ALT_STITCHES's indented \
-`  = b` (#2721); \
+`  = b` (#2721), plus `move_stitch`/`demote_knot` driven on ALT_FENCES's \
+non-newline-terminated `three` boundary — the input shape that stresses their own \
+`needs_newline_before`/`needs_nl` guards, which ALT_STITCHES's `  = b` does not (#2730); \
 `call_forms` are the exact call-site LINE `extract_to_function` chooses — \
 `{name()}` vs `~ name()` — the half `acceptance` cannot see because both forms answer \
 `ok: true` (#2675 Gap A); `defaults` are session-seed values a fresh production session \
@@ -1153,12 +1155,30 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// Gap 2: `move_stitch`/`promote_stitch`/`demote_knot` were never driven
     /// on [`ALT_STITCHES`]'s indented `  = b`, the input shape #2703's fix
     /// was made for, though the other four `dispatchSymbolAction` ops were.
+    ///
+    /// Gap 3 (#2730, follow-up from #2725's review): `ALT_STITCHES`'s `  = b`
+    /// lands `move_stitch`/`demote_knot`'s insertion point right after a byte
+    /// that is already `\n` (see [`driven_payloads`]'s doc), so Gap 2's two
+    /// cases above cannot exercise either op's `needs_newline_before`/
+    /// `needs_nl` guard (`structural_move.rs`'s `move_stitch` and
+    /// `demote_knot_to_stitch`) at all — only `promote_stitch_to_knot`'s
+    /// analogous guard got driven somewhere that mattered, by
+    /// `promote_stitch:alt-stitch-indented` on the SAME source. [`ALT_FENCES`]'s
+    /// indented `  ==== four ====` is the input that does stress it: it glues
+    /// its own leading whitespace onto knot `three`'s trailing trivia (same
+    /// mechanism, #2703), leaving `three`'s region ending in a bare `"  "`
+    /// with no trailing newline — so inserting INTO `three` is where a missing
+    /// guard would show. This is acceptance only (`ok`/`error`, both sides
+    /// agree here); [`driven_payloads`]'s pair of the same name carries the
+    /// `new_source` byte-level answer the guard actually changes.
     fn driven_indent_acceptance() -> serde_json::Value {
         let delete_indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
         let rename_indented_first = session_with(&[("main.ink", INDENTED_FIRST_KNOT)]);
         let move_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
         let promote_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
         let demote_indented_stitch = session_with(&[("main.ink", ALT_STITCHES)]);
+        let move_into_alt_fence_boundary = session_with(&[("main.ink", ALT_FENCES)]);
+        let demote_into_alt_fence_boundary = session_with(&[("main.ink", ALT_FENCES)]);
 
         serde_json::json!({
             "delete_symbol:indented-first-knot": outcome(
@@ -1180,6 +1200,16 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "demote_knot:alt-stitch-indented": outcome(
                 "demote_knot (demoting `two` into `one`, landing after the indented `  = b`)",
                 &demote_indented_stitch.demote_knot("main.ink", "two", "one"),
+            ),
+            "move_stitch:alt-fence-three-boundary": outcome(
+                "move_stitch (moving `one`'s stitch `a` into `three`, whose region ends \
+                 in a bare two-space indent glued from `four`'s header)",
+                &move_into_alt_fence_boundary.move_stitch("main.ink", "one", "a", "three"),
+            ),
+            "demote_knot:alt-fence-three-boundary": outcome(
+                "demote_knot (demoting `two` into `three`, whose region ends in a bare \
+                 two-space indent glued from `four`'s header)",
+                &demote_into_alt_fence_boundary.demote_knot("main.ink", "two", "three"),
             ),
         })
     }
@@ -1360,6 +1390,22 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// `dispatchSymbolAction` ops #2713 had not yet driven there.
     /// `delete_symbol:indented-first-knot` is deliberately NOT among them —
     /// see [`driven_stitch_regions`]'s doc for why.
+    ///
+    /// #2730 (follow-up from #2725's review) adds
+    /// `move_stitch:alt-fence-three-boundary` / `demote_knot:alt-fence-three-
+    /// boundary`: #2725 found and fixed `promote_stitch_to_knot`'s missing
+    /// `needs_newline_before`-style guard, and review found the SAME gap
+    /// still open in `structural_move.rs`'s `move_stitch`
+    /// (`needs_newline_before`) and `demote_knot_to_stitch` (`needs_nl`) —
+    /// but the two `ALT_STITCHES` cases above happen to land right after a
+    /// byte that is already `\n`, so neither exercises either guard. Moving
+    /// INTO `three` does: `three`'s region ends in the bare `"  "` left
+    /// behind by `four`'s indented header (same #2703 mechanism), so the
+    /// byte immediately before the insertion point is a space, not `\n`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "driven fixture table — one block per (op, input) pair; splitting it would scatter cases that are read together"
+    )]
     fn driven_payloads() -> serde_json::Value {
         let alt_fences = session_with(&[("main.ink", ALT_FENCES)]);
         let alt_stitches = session_with(&[("main.ink", ALT_STITCHES)]);
@@ -1481,6 +1527,31 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
             "demote_knot:alt-stitch-indented": payload_source(
                 "demote_knot (demoting `two` into `one`, landing after the indented `  = b`)",
                 &alt_stitches.demote_knot("main.ink", "two", "one"),
+            ),
+            // #2730 (follow-up from #2725's review): `move_stitch`/
+            // `demote_knot` on ALT_STITCHES's `  = b` above both land right
+            // after a byte that is already `\n`, so neither case can exercise
+            // `structural_move.rs`'s `needs_newline_before` (`move_stitch`) /
+            // `needs_nl` (`demote_knot_to_stitch`) guard — the exact defect
+            // class #2725 found and fixed for `promote_stitch_to_knot`'s own
+            // guard. `ALT_FENCES`'s indented `  ==== four ====` glues its
+            // leading whitespace onto knot `three`'s trailing trivia (#2703),
+            // leaving `three`'s region ending in a bare `"  "` with no
+            // trailing newline — inserting INTO `three` is where a missing
+            // guard would actually show up in `new_source`. Hand-verified
+            // against `structural_move.rs`: both guards fire here (the byte
+            // before the insertion point is a space, not `\n`), so production
+            // inserts a separating `\n` that a mock without the matching
+            // guard would drop.
+            "move_stitch:alt-fence-three-boundary": payload_source(
+                "move_stitch (moving `one`'s stitch `a` into `three`'s non-newline-\
+                 terminated region)",
+                &alt_fences.move_stitch("main.ink", "one", "a", "three"),
+            ),
+            "demote_knot:alt-fence-three-boundary": payload_source(
+                "demote_knot (demoting `two` into `three`'s non-newline-terminated \
+                 region)",
+                &alt_fences.demote_knot("main.ink", "two", "three"),
             ),
             // Review finding on #2675 Gap C: extract.rs's call-line indent
             // (`extract.rs:121-125`, `plan.indent` prefixing the call) and
