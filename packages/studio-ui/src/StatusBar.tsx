@@ -150,6 +150,27 @@ export function StorySegment() {
 }
 
 /**
+ * Local busy-state affordance for a gated structural op (`moveStitch`/
+ * `promoteStitch`/`demoteKnot`, #2767) running off the paint path
+ * (`runGatedStructuralOp` in `symbolMenuActions.ts`, spec §7.7.4). Renders
+ * only while `structuralOpPending` is set — quiet, non-modal, and gone the
+ * moment the deferred wasm call settles. This is deliberately a status-bar
+ * segment and NOT a shell notification: spec §7.5 states progress
+ * notifications are out of scope for the notification service, so progress
+ * for these one-shot context-menu/drag-drop actions lives here per §7.3
+ * instead.
+ */
+export function StructuralOpSegment() {
+  const pending = useStudioStore((s) => s.structuralOpPending);
+  if (pending === null) return null;
+  return (
+    <span className="brink-status-structural-op" role="status" aria-live="polite">
+      {pending}…
+    </span>
+  );
+}
+
+/**
  * Multi-session picker (docs/multi-session-spec.md §5, #182). Lists the
  * registered sessions and repoints every session-bound view to the selected
  * one. Hidden when ≤1 session — no picker noise in the single-session studio;

@@ -16,9 +16,13 @@
  * Rust op runs the full-project breakage gate (`gate_with_source`,
  * `crates/internal/brink-ide/src/structural_result.rs`), the same cost class
  * as rename's collision check — and fixed those three the same way
- * (`runGatedStructuralOp` in `symbolMenuActions.ts`: commit a pending
- * notification synchronously, defer the wasm call via `scheduleIdleWork`,
- * re-validate `session.generation` before running it).
+ * (`runGatedStructuralOp` in `symbolMenuActions.ts`: commit a LOCAL
+ * busy-state affordance synchronously — `structuralOpPending`, rendered by
+ * the status bar's `StructuralOpSegment`, spec §7.7.4 — then defer the wasm
+ * call via `scheduleIdleWork` and trust the op's own refusal for staleness;
+ * no shell notification and no `session.generation` re-check, both tried in
+ * an earlier draft and removed in review — see §7.7.4's "Third enrolment"
+ * paragraph for why).
  *
  * ## Deliberately narrow scope
  *
@@ -63,7 +67,8 @@
  * implement the remedy (or a bogus EXEMPT reason) passes this scan. Real
  * verification of the remedy's behavior lives in
  * `symbol-structural-ops.test.ts`'s "run off the paint path" describe block
- * (synchronous pending-toast assertion, staleness re-validation, and the
+ * (synchronous pending busy-state assertion, two concurrent-edit cases
+ * proving a queued op is no longer dropped on an unrelated change, and the
  * reorder-stays-synchronous control case) — this file only guarantees that
  * REVIEW attention was paid at the call site, the same guarantee
  * `select-call-enrolment.test.ts` gives for its own invariant.

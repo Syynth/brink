@@ -50,45 +50,54 @@ function symbolDeclarationOffset(
  * change no qualification, so the pure op returns `StructuralResult::
  * safe_source` and skips the gate entirely (see that type's doc comment) —
  * genuinely cheap, not merely assumed so. Wrapping them here would add an
- * idle-hop and a pending-toast flash for zero benefit.
+ * idle-hop and a pending-indicator flash for zero benefit.
  *
- * This commits a pending notification synchronously (so React can paint it
- * before the heavy call runs) and defers `compute` to the next idle slot via
- * `scheduleIdleWork`. It then re-validates `session.generation` — a counter
- * every content-mutating wasm call bumps (`packages/wasm/src/index.ts`) —
- * against the value captured before scheduling: if anything else mutated the
- * session while this was queued (a doc edit landing, another structural op),
- * `compute` is skipped rather than run against content that may no longer
- * match what triggered the action. This is #2761's non-obvious lesson
- * carried forward: a user action during the deferred window must not let
- * stale work land after the fact.
+ * This commits `structuralOpPending` synchronously (so React can paint a
+ * pending indicator before the heavy call runs) and defers `compute` to the
+ * next idle slot via `scheduleIdleWork`, clearing it again once `compute`
+ * returns. The pending state is a LOCAL busy-state affordance rendered by
+ * the status bar's `StructuralOpSegment` (spec §7.3) — deliberately NOT a
+ * shell notification (`state._notify`): §7.5 states progress notifications
+ * are out of scope for the notification service, and a review of #2769
+ * caught an earlier version of this helper raising one anyway (it also
+ * double-toasted on success, since `applyMoveResult` already raises its own
+ * "Move X to Y" notification with Undo).
+ *
+ * There is deliberately no re-check of `session.generation` (a counter every
+ * content-mutating wasm call bumps, including a single keystroke in a
+ * mounted editor view via `pushSource`/`updateDocument` —
+ * `packages/wasm/src/index.ts`) against a value captured before scheduling.
+ * An earlier version of this helper did that, on the theory it mirrored
+ * #2761's staleness guard for the rename prompt — but unlike that prompt,
+ * `compute` here is a thunk that calls the wasm op fresh at invocation time
+ * against the session's THEN-current source, never against a snapshot
+ * captured before the idle wait; and the op itself already refuses cleanly
+ * when its target has moved out from under it (`error_json`, e.g. "source
+ * knot not found"). A blanket generation check guards no hazard that exists
+ * on this path — it only silently drops legitimate queued ops on completely
+ * unrelated edits, including the routine one-keystroke-per-transaction
+ * bumps every mounted editor view produces. Trust the op's own `result.ok`
+ * refusal instead; see `dispatchSymbolAction`'s `case`s below.
  *
  * There is no widget instance to `cancelIdleWork` on unmount/close the way
  * `InlineNameInput`/`SymbolRenamePrompt` do — a context-menu click and a
- * drag-drop drop are one-shot, not an open editing surface — so the
- * generation re-check is this call's only staleness guard; there is nothing
- * else to cancel.
+ * drag-drop drop are one-shot, not an open editing surface — so there is no
+ * staleness guard to run here at all; the op's own refusal is sufficient.
  */
-async function runGatedStructuralOp<S extends { generation: number }>(
+async function runGatedStructuralOp(
   state: StudioState,
-  session: S,
   description: string,
   compute: () => StructuralResult,
-): Promise<StructuralResult | null> {
-  state._notify?.({ severity: "info", source: "binder", message: `${description}…` });
-  const generation = session.generation;
-  await new Promise<void>((resolve) => {
-    scheduleIdleWork(resolve);
-  });
-  if (session.generation !== generation) {
-    state._notify?.({
-      severity: "warning",
-      source: "binder",
-      message: `${description} skipped — the project changed while this was pending`,
+): Promise<StructuralResult> {
+  state.setStructuralOpPending(description);
+  try {
+    await new Promise<void>((resolve) => {
+      scheduleIdleWork(resolve);
     });
-    return null;
+    return compute();
+  } finally {
+    state.setStructuralOpPending(null);
   }
-  return compute();
 }
 
 export async function dispatchSymbolAction(
@@ -150,35 +159,29 @@ export async function dispatchSymbolAction(
       break;
     case "moveStitch": {
       description = `Move ${action.stitch} to ${action.destKnot}`;
-      const deferred = await runGatedStructuralOp(state, session, description, () =>
+      result = await runGatedStructuralOp(state, description, () =>
         // PAINT-PATH-DEFERRED move-stitch: gated (structural_result::gate_with_source)
         // — run off the paint path by runGatedStructuralOp above (#2767).
         session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot),
       );
-      if (deferred === null) return;
-      result = deferred;
       break;
     }
     case "promoteStitch": {
       description = `Promote ${action.stitch} to knot`;
-      const deferred = await runGatedStructuralOp(state, session, description, () =>
+      result = await runGatedStructuralOp(state, description, () =>
         // PAINT-PATH-DEFERRED promote-stitch: gated (structural_result::gate_with_source)
         // — run off the paint path by runGatedStructuralOp above (#2767).
         session.promoteStitch(action.path, action.knot, action.stitch),
       );
-      if (deferred === null) return;
-      result = deferred;
       break;
     }
     case "demoteKnot": {
       description = `Demote ${action.knot} into ${action.destKnot}`;
-      const deferred = await runGatedStructuralOp(state, session, description, () =>
+      result = await runGatedStructuralOp(state, description, () =>
         // PAINT-PATH-DEFERRED demote-knot: gated (structural_result::gate_with_source)
         // — run off the paint path by runGatedStructuralOp above (#2767).
         session.demoteKnot(action.path, action.knot, action.destKnot),
       );
-      if (deferred === null) return;
-      result = deferred;
       break;
     }
     default:
