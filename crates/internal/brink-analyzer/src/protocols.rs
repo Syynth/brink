@@ -46,8 +46,9 @@
 //!   side); user iterables joining the verb ecosystem stays #1090-gated.
 
 use brink_ir::{
-    BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, ElseBranch, FileId, HirFile,
-    HostManifest, IfStmt, Knot, Name, Param, ResolutionMap, Stmt, SymbolIndex, TypeExpr,
+    BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, ElseBranch, Expr, FileId, HirFile,
+    HostManifest, IfStmt, Knot, Name, Param, ResolutionMap, Stmt, StringPart, SymbolIndex,
+    TypeExpr,
 };
 
 use crate::infer::{EffectRow, Ty};
@@ -202,9 +203,11 @@ pub fn check_reserved_names(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
         };
         for var in &hir.variables {
             push(&var.name, "VAR");
+            walk_expr_for_lambdas(&var.value, &mut push);
         }
         for cst in &hir.constants {
             push(&cst.name, "CONST");
+            walk_expr_for_lambdas(&cst.value, &mut push);
         }
         for ext in &hir.externals {
             push(&ext.name, "EXTERNAL");
@@ -230,13 +233,111 @@ fn walk_params(params: &[Param], push: &mut impl FnMut(&Name, &str)) {
     }
 }
 
+/// Find every `Expr::Lambda` reachable from `expr` — including nested
+/// arbitrarily deep inside another expression (`f(|display| display)`), and
+/// nested inside the lambda's *own* body (`|x| { let f = |display| display;
+/// f() }`, via [`brink_ir::LambdaBody::all_exprs`], the "does this construct
+/// occur anywhere inside" helper built for exactly this shape — issue
+/// #1764) — and, for each one found, push its params exactly like
+/// [`walk_params`] does for a top-level fn/knot/stitch param (issue #1773:
+/// same reserved-name rule, same declaration-site treatment, regardless of
+/// which kind of param row it sits on).
+///
+/// Mirrors the shape of `hir::visit::walk_expr` / this crate's other
+/// hand-rolled expression collectors (e.g. `comparator_contract::
+/// collect_expr`) rather than introducing a third — every `Expr` variant
+/// that can hold a nested expression is descended; the only ones skipped
+/// (`Int`/`Float`/`Bool`/`Null`/`Path`/`DivertTarget`/`ListLiteral`) are
+/// leaves that can never contain a lambda literal.
+fn walk_expr_for_lambdas(expr: &Expr, push: &mut impl FnMut(&Name, &str)) {
+    match expr {
+        Expr::Lambda(l) => {
+            walk_params(&l.params, push);
+            for e in l.body.all_exprs() {
+                walk_expr_for_lambdas(e, push);
+            }
+        }
+        Expr::Call(_path, args) => {
+            for arg in args {
+                walk_expr_for_lambdas(arg, push);
+            }
+        }
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => walk_expr_for_lambdas(inner, push),
+        Expr::Infix(ie) => {
+            walk_expr_for_lambdas(&ie.lhs, push);
+            walk_expr_for_lambdas(&ie.rhs, push);
+        }
+        Expr::String(s) => {
+            for part in &s.parts {
+                if let StringPart::Interpolation(e) = part {
+                    walk_expr_for_lambdas(e, push);
+                }
+            }
+        }
+        Expr::ArrayLiteral(a) => {
+            for e in &a.elements {
+                walk_expr_for_lambdas(e, push);
+            }
+        }
+        Expr::MapLiteral(m) => {
+            for (k, v) in &m.entries {
+                walk_expr_for_lambdas(k, push);
+                walk_expr_for_lambdas(v, push);
+            }
+        }
+        Expr::Index(idx) => {
+            walk_expr_for_lambdas(&idx.base, push);
+            walk_expr_for_lambdas(&idx.index, push);
+        }
+        Expr::StructLiteral(sl) => {
+            for (_name, val) in &sl.fields {
+                walk_expr_for_lambdas(val, push);
+            }
+        }
+        Expr::FieldAccess(fa) => walk_expr_for_lambdas(&fa.base, push),
+        // T1c `#fn(target, args…)`: the target is a static path, not an
+        // `Expr` child (same shape as `Call`'s path) — only bound args
+        // descend.
+        Expr::FnLiteral(fl) => {
+            for arg in &fl.args {
+                walk_expr_for_lambdas(arg, push);
+            }
+        }
+        Expr::RefArg(ra) => walk_expr_for_lambdas(&ra.operand, push),
+        Expr::Range(r) => {
+            walk_expr_for_lambdas(&r.start, push);
+            walk_expr_for_lambdas(&r.end, push);
+        }
+        // Block-capture fragment (issue #1839): not constructible from
+        // surface syntax, but it embeds real `Stmt`s the ordinary weave walk
+        // already knows how to visit — reuse `walk_stmts` rather than
+        // growing a second statement vocabulary here.
+        Expr::Fragment(stmts) => walk_stmts(stmts, push),
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Path(_)
+        | Expr::DivertTarget(_)
+        | Expr::ListLiteral(_) => {}
+    }
+}
+
 /// Recursive walk over weave-level statements, visiting every declaration
 /// site a temp or loop variable can hide in (the `strict.rs`
-/// `collect_temps_*` walk, extended to choice bodies and continuations).
+/// `collect_temps_*` walk, extended to choice bodies and continuations) —
+/// plus, additively, every position an `Expr` can sit in, so a lambda
+/// literal reachable from any of them gets its params checked too (issue
+/// #1773).
 fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
     for stmt in stmts {
         match stmt {
-            Stmt::TempDecl(t) => push(&t.name, "temp"),
+            Stmt::TempDecl(t) => {
+                push(&t.name, "temp");
+                if let Some(v) = &t.value {
+                    walk_expr_for_lambdas(v, push);
+                }
+            }
             Stmt::Content(c) => walk_content(c, push),
             Stmt::ChoiceSet(cs) => {
                 for choice in &cs.choices {
@@ -246,6 +347,9 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
                     // can hide behind, per this function's own doc.
                     if let Some(binding) = &choice.binding {
                         push(binding, "binding");
+                    }
+                    if let Some(cond) = &choice.condition {
+                        walk_expr_for_lambdas(cond, push);
                     }
                     walk_stmts(&choice.body.stmts, push);
                 }
@@ -257,6 +361,9 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
                     if let Some(binding) = &branch.binding {
                         push(binding, "binding");
                     }
+                    if let Some(cond) = &branch.condition {
+                        walk_expr_for_lambdas(cond, push);
+                    }
                     walk_stmts(&branch.body.stmts, push);
                 }
             }
@@ -266,16 +373,42 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
                 }
             }
             Stmt::LogicBlock(lb) => walk_block_stmts(&lb.stmts, push),
-            Stmt::Divert(_)
-            | Stmt::TunnelCall(_)
-            | Stmt::ThreadStart(_)
-            | Stmt::Assignment(_)
-            | Stmt::Return(_)
-            | Stmt::ExprStmt(_)
-            | Stmt::EndOfLine
-            | Stmt::Await(_)
-            | Stmt::AttachElement(_)
-            | Stmt::EndElementRun => {}
+            Stmt::Divert(d) => {
+                for arg in &d.target.args {
+                    walk_expr_for_lambdas(arg, push);
+                }
+            }
+            Stmt::TunnelCall(tc) => {
+                for target in &tc.targets {
+                    for arg in &target.args {
+                        walk_expr_for_lambdas(arg, push);
+                    }
+                }
+            }
+            Stmt::ThreadStart(ts) => {
+                for arg in &ts.target.args {
+                    walk_expr_for_lambdas(arg, push);
+                }
+            }
+            Stmt::Assignment(a) => {
+                walk_expr_for_lambdas(&a.target, push);
+                walk_expr_for_lambdas(&a.value, push);
+            }
+            Stmt::Return(r) => {
+                if let Some(v) = &r.value {
+                    walk_expr_for_lambdas(v, push);
+                }
+                for arg in &r.onwards_args {
+                    walk_expr_for_lambdas(arg, push);
+                }
+            }
+            Stmt::ExprStmt(e) | Stmt::AttachElement(e) => walk_expr_for_lambdas(e, push),
+            Stmt::Await(a) => {
+                if let Some(cond) = &a.condition {
+                    walk_expr_for_lambdas(cond, push);
+                }
+            }
+            Stmt::EndOfLine | Stmt::EndElementRun => {}
         }
     }
 }
@@ -290,6 +423,9 @@ fn walk_content_part(part: &ContentPart, push: &mut impl FnMut(&Name, &str)) {
     match part {
         ContentPart::InlineConditional(c) => {
             for branch in &c.branches {
+                if let Some(cond) = &branch.condition {
+                    walk_expr_for_lambdas(cond, push);
+                }
                 walk_stmts(&branch.body.stmts, push);
             }
         }
@@ -305,24 +441,29 @@ fn walk_content_part(part: &ContentPart, push: &mut impl FnMut(&Name, &str)) {
                 walk_content_part(child, push);
             }
         }
-        ContentPart::Interpolation(_)
-        | ContentPart::Text(_)
-        | ContentPart::Glue
-        | ContentPart::Spring => {}
+        ContentPart::Interpolation(e) => walk_expr_for_lambdas(e, push),
+        ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
     }
 }
 
 /// Logic-block statements (`~ { … }`): temps, `for`-loop variables, and
-/// every nested block shape.
+/// every nested block shape — plus, additively, every `Expr`-bearing
+/// position (issue #1773; see [`walk_stmts`]'s doc).
 fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
     for stmt in stmts {
         match stmt {
-            BlockStmt::TempDecl(t) => push(&t.name, "temp"),
+            BlockStmt::TempDecl(t) => {
+                push(&t.name, "temp");
+                if let Some(v) = &t.value {
+                    walk_expr_for_lambdas(v, push);
+                }
+            }
             BlockStmt::If(i) => walk_if(i, push),
             BlockStmt::While(w) => {
                 if let Some(binding) = &w.binding {
                     push(binding, "binding");
                 }
+                walk_expr_for_lambdas(&w.condition, push);
                 walk_block_stmts(&w.body, push);
             }
             BlockStmt::For(f) => {
@@ -330,14 +471,28 @@ fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
                 if let Some(val_name) = &f.val_name {
                     push(val_name, "for-loop variable");
                 }
+                walk_expr_for_lambdas(&f.iterable, push);
                 walk_block_stmts(&f.body, push);
             }
-            BlockStmt::Assignment(_)
-            | BlockStmt::Return(_)
-            | BlockStmt::ExprStmt(_)
-            | BlockStmt::Await(_)
-            | BlockStmt::Break(_)
-            | BlockStmt::Continue(_) => {}
+            BlockStmt::Assignment(a) => {
+                walk_expr_for_lambdas(&a.target, push);
+                walk_expr_for_lambdas(&a.value, push);
+            }
+            BlockStmt::Return(r) => {
+                if let Some(v) = &r.value {
+                    walk_expr_for_lambdas(v, push);
+                }
+                for arg in &r.onwards_args {
+                    walk_expr_for_lambdas(arg, push);
+                }
+            }
+            BlockStmt::ExprStmt(e) => walk_expr_for_lambdas(e, push),
+            BlockStmt::Await(a) => {
+                if let Some(cond) = &a.condition {
+                    walk_expr_for_lambdas(cond, push);
+                }
+            }
+            BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
         }
     }
 }
@@ -348,6 +503,7 @@ fn walk_if(i: &IfStmt, push: &mut impl FnMut(&Name, &str)) {
     if let Some(binding) = &i.binding {
         push(binding, "binding");
     }
+    walk_expr_for_lambdas(&i.condition, push);
     walk_block_stmts(&i.body, push);
     match &i.else_branch {
         Some(ElseBranch::ElseIf(inner)) => walk_if(inner, push),
@@ -706,6 +862,24 @@ mod tests {
         check_reserved_names(&[(FileId(0), &hir)])
     }
 
+    /// Native-frontend twin of [`reserved_diags`] — `Expr::Lambda` is minted
+    /// only by `hir::lower_native` (the ink/brink-compat frontend has no
+    /// lambda grammar), so a fixture exercising a lambda param must go
+    /// through the native parser, mirroring `coalesce.rs`/
+    /// `comparator_contract.rs`'s `build_native` test helpers.
+    fn reserved_diags_native(src: &str) -> Vec<Diagnostic> {
+        let parse = brink_syntax_native::parse(src);
+        assert!(
+            parse.errors().is_empty(),
+            "fixture must parse cleanly: {:?}",
+            parse.errors()
+        );
+        let tree = parse.tree();
+        let (hir, _manifest, diags) = brink_ir::hir::lower_native::lower(FileId(0), &tree);
+        assert!(diags.is_empty(), "lowering diagnostics: {diags:?}");
+        check_reserved_names(&[(FileId(0), &hir)])
+    }
+
     fn impl_diags(src: &str, impls: &[ProtocolImplDecl]) -> Vec<Diagnostic> {
         let (hir, manifest) = lower(src);
         let result = crate::analyze(&[(FileId(0), &hir, &manifest)]);
@@ -787,6 +961,17 @@ mod tests {
         // *type* names aren't callable.
         let diags = reserved_diags("LIST steps = intro, next, outro\n");
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn lambda_param_named_display_is_reserved() {
+        // Issue #1773: same shadowing shape as `param_named_display_is_reserved`
+        // (a top-level fn/knot/stitch param), but the binding site is a
+        // lambda's own `|…|` param row instead. Same name, same file — must
+        // get the identical E113 answer.
+        let diags = reserved_diags_native("var f = |display| display\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E113);
     }
 
     #[test]
