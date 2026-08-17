@@ -17,9 +17,9 @@
 use crate::SyntaxKind::{
     COLON, COMMA, CONST_DECL, EOF, EQ, EXTERN_DECL, FLAGS_DECL, FLAGS_MEMBER, FLAGS_MEMBER_LIST,
     FLOW_DECL, FN_DECL, GT, HASH, IDENT, IMPORT_DECL, KW_AS, KW_CONST, KW_EXTERN, KW_FLAGS,
-    KW_FLOW, KW_FN, KW_MODULE, KW_PUB, KW_REF, KW_STRUCT, KW_VAR, L_BRACE, L_PAREN, MODULE_DECL,
-    NEWLINE, PARAM, PARAM_LIST, R_BRACE, R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE, USE_DECL,
-    USE_TREE, USE_TREE_LIST, VAR_DECL,
+    KW_FLOW, KW_FN, KW_MODULE, KW_PUB, KW_REF, KW_STRUCT, KW_VAR, L_BRACE, L_BRACKET, L_PAREN,
+    MODULE_DECL, NEWLINE, PARAM, PARAM_LIST, R_BRACE, R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE,
+    USE_DECL, USE_TREE, USE_TREE_LIST, VAR_DECL,
 };
 
 use super::Parser;
@@ -401,6 +401,7 @@ pub(crate) fn var_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     p.bump(); // KW_VAR
     p.expect(IDENT);
     binding_annotation(p);
+    reject_bracket_after_annotation(p);
     if p.eat(crate::SyntaxKind::EQ) {
         super::expr::expression(p);
     }
@@ -414,6 +415,7 @@ pub(crate) fn const_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>)
     p.bump(); // KW_CONST
     p.expect(IDENT);
     binding_annotation(p);
+    reject_bracket_after_annotation(p);
     if p.eat(crate::SyntaxKind::EQ) {
         super::expr::expression(p);
     }
@@ -426,6 +428,49 @@ pub(crate) fn const_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>)
 pub(super) fn binding_annotation(p: &mut Parser<'_, '_>) {
     if super::types::at_type_annotation(p) {
         super::types::type_annotation(p);
+    }
+}
+
+/// Issue #2781: `[` is not the type-argument delimiter (`docs/decision-log.md`
+/// 2026-07-27 retracted `Option[T]` — angle brackets are RULED, `[…]` is
+/// reserved for array literals, #1490). `type_name_or_generic`
+/// (`parser/types.rs`) reads a bare type name and simply stops before a
+/// `[` it doesn't recognize, since `[` is not part of the type-annotation
+/// grammar; nothing else in `var`/`const`'s header requires a specific next
+/// token, so without this check the trailing `[int] = none` silently falls
+/// out to `var_decl`'s own end and gets reinterpreted by the caller as an
+/// unrelated `CONTENT_LINE` (narrative prose) — a silent data drop with
+/// zero diagnostics (CLAUDE.md: "flag silent data drops... silent drops
+/// are always bugs until proven otherwise").
+///
+/// `fn`/`flow` params, return types, and lambda params never needed this:
+/// each of those has its own hard `expect` for the very next token
+/// (`R_PAREN`, `PIPE`) that fires for free when `[` shows up in its place
+/// (`expected R_PAREN, found L_BRACKET` / `expected PIPE, found
+/// L_BRACKET`, pinned by
+/// `lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position`).
+/// `var`/`const`'s initializer is optional (`p.eat(EQ)`, not
+/// `p.expect(EQ)`), so there is no natural "expect" call left to catch it —
+/// this is the one annotation position that needs an explicit check.
+///
+/// Deliberately **not** folded into `binding_annotation` itself: that
+/// helper is also `let`'s entry point (`parser/stmt.rs`), and `let` already
+/// errors loudly on the same input for a different, pre-existing reason —
+/// it is `;`-terminated, so a leftover `[int]` before the required
+/// `SEMICOLON` already produces `expected SEMICOLON, found L_BRACKET`
+/// there. Adding a second, redundant diagnostic to an already-correct path
+/// is unwarranted scope.
+///
+/// Only fires when the `[` sits on the same source line as the annotation
+/// just parsed — `Parser::at` never crosses a `NEWLINE` (`at_type_annotation`
+/// leans on the same property), so a legitimate array-literal `CONTENT_LINE`
+/// starting fresh on the *next* line is untouched.
+fn reject_bracket_after_annotation(p: &mut Parser<'_, '_>) {
+    if p.at(L_BRACKET) {
+        p.error(format!(
+            "expected `<` or end of type name, found {:?}",
+            p.current()
+        ));
     }
 }
 
