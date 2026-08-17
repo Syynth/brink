@@ -35,8 +35,15 @@
 //! rejected in the same ruling: the everyday collection literal deserves
 //! the lightest spelling, not a trip through the `TypeName { … }` registry
 //! dispatch. Distinct from the sibling NG-D ruling on type-argument syntax
-//! (issue #1552, `< >` for type arguments): `parser/types.rs` never touches
-//! `L_BRACKET`, so the two grammars cannot collide.
+//! (issue #1552, `< >` for type arguments): `parser/types.rs`'s
+//! `reject_bracket_after_type_name` (issue #2792) DOES now read
+//! `L_BRACKET` — right after a type name/generic finishes, to catch the
+//! retracted `Option[T]` spelling — but only ever as a **read-only
+//! lookahead check**, never consuming the bracket, so it cannot itself
+//! misroute an array literal into a type. The one place the two grammars'
+//! `[` readings sit back to back is the lambda's own return annotation
+//! (`lambda_expr` below), where that check is deliberately skipped for
+//! exactly this reason — see [`lambda_expr`]'s doc.
 
 use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, ARRAY_LITERAL, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON, COLON_COLON,
@@ -276,28 +283,38 @@ fn paren_expr(p: &mut Parser<'_, '_>) {
 /// and the brace as the body — not a `bool { … }` construction literal).
 ///
 /// **Generic-typed annotations (issue #2775):** both the per-param
-/// annotation ([`lambda_param`]) and this return annotation call
-/// `super::types::type_annotation` — the exact same entry point
+/// annotation ([`lambda_param`]) and this return annotation call into
+/// `super::types` — the exact same shared type-annotation grammar
 /// `VAR`/`CONST` (`decl.rs::var_decl`) and `fn`/`flow` params/returns
 /// (`decl.rs::param`) use. There is no lambda-specific, narrower
 /// annotation parser: `|y: Option<int>| { y }` already parses (angle
 /// brackets are the RULED type-argument delimiter,
 /// `docs/decision-log.md` 2026-07-27 "Type-name surface ruled: angle
-/// brackets"). `|y: Option[int]| { y }` fails with `` expected `<` or end
-/// of type name, found L_BRACKET `` — the same targeted diagnostic every
-/// annotation position gets (issue #2792 unified it; before that, this
-/// position's own `expect(PIPE)` produced a generic message purely
-/// incidentally) — because `[…]` is not a valid type-argument delimiter
-/// *anywhere* in this grammar (it is reserved for array literals,
-/// `[1, 2, 3]`, #1490; the 2026-07-27 ruling explicitly retracts the older
-/// `Option[T]` spelling). See `brink-ir/tests/native_lambdas.rs`'s
+/// brackets"). See `brink-ir/tests/native_lambdas.rs`'s
 /// `generic_typed_param_lowers_through_the_shared_type_annotation_entry_point`
 /// for the lowering-level proof.
+///
+/// **This return annotation's own call site is the one exception to
+/// #2792's unified `[` diagnostic** (`super::types::
+/// lambda_return_type_annotation`, review finding — NOT
+/// `super::types::type_annotation`, which [`lambda_param`] still uses):
+/// unlike every other annotation position, THIS one is immediately
+/// followed by an expression — the lambda body — and `[` legally starts
+/// one (the array-literal atom, #1490). `|x: int|: List<int> [1, 2]` is a
+/// fully legal program (return type `List<int>`, body `[1, 2]`), so the
+/// shared check cannot run unconditionally here without misreading that as
+/// the retracted `Option[T]` mistake. `|y: int|: Option[int] { none }`
+/// therefore silently reads `[int]` as the lambda body again, dropping the
+/// real ` { none }` body with no diagnostic — the same shape #2781 found
+/// for `var`/`const`'s initializer, deliberately left un-fixed at this one
+/// position because the false positive against legal code was judged
+/// worse. See `lambda_return_type_annotation`'s doc for the full
+/// reasoning.
 fn lambda_expr(p: &mut Parser<'_, '_>) {
     p.start_node(LAMBDA_EXPR);
     lambda_params(p);
     if super::types::at_type_annotation(p) {
-        super::types::type_annotation(p);
+        super::types::lambda_return_type_annotation(p);
     }
     p.skip_ws();
     expression(p);

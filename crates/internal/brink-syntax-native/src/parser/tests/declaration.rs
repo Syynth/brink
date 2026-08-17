@@ -608,6 +608,43 @@ fn struct_field_square_bracket_after_type_name_gets_the_unified_message_first() 
     );
 }
 
+/// #2792 review (BLOCKING, small): `[` after a NESTED type argument's own
+/// name must be reported exactly once, not once by the inner type name's
+/// own check and again by the outer generic that never got to close.
+///
+/// Before this fix: `type_name_or_generic` parsing `Option` (the type
+/// argument inside `List<…>`) hits the bare `Option[` mistake and fires the
+/// unified diagnostic — correctly, once. But that leaves `p`'s position
+/// still sitting on `[` (the check is a pure lookahead, never consumes),
+/// so back in the OUTER `List<…>` call, the `while` loop's `eat(COMMA)`
+/// fails (current token is `[`, not `,`), the loop breaks, `expect(GT)`
+/// then also fails on the same `[`, and the outer call's own *unconditional*
+/// `reject_bracket_after_type_name(p)` call — added by #2792, sitting right
+/// after the `TYPE_GENERIC` branch — fires a SECOND, textually IDENTICAL
+/// diagnostic at the same offset. Two identical Problems-panel rows on one
+/// caret. Fixed by only running the outer call's own check when its `<…>`
+/// actually closed (see `types::type_name_or_generic`'s `generic_closed`
+/// guard) — the inner position that actually saw the mistake still reports
+/// it, just not a second time from the outer position that never got past
+/// it.
+#[test]
+fn nested_type_argument_square_bracket_mistake_is_reported_once_not_twice() {
+    let p = parse("var x: List<Option[int]> = none\n");
+    let unified: Vec<_> = p
+        .errors()
+        .iter()
+        .filter(|e| e.message == "expected `<` or end of type name, found L_BRACKET")
+        .collect();
+    assert_eq!(
+        unified.len(),
+        1,
+        "the unified diagnostic should fire once, from the inner `Option[` \
+         mistake, not again from the outer `List<…>` that never closed; \
+         errors: {:?}",
+        p.errors()
+    );
+}
+
 // ── flags: active-marker accessor, dangling/malformed shapes ──────────
 
 #[test]

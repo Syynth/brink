@@ -1150,25 +1150,75 @@ fn lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return
     );
 }
 
-/// A lambda's *own* return annotation (as opposed to a per-param one, above)
-/// used to have the worst behavior of any of the four positions, worse even
-/// than pre-#2781 `var`/`const`: `expression(p)` (`lambda_expr`) reads
-/// whatever follows the return annotation as the lambda's body, and `[` is a
-/// legal expression atom (the array-literal grammar, #1490) — so
-/// `|y: int|: Option[int] { none }` silently parsed `[int]` as an
-/// `ARRAY_LITERAL` *body*, with the real ` { none }` body dropped with
-/// **zero** diagnostics. #2792's shared check (`types::
-/// reject_bracket_after_type_name`) fires regardless of what a given
-/// position does with its post-annotation tokens, so this now fails loudly
-/// with the same unified message as every other position.
+/// #2792 review (BLOCKING false positive): unlike every other annotation
+/// position, a lambda's *own* return annotation is immediately followed by
+/// an expression — the lambda body — and `[` legally starts one (the
+/// array-literal atom, #1490). `var f = |x: int|: List<int> [1, 2]` is a
+/// fully legal program: return type `List<int>`, body the two-element array
+/// literal `[1, 2]`. An earlier version of this PR's shared bracket check
+/// (`types::reject_bracket_after_type_name`) ran unconditionally at every
+/// position it could reach, including this one, and misfired on exactly
+/// this shape — a regression from zero errors at `main` — which is why
+/// `types::lambda_return_type_annotation` (used only by `expr.rs::
+/// lambda_expr`, not by `lambda_param`) exempts the outermost type at this
+/// one call site. This is the corresponding negative control to
+/// `lambda_return_annotation_takes_a_generic_type` above: that test proves
+/// the closed-generic shape lowers correctly with no trailing bracket;
+/// this one proves a *legal* trailing bracket (the next construct, not a
+/// mistake) is left alone.
 #[test]
-fn lambda_return_annotation_square_bracket_fails_loudly_instead_of_silently_eating_the_body() {
-    let p = parse("var f = |y: int|: Option[int] { none }\n");
+fn lambda_return_annotation_array_literal_body_after_generic_return_type_is_not_a_false_positive() {
+    let p = assert_lossless("var f = |x: int|: List<int> [1, 2]\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let annotation = lambda
+        .syntax()
+        .children()
+        .find_map(ast::TypeAnnotation::cast)
+        .expect("the lambda's own return annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("List".to_string()));
+    let body = lambda.body().expect("lambda body");
     assert_eq!(
-        p.errors().first().map(|e| e.message.as_str()),
-        Some("expected `<` or end of type name, found L_BRACKET"),
-        "errors: {:?}",
+        body.kind(),
+        SyntaxKind::ARRAY_LITERAL,
+        "body should be the [1, 2] array literal, not swallowed into the return type; tree: {body:#?}"
+    );
+}
+
+/// The trade-off finding 1's fix accepts, pinned so a future change doesn't
+/// silently "improve" this back into a false positive without a maintainer
+/// ruling (`docs/decision-log.md`'s note on this same PR): because the
+/// check at `lambda_expr`'s own return-annotation call site is now fully
+/// exempted (not just for the closed-generic case), `|y: int|:
+/// Option[int] { none }` goes back to the pre-#2792 silent-data-drop
+/// behavior — `expression(p)` reads `[int]` as the lambda's `ARRAY_LITERAL`
+/// body, and the real ` { none }` body is dropped with **zero**
+/// diagnostics, exactly as it did before this PR. `lambda_param`'s own
+/// annotation is unaffected — see
+/// `lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position`
+/// for that position (a `fn`-return-position case, not this one) still
+/// failing loudly.
+#[test]
+fn lambda_return_annotation_square_bracket_mistake_is_a_known_silent_drop_not_a_diagnostic() {
+    let p = parse("var f = |y: int|: Option[int] { none }\n");
+    assert!(
+        p.errors().is_empty(),
+        "the false-positive fix (issue #2792 review) exempts this position \
+         entirely, so this known silent drop should produce zero \
+         diagnostics, not the unified message; errors: {:?}",
         p.errors()
+    );
+    let lambda = lambda_of(&p);
+    let body = lambda.body().expect("lambda body");
+    assert_eq!(
+        body.kind(),
+        SyntaxKind::ARRAY_LITERAL,
+        "the leftover `[int]` is silently read as the body, dropping the \
+         real ` {{ none }}` body; tree: {body:#?}"
     );
 }
 
