@@ -704,6 +704,16 @@ fn external_no_whitespace_keyword_fuses() {
             .any(|n| n.kind() == SyntaxKind::EXTERNAL_DECL),
         "`EXTERNALfoo` should fuse into one identifier, not start an EXTERNAL_DECL"
     );
+    // Confirm the identifier text really is the fused `EXTERNALfoo`, not
+    // `EXTERNAL` consumed separately from a shorter `foo` name — otherwise
+    // this test would pass vacuously if EXTERNAL_DECL merely failed to parse
+    // for an unrelated reason.
+    let ident = p
+        .syntax()
+        .descendants_with_tokens()
+        .find_map(|e| e.into_token().filter(|t| t.kind() == SyntaxKind::IDENT))
+        .expect("IDENT token not found");
+    assert_eq!(ident.text(), "EXTERNALfoo");
 }
 
 /// `VARfoo = 5` — same keyword/identifier fusion as `EXTERNALfoo` above;
@@ -719,6 +729,14 @@ fn var_no_whitespace_keyword_fuses() {
             .any(|n| n.kind() == SyntaxKind::VAR_DECL),
         "`VARfoo` should fuse into one identifier, not start a VAR_DECL"
     );
+    // Confirm the identifier text really is the fused `VARfoo`, not `VAR`
+    // consumed separately from a shorter `foo` name.
+    let ident = p
+        .syntax()
+        .descendants_with_tokens()
+        .find_map(|e| e.into_token().filter(|t| t.kind() == SyntaxKind::IDENT))
+        .expect("IDENT token not found");
+    assert_eq!(ident.text(), "VARfoo");
 }
 
 /// `CONSTfoo = 5` — same keyword/identifier fusion; no `CONST_DECL` is
@@ -734,6 +752,14 @@ fn const_no_whitespace_keyword_fuses() {
             .any(|n| n.kind() == SyntaxKind::CONST_DECL),
         "`CONSTfoo` should fuse into one identifier, not start a CONST_DECL"
     );
+    // Confirm the identifier text really is the fused `CONSTfoo`, not
+    // `CONST` consumed separately from a shorter `foo` name.
+    let ident = p
+        .syntax()
+        .descendants_with_tokens()
+        .find_map(|e| e.into_token().filter(|t| t.kind() == SyntaxKind::IDENT))
+        .expect("IDENT token not found");
+    assert_eq!(ident.text(), "CONSTfoo");
 }
 
 /// `LISTfoo = a` — same keyword/identifier fusion; no `LIST_DECL` is
@@ -749,4 +775,12 @@ fn list_no_whitespace_keyword_fuses() {
             .any(|n| n.kind() == SyntaxKind::LIST_DECL),
         "`LISTfoo` should fuse into one identifier, not start a LIST_DECL"
     );
+    // Confirm the identifier text really is the fused `LISTfoo`, not `LIST`
+    // consumed separately from a shorter `foo` name.
+    let ident = p
+        .syntax()
+        .descendants_with_tokens()
+        .find_map(|e| e.into_token().filter(|t| t.kind() == SyntaxKind::IDENT))
+        .expect("IDENT token not found");
+    assert_eq!(ident.text(), "LISTfoo");
 }
