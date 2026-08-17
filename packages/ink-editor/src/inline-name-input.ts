@@ -103,6 +103,11 @@ export class InlineNameInput {
   /** Handle for the deferred (off-paint-path) query call, if one is in
    *  flight; see the OFF THE PAINT PATH note above. */
   private idleHandle: IdleHandle | null = null;
+  /** Handle for `render()`'s post-mount focus `setTimeout(..., 0)` (#2557). */
+  private focusTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Handle for `renderReport()`'s force-button focus `setTimeout(..., 0)`
+   *  (#2557). */
+  private forceFocusTimer: ReturnType<typeof setTimeout> | null = null;
   /** The name a deferred query is currently in flight for, or null when idle. */
   private pendingName: string | null = null;
   /** True while `pendingName`'s query is in flight — surfaced as the badge's
@@ -185,7 +190,8 @@ export class InlineNameInput {
     // has touched; this mirrors the guard PR #2523 landed in
     // `packages/studio-ui/src/SymbolRenamePrompt.tsx`. Pinned by
     // `packages/brink-studio/src/__tests__/inline-name-input-seed.test.ts`.
-    setTimeout(() => {
+    this.focusTimer = setTimeout(() => {
+      this.focusTimer = null;
       input.focus();
       // SELECT-INVARIANT InlineNameInput.select: guarded by the
       // value-equality check on the line below — select() only fires when
@@ -400,7 +406,15 @@ export class InlineNameInput {
     actions.append(cancel, force);
     report.append(head, list, actions);
     // Focus the override so an unsafe Enter lands on a deliberate confirmation.
-    setTimeout(() => force.focus(), 0);
+    // Clear any still-pending focus from a prior renderReport() call (e.g. a
+    // badge refresh while the report is already open, see updateBadge()) —
+    // its target `force` button was just replaced by report.replaceChildren()
+    // above, so the stale timer would otherwise focus a detached node.
+    if (this.forceFocusTimer !== null) clearTimeout(this.forceFocusTimer);
+    this.forceFocusTimer = setTimeout(() => {
+      this.forceFocusTimer = null;
+      force.focus();
+    }, 0);
   }
 
   private onKeyDown(e: KeyboardEvent): void {
@@ -476,9 +490,13 @@ export class InlineNameInput {
     this.onClose();
   }
 
-  /** Tear down everything this controller owns: the debounce timer, the report,
-   *  and the widget DOM with its listeners (the input listeners die with the
-   *  removed node; we null our refs so a late callback is inert). */
+  /** Tear down everything this controller owns: the debounce timer, the two
+   *  deferred focus `setTimeout`s (#2557 — previously left uncleared, latent
+   *  because `root.remove()` below detaches the input/force button first and
+   *  `focus()` on a detached node is a no-op; not exercised by an observable
+   *  bug today, but the class doc's "tears them all down" should be true), the
+   *  report, and the widget DOM with its listeners (the input listeners die
+   *  with the removed node; we null our refs so a late callback is inert). */
   dispose(): void {
     this.disposed = true;
     if (this.timer !== null) {
@@ -488,6 +506,14 @@ export class InlineNameInput {
     if (this.idleHandle !== null) {
       cancelIdleWork(this.idleHandle);
       this.idleHandle = null;
+    }
+    if (this.focusTimer !== null) {
+      clearTimeout(this.focusTimer);
+      this.focusTimer = null;
+    }
+    if (this.forceFocusTimer !== null) {
+      clearTimeout(this.forceFocusTimer);
+      this.forceFocusTimer = null;
     }
     this.pending = false;
     this.pendingName = null;
