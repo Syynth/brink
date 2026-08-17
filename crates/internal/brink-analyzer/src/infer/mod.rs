@@ -632,10 +632,13 @@ fn index_module_by_file(index: &SymbolIndex) -> BTreeMap<FileId, Option<String>>
 /// collection-typed global was invisible to every typed check keyed on this
 /// map — E149 and the TM-3/T1e family all missed `VAR arr = #[…]` entirely.
 /// One field now carries that whole domain, so nothing in it can fall out
-/// again. `option<T>`/`range` are not part of that domain yet: neither has
-/// annotation grammar at all (`crate::annotations::resolve` has no arm for
-/// either), so a `VAR`/`CONST` can't be declared with one in the first
-/// place.
+/// again. `range` is not part of that domain yet: it has no annotation
+/// grammar at all (`crate::annotations::resolve` has no arm for it), so a
+/// `VAR`/`CONST` can't be declared with one in the first place. (Stale
+/// pre-#1552 note, corrected for issue #2782: `Option<T>` **is** part of
+/// this domain — `annotations::resolve`'s `Generic` arm has handled it
+/// since #1552/PR #1804, so a `VAR`/`CONST` declared `Option<T>` reads
+/// through `Sig::value_ty` here exactly like `Array<T>`/`Map<K, V>` do.)
 ///
 /// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
 /// classification can resolve a variable-valued initializer that names a
