@@ -177,13 +177,19 @@ pub fn iterate_val_ty(iterable: &Ty) -> Option<Ty> {
 /// vanilla ink identifiers stay untouched.
 ///
 /// Covered declaration kinds: knots/stitches (including functions), their
-/// params, `VAR`/`CONST`, `EXTERNAL`, body temps, and `for`-loop
-/// variables — every kind that can bind a callable or a value (a fn-value
-/// in a temp named `display` would capture call-position dispatch).
-/// Deliberately *not* covered: `LIST`/`STRUCT` type names and `LIST`
-/// members — type names aren't callable, and list members are
-/// value-position-only vocabulary (`next` is plausible narrative domain
-/// language); reserving them would over-reach F6's rationale.
+/// params, `VAR`/`CONST`, `EXTERNAL`, body temps, `for`-loop variables, and
+/// a lambda's own `|…|` param row (issue #1773) — every kind that can bind
+/// a callable or a value (a fn-value in a temp named `display` would
+/// capture call-position dispatch). A lambda's params are checked at any
+/// expression depth the lambda literal can be reached from — see
+/// [`walk_expr_for_lambdas`]. Deliberately *not* covered: `LIST`/`STRUCT`
+/// type names and `LIST` members — type names aren't callable, and list
+/// members are value-position-only vocabulary (`next` is plausible
+/// narrative domain language); reserving them would over-reach F6's
+/// rationale. Also not covered: a `temp`/for-loop variable/`as` binding
+/// declared *inside* a lambda's own body — only the lambda's param row
+/// itself is checked (asymmetric with `Expr::Fragment`'s block-capture
+/// arm, which does check declarations via `walk_stmts`).
 #[must_use]
 pub fn check_reserved_names(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
@@ -350,6 +356,21 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
                     }
                     if let Some(cond) = &choice.condition {
                         walk_expr_for_lambdas(cond, push);
+                    }
+                    // Native choice labels (`* Gold: {fmt(...)}`) lower
+                    // interpolations into these three `Content` regions,
+                    // not into `choice.body.stmts` — issue #1773 review: a
+                    // lambda param reserved-name shadow in a choice label
+                    // was still unreached without this.
+                    for c in [
+                        &choice.start_content,
+                        &choice.bracket_content,
+                        &choice.inner_content,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        walk_content(c, push);
                     }
                     walk_stmts(&choice.body.stmts, push);
                 }
@@ -970,6 +991,19 @@ mod tests {
         // lambda's own `|…|` param row instead. Same name, same file — must
         // get the identical E113 answer.
         let diags = reserved_diags_native("var f = |display| display\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E113);
+    }
+
+    #[test]
+    fn lambda_param_named_display_in_choice_label_is_reserved() {
+        // Issue #1773 review finding: native choice labels (`* Gold: {…}`)
+        // lower interpolations into `choice.start_content` /
+        // `bracket_content` / `inner_content`, NOT into `choice.body.stmts`
+        // — so a lambda param shadow reachable only through one of those
+        // three `Content` regions was still unreached without walking them.
+        let diags =
+            reserved_diags_native("flow f() {\n  {?\n    * Gold: {fmt(|display| 0)}\n  }\n}\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E113);
     }
