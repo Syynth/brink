@@ -1397,11 +1397,15 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// `needs_newline_before`-style guard, and review found the SAME gap
     /// still open in `structural_move.rs`'s `move_stitch`
     /// (`needs_newline_before`) and `demote_knot_to_stitch` (`needs_nl`) —
-    /// but the two ALT_STITCHES cases above happen to land right after a
+    /// but the two `ALT_STITCHES` cases above happen to land right after a
     /// byte that is already `\n`, so neither exercises either guard. Moving
     /// INTO `three` does: `three`'s region ends in the bare `"  "` left
     /// behind by `four`'s indented header (same #2703 mechanism), so the
     /// byte immediately before the insertion point is a space, not `\n`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "driven fixture table — one block per (op, input) pair; splitting it would scatter cases that are read together"
+    )]
     fn driven_payloads() -> serde_json::Value {
         let alt_fences = session_with(&[("main.ink", ALT_FENCES)]);
         let alt_stitches = session_with(&[("main.ink", ALT_STITCHES)]);
