@@ -6,6 +6,8 @@
  * chrome owns placement + dismissal.
  */
 
+import { registerDismissible } from "./dismiss-registry.js";
+
 export interface ModalHandle {
   close(): void;
 }
@@ -33,10 +35,15 @@ export function openModal(
   render(panel);
 
   let closed = false;
+  // Global Escape safety net (#279) — a second, independent registration
+  // alongside the modal's own Escape listener below (see dismiss-registry.ts).
+  const unregisterDismiss = registerDismissible(() => close());
+
   const close = (): void => {
     if (closed) return;
     closed = true;
     document.removeEventListener("keydown", onKeyDown, true);
+    unregisterDismiss();
     backdrop.remove();
     onClose();
   };

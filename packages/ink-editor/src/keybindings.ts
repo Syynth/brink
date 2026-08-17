@@ -6,6 +6,7 @@ import { sigilBypass, characterName } from "./screenplay.js";
 import { findTransition, lineHasContent, executeAction, buildContext, tryDialectTransition } from "./transitions.js";
 import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
+import { registerDismissible } from "./dismiss-registry.js";
 
 const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab", "Backspace", "Delete"] as const;
 
@@ -325,11 +326,15 @@ function showInlineElementPicker(view: EditorView): boolean {
   document.body.appendChild(dropdown);
   document.addEventListener("keydown", handleKeydown, true);
   document.addEventListener("mousedown", handleClick);
+  // Global Escape safety net (#279) — a second, independent registration
+  // alongside this picker's own Escape listener above (see dismiss-registry.ts).
+  const unregisterDismiss = registerDismissible(() => dismissInlineElementPicker());
 
   // Store cleanup references
   (dropdown as any).__cleanup = () => {
     document.removeEventListener("keydown", handleKeydown, true);
     document.removeEventListener("mousedown", handleClick);
+    unregisterDismiss();
   };
 
   return true;

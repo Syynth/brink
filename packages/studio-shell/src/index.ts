@@ -101,6 +101,13 @@ export {
   type StatusBarItemDescriptor,
 } from "./statusbar.js";
 export { Overlay, type OverlayProps } from "./overlay.js";
+export {
+  dismissAllTransientSurfaces,
+  installGlobalDismissNet,
+  registerDismissible,
+  resetDismissRegistryForTests,
+  type DismissHandler,
+} from "./dismiss-registry.js";
 export { CommandPalette, PALETTE_COMMAND_ID, filterCommands } from "./palette.js";
 export {
   QuickPick,
