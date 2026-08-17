@@ -163,6 +163,8 @@ On a fresh checkout (including cloud sessions with no local toolchain cache), ru
 
 Pick the gate from the files you actually touched, not from the directory's name. The mapping is not guessable, and getting it wrong ships a change whose tests never ran — the commands below are correct, but none of them tells you *which* one owns a given file.
 
+**A file is subject to every check its kind attracts, not just the one you thought of.** Derive the list from the diff; do not enumerate from memory. Any `.rs` file in the root workspace is subject to **three independent CI gates** — `cargo test`, `cargo fmt --all -- --check`, *and* `cargo clippy --workspace --all-targets -- -D warnings` (plus a separate `--all-features` clippy pass). Clippy is the one most often forgotten, and this repo denies warnings with pedantic on, so ordinary-looking additions fail it: a doc comment naming an identifier without backticks (`clippy::doc_markdown`), or a fixture/test function crossing 100 *logical* lines (`clippy::too_many_lines`) — both of which took a PR red in #2734 while its gate's `cargo test` and `cargo fmt` passed. For large driven/fixture functions the established convention is `#[expect(clippy::too_many_lines, reason = "…")]` (see `crates/bevy-brink/src/flow.rs`), not splitting.
+
 | You edited | The gate that covers it | Trap |
 |---|---|---|
 | `scripts/*.mjs` | `pnpm test:scripts` | — |
