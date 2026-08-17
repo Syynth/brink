@@ -74,6 +74,9 @@ jobs:
   gen-input-gate:
     name: BENCHMARKS_GEN_INPUT_GATE
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): fmt +
+    # clippy + build of one small satellite crate is minutes of work.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -111,6 +114,9 @@ jobs:
   brink-loop-gate:
     name: BENCHMARKS_BRINK_LOOP_GATE
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): fmt +
+    # clippy + build of one small satellite crate is minutes of work.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

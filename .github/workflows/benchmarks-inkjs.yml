@@ -56,6 +56,9 @@ jobs:
   inkjs-gate:
     name: BENCHMARKS_INKJS_GATE
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): npm ci
+    # plus a single-story smoke run is minutes of work, not hours.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

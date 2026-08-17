@@ -47,6 +47,9 @@ jobs:
       id-token: write   # mint the crates.io OIDC token (Trusted Publishing)
     concurrency:
       group: release-plz-release
+    # Hard backstop against the 360-minute Actions default (#2697):
+    # `cargo publish`'s per-crate verification build across the workspace.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -85,6 +88,9 @@ jobs:
     concurrency:
       group: release-plz-pr
       cancel-in-progress: false
+    # Hard backstop against the 360-minute Actions default (#2697): the
+    # version bump plus the excluded-lockfile refresh's git operations.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -190,6 +196,9 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read
+    # Hard backstop against the 360-minute Actions default (#2697): a
+    # dry-run `cargo update --dry-run` over three excluded lockfiles.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

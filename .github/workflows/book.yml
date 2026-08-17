@@ -33,6 +33,9 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): wasm +
+    # studio build, mdbook build and a Pages deploy — minutes, not hours.
+    timeout-minutes: 20
     permissions:
       contents: read
       pages: write

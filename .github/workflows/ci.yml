@@ -44,6 +44,9 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): a
+    # workspace type-check plus one wasm32 target check.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -70,6 +73,9 @@ jobs:
   wasm-test:
     name: Wasm Tests (brink-web)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): 49
+    # wasm_bindgen_test cases under Node.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -89,6 +95,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697):
+    # `cargo test --workspace --exclude bevy-brink`.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -180,6 +189,9 @@ jobs:
   test-bench-counters:
     name: Test (bench-counters)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): the
+    # bevy-brink dependency graph build plus its clippy/test/doc legs.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -232,6 +244,9 @@ jobs:
   test-all-features:
     name: Test (all features)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697):
+    # `cargo test --workspace --all-features --exclude bevy-brink`.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -264,6 +279,10 @@ jobs:
   static-checks:
     name: Static checks (fmt, clippy, no_std, publishable)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): seven
+    # cheap-by-design steps (fmt, two clippy legs, two no_std checks, the
+    # test-util fence, the crates.io publishability probe).
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -391,6 +410,9 @@ jobs:
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): one
+    # advisory/license/source-allowlist check.
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -573,6 +595,9 @@ jobs:
   book:
     name: Book
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): mdbook
+    # build/test plus the doctest dependency build and the TS type-check.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -644,6 +669,10 @@ jobs:
   frontend:
     name: Frontend (brink-studio)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): the
+    # wasm build plus the full pnpm test/typecheck/vitest sequence — the
+    # heaviest single job in this file outside the bevy/e2e lanes.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -729,6 +758,10 @@ jobs:
   e2e:
     name: E2E (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # Hard backstop against the 360-minute Actions default (#2697): each
+    # shard rebuilds wasm, installs Playwright's browser, then runs its
+    # quarter of the ~5m40s serial suite.
+    timeout-minutes: 20
     permissions:
       contents: read
     strategy:
@@ -779,6 +812,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: e2e
     if: always()
+    # Hard backstop against the 360-minute Actions default (#2697): a
+    # trivial fan-in check of the matrix result above.
+    timeout-minutes: 5
     steps:
       - name: All shards passed
         run: test "${{ needs.e2e.result }}" = "success"

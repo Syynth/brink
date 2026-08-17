@@ -44,6 +44,9 @@ jobs:
       contents: write # push the version PR branch + git tags
       pull-requests: write # open/update the version PR
       id-token: write # npm trusted publishing (OIDC) + provenance
+    # Hard backstop against the 360-minute Actions default (#2697): wasm
+    # build, pnpm install, typecheck, vitest, and a changesets publish.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
