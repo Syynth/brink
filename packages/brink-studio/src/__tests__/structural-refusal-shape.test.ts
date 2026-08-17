@@ -1041,6 +1041,19 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
     key: "demote_knot:alt-stitch-indented",
     call: () => sessionWith({ "main.ink": ALT_STITCHES }).demote_knot("main.ink", "two", "one"),
   },
+  // ── #2730 (follow-up from #2725's review): `move_stitch`/`demote_knot`
+  // driven into ALT_FENCES's `three`, whose region ends in a bare two-space
+  // indent glued from `four`'s header (#2703) — unlike the `  = b` cases
+  // above, this insertion point is NOT already newline-terminated, so it is
+  // where a missing `needs_newline_before`/`needs_nl` guard would show.
+  {
+    key: "move_stitch:alt-fence-three-boundary",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).move_stitch("main.ink", "one", "a", "three"),
+  },
+  {
+    key: "demote_knot:alt-fence-three-boundary",
+    call: () => sessionWith({ "main.ink": ALT_FENCES }).demote_knot("main.ink", "two", "three"),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -1424,6 +1437,19 @@ describe("extract_to_function chooses the call form production does (#2675 Gap A
  * `if !new_source.ends_with('\n') { new_source.push('\n'); }`). Fixed in
  * `promote_stitch` (`packages/brink-studio/src/__mocks__/brink-web.ts`) with
  * the same guard, scoped to the one call site actually driven here.
+ *
+ * #2730 (follow-up from #2725's review) is the SAME gap in `move_stitch`/
+ * `demote_knot`'s own production counterparts — `structural_move.rs`'s
+ * `move_stitch` (`needs_newline_before`) and `demote_knot_to_stitch`
+ * (`needs_nl`) — which #2725 did not touch and #2721's `alt-stitch-indented`
+ * pair above could not catch, since ALT_STITCHES's `  = b` insertion point is
+ * always already newline-terminated. `move_stitch:alt-fence-three-boundary`/
+ * `demote_knot:alt-fence-three-boundary` drive both INTO `three` instead,
+ * whose region ends in the same bare `"  "` `promote_stitch:alt-stitch-
+ * indented` exploited above (production: `"...Third.\n\n  \n= a\nA.\n\n..."`,
+ * a separating newline inserted before the moved/demoted content). Fixed in
+ * `move_stitch`/`demote_knot` (`packages/brink-studio/src/__mocks__/
+ * brink-web.ts`) with the matching guard.
  */
 describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3, #2706)", () => {
   const payloadCalls: Record<string, () => string> = {
@@ -1501,6 +1527,15 @@ describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees
       sessionWith({ "main.ink": ALT_STITCHES }).promote_stitch("main.ink", "one", "b"),
     "demote_knot:alt-stitch-indented": () =>
       sessionWith({ "main.ink": ALT_STITCHES }).demote_knot("main.ink", "two", "one"),
+    // #2730 (follow-up from #2725's review): `move_stitch`/`demote_knot`
+    // driven into ALT_FENCES's `three`, whose region ends in a bare
+    // two-space indent glued from `four`'s header (#2703) rather than a
+    // trailing `\n` — the input shape that stresses `needs_newline_before`/
+    // `needs_nl`, which the `  = b` cases above land right past.
+    "move_stitch:alt-fence-three-boundary": () =>
+      sessionWith({ "main.ink": ALT_FENCES }).move_stitch("main.ink", "one", "a", "three"),
+    "demote_knot:alt-fence-three-boundary": () =>
+      sessionWith({ "main.ink": ALT_FENCES }).demote_knot("main.ink", "two", "three"),
   };
 
   it("every driven payload has a call site here", () => {
