@@ -90,17 +90,26 @@ export const DEFAULT_EXEC_TIMEOUT_MS = Number(process.env.BRINK_ENSURE_CLI_SIDEC
  * module talks to `rustc`/`cargo`, so a caller can drive the staging logic
  * without a toolchain.
  *
- * On a timeout (the `execSync` `timeout` option firing — Node kills the
- * child and throws with `.killed === true`), rethrows with a house-style
- * diagnostic naming the bound and the env var to raise (#2702 review): a
- * bare `Error: Command failed: cargo build …` left a developer with no
- * indication this was a bound firing rather than a real build failure.
+ * On a timeout (the `execSync` `timeout` option firing), rethrows with a
+ * house-style diagnostic naming the bound and the env var to raise (#2702
+ * review): a bare `Error: Command failed: cargo build …` left a developer
+ * with no indication this was a bound firing rather than a real build
+ * failure.
+ *
+ * The discriminator is `code === "ETIMEDOUT"`, NOT `killed`. Probed on this
+ * Node rather than assumed: `execSync("sleep 5", { timeout: 30 })` throws a
+ * spawnSync system error with `code: "ETIMEDOUT"`, `errno: -110`,
+ * `signal: "SIGTERM"`, message `spawnSync /bin/sh ETIMEDOUT` — and
+ * `killed` UNDEFINED, because `killed` lives on spawnSync's RESULT object,
+ * not on the error it throws. A `killed`-only predicate never fires and
+ * leaves this whole branch dead; `killed` is kept as a second arm for the
+ * spawn paths that do set it.
  */
 export function defaultRunCommand(command, options = {}) {
   try {
     return execSync(command, { encoding: "utf8", timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });
   } catch (error) {
-    if (error && error.killed) {
+    if (error && (error.code === "ETIMEDOUT" || error.killed)) {
       const effectiveTimeout = options.timeout ?? DEFAULT_EXEC_TIMEOUT_MS;
       throw new Error(
         `[ensure-cli-sidecar] ✗ \`${command}\` TIMED OUT after ${effectiveTimeout}ms — likely a stalled ` +
