@@ -13,9 +13,20 @@ use super::types::{at_type_annotation, type_annotation, type_expr};
 /// Parse `INCLUDE filepath\n`.
 ///
 /// ```text
-/// include_statement = { "INCLUDE" ~ INLINE_WS+ ~ file_path }
+/// include_statement = { "INCLUDE" ~ INLINE_WS* ~ file_path }
 /// file_path = { (!NEWLINE ~ ANY)+ }
 /// ```
+///
+/// Whitespace after `INCLUDE` is **optional** (`INLINE_WS*`, not `+`) —
+/// the body is `p.bump()` then `p.skip_ws()`, and `skip_ws` consumes zero
+/// or more trivia tokens (the same notation-vs-code gap #2695 fixed in
+/// `knot.rs`'s `stitch_header`, swept for siblings by #2707). Unlike
+/// `VAR`/`CONST`/`LIST`/`EXTERNAL` below, the zero-whitespace form here is
+/// actually reachable, not just theoretically implied by the code: `file_path`
+/// can start with a non-identifier character (e.g. `.` or `/`), so
+/// `INCLUDE../shared.ink` lexes as `KW_INCLUDE` followed immediately by the
+/// path — not fused into one identifier token — and is driven directly by
+/// `include_no_whitespace_after_keyword` in `tests/declaration/cst.rs`.
 pub(crate) fn include_statement(p: &mut Parser<'_, '_>) {
     p.start_node(INCLUDE_STMT);
     p.bump(); // KW_INCLUDE
@@ -40,7 +51,7 @@ pub(crate) fn include_statement(p: &mut Parser<'_, '_>) {
 /// Parse an `IMPORT` statement (M-2, docs/modules-spec.md §2), both forms:
 ///
 /// ```text
-/// import_statement = { "IMPORT" ~ INLINE_WS+ ~ (import_list ~ "FROM" ~ module | module) ~ NEWLINE }
+/// import_statement = { "IMPORT" ~ INLINE_WS* ~ (import_list ~ "FROM" ~ module | module) ~ NEWLINE }
 /// import_list      = { "{" ~ import_item ~ ("," ~ import_item)* ~ "}" }
 /// import_item      = { identifier ~ ("AS" ~ identifier)? }
 /// module           = { identifier }
@@ -50,6 +61,17 @@ pub(crate) fn include_statement(p: &mut Parser<'_, '_>) {
 /// else); only `IMPORT` is a reserved token. Grammar is always superset-
 /// parsed; the brink-dialect gate rejects the whole statement under
 /// strict-ink downstream (the `#@module` precedent).
+///
+/// Whitespace after `IMPORT` is **optional** (`INLINE_WS*`, not `+`) — same
+/// notation-vs-code gap #2695 fixed in `knot.rs`, swept here by #2707: the
+/// body is `p.bump()` then `p.skip_ws()` (zero or more). The bare-list form
+/// makes this reachable, not just a code-vs-comment technicality: `{` isn't
+/// an identifier character, so `IMPORT{a}` lexes as `KW_IMPORT` then
+/// `L_BRACE` with nothing to fuse into — driven directly by
+/// `import_no_whitespace_after_keyword` in `tests/declaration/cst.rs`. The
+/// qualified form (`IMPORT mod`) is like `VAR`/`CONST`/`LIST` below: the
+/// module name is a bare identifier, so it fuses with `IMPORT` into one
+/// token with zero whitespace and the zero-ws case can't be driven there.
 pub(crate) fn import_statement(p: &mut Parser<'_, '_>) {
     p.start_node(IMPORT_STMT);
     p.bump(); // KW_IMPORT
@@ -130,8 +152,22 @@ fn import_module(p: &mut Parser<'_, '_>) {
 /// Parse `EXTERNAL ident(params)\n`.
 ///
 /// ```text
-/// external_declaration = { "EXTERNAL" ~ INLINE_WS+ ~ identifier ~ "(" ~ function_param_list? ~ ")" ~ NEWLINE }
+/// external_declaration = { "EXTERNAL" ~ INLINE_WS* ~ identifier ~ "(" ~ function_param_list? ~ ")" ~ NEWLINE }
 /// ```
+///
+/// Whitespace after `EXTERNAL` is **optional** (`INLINE_WS*`, not `+`) —
+/// same notation-vs-code gap #2695 fixed in `knot.rs`, swept here by #2707:
+/// the body is `p.bump()` then `p.skip_ws()` (zero or more). The
+/// zero-whitespace form is lexically unreachable, though: `EXTERNAL` and
+/// the identifier that follows are both scanned by the same
+/// identifier-character loop (`lexer::ident::scan_ident` +
+/// `classify_keyword`), so `EXTERNALfoo` lexes as one `IDENT` token, not
+/// `KW_EXTERNAL` followed by `IDENT` — there's no whitespace-free input
+/// that reaches this function as a declaration at all (`VARx` is the same
+/// shape, #2707). The comment still states the parser's actual
+/// zero-or-more policy rather than an artifact of what's reachable; the
+/// fusion itself is pinned by `external_no_whitespace_keyword_fuses` in
+/// `tests/declaration/cst.rs`.
 pub(crate) fn external_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(EXTERNAL_DECL);
     p.bump(); // KW_EXTERNAL
@@ -181,8 +217,17 @@ fn function_param_list(p: &mut Parser<'_, '_>) {
 /// Parse `VAR ident = expr\n`.
 ///
 /// ```text
-/// var_declaration = { "VAR" ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
+/// var_declaration = { "VAR" ~ INLINE_WS* ~ identifier ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
 /// ```
+///
+/// Whitespace after `VAR` is **optional** (`INLINE_WS*`, not `+`) — same
+/// notation-vs-code gap #2695 fixed in `knot.rs`, swept here by #2707: the
+/// body is `p.bump()` then `p.skip_ws()` (zero or more). As with
+/// `external_declaration` above, the zero-whitespace form is lexically
+/// unreachable: `VAR` and the identifier are both scanned by the same
+/// identifier-character loop, so `VARx` lexes as one `IDENT` token, never
+/// `KW_VAR` + `IDENT` — pinned by `var_no_whitespace_keyword_fuses` in
+/// `tests/declaration/cst.rs`.
 pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(VAR_DECL);
     p.bump(); // KW_VAR
@@ -208,8 +253,17 @@ pub(crate) fn var_declaration(p: &mut Parser<'_, '_>) {
 /// Parse `CONST ident = expr\n`.
 ///
 /// ```text
-/// const_declaration = { "CONST" ~ INLINE_WS+ ~ identifier ~ type_annotation? ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
+/// const_declaration = { "CONST" ~ INLINE_WS* ~ identifier ~ type_annotation? ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ expression ~ NEWLINE }
 /// ```
+///
+/// Whitespace after `CONST` is **optional** (`INLINE_WS*`, not `+`) — same
+/// notation-vs-code gap #2695 fixed in `knot.rs`, swept here by #2707: the
+/// body is `p.bump()` then `p.skip_ws()` (zero or more). As with
+/// `external_declaration` above, the zero-whitespace form is lexically
+/// unreachable: `CONST` and the identifier are both scanned by the same
+/// identifier-character loop, so `CONSTx` lexes as one `IDENT` token, never
+/// `KW_CONST` + `IDENT` — pinned by `const_no_whitespace_keyword_fuses` in
+/// `tests/declaration/cst.rs`.
 pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(CONST_DECL);
     p.bump(); // KW_CONST
@@ -235,12 +289,21 @@ pub(crate) fn const_declaration(p: &mut Parser<'_, '_>) {
 /// Parse `LIST ident = list_def\n`.
 ///
 /// ```text
-/// list_declaration = { "LIST" ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ list_definition ~ NEWLINE }
+/// list_declaration = { "LIST" ~ INLINE_WS* ~ identifier ~ INLINE_WS* ~ "=" ~ INLINE_WS* ~ list_definition ~ NEWLINE }
 /// list_definition = { list_member ~ ("," ~ list_member)* }
 /// list_member = { list_member_on | list_member_off }
 /// list_member_on = { "(" ~ identifier ~ ("=" ~ integer)? ~ ")" }
 /// list_member_off = { identifier ~ ("=" ~ integer)? }
 /// ```
+///
+/// Whitespace after `LIST` is **optional** (`INLINE_WS*`, not `+`) — same
+/// notation-vs-code gap #2695 fixed in `knot.rs`, swept here by #2707: the
+/// body is `p.bump()` then `p.skip_ws()` (zero or more). As with
+/// `external_declaration` above, the zero-whitespace form is lexically
+/// unreachable: `LIST` and the identifier are both scanned by the same
+/// identifier-character loop, so `LISTx` lexes as one `IDENT` token, never
+/// `KW_LIST` + `IDENT` — pinned by `list_no_whitespace_keyword_fuses` in
+/// `tests/declaration/cst.rs`.
 pub(crate) fn list_declaration(p: &mut Parser<'_, '_>) {
     p.start_node(LIST_DECL);
     p.bump(); // KW_LIST

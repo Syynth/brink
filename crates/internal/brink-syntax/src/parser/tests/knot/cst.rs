@@ -1015,6 +1015,53 @@ fn stitch_header_excludes_whitespace_separated_double_eq() {
     );
 }
 
+// ── C3. `knot_header`'s `function` keyword — same sibling gap (#2707) ──
+//
+// Found while sweeping `brink-syntax` for the #2695 shape beyond
+// `declaration.rs`: `knot_header`'s own doc comment still claimed
+// `("function" ~ INLINE_WS+)?` — required whitespace after `function` —
+// while the body (`p.bump()` then `p.skip_ws()`) accepts zero-or-more, the
+// same gap as `stitch_header` above. Unlike `stitch_header`'s `=`, though,
+// `function` is itself scanned by the identifier-character lexer loop
+// (`classify_keyword`), so it fuses with an immediately-following knot
+// name exactly like `VAR`/`CONST`/`LIST`/`EXTERNAL` do in
+// `declaration.rs` — the zero-whitespace form is real (the comment now
+// says `INLINE_WS*`, matching the code) but lexically unreachable.
+
+/// `==functionGreet==` — `function` and the knot name fuse into a single
+/// identifier token (`functionGreet`), so no `KW_FUNCTION` is consumed and
+/// the knot has no `KNOT_PARAMS`-adjacent function marking; it is simply a
+/// knot named `functionGreet`.
+#[test]
+fn function_keyword_no_whitespace_fuses() {
+    assert_equivalent(
+        parse("==functionGreet==\nHi!\n"),
+        cst!(SOURCE_FILE {
+            KNOT_DEF {
+                KNOT_HEADER {
+                    IDENTIFIER
+                }
+                KNOT_BODY {
+                    CONTENT_LINE {
+                        MIXED_CONTENT {
+                            TEXT
+                        }
+                    }
+                }
+            }
+        }),
+    );
+    // Confirm the identifier text really is the fused `functionGreet`, not
+    // `function` consumed separately from a shorter `Greet` name.
+    let p = parse("==functionGreet==\nHi!\n");
+    let root = p.syntax();
+    let ident = root
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::IDENTIFIER)
+        .expect("IDENTIFIER not found");
+    assert_eq!(ident.text().to_string(), "functionGreet");
+}
+
 // ── D. Knot body content ──────────────────────────────────────────
 
 /// Plain content line in knot body.

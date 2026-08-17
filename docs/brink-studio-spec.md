@@ -554,13 +554,18 @@ op a test happened to call.
 `parser/knot.rs::knot_header` is
 
 ```text
-knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
+knot_header = { "==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS*)? ~ identifier
                 ~ INLINE_WS* ~ knot_params? ~ INLINE_WS* ~ ("==" ~ "="*)? }
 ```
 
 — **two or more** `=` (`at_knot` tests `EQ_EQ`, then `eat_extra_equals` takes
 the rest), **zero or more** spaces after it (`skip_ws`), an indent tolerated, a
-trailing fence that is optional and of any width. Driven, not read:
+trailing fence that is optional and of any width. The `function` keyword's own
+trailing whitespace is `INLINE_WS*` for the same reason, though the
+zero-whitespace form is lexically unreachable: `classify_keyword` scans
+`function` with the same identifier-character loop as the name that follows
+it, so `==functionGreet==` lexes as one `IDENT` token (a knot literally named
+`functionGreet`), never `KW_FUNCTION` + `IDENT` (#2712). Driven, not read:
 `file_symbols` reports one knot `a` for each of `== a ==`, `===a===`, `==a==`,
 `==== a ====`, `  === a ===`, `=== a` and `=== a ==`. So the outline's form was
 wrong three ways and the inline form one way (it caps at three `=`).
