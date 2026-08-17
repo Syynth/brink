@@ -19,7 +19,11 @@ import { codeActionsExtension } from "../code-actions.js";
 import { resetDismissRegistryForTests } from "../dismiss-registry.js";
 
 const DOC = "=== opening ===\nThe lights dim.\n-> END\n";
-const ACTIONS: CodeAction[] = [{ title: "Do the thing", kind: "quickfix" }];
+// See code-actions-escape-dismiss.test.ts: `data` is required by `CodeAction`;
+// this test never resolves the action, so the marker is inert on purpose.
+const ACTIONS: CodeAction[] = [
+  { title: "Do the thing", kind: "quickfix", data: { action: "TestNoop" } },
+];
 
 function mount(): EditorView {
   return new EditorView({

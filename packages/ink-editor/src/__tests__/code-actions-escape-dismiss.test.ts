@@ -34,7 +34,12 @@ import { codeActionsExtension } from "../code-actions.js";
 
 const DOC = "=== opening ===\nThe lights dim.\n-> END\n";
 
-const ACTIONS: CodeAction[] = [{ title: "Do the thing", kind: "quickfix" }];
+// `data` is required by `CodeAction` and is round-tripped to
+// `resolveCodeAction` in production. These tests never resolve the action —
+// they only open and dismiss the menu — so the marker is inert on purpose.
+const ACTIONS: CodeAction[] = [
+  { title: "Do the thing", kind: "quickfix", data: { action: "TestNoop" } },
+];
 
 function mount(onSelect?: (action: CodeAction) => void): EditorView {
   return new EditorView({
