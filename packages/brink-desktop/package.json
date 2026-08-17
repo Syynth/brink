@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node scripts/ensure-wasm.mjs && node scripts/ensure-cli-sidecar.mjs && vite",
     "build": "node scripts/ensure-cli-sidecar.mjs && vite build",
+    "stage:universal": "node scripts/ensure-cli-sidecar.mjs --universal",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri"

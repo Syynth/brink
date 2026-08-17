@@ -360,6 +360,41 @@ describe("the main-guard dispatch for a universal build (#2715)", () => {
     expect(readFileSync(staged, "utf8")).toBe(STUB_SIDECAR);
   });
 
+  // #2729: the only pre-existing entry point into stageUniversalCliSidecar
+  // was TAURI_ENV_TARGET_TRIPLE, set by tauri-cli's own beforeBuildCommand
+  // hook — a macOS developer had no way to dry-run this staging path by
+  // hand without faking that env var. `--universal` is the documented
+  // entry point this adds (wired to `pnpm --filter @brink/desktop
+  // stage:universal`); this proves the dispatch fires from the CLI flag
+  // alone, with TAURI_ENV_TARGET_TRIPLE deliberately unset, so the flag
+  // is a REAL second path in, not a no-op that happens to pass only
+  // because the env var is also set.
+  it("stages under universal-apple-darwin when invoked with --universal, with no TAURI_ENV_TARGET_TRIPLE set", () => {
+    const base = scratch();
+    const packageDir = join(base, "packages", "brink-desktop");
+    mkdirSync(join(packageDir, "scripts"), { recursive: true });
+    copyFileSync(scriptPath, join(packageDir, "scripts", "ensure-cli-sidecar.mjs"));
+
+    const emptyPath = scratch();
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PATH: emptyPath, // No rustc/cargo/lipo reachable — the stub path needs none of them.
+      BRINK_SIDECAR_STUB: "1",
+    };
+    delete env.CARGO_TARGET_DIR;
+    delete env.TAURI_ENV_TARGET_TRIPLE;
+
+    execFileSync(
+      process.execPath,
+      [join(packageDir, "scripts", "ensure-cli-sidecar.mjs"), "--universal"],
+      { encoding: "utf8", env },
+    );
+
+    const staged = join(packageDir, "src-tauri", "binaries", "brink-cli-universal-apple-darwin");
+    expect(existsSync(staged)).toBe(true);
+    expect(readFileSync(staged, "utf8")).toBe(STUB_SIDECAR);
+  });
+
   it.skipIf(process.platform === "win32")(
     "still dispatches to the ordinary host-triple ensureCliSidecar when TAURI_ENV_TARGET_TRIPLE is unset (regression guard)",
     () => {

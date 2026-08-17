@@ -1601,6 +1601,114 @@ mod tests {
         );
     }
 
+    /// The entries of the `paths:` filter nested under `pull_request:`,
+    /// specifically. `path_filter` alone returns the FIRST `paths:` block
+    /// found in the file — which, in `desktop-bundle-smoke.yml` since
+    /// #2716, is `push`'s (declared first in `on:`), not `pull_request`'s.
+    /// Slicing the workflow text from the `pull_request:` trigger line
+    /// onward makes ITS `paths:` block the first one `path_filter` finds.
+    fn pull_request_path_filter(workflow: &str) -> Vec<String> {
+        let idx = workflow
+            .find("\n  pull_request:")
+            .expect("workflow should have a top-level `pull_request:` trigger");
+        path_filter(&workflow[idx..])
+    }
+
+    /// The entries of the `paths:` filter nested under `push:`, specifically
+    /// — bounded to the slice between the `push:` and `pull_request:`
+    /// trigger lines. A bare `path_filter(&contents)` reads whichever
+    /// `paths:` block happens to appear FIRST in the file, which is only
+    /// `push`'s by coincidence of `on:` ordering: delete `push`'s `paths:`
+    /// block (the exact regression #2716 fixed) and the first block in the
+    /// file becomes `pull_request`'s instead, so an unbounded read would
+    /// silently return `pull_request`'s list for BOTH triggers — the
+    /// mismatch test below would then compare a list to itself and pass
+    /// even though the fix had been reverted. Bounding the read positionally
+    /// to the `push:`..`pull_request:` span closes that hole: if `push`
+    /// carries no `paths:` filter in that span, this returns empty rather
+    /// than borrowing `pull_request`'s.
+    fn push_path_filter(workflow: &str) -> Vec<String> {
+        let push_idx = workflow
+            .find("\n  push:")
+            .expect("workflow should have a top-level `push:` trigger");
+        let pull_request_idx = workflow
+            .find("\n  pull_request:")
+            .expect("workflow should have a top-level `pull_request:` trigger");
+        assert!(
+            push_idx < pull_request_idx,
+            "expected `push:` to precede `pull_request:` in the `on:` block"
+        );
+        path_filter(&workflow[push_idx..pull_request_idx])
+    }
+
+    /// #2716: `desktop-bundle-smoke.yml`'s `push` trigger had NO `paths:`
+    /// filter at all — every push to `main` re-ran the whole lane (a real
+    /// `cargo build -p brink-cli --release` plus the full `src-tauri`
+    /// Tauri build graph) and re-saved its ~784 MB rust-cache entry
+    /// (`Cache Size: ~784 MB (822197295 B)`, confirmed against a real run,
+    /// job 95324823667), against ci.yml's shared 10 GB repo-wide cache
+    /// quota, regardless of whether the push touched anything this lane
+    /// exercises. The fix mirrors `pull_request`'s own `paths:` list onto
+    /// `push`. This test is what keeps that mirror honest going forward.
+    /// Both sides use a positionally-bounded reader (`push_path_filter` /
+    /// `pull_request_path_filter`), not bare `path_filter`: a bare
+    /// `path_filter(&contents)` reads whichever `paths:` block appears
+    /// FIRST in the file, which only happens to be `push`'s today because
+    /// `push:` precedes `pull_request:` under `on:`. Delete `push`'s
+    /// `paths:` block entirely (the exact regression this test guards
+    /// against) or reorder the two triggers, and an unbounded read would
+    /// silently fall through to `pull_request`'s block for BOTH sides —
+    /// `assert_eq!` would then compare a list to itself and pass, and
+    /// `!push_paths.is_empty()` would pass too, even though the fix had
+    /// been reverted.
+    #[test]
+    fn desktop_bundle_smoke_push_and_pull_request_paths_match() {
+        let contents = workflow("desktop-bundle-smoke.yml");
+        let push_paths = push_path_filter(&contents);
+        let pull_request_paths = pull_request_path_filter(&contents);
+        assert!(
+            !push_paths.is_empty(),
+            "desktop-bundle-smoke.yml's push trigger should carry a real paths filter (#2716); \
+             an empty filter here would mean path_filter's parsing broke, not that the fix \
+             was reverted on purpose"
+        );
+        assert_eq!(
+            push_paths, pull_request_paths,
+            "desktop-bundle-smoke.yml's push and pull_request paths filters must stay \
+             identical (#2716) — push: {push_paths:?}, pull_request: {pull_request_paths:?}. \
+             If one legitimately needs a new entry the other doesn't, that's a deliberate \
+             design change this test should be updated to reflect explicitly, not a silent \
+             drift"
+        );
+    }
+
+    /// Negative case for the tautology `desktop_bundle_smoke_push_and_pull_request_paths_match`
+    /// guards against: over a synthetic workflow with `push`'s `paths:`
+    /// block removed entirely, `push_path_filter` must report empty rather
+    /// than silently borrowing `pull_request`'s block. A bare
+    /// `path_filter(&contents)` would NOT catch this — with `push`'s block
+    /// gone, `pull_request`'s becomes the first (and only) `paths:` block in
+    /// the file, so the unbounded reader would return it for both sides and
+    /// the drift test above would pass on a reverted fix.
+    #[test]
+    fn push_path_filter_is_empty_when_push_has_no_paths_block() {
+        let synthetic = "\
+name: Synthetic
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - \"packages/brink-desktop/**\"
+      - \"pnpm-lock.yaml\"
+";
+        assert!(
+            push_path_filter(synthetic).is_empty(),
+            "push_path_filter should report empty when push's own paths: block is missing, \
+             not fall through to pull_request's block"
+        );
+    }
+
     /// Each check in the smoke lane must stay non-blocking for its SIBLINGS
     /// (`!cancelled()`, so a clippy failure cannot hide a failing test)
     /// while still being gated on the SETUP steps it depends on. A bare

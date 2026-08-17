@@ -222,8 +222,8 @@ when the edit itself lives entirely in `packages/brink-studio`.
 
 ### Smoke-lane inputs and step gating (#2418)
 
-Five properties of `desktop-smoke.yml` are asserted by tests in
-`src-tauri/src/lib.rs` rather than left to review:
+Nine properties of `desktop-smoke.yml` and `desktop-bundle-smoke.yml` are
+asserted by tests in `src-tauri/src/lib.rs` rather than left to review:
 
 - **The `pull_request` path filter lists every input that can break the
   job**, not just the trees it checks: `pnpm-lock.yaml`, root `Cargo.toml`/
@@ -468,6 +468,30 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
   repository, and no test here reads or asserts it — a repo-admin-scoped
   API token would be needed for that, which is an open design/cost call
   left to the maintainer, not built by this guard.
+- **`desktop-bundle-smoke.yml`'s `push` trigger carries the same `paths:`
+  filter as its `pull_request` trigger.** The `push` trigger previously had
+  no `paths:` filter at all, so every push to `main` — regardless of what
+  changed — re-ran a real `cargo build -p brink-cli --release` plus the
+  full `src-tauri` Tauri build graph and re-saved its ~784 MB rust-cache
+  entry against `ci.yml`'s shared 10 GB repo-wide cache quota (confirmed
+  against a real run, job 95324823667:
+  `Cache Size: ~784 MB (822197295 B)`), risking another lane's cache being
+  silently LRU-evicted with no visible error. The change mirrors
+  `pull_request`'s `paths:` list onto `push` rather than touch the cache
+  key or its content — dropping `push` entirely was considered and set
+  aside in the same breath, since a direct push to `main` bypassing a PR
+  could then go unverified by this lane until the next matching change.
+  `desktop_bundle_smoke_push_and_pull_request_paths_match` keeps the two
+  lists from silently drifting apart, using positionally-bounded readers
+  for both sides (`push_path_filter`/`pull_request_path_filter`) so the
+  assertion cannot pass tautologically if `push`'s `paths:` block is ever
+  deleted again or the two triggers are reordered.
+  ⚠ **The trigger-scope choice itself is UNRULED** (#2716 explicitly asked
+  for a maintainer ruling among three options — narrower cache key,
+  narrower trigger, or an explicit accept-the-risk call — and named it "not
+  obviously mechanical"). This bullet documents what the code and test do,
+  not a settled design decision; #2716 stays open for the maintainer's
+  call rather than being closed by this change.
 
 ### The `dev` preflight pair (#2452, #2468)
 
@@ -487,10 +511,13 @@ script: it carries a SECOND injectable seam (`runLipo`, alongside
 `runCommand`), a FOURTH external command it can invoke (`lipo`, joining
 `wasm-pack`/`rustc`/`cargo`), three more exports
 (`stageUniversalCliSidecar`, `defaultRunLipo`,
-`UNIVERSAL_DARWIN_SLICE_TRIPLES`), and a standalone run that branches on
-`TAURI_ENV_TARGET_TRIPLE` rather than always doing the same host-triple job
-— see "Reachability caveat" below for what that dispatch does and its
-limits.
+`UNIVERSAL_DARWIN_SLICE_TRIPLES`), and a standalone run that branches into
+`stageUniversalCliSidecar` rather than always doing the same host-triple job
+— either because `TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"`
+(tauri-cli's own hook env var), or, as of #2729, because the script was
+invoked with the `--universal` CLI flag (`pnpm --filter @brink/desktop
+stage:universal`) — see "Reachability caveat" below for what that dispatch
+does and its limits.
 
 The default `runCommand` (`defaultRunCommand`, exported from each script)
 carries a bound: `DEFAULT_EXEC_TIMEOUT_MS` (#2697), overridable via
@@ -861,7 +888,12 @@ main-guard now dispatches to it instead of the ordinary host-triple
 `beforeBuildCommand` that `assertRealSidecarStaged` already reads for
 `beforeBundleCommand` (#2687), so a real `tauri build --target
 universal-apple-darwin` now reaches `stageUniversalCliSidecar` via `pnpm
-build` before `assertRealSidecarStaged` ever runs against the result.
+build` before `assertRealSidecarStaged` ever runs against the result. As of
+#2729, the same dispatch also fires from a bare `--universal` CLI flag
+(`pnpm --filter @brink/desktop stage:universal`) with no
+`TAURI_ENV_TARGET_TRIPLE` involved — a second, explicit entry point for a
+macOS developer to dry-run the path by hand; see "CI coverage blind spots"
+below for what it does and does not verify.
 `BRINK_SIDECAR_STUB=1` short-circuits to three `ensureCliSidecar({ triple,
 stub: true })` calls — one per slice triple plus `universal-apple-darwin`
 itself — no slice builds, no `lipo` — for lanes that only need the files to
@@ -963,6 +995,68 @@ unsettled above: the `macho`/`pe`/`.exe` paths still only ever reach the
 skip branch, because there is still no macOS/Windows runner in CI. Buying
 one is the same unsettled cost question as the file-association surface
 above — not decided by this lane either.
+
+**#2729: the `universal-apple-darwin` staging path is a blind spot of its
+own, distinct from — and deeper than — the macho/pe skip-branch gap above.**
+PR #2722 (delivering #2715) added `stageUniversalCliSidecar` in
+`ensure-cli-sidecar.mjs` — two real `cargo build -p brink-cli --release
+--target <triple>` slice builds (`x86_64-apple-darwin` and
+`aarch64-apple-darwin`), then a real `lipo -create` combining them into one
+fat Mach-O — and wired the script's main-guard to dispatch there whenever
+`TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"`, the value tauri-cli's
+`beforeBuildCommand` hook sets for a `tauri build --target
+universal-apple-darwin` invocation. That dispatch is what gives #2708's
+widened `canExecuteStagedSidecar` branch (assert-real-sidecar.mjs) an actual
+path to fire on. The staging/combining LOGIC in
+`stageUniversalCliSidecar` — every assertion in
+`stage-universal-cli-sidecar.test.ts`'s `describe("stageUniversalCliSidecar")`
+block, and this section's own description above — was verified against
+injected `runCommand`/`runLipo` fakes standing in for `cargo`/`lipo`, the
+same disclosed constraint as the rest of this section: this repo's CI/dev
+containers are Linux, with neither the Apple slice rustc targets nor `lipo`
+on PATH. The main-guard DISPATCH is a separate claim with no such caveat:
+`describe("the main-guard dispatch for a universal build (#2715)")` in the
+same file — including this PR's own new `--universal` test — spawns the
+real script as a subprocess (`execFileSync`) through the
+`BRINK_SIDECAR_STUB` branch, with no injected `runCommand`/`runLipo` seam at
+all; see "What #2715 did NOT do, stated plainly" above, which draws this
+same logic/dispatch distinction. So, precisely:
+
+- **No CI lane, and no machine this repo's automation can see, has ever run
+  the real two-slice build or the real `lipo -create` invocation against
+  a real Apple toolchain — i.e. never against a real fat Mach-O on a real
+  macOS host at the real bundle-time firing point.** (#2708's widened
+  `canExecuteStagedSidecar` branch itself is NOT part of this gap:
+  `src/__tests__/assert-real-sidecar.test.ts` calls
+  `canExecuteStagedSidecar("universal-apple-darwin", "x86_64-apple-darwin"
+  | "aarch64-apple-darwin")` directly and drives
+  `assertRealSidecarStaged` through that branch, and that suite runs on
+  every PR via `pnpm --filter @brink/desktop test` — it is exercised, just
+  never against a binary a real two-slice-plus-lipo build actually
+  produced.) This is a strictly narrower and unexecuted-so-far claim than
+  the macho/pe paragraph above — that one is about `executableFormatFor`'s
+  classification logic reaching only its skip branch; this one is about the
+  staging mechanism itself (real cross-compiled builds plus an external
+  Apple-toolchain binary) never having run anywhere, on any input, real or
+  synthetic.
+- **The `TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"` dispatch
+  condition itself is a read of tauri-cli source** (#2687/#2714), not an
+  in-repo confirmation from a real `tauri build --target
+  universal-apple-darwin` run — consistent with `assert-real-sidecar.mjs`'s
+  own default for that same env var, but not independently verified here.
+- `pnpm --filter @brink/desktop stage:universal` (`node
+  scripts/ensure-cli-sidecar.mjs --universal`, #2729) now gives a macOS
+  developer a documented dry-run entry point into this path without faking
+  `TAURI_ENV_TARGET_TRIPLE` by hand — closing the "no explicit way to
+  request universal staging" half of #2729's ask. It does not, and cannot,
+  close either bullet above: running it on this repo's Linux CI/dev
+  containers still only reaches the `BRINK_SIDECAR_STUB` stub branch (no
+  `lipo`, no Apple rustc targets to build the slices with), and the first
+  real confirmation still needs a macOS host. Buying a macOS CI runner (or
+  a maintainer's one-time manual verification) is the same unsettled cost
+  question this section already declines to rule on for the file-
+  association surface and the macho/pe bundle targets — not decided here
+  either. **Documenting this gap is not closing it.**
 
 ## Menus
 
