@@ -1,0 +1,132 @@
+/**
+ * `RenameQueryCache.key()` must be collision-free across the `(path, offset,
+ * newName)` triple (#2558).
+ *
+ * The original implementation joined the triple with a literal NUL byte
+ * (`${path}\x00${offset}\x00${newName}`). That had two problems: a NUL byte
+ * makes the source file register as "binary" to `grep`/`rg` without `-a`/
+ * `--text` (silently hiding every match in the file, including the method's
+ * own lines, from any repo-wide sweep), and — the correctness property this
+ * suite pins — a component that itself contains the separator can shift
+ * where a "boundary" falls, so two distinct triples serialize to the same
+ * joined string. The fix JSON-encodes the triple: `JSON.stringify` of a
+ * fixed 3-element array is an injective encoding (JSON escapes embedded
+ * quotes, backslashes, and NUL bytes), so `JSON.parse` always recovers the
+ * exact three original values and two distinct triples can never serialize
+ * to the same key.
+ */
+
+import { describe, it, expect } from "vitest";
+import type { StructuralResult } from "@brink/wasm-types";
+import { RenameQueryCache } from "../rename.js";
+
+function result(tag: string): StructuralResult {
+  return {
+    ok: true,
+    path: "main.ink",
+    new_source: `=== ${tag} ===\n`,
+    cross_file_edits: [],
+    introduced_diagnostics: [],
+    safe: true,
+  };
+}
+
+describe("RenameQueryCache key collision-freeness (#2558)", () => {
+  it("get/set/clear round-trip for a single entry", () => {
+    const cache = new RenameQueryCache();
+    expect(cache.get("main.ink", 10, "hello")).toBeUndefined();
+
+    const r = result("a");
+    cache.set("main.ink", 10, "hello", r);
+    expect(cache.get("main.ink", 10, "hello")).toBe(r);
+
+    cache.clear();
+    expect(cache.get("main.ink", 10, "hello")).toBeUndefined();
+  });
+
+  it("distinguishes a pair that WOULD collide under the pre-#2558 NUL-joined key", () => {
+    // The original `key()` was `${path}\x00${offset}\x00${newName}`. Two
+    // distinct triples produce the identical joined string when a component
+    // embeds the separator, shifting where a "boundary" falls:
+    //
+    //   triple1 = (path: "a",           offset: 1, newName: "b\x002\x00c")
+    //   triple2 = (path: "a\x001\x00b", offset: 2, newName: "c")
+    //
+    // Both naive-join to the same five NUL-separated segments
+    // ("a","1","b","2","c"), just split at a different point:
+    //   naive(triple1) = "a" + \0 + "1" + \0 + "b" + \0 + "2" + \0 + "c"
+    //   naive(triple2) = "a" + \0 + "1" + \0 + "b" + \0 + "2" + \0 + "c"
+    //
+    // `JSON.stringify` of the 3-element array does not have this failure
+    // mode — it escapes the embedded NUL bytes as `\x00` inside their own
+    // quoted array element, so the two triples serialize to different
+    // strings and the cache keeps them as distinct entries with their own
+    // results.
+    const cache = new RenameQueryCache();
+    const r1 = result("triple-1-nul-in-newname");
+    const r2 = result("triple-2-nul-in-path");
+
+    cache.set("a", 1, "b\x002\x00c", r1);
+    cache.set("a\x001\x00b", 2, "c", r2);
+
+    expect(cache.get("a", 1, "b\x002\x00c")).toBe(r1);
+    expect(cache.get("a\x001\x00b", 2, "c")).toBe(r2);
+    expect(cache.get("a", 1, "b\x002\x00c")).not.toBe(cache.get("a\x001\x00b", 2, "c"));
+  });
+
+  it("distinguishes triples that differ only by a quote or backslash inside a component", () => {
+    const cache = new RenameQueryCache();
+    const rA = result("quote");
+    const rB = result("backslash");
+    const rC = result("plain");
+
+    cache.set('weird"path.ink', 1, "name", rA);
+    cache.set("weird\\path.ink", 1, "name", rB);
+    cache.set("weirdpath.ink", 1, "name", rC);
+
+    expect(cache.get('weird"path.ink', 1, "name")).toBe(rA);
+    expect(cache.get("weird\\path.ink", 1, "name")).toBe(rB);
+    expect(cache.get("weirdpath.ink", 1, "name")).toBe(rC);
+  });
+
+  it("treats distinct offsets as distinct entries, and re-setting an existing triple overwrites in place", () => {
+    const cache = new RenameQueryCache();
+    const r1 = result("offset-1");
+    const r2 = result("offset-2");
+
+    cache.set("main.ink", 1, "hello", r1);
+    cache.set("main.ink", 2, "hello", r2);
+
+    expect(cache.get("main.ink", 1, "hello")).toBe(r1);
+    expect(cache.get("main.ink", 2, "hello")).toBe(r2);
+
+    const r1b = result("offset-1-updated");
+    cache.set("main.ink", 1, "hello", r1b);
+    expect(cache.get("main.ink", 1, "hello")).toBe(r1b);
+    expect(cache.get("main.ink", 2, "hello")).toBe(r2); // untouched neighbor
+  });
+
+  it("key() is injective: every triple in an adversarial spread resolves to its own result", () => {
+    const cache = new RenameQueryCache();
+    const triples: ReadonlyArray<readonly [string, number, string]> = [
+      ["main.ink", 0, ""],
+      ["", 0, "main.ink"],
+      ["a", 1, "b"],
+      ["a b", 1, "c"],
+      ["a", 1, "b c"],
+      ['a"b', 1, "c"],
+      ["a\\b", 1, "c"],
+      ["a,b", 1, "c"],
+      ["a|1|b", 23, "x"],
+      ["a\x00b", 1, "c"],
+    ];
+
+    for (const [i, [path, offset, newName]] of triples.entries()) {
+      cache.set(path, offset, newName, result(`t${i}`));
+    }
+
+    for (const [i, [path, offset, newName]] of triples.entries()) {
+      expect(cache.get(path, offset, newName)).toEqual(result(`t${i}`));
+    }
+  });
+});
