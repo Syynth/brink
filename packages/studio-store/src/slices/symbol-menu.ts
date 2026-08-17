@@ -58,6 +58,22 @@ export interface SymbolMenuSlice {
   openRenamePrompt(request: SymbolRenameRequest): void;
   /** Dismiss the rename prompt. */
   closeRenamePrompt(): void;
+
+  /**
+   * A human-readable description of the gated structural op (`moveStitch`/
+   * `promoteStitch`/`demoteKnot`, #2767) currently running off the paint
+   * path, or `null` when none is in flight. This is a LOCAL busy-state
+   * affordance (spec §7.3), not a notification: §7.5 states progress
+   * notifications are out of scope for the notification service, so the
+   * pending state for these one-shot context-menu/drag-drop actions renders
+   * in the status bar (`StructuralOpSegment`) instead of the notification
+   * stack. Set synchronously by `runGatedStructuralOp`
+   * (`packages/studio-ui/src/symbolMenuActions.ts`) before it defers the
+   * heavy call via `scheduleIdleWork`, and cleared once that call settles.
+   */
+  structuralOpPending: string | null;
+  /** Set (or clear, with `null`) the pending structural-op description. */
+  setStructuralOpPending(description: string | null): void;
 }
 
 export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenuSlice> = (
@@ -77,5 +93,10 @@ export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenu
   },
   closeRenamePrompt() {
     set({ renamePrompt: null });
+  },
+
+  structuralOpPending: null,
+  setStructuralOpPending(description) {
+    set({ structuralOpPending: description });
   },
 });

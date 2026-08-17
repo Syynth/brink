@@ -11,6 +11,7 @@ import type {
   RenameDiagnostic,
 } from "@brink/wasm-types";
 import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
+import { scheduleIdleWork } from "@brink-lang/editor";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
 
 /** The declaration-name offset (whole-file UTF-16) of a knot or stitch in the
@@ -30,6 +31,73 @@ function symbolDeclarationOffset(
   if (stitch === undefined) return knotSym.start;
   const stitchSym = knotSym.children.find((c) => c.kind === "stitch" && c.name === stitch);
   return stitchSym ? stitchSym.start : null;
+}
+
+/**
+ * Off the paint path (#722/#2761's remedy, generalized here for #2767):
+ * `moveStitch` / `promoteStitch` / `demoteKnot` are the three
+ * `dispatchSymbolAction` branches whose Rust op runs the full op-agnostic
+ * breakage gate (`gated_move_json` → `structural_result::gate_with_source`,
+ * `crates/brink-web/src/editor_refactor.rs` / `crates/internal/brink-ide/src/
+ * structural_result.rs`) — an overlay re-analysis of the whole project, the
+ * same cost class as the rename collision check #722 and #2761 already
+ * cover. Called synchronously and inline from a React event handler (the
+ * context-menu click, the drag-drop `onDrop`) with no yield point, it can
+ * block the main thread — and therefore paint — under load exactly like the
+ * two prior incidents.
+ *
+ * The four `reorder*` branches deliberately do NOT go through this: they
+ * change no qualification, so the pure op returns `StructuralResult::
+ * safe_source` and skips the gate entirely (see that type's doc comment) —
+ * genuinely cheap, not merely assumed so. Wrapping them here would add an
+ * idle-hop and a pending-indicator flash for zero benefit.
+ *
+ * This commits `structuralOpPending` synchronously (so React can paint a
+ * pending indicator before the heavy call runs) and defers `compute` to the
+ * next idle slot via `scheduleIdleWork`, clearing it again once `compute`
+ * returns. The pending state is a LOCAL busy-state affordance rendered by
+ * the status bar's `StructuralOpSegment` (spec §7.3) — deliberately NOT a
+ * shell notification (`state._notify`): §7.5 states progress notifications
+ * are out of scope for the notification service, and a review of #2769
+ * caught an earlier version of this helper raising one anyway (it also
+ * double-toasted on success, since `applyMoveResult` already raises its own
+ * "Move X to Y" notification with Undo).
+ *
+ * There is deliberately no re-check of `session.generation` (a counter every
+ * content-mutating wasm call bumps, including a single keystroke in a
+ * mounted editor view via `pushSource`/`updateDocument` —
+ * `packages/wasm/src/index.ts`) against a value captured before scheduling.
+ * An earlier version of this helper did that, on the theory it mirrored
+ * #2761's staleness guard for the rename prompt — but unlike that prompt,
+ * `compute` here is a thunk that calls the wasm op fresh at invocation time
+ * against the session's THEN-current source, never against a snapshot
+ * captured before the idle wait; and the op itself already refuses cleanly
+ * when its target has moved out from under it (`error_json`, e.g. "source
+ * knot not found"). A blanket generation check guards no hazard that exists
+ * on this path — it only silently drops legitimate queued ops on completely
+ * unrelated edits, including the routine one-keystroke-per-transaction
+ * bumps every mounted editor view produces. Trust the op's own `result.ok`
+ * refusal instead; see `dispatchSymbolAction`'s `case`s below.
+ *
+ * There is no widget instance to `cancelIdleWork` on unmount/close the way
+ * `InlineNameInput`/`SymbolRenamePrompt` do — a context-menu click and a
+ * drag-drop drop are one-shot, not an open editing surface — so there is no
+ * staleness guard to run here at all; the op's own refusal is sufficient.
+ */
+async function runGatedStructuralOp(
+  state: StudioState,
+  description: string,
+  compute: () => StructuralResult,
+): Promise<StructuralResult> {
+  state.setStructuralOpPending(description);
+  try {
+    await new Promise<void>((resolve) => {
+      scheduleIdleWork(resolve);
+    });
+    return compute();
+  } finally {
+    state.setStructuralOpPending(null);
+  }
 }
 
 export async function dispatchSymbolAction(
@@ -89,18 +157,33 @@ export async function dispatchSymbolAction(
       result = session.reorderKnots(action.path, action.order);
       description = `Reorder knots`;
       break;
-    case "moveStitch":
-      result = session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot);
+    case "moveStitch": {
       description = `Move ${action.stitch} to ${action.destKnot}`;
+      result = await runGatedStructuralOp(state, description, () =>
+        // PAINT-PATH-DEFERRED move-stitch: gated (structural_result::gate_with_source)
+        // — run off the paint path by runGatedStructuralOp above (#2767).
+        session.moveStitch(action.path, action.srcKnot, action.stitch, action.destKnot),
+      );
       break;
-    case "promoteStitch":
-      result = session.promoteStitch(action.path, action.knot, action.stitch);
+    }
+    case "promoteStitch": {
       description = `Promote ${action.stitch} to knot`;
+      result = await runGatedStructuralOp(state, description, () =>
+        // PAINT-PATH-DEFERRED promote-stitch: gated (structural_result::gate_with_source)
+        // — run off the paint path by runGatedStructuralOp above (#2767).
+        session.promoteStitch(action.path, action.knot, action.stitch),
+      );
       break;
-    case "demoteKnot":
-      result = session.demoteKnot(action.path, action.knot, action.destKnot);
+    }
+    case "demoteKnot": {
       description = `Demote ${action.knot} into ${action.destKnot}`;
+      result = await runGatedStructuralOp(state, description, () =>
+        // PAINT-PATH-DEFERRED demote-knot: gated (structural_result::gate_with_source)
+        // — run off the paint path by runGatedStructuralOp above (#2767).
+        session.demoteKnot(action.path, action.knot, action.destKnot),
+      );
       break;
+    }
     default:
       // File/folder actions are owned by the Binder and never reach here.
       return;

@@ -28,6 +28,11 @@
 .brink-studio .brink-status-diag.has-warnings {
   color: var(--bs-warning);
 }
+/* Gated structural-op busy indicator (#2767/#2769) — quiet, muted; not an
+   error/warning tint, just "something is running". */
+.brink-studio .brink-status-structural-op {
+  color: var(--bs-fg-muted);
+}
 /* Element type dropdown */
 .brink-studio .brink-element-dropdown {
   /* Positioning + panel chrome come from the shell overlay (.shell-overlay). */

@@ -82,6 +82,7 @@ import {
   StateView,
   StorySegment,
   StoreProvider,
+  StructuralOpSegment,
   SymbolContextMenuHost,
   SymbolRenamePrompt,
   applyComputedRename,
@@ -856,12 +857,23 @@ export async function mountStudio(
     priority: 10,
     component: StorySegment,
   });
+  // Gated structural-op busy indicator (#2767/#2769) — a local status-bar
+  // affordance, not a notification (spec §7.5's "out of scope: progress
+  // notifications"). Sits between story status and the session picker;
+  // renders nothing (StructuralOpSegment returns null) outside the brief
+  // window one of moveStitch/promoteStitch/demoteKnot is deferred.
+  statusBarItems.register({
+    id: "status.structural-op",
+    alignment: "left",
+    priority: 9,
+    component: StructuralOpSegment,
+  });
   // Multi-session picker (#182) — sits just after the story status, hidden
   // until there's more than one session.
   statusBarItems.register({
     id: "status.sessions",
     alignment: "left",
-    priority: 9,
+    priority: 8,
     component: SessionPicker,
   });
   statusBarItems.register({
