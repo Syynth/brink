@@ -74,6 +74,24 @@ export function SymbolRenamePrompt() {
   }, []);
 
   const open = req != null;
+
+  // Cancel a still-pending deferred analysis the moment the prompt closes.
+  // `Overlay`'s Escape/outside-pointerdown dismissal (packages/studio-shell/
+  // src/overlay.tsx) is NOT gated on `busy` — only the input and the report's
+  // Cancel button are — so during the idle window below (<=300ms rIC timeout,
+  // or a macrotask on the setTimeout fallback) a user can dismiss the prompt
+  // while the deferred analysis is still queued. The unmount cleanup above
+  // does not cover this: `SymbolRenamePrompt` is mounted once near the studio
+  // root and never unmounts on a mere close. Keying this on `open` (rather
+  // than only unmount) ensures a cancel-while-pending never lets `run()`
+  // resume into a call against a request the user already dismissed.
+  useEffect(() => {
+    if (open) return;
+    if (idleHandleRef.current !== null) {
+      cancelIdleWork(idleHandleRef.current);
+      idleHandleRef.current = null;
+    }
+  }, [open]);
   const currentName = req ? (req.currentName ?? req.stitch ?? req.knot ?? "") : "";
 
   // Reset transient state on each fresh open, then focus/select the input.
@@ -128,6 +146,14 @@ export function SymbolRenamePrompt() {
       idleHandleRef.current = scheduleIdleWork(resolve);
     });
     idleHandleRef.current = null;
+    // Re-check staleness after the await: the user may have cancelled the
+    // prompt (Escape / outside-click — see the effect above) or re-pointed it
+    // at a different symbol while this call was queued. `req` is a fresh
+    // object on every `openRenamePrompt`/`closeRenamePrompt`, so reference
+    // equality against the live store value is exactly "nothing changed
+    // since we captured `req`". Bail rather than apply a rename the user
+    // already backed out of.
+    if (storeApi.getState().renamePrompt !== req) return;
     const outcome = await performSymbolRename(
       storeApi.getState(),
       applyMoveResult,

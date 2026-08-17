@@ -800,6 +800,74 @@ call that would orphan the first handle absent the clear-before-set guard,
 teardown via `dispose()`, then `vi.runAllTimers()` asserting the spy was
 never called.
 
+#### 7.7.3 Off-paint-path analysis deferral (invariant)
+
+A third, related hazard: a synchronous call that is not merely deferred (§7.7.2)
+but *heavy* — expensive enough to itself block the main thread, and therefore
+paint, for however long it runs. §7.7.2 governs cancelling a deferred call;
+this rule governs how a call that cannot be made cheap or asynchronous is kept
+from racing the paint of its own "this is running" feedback.
+
+The rule: a symbol-rename/collision analysis that runs as a synchronous wasm
+call (no `Promise`, no yield point of its own) must not be invoked inline in
+the same frame as the triggering event. Instead: commit a `busy`/`pending`
+state **synchronously** (so React has something to paint before the heavy call
+starts), then defer the call itself to the next idle slot via
+`scheduleIdleWork` (`packages/ink-editor/src/idle-schedule.ts`) —
+`requestIdleCallback` with an 300ms timeout, falling back to a `setTimeout`
+macrotask where `requestIdleCallback` is unavailable (Safari, jsdom).
+`cancelIdleWork` cancels a still-pending handle.
+
+**This is a mitigation, not a bound.** `idle-schedule.ts`'s own doc comment
+states the limit directly: "It is not a substitute for a worker: a call that
+itself blocks for seconds still blocks once it starts." Deferring the call
+guarantees a paint of the pending indicator lands *before* the heavy work
+begins; it does not shorten the heavy work itself, and a test asserting a
+fixed wall-clock bound on the call's completion is asserting something this
+discipline does not provide.
+
+**Enrolled sites (#722, #696).**
+
+- `packages/ink-editor/src/inline-name-input.ts` — `InlineNameInput` (F2
+  inline rename / extract), the original site. Commits
+  `.brink-inline-rename-badge--pending` synchronously, defers the analysis via
+  `scheduleIdleWork`, and cancels a stale handle via `abandonPending()`.
+- `packages/studio-ui/src/SymbolRenamePrompt.tsx` — the modal knot/stitch
+  rename prompt (context-menu "Rename…"), added in #696 after two recurrences
+  (PR #1500, PR #1888) of the flake #722 had already fixed on the sibling
+  inline surface but never carried to this one. Commits `.brink-rename-pending`
+  ("Checking for conflicts…") synchronously, defers via the same
+  `scheduleIdleWork`/`cancelIdleWork` pair (now exported from
+  `@brink-lang/editor`'s package entry point rather than kept internal to
+  `ink-editor`, so a second surface can consume them without reaching past the
+  package boundary).
+
+**The pending state must stay current across a cancel.** Because the deferral
+opens a window between commit and call, `Overlay`'s Escape/outside-pointerdown
+dismissal (§7.7, `packages/studio-shell/src/overlay.tsx`) can close the prompt
+while the analysis is still queued — those listeners are not gated on `busy`.
+`SymbolRenamePrompt` handles this two ways: an effect keyed on the overlay's
+`open` state cancels any pending idle handle the moment the prompt closes
+(not only on unmount, since the component is mounted once near the studio
+root and a close does not unmount it), and `run()` re-checks that the store's
+live `renamePrompt` is still reference-equal to the request it captured before
+calling `performSymbolRename` after the await, bailing otherwise. Pinned by
+`packages/brink-studio/src/__tests__/symbol-rename-prompt-pending.test.tsx`.
+
+**The pending flash is not asserted in the e2e spec.** Measured with
+`--repeat-each=15` against a real (Chromium) browser on a mostly-idle page,
+`.brink-rename-pending`'s visibility window was too brief for Playwright's CDP
+polling to reliably observe: 10/15 runs missed the indicator, 0/15 missed the
+eventual report. `packages/brink-studio/e2e/symbol-rename.spec.ts` therefore
+asserts only the report, not the pending flash — a live browser's polling
+granularity is the wrong tool for a sub-poll-interval ordering claim. The
+ordering itself (pending-committed-before-analysis-runs) is instead proven
+deterministically in `symbol-rename-prompt-pending.test.tsx`: jsdom has no
+`requestIdleCallback`, so `scheduleIdleWork` always takes the `setTimeout`
+fallback, and with fake timers the test asserts the pending indicator is
+already in the DOM *before advancing any timer at all* — i.e. before the
+deferred analysis could possibly have run.
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*

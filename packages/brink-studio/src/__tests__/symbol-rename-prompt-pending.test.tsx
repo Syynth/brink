@@ -208,4 +208,40 @@ describe("SymbolRenamePrompt off-the-paint-path pending state (#696)", () => {
     expect(pendingIndicator()).toBeNull();
     expect(project.getSession().getFileSource("main.ink")).not.toBe(COLLIDING);
   });
+
+  it("cancelling (Escape) during the idle window prevents the deferred rename from applying", async () => {
+    // #2761 review finding: `Overlay`'s Escape/outside-pointerdown dismissal
+    // (packages/studio-shell/src/overlay.tsx) is not gated on `busy`, so a
+    // user can close the prompt during the deferred window opened by `run()`
+    // below. Without a cancel + staleness re-check, `run()` resumes after the
+    // await and applies a rename the user already backed out of.
+    const { project, store } = await renderPrompt("a");
+
+    act(() => {
+      const el = input();
+      el.value = "b";
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    // Pending is committed (the deferred analysis is queued) before any timer
+    // has run — same ordering proof as the first test above.
+    expect(pendingIndicator()).not.toBeNull();
+    expect(store.getState().renamePrompt).not.toBeNull();
+
+    // The user dismisses the prompt (Escape) while the analysis is still
+    // queued — `Overlay` listens on `document`, capture phase.
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(store.getState().renamePrompt).toBeNull();
+
+    // Let the deferred work run to completion. If `run()` did not re-check
+    // staleness after the await, it would now call `performSymbolRename`
+    // against the cancelled request and rename `a` anyway.
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(project.getSession().getFileSource("main.ink")).toBe(COLLIDING);
+  });
 });

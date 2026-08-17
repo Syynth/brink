@@ -1,5 +1,5 @@
 ---
-"@brink-lang/editor": patch
+"@brink-lang/editor": minor
 ---
 
 Exported `scheduleIdleWork`/`cancelIdleWork` (the off-paint-path scheduling helper #722 added
