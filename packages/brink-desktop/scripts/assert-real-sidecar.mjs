@@ -75,14 +75,20 @@
 // not optional decoration: GNU coreutils' `true` — #2691's own stand-in —
 // ALSO accepts `--version` and exits 0 (`true (GNU coreutils) 9.4`,
 // observed directly for #2699), so exit code alone would have caught
-// nothing new. The whole smoke check is gated on the staged triple
-// equalling the triple this process is actually running on
-// (`smokeCheckSidecar`): a cross-compiled sidecar CANNOT be executed on the
-// build machine at all, and treating that failure as "not a real brink-cli"
-// would reject a legitimate cross-build for the wrong reason. The
-// non-host-triple case — and the case where the host triple itself cannot
-// be determined — degrades to "verified via magic only," and SAYS SO in the
-// log, rather than either failing a legitimate cross-build or silently
+// nothing new. The whole smoke check is gated on the staged triple being
+// EXECUTABLE on the triple this process is actually running on
+// (`smokeCheckSidecar`, via `canExecuteStagedSidecar`): a cross-compiled
+// sidecar CANNOT be executed on the build machine at all, and treating that
+// failure as "not a real brink-cli" would reject a legitimate cross-build
+// for the wrong reason. "Executable on" is not simply "equal to" (#2708): a
+// `universal-apple-darwin` staged triple IS executable on a host whose real
+// triple is `x86_64-apple-darwin` or `aarch64-apple-darwin` — a universal
+// build is a fat Mach-O carrying both slices and runs natively on either
+// arch, even though the staged triple never equals either host triple. See
+// `canExecuteStagedSidecar` for that one deliberate widening. The
+// non-executable case — including the case where the host triple itself
+// cannot be determined — degrades to "verified via magic only," and SAYS SO
+// in the log, rather than either failing a legitimate cross-build or silently
 // claiming to have verified more than it did.
 
 import { execFileSync } from "node:child_process";
@@ -263,13 +269,62 @@ function actualHostTriple() {
 }
 
 /**
+ * The real host triples on which a `universal-apple-darwin` sidecar can
+ * actually run. `rustc -vV`'s `host:` line — what `actualHostTriple()`
+ * queries — never reports `universal-apple-darwin` itself: there is no
+ * `--target universal-apple-darwin` rustc target to be the host of, only
+ * these two single-arch ones. A universal build stages under
+ * `universal-apple-darwin` regardless of which of these built it, since it
+ * is one fat Mach-O carrying both slices (#2708).
+ */
+const UNIVERSAL_DARWIN_HOST_TRIPLES = new Set(["x86_64-apple-darwin", "aarch64-apple-darwin"]);
+
+/**
+ * Whether a sidecar staged for `triple` can actually be executed on a
+ * machine whose real host triple is `host` (`undefined` when it could not
+ * be determined at all — see `actualHostTriple`).
+ *
+ * The ordinary case is an exact match. The one deliberate exception
+ * (#2708): `triple === "universal-apple-darwin"` on a real macOS host
+ * (`host` one of [`UNIVERSAL_DARWIN_HOST_TRIPLES`]). A universal macOS
+ * build stages under the triple `universal-apple-darwin`, which
+ * `triple === host` never equals — not even when running ON a macOS host
+ * that unambiguously CAN execute it — because a universal binary is a fat
+ * Mach-O carrying BOTH the x86_64 and aarch64 slices, and the kernel picks
+ * the matching one to run natively on either arch. Without this exception
+ * `smokeCheckSidecar` would silently and PERMANENTLY take the
+ * "cannot execute here" branch for the exact artifact macOS users install,
+ * on every macOS machine there is, never once running `--version` against
+ * it for real.
+ *
+ * Deliberately does NOT widen the other direction: `universal-apple-darwin`
+ * on a non-Darwin `host` (or `host === undefined`) still returns `false` —
+ * that IS a genuine cross-build (no non-Apple machine can execute a Mach-O
+ * of any kind), and `smokeCheckSidecar` must still degrade to the
+ * magic-only fallback for it, never collapse "cannot execute here" into a
+ * rejection (the same tri-state lesson #2687's review already caught one
+ * `looksLikeNativeExecutable` call site getting wrong via `!== true`).
+ */
+export function canExecuteStagedSidecar(triple, host) {
+  if (host === undefined) {
+    return false;
+  }
+  if (triple === host) {
+    return true;
+  }
+  return triple === "universal-apple-darwin" && UNIVERSAL_DARWIN_HOST_TRIPLES.has(host);
+}
+
+/**
  * Execute the staged sidecar as `destBin --version` and report success or
  * failure. Never throws itself — `smokeCheckSidecar`, its only caller,
  * decides what a failure means. Exported for direct unit coverage of the
  * success/failure summarizing; NOT meant to be called on a binary staged
- * for a different triple than this process is running on — see
- * `smokeCheckSidecar`, which is the only place that decides it is safe to
- * call this at all.
+ * for a triple that is not executable on this host — see
+ * `canExecuteStagedSidecar` (#2708 — not simply "a different triple": a
+ * `universal-apple-darwin` staged triple IS executable on either single-arch
+ * Apple host) and `smokeCheckSidecar`, which is the only place that decides
+ * it is safe to call this at all.
  */
 export function runVersionSmokeTest({ destBin, runFile = defaultRunFile }) {
   try {
@@ -316,25 +371,31 @@ export function looksLikeBrinkCliVersionOutput(output) {
  * IS `brink-cli` or that it runs — any correctly-formatted binary of the
  * wrong build passes it, exactly as #2691's own `/bin/true` stand-in did.
  * This closes that gap for the one case where actually running the binary
- * is safe to attempt: `destBin`'s triple matches the triple this process is
- * running on RIGHT NOW. Any other triple is a cross-build — the staged
- * binary cannot be executed on this machine at all, and a failure to do so
- * says nothing about whether the binary is a genuine, working `brink-cli`.
- * Collapsing that "cannot execute here" case into a rejection would refuse
- * a legitimate cross-compiled bundle for the wrong reason, so it instead
- * degrades to the magic check alone and logs that it did — never silently.
+ * is safe to attempt: `destBin`'s triple is executable on the triple this
+ * process is running on RIGHT NOW (`canExecuteStagedSidecar`, #2708 — not
+ * simply "matches": a `universal-apple-darwin` staged triple IS executable
+ * on either single-arch Apple host). Any triple that is not executable here
+ * is a cross-build — the staged binary cannot be executed on this machine
+ * at all, and a failure to do so says nothing about whether the binary is a
+ * genuine, working `brink-cli`. Collapsing that "cannot execute here" case
+ * into a rejection would refuse a legitimate cross-compiled bundle for the
+ * wrong reason, so it instead degrades to the magic check alone and logs
+ * that it did — never silently.
  *
- * Deliberately the ONLY call site that inspects host-triple-match at all:
- * #2687's review caught a `looksLikeNativeExecutable !== true` call site
- * elsewhere in this file silently collapsing "cannot judge" into "reject."
- * This function returns nothing to its caller — success is "returned
- * normally," a skip is also "returned normally," and only an executed
- * failure throws — so there is no boolean for a second call site to ever
- * mis-test the same way.
+ * Deliberately the ONLY call site that inspects executability-on-this-host
+ * at all: #2687's review caught a `looksLikeNativeExecutable !== true` call
+ * site elsewhere in this file silently collapsing "cannot judge" into
+ * "reject." This function returns nothing to its caller — success is
+ * "returned normally," a skip is also "returned normally," and only an
+ * executed failure throws — so there is no boolean for a second call site
+ * to ever mis-test the same way. Since #2708 the executability test is
+ * `canExecuteStagedSidecar(triple, host)`, not a bare `host === triple` —
+ * see that function for the one deliberate widening (a universal macOS
+ * build on a real macOS host) and why the reverse direction is NOT widened.
  */
 function smokeCheckSidecar({ destBin, triple, runFile, log }) {
   const host = actualHostTriple();
-  if (host !== triple) {
+  if (!canExecuteStagedSidecar(triple, host)) {
     log(
       `[assert-real-sidecar] skipped the --version smoke check: staged triple ${triple} ` +
         (host === undefined
@@ -369,9 +430,10 @@ function smokeCheckSidecar({ destBin, triple, runFile, log }) {
   }
 
   log(
-    `[assert-real-sidecar] ${destBin} ran successfully (host-triple match, \`--version\` ` +
-      `exited 0 and printed "${result.output}") — confirmed a working brink-cli, not merely a ` +
-      "correctly-formatted file (#2699).",
+    `[assert-real-sidecar] ${destBin} ran successfully (${
+      triple === host ? "host-triple match" : "universal build on this host's arch, #2708"
+    }, \`--version\` exited 0 and printed "${result.output}") — confirmed a working brink-cli, ` +
+      "not merely a correctly-formatted file (#2699).",
   );
 }
 
@@ -404,8 +466,11 @@ function smokeCheckSidecar({ destBin, triple, runFile, log }) {
  * inherits or needs to repeat.
  *
  * Once the staged file clears the stub comparison, `smokeCheckSidecar`
- * (#2699) additionally runs `destBin --version` when `triple` matches the
- * triple this process is running on — on BOTH the magic-confirmed path
+ * (#2699) additionally runs `destBin --version` when `triple` is executable
+ * on the triple this process is running on (`canExecuteStagedSidecar`,
+ * #2708 — not simply equal: a `universal-apple-darwin` staged triple is
+ * executable on either single-arch Apple host) — on BOTH the magic-confirmed
+ * path
  * below and the weak-fallback path (`weakFallbackCheck`, for a triple with
  * no format rule or a format `EXECUTABLE_MAGIC` has no entry for), closing
  * the "correctly-formatted but not actually `brink-cli`" gap the magic

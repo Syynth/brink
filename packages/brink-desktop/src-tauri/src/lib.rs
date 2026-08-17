@@ -2589,10 +2589,15 @@ mod tests {
             vec![
                 "ci.yml:frontend".to_owned(),
                 "ci.yml:e2e".to_owned(),
+                // #2709: desktop-bundle-smoke.yml is the non-required real
+                // `tauri build --debug --bundles deb` lane. Sorted between
+                // ci.yml and desktop-smoke.yml because `workflow_files()`
+                // walks the directory alphabetically.
+                "desktop-bundle-smoke.yml:desktop-bundle-smoke".to_owned(),
                 "desktop-smoke.yml:desktop-smoke".to_owned(),
                 "npm-release.yml:release".to_owned(),
             ],
-            "expected exactly these four jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
+            "expected exactly these five jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
              pnpm-install lane must both pass the ordering assertion above AND be added to \
              this list on purpose — that is what keeps a new lane from opting out of this \
              guard by simply existing"
