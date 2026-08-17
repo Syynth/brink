@@ -69,7 +69,7 @@
 //! (`crates/internal/brink-ir/src/hir/types.rs`) — there is nothing left in
 //! `HirFile` for this walk to reach.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -478,7 +478,7 @@ fn walk_expr_for_lambdas(
                     globals: ctx.globals,
                     signatures: ctx.signatures,
                     resolution_by_range: ctx.resolution_by_range,
-                    locals: pruned_locals.as_ref(),
+                    locals: Some(&pruned_locals),
                 };
                 for bs in stmts {
                     check_block_stmt(bs, file, &pruned_ctx, out);
@@ -566,28 +566,72 @@ fn walk_expr_for_lambdas(
 /// every name the block itself binds (`TempDecl`, a `for` loop's var/val, an
 /// `if`/`while` `as` binding), recursed through nested `if`/`while`/`for` the
 /// same way [`crate::infer::lambda_own_bindings`] already does for
-/// `infer_lambda`'s own shadow set. Returns `None` when `ctx.locals` is
-/// itself `None` (file scope — nothing to prune from).
+/// `infer_lambda`'s own shadow set.
+///
+/// Issue #2782: also seeds the lambda's own explicitly `: T`-annotated
+/// param types directly into the returned map — mirrors
+/// `infer::body::InferPass::infer_lambda`'s own `self.annotated` seed
+/// (issue #1941), just written into the bare-name-keyed locals map this
+/// check's classification (`resolved_symbol_ty`'s `ctx.locals?.get(…)`)
+/// actually reads, instead of the parallel `self.annotated` map that seed
+/// feeds. Without it, a lambda param's written annotation never reached
+/// E116's truthiness check: only a body-inferred type did (the
+/// ordinary-`fn`-param half of the same gap is fixed at its source, in
+/// `infer::body::infer_def_body`, since a lambda has no `BodyTypes` entry
+/// of its own for this check to read in the first place). A param name the
+/// lambda's own block *re-binds* (a fresh `TempDecl`/`if`/`while`/`for`
+/// binding of the same spelling) is excluded from the seed — `body_names`
+/// is collected before the param loop below adds param names to `own_names`,
+/// so it reflects only the block's own re-binds, exactly like
+/// `infer_lambda`'s identical `body_bound_names.contains` guard.
+///
+/// No longer bottoms out to nothing for a file-scope lambda (`ctx.locals`
+/// itself `None`, e.g. a `var f = |x: Option<int>| { … }` initializer): an
+/// annotated param must still be classifiable there, so this always
+/// returns a real map, falling back to an empty pruned base when there was
+/// no enclosing `locals` to prune from — the caller's `ctx.locals?` (via
+/// `Some(&map)`) treats an empty map and `None` identically for any name
+/// absent from it, so this is not a behavior change for the pre-existing
+/// pruning path. Plain `BTreeMap` return (not `Option`-wrapped): every path
+/// now produces a real map, so wrapping it would just be
+/// `clippy::unnecessary_wraps`.
 fn pruned_locals_for_lambda(
     l: &brink_ir::LambdaExpr,
     stmts: &[BlockStmt],
     ctx: &MistypeCtx<'_>,
-) -> Option<BTreeMap<String, Ty>> {
-    let locals = ctx.locals?;
-    let mut own_names: BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)> = BTreeMap::new();
-    crate::infer::lambda_own_bindings(stmts, &mut own_names);
+) -> BTreeMap<String, Ty> {
+    let mut body_names: BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)> = BTreeMap::new();
+    crate::infer::lambda_own_bindings(stmts, &mut body_names);
+    let body_bound_names: BTreeSet<String> = body_names.keys().cloned().collect();
+
+    let mut own_names = body_names;
     for p in &l.params {
         own_names
             .entry(p.name.text.clone())
             .or_insert((p.name.range, None));
     }
-    Some(
+
+    let mut pruned: BTreeMap<String, Ty> = ctx.locals.map_or_else(BTreeMap::new, |locals| {
         locals
             .iter()
             .filter(|(name, _)| !own_names.contains_key(*name))
             .map(|(name, ty)| (name.clone(), ty.clone()))
-            .collect(),
-    )
+            .collect()
+    });
+
+    let type_names = annotations::TypeNames::new(ctx.index, None);
+    for p in &l.params {
+        if body_bound_names.contains(&p.name.text) {
+            continue;
+        }
+        if let Some(te) = &p.annotation
+            && let Some(ty) = annotations::resolve(te, &type_names)
+        {
+            pruned.insert(p.name.text.clone(), ty);
+        }
+    }
+
+    pruned
 }
 
 fn check_if(i: &IfStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
@@ -1167,6 +1211,105 @@ mod tests {
         check_conditional(&conditional, FileId(0), &ctx, &mut out);
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].code, DiagnosticCode::E116);
+    }
+
+    // ── Issue #2782: an explicitly `: Option<T>`-annotated param ─────────
+    //
+    // Only an *inference-derived* `Option[T]` (the tests above — `find(...)`
+    // results, `some(...)` locals) reached E116's classification before this
+    // fix. A param whose type came from a *written* annotation instead
+    // never did, for both an ordinary `fn` param
+    // (`infer::body::infer_def_body`'s `pass.locals` never got the
+    // annotation overlay `param_types` already applied to `InferredSig`)
+    // and a lambda's own param (`pruned_locals_for_lambda` pruned it out of
+    // the enclosing scope but never seeded it back in from the lambda's own
+    // annotation). Confirmed as the live bug pre-fix: both
+    // `annotated_fn_param_option_condition_is_e116`'s and
+    // `annotated_lambda_param_option_condition_is_e116`'s fixtures produced
+    // zero diagnostics at this issue's filing.
+
+    #[test]
+    fn annotated_fn_param_option_condition_is_e116() {
+        let diags = check_all_native(
+            "fn heal(x: Option<int>): int {\n  if x {\n    return 0;\n  } else {\n    return 1;\n  }\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Negative control alongside
+    /// [`annotated_fn_param_option_condition_is_e116`]: an annotated
+    /// **non**-Option param must not start firing just because annotated
+    /// params now reach classification at all.
+    #[test]
+    fn annotated_fn_param_non_option_condition_stays_clean() {
+        let diags = check_all_native(
+            "fn heal(x: int): int {\n  if x {\n    return 0;\n  } else {\n    return 1;\n  }\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// The lambda-param half of issue #2782 — not lambda-specific in cause,
+    /// but a separate fix site (`pruned_locals_for_lambda`) since a lambda
+    /// has no `BodyTypes` entry of its own for the enclosing-def fix above
+    /// to reach.
+    #[test]
+    fn annotated_lambda_param_option_condition_is_e116() {
+        let diags = check_all_native(
+            "fn heal(n: int): int {\n  let f = |x: Option<int>| {\n    if x {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return n;\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Negative control alongside
+    /// [`annotated_lambda_param_option_condition_is_e116`].
+    #[test]
+    fn annotated_lambda_param_non_option_condition_stays_clean() {
+        let diags = check_all_native(
+            "fn heal(n: int): int {\n  let f = |x: int| {\n    if x {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return n;\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Issue #2773's own hazard, re-checked against this fix specifically:
+    /// `pruned_locals_for_lambda` now writes annotation-derived types into
+    /// the same bare-name-keyed map #2773 warned is shadowing-unsafe. This
+    /// pins that a lambda param's *own* annotation — Option here — is what
+    /// governs its body, never an outer same-named local's own (different,
+    /// non-Option) type: the outer `r` is a plain `int` temp, the inner `r`
+    /// is an annotated `Option<int>` lambda param that shadows it, and the
+    /// condition must classify against the inner annotation and fire E116
+    /// — the pre-fix pruning already stopped the outer `int` from leaking
+    /// in (see `lambda_param_shadowing_outer_option_stays_clean`, the
+    /// mirror-image direction), so this pins that the *new* annotation seed
+    /// added by this fix doesn't accidentally skip the shadowing param
+    /// entirely and leave it unclassified instead.
+    #[test]
+    fn lambda_param_own_annotation_shadowing_outer_non_option_local_is_e116() {
+        let diags = check_all_native(
+            "fn heal(x) {\n  let r = 5;\n  let f = |r: Option<int>| {\n    if r {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return 0;\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Same #2773-hazard family, the exclusion half: a lambda param's own
+    /// annotation must NOT be seeded for a name the lambda's own block body
+    /// re-binds via a fresh same-spelled `let` — mirrors
+    /// `infer::body::InferPass::infer_lambda`'s identical
+    /// `body_bound_names.contains` guard on its own `self.annotated` seed.
+    /// Without this exclusion, the annotated Option param's type would leak
+    /// into the *re-bound* `r` (a plain `int` local the block introduces
+    /// itself), producing a false E116 on a condition that is actually
+    /// unclassified (any annotation this check doesn't independently prove
+    /// governs the fresh binding).
+    #[test]
+    fn lambda_param_own_annotation_re_bound_by_body_stays_clean() {
+        let diags = check_all_native(
+            "fn heal(x) {\n  let f = |r: Option<int>| {\n    let r = 5;\n    if r {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return 0;\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     /// The genuine capture case, pinned so the pruning fix above doesn't
