@@ -68,13 +68,15 @@
 // applies them to the real repo.
 //
 // #2728 follow-up: everything above rests on a premise stated only in prose
-// until now — "brink-syntax's parser has exactly ONE whitespace-consuming
-// primitive, `Parser::skip_ws`, matching zero-or-more". Nothing checked
-// that claim, so a future required-whitespace primitive (a `skip_ws_
-// required`, an `expect_ws`) would silently invalidate this guard: it would
-// keep banning `INLINE_WS+` comments that had become TRUE, with no signal
-// the founding premise had changed. See "Whitespace-primitive premise pin"
-// below for the mechanical check that pins it.
+// until now — "brink-syntax's parser's `Parser::skip_ws` matches
+// zero-or-more". Nothing checked that claim, so a future required-
+// whitespace primitive (a `skip_ws_required`, an `expect_ws`) would
+// silently invalidate this guard: it would keep banning `INLINE_WS+`
+// comments that had become TRUE, with no signal the founding premise had
+// changed. See "Whitespace-primitive premise pin" below for the mechanical,
+// NAME-BASED (`ws`/`whitespace` segments only) check that pins `skip_ws`
+// specifically — plus a separate real-repo test pinning its two known
+// trivia/blank-line-named siblings that the name-based census can't see.
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -140,26 +142,39 @@ const SCANNED_EXTENSIONS = [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"];
  * ── Whitespace-primitive premise pin (#2728) ────────────────────────────
  *
  * This guard's entire `STALE_TOKEN` ban rests on a premise: `brink-syntax`'s
- * parser exposes exactly ONE whitespace-consuming primitive —
- * `Parser::skip_ws` (`crates/internal/brink-syntax/src/parser/mod.rs`) —
- * and it matches ZERO-OR-MORE. That premise is what makes `INLINE_WS+`
- * (one-or-more) always a lie about current parser behavior. Add a second
- * primitive (a `skip_ws_required`, an `expect_ws`) and the ban silently
+ * parser's `Parser::skip_ws` (`crates/internal/brink-syntax/src/parser/
+ * mod.rs`) matches ZERO-OR-MORE whitespace. That premise is what makes
+ * `INLINE_WS+` (one-or-more) always a lie about current parser behavior.
+ * Turn `skip_ws` itself required, or rename it away, and the ban silently
  * becomes wrong: it would keep flagging `INLINE_WS+` comments that had
  * become TRUE.
  *
- * `censusWhitespacePrimitives` pins it mechanically: a grep-based census of
- * every function under the parser's PRODUCTION sources (files directly in
- * `PARSER_SRC_DIR`, excluding its `tests/` subtree — a test helper named
- * `*_ws*` changes nothing about what the parser itself does) whose
- * snake_case name has a `ws` or `whitespace` segment. `checkGrammarDrift`
- * folds `checkWhitespacePrimitivePremise`'s verdict into its own — a
- * premise violation is reported as a PROBLEM, not a silent pass, so both
- * `pnpm check:grammar-drift` and the fixture test in
- * check-grammar-drift.test.mjs go red the moment a second primitive
- * appears, the sole primitive is renamed, or it stops matching zero-or-more
- * (its body loses its `while` loop, or starts calling `.error(...)` when
- * whitespace is absent — the shape a *required* primitive would have).
+ * `censusWhitespacePrimitives` pins the `skip_ws` half of that mechanically:
+ * a grep-based, **name-based** census (`ws`/`whitespace` name segments
+ * only — NOT an exhaustive census of every trivia/blank-line-consuming
+ * primitive in the parser; see "known uncovered siblings" below) of every
+ * function under the parser's PRODUCTION sources (files directly in
+ * `PARSER_SRC_DIR`, excluding its `tests/` subtree and any inline
+ * `#[cfg(test)]` module body — a test helper's name says nothing about what
+ * the parser itself does) whose snake_case name has a `ws` or `whitespace`
+ * segment. `checkGrammarDrift` folds `checkWhitespacePrimitivePremise`'s
+ * verdict into its own — a premise violation is reported as a PROBLEM, not
+ * a silent pass, so both `pnpm check:grammar-drift` and the fixture test in
+ * check-grammar-drift.test.mjs go red the moment `skip_ws` disappears, is
+ * renamed, or stops matching zero-or-more (its body loses its `while` loop,
+ * or starts calling `.error(...)` when whitespace is absent — the shape a
+ * *required* primitive would have).
+ *
+ * Known uncovered siblings. The parser has two other zero-or-more
+ * trivia/blank-line-consuming primitives whose names use this codebase's
+ * OTHER whitespace vocabulary — "trivia", "blank lines" — not "ws"/
+ * "whitespace", so the name-based census above can't see them:
+ * `skip_struct_body_trivia` (`parser/declaration.rs`) and
+ * `skip_blank_lines` (`parser/inline.rs`). Both are asserted zero-or-more
+ * by a dedicated real-repo test in check-grammar-drift.test.mjs (see
+ * `KNOWN_UNCOVERED_TRIVIA_PRIMITIVES`) rather than by this pin's census, so
+ * either one turning required is still caught — just not through the same
+ * mechanism as `skip_ws`.
  */
 
 /** Parser source directory whose census pins the "one primitive" premise. */
@@ -168,7 +183,22 @@ export const PARSER_SRC_DIR = "crates/internal/brink-syntax/src/parser";
 /** The one primitive this guard's premise names. */
 export const EXPECTED_WHITESPACE_PRIMITIVE = "skip_ws";
 
+/**
+ * Trivia/blank-line-consuming parser primitives known to exist but NOT
+ * covered by `censusWhitespacePrimitives`'s `ws`/`whitespace` name-based
+ * matching (their names use this codebase's other whitespace vocabulary —
+ * "trivia", "blank lines"). Listed explicitly, and guarded by a dedicated
+ * real-repo test in check-grammar-drift.test.mjs asserting they stay
+ * zero-or-more, so a change to either doesn't silently invalidate this
+ * guard's premise with no test noticing.
+ */
+export const KNOWN_UNCOVERED_TRIVIA_PRIMITIVES = [
+  { name: "skip_struct_body_trivia", path: `${PARSER_SRC_DIR}/declaration.rs` },
+  { name: "skip_blank_lines", path: `${PARSER_SRC_DIR}/inline.rs` },
+];
+
 const FN_DEF_RE = /\bfn\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\([^)]*\)[^{;]*\{/g;
+const CFG_TEST_MOD_RE = /#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*mod\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\{/g;
 
 /**
  * Whether a snake_case function name has `ws` or `whitespace` as one of its
@@ -206,43 +236,111 @@ function extractBracedBody(text, openBraceIndex) {
 }
 
 /**
- * Repo-relative `.rs` files directly under `PARSER_SRC_DIR` — its `tests/`
- * subtree is excluded on purpose, since a test helper's name says nothing
- * about what the parser itself does.
+ * Repo-relative `.rs` files under `PARSER_SRC_DIR`, walked recursively so a
+ * future production subdirectory doesn't silently escape the census — with
+ * any directory literally named `tests` (at any depth) pruned entirely,
+ * since a test helper's name says nothing about what the parser itself
+ * does.
  *
  * @param {string} [repoRoot]
  * @returns {string[]} sorted, repo-relative paths
  */
 export function discoverParserSourceFiles(repoRoot = REPO_ROOT) {
-  const dir = join(repoRoot, PARSER_SRC_DIR);
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
+  const found = [];
+
+  const walk = (dir, relDir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (entry.name === "tests") continue;
+        walk(join(dir, entry.name), `${relDir}/${entry.name}`);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".rs")) {
+        found.push(`${relDir}/${entry.name}`);
+      }
+    }
+  };
+
+  walk(join(repoRoot, PARSER_SRC_DIR), PARSER_SRC_DIR);
+  return found.sort();
+}
+
+/**
+ * Remove every inline `#[cfg(test)] mod <name> { ... }` block from `text`
+ * (brace-matched), replacing each with nothing. A test-only module's
+ * function names say nothing about what the parser itself does — same
+ * rationale as excluding the `tests/` directory subtree — but unlike that
+ * subtree, an inline `#[cfg(test)] mod tests { ... }` lives inside a
+ * production file the census reads directly, so it has to be stripped from
+ * the text rather than skipped by path.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripCfgTestModules(text) {
+  let result = "";
+  let searchFrom = 0;
+  CFG_TEST_MOD_RE.lastIndex = 0;
+  for (;;) {
+    CFG_TEST_MOD_RE.lastIndex = searchFrom;
+    const match = CFG_TEST_MOD_RE.exec(text);
+    if (!match) {
+      result += text.slice(searchFrom);
+      break;
+    }
+    const braceStart = match.index + match[0].length - 1;
+    const body = extractBracedBody(text, braceStart);
+    result += text.slice(searchFrom, match.index);
+    searchFrom = braceStart + body.length;
   }
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".rs"))
-    .map((entry) => `${PARSER_SRC_DIR}/${entry.name}`)
-    .sort();
+  return result;
 }
 
 /**
  * Find every function definition in `text` whose name census-matches as a
- * whitespace primitive, along with its brace-matched body.
+ * whitespace primitive, along with its brace-matched body. Text inside any
+ * inline `#[cfg(test)]` module is stripped first (see `stripCfgTestModules`)
+ * so a test helper's name can never be mistaken for a production primitive.
  *
  * @param {string} text
  * @returns {{name: string, body: string}[]}
  */
 export function censusWhitespacePrimitivesInText(text) {
+  const productionText = stripCfgTestModules(text);
   const found = [];
-  for (const match of text.matchAll(FN_DEF_RE)) {
+  for (const match of productionText.matchAll(FN_DEF_RE)) {
     const name = match[1];
     if (!nameHasWhitespaceSegment(name)) continue;
     const braceStart = match.index + match[0].length - 1; // index of the `{`
-    found.push({ name, body: extractBracedBody(text, braceStart) });
+    found.push({ name, body: extractBracedBody(productionText, braceStart) });
   }
   return found;
+}
+
+/**
+ * Find a specific function's brace-matched body by name in `text`, ignoring
+ * any inline `#[cfg(test)]` module bodies. Used to check the known
+ * trivia/blank-line siblings this guard's ws/whitespace name-based census
+ * can't see (`KNOWN_UNCOVERED_TRIVIA_PRIMITIVES`).
+ *
+ * @param {string} text
+ * @param {string} name
+ * @returns {string | undefined}
+ */
+export function findFunctionBodyByName(text, name) {
+  const productionText = stripCfgTestModules(text);
+  for (const match of productionText.matchAll(FN_DEF_RE)) {
+    if (match[1] !== name) continue;
+    const braceStart = match.index + match[0].length - 1;
+    return extractBracedBody(productionText, braceStart);
+  }
+  return undefined;
 }
 
 /**
@@ -280,8 +378,10 @@ export function checkWhitespacePrimitivePremise(repoRoot = REPO_ROOT) {
   if (census.length !== 1) {
     const names = census.map((c) => `${c.name} (${c.path})`).join(", ") || "none found";
     problems.push(
-      `PREMISE VIOLATION: expected exactly one whitespace-consuming primitive in ${PARSER_SRC_DIR} ` +
-        `(this guard assumes \`Parser::${EXPECTED_WHITESPACE_PRIMITIVE}\` is the ONLY one, matching ` +
+      `PREMISE VIOLATION: expected exactly one \`ws\`/\`whitespace\`-named primitive in ${PARSER_SRC_DIR} ` +
+        `(this is a NAME-BASED census, not exhaustive over every trivia/blank-line-consuming primitive — ` +
+        `see \`KNOWN_UNCOVERED_TRIVIA_PRIMITIVES\`; this guard assumes \`Parser::` +
+        `${EXPECTED_WHITESPACE_PRIMITIVE}\` is the only \`ws\`/\`whitespace\`-named one, matching ` +
         `zero-or-more), but found ${census.length}: ${names}. A second whitespace primitive can make a ` +
         `previously-stale \`INLINE_WS+\` grammar-comment quote TRUE again — ${reexamine}`,
     );
