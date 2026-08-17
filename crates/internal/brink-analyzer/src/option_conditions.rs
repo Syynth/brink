@@ -1249,6 +1249,25 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
     }
 
+    /// The `fn`-param half of the #2773-hazard family, mirroring
+    /// [`lambda_param_own_annotation_re_bound_by_body_stays_clean`]: an
+    /// ordinary `fn` param's own written annotation must NOT be seeded onto
+    /// a *different* binding the body re-introduces via a fresh same-spelled
+    /// `let`. `infer::body::infer_def_body`'s `pass.locals` overlay used to
+    /// key on the stored type being `Unknown` — which can't distinguish "no
+    /// entry was ever written for this name" from "the re-bound temp's own
+    /// entry is legitimately `Unknown`" — so it clobbered the re-bound `x`
+    /// (a plain `int` copy of `y`) with the outer param's `Option<int>`
+    /// annotation, firing a false E116. Fixed to key on `contains_key`
+    /// instead, matching docs/typed-mode-spec.md §2's RULED #1912 firewall.
+    #[test]
+    fn fn_param_own_annotation_re_bound_by_body_stays_clean() {
+        let diags = check_all_native(
+            "fn heal(x: Option<int>, y: int): int {\n  let x = y;\n  if x {\n    return 0;\n  } else {\n    return 1;\n  }\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     /// The lambda-param half of issue #2782 — not lambda-specific in cause,
     /// but a separate fix site (`pruned_locals_for_lambda`) since a lambda
     /// has no `BodyTypes` entry of its own for the enclosing-def fix above
@@ -1310,6 +1329,23 @@ mod tests {
             "fn heal(x) {\n  let f = |r: Option<int>| {\n    let r = 5;\n    if r {\n      return 0;\n    } else {\n      return 1;\n    }\n  };\n  return 0;\n}\n",
         );
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// `pruned_locals_for_lambda` was changed from `Option<BTreeMap<..>>`
+    /// to a plain map specifically so a *file-scope* lambda — one whose
+    /// enclosing `ctx.locals` is itself `None`, e.g. this top-level `var`'s
+    /// default — stays classifiable from its own annotation. All the other
+    /// tests in this #2782 family nest the lambda inside a `fn` body,
+    /// exercising only the pruning path (`ctx.locals: Some(..)`); this pins
+    /// the `ctx.locals: None` path the pruning fix's `map_or_else` branch
+    /// covers, mirroring [`var_lambda_body_condition_on_option_is_e116`].
+    #[test]
+    fn var_lambda_own_annotation_option_condition_is_e116() {
+        let diags = check_all_native(
+            "var f = |x: Option<int>| {\n  if x {\n    0\n  } else {\n    1\n  }\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
     }
 
     /// The genuine capture case, pinned so the pruning fix above doesn't
