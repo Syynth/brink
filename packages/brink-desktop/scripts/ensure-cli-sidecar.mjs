@@ -46,7 +46,7 @@
 // preflight script is checked the moment it lands. Removing the guard line
 // below fails that scan as well as this script's own tests.
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { copyFileSync, chmodSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -327,10 +327,237 @@ export function ensureCliSidecar({
   return destBin;
 }
 
+// ---------------------------------------------------------------------------
+// Universal (lipo'd) macOS staging (#2715).
+//
+// #2708 (PR #2714) widened `canExecuteStagedSidecar` in assert-real-sidecar.mjs
+// to recognize a staged `universal-apple-darwin` triple as executable on a
+// real `x86_64-apple-darwin`/`aarch64-apple-darwin` host — but that branch
+// was DEAD CODE the moment it shipped: nothing anywhere in this repo ever
+// staged a sidecar under that triple. `ensureCliSidecar` above always
+// resolves its own default `triple` from `hostTriple()`, and even a caller
+// naming `triple: "universal-apple-darwin"` explicitly would only get a
+// mislabeled single-arch binary out of it — `ensureCliSidecar`'s `cargo
+// build` command has no `--target` flag, so it always builds for whatever
+// architecture this process is already running on and stages that under
+// whatever name it's told to, real or not. A universal sidecar is not "one
+// build labeled differently" — it is a fat Mach-O produced by `lipo`
+// combining two REAL, independently-built single-arch binaries. This
+// section is what performs that: build both Apple slices for real (each via
+// its own `--target`-scoped `cargo build`), then `lipo -create` them
+// together into `binaries/brink-cli-universal-apple-darwin`.
+
+/**
+ * The two real Apple single-arch triples a `universal-apple-darwin` sidecar
+ * is `lipo`'d from. Not `hostTriple()`'s output for either arch — `rustc -vV`
+ * never reports `universal-apple-darwin` as a `host:` value because there is
+ * no such rustc target to be the host of (see `canExecuteStagedSidecar`'s own
+ * doc comment in assert-real-sidecar.mjs) — these are the two real ones that
+ * exist to be built.
+ */
+export const UNIVERSAL_DARWIN_SLICE_TRIPLES = ["x86_64-apple-darwin", "aarch64-apple-darwin"];
+
+/**
+ * Run `lipo` and return its stdout. The single seam through which
+ * `stageUniversalCliSidecar` talks to the real Apple toolchain, so a test can
+ * drive the staging/combining logic without `lipo` on PATH — which it never
+ * is in this repo's Linux CI/dev containers; `lipo` is an Apple-toolchain
+ * binary. `execFileSync`, not `execSync`, for the same reason
+ * `defaultRunFile` in assert-real-sidecar.mjs uses it: every argument here is
+ * a real filesystem path, not a shell command line, so there is no quoting
+ * hazard to accept by going through a shell.
+ *
+ * `timeout`/`killSignal` are load-bearing, the same way they are on
+ * `defaultRunFile` in assert-real-sidecar.mjs (and the hazard class
+ * `scripts/check-scripts.mjs`'s `findUnboundedExecCalls` — #2697 — checks
+ * every `packages/*\/scripts/*.mjs` exec call for): an unbounded
+ * `execFileSync` here would hang this preflight forever if `lipo` ever
+ * wedged, with no diagnostic.
+ */
+export function defaultRunLipo(args, options = {}) {
+  return execFileSync("lipo", args, {
+    encoding: "utf8",
+    timeout: DEFAULT_EXEC_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+    ...options,
+  });
+}
+
+/**
+ * Where a `cargo build -p brink-cli --release --target <triple>` build
+ * lands. Distinct from `sidecarPaths`' `builtBin` (`<targetDir>/release/…`),
+ * which only ever describes a build run WITHOUT `--target` — `ensureCliSidecar`'s
+ * command. Passing `--target` moves cargo's output into a triple-scoped
+ * subdirectory, which is real cargo behavior, not a convention this script
+ * invents.
+ */
+function sliceBuiltBin({ targetDir, triple }) {
+  const exeSuffix = executableFormatFor(triple) === "pe" ? ".exe" : "";
+  return join(targetDir, triple, "release", `brink${exeSuffix}`);
+}
+
+/**
+ * Build one universal-build slice for real — `cargo build -p brink-cli
+ * --release --target <triple>`, explicitly cross/native-compiling for
+ * `triple` rather than reusing whatever architecture this process happens to
+ * be running on — and stage it under its own triple-suffixed sidecar name
+ * via the same `sidecarPaths` convention `ensureCliSidecar` uses, so nothing
+ * downstream (`assertRealSidecarStaged`, `canExecuteStagedSidecar`) needs a
+ * separate rule for a slice built this way.
+ */
+function buildAndStageSlice({ repoRoot, srcTauriDir, targetDir, runCommand, triple, log }) {
+  const { binariesDir, destBin } = sidecarPaths({ triple, repoRoot, srcTauriDir, targetDir });
+  mkdirSync(binariesDir, { recursive: true });
+
+  log(
+    `[ensure-cli-sidecar] cargo build -p brink-cli --release --target ${triple} ` +
+      "(root workspace, universal-build slice, #2715)",
+  );
+  runCommand(`cargo build -p brink-cli --release --target ${triple}`, {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+
+  const builtBin = sliceBuiltBin({ targetDir, triple });
+  if (!existsSync(builtBin)) {
+    throw new Error(
+      `[ensure-cli-sidecar] release build for the ${triple} universal-build slice did not ` +
+        `produce the expected binary at ${builtBin} (#2715) — is \`rustup target add ${triple}\` ` +
+        "installed?",
+    );
+  }
+
+  copyFileSync(builtBin, destBin);
+  chmodSync(destBin, 0o755);
+  log(`[ensure-cli-sidecar] staged universal-build slice ${triple} at ${destBin}`);
+  return destBin;
+}
+
+/**
+ * Build both Apple slices and `lipo` them together into one
+ * `binaries/brink-cli-universal-apple-darwin` sidecar (#2715) — the staging
+ * mechanism #2708's widened `canExecuteStagedSidecar` branch had no path to
+ * ever reach, because nothing produced a file under that triple at all.
+ * Returns the staged universal binary's path.
+ *
+ * `stub` (default: `BRINK_SIDECAR_STUB=1`, matching `ensureCliSidecar`'s own
+ * default) skips both the slice builds and `lipo` entirely: a stub lane's
+ * whole point is running without a real toolchain, and there is no real
+ * Mach-O slice to combine without one. It delegates to `ensureCliSidecar({
+ * triple, stub: true, … })`, which already knows how to stage
+ * `STUB_SIDECAR` under an arbitrary triple-suffixed name — no second
+ * stub-staging code path is written here.
+ *
+ * It stages THREE files this way, not one (#2715 review): `tauri_build::build()`
+ * resolves `bundle.externalBin` against the per-arch `TARGET` during EACH of
+ * the two cargo passes a universal build runs, not only against the final
+ * `universal-apple-darwin` name — so a stub lane that staged only the
+ * universal file would still die partway through a universal build at the
+ * exact unreachability #2715 was filed about, just one step later. Staging
+ * both `sliceTriples` names plus `universal-apple-darwin` covers every
+ * triple `tauri_build` could probe for this target.
+ *
+ * The non-stub path cannot be exercised end-to-end outside a real macOS host
+ * with Xcode's command line tools installed (`lipo` and the
+ * `x86_64-apple-darwin`/`aarch64-apple-darwin` rustc targets) — this repo's
+ * CI/dev containers are Linux. `runCommand`/`runLipo` are both injectable
+ * seams precisely so the staging/combining LOGIC (which slices get built,
+ * what `lipo` is invoked with, where the result lands) can be driven and
+ * tested without that toolchain; see `stage-universal-cli-sidecar.test.ts`'s
+ * own disclosure of exactly what it does and does not prove.
+ */
+export function stageUniversalCliSidecar({
+  repoRoot = defaultRepoRoot,
+  srcTauriDir = defaultSrcTauriDir,
+  targetDir = process.env.CARGO_TARGET_DIR ?? join(repoRoot, "target"),
+  runCommand = defaultRunCommand,
+  runLipo = defaultRunLipo,
+  log = console.log,
+  stub = process.env.BRINK_SIDECAR_STUB === "1",
+  sliceTriples = UNIVERSAL_DARWIN_SLICE_TRIPLES,
+} = {}) {
+  const universalTriple = "universal-apple-darwin";
+
+  if (stub) {
+    log(
+      "[ensure-cli-sidecar] stub requested for a universal build — staging the stub under " +
+        `both slice triples and ${universalTriple}, no real slice builds or lipo needed (#2715)`,
+    );
+    let universalStubDest = "";
+    for (const triple of [...sliceTriples, universalTriple]) {
+      universalStubDest = ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        targetDir,
+        runCommand,
+        log,
+        stub: true,
+        triple,
+      });
+    }
+    return universalStubDest;
+  }
+
+  const slicePaths = sliceTriples.map((triple) =>
+    buildAndStageSlice({ repoRoot, srcTauriDir, targetDir, runCommand, triple, log }),
+  );
+
+  const { binariesDir, destBin } = sidecarPaths({
+    triple: universalTriple,
+    repoRoot,
+    srcTauriDir,
+    targetDir,
+  });
+  mkdirSync(binariesDir, { recursive: true });
+
+  log(`[ensure-cli-sidecar] lipo -create -output ${destBin} ${slicePaths.join(" ")}`);
+  try {
+    runLipo(["-create", "-output", destBin, ...slicePaths]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[ensure-cli-sidecar] \`lipo -create\` failed combining ${slicePaths.join(" and ")} into ` +
+        `${destBin} (#2715): ${message}. lipo is an Apple-toolchain binary — this staging step ` +
+        "must run on a real macOS host with Xcode command line tools installed.",
+      { cause: error },
+    );
+  }
+
+  if (!existsSync(destBin)) {
+    throw new Error(
+      `[ensure-cli-sidecar] lipo reported success but ${destBin} does not exist (#2715)`,
+    );
+  }
+
+  chmodSync(destBin, 0o755);
+  log(
+    `[ensure-cli-sidecar] staged universal sidecar at ${destBin} ` +
+      `(slices: ${sliceTriples.join(", ")}) (#2715)`,
+  );
+  return destBin;
+}
+
 // Main-guard: `node scripts/ensure-cli-sidecar.mjs` (what the `dev` and
 // `build` package scripts and the smoke lane's "Stage brink-cli sidecar"
 // step run) still does the whole job, while `import`ing this module does
 // nothing but hand over the functions.
+//
+// The dispatch below is the other half of #2715's fix: `pnpm build` is
+// tauri.conf.json's `beforeBuildCommand`, and tauri-cli sets
+// `TAURI_ENV_TARGET_TRIPLE` in that hook's environment to the `--target`
+// the build was invoked with — for `tauri build --target
+// universal-apple-darwin` that value IS the literal string
+// `"universal-apple-darwin"`, the same env var `assertRealSidecarStaged` in
+// assert-real-sidecar.mjs already reads for its own default triple (#2687).
+// Before this, this script never consulted that env var at all — its
+// default `triple` came only from `hostTriple()` — so a universal build's
+// `beforeBuildCommand` always staged a single-arch, host-triple-suffixed
+// sidecar no matter what `--target` was requested, and
+// `stageUniversalCliSidecar` had no caller.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  ensureCliSidecar();
+  if (process.env.TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin") {
+    stageUniversalCliSidecar();
+  } else {
+    ensureCliSidecar();
+  }
 }
