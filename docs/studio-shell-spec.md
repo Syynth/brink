@@ -727,6 +727,79 @@ before the act under test, exactly as `binder-seed-race.test.tsx` does.
 Rule 1 ("seed synchronously at mount") still has no structural enforcement of
 its own; #2571 tracks the design for a companion guard.
 
+#### 7.7.2 Deferred focus-timer teardown (invariant)
+
+§7.7.1 rule 2 governs *whether* a deferred call is allowed to touch the
+selection; this rule governs a related but separate hazard: a deferred
+`focus()` call that a teardown path does not, in fact, tear down. "Deferring
+`focus()` is harmless" (rule 2) is true only while the callback that eventually
+runs is a bare `focus()` on a node that is either still live or has already
+been detached before the callback fires — the harm §7.7.1 rules out is a
+`focus()`/`select()` racing a keystroke, not a `focus()` firing after its
+owning controller believes it has been torn down. #2557 found that gap: a
+`setTimeout(…, 0)` handle that is never assigned to a field cannot be
+cancelled by `dispose()`/`stop()`/`destroy()`, however completely that method
+otherwise "tears them all down."
+
+The rule: **every deferred `setTimeout(…, 0)` that exists only to run
+`focus()` (or an equivalent, e.g. a popover's own `onClose`-adjacent hook)
+after a widget mounts must store its handle on a field (or closure-local
+variable) and cancel it — via `clearTimeout`, guarded by a `!== null` check —
+in two places, not one:
+
+1. **Before re-assigning the field**, if the same controller instance can
+   schedule a second such timer while an earlier one from the same field is
+   still pending (e.g. a badge refresh re-opening an already-open report, or a
+   host re-invoking `render()`/`toDOM()` on the same instance before the first
+   timer fires). Skipping this clear-before-set step orphans the first handle:
+   the field now points only at the second, so the eventual `dispose()` call
+   can cancel only the second one, and the first is stranded with no code path
+   left that references its ID.
+2. **In the teardown method itself** (`dispose()` / `stop()` / `destroy()`),
+   so a handle that is still pending when the controller is torn down never
+   fires after teardown at all.
+
+Both steps are required; each covers a failure the other does not. Skipping
+(1) leaks the pattern back into an already-torn-down instance the moment a
+second timer is scheduled before the first resolves. Skipping (2) leaks
+whenever teardown itself is the event that ends the widget's life, which is
+the common case.
+
+**Enrolled sites (#2557 / #2558).** Four deferred post-mount/post-close focus
+timers carry this pattern, each independently confirmed to transfer rather
+than assumed by analogy:
+
+- `packages/ink-editor/src/inline-name-input.ts` — `InlineNameInput`'s two
+  sites: `render()`'s post-mount `focusTimer` (`this.focusTimer`, guarded
+  against a second `render()` call and cancelled in `dispose()`) and
+  `renderReport()`'s force-button `forceFocusTimer` (guarded against a badge
+  refresh re-opening the already-open report, and likewise cancelled in
+  `dispose()`).
+- `packages/ink-editor/src/extract-actions.ts` — `ExtractPrompt`'s `stop()`
+  deferred `view.focus()`, cancelled in `destroy()`.
+- `packages/ink-editor/src/rename.ts` — `InlineRename`'s `stop()` deferred
+  `view.focus()` (the same shape as `extract-actions.ts`, found while fixing
+  #2558 in the same file), cancelled in `destroy()`.
+- `packages/ink-editor/src/argument-widgets.ts` — `openValuePicker`'s
+  post-mount filter-input focus timer, held in a closure-local `let` (there is
+  no controller instance to hang a field off) and cancelled in `openPopover`'s
+  `onClose` callback, the dispose-equivalent hook for a popover.
+
+Not every deferred `setTimeout` in the package is in scope: one in
+`argument-widgets.ts` (inside the auto-open `updateListener`, ~line 1042)
+does non-focus-shaped work (a `view.dispatch` plus a follow-up call) and was
+deliberately left alone — the pattern above is specific to bare
+focus-on-mount/focus-on-close timers, not a blanket rule about every deferred
+callback in the file.
+
+`InlineNameInput`'s two sites are pinned by
+`packages/brink-studio/src/__tests__/inline-name-input-seed.test.ts`: fake
+timers, a spy on `HTMLInputElement.prototype.focus` (`render()`'s site) and
+`HTMLButtonElement.prototype.focus` (`renderReport()`'s site), a second
+call that would orphan the first handle absent the clear-before-set guard,
+teardown via `dispose()`, then `vi.runAllTimers()` asserting the spy was
+never called.
+
 ### 7.8 Editor groups & the document-type API
 
 The editor area's counterpart to §7.1: the shell owns document *structure*

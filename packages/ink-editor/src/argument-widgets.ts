@@ -590,6 +590,9 @@ function openValuePicker(
   onPick: (value: string) => void,
 ): void {
   let popover: { close(): void } | null = null;
+  // Handle for the post-mount filter-focus `setTimeout(..., 0)` below,
+  // cleared on close so it can't fire after teardown (#2557 sibling site).
+  let focusTimer: ReturnType<typeof setTimeout> | null = null;
   popover = openPopover(
     anchor,
     (container) => {
@@ -640,9 +643,17 @@ function openValuePicker(
       render("");
       root.append(filter, list);
       container.appendChild(root);
-      setTimeout(() => filter.focus(), 0);
+      focusTimer = setTimeout(() => {
+        focusTimer = null;
+        filter.focus();
+      }, 0);
     },
-    () => {},
+    () => {
+      if (focusTimer !== null) {
+        clearTimeout(focusTimer);
+        focusTimer = null;
+      }
+    },
   );
 }
 
