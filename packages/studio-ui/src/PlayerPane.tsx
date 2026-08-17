@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   EDITOR_MAXIMIZE_GROUP_COMMAND_ID,
+  documentKey,
+  findTab,
   useEditorGroups,
   useShell,
   type CommandRegistry,
@@ -30,9 +32,22 @@ export function playerRef(): DocumentRef {
 }
 
 /**
- * Register `story.openPlayer` (palette: "Story: Open Player", no default
- * keybinding). Opens pinned into the focused group; the groups store's
- * reveal policy focuses an existing tab wherever it lives.
+ * Register `story.openPlayer` (palette: "Story: Open Player" — also reachable
+ * from the hamburger menu's "Story" group, since it carries no `when` gate).
+ * A plain open reveals an existing tab wherever it lives (the groups store's
+ * reveal policy).
+ *
+ * #280: closing the player tab collapses its split back down to one group
+ * (`closeTab`'s last-tab-in-a-group behavior). If the player is closed *and*
+ * the editor area is down to one group that still holds other content (the
+ * split collapsed, leaving the entry file behind — not a brand new, still-
+ * empty editor area with nothing open yet), reopening restores the
+ * fresh-load layout (the Inky two-up, `openPlayerSplit` below) instead of
+ * dropping the tab into whatever the focused group happens to hold. Once
+ * another split already exists (or the lone group is genuinely empty —
+ * nothing has been opened at all) there is no "missing" split layout to
+ * restore, so it falls through to the normal reveal/open-in-focused-group
+ * policy untouched.
  */
 export function registerOpenPlayerCommand(
   commands: CommandRegistry,
@@ -41,8 +56,17 @@ export function registerOpenPlayerCommand(
   return commands.register({
     id: OPEN_PLAYER_COMMAND_ID,
     title: "Story: Open Player",
-    run: () =>
-      editorGroups.getState().openDocument(playerRef(), { pinned: true }),
+    run: () => {
+      const state = editorGroups.getState();
+      const isOpen = findTab(state.groups, documentKey(playerRef())) !== null;
+      const collapsedToSingleNonEmptyGroup =
+        state.groups.length === 1 && state.groups[0].tabs.length > 0;
+      if (!isOpen && collapsedToSingleNonEmptyGroup) {
+        openPlayerSplit(editorGroups);
+        return;
+      }
+      editorGroups.getState().openDocument(playerRef(), { pinned: true });
+    },
   });
 }
 

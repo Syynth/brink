@@ -1070,19 +1070,24 @@ fn lambda_param_generic_annotation_surface() {
 
 /// Negative control, pinning the *other* half of #2775's determination:
 /// `[…]` is not a valid type-argument delimiter in lambda-param, `fn`-param,
-/// or `fn`-return position (reserved for array literals, `[1, 2, 3]`,
-/// #1490) — it fails identically across those three. This is why the fix
-/// is documentation, not parser acceptance of `[…]`: widening only the
-/// lambda position would make it the one place `[…]` silently meant
-/// something, instead of consistently meaning nothing.
+/// `fn`-return, or `var`/`const` annotation position (reserved for array
+/// literals, `[1, 2, 3]`, #1490) — it fails identically across all four.
+/// This is why the fix is documentation, not parser acceptance of `[…]`:
+/// widening only one position would make it the one place `[…]` silently
+/// meant something, instead of consistently meaning nothing.
 ///
-/// This does NOT cover `var`/`const` position: `var x: Option[int] = none`
-/// does not error at all — it silently parses the bare `Option` and
-/// reinterprets the trailing `[int] = none` as an unrelated `CONTENT_LINE`
-/// (recorded in the PR body's "Scope found beyond this issue" section as a
-/// real gap, deliberately left unfixed here since it's outside #2775's
-/// parser-only fence). Fixing that quirk would not flip this test, since
-/// this test never asserted anything about `var`/`const`.
+/// `var`/`const` position was carved out here at #2775 time: `var x:
+/// Option[int] = none` produced **zero** diagnostics — it silently parsed
+/// the bare `Option` and reinterpreted the trailing `[int] = none` as an
+/// unrelated `CONTENT_LINE` (recorded in that PR body's "Scope found beyond
+/// this issue" section as a real gap, deliberately left unfixed there since
+/// it was outside #2775's parser-only fence). Issue #2781 closed that gap —
+/// `var`/`const` now fails loudly here too, so the carve-out no longer
+/// applies; the dedicated regression tests for the exact diagnostic text
+/// live in `declaration.rs`
+/// (`var_decl_square_bracket_after_type_name_fails_loudly_instead_of_dropping_to_content`
+/// / the `const` sibling next to it) — this test only checks that *some*
+/// error fires here, matching the `fn`-param/`fn`-return style below.
 ///
 /// The lambda case additionally pins the exact diagnostic shape (rather
 /// than just "some error fired") so a regression to an unrelated failure
@@ -1103,6 +1108,12 @@ fn lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return
 
     let fn_return = parse("fn f(): Option[int] { none }\n");
     assert!(!fn_return.errors().is_empty());
+
+    let var_decl = parse("var x: Option[int] = none\n");
+    assert!(!var_decl.errors().is_empty());
+
+    let const_decl = parse("const MAX: Option[int] = none\n");
+    assert!(!const_decl.errors().is_empty());
 }
 
 #[test]
