@@ -890,6 +890,35 @@ follow the same pattern: whatever state they need, they own.
 groups reset on reload — future work), nested grids, and horizontal splits.
 Vertical columns only.
 
+#### 7.8.1 `documentKey()` identity encoding (invariant)
+
+The "open at most once" policy above and every activeKey/tab-match comparison
+in `editor-groups.ts`, `editor-area.tsx`, and `tab-drag.ts` rest entirely on
+`documentKey(ref)` producing the same string for the same document and a
+different string for any other — `packages/studio-shell/src/document.ts`'s
+`DocumentRef` identity function. The encoding is:
+
+```ts
+documentKey(ref) = JSON.stringify([ref.typeId, ref.docId]);
+```
+
+`JSON.stringify` of a fixed 2-element array is injective — `JSON.parse`
+recovers the exact two original values, so two distinct `(typeId, docId)`
+pairs can never serialize to the same string, regardless of what characters
+either field contains (JSON escapes them, including any embedded NUL). This
+replaced an earlier NUL-byte-separated template literal (`` `${typeId}\x00${docId}` ``)
+that carried the same defect class #2558 fixed in `ink-editor/src/rename.ts`
+(#2733, #2737): a literal NUL byte makes the file register as binary to
+`grep`/`rg` without `-a`, silently hiding every match in it — including
+`documentKey()`'s own definition — from a repo-wide sweep. Guarded
+repo-wide, not just here, by `scripts/check-no-nul-bytes.mjs` (CLAUDE.md
+"Rules").
+
+`documentKey()`'s output is **in-memory identity only** — it is never
+persisted. `LayoutSnapshot` (`layout-persistence.ts`) carries no tab keys, so
+the key's shape can change freely across releases with no migration
+concern; only same-session `===` comparisons depend on it.
+
 ## 8. Embedder extension API
 
 brink-studio is embedded programmatically (the embedded playground today; RPG Maker MZ
