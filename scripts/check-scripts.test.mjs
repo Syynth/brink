@@ -41,6 +41,7 @@ import {
   checkPackageScriptPath,
   checkScripts,
   commandHead,
+  discoverNodeOrBashScriptNames,
   discoverPackageScriptSources,
   discoverShellScripts,
   discoverShellSources,
@@ -1321,7 +1322,7 @@ describe("checkPackageScriptPath — the #2688 gap 2 self-consistency check", ()
       JSON.stringify({ scripts: { "check:scripts": "node scripts/check-scripts.mjs --strict" } }),
     );
     assert.equal(result.ok, false);
-    assert.match(result.problems.join("\n"), /not a bare `node <path>` invocation/);
+    assert.match(result.problems.join("\n"), /not a bare `node <path>` \/ `bash <path>` invocation/);
   });
 
   it("respects a custom scriptName option", () => {
@@ -1362,6 +1363,53 @@ describe("checkPackageScriptPath — the REAL root package.json", () => {
     assert.match(result.problems.join("\n"), /check-setup-dev\.mjs.*does not exist on disk/s);
   });
 
+  it("discovers every node/bash <path> sibling, not just check:scripts (#2702 review)", () => {
+    const names = discoverNodeOrBashScriptNames(realPackageJson);
+    for (const expected of [
+      "check:pnpm-pin",
+      "check:scripts",
+      "check:wasm-pkg",
+      "install:checked",
+      "test:setup-dev",
+      "test:refresh-lockfiles",
+    ]) {
+      assert.equal(names.includes(expected), true, `expected ${expected} in ${JSON.stringify(names)}`);
+    }
+    // Sorted, for deterministic output — this module's own discipline.
+    assert.deepEqual([...names].sort(), names);
+  });
+
+  it("skips scripts.json entries in a shape this check cannot resolve (e.g. `vitest run`)", () => {
+    const names = discoverNodeOrBashScriptNames(
+      JSON.stringify({ scripts: { test: "vitest run", "check:scripts": "node scripts/check-scripts.mjs" } }),
+    );
+    assert.deepEqual(names, ["check:scripts"]);
+  });
+
+  // Non-vacuity for the sibling enumeration gap itself (#2702 review): a
+  // renamed `test:refresh-lockfiles` — the exact scenario named in the
+  // review, since this PR wires that script into ci.yml by name — must be
+  // caught by checkPackageScriptPath once discovered, not silently passed
+  // because only "check:scripts" was ever hardcoded.
+  it("catches a renamed test:refresh-lockfiles sibling once discovered", () => {
+    const desynced = realPackageJson.replace(
+      '"test:refresh-lockfiles": "bash scripts/refresh-excluded-lockfiles.test.sh"',
+      '"test:refresh-lockfiles": "bash scripts/does-not-exist.test.sh"',
+    );
+    assert.notEqual(
+      desynced,
+      realPackageJson,
+      "the real package.json must still name refresh-excluded-lockfiles.test.sh",
+    );
+
+    const names = discoverNodeOrBashScriptNames(desynced);
+    assert.equal(names.includes("test:refresh-lockfiles"), true);
+
+    const result = checkPackageScriptPath(desynced, { scriptName: "test:refresh-lockfiles" });
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /does-not-exist\.test\.sh.*does not exist on disk/s);
+  });
+
   it("is wired into checkScripts() end-to-end", () => {
     // Same non-vacuity proof, through the aggregate entry point rather than
     // the unit function, over a REAL temp checkout so `checkScripts`'s own
@@ -1389,6 +1437,42 @@ describe("checkPackageScriptPath — the REAL root package.json", () => {
         result.problems.join("\n"),
         /does-not-exist\.mjs.*does not exist on disk/s,
         `expected checkScripts() to surface the planted package.json drift; problems: ${JSON.stringify(result.problems)}`,
+      );
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("catches a sibling drift through checkScripts() end-to-end, not only check:scripts (#2702 review)", () => {
+    // Same shape as the test above, but the PLANTED drift is on a sibling
+    // ("test:refresh-lockfiles") while "check:scripts" itself stays healthy
+    // — proving checkScripts() enumerates every node/bash <path> script
+    // rather than only ever looking at the one hardcoded name.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "check-scripts-pkg-sibling-"));
+    try {
+      mkdirSync(join(tmpRoot, "scripts"), { recursive: true });
+      writeFileSync(join(tmpRoot, "scripts", "check-scripts.mjs"), "// stub\n");
+      writeFileSync(
+        join(tmpRoot, "package.json"),
+        JSON.stringify({
+          scripts: {
+            "check:scripts": "node scripts/check-scripts.mjs",
+            "test:refresh-lockfiles": "bash scripts/does-not-exist.test.sh",
+          },
+        }),
+      );
+      writeFileSync(join(tmpRoot, "scripts", "setup-dev.sh"), "#!/usr/bin/env bash\n");
+      for (const doc of POINTER_DOCS) {
+        mkdirSync(join(tmpRoot, doc.path, ".."), { recursive: true });
+        writeFileSync(join(tmpRoot, doc.path), "no pointer here");
+      }
+
+      const result = checkScripts({ repoRoot: tmpRoot });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.problems.join("\n"),
+        /test:refresh-lockfiles.*does-not-exist\.test\.sh.*does not exist on disk/s,
+        `expected checkScripts() to surface the planted sibling drift; problems: ${JSON.stringify(result.problems)}`,
       );
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
@@ -1506,8 +1590,23 @@ describe("findUnboundedExecCalls — planted red and green, one per shape (#2697
 });
 
 describe("EXEC_CALL_NAMES / discoverPackageScriptSources (#2697)", () => {
-  it("names exactly execSync and spawnSync", () => {
-    assert.deepEqual([...EXEC_CALL_NAMES].sort(), ["execSync", "spawnSync"]);
+  it("names all six node:child_process spawn APIs (#2702 review)", () => {
+    assert.deepEqual(
+      [...EXEC_CALL_NAMES].sort(),
+      ["exec", "execFile", "execFileSync", "execSync", "spawn", "spawnSync"],
+    );
+  });
+
+  it("catches an unbounded execFileSync call (previously invisible — #2702 review)", () => {
+    const result = findUnboundedExecCalls('execFileSync("cargo", ["build"]);', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execFileSync/);
+  });
+
+  it("catches unbounded async exec/spawn calls (previously invisible — #2702 review)", () => {
+    const result = findUnboundedExecCalls('exec("a");\nspawn("b");', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.equal(result.findings.length, 2);
   });
 
   it("discovers the real packages/*/scripts/*.mjs sources, non-recursively", () => {

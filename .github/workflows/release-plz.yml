@@ -49,6 +49,12 @@ jobs:
       group: release-plz-release
     # Hard backstop against the 360-minute Actions default (#2697):
     # `cargo publish`'s per-crate verification build across the workspace.
+    # Measured against the most recent real multi-crate publish (PR #2702
+    # review): run 29133014255 / job 86491927716 (2026-07-11, ~15
+    # publishable crates bumped together) — the `release-plz release` step
+    # took 3m30s, the whole job 4m12s wall. 30 keeps ~7x headroom over that
+    # measured run; revisit if bevy-brink's verification build (added since)
+    # meaningfully changes the picture.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -90,7 +96,13 @@ jobs:
       cancel-in-progress: false
     # Hard backstop against the 360-minute Actions default (#2697): the
     # version bump plus the excluded-lockfile refresh's git operations.
-    timeout-minutes: 15
+    # Measured against the three most recent completed push runs (PR #2702
+    # review): 17m04s (run 31982389154 / job 95251383535, merge-base
+    # c69ec52), 17m31s (run 31981219991 / job 95248215707), 13m34s (run
+    # 31979594517 / job 95244146760) — two of three already over the old
+    # 15m cap, with the `release-plz release-pr` step alone at
+    # 16m24s/17m00s. 45 keeps real headroom above the worst measured run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

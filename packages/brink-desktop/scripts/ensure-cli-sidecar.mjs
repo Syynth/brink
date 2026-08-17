@@ -57,10 +57,10 @@ const defaultSrcTauriDir = resolve(here, "..", "src-tauri");
 
 /**
  * Default bound for every command this module shells out to (#2697), matching
- * `ensure-wasm.mjs`'s identical `DEFAULT_EXEC_TIMEOUT_MS` (that module's own
- * doc comment explains the hazard: an unbounded `execSync` on this same
+ * `ensure-wasm.mjs`'s `DEFAULT_EXEC_TIMEOUT_MS` (that module's own doc
+ * comment explains the hazard: an unbounded `execSync` on this same
  * `pnpm --filter @brink/desktop dev` preflight path hangs forever on a
- * wedged proxy/toolchain fetch, with no diagnostic). 20 minutes here, not 10:
+ * wedged proxy/toolchain fetch, with no diagnostic). 20 minutes here:
  * `hostTriple`'s `rustc -vV` is near-instant, but `ensureCliSidecar`'s
  * `cargo build -p brink-cli --release` is a real release build of the whole
  * crate's dependency graph, so the single default this module bakes in has
@@ -68,16 +68,49 @@ const defaultSrcTauriDir = resolve(here, "..", "src-tauri");
  * through it. Baked into `defaultRunCommand`'s own `execSync` call (before
  * `...options`) rather than into each call site — a caller can still
  * override it by spreading its own `timeout` in afterward.
+ *
+ * Overridable via BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS (#2702 review),
+ * matching scripts/setup-dev.sh's BRINK_SETUP_*_TIMEOUT convention one
+ * language over (milliseconds here, not seconds, matching `execSync`'s own
+ * `timeout` option's unit):
+ *
+ *   Knob                                   Default              On timeout
+ *   ---------------------------------------------------------------------
+ *   BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS    20 * 60 * 1000 (20m)  FAIL —
+ *                                                         `defaultRunCommand`
+ *                                                         rethrows a
+ *                                                         diagnostic naming
+ *                                                         the bound and this
+ *                                                         env var.
  */
-export const DEFAULT_EXEC_TIMEOUT_MS = 20 * 60 * 1000;
+export const DEFAULT_EXEC_TIMEOUT_MS = Number(process.env.BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS) || 20 * 60 * 1000;
 
 /**
  * Run a command and capture its stdout. The single seam through which this
  * module talks to `rustc`/`cargo`, so a caller can drive the staging logic
  * without a toolchain.
+ *
+ * On a timeout (the `execSync` `timeout` option firing — Node kills the
+ * child and throws with `.killed === true`), rethrows with a house-style
+ * diagnostic naming the bound and the env var to raise (#2702 review): a
+ * bare `Error: Command failed: cargo build …` left a developer with no
+ * indication this was a bound firing rather than a real build failure.
  */
-function defaultRunCommand(command, options = {}) {
-  return execSync(command, { encoding: "utf8", timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });
+export function defaultRunCommand(command, options = {}) {
+  try {
+    return execSync(command, { encoding: "utf8", timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });
+  } catch (error) {
+    if (error && error.killed) {
+      const effectiveTimeout = options.timeout ?? DEFAULT_EXEC_TIMEOUT_MS;
+      throw new Error(
+        `[ensure-cli-sidecar] ✗ \`${command}\` TIMED OUT after ${effectiveTimeout}ms — likely a stalled ` +
+          `proxy/toolchain fetch, or a slow cold \`cargo build -p brink-cli --release\` of the whole ` +
+          `dependency graph. Retry when network is stable, or raise BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 /**

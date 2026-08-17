@@ -16,6 +16,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_EXEC_TIMEOUT_MS,
+  defaultRunCommand,
   ensureCliSidecar,
   executableFormatFor,
   hostTriple,
@@ -440,6 +442,40 @@ describe("the stub option", () => {
         process.env.BRINK_SIDECAR_STUB = original;
       }
     }
+  });
+});
+
+describe("defaultRunCommand — timeout diagnostic (#2702 review)", () => {
+  // POSIX-only: `sleep` isn't a bare command on Windows the way it is here,
+  // and the desktop lanes this guards are ubuntu/macOS.
+  it.skipIf(process.platform === "win32")(
+    "rethrows a house-style diagnostic naming the bound and BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS, not a bare execSync error",
+    () => {
+      expect(() => defaultRunCommand("sleep 5", { timeout: 30 })).toThrow(
+        /TIMED OUT after 30ms.*BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS/s,
+      );
+    },
+  );
+
+  it("has a sane default when BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS is unset", () => {
+    expect(DEFAULT_EXEC_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it("BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS overrides the module default (#2702 review)", () => {
+    // DEFAULT_EXEC_TIMEOUT_MS is read once at module-load time from
+    // process.env, so proving the override works means importing it in a
+    // FRESH process with the env var already set, not re-importing in this
+    // one (ESM modules cache by specifier).
+    const scriptPath = resolve(
+      fileURLToPath(import.meta.url),
+      "../../../scripts/ensure-cli-sidecar.mjs",
+    );
+    const source = `const m = await import(${JSON.stringify(pathToFileURL(scriptPath).href)}); console.log(m.DEFAULT_EXEC_TIMEOUT_MS);`;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: scratch(), BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS: "5678" },
+    });
+    expect(output.trim()).toBe("5678");
   });
 });
 

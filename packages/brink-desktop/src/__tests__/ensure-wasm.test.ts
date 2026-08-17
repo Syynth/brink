@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureWasm, newestSource } from "../../scripts/ensure-wasm.mjs";
+import { DEFAULT_EXEC_TIMEOUT_MS, defaultRunCommand, ensureWasm, newestSource } from "../../scripts/ensure-wasm.mjs";
 
 // `ensure-wasm.mjs` was top-level imperative script code until #2468 — the
 // structurally parallel sibling of `ensure-cli-sidecar.mjs` (given the same
@@ -201,6 +201,37 @@ describe("ensureWasm", () => {
 
     expect(rebuilt).toBe(false);
     expect(commands).toEqual([]);
+  });
+});
+
+describe("defaultRunCommand — timeout diagnostic (#2702 review)", () => {
+  // POSIX-only: `sleep` isn't a bare command on Windows the way it is here,
+  // and the desktop lanes this guards are ubuntu/macOS.
+  it.skipIf(process.platform === "win32")(
+    "rethrows a house-style diagnostic naming the bound and BRINK_ENSURE_WASM_TIMEOUT_MS, not a bare execSync error",
+    () => {
+      expect(() => defaultRunCommand("sleep 5", { timeout: 30 })).toThrow(
+        /TIMED OUT after 30ms.*BRINK_ENSURE_WASM_TIMEOUT_MS/s,
+      );
+    },
+  );
+
+  it("has a sane default when BRINK_ENSURE_WASM_TIMEOUT_MS is unset", () => {
+    expect(DEFAULT_EXEC_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it("BRINK_ENSURE_WASM_TIMEOUT_MS overrides the module default (#2702 review)", () => {
+    // DEFAULT_EXEC_TIMEOUT_MS is read once at module-load time from
+    // process.env, so proving the override works means importing it in a
+    // FRESH process with the env var already set, not re-importing in this
+    // one (ESM modules cache by specifier).
+    const scriptPath = resolve(fileURLToPath(import.meta.url), "../../../scripts/ensure-wasm.mjs");
+    const source = `const m = await import(${JSON.stringify(pathToFileURL(scriptPath).href)}); console.log(m.DEFAULT_EXEC_TIMEOUT_MS);`;
+    const output = execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: scratch(), BRINK_ENSURE_WASM_TIMEOUT_MS: "1234" },
+    });
+    expect(output.trim()).toBe("1234");
   });
 });
 
