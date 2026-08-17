@@ -33,6 +33,16 @@ name: Desktop bundle smoke
 # runner-cost question `docs/desktop-shell-spec.md` "CI coverage blind
 # spots" already declines to rule on for the file-association surface — not
 # decided here either.
+#
+# ⚠ Deliberately NOT `--locked`, unlike desktop-smoke.yml's own cargo steps:
+# this lane's cargo builds (the root workspace's `cargo build -p brink-cli
+# --release` via ensure-cli-sidecar.mjs, and src-tauri's own debug build,
+# both driven through `pnpm tauri build`) have no plumbed passthrough for
+# extra cargo flags on this Tauri CLI version. This lane is NOT the
+# lock-staleness gate for `packages/brink-desktop/src-tauri/Cargo.lock` —
+# desktop-smoke.yml's `--locked` cargo steps (see its own ⚠ block) remain
+# the lane that catches that lockfile drifting stale; this one only proves
+# the bundle builds and runs.
 on:
   push:
     branches: [main]

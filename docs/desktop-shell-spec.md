@@ -663,21 +663,25 @@ inert-on-import and still-acts-standalone properties, the same shape
 `ensure-cli-sidecar.test.ts` uses for the script it imports `STUB_SIDECAR`
 from.
 
-**Deliberately inert by default, not a gap.** No CI lane and no documented
-developer command invokes `tauri build` (grepped at the time of #2631: only
+**Deliberately inert by default, not a gap.** No documented developer
+command invokes `tauri build` (grepped at the time of #2631: only
 `pnpm --filter @brink/desktop dev`/`build` exist, neither of which reaches
-tauri-cli's bundler) — so the hook does not fire in the ordinary course of
-things, by design. But its firing condition is not simply "`bundle.active`
-flips to `true`": tauri-cli enters its bundling phase (and therefore runs
-this hook) on `!options.no_bundle && (config.bundle.active ||
-options.bundles.is_some())`, so an explicit `tauri build --bundles
-<target>` / `-b <target>` already fires it **today**, with `bundle.active`
-still `false` — D3 flipping `bundle.active` to `true` only widens which
-invocation reaches it (the *default*, bundle-less `tauri build` starts
-doing so too); it is not the sole door. No CI lane or documented command
-invokes either door — but an ad-hoc `--bundles` invocation reaches the hook
-today, as #2687's observation (below) did; that is a narrower claim than
-"unreachable."
+tauri-cli's bundler), and the *default*, bundle-less `tauri build` still
+does not reach this hook until D3 flips `bundle.active` — so the hook does
+not fire in the ordinary course of a developer's workflow, by design. But
+its firing condition is not simply "`bundle.active` flips to `true`":
+tauri-cli enters its bundling phase (and therefore runs this hook) on
+`!options.no_bundle && (config.bundle.active || options.bundles.is_some())`,
+so an explicit `tauri build --bundles <target>` / `-b <target>` already
+fires it **today**, with `bundle.active` still `false` — D3 flipping
+`bundle.active` to `true` only widens which invocation reaches it (the
+*default*, bundle-less `tauri build` starts doing so too); it is not the
+sole door. `.github/workflows/desktop-bundle-smoke.yml` (#2709, below) is
+the one CI lane that walks through the `--bundles` door today, deliberately
+and on every relevant change — no CI lane or documented command walks
+through the *default* door until D3 — but an ad-hoc `--bundles` invocation
+(and now that lane) reaches the hook today, as #2687's observation (below)
+did; that is a narrower claim than "unreachable."
 `before_bundle_command_asserts_the_staged_sidecar_is_real` pins that
 `bundle.active` stays `false` here specifically so a later, unrelated PR
 that does flip it does not silently change what this hook's presence means
@@ -686,8 +690,10 @@ once D3 makes it legitimately `true`.
 
 **The firing point is OBSERVED, not inferred (#2687).** Up to and including
 #2660 it rested on Tauri's documented ordering plus a reading of tauri-cli
-2.11.4's source; nothing in-repo invokes `tauri build`, so nobody had watched
-it happen. It has now been watched, three times, by driving a real
+2.11.4's source; at that point nothing in-repo invoked `tauri build`, so
+nobody had watched it happen. (`.github/workflows/desktop-bundle-smoke.yml`,
+#2709 below, is the lane that now does, continuously, in CI, for the
+ELF/Linux slice.) It has now been watched, three times, by driving a real
 `pnpm tauri build --debug --bundles deb` in a worktree with `bundle.active`
 left at `false`:
 
@@ -704,9 +710,12 @@ still `false` (confirming tauri-cli's `config.bundle.active ||
 options.bundles.is_some()`); and a refusal genuinely **stops** the bundle
 rather than merely printing. The third row also demonstrates the positive
 check does not false-reject a real native binary at the real firing point.
-No CI lane runs any of this — a `tauri build --debug --bundles deb` lane is
-still the standing follow-up, and this observation does not substitute for
-one, it only removes the doubt about *where* the hook fires.
+`.github/workflows/desktop-bundle-smoke.yml` (#2709, below) now runs
+exactly this in CI — a real `tauri build --debug --bundles deb` — closing
+the ELF/Linux slice of what was, until this PR, still the standing
+follow-up. This hand-driven observation predates that lane and does not
+substitute for it; it only removes the doubt about *where* the hook fires,
+not whether CI exercises it.
 
 **The `--version` executable smoke check (#2699).** The magic check above
 proves the staged file's FORMAT (ELF/Mach-O/PE); it cannot prove the file
@@ -730,21 +739,24 @@ on "not the stub, not empty, not a `#!` script" alone (#2699 review).
 `smokeCheckSidecar` is the single call site both paths share, so this is one
 behavior, not two copies that could drift.
 
-This is gated on the staged triple matching the triple the check is
-actually running on (`smokeCheckSidecar` in `assert-real-sidecar.mjs`): a
-sidecar staged for any other triple is a cross-build and **cannot be
-executed on this machine at all** — trying would fail for a reason that has
-nothing to do with whether the binary is a genuine `brink-cli`, and
-treating that as a rejection would refuse a legitimate cross-compiled
-bundle. That case — and the case where the host triple itself cannot be
-determined (no `rustc` on PATH) — degrades to "verified via magic only,"
+This is gated on the staged triple being **executable on** the triple the
+check is actually running on (`canExecuteStagedSidecar` in
+`assert-real-sidecar.mjs` — not a bare equality; see the `#2708` gap below
+for the one deliberate exception, a universal macOS build): a sidecar
+staged for a triple that is not executable here is a cross-build and
+**cannot be executed on this machine at all** — trying would fail for a
+reason that has nothing to do with whether the binary is a genuine
+`brink-cli`, and treating that as a rejection would refuse a legitimate
+cross-compiled bundle. That case — and the case where the host triple
+itself cannot be determined (no `rustc` on PATH) — degrades to "verified
+via magic only,"
 and the log line says so explicitly rather than silently claiming to have
 run something it did not.
 
 Driven directly (not merely argued) via `assertRealSidecarStaged` in a
 scratch tree, mirroring the shape of the table above:
 
-| staged at `binaries/brink-cli-<triple>`, triple = host | observed |
+| staged at `binaries/brink-cli-<triple>`, triple executable on host (`canExecuteStagedSidecar`) | observed |
 |---|---|
 | a real release build of `brink-cli` | `--version` exited 0, printed `brink 0.0.11` → logged `ran successfully … confirmed a working brink-cli`, then `proceeding with the bundle` |
 | `/bin/true` (GNU coreutils, #2691's own stand-in) | `--version` exited 0, printed `true (GNU coreutils) 9.4…` → **refused**: `ran (--version exited 0) but printed "…" — that is not a brink-cli version string`, `exit 1` |
@@ -783,6 +795,21 @@ needed no change: it already resolves to `"macho"` (the triple contains
 `"apple"`), and `EXECUTABLE_MAGIC.macho` already carries the FAT/universal
 magics alongside the thin ones (#2691) — only the smoke check's
 executability test was narrower than it should have been.
+
+**Reachability caveat: staging, not executability, is the remaining
+blocker.** Nothing in-repo actually stages
+`binaries/brink-cli-universal-apple-darwin` today. `ensureCliSidecar`
+(`ensure-cli-sidecar.mjs`) defaults `triple = hostTriple(runCommand)`, and
+`build.rs` only auto-stages when `HOST == TARGET` — neither path ever
+produces a `universal-apple-darwin`-suffixed file. `assertRealSidecarStaged`
+does default `triple` to `TAURI_ENV_TARGET_TRIPLE`, which tauri-cli sets to
+`universal-apple-darwin` for a real `--target universal-apple-darwin`
+build, but that build would hit the missing-file backstop above (or fail
+earlier still, in tauri-bundler's own per-arch `externalBin` resolution)
+before `canExecuteStagedSidecar`'s widened branch ever gets a chance to
+run. So this fix is not yet reachable by any build this repo actually
+produces — the executability comparison is no longer the blocker for a
+universal build once something stages one, but staging one is.
 
 Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
 checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`

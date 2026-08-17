@@ -320,9 +320,11 @@ export function canExecuteStagedSidecar(triple, host) {
  * failure. Never throws itself — `smokeCheckSidecar`, its only caller,
  * decides what a failure means. Exported for direct unit coverage of the
  * success/failure summarizing; NOT meant to be called on a binary staged
- * for a different triple than this process is running on — see
- * `smokeCheckSidecar`, which is the only place that decides it is safe to
- * call this at all.
+ * for a triple that is not executable on this host — see
+ * `canExecuteStagedSidecar` (#2708 — not simply "a different triple": a
+ * `universal-apple-darwin` staged triple IS executable on either single-arch
+ * Apple host) and `smokeCheckSidecar`, which is the only place that decides
+ * it is safe to call this at all.
  */
 export function runVersionSmokeTest({ destBin, runFile = defaultRunFile }) {
   try {
@@ -369,13 +371,16 @@ export function looksLikeBrinkCliVersionOutput(output) {
  * IS `brink-cli` or that it runs — any correctly-formatted binary of the
  * wrong build passes it, exactly as #2691's own `/bin/true` stand-in did.
  * This closes that gap for the one case where actually running the binary
- * is safe to attempt: `destBin`'s triple matches the triple this process is
- * running on RIGHT NOW. Any other triple is a cross-build — the staged
- * binary cannot be executed on this machine at all, and a failure to do so
- * says nothing about whether the binary is a genuine, working `brink-cli`.
- * Collapsing that "cannot execute here" case into a rejection would refuse
- * a legitimate cross-compiled bundle for the wrong reason, so it instead
- * degrades to the magic check alone and logs that it did — never silently.
+ * is safe to attempt: `destBin`'s triple is executable on the triple this
+ * process is running on RIGHT NOW (`canExecuteStagedSidecar`, #2708 — not
+ * simply "matches": a `universal-apple-darwin` staged triple IS executable
+ * on either single-arch Apple host). Any triple that is not executable here
+ * is a cross-build — the staged binary cannot be executed on this machine
+ * at all, and a failure to do so says nothing about whether the binary is a
+ * genuine, working `brink-cli`. Collapsing that "cannot execute here" case
+ * into a rejection would refuse a legitimate cross-compiled bundle for the
+ * wrong reason, so it instead degrades to the magic check alone and logs
+ * that it did — never silently.
  *
  * Deliberately the ONLY call site that inspects executability-on-this-host
  * at all: #2687's review caught a `looksLikeNativeExecutable !== true` call
