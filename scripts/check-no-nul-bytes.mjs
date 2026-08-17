@@ -177,8 +177,12 @@ if (invokedDirectly) {
       console.error(
         `  - ${offense.path}: literal NUL byte at offset ${offense.offset}. A grep/rg sweep without ` +
           `-a silently skips this file (it classifies as binary) — see scripts/check-no-nul-bytes.mjs's ` +
-          `header. Use a printable, collision-free separator instead (e.g. ` +
-          `JSON.stringify([...fields]) for a fixed-arity composite key, the fix shape #2733 used).`,
+          `header. If this is source code building a composite in-memory cache key, use a printable, ` +
+          `collision-free separator instead (e.g. JSON.stringify([...fields]) for a fixed-arity ` +
+          `composite key, the fix shape #2733 used). If this is a legitimately binary asset (an image, ` +
+          `font, or other non-text file) checked in under packages/*/src, either move it out of src/ ` +
+          `(this guard scans only packages/*/src) or extend this guard's scope/exclusions to allow it — ` +
+          `do not add a printable separator to a binary format that isn't yours to edit.`,
       );
     }
     process.exitCode = 1;
