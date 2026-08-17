@@ -133,16 +133,18 @@ export class ProjectSession {
   private destroyed = false;
   private lastCompile: { generation: number; result: CompileResult } | null = null;
   /**
-   * Idle handles this class has scheduled via {@link deferForGatedCall} —
-   * today, `renameFile`'s yield below — that have not yet settled, mapped to
-   * the `reject` function that lets {@link destroy} abort them (issue #2794).
-   * The same freed-wasm discipline this class already applies elsewhere
-   * (`destroy()`'s listener detach, `FileChangeHub.getContent`'s `destroyed`
-   * check): one guard, meant to cover every current and future gated call
-   * this class defers via `scheduleIdleWork`, not a `renameFile`-specific
-   * patch. Before this existed, an unmount landing inside the ≤300ms idle
-   * window left the scheduled callback to fire anyway and go on to call
-   * `this.session.*` on a handle `destroy()` had already freed.
+   * Idle handles this class has scheduled via {@link deferGatedCall} —
+   * `renameFile`'s yield below, and (issue #2794 review) `studio-ui`'s
+   * `runGatedStructuralOp` for the symbol-menu `moveStitch`/`promoteStitch`/
+   * `demoteKnot` ops — that have not yet settled, mapped to the `reject`
+   * function that lets {@link destroy} abort them. The same freed-wasm
+   * discipline this class already applies elsewhere (`destroy()`'s listener
+   * detach, `FileChangeHub.getContent`'s `destroyed` check): one guard,
+   * meant to cover every current and future gated call this class defers
+   * via `scheduleIdleWork`, not a `renameFile`-specific patch. Before this
+   * existed, an unmount landing inside the ≤300ms idle window left the
+   * scheduled callback to fire anyway and go on to call `this.session.*` on
+   * a handle `destroy()` had already freed.
    */
   private readonly pendingIdleWork = new Map<IdleHandle, (reason: Error) => void>();
 
@@ -305,10 +307,16 @@ export class ProjectSession {
   }
 
   /**
-   * Yield to the next idle slot ahead of a gated wasm call this class
-   * defers (today: {@link renameFile}'s call to `this.session.renameFile`),
-   * the way every future gated call this class defers should too (issue
-   * #2794). Unlike a bare `scheduleIdleWork` await, this:
+   * Yield to the next idle slot ahead of a gated wasm call — a call whose
+   * Rust op runs the full-project breakage/collision gate, the way {@link
+   * renameFile}'s call to `this.session.renameFile` below does. Public
+   * (issue #2794 review) so every gated call this class's callers defer
+   * shares one guard instead of a per-site `scheduleIdleWork` sprinkle —
+   * `studio-ui`'s `runGatedStructuralOp` (the symbol-menu `moveStitch`/
+   * `promoteStitch`/`demoteKnot` ops) awaits this directly rather than
+   * rolling its own bare `scheduleIdleWork` yield, which had none of the
+   * protections below and could reach a freed `session` the same way
+   * `renameFile` once could. Unlike a bare `scheduleIdleWork` await, this:
    *
    *  - Rejects immediately, without scheduling anything, if the session is
    *    already destroyed when called (a caller invoking a gated method after
@@ -326,7 +334,7 @@ export class ProjectSession {
    *    catch/finally still won't touch the freed session, since the
    *    rejection prevents its own continuation from ever executing.
    */
-  private deferForGatedCall(): Promise<void> {
+  deferGatedCall(): Promise<void> {
     if (this.destroyed) {
       return Promise.reject(
         new Error("ProjectSession destroyed before a deferred gated call ran"),
@@ -440,10 +448,10 @@ export class ProjectSession {
    */
   async renameFile(oldPath: string, newPath: string): Promise<string[]> {
     if (oldPath === newPath) return [];
-    await this.deferForGatedCall();
+    await this.deferGatedCall();
     // PAINT-PATH-DEFERRED rename-file: gated (structural_result::gate_with_source
     // via crates/internal/brink-ide/src/file_rename.rs) — deferred by the
-    // deferForGatedCall yield immediately above (#2776; destroy()-safe since
+    // deferGatedCall yield immediately above (#2776; destroy()-safe since
     // #2794 — see that method's doc comment).
     const result = this.session.renameFile(oldPath, newPath);
     if (!result.ok) {
@@ -814,7 +822,7 @@ export class ProjectSession {
    *  (mountStudio's unmount does) — destroy only cancels.
    *
    *  Also aborts every gated call still waiting on its {@link
-   *  deferForGatedCall} yield (issue #2794): each pending idle handle is
+   *  deferGatedCall} yield (issue #2794): each pending idle handle is
    *  cancelled (so the browser/timer callback never fires against this
    *  now-freed session) and its caller's `await` is rejected (so the code
    *  that would call `this.session.*` after the yield never runs) — before

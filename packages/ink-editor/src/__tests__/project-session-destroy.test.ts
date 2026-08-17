@@ -13,8 +13,14 @@
  * throw is caught by `applyRename` (`studio-store`'s `binder.ts`) and
  * surfaces as an error notification — but containment is not a fix, and the
  * same shape applies to every future gated call this class defers, not just
- * `renameFile` (see `deferForGatedCall`'s doc comment in
- * `project-session.ts`).
+ * `renameFile` (see `deferGatedCall`'s doc comment in
+ * `project-session.ts`). #2794's follow-up review found that gap still open
+ * in `studio-ui`'s `runGatedStructuralOp` (the symbol-menu `moveStitch`/
+ * `promoteStitch`/`demoteKnot` ops), which rolled its own bare
+ * `scheduleIdleWork` yield instead of this guard — fixed by switching it to
+ * `deferGatedCall` (now public for exactly this reuse) and adding coverage in
+ * `packages/brink-studio/src/__tests__/symbol-structural-ops.test.ts`
+ * ("runGatedStructuralOp swallows a destroy()-during-defer race").
  *
  * Uses a hand-built stub `session` (not a real `EditorSessionHandle`).
  * `vitest.config.ts`'s `resolve.alias` repoints `@brink-lang/web` at a local

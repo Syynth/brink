@@ -12,12 +12,16 @@ unmount landing inside the deferral's idle window let the scheduled callback
 fire anyway and call into a wasm handle `destroy()` had already freed. This
 was contained (the throw surfaced as an ordinary error notification through
 `applyRename`'s existing `catch`), not unreachable, but containment is not a
-fix. `deferForGatedCall` (replacing a bare `scheduleIdleWork` await) now
+fix. `deferGatedCall` (replacing a bare `scheduleIdleWork` await) now
 tracks its idle handle and rejects the caller's `await` — instead of
 resolving into a freed session — if `destroy()` runs first; `destroy()`
 cancels every still-pending handle and rejects its caller before freeing the
 wasm handle. One guard, meant to cover every gated call this class defers,
-present or future.
+present or future — including `runGatedStructuralOp`'s symbol-menu ops
+(`moveStitch`/`promoteStitch`/`demoteKnot`, in `@brink/studio-ui`), which a
+follow-up review found still deferred through their own independent
+`scheduleIdleWork` yield outside this guard; `deferGatedCall` is public for
+exactly this reuse.
 
 `structuralOpPending` (`@brink/studio-store`, bundled into
 `@brink-lang/studio`): two independent fire-and-forget writers
@@ -28,5 +32,7 @@ erase each other's still-live indicator, whichever settled last winning
 regardless of which op was actually still running. `SymbolMenuSlice` gains
 `clearStructuralOpPending(description)` — a compare-and-clear that only nulls
 the field when the live value still equals the description the clearing
-call itself set — and both writers now clear through it instead of calling
-`setStructuralOpPending(null)` directly.
+call itself set — and both writers now clear through it instead of an
+unconditional clear. `setStructuralOpPending` is narrowed to take only
+`string` (no caller ever passed `null`), so a future regression back to the
+unconditional shape fails typecheck instead of relying on review attention.

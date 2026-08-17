@@ -11,8 +11,25 @@ import type {
   RenameDiagnostic,
 } from "@brink/wasm-types";
 import type { StudioState, SymbolRenameRequest } from "@brink/studio-store";
-import { scheduleIdleWork } from "@brink-lang/editor";
 import type { ContextMenuAction } from "./BinderContextMenu.js";
+
+/**
+ * The result {@link runGatedStructuralOp} reports when `ProjectSession.
+ * destroy()` raced its `deferGatedCall()` yield (issue #2794 review, Gap 1
+ * follow-up): the op never ran — and never could, since the wasm `session`
+ * handle `compute` closes over is already freed by the time the destroy
+ * rejection lands. Shaped exactly like a genuine no-op refusal (`ok: false`,
+ * `safe: true`, no diagnostics — see `StructuralResult.ok`'s doc comment on
+ * why that pairing means "refused", not "succeeded vacuously"), so
+ * `dispatchSymbolAction`'s `result.ok && result.path` check below skips
+ * `applyMoveResult` the same way it does for any other refusal.
+ */
+const DESTROYED_DURING_DEFER_RESULT: StructuralResult = {
+  ok: false,
+  safe: true,
+  cross_file_edits: [],
+  introduced_diagnostics: [],
+};
 
 /** The declaration-name offset (whole-file UTF-16) of a knot or stitch in the
  *  project outline, or null when the symbol is not found. Used to seed the
@@ -54,8 +71,10 @@ function symbolDeclarationOffset(
  *
  * This commits `structuralOpPending` synchronously (so React can paint a
  * pending indicator before the heavy call runs) and defers `compute` to the
- * next idle slot via `scheduleIdleWork`, clearing it again once `compute`
- * returns. The pending state is a LOCAL busy-state affordance rendered by
+ * next idle slot via `ProjectSession.deferGatedCall()` (`@brink-lang/editor`
+ * — issue #2794 review; previously a bare `scheduleIdleWork` await rolled
+ * here, see below), clearing the pending indicator again once `compute`
+ * settles. The pending state is a LOCAL busy-state affordance rendered by
  * the status bar's `StructuralOpSegment` (spec §7.3) — deliberately NOT a
  * shell notification (`state._notify`): §7.5 states progress notifications
  * are out of scope for the notification service, and a review of #2769
@@ -81,12 +100,26 @@ function symbolDeclarationOffset(
  *
  * There is no widget instance to `cancelIdleWork` on unmount/close the way
  * `InlineNameInput`/`SymbolRenamePrompt` do — a context-menu click and a
- * drag-drop drop are one-shot, not an open editing surface — so there is no
- * staleness guard to run here at all; the op's own refusal is sufficient.
+ * drag-drop drop are one-shot, not an open editing surface. That is about
+ * component teardown, though, not `ProjectSession` teardown: issue #2794's
+ * follow-up review found that an unmount within the idle window destroys the
+ * session out from under this call's own deferred `compute()` the same way
+ * it once could for `renameFile` — a real hazard `deferGatedCall` closes
+ * (see below), not a staleness check this call gets to skip.
  *
- * Clears via `clearStructuralOpPending(description)`, not
- * `setStructuralOpPending(null)` (issue #2794): `structuralOpPending` has a
- * second writer (`applyRename` in `binder.ts`'s Binder rename/move), and
+ * `deferGatedCall`'s rejection (session destroyed mid-defer) is caught and
+ * swallowed here into {@link DESTROYED_DURING_DEFER_RESULT} rather than left
+ * to propagate: every caller of `dispatchSymbolAction` invokes it as a
+ * fire-and-forget `void dispatchSymbolAction(...)` (`useSymbolMenuActions.ts`,
+ * `Binder.tsx`), so an uncaught rejection here would surface as an unhandled
+ * promise rejection with nothing to catch it, not a caught error a UI layer
+ * reports. `compute()` itself is deliberately left outside this catch — a
+ * refusal from the op itself is reported through `result.ok`, same as ever;
+ * only the destroy race short-circuits before `compute()` would run at all.
+ *
+ * Clears via `clearStructuralOpPending(description)`, never by calling
+ * `setStructuralOpPending` again with a null-ish value — `structuralOpPending`
+ * has a second writer (`applyRename` in `binder.ts`'s Binder rename/move), and
  * both are independent fire-and-forget `void` dispatches that can overlap —
  * an unconditional clear here could erase a Binder rename's still-live
  * indicator if this op happens to settle after that one started. The
@@ -99,9 +132,15 @@ async function runGatedStructuralOp(
 ): Promise<StructuralResult> {
   state.setStructuralOpPending(description);
   try {
-    await new Promise<void>((resolve) => {
-      scheduleIdleWork(resolve);
-    });
+    try {
+      await state._project?.deferGatedCall();
+    } catch {
+      // ProjectSession.destroy() landed while this call was deferred (issue
+      // #2794 review) — the session (and the wasm handle `compute` closes
+      // over) is already freed. Swallow rather than rethrow; see the doc
+      // comment above for why this must not reach `compute()` or propagate.
+      return DESTROYED_DURING_DEFER_RESULT;
+    }
     return compute();
   } finally {
     state.clearStructuralOpPending(description);

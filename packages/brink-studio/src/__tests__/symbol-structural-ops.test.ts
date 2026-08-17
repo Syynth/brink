@@ -546,6 +546,46 @@ describe("structuralOpPending compare-and-clear (#2794)", () => {
     expect(clearSpy).toHaveBeenCalledExactlyOnceWith("Move alpha to two");
   });
 
+  it("runGatedStructuralOp swallows a destroy()-during-defer race instead of reaching a freed session (#2794 follow-up)", async () => {
+    // Mirrors `project-session-destroy.test.ts`'s first case, one layer up:
+    // before this follow-up, `runGatedStructuralOp` rolled its own bare
+    // `scheduleIdleWork` yield entirely outside `ProjectSession`, so
+    // `destroy()` landing inside the idle window could still reach
+    // `compute()`'s captured (now-freed) `session` handle — the same hazard
+    // #2794 closed for `renameFile`, just less contained: the dispatch is
+    // fire-and-forget `void dispatchSymbolAction(...)`
+    // (`useSymbolMenuActions.ts`, `Binder.tsx`), so an uncaught rejection
+    // here would be an unhandled promise rejection with no catch, not
+    // `applyRename`'s caught-and-notified one.
+    const { store, project } = await makeStore({ "main.ink": MAIN });
+    const state = store.getState();
+    const session = project.getSession();
+    const moveSpy = vi.spyOn(session, "moveStitch");
+    const applyMoveResultSpy = vi.spyOn(state, "applyMoveResult");
+
+    const pending = dispatchSymbolAction(state, applyMoveResultSpy, {
+      type: "moveStitch",
+      path: "main.ink",
+      srcKnot: "one",
+      stitch: "alpha",
+      destKnot: "two",
+    });
+
+    // destroy() lands INSIDE the idle window — before the deferred callback
+    // (a scheduleIdleWork/setTimeout(...,0) under fake timers) has fired.
+    project.destroy();
+
+    // The void dispatch resolves quietly instead of rejecting — nothing
+    // upstream has a catch for it — and `applyMoveResult` never runs, since
+    // the swallowed refusal's `ok` is false.
+    await expect(pending).resolves.toBeUndefined();
+    expect(moveSpy).not.toHaveBeenCalled();
+    expect(applyMoveResultSpy).not.toHaveBeenCalled();
+    // The `finally` in `runGatedStructuralOp` still clears the pending
+    // indicator even though the op itself never ran.
+    expect(store.getState().structuralOpPending).toBeNull();
+  });
+
   it("applyRename (Binder rename/move) clears via clearStructuralOpPending with its own description", async () => {
     await initWasm();
     const provider = new InMemoryFileProvider({ "main.ink": "-> END\n", "lib.ink": "-> END\n" });

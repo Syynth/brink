@@ -22,16 +22,21 @@
  * and the wiring deterministically; THIS file gets genuine time separation
  * by controlling one side of the race directly.
  *
- * The trick: mock `@brink-lang/editor`'s `scheduleIdleWork` so the
- * symbol-menu op's yield becomes a manually-drained queue entry instead of a
- * timer. `ProjectSession.renameFile` (also re-exported from that package)
- * calls its OWN copy of `scheduleIdleWork` via a *relative* import
- * (`./idle-schedule.js` inside `project-session.ts`) — a different resolved
- * module than the `"@brink-lang/editor"` specifier this file mocks, so that
- * call is UNTOUCHED and still yields on a real timer. That asymmetry is
- * exactly what makes the two writers separable: the Binder rename settles on
- * its own schedule while the symbol-menu op's yield stays parked until this
- * test explicitly drains it.
+ * The trick: `runGatedStructuralOp` (the symbol-menu op's caller) and
+ * `applyRename`'s `project.renameFile` (the Binder rename's caller) both
+ * defer through the exact same `ProjectSession.deferGatedCall()` — that is
+ * the point of #2794's follow-up fix (see `project-session.ts` and
+ * `symbolMenuActions.ts`'s doc comments), and it retires the ONE asymmetry
+ * an earlier version of this file exploited (mocking `@brink-lang/editor`'s
+ * re-exported `scheduleIdleWork`, which only `symbolMenuActions.ts`'s bare
+ * import resolved to — that import no longer exists; `runGatedStructuralOp`
+ * now calls `deferGatedCall` directly, the same as `renameFile`). With one
+ * shared method instead of two independently-mockable paths, this file
+ * instead spies directly on the now-public `ProjectSession.deferGatedCall`
+ * and gives its FIRST caller (whichever op starts first) the real
+ * timer-backed implementation while parking the SECOND caller's yield on a
+ * manually-controlled promise — deterministic ordering with no dependency on
+ * which module resolved which import.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -39,27 +44,6 @@ import { InMemoryFileProvider, ProjectSession } from "@brink-lang/editor";
 import { initWasm } from "@brink-lang/web";
 import { createStudioStore, type DocumentSessions as StoreDocs } from "@brink/studio-store";
 import { dispatchSymbolAction } from "@brink/studio-ui";
-
-const { idleQueue } = vi.hoisted(() => ({ idleQueue: [] as Array<() => void> }));
-
-vi.mock("@brink-lang/editor", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@brink-lang/editor")>();
-  return {
-    ...original,
-    // Only `symbolMenuActions.ts`'s bare `import { scheduleIdleWork } from
-    // "@brink-lang/editor"` resolves to this mocked specifier. See this
-    // file's header for why `ProjectSession`'s own defer (a *relative*
-    // import inside `project-session.ts`) is a different resolved module
-    // and stays real.
-    scheduleIdleWork: (work: () => void) => {
-      idleQueue.push(work);
-      return idleQueue.length;
-    },
-    cancelIdleWork: () => {
-      /* no-op: nothing in this file cancels a queued entry */
-    },
-  };
-});
 
 function stubDocuments(): StoreDocs {
   return {
@@ -77,9 +61,27 @@ function stitchOrder(source: string): string[] {
   return [...source.matchAll(/^=\s+(\w+)/gm)].map((m) => m[1]!);
 }
 
+/**
+ * Spy on `project.deferGatedCall` so its first call runs the real,
+ * timer-backed implementation (settled by `vi.runAllTimersAsync()`) and its
+ * second call parks on a promise this function's caller controls directly —
+ * genuine time separation between two ops that now share one defer method.
+ * Returns the release function for the parked (second) call.
+ */
+function deferSecondCallManually(project: ProjectSession): () => void {
+  const original = project.deferGatedCall.bind(project);
+  let release!: () => void;
+  const parked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(project, "deferGatedCall");
+  spy.mockImplementationOnce(() => original());
+  spy.mockImplementationOnce(() => parked);
+  return release;
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
-  idleQueue.length = 0;
 });
 
 afterEach(() => {
@@ -96,15 +98,18 @@ describe("structuralOpPending: a genuine overlap between the two writers (#2794)
     store.setState({ _project: project, _documents: stubDocuments() });
     const state = store.getState();
 
-    // The Binder rename starts first — it yields on a REAL timer
-    // (ProjectSession's own scheduleIdleWork, untouched by the mock above).
+    // First caller (the Binder rename) gets the real, timer-backed defer;
+    // second caller (the symbol-menu move) parks until released below.
+    const releaseMove = deferSecondCallManually(project);
+
+    // The Binder rename starts first — real timer.
     const renamePending = state.renameFile("lib.ink", "util.ink");
     expect(store.getState().structuralOpPending).toBe("Renaming lib.ink → util.ink");
 
     // The symbol-menu move starts next, overwriting the pending description
     // — the "overlapping Binder drag-move and symbol-menu op" case the issue
-    // names. Its yield lands in `idleQueue`, NOT a timer, so it stays parked
-    // until this test explicitly drains it.
+    // names. Its defer call is the parked one — it stays pending until this
+    // test explicitly releases it below.
     const movePending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "moveStitch",
       path: "main.ink",
@@ -113,10 +118,10 @@ describe("structuralOpPending: a genuine overlap between the two writers (#2794)
       destKnot: "two",
     });
     expect(store.getState().structuralOpPending).toBe("Move alpha to two");
-    expect(idleQueue).toHaveLength(1); // the move's yield, parked — no timer
 
     // Let the rename's real timer run all the way to completion. The move's
-    // yield is not a timer at all, so this settles ONLY the rename.
+    // defer is parked on a plain promise, not a timer, so this settles ONLY
+    // the rename.
     await vi.runAllTimersAsync();
     await renamePending;
 
@@ -126,11 +131,10 @@ describe("structuralOpPending: a genuine overlap between the two writers (#2794)
     // unconditional `setStructuralOpPending(null)`, which would have wiped
     // the still-in-flight move's indicator right here.
     expect(store.getState().structuralOpPending).toBe("Move alpha to two");
-    expect(idleQueue).toHaveLength(1); // the move's yield is STILL parked
 
-    // Now drain the move's yield manually — its `compute()` is synchronous,
+    // Now release the move's parked defer — its `compute()` is synchronous,
     // so this settles the whole op, including its own `finally`-clear.
-    idleQueue.shift()!();
+    releaseMove();
     await movePending;
 
     // The move's own clear DOES apply — it is the one still live.
@@ -154,6 +158,11 @@ describe("structuralOpPending: a genuine overlap between the two writers (#2794)
     store.setState({ _project: project, _documents: stubDocuments() });
     const state = store.getState();
 
+    // This time the symbol-menu move starts first, so it is the FIRST
+    // caller of `deferGatedCall` — real timer. The rename starts second and
+    // parks.
+    const releaseRename = deferSecondCallManually(project);
+
     const movePending = dispatchSymbolAction(state, state.applyMoveResult, {
       type: "moveStitch",
       path: "main.ink",
@@ -162,21 +171,21 @@ describe("structuralOpPending: a genuine overlap between the two writers (#2794)
       destKnot: "two",
     });
     expect(store.getState().structuralOpPending).toBe("Move alpha to two");
-    expect(idleQueue).toHaveLength(1);
 
     const renamePending = state.renameFile("lib.ink", "util.ink");
     expect(store.getState().structuralOpPending).toBe("Renaming lib.ink → util.ink");
 
-    // Settle the move FIRST this time — drain its (still lone) queue entry
-    // directly, without touching the rename's real timer at all.
-    idleQueue.shift()!();
+    // Settle the move FIRST this time — its defer is the real timer-backed
+    // one, so running timers settles it without touching the rename's
+    // parked defer at all.
+    await vi.runAllTimersAsync();
     await movePending;
 
     // The move's clear tried to remove "Move alpha to two" — but the live
     // value is now the rename's description, so it must be a no-op.
     expect(store.getState().structuralOpPending).toBe("Renaming lib.ink → util.ink");
 
-    await vi.runAllTimersAsync();
+    releaseRename();
     await renamePending;
 
     // The rename's own clear DOES apply.

@@ -77,8 +77,14 @@ export interface SymbolMenuSlice {
    * that call settles.
    */
   structuralOpPending: string | null;
-  /** Set the pending structural-op description (the start of a gated call). */
-  setStructuralOpPending(description: string | null): void;
+  /** Set the pending structural-op description (the start of a gated call).
+   *  Takes only `string` (issue #2794 review) — clearing goes exclusively
+   *  through {@link clearStructuralOpPending}'s compare-and-clear; no
+   *  production or test caller passes `null` here, and narrowing the
+   *  signature turns a future unconditional-clear regression into a
+   *  `pnpm --filter @brink-lang/studio typecheck` failure instead of relying
+   *  on review attention to catch it. */
+  setStructuralOpPending(description: string): void;
   /**
    * Compare-and-clear (issue #2794): clears {@link structuralOpPending} only
    * if it still equals `description` — the exact string this call's own
@@ -89,10 +95,10 @@ export interface SymbolMenuSlice {
    * `binder.ts`) as independent fire-and-forget (`void`) dispatches — an
    * overlapping Binder drag-move and symbol-menu op is a real case, not a
    * hypothetical one. Every caller that commits a pending description before
-   * deferring a gated call MUST clear through this, never by calling
-   * `setStructuralOpPending(null)` directly in a `finally` — that
+   * deferring a gated call MUST clear through this, never through
+   * {@link setStructuralOpPending} directly in a `finally` — that
    * unconditional-clear shape is exactly the last-writer-wins race #2794
-   * fixed.
+   * fixed, and (as of this review) is no longer even typeable with `null`.
    */
   clearStructuralOpPending(description: string): void;
 }
