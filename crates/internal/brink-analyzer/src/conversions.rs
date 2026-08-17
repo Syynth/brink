@@ -92,6 +92,7 @@ pub fn check(
             current_knot_name: None,
             knot_locals: None,
             stitch_locals: None,
+            lambda_locals: Vec::new(),
             diagnostics: &mut out,
         };
         // Issue #2098: `ConversionVisitor::enter_expr` has no state that
@@ -124,22 +125,19 @@ struct ConversionVisitor<'a> {
     /// The currently-open stitch's own finalized locals, if any — takes
     /// priority over `knot_locals` while set.
     stitch_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field/hook pair exactly —
+    /// see that field's own doc.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
-impl<'a> ConversionVisitor<'a> {
-    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
-    }
-
-    fn ctx(&self) -> MistypeCtx<'a> {
-        MistypeCtx {
-            index: self.index,
-            globals: self.globals,
-            signatures: self.signatures,
-            resolution_by_range: self.resolution_by_range,
-            locals: self.current_locals(),
-        }
+impl ConversionVisitor<'_> {
+    fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
+        self.lambda_locals
+            .last()
+            .or_else(|| self.stitch_locals.or(self.knot_locals))
     }
 
     /// The `DefinitionId` a knot/stitch's own name resolves to — mirrors
@@ -188,8 +186,34 @@ impl HirVisitor for ConversionVisitor<'_> {
     }
 
     fn enter_expr(&mut self, expr: &Expr) {
-        let ctx = self.ctx();
+        // Built from direct field projections (not `self.ctx()`) so the
+        // borrow checker sees this only borrows the locals-shaped fields,
+        // disjoint from the `self.diagnostics` reborrow below — see
+        // `structs::ConstructionVisitor::enter_expr`'s identical comment.
+        let ctx = MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self
+                .lambda_locals
+                .last()
+                .or_else(|| self.stitch_locals.or(self.knot_locals)),
+        };
         check_call(expr, self.file, &ctx, self.diagnostics);
+    }
+
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let stmts: &[brink_ir::BlockStmt] = match &l.body {
+            brink_ir::LambdaBody::Block { stmts, .. } => stmts,
+            brink_ir::LambdaBody::Expr(_) => &[],
+        };
+        let pruned = structs::pruned_locals_for_lambda(l, stmts, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
     }
 }
 
@@ -377,6 +401,36 @@ mod tests {
     #[test]
     fn a_bad_conversion_in_a_lambda_tail_of_a_var_initializer_is_still_e078() {
         let diags = check_all_native("var f = ||: int {\n  let a = 1;\n  int(Map { 1: 2 })\n};\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+    }
+
+    // ─── issue #2773: a lambda-own binding must not inherit an outer
+    // same-named local's type ────────────────────────────────────────
+
+    /// Reproduces the hazard issue #2773 tracks, live in this file's own
+    /// `ConversionVisitor` before its `enter_lambda`/`exit_lambda` frame
+    /// existed: `build`'s own temp `x` is `array`-typed (`[1, 2, 3]`); the
+    /// lambda's own `x: int` param shadows it. Pre-fix, `int(x)` resolved
+    /// `x` to the outer `array` — out of `int`'s domain — a false-positive
+    /// `E078`. `int` is squarely inside `int`'s own domain, so the fixed
+    /// behavior is clean.
+    #[test]
+    fn lambda_param_shadowing_outer_array_local_is_not_misclassified_as_out_of_domain() {
+        let diags = check_all_native(
+            "fn build() {\n  let x = [1, 2, 3];\n  let f = |x: int| {\n    int(x)\n  };\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// The pruning must not silence a genuinely out-of-domain conversion
+    /// inside the lambda's own body — the lambda's own `x: Map<int, int>`
+    /// param really is out of `int`'s domain.
+    #[test]
+    fn lambda_param_own_annotation_still_flags_a_genuine_out_of_domain_conversion() {
+        let diags = check_all_native(
+            "fn build() {\n  let x = [1, 2, 3];\n  let f = |x: Map<int, int>| {\n    int(x)\n  };\n}\n",
+        );
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E078);
     }

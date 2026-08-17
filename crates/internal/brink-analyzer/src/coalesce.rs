@@ -255,6 +255,7 @@ pub fn resolve(
             fallback: TextRange::new(0.into(), 0.into()),
             spine: BTreeSet::new(),
             table: &mut table,
+            lambda_locals: Vec::new(),
             diagnostics: &mut out,
         };
         // Issue #2098: `CoalesceVisitor::enter_var_decl`/`enter_const_decl`
@@ -319,22 +320,19 @@ struct CoalesceVisitor<'a> {
     spine: BTreeSet<usize>,
     /// The chain-root verdicts recorded so far.
     table: &'a mut CoalesceTable,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field/hook pair exactly —
+    /// see that field's own doc.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
-impl<'a> CoalesceVisitor<'a> {
-    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
-    }
-
-    fn ctx(&self) -> MistypeCtx<'a> {
-        MistypeCtx {
-            index: self.index,
-            globals: self.globals,
-            signatures: self.signatures,
-            resolution_by_range: self.resolution_by_range,
-            locals: self.current_locals(),
-        }
+impl CoalesceVisitor<'_> {
+    fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
+        self.lambda_locals
+            .last()
+            .or_else(|| self.stitch_locals.or(self.knot_locals))
     }
 
     /// The `DefinitionId` a knot/stitch's own name resolves to — mirrors
@@ -428,7 +426,21 @@ impl HirVisitor for CoalesceVisitor<'_> {
         for node in chain_spine(expr).iter().skip(1) {
             self.spine.insert(std::ptr::from_ref(*node).addr());
         }
-        let ctx = self.ctx();
+        // Built from direct field projections (not `self.ctx()`) so the
+        // borrow checker sees this only borrows the locals-shaped fields,
+        // disjoint from the `self.table`/`self.diagnostics` reborrows below
+        // — see `structs::ConstructionVisitor::enter_expr`'s identical
+        // comment.
+        let ctx = MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self
+                .lambda_locals
+                .last()
+                .or_else(|| self.stitch_locals.or(self.knot_locals)),
+        };
         analyze_chain(
             expr,
             self.fallback,
@@ -437,6 +449,19 @@ impl HirVisitor for CoalesceVisitor<'_> {
             self.table,
             self.diagnostics,
         );
+    }
+
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let stmts: &[brink_ir::BlockStmt] = match &l.body {
+            brink_ir::LambdaBody::Block { stmts, .. } => stmts,
+            brink_ir::LambdaBody::Expr(_) => &[],
+        };
+        let pruned = structs::pruned_locals_for_lambda(l, stmts, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
     }
 }
 

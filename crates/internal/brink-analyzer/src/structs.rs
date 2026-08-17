@@ -53,13 +53,13 @@
 //! is_native` — same reasoning `map_keys::check_duplicate_keys`'s own doc
 //! gives for `E138`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
-    AssignOp, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch,
-    StructLiteral, SymbolIndex, SymbolKind,
+    AssignOp, BlockStmt, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap,
+    Stitch, StructLiteral, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -271,6 +271,7 @@ pub fn check(
             current_knot_name: None,
             knot_locals: None,
             stitch_locals: None,
+            lambda_locals: Vec::new(),
             diagnostics: &mut out,
         };
         // Issue #2098: `ConstructionVisitor::enter_expr` has no state that
@@ -462,6 +463,88 @@ pub(crate) struct MistypeCtx<'a> {
     pub(crate) locals: Option<&'a BTreeMap<String, Ty>>,
 }
 
+/// Issue #2773's shared lambda-frame helper: the name set a lambda literal
+/// itself binds — its own param row, plus (for a block body) every name the
+/// block's own statements introduce (`TempDecl`, a `for` loop's var/val, an
+/// `if`/`while` `as` binding, recursed through nested `if`/`while`/`for` via
+/// [`crate::infer::lambda_own_bindings`]) — pruned out of `outer_locals`
+/// (a bare-name-keyed `BodyTypes::locals`-shaped map), with the lambda's own
+/// explicitly `: T`-annotated param types seeded back in under their own
+/// names.
+///
+/// This is the fix for the hazard class issue #2773 tracks: `resolved_symbol_ty`
+/// (below) resolves a `Param`/`Temp` `Path` by **bare name** out of
+/// `ctx.locals`, with no shadowing frame of its own — so a lambda-own
+/// binding that shares a name with a *different-typed* outer local gets
+/// silently attributed the outer binding's type for any expression inside
+/// the lambda's own body. Before this helper existed, every consumer of
+/// [`MistypeCtx::locals`]/`BodyTypes::locals` that reads it from
+/// [`brink_ir::hir::visit::HirVisitor::enter_expr`] — `conversions.rs`,
+/// `coalesce.rs`, this file's own [`ConstructionVisitor`], `ufcs.rs`,
+/// `range_refinement.rs`, `contains_domain.rs` — inherited this hazard
+/// automatically the moment `hir::visit::walk_expr`'s pre-existing
+/// `Expr::Lambda` descent (issue #1685) reached an expression inside a
+/// lambda body, because nothing signaled that a new scope had opened. Every
+/// one of those `HirVisitor` impls now pushes a pruned frame (built by this
+/// function) in [`brink_ir::hir::visit::HirVisitor::enter_lambda`] and pops
+/// it in `exit_lambda`.
+///
+/// `option_conditions.rs`'s condition-position walk (issue #2764/#2768)
+/// composes with this same function instead of keeping its own private copy
+/// — it cannot use the `enter_lambda`/`exit_lambda` hooks directly (its walk
+/// is hand-rolled, not `HirVisitor`-driven, because it needs to distinguish
+/// "this is a condition position" from an arbitrary expression — see that
+/// module's own doc), but the pruning logic itself is identical, so it is
+/// not re-implemented a second time.
+///
+/// Falls back to an empty pruned base when `outer_locals` is `None` (a
+/// file-scope lambda, e.g. a `var f = |x: Option<int>| { … }` initializer)
+/// rather than staying `None` itself: an annotated param must still be
+/// classifiable there. `outer_locals` and the returned map both use "absent
+/// name" identically for `MistypeCtx::locals`'s own `Option`-wrapped
+/// `ctx.locals?` reads, so this is not a behavior change for the
+/// pre-existing pruning path.
+#[must_use]
+pub(crate) fn pruned_locals_for_lambda(
+    l: &brink_ir::LambdaExpr,
+    stmts: &[BlockStmt],
+    index: &SymbolIndex,
+    outer_locals: Option<&BTreeMap<String, Ty>>,
+) -> BTreeMap<String, Ty> {
+    let mut body_names: BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)> = BTreeMap::new();
+    crate::infer::lambda_own_bindings(stmts, &mut body_names);
+    let body_bound_names: BTreeSet<String> = body_names.keys().cloned().collect();
+
+    let mut own_names = body_names;
+    for p in &l.params {
+        own_names
+            .entry(p.name.text.clone())
+            .or_insert((p.name.range, None));
+    }
+
+    let mut pruned: BTreeMap<String, Ty> = outer_locals.map_or_else(BTreeMap::new, |locals| {
+        locals
+            .iter()
+            .filter(|(name, _)| !own_names.contains_key(*name))
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect()
+    });
+
+    let type_names = annotations::TypeNames::new(index, None);
+    for p in &l.params {
+        if body_bound_names.contains(&p.name.text) {
+            continue;
+        }
+        if let Some(te) = &p.annotation
+            && let Some(ty) = annotations::resolve(te, &type_names)
+        {
+            pruned.insert(p.name.text.clone(), ty);
+        }
+    }
+
+    pruned
+}
+
 struct ConstructionVisitor<'a> {
     file: FileId,
     shapes: &'a ShapeTable,
@@ -483,22 +566,21 @@ struct ConstructionVisitor<'a> {
     /// The currently-open stitch's own finalized locals, if any — takes
     /// priority over `knot_locals` while set.
     stitch_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last) — pushed in `enter_lambda`, popped in
+    /// `exit_lambda`. Takes priority over `stitch_locals`/`knot_locals`
+    /// while non-empty, so an expression inside a lambda's own body sees its
+    /// own bindings' types (or "unclassifiable") instead of a same-named
+    /// outer binding's.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
-impl<'a> ConstructionVisitor<'a> {
-    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
-    }
-
-    fn ctx(&self) -> MistypeCtx<'a> {
-        MistypeCtx {
-            index: self.index,
-            globals: self.globals,
-            signatures: self.signatures,
-            resolution_by_range: self.resolution_by_range,
-            locals: self.current_locals(),
-        }
+impl ConstructionVisitor<'_> {
+    fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
+        self.lambda_locals
+            .last()
+            .or_else(|| self.stitch_locals.or(self.knot_locals))
     }
 
     /// The `DefinitionId` a knot/stitch's own name resolves to, mirroring
@@ -549,9 +631,38 @@ impl HirVisitor for ConstructionVisitor<'_> {
 
     fn enter_expr(&mut self, expr: &Expr) {
         if let Expr::StructLiteral(sl) = expr {
-            let ctx = self.ctx();
+            // Built from direct field projections (not `self.ctx()`/
+            // `self.current_locals()`) so the borrow checker sees this only
+            // borrows `index`/`globals`/`signatures`/`resolution_by_range`/
+            // the three locals fields, disjoint from the `self.diagnostics`
+            // reborrow below — a method call opaquely borrows the whole
+            // `&self` receiver for as long as its return value lives, which
+            // would conflict with `self.diagnostics` inside the same call.
+            let ctx = MistypeCtx {
+                index: self.index,
+                globals: self.globals,
+                signatures: self.signatures,
+                resolution_by_range: self.resolution_by_range,
+                locals: self
+                    .lambda_locals
+                    .last()
+                    .or_else(|| self.stitch_locals.or(self.knot_locals)),
+            };
             check_literal(sl, self.file, self.shapes, &ctx, self.diagnostics);
         }
+    }
+
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let stmts: &[BlockStmt] = match &l.body {
+            brink_ir::LambdaBody::Block { stmts, .. } => stmts,
+            brink_ir::LambdaBody::Expr(_) => &[],
+        };
+        let pruned = pruned_locals_for_lambda(l, stmts, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
     }
 }
 
@@ -1325,6 +1436,47 @@ mod tests {
     fn a_mistyped_field_in_a_lambda_tail_of_a_var_initializer_is_still_reported() {
         let diags = check_all_native(
             "struct Point { x: float }\nvar f = ||: Point {\n  let a = 1;\n  Point { x: \"hi\" }\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+    }
+
+    // ─── issue #2773: a lambda-own binding must not inherit an outer
+    // same-named local's type ────────────────────────────────────────
+
+    /// Reproduces the hazard issue #2773 tracks, live in this file's own
+    /// `ConstructionVisitor` before its `enter_lambda`/`exit_lambda` frame
+    /// existed: `resolved_symbol_ty` reads `ctx.locals` (bare-name-keyed
+    /// `BodyTypes::locals`) with no shadowing frame of its own, and
+    /// `ConstructionVisitor` is `HirVisitor`-driven — `hir::visit::walk_expr`
+    /// has descended into a lambda's own block body since issue #1685, so
+    /// every `enter_expr` this visitor received for an expression inside the
+    /// lambda body was already reading the *enclosing* `build`'s locals,
+    /// unpruned. `build`'s own temp `x` is `array`-typed
+    /// (`[1, 2, 3]`); the lambda's own `x: int` param shadows it. Pre-fix,
+    /// `Point { x: x }`'s field initializer resolved `x` to the outer
+    /// `array` — never assignable to `Point.x: float` — a false-positive
+    /// `E071`. `int` *is* legally assignable to `float` (the directional
+    /// coercion `int_initializer_for_a_float_field_is_the_legal_coercion`
+    /// pins above), so the fixed behavior is clean.
+    #[test]
+    fn lambda_param_shadowing_outer_local_of_a_different_type_is_not_misclassified() {
+        let diags = check_all_native(
+            "struct Point { x: float }\n\
+             fn build() {\n  let x = [1, 2, 3];\n  let f = |x: int| {\n    let p = Point { x: x };\n  };\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// The pruning must not silence a *genuine* mistype inside the lambda's
+    /// own body — only the outer binding's type is discarded, not
+    /// classification itself. The lambda's own `x: string` param really is
+    /// the wrong type for `Point.x: float`.
+    #[test]
+    fn lambda_param_own_annotation_still_flags_a_genuine_mistype() {
+        let diags = check_all_native(
+            "struct Point { x: float }\n\
+             fn build() {\n  let x = [1, 2, 3];\n  let f = |x: string| {\n    let p = Point { x: x };\n  };\n}\n",
         );
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E071);
