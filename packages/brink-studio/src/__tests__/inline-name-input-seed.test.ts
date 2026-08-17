@@ -230,15 +230,26 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
 
     // A badge refresh while the report is already open re-renders it
     // (`updateBadge()`'s `if (this.reportOpen) this.renderReport(result)`
-    // branch) before the first `forceFocusTimer` fires.
+    // branch), which clears forceFocusTimer #1 and schedules #2.
+    //
+    // NOTE the 251ms advance below also flushes forceFocusTimer #1 (a 0ms
+    // timer) BEFORE the 250ms debounce triggers that re-render — so exactly
+    // one focus legitimately lands here, while the controller is still alive
+    // and the report is open. That call is correct behaviour, not a leak, so
+    // this asserts the DELTA across dispose() rather than an absolute zero.
+    // The delta is still the real test: if renderReport()'s re-render left #2
+    // uncleared, or dispose() failed to clear it, runAllTimers() would add a
+    // second call here.
     input.value = "worse";
     input.dispatchEvent(new Event("input"));
     vi.advanceTimersByTime(251);
 
+    const focusCallsBeforeDispose = focusSpy.mock.calls.length;
+
     controller.dispose();
     vi.runAllTimers();
 
-    expect(focusSpy).not.toHaveBeenCalled();
+    expect(focusSpy).toHaveBeenCalledTimes(focusCallsBeforeDispose);
     focusSpy.mockRestore();
     document.body.replaceChildren();
   });
