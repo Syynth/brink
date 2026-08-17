@@ -752,10 +752,37 @@ scratch tree, mirroring the shape of the table above:
 
 The middle row is the one that matters: it is the exact scenario #2691's PR
 body disclosed as its own limit (`/bin/true` standing in for `brink-cli`),
-and it is now refused where it previously would have passed. No CI lane
-exercises any of this either — same standing gap as the magic check itself,
-and now also named in "CI coverage blind spots" for the macho/pe/.exe
-formats this smoke check's execute branch never reaches in CI.
+and it is now refused where it previously would have passed. Until #2709 no
+CI lane exercised any of this — same standing gap as the magic check itself
+— and it was named in "CI coverage blind spots" for the macho/pe/.exe
+formats this smoke check's execute branch never reached in CI.
+`.github/workflows/desktop-bundle-smoke.yml` (#2709, below) now runs the
+third row of that table for real, against an actual host-triple-matched ELF
+binary, on every relevant change.
+
+**The `universal-apple-darwin` gap (#2708).** The table's third row —
+"cannot execute here" — is not only a genuine cross-build. `hostTriple()`'s
+gate compared `triple` to the host triple with a bare equality
+(`host !== triple`), and a **universal** macOS build stages under the
+triple `universal-apple-darwin`, which never equals `hostTriple()`'s
+`x86_64-apple-darwin`/`aarch64-apple-darwin` even when run ON a real macOS
+host that unambiguously CAN execute it — a universal binary is a fat
+Mach-O carrying both slices and runs natively on either arch. That gate
+therefore took the "cross-build, skip" branch **permanently** for the exact
+artifact macOS users install, never once running `--version` against it for
+real. `canExecuteStagedSidecar(triple, host)` in `assert-real-sidecar.mjs`
+replaces the bare equality: it still requires an exact match in the
+ordinary case, and adds the one deliberate exception — `triple ===
+"universal-apple-darwin"` on a `host` of `x86_64-apple-darwin` or
+`aarch64-apple-darwin`. It deliberately does NOT widen the other direction:
+a universal triple staged on a non-Darwin host (or an undeterminable host)
+still degrades to "verified via magic only," never a rejection — the same
+tri-state discipline #2687's review established for
+`looksLikeNativeExecutable`. `executableFormatFor("universal-apple-darwin")`
+needed no change: it already resolves to `"macho"` (the triple contains
+`"apple"`), and `EXECUTABLE_MAGIC.macho` already carries the FAT/universal
+magics alongside the thin ones (#2691) — only the smoke check's
+executability test was narrower than it should have been.
 
 Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
 checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`
@@ -813,17 +840,25 @@ exercised only by unit tests over synthetic byte arrays
 never observes the real magic bytes of an actual cross-built `brink-cli`
 for either format, and never stages anything under a real `.exe` name. The
 `--version` smoke check added alongside the positive magic check (above,
-"Bundle-time sidecar assertion") inherits the same gap one layer up: its
+"Bundle-time sidecar assertion") inherited the same gap one layer up: its
 host-triple-match branch — the one that actually executes the staged
-binary — is likewise proven only by unit tests with a mocked `runFile`
+binary — was likewise proven only by unit tests with a mocked `runFile`
 plus the ad-hoc, by-hand `node scripts/assert-real-sidecar.mjs` drive
-recorded in that section, not by any CI lane; the macho/pe/.exe paths
-specifically only ever reach the check's cross-build skip branch, which
-never executes anything at all. Documenting this here does not close it —
-it names the same "which formats does `ubuntu-latest` actually observe"
-gap the file-association surface above has, for the sidecar-verification
-surface instead. Whether to buy a macOS/Windows runner is the same
-unsettled cost question as above.
+recorded in that section, not by any CI lane.
+
+**#2709 closes the ELF slice of this.** `.github/workflows/desktop-bundle-smoke.yml`
+runs a real, non-required `tauri build --debug --bundles deb` on
+`ubuntu-latest`: `ensure-cli-sidecar.mjs` runs a real (not
+`BRINK_SIDECAR_STUB`-stubbed) `cargo build -p brink-cli --release`, so the
+ELF branch of `executableFormatFor`/`EXECUTABLE_MAGIC` and the
+`--version` smoke check's host-triple-match execute branch both run
+against a real cross-workspace-built `brink-cli` binary, on every change
+that plausibly affects the bundle, ending in a real produced `.deb` the
+lane asserts exists. What remains open is exactly what was already
+unsettled above: the `macho`/`pe`/`.exe` paths still only ever reach the
+skip branch, because there is still no macOS/Windows runner in CI. Buying
+one is the same unsettled cost question as the file-association surface
+above — not decided by this lane either.
 
 ## Menus
 
