@@ -1,6 +1,6 @@
 /**
  * Studio-owned modal chrome for argument-widget editors (argument-widget-spec
- * §1 / §6.4). A full-overlay alternative to the popover, for heavy host editors
+ * §1 / §6 item 2 "Chrome ownership"). A full-overlay alternative to the popover, for heavy host editors
  * (the map-editor case) declared with `surface: "modal"`. A backdrop centers the
  * panel; Escape or a backdrop click dismisses. The widget fills the panel; the
  * chrome owns placement + dismissal.

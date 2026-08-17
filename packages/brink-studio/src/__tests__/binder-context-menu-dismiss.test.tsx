@@ -109,4 +109,39 @@ describe("BinderContextMenu dismissal survives a bubble-phase stopPropagation() 
     item!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
     expect(closed).toBe(false);
   });
+
+  it("on the SECOND open, with the net already pre-installed, Escape still runs the menu's own close (preventDefault()) — not just the net's bare dismiss", () => {
+    // No reset before the first open — recreates production: the net
+    // installs once (on this first `registerDismissible()` call) and stays
+    // installed across the second menu open. Before the ordering fix, the
+    // net's `document`-capture listener would run BEFORE a freshly-mounted
+    // second menu's own `document`-capture listener (registered later),
+    // handling the Escape itself and never giving this menu's own listener a
+    // chance to run its `preventDefault()`.
+    resetDismissRegistryForTests();
+
+    let firstClosed = false;
+    mountMenu(() => {
+      firstClosed = true;
+    });
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    expect(firstClosed).toBe(true);
+    act(() => root?.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+
+    let secondClosed = false;
+    mountMenu(() => {
+      secondClosed = true;
+    });
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(secondClosed).toBe(true);
+    // The menu's own capture-phase listener handled it, not a bare fallback
+    // from the net — proven by preventDefault() having run.
+    expect(event.defaultPrevented).toBe(true);
+  });
 });

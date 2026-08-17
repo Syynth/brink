@@ -55,14 +55,15 @@ describe("code-actions menu — orphaned local listener still closes via the glo
     const view = mount();
     openMenu(view);
 
-    // `open()` installs two document-level capture-phase keydown listeners:
-    // its own (attached directly) and the registry's global net (installed
-    // lazily by `registerDismissible`, guaranteed fresh here by the reset
-    // above). The menu's own is registered first (see code-actions.ts).
+    // `open()` installs exactly ONE document-level capture-phase keydown
+    // listener: its own. The registry's global net is installed on `window`,
+    // bubble phase — deliberately NOT `document`/capture — so it never shows
+    // up in this filter; see the "LISTENER ORDERING" note on
+    // dismiss-registry.ts.
     const keydownCalls = addSpy.mock.calls.filter(
       (call) => call[0] === "keydown" && call[2] === true,
     );
-    expect(keydownCalls).toHaveLength(2);
+    expect(keydownCalls).toHaveLength(1);
     const localHandler = keydownCalls[0][1] as EventListener;
     addSpy.mockRestore();
 
@@ -91,6 +92,44 @@ describe("code-actions menu — orphaned local listener still closes via the glo
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
     expect(document.querySelector(".brink-code-actions-menu")).toBeNull();
+
+    view.destroy();
+  });
+
+  it("on the SECOND open, with the net already pre-installed, Escape still runs the menu's own close (view.focus(), preventDefault()) — not just the net's bare dismiss", () => {
+    // Deliberately no `resetDismissRegistryForTests()` before the FIRST open
+    // below — this test recreates the production shape: the net installs
+    // once, on this first `registerDismissible()` call, and stays installed
+    // for every menu opened after. Before the ordering fix, the net's
+    // `document`-capture listener would then run BEFORE the SECOND menu's own
+    // (freshly attached, so registered later) `document`-capture listener,
+    // calling `this.close()` first — which removes `this.onKeyDown` mid-
+    // dispatch (never invoked) so `this.view.focus()` never ran and
+    // `e.preventDefault()` was skipped, leaking Escape to CM6's keymap.
+    resetDismissRegistryForTests();
+    const view = mount();
+
+    // First open + close: installs the net (via registerDismissible in
+    // open()) and leaves it installed after this menu closes.
+    openMenu(view);
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    expect(document.querySelector(".brink-code-actions-menu")).toBeNull();
+
+    // Second open — the net is already live; this menu's own document-capture
+    // listener is attached fresh, strictly after it.
+    openMenu(view);
+    const focusSpy = vi.spyOn(view, "focus");
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    document.dispatchEvent(event);
+
+    expect(document.querySelector(".brink-code-actions-menu")).toBeNull();
+    // The menu's own onKeyDown ran (not just the net's bare `close()`): it
+    // calls `e.preventDefault()` and `this.view.focus()` before the net ever
+    // gets a turn.
+    expect(event.defaultPrevented).toBe(true);
+    expect(focusSpy).toHaveBeenCalledTimes(1);
 
     view.destroy();
   });

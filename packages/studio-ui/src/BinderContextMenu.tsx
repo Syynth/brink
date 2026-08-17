@@ -78,7 +78,7 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
   const [submenuFor, setSubmenuFor] = useState<string | null>(null);
 
   // Close on click-outside or Escape. Capture-phase, matching Overlay's
-  // dismiss contract (docs/studio-shell-spec.md §7.7) — this menu predates
+  // dismiss contract (docs/studio-shell-spec.md §7.7.3) — this menu predates
   // that primitive and used to listen on the bubble phase instead, which let
   // any inner element's `stopPropagation()` (a submenu item, a nested
   // interactive widget) silently defeat BOTH Escape and outside-dismiss at

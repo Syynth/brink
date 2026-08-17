@@ -6,8 +6,8 @@
  * per-instance listeners (see overlay.tsx). This registry is a second,
  * independent layer: a surface registers its close callback here — in a
  * separate, minimal effect from its own listener setup — while it is open,
- * and one capture-phase `document` Escape listener, installed once (the
- * first time anything registers, not tied to any single surface's effect
+ * and one `window`, BUBBLE-phase Escape listener, installed once (the first
+ * time anything registers, not tied to any single surface's effect
  * lifecycle), walks the registry and closes everything registered.
  *
  * The point is resilience against exactly the failure #279 named: a surface
@@ -15,6 +15,33 @@
  * while the surface stays mounted. Because registration lives in code
  * separate from the per-instance listener setup, a bug in the latter does
  * not take the former down with it.
+ *
+ * LISTENER ORDERING (must run LAST, not first): every surface's own dismiss
+ * listener is `document`-level, CAPTURE-phase (matching `Overlay`'s
+ * contract). Capture-phase listeners on the same node fire in registration
+ * order — and this net's listener is installed once, on the very first
+ * `registerDismissible()` call anywhere in the app's lifetime, so it was
+ * almost always registered BEFORE any individual surface's own listener,
+ * which only gets (re)attached each time that surface opens. If this net
+ * were also `document`-capture, it would then run FIRST on every open after
+ * the first: it would call every registered `onClose` — including the
+ * surface's own — before that surface's own capture-phase handler ever got a
+ * chance to run its `preventDefault()`/focus-return logic, silently
+ * defeating it (and, since `dismissAllTransientSurfaces()` closes
+ * everything, tearing down every registered surface instead of just the
+ * top-most one).
+ *
+ * Attaching on `window` in the BUBBLE phase fixes this structurally, not by
+ * accident of registration order: capture-phase listeners on `document`
+ * (every surface's own) always run to completion, in the capture phase,
+ * strictly BEFORE any bubble-phase listener on `window` gets a chance to run
+ * — regardless of which was attached first. A surface that handles Escape
+ * itself calls `preventDefault()`, which this net's `defaultPrevented` guard
+ * then honors; a surface that calls `stopPropagation()` keeps the event from
+ * reaching `window` at all. The net only fires — and only then closes
+ * whatever is left registered — when nothing in the dispatch path already
+ * handled the key, which is exactly the orphan case #279 is a safety net
+ * for.
  */
 
 export type DismissHandler = () => void;
@@ -53,6 +80,10 @@ export function dismissAllTransientSurfaces(): void {
  * Install the global Escape safety net. Idempotent — safe to call from every
  * mount point (and from `registerDismissible` itself); only the first call
  * attaches the listener.
+ *
+ * `window`, bubble phase (capture=false) — deliberately NOT `document`
+ * capture-phase, which every individual surface uses for its own listener.
+ * See the "LISTENER ORDERING" note on the module doc comment above.
  */
 export function installGlobalDismissNet(): void {
   if (installedListener !== null) return;
@@ -60,12 +91,12 @@ export function installGlobalDismissNet(): void {
     if (event.key !== "Escape" || event.defaultPrevented) return;
     dismissAllTransientSurfaces();
   };
-  document.addEventListener("keydown", installedListener, true);
+  window.addEventListener("keydown", installedListener, false);
 }
 
 /**
  * Test-only: reset registry + net-installed state between tests. Removes
- * the actual `document` listener (not just an internal flag) — otherwise a
+ * the actual `window` listener (not just an internal flag) — otherwise a
  * second `installGlobalDismissNet()` call after a reset would attach a
  * SECOND listener alongside the first still-live one, double-firing every
  * registered `onClose` on the next Escape.
@@ -73,7 +104,7 @@ export function installGlobalDismissNet(): void {
 export function resetDismissRegistryForTests(): void {
   registry.clear();
   if (installedListener !== null) {
-    document.removeEventListener("keydown", installedListener, true);
+    window.removeEventListener("keydown", installedListener, false);
     installedListener = null;
   }
 }
