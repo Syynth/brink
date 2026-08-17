@@ -181,11 +181,17 @@ export function createEditorGroupsStore(): EditorGroupsStore {
         // Resolve the target group, creating one for "split-right".
         let groups = s.groups;
         let groupId: string;
+        // Splitting while maximized restores first (§5.4): a newly created
+        // split would land behind the maximized group and never render
+        // (EditorArea shows only the maximized group), so every split-right
+        // caller — not just splitGroup — must clear it here.
+        let maximizedGroupId = s.maximizedGroupId;
         if (target === "split-right") {
           const created = newGroup();
           const at = groups.findIndex((g) => g.id === s.focusedGroupId);
           groups = [...groups.slice(0, at + 1), created, ...groups.slice(at + 1)];
           groupId = created.id;
+          maximizedGroupId = null;
         } else if (target === "focused") {
           groupId = s.focusedGroupId;
         } else {
@@ -216,7 +222,7 @@ export function createEditorGroupsStore(): EditorGroupsStore {
           return { ...g, tabs: [...g.tabs, tab], activeKey: key };
         });
 
-        return { groups, focusedGroupId: groupId };
+        return { groups, focusedGroupId: groupId, maximizedGroupId };
       });
     },
 
