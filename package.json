@@ -7,6 +7,7 @@
 		"check:pnpm-pin": "node scripts/check-pnpm-pin.mjs",
 		"check:scripts": "node scripts/check-scripts.mjs",
 		"check:wasm-pkg": "node scripts/check-wasm-pkg.mjs",
+		"check:target-freshness": "node scripts/check-target-freshness.mjs",
 		"install:checked": "node scripts/guarded-install.mjs",
 		"test:scripts": "node --test scripts/*.test.mjs",
 		"test:setup-dev": "bash scripts/setup-dev.test.sh",
