@@ -573,10 +573,80 @@ range; it is what `Binder.tsx`'s function marker renders off, and
 `outline_shape()`, the TS `shape()`/`OutlineSymbol`, and the mock's
 `MockSymbol` all carry it now.
 
-Not covered: the **stitch** header vocabulary has the same split shape
-(`STITCH_HEADER_RE` is `^=\s+`, the three inline stitch sites are `^\s*=\s+`).
-It is untouched here because #2662 was narrowed to knots, and because the
-correct form needs the same driven check against production before choosing.
+Not covered by #2662: the **stitch** header vocabulary had the same split shape
+one rung down. Settled by #2684, below.
+
+### One stitch-header vocabulary (#2684)
+
+The class recurred on the sibling constant, in the file #2662 had just
+unified — which is the lesson: fixing the instance you were asked about does
+not fix the class unless you go looking for its siblings. The stitch level had
+**three** answers to "is this a stitch", not two:
+
+| consumer | pattern before | `= a` | `  = b` | `=c` | `=> x` / `= > y` |
+| --- | --- | --- | --- | --- | --- |
+| `parseOutline` / `selectionCrossesHeader` | `^=\s+(\w+)` | stitch | invisible | invisible | not a header |
+| `delete_symbol` / `rename_symbol`, three inline sites | `^\s*=\s+` | stitch | stitch | invisible | not a header |
+| `opensHeader` (the region-end scan) | `^\s*=` | ends region | ends region | ends region | **ends region** |
+
+So an indented `  = b` was a stitch to the ops and invisible to the outline, a
+tight `=c` was invisible to both yet still *ended* a region, and a `=>` divert
+ended a region production runs straight through.
+
+**Production is the tiebreak, and the grammar comment is not production.**
+`brink_syntax`'s `parser/knot.rs` documents `stitch_header` as
+
+```text
+stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ knot_params? }
+```
+
+with `INLINE_WS+` — **required** whitespace. The code is `at_stitch`
+(`current() == EQ && nth(1) != EQ && nth(1) != GT`) followed by `p.skip_ws()`,
+and `skip_ws` matches **zero** or more. Driven, not read: `file_symbols`
+reports one stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and
+`\t= h`, and **none** for `=> f`, `  => g`, `= > j`, `= = k` or a bare `=`. So
+the real vocabulary is a tolerated leading indent (tabs included), exactly one
+`=`, the next non-trivia token neither `=` nor `>`, and optional whitespace
+before the name. Because `nth(1)` skips trivia, `= >` is excluded exactly as
+`=>` is — which is why the mock's exclusion is `=(?!\s*[=>])`, not
+`=(?![=>])`.
+
+**The fix is a shared constant, not a wider regex** — the same treatment
+#2662 gave knots. `STITCH_FENCE_EQUALS` → `STITCH_FENCE` →
+`STITCH_HEADER_PREFIX` in `src/__mocks__/brink-web.ts`; the recognizer
+(`STITCH_HEADER_RE`), the per-name resolver (`stitchHeaderFor`, replacing the
+three hand-written inline sites), the region-end scan (`opensHeader`, now
+`opensKnot(line) || STITCH_OPEN_RE.test(line)` rather than a bare `^\s*=`) and
+the rename rewrite are all built from them.
+
+**The region is a third half the fixture had to grow for.** `acceptance`
+cannot see a wrong region boundary — `delete_symbol` answers `ok: true` either
+way and simply removes a shorter span — and `outlines` cannot either, since the
+recognizer can be right while the scan is not. `refusal-shapes.json` gained a
+`regions` map: production's own surviving `new_source` after a stitch region is
+deleted. The `ALT_STITCHES` source carries both directions in one case (stitch
+`a`'s body holds `=> x` and `= > y`, which must *not* end it, and is followed by
+`=c`, which must), plus `delete_symbol` on the flush-left `= a` as the positive
+control that was green before and after.
+
+**Session-seed parity (#2663).** `refusal-shapes.json` also gained a `defaults`
+map. Production's `EditorSession::new` seeds `active_path` with `"main.ink"`;
+the mock seeded `""`. Both answer `file not loaded` for a session that has
+loaded nothing, so #2635's driven `resolve_code_action` site stayed green over
+the divergence — but `update_source` writes into `files[activePath]`, so a mock
+session that never called `set_active_file` wrote to key `""` where production
+writes to `"main.ink"`.
+
+**Not covered:** production's stitch regions are CST node ranges, not lines,
+so an **indented** header's leading whitespace crosses the region boundary in
+a way this line-based mock cannot reproduce byte-for-byte — only the
+flush-left boundary is pinned in `regions`; the indented case (`  = b` in
+`ALT_STITCHES`) is left unguarded rather than papered over, and the
+divergence is recorded on #2684, not closed here. Separately, `parser/knot.rs`'s
+grammar comment still spells `stitch_header` with `INLINE_WS+` — required
+whitespace — which this PR's driven evidence rejects (whitespace after the
+`=` is optional in practice, per `skip_ws`); the comment has not been
+corrected to match the code it documents.
 
 ## Visual hierarchy
 

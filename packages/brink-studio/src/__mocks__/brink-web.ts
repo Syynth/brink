@@ -137,20 +137,102 @@ function knotHeaderFor(name: string): RegExp {
  */
 const KNOT_IS_FUNCTION_RE = new RegExp(`^\\s*${KNOT_FENCE_EQUALS}\\s*function\\s+`);
 
+/**
+ * The ONE stitch-header vocabulary (#2684) — everything between the start of a
+ * stitch header line and the declared name. The sibling of
+ * {@link KNOT_FENCE_EQUALS} one rung down, and the same recurring split:
+ * #2662/#2682 unified the knot family and left this one alone in the same
+ * file, which is why #2684 exists at all.
+ *
+ * Read off production's `parser/knot.rs` — but only after DRIVING it, because
+ * the doc comment there and the code disagree. The comment says
+ *
+ * ```text
+ * stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
+ * ```
+ *
+ * with `INLINE_WS+` — REQUIRED whitespace. The code is `at_stitch`
+ * (`current() == EQ && nth(1) != EQ && nth(1) != GT`) followed by
+ * `p.skip_ws()`, and `skip_ws` matches **zero** or more. So the real
+ * vocabulary is: a tolerated leading indent (`current()` skips trivia,
+ * tabs included), **exactly one** `=`, the next non-trivia token neither `=`
+ * nor `>` — and **optional** whitespace before the name.
+ *
+ * Driven, not read (#2662's whole lesson): `file_symbols` reports one stitch
+ * for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and `\t= h`, and reports
+ * NONE for `=> f`, `  => g`, `= > j`, `= = k` or a bare `=`. The `\s*` inside
+ * the lookahead is what the last two need — `nth(1)` skips trivia, so `= >` is
+ * excluded exactly as `=>` is.
+ *
+ * ⚠ **This is the single source every stitch consumer below shares.** Before
+ * #2684 the mock had THREE answers to "is this a stitch":
+ * {@link STITCH_HEADER_RE} wanted `^=\s+` (no indent, required space), the
+ * `delete_symbol`/`rename_symbol` guards wanted `^\s*=\s+` (indent fine,
+ * required space), and {@link opensHeader} was a bare `^\s*=` that ended a
+ * region for ANY line starting `=`. So `  = b` was a stitch to the ops and
+ * invisible to the outline, `=c` was invisible to both yet still ENDED a
+ * region, and `=> x` ended a region production keeps running straight
+ * through.
+ */
+// `\s` is not `INLINE_WS`: `\s` matches `\n`, and production's `skip_ws`
+// stops at end of line (it loops on `is_trivia()`, and NEWLINE is its own
+// SyntaxKind — `brink-syntax/src/parser/mod.rs`). Harmless in every
+// line-scoped use below (the string being matched never contains a `\n`),
+// but real in the one whole-source use (the rename rewrite), so both the
+// lookahead and the post-fence whitespace use `[^\S\n]*` rather than `\s*`.
+const STITCH_FENCE_EQUALS = "=(?![^\\S\\n]*[=>])";
+
+/** The fence plus the optional whitespace — everything a stitch header puts
+ *  before the declared name. Production's `skip_ws` after the `=`. */
+const STITCH_FENCE = `${STITCH_FENCE_EQUALS}[^\\S\\n]*`;
+
+/** {@link STITCH_FENCE} anchored at the start of a line, indent allowed. */
+const STITCH_HEADER_PREFIX = `^\\s*${STITCH_FENCE}`;
+
+/** A line that OPENS a stitch, name irrelevant — the region-end question. */
+const STITCH_OPEN_RE = new RegExp(`^\\s*${STITCH_FENCE_EQUALS}`);
+
 /** Does this line OPEN a top-level knot? */
 function opensKnot(line: string): boolean {
   return KNOT_OPEN_RE.test(line);
 }
 
-/** Does this line open a header of ANY level (knot or stitch)? A stitch's
- *  region ends at the next one. Was `/^\s*={1,3}/`, which accepts the same
- *  set of lines as `^\s*=` — one `=` is one `=` however many follow. */
+/**
+ * Does this line open a header of ANY level (knot or stitch)? A stitch's
+ * region ends at the next one.
+ *
+ * Was `/^\s*={1,3}/`, then `/^\s*=/` — "one `=` is one `=` however many
+ * follow" is true of the fence WIDTH but was never the whole question:
+ * production's `stitch_body` breaks on `at_knot(p) || at_stitch(p)`, and
+ * `at_stitch` excludes a following `>`. A `=> x` line is a divert, not a
+ * header, and does not end a stitch — driven: with `= a` / `A.` / `=> x` /
+ * `Still a.` / `=c` under one knot, `file_symbols` gives `a` a region running
+ * through `Still a.` and ending at `=c`. Built from the two families' own
+ * open-tests so a widening in either lands here too.
+ */
 function opensHeader(line: string): boolean {
-  return /^\s*=/.test(line);
+  return opensKnot(line) || STITCH_OPEN_RE.test(line);
 }
 
-/** A stitch header line (`= name`, `= name(params)`), capturing the name. */
-const STITCH_HEADER_RE = /^=\s+(\w+)/d;
+/**
+ * A stitch header line (`= name`, `=name`, `  = name(params)`), capturing the
+ * name.
+ *
+ * Built from {@link STITCH_HEADER_PREFIX}, so `parseOutline` and
+ * `selectionCrossesHeader` recognise exactly what the `delete_symbol` /
+ * `rename_symbol` guards do; before #2684 these disagreed and which answer a
+ * test saw depended on which op it called.
+ */
+const STITCH_HEADER_RE = new RegExp(`${STITCH_HEADER_PREFIX}(\\w+)`, "d");
+
+/**
+ * The header line declaring a stitch NAMED `name` — the shape every op that
+ * resolves a caller-supplied stitch needs. The stitch-level sibling of
+ * {@link knotHeaderFor}.
+ */
+function stitchHeaderFor(name: string): RegExp {
+  return new RegExp(`${STITCH_HEADER_PREFIX}${escapeForRegex(name)}\\b`);
+}
 
 /** Parse knot/stitch headers from ink source for outline generation. */
 function parseOutline(source: string): MockSymbol[] {
@@ -425,7 +507,23 @@ interface MockDoc {
 
 export class EditorSession {
   private files = new Map<string, string>();
-  private activePath = "";
+  /**
+   * Production's own seed (#2663): `EditorSession::new` sets `active_path` to
+   * `"main.ink"` (`crates/brink-web/src/editor/mod.rs`). The mock seeded `""`.
+   *
+   * Both answer `file not loaded` for a session that has loaded nothing —
+   * which is why #2635's driven `resolve_code_action` site stayed green over
+   * the divergence — but `update_source` writes into `files[activePath]`, so a
+   * mock session that never calls `set_active_file` wrote to key `""` where
+   * production writes to `"main.ink"`, and a later `set_active_file("main.ink")`
+   * then refused a file production considers loaded.
+   *
+   * Pinned by `defaults.active_file` in
+   * `crates/brink-web/fixtures/refusal-shapes.json`, read out of a real
+   * production session rather than typed here, so a change to production's
+   * seed moves the fixture instead of silently un-aligning the mock again.
+   */
+  private activePath = "main.ink";
   private docs = new Map<number, MockDoc>();
   private nextDocId = 1;
 
@@ -679,7 +777,10 @@ export class EditorSession {
     let start: number;
     let end: number;
     if (stitch) {
-      const stitchRe = new RegExp(`^\\s*=\\s+${escapeForRegex(stitch)}\\b`);
+      // #2684: `stitchHeaderFor` rather than a hand-written `^\s*=\s+` — the
+      // one stitch vocabulary `parseOutline` also uses, so a stitch this op
+      // can delete is one the outline reports.
+      const stitchRe = stitchHeaderFor(stitch);
       const relative = lines.slice(knotStart + 1, knotEnd).findIndex((l) => stitchRe.test(l));
       if (relative < 0) {
         // #2620 review / #2627: a missing STITCH inside a knot that DOES
@@ -1012,7 +1113,9 @@ export class EditorSession {
         while (knotEnd < lines.length && !opensKnot(lines[knotEnd]!)) knotEnd++;
         const found = lines
           .slice(knotLine + 1, knotEnd)
-          .some((l) => new RegExp(`^\\s*=\\s+${esc(stitch)}\\b`).test(l));
+          // #2684: the one stitch vocabulary, same as `delete_symbol`'s guard
+          // and `parseOutline`'s recognizer.
+          .some((l) => stitchHeaderFor(stitch).test(l));
         if (!found) {
           return EditorSession.structuralRefusal("symbol not found");
         }
@@ -1057,7 +1160,14 @@ export class EditorSession {
     const rewrite = (src: string): string => {
       let out = src;
       if (stitch) {
-        out = out.replace(new RegExp(`(^|\\n)(\\s*=\\s*)${esc(oldName)}\\b`, "g"), `$1$2${newName}`);
+        // #2684: the same {@link STITCH_FENCE} the guard above resolves with —
+        // `(^|\n)` rather than `^` because a header can be rewritten anywhere
+        // in the file. The fence's negative lookahead is what keeps a `=>`
+        // divert line out of the rewrite.
+        out = out.replace(
+          new RegExp(`(^|\\n)([^\\S\\n]*${STITCH_FENCE})${esc(oldName)}\\b`, "g"),
+          `$1$2${newName}`,
+        );
       } else {
         // #2662: the same {@link KNOT_FENCE} the guard above resolves with —
         // unanchored here because a header can be rewritten anywhere in the
