@@ -449,6 +449,28 @@ impl Ord for Ty {
 ///   consumers read `Conflicted` exactly like `Unknown`
 ///   ([`Ty::is_unresolved`]); TM-3 (#619) is the slice that turns a
 ///   `Conflicted` slot into a real strict-mode error.
+///
+/// **The trailing `_ => Ty::Conflicted` cannot be removed** (issue #1772,
+/// the pair-match sibling of #1758's `erase_fn_rows` fix above it in this
+/// file). Unlike `erase_fn_rows`'s single-argument match, this one matches
+/// `(Ty, Ty)`: the wildcard is not just a catch-all for "haven't handled
+/// this variant yet" — it is also the *correct*, load-bearing arm for every
+/// genuine cross-nominal mismatch (`int` vs `string`, `Handle("A")` vs
+/// `Handle("B")`, two different-length `Fn` rows, …), so the match can never
+/// be made exhaustive the way `erase_fn_rows` was. That is exactly what
+/// makes this wildcard a silent-erasure hole for a *future* `Ty` variant
+/// that nests a `Ty`: such a variant would compile cleanly against this
+/// wildcard and silently join to `Conflicted` instead of unifying
+/// pointwise, with no compiler error to catch it — and, worse than
+/// `erase_fn_rows`'s failure mode, gradual mode (every consumer today)
+/// treats `Conflicted` exactly like `Unknown`, so nothing would even be
+/// visibly wrong. `classify_unify_nesting` and
+/// `unify_has_a_pointwise_arm_for_every_nesting_ty_variant` in `mod tests`
+/// below are the guard: an exhaustive match with no wildcard forces an
+/// explicit decision the moment a new variant lands on `Ty`, and the test
+/// proves today's five nesting variants (`Array`, `Map`, `Fn`, `Option`,
+/// `Weighted`) all really do have a pointwise arm above rather than falling
+/// through to here.
 #[must_use]
 pub fn unify(a: &Ty, b: &Ty) -> Ty {
     match (a, b) {
@@ -1108,6 +1130,141 @@ mod tests {
             ErasureShape::NestsTy
         ));
         assert_eq!(erase_fn_rows(&via_weighted), Ty::Weighted(Box::new(erased)));
+    }
+
+    // ─── #1772 `unify`'s pair-match wildcard ───────────────────────────
+    //
+    // `unify` cannot be made an exhaustive match the way `erase_fn_rows`
+    // was for #1758 — it matches `(Ty, Ty)`, and the `_ => Ty::Conflicted`
+    // wildcard is also the *correct* arm for every genuine cross-nominal
+    // mismatch (`int` vs `string`, two different-kind `Handle`s, …), so it
+    // can never be removed. What CAN be pinned down at compile time is
+    // which variants nest a `Ty` — those two evaluated approaches:
+    //
+    // 1. A same-discriminant runtime guard in `unify`'s wildcard arm
+    //    (`debug_assert!(discriminant(a) != discriminant(b), …)`) — rejected.
+    //    It cannot tell a same-variant NESTING mismatch (a bug: the
+    //    hypothetical case this issue is about) apart from a same-variant
+    //    NOMINAL mismatch that is supposed to reach the wildcard today
+    //    (`Ty::List("A")` vs `Ty::List("B")`, `Ty::Handle("A")` vs
+    //    `Ty::Handle("B")` — see the comment on that arm above). Telling
+    //    those apart needs the same nesting-vs-leaf classification as
+    //    option 2 below anyway, so it buys nothing extra — and what it
+    //    gives up is real: `debug_assert!` is compiled out of release
+    //    builds and only fires if some runtime call site actually exercises
+    //    the new variant pair, so an untested new variant sails through
+    //    silently. A compile-time forcing function catches it before any
+    //    test even has to think to exercise it.
+    // 2. An exhaustive classification match with no wildcard arm (this),
+    //    the same idiom `classify_erasure_shape` above uses for #1758 —
+    //    chosen because it forces the decision at compile time, the moment
+    //    the variant is added, independent of whether any test happens to
+    //    construct it.
+
+    /// Whether a `Ty` variant nests another `Ty` — and so needs an explicit
+    /// pointwise `(Variant, Variant)` arm in [`unify`] rather than falling
+    /// through to the trailing `_ => Ty::Conflicted` — or is a nominal leaf
+    /// for which reaching that wildcard on a same-variant mismatch (e.g.
+    /// two different `Handle` kinds) is correct, not a bug.
+    enum UnifyNestingShape {
+        NestsTy,
+        Leaf,
+    }
+
+    /// Structural exhaustiveness guard (issue #1772), the pair-match
+    /// sibling of `classify_erasure_shape` above (issue #1758): an
+    /// *exhaustive* match over every current [`Ty`] variant with **no
+    /// wildcard arm**, so this — and therefore `cargo test` for this crate
+    /// — fails to compile the moment a new variant lands on `Ty`, until it
+    /// is explicitly classified here. Today's five `NestsTy` variants
+    /// (`Array`, `Map`, `Fn`, `Option`, `Weighted`) are exactly the ones
+    /// that already carry an explicit pointwise arm in `unify` — see the
+    /// companion test below, which proves the classification and `unify`'s
+    /// real behavior agree rather than just asserting this match compiles.
+    fn classify_unify_nesting(ty: &Ty) -> UnifyNestingShape {
+        match ty {
+            Ty::Fn(..) | Ty::Array(_) | Ty::Map(_, _) | Ty::Option(_) | Ty::Weighted(_) => {
+                UnifyNestingShape::NestsTy
+            }
+            Ty::Int
+            | Ty::Float
+            | Ty::Bool
+            | Ty::String
+            | Ty::Content
+            | Ty::Divert
+            | Ty::List(_)
+            | Ty::Struct(_)
+            | Ty::Handle(_)
+            | Ty::Range { .. }
+            | Ty::Tower(_)
+            | Ty::Unknown
+            | Ty::Conflicted => UnifyNestingShape::Leaf,
+        }
+    }
+
+    #[test]
+    fn unify_has_a_pointwise_arm_for_every_nesting_ty_variant() {
+        // For every variant `classify_unify_nesting` calls `NestsTy`, build
+        // two same-variant values whose nested element genuinely differs
+        // and confirm `unify` returns the pointwise join, not
+        // `Ty::Conflicted`. A `NestsTy` variant whose `unify` arm is
+        // missing (present or future) falls through the trailing wildcard,
+        // and for a same-variant pair that wildcard result is never
+        // correct — so `Ty::Conflicted` here is exactly the failure this
+        // guard exists to catch (#1772).
+        //
+        // Same caveat as `erase_fn_rows_leaves_every_nominal_leaf_untouched`
+        // above: the exhaustive match only forces a DECISION when a new
+        // variant lands on `Ty`, it cannot force a CORRECT one — a future
+        // nesting variant classified `NestsTy` here still needs a row added
+        // to this table by hand to actually prove `unify` handles it.
+        let nesting_pairs: [(Ty, Ty, Ty); 5] = [
+            (
+                Ty::Array(Box::new(Ty::Int)),
+                Ty::Array(Box::new(Ty::Float)),
+                Ty::Array(Box::new(Ty::Float)),
+            ),
+            (
+                Ty::Map(Box::new(Ty::Int), Box::new(Ty::String)),
+                Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::String)),
+                Ty::Map(Box::new(Ty::Int), Box::new(Ty::String)),
+            ),
+            (
+                Ty::Option(Box::new(Ty::Int)),
+                Ty::Option(Box::new(Ty::Float)),
+                Ty::Option(Box::new(Ty::Float)),
+            ),
+            (
+                Ty::Weighted(Box::new(Ty::Int)),
+                Ty::Weighted(Box::new(Ty::Float)),
+                Ty::Weighted(Box::new(Ty::Float)),
+            ),
+            (
+                fn_ty(&[Ty::Int], Ty::Int),
+                fn_ty(&[Ty::Float], Ty::Int),
+                fn_ty(&[Ty::Float], Ty::Int),
+            ),
+        ];
+
+        for (x, y, expected) in &nesting_pairs {
+            assert!(
+                matches!(classify_unify_nesting(x), UnifyNestingShape::NestsTy),
+                "{x:?} must classify as NestsTy to belong in this table"
+            );
+            let joined = unify(x, y);
+            assert_ne!(
+                joined,
+                Ty::Conflicted,
+                "unify({x:?}, {y:?}) fell through the pair-match wildcard \
+                 to Conflicted — a same-variant nesting pair must unify \
+                 pointwise instead (#1772)"
+            );
+            assert_eq!(
+                &joined, expected,
+                "unify({x:?}, {y:?}) did not join pointwise on the nested \
+                 element"
+            );
+        }
     }
 
     #[test]
