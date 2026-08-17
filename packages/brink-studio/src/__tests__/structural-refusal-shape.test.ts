@@ -364,8 +364,9 @@ const ALT_FENCES =
  * Three stitches, only one of them `= name`, plus two `=`-leading lines that
  * are NOT headers (#2684) — #2662's split one rung down.
  *
- * `parser/knot.rs` DOCUMENTS `stitch_header` as `"=" ~ !("=" | ">") ~
- * INLINE_WS+ ~ identifier`, but the code is `at_stitch` (`current() == EQ &&
+ * `parser/knot.rs` USED TO DOCUMENT `stitch_header` as `"=" ~ !("=" | ">") ~
+ * INLINE_WS+ ~ identifier` (the comment now says `INLINE_WS*`, mismatch fixed
+ * separately by #2695), but the code is `at_stitch` (`current() == EQ &&
  * nth(1) != EQ && nth(1) != GT`) then `p.skip_ws()`, which matches ZERO or
  * more. Driven in `driven_outlines()` / `driven_stitch_acceptance()`, not
  * read off the grammar: production reports a stitch for `= a`, `  = b`, `=c`,
