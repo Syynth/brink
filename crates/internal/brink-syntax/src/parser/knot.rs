@@ -184,9 +184,26 @@ pub(crate) fn stitch_definition(p: &mut Parser<'_, '_>) {
 /// Parse a stitch header.
 ///
 /// ```text
-/// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ knot_params?
+/// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS* ~ identifier ~ INLINE_WS* ~ knot_params?
 ///                   ~ INLINE_WS* ~ type_annotation? }
 /// ```
+///
+/// Two things here previously read differently from what the code below
+/// does (#2695) — verified by driving the parser, not by inferring from this
+/// comment:
+///
+/// - Whitespace after `=` is **optional** (`INLINE_WS*`, not `+`): the body
+///   is `p.bump()` then `p.skip_ws()`, and `skip_ws` consumes zero or more
+///   trivia tokens. `=c` (no space before the name) parses as a stitch.
+/// - The `!("=" | ">")` lookahead is **trivia-skipping**, via `at_stitch`'s
+///   use of `p.nth(1)` (see its doc comment). So whitespace between `=` and
+///   the excluded character doesn't rescue it: `= > j` and `= = k` are
+///   excluded exactly like the tight `=>`/`==` forms are, not just those.
+///
+/// Whether stitch headers *should* require whitespace after `=` is a
+/// parser-semantics question this comment does not decide — `at_stitch` is
+/// unchanged here. The in-tree corpus (`tests/tier{1,2,3}/**/story.ink`)
+/// contains no whitespace-free stitch header to settle it either way.
 fn stitch_header(p: &mut Parser<'_, '_>) {
     p.start_node(STITCH_HEADER);
     p.bump(); // EQ (we already checked it's not `==` or `=>`)
