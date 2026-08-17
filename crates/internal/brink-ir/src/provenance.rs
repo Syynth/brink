@@ -170,6 +170,13 @@ pub enum NodeClass {
     /// diagnostics (`E164`/`E165`, issue #1782) can point at the exact span
     /// rather than its enclosing content line.
     Span = 54,
+    /// One `name="value"` attribute on an inline markup span (issue #1829).
+    /// Stamped per-attribute so `E165` (undeclared attribute) can point at
+    /// the exact `name="value"` pair rather than the whole enclosing span —
+    /// the attribute-axis counterpart of [`Self::Span`]'s span-axis fix
+    /// (#1782): two undeclared attributes on one span now get distinct
+    /// ranges instead of colliding on the span's whole range.
+    SpanAttr = 55,
 }
 
 impl NodeClass {
@@ -226,6 +233,7 @@ impl NodeClass {
             52 => Self::SequenceBranch,
             53 => Self::Lambda,
             54 => Self::Span,
+            55 => Self::SpanAttr,
             _ => return None,
         })
     }
@@ -394,7 +402,7 @@ mod tests {
         // to the enum means bumping this name to the new last variant —
         // otherwise the sentinel starts naming an assigned value and this
         // assertion fails.
-        assert_eq!(NodeClass::from_u16(NodeClass::Span.as_u16() + 1), None);
+        assert_eq!(NodeClass::from_u16(NodeClass::SpanAttr.as_u16() + 1), None);
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 

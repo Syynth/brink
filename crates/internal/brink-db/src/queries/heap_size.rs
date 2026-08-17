@@ -177,7 +177,7 @@ fn span_heap(span: &brink_ir::SpanPart) -> usize {
         + span
             .attrs
             .iter()
-            .map(|(k, v)| string_heap(k) + string_heap(v))
+            .map(|attr| string_heap(&attr.name) + string_heap(&attr.value))
             .sum::<usize>()
         + content_parts_heap(&span.children)
 }

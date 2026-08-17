@@ -501,6 +501,9 @@ fn garble_content_part(part: &mut hir::ContentPart) {
         // like every other required `ptr`, then recurse into its children.
         hir::ContentPart::Span(span) => {
             garble(&mut span.ptr);
+            for attr in &mut span.attrs {
+                garble(&mut attr.ptr);
+            }
             for child in &mut span.children {
                 garble_content_part(child);
             }

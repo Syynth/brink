@@ -40,7 +40,7 @@ use crate::provenance::NodeClass;
 use crate::{
     Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert,
     DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, LogicBlockScope, Name, Return,
-    ReturnKind, SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
+    ReturnKind, SpanAttr, SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -1180,7 +1180,7 @@ pub(super) fn lower_span(
     for child in node.children() {
         match child.kind() {
             N::SPAN_NAME => name = child.text().to_string(),
-            N::SPAN_ATTR => attrs.push(lower_span_attr(&child)),
+            N::SPAN_ATTR => attrs.push(lower_span_attr(file_id, &child)),
             N::TEXT => push_text(&mut children, &child),
             N::ESCAPE => push_escape(&mut children, &child),
             N::INTERPOLATION => children.push(lower_interpolation(file_id, &child, diags)),
@@ -1213,8 +1213,10 @@ pub(super) fn lower_span(
 }
 
 /// One `SPAN_ATTR` (`name="value"`, static text only — see
-/// `SyntaxKind::SPAN_ATTR_VALUE`'s doc) → `(name, value)`.
-fn lower_span_attr(node: &SyntaxNode) -> (String, String) {
+/// `SyntaxKind::SPAN_ATTR_VALUE`'s doc) → a [`SpanAttr`], stamped with its
+/// own provenance (issue #1829) so `E165` can anchor to this exact
+/// attribute instead of the whole enclosing span.
+fn lower_span_attr(file_id: FileId, node: &SyntaxNode) -> SpanAttr {
     let mut name = String::new();
     let mut value = String::new();
     for el in node.children_with_tokens() {
@@ -1228,7 +1230,11 @@ fn lower_span_attr(node: &SyntaxNode) -> (String, String) {
             _ => {}
         }
     }
-    (name, value)
+    SpanAttr {
+        ptr: native_provenance(file_id, NodeClass::SpanAttr, node),
+        name,
+        value,
+    }
 }
 
 /// A `SPAN_ATTR_VALUE`'s decoded text — reuses `expr::unescape_string_token`

@@ -389,7 +389,16 @@ fn build_recognized_parts(
                 );
                 out.push(LinePart::Span {
                     name: span.name.clone(),
-                    attrs: span.attrs.clone(),
+                    // `LinePart::Span::attrs` is the wire shape's flat
+                    // `Vec<(String, String)>` (untouched by #1782 and by
+                    // #1829: E164/E165 fire during HIR analysis, before LIR
+                    // lowering ever runs, so per-attribute provenance has
+                    // nothing to carry across this boundary).
+                    attrs: span
+                        .attrs
+                        .iter()
+                        .map(|attr| (attr.name.clone(), attr.value.clone()))
+                        .collect(),
                     children,
                 });
             }

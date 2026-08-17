@@ -51,6 +51,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rowan::TextRange;
+
 use brink_ir::hir::{Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HostManifest, Provenance};
 
@@ -127,18 +129,21 @@ struct SpanWalker<'a> {
 }
 
 impl SpanWalker<'_> {
-    /// Report against the span's own range (issue #1782: `SpanPart::ptr`).
+    /// Report against a caller-chosen range — the span's own (issue #1782:
+    /// `SpanPart::ptr`) or, for `E165`, an individual attribute's own
+    /// (issue #1829: `SpanAttr::ptr`).
     ///
-    /// Every `SpanPart` is lowered from a real `SPAN` syntax node (native is
-    /// the only frontend that can spell markup), so this always has
-    /// somewhere precise to point — no enclosing-line or enclosing-choice
-    /// fallback needed. This is what makes several spans on one line, even
-    /// repeats of the same undeclared tag, distinguishable: each gets its
-    /// own range instead of sharing the whole content line's.
-    fn report(&mut self, span: &SpanPart, code: DiagnosticCode, message: String) {
+    /// Every `SpanPart`/`SpanAttr` is lowered from a real syntax node
+    /// (native is the only frontend that can spell markup), so a caller
+    /// always has somewhere precise to point — no enclosing-line or
+    /// enclosing-choice fallback needed. This is what makes several spans
+    /// on one line, or several undeclared attributes on one span, even
+    /// repeats of the same name, distinguishable: each gets its own range
+    /// instead of sharing its container's.
+    fn report(&mut self, range: TextRange, code: DiagnosticCode, message: String) {
         self.out.push(Diagnostic {
             file: self.file,
-            range: Provenance::text_range(&span.ptr),
+            range,
             message,
             code,
         });
@@ -147,7 +152,7 @@ impl SpanWalker<'_> {
     fn check_span(&mut self, span: &SpanPart) {
         match self.vocab.get(span.name.as_str()) {
             None => self.report(
-                span,
+                Provenance::text_range(&span.ptr),
                 DiagnosticCode::E164,
                 format!(
                     "unknown markup tag `<{}>`: the host manifest's markup vocabulary does not declare it",
@@ -155,14 +160,19 @@ impl SpanWalker<'_> {
                 ),
             ),
             Some(kind_vocab) => {
-                for (attr, _value) in &span.attrs {
-                    if !kind_vocab.allowed.contains(attr.as_str()) {
+                for attr in &span.attrs {
+                    if !kind_vocab.allowed.contains(attr.name.as_str()) {
+                        // Issue #1829: ranged against the attribute's own
+                        // provenance (`SpanAttr::ptr`), not the whole
+                        // enclosing span — two undeclared attributes on one
+                        // span used to collapse into two diagnostics with
+                        // identical range *and* identical message.
                         self.report(
-                            span,
+                            Provenance::text_range(&attr.ptr),
                             DiagnosticCode::E165,
                             format!(
-                                "unknown attribute `{attr}` on markup tag `<{}>`: the host manifest does not declare it for this span kind",
-                                span.name
+                                "unknown attribute `{}` on markup tag `<{}>`: the host manifest does not declare it for this span kind",
+                                attr.name, span.name
                             ),
                         );
                     }
@@ -177,11 +187,14 @@ impl SpanWalker<'_> {
                 // missing several required attributes gets one report per
                 // name rather than a single combined message.
                 let present: BTreeSet<&str> =
-                    span.attrs.iter().map(|(attr, _)| attr.as_str()).collect();
+                    span.attrs.iter().map(|attr| attr.name.as_str()).collect();
                 for &required_attr in &kind_vocab.required {
                     if !present.contains(required_attr) {
+                        // Stays span-ranged, unlike E165 above: a *missing*
+                        // attribute has no `SpanAttr` node of its own to
+                        // point at — the span is the narrowest real range.
                         self.report(
-                            span,
+                            Provenance::text_range(&span.ptr),
                             DiagnosticCode::E173,
                             format!(
                                 "markup tag `<{}>` is missing required attribute `{required_attr}`: the host manifest declares it required for this span kind",
@@ -543,6 +556,109 @@ mod tests {
         assert_eq!(
             &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
             "<pulse>b</pulse>"
+        );
+    }
+
+    // ── Per-attribute provenance (issue #1829) ───────────────────────────
+
+    #[test]
+    fn two_undeclared_attributes_on_one_span_get_distinct_squiggle_ranges() {
+        // Before #1829, `SpanPart::attrs` had no per-attribute provenance,
+        // so every `E165` for a span pointed at the *whole span* — a
+        // consumer saw two identical-range squiggles instead of one per
+        // undeclared attribute. `wave_manifest()` allows only `amount` on
+        // `wave`, so both `speed` and `decay` are undeclared.
+        let src = "flow a() {\n  <wave amount=\"1\" speed=\"2\" decay=\"3\">shimmer</wave>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E165", "E165"], "{diags:?}");
+        // Distinguishability, not merely "a snapshot changed": the two
+        // ranges must actually differ, AND each must cover only its own
+        // attribute's text — asserting equal-but-wrong ranges would pass a
+        // snapshot-only test just as happily.
+        assert_ne!(
+            diags[0].range, diags[1].range,
+            "two undeclared attributes on one span must not share a range: {diags:?}"
+        );
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "speed=\"2\"",
+            "range must cover only the offending attribute, not the whole span"
+        );
+        assert_eq!(
+            &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
+            "decay=\"3\"",
+            "range must cover only the offending attribute, not the whole span"
+        );
+    }
+
+    #[test]
+    fn repeated_undeclared_attribute_name_on_one_span_still_gets_per_occurrence_ranges() {
+        // The sharper case, mirroring `repeated_undeclared_tag_on_one_line_
+        // still_gets_per_occurrence_ranges` above: the *same* undeclared
+        // attribute name twice on one span used to produce two
+        // byte-identical diagnostics (same code, same whole-span range,
+        // same message) — indistinguishable to a consumer. §1829's fence:
+        // this does NOT diagnose the duplicate attribute *name* itself
+        // (that is a separate, unfiled diagnostic) — it only proves each
+        // occurrence's `E165` now gets its own range.
+        let src = "flow a() {\n  <wave speed=\"1\" speed=\"2\">shimmer</wave>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E165", "E165"], "{diags:?}");
+        assert_eq!(
+            diags[0].message, diags[1].message,
+            "same undeclared attribute name -> same message text: {diags:?}"
+        );
+        assert_ne!(
+            diags[0].range, diags[1].range,
+            "repeated undeclared attribute name must still get per-occurrence ranges: {diags:?}"
+        );
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "speed=\"1\""
+        );
+        assert_eq!(
+            &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
+            "speed=\"2\""
+        );
+    }
+
+    #[test]
+    fn a_single_undeclared_attribute_still_reports_e165_narrowed_to_that_attribute() {
+        // Positive control alongside the #1820 tests above: the
+        // single-undeclared-attribute case (already pinned by
+        // `an_undeclared_attribute_on_a_declared_tag_reports_e165`, message
+        // only) keeps working — and now also gets a range narrower than
+        // the whole span, which is strictly more precise, not a
+        // regression.
+        let src = "flow a() {\n  <wave speed=\"2\">shimmer</wave>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E165"], "{diags:?}");
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "speed=\"2\""
+        );
+    }
+
+    #[test]
+    fn a_missing_required_attribute_stays_span_ranged_not_attribute_ranged() {
+        // E173 (issue #1997) reports a *missing* attribute, which has no
+        // `SpanAttr` syntax node in source to point at — unlike E165, it
+        // must keep pointing at the whole span. Guards against #1829's fix
+        // accidentally narrowing E173 too.
+        let manifest = HostManifest {
+            markup: vec![ManifestSpanKind {
+                name: "sfx".to_string(),
+                attrs: vec![required_attr("volume")],
+            }],
+            ..HostManifest::default()
+        };
+        let src = "flow a() {\n  <sfx>clank</sfx>\n}\n";
+        let diags = run(src, Some(&manifest));
+        assert_eq!(codes(&diags), ["E173"], "{diags:?}");
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "<sfx>clank</sfx>",
+            "a missing attribute has no node of its own; E173 must stay span-ranged"
         );
     }
 

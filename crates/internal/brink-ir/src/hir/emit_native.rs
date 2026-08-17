@@ -1143,8 +1143,8 @@ fn emit_content_parts(parts: &[ContentPart], context: &str) -> Result<String, Em
 /// inverse of `hir::lower_native::body::lower_span`.
 fn emit_span(span: &crate::hir::SpanPart, context: &str) -> Result<String, EmitError> {
     let mut s = format!("<{}", span.name);
-    for (name, value) in &span.attrs {
-        let _ = write!(s, " {name}=\"{}\"", escape_attr_value(value));
+    for attr in &span.attrs {
+        let _ = write!(s, " {}=\"{}\"", attr.name, escape_attr_value(&attr.value));
     }
     if span.children.is_empty() {
         s.push_str("/>");
