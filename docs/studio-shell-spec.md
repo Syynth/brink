@@ -982,7 +982,15 @@ differences from the rename enrolments, both intentional:
   transaction), so the check silently dropped legitimate queued moves on
   totally unrelated edits far more often than it caught a genuine staleness
   hazard — and there was no genuine hazard on this path for it to catch.
-  Trust `result.ok` instead.
+  Trust `result.ok` instead. (This is a staleness claim, distinct from
+  *teardown* safety: an earlier version of this bullet also claimed "no
+  widget instance to `cancelIdleWork` on unmount ... so there is no
+  staleness guard to run here at all," which read as covering
+  `ProjectSession.destroy()` too. It didn't — `runGatedStructuralOp` rolled
+  its own bare `scheduleIdleWork` yield outside `ProjectSession` entirely, so
+  destroying the session mid-defer could still reach a freed `session`
+  handle in `compute()`. See "Two structural gaps closed (#2794)" below for
+  the fix.)
 
 **Which structural ops are gated vs cheap** (`crates/brink-web/src/editor/
 refactor.rs`, backed by `crates/internal/brink-ide/src/structural_result.rs`):
@@ -1069,6 +1077,73 @@ unreachable rather than merely deferred:
   this callback.) Wrapping an always-cheap call would add an idle-hop and a
   pending-indicator flash for zero benefit — the regression this whole
   invariant exists to prevent, not a fix. Left synchronous.
+
+**Two structural gaps closed (#2794).** #2788's adversarial re-review of the
+fourth enrolment found two hazards in the shared shape itself — "the
+enrolment family's gap, not this PR's":
+
+- **A deferred gated call can outlive `ProjectSession.destroy()`.** The
+  `scheduleIdleWork` yield opens a window (up to the 300ms
+  `requestIdleCallback` timeout) between a caller committing
+  `structuralOpPending` and the deferred wasm call actually running. Before
+  #2794, `renameFile` had no `this.destroyed` check after that yield, and its
+  idle handle was never `cancelIdleWork`'d on teardown — an unmount landing
+  inside the window let the callback fire anyway and call
+  `this.session.renameFile(...)` on a wasm handle `destroy()` had already
+  freed. This was CONTAINED, not unreachable, before the fix: the throw
+  landed in `applyRename`'s `catch` and surfaced as an ordinary error
+  notification — but containment is not a fix, and the hazard is generic to
+  every call this class defers via `scheduleIdleWork`, present or future, not
+  specific to `renameFile`. The fix: `ProjectSession.deferGatedCall` (the
+  yield every deferring method now goes through, replacing a bare
+  `scheduleIdleWork` await) tracks its idle handle and rejects the caller's
+  await — instead of resolving into a freed session — if `destroy()` runs
+  first; `destroy()` cancels every still-pending handle and rejects its
+  caller before freeing the wasm handle. One guard, applied once, covering
+  every gated call this class defers rather than a per-site sprinkle. Pinned
+  by `packages/ink-editor/src/__tests__/project-session-destroy.test.ts`.
+
+  **Half-fixed at first landing — closed by #2794's own follow-up review.**
+  "Every gated call this class defers" only covered calls that actually went
+  through `ProjectSession`. `runGatedStructuralOp` (the third enrolment,
+  above) never did: it rolled its own bare `scheduleIdleWork` yield inside
+  `studio-ui`, entirely outside this guard, so `ProjectSession.destroy()`
+  landing mid-defer there could still reach a freed `session` handle in
+  `compute()` — the identical hazard this bullet describes for `renameFile`,
+  just less contained (`dispatchSymbolAction` is dispatched `void`, fire-and-
+  forget, so the throw would have been an unhandled rejection, not even
+  `applyRename`'s caught-and-notified one). The follow-up review caught this
+  before it shipped: `deferForGatedCall` was made public as
+  `ProjectSession.deferGatedCall()` for exactly this reuse, and
+  `runGatedStructuralOp` now awaits it instead of its own yield, catching and
+  swallowing the destroy rejection (the `void` dispatch has no caller to
+  rethrow to) and skipping `applyMoveResult`. Pinned by a case in
+  `symbol-structural-ops.test.ts` mirroring
+  `project-session-destroy.test.ts`'s first case. The family is now actually
+  closed, not merely believed to be.
+- **`structuralOpPending` is a two-writer field with last-writer-wins
+  clearing.** `runGatedStructuralOp` (symbol-menu ops) and `applyRename`
+  (Binder rename/move, #2776) are independent fire-and-forget (`void`)
+  dispatches that both write this field, and before #2794 both cleared it
+  unconditionally in `finally`. An overlapping Binder drag-move and
+  symbol-menu op — e.g. a drag-move started while a `moveStitch` from the
+  context menu is still mid-flight — let whichever settled LAST erase
+  whichever description was actually live, not necessarily its own: the
+  status-bar indicator for the still-running op could vanish, or get
+  silently replaced by a stale "done" state for the op that already
+  finished. The fix is compare-and-clear: `clearStructuralOpPending(
+  description)` (`SymbolMenuSlice`, `studio-store`'s `symbol-menu.ts`) only
+  nulls the field when the live value still equals the description the
+  clearing call itself set, a no-op otherwise. Both writers now clear through
+  this instead of calling `setStructuralOpPending(null)` directly. Pinned by
+  `symbol-structural-ops.test.ts`'s "structuralOpPending compare-and-clear
+  across the two writers" describe block (both overlap orders).
+
+  The field still lives in the `symbol-menu` slice even though `binder.ts`
+  has written it since #2776 — noted, not relocated, in #2794: the two
+  correctness gaps above were the fix this PR scoped to; moving the field to
+  a more neutral home (and updating every reference here) is a follow-up, not
+  bundled with a race-condition fix.
 
 ### 7.8 Editor groups & the document-type API
 

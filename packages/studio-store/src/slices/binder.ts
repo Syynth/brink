@@ -465,6 +465,14 @@ async function deleteFilesWithUndo(
  * refuses cleanly (the catch below) if its target moved out from under it —
  * the same trust-the-op's-own-refusal reasoning `runGatedStructuralOp`
  * documents for the sibling ops.
+ *
+ * Clears via `clearStructuralOpPending(description)`, not
+ * `setStructuralOpPending(null)` (issue #2794): this is a fire-and-forget
+ * `void` dispatch, same as `runGatedStructuralOp`'s symbol-menu ops, and the
+ * two share `structuralOpPending`. An overlapping symbol-menu op settling
+ * after this one started (or vice versa) must not erase the other's
+ * still-live indicator — compare-and-clear only removes the description
+ * THIS call set.
  */
 async function applyRename(
   get: () => StudioState,
@@ -476,7 +484,8 @@ async function applyRename(
   const documents = state._documents;
   if (!project || !documents) return false;
 
-  state.setStructuralOpPending(`Renaming ${oldPath} → ${newPath}`);
+  const pendingDescription = `Renaming ${oldPath} → ${newPath}`;
+  state.setStructuralOpPending(pendingDescription);
   let referrers: string[];
   try {
     referrers = await project.renameFile(oldPath, newPath);
@@ -498,7 +507,7 @@ async function applyRename(
     });
     return false;
   } finally {
-    state.setStructuralOpPending(null);
+    state.clearStructuralOpPending(pendingDescription);
   }
 
   // Re-key any open tabs/views for the file in place (preserve pin/split/
