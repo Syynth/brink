@@ -991,10 +991,12 @@ assumed so).
 | op | helper | gated? | off-paint-path? |
 |---|---|---|---|
 | `move_stitch` / `promote_stitch` / `demote_knot` | `gated_move_json` | yes | yes (`runGatedStructuralOp`, #2767) |
-| `rename_file` / `rename_dir` | `structural_result_json` / `dir_move_result_json` | yes | **no — tracked gap, see below** |
+| `rename_file` | `structural_result_json` | yes | yes (deferred in `ProjectSession.renameFile`; pending state committed by `applyRename` in `binder.ts`, #2776) |
+| `rename_dir` | `dir_move_result_json` | yes | n/a — **no studio caller** (see below); nothing to defer today |
 | `rename_symbol` / `rename_symbol_at` | `structural_result_json` | yes | yes (#722 inline, #696/#2761 modal) |
 | `extract_to_knot` / `extract_to_function` | `structural_result_json` | yes | yes, transitively (built on `InlineNameInput`, #722) |
 | `reorder_stitch` / `reorder_knot` / `reorder_stitches` / `reorder_knots` | `move_result_json_simple` | no | n/a — not heavy, runs inline |
+| code actions routed through `resolve_code_action_impl` (`crates/brink-web/src/editor/code_actions.rs`) | `gated_move_json` for a `MoveStitch`/`PromoteStitch`/`DemoteKnot`-tagged action, `move_result_json_simple` for everything else | **conditionally** | n/a — the gated branch is unreachable from the studio menu (see below); left synchronous |
 
 **Marker convention and its guard.** A call site enrolled in this invariant
 carries a `// PAINT-PATH-DEFERRED <id>: <reason>` (wrapped by the remedy) or
@@ -1003,24 +1005,65 @@ out of scope) comment directly above it. `packages/brink-studio/src/
 __tests__/paint-path-call-enrolment.test.ts` statically scans every
 `packages/*/src` file (roots derived from `pnpm-workspace.yaml`, same pattern
 as `select-call-enrolment.test.ts`) for `.moveStitch(`/`.promoteStitch(`/
-`.demoteKnot(` call sites and fails if one lacks a marker with a real (>10
-char) reason — deliberately scoped to exactly those three method names, not
-every gated op in the table above (see the test file's own header for why).
-It is a marker-presence scan, not a control-flow check: it cannot verify a
-`DEFERRED` site is actually wrapped correctly, only that a human wrote a
-marker and so had to look. Real behavioral verification is
-`symbol-structural-ops.test.ts`'s "run off the paint path" describe block.
+`.demoteKnot(`/`.session.renameFile(` call sites and fails if one lacks a
+marker with a real (>10 char) reason — deliberately scoped to exactly those
+four method-call shapes, not every gated op in the table above (see the test
+file's own header for why). It is a marker-presence scan, not a control-flow
+check: it cannot verify a `DEFERRED` site is actually wrapped correctly, only
+that a human wrote a marker and so had to look. Real behavioral verification
+is `symbol-structural-ops.test.ts`'s "run off the paint path" describe block
+for the symbol-menu trio, and `file-rename.test.ts`'s "runs off the paint
+path" describe block for `rename_file`.
 
-**Known, un-fixed gap: `renameFile`/`renameDir`.** `packages/ink-editor/src/
-project-session.ts`'s `ProjectSession.renameFile`/`renameDir` — the Binder's
-file-tree rename/move surface — call the same gated ops synchronously with no
-pending state at all. #2767's audit found this site but left it unfixed: it
-is a different UI surface (the file tree, not the symbol menu) whose fix
-would touch `project-session.ts` and `binder.ts`, both shared/central files
-that PR deliberately did not expand into. Tracked as a follow-up, not
-enrolled in the `paint-path-call-enrolment.test.ts` guard (enrolling it would
-make the guard red on a known gap instead of a new regression — see that
-file's header).
+**Fourth enrolment (#2776): the Binder's file/folder rename-and-move.** The
+same hazard recurred a fourth time in `ProjectSession.renameFile`
+(`packages/ink-editor/src/project-session.ts`), reached from the Binder's
+inline rename, drag-move, and multi-select move (`applyRename` in
+`binder.ts`, backing `renameFile`/`moveFile`/`moveFiles`/`renameFolder` —
+`renameFolder` loops one `renameFile` call per contained file). Unlike the
+symbol-menu trio, the deferred call and the busy-state commit sit in
+different packages: `ProjectSession` (`ink-editor`) has no store to commit UI
+state into, so it only does the `scheduleIdleWork` half — `renameFile` yields
+before touching the gated wasm call, which means the deferral applies to
+*every* caller of `ProjectSession.renameFile`, not just the Binder. The
+synchronous half — committing `structuralOpPending` before that first
+`await` — lives in `applyRename` (`studio-store`'s `binder.ts`), the
+store-aware caller, reusing the SAME field and `StructuralOpSegment` #2767
+introduced rather than a parallel mechanism (see that field's doc comment in
+`symbol-menu.ts`, which #2776 generalized from "the symbol-menu trio" to "any
+gated structural op"). Same staleness posture as the trio: no
+`session.generation` re-check, trusting `rename_file`'s own refusal
+(`RenameFileError::DestinationExists`, surfaced as `result.ok: false`)
+against whatever the session's live source is when the deferred call actually
+runs.
+
+**Audited and left out, on purpose (#2776).** #2776's ask named three sites;
+one of the three turned out not to need this treatment, and one turned out
+unreachable rather than merely deferred:
+
+- **`rename_dir`** runs the identical gate to `rename_file`
+  (`crates/internal/brink-ide/src/dir_rename.rs`'s `gate_dir_move`), but
+  **no code under `packages/*/src` calls it.** The Binder's folder rename
+  (`renameFolder` in `binder.ts`) loops per-file `renameFile` calls instead
+  of calling the wasm `renameDir`/`rename_dir` op — confirmed by grepping
+  every non-test `.renameDir(`/`.rename_dir(` call site in the workspace
+  (`symbol-structural-ops.test.ts`'s own header independently notes
+  "`renameDir` has no studio consumer yet"). There is nothing on a real user
+  path to defer. If a caller is ever added, it needs this same treatment.
+- **`applyCodeAction`** (`document-sessions.ts`'s `resolveCodeAction`
+  callback) routes through `resolve_code_action_impl`, which CAN take the
+  gated `gated_move_json` branch — but only for a `MoveStitch`/
+  `PromoteStitch`/`DemoteKnot`-tagged `CodeActionData`. `brink_ide::
+  code_actions::code_actions` — the only function that builds the list the
+  studio's code-actions menu actually offers — never constructs any of those
+  three variants, nor do the import-fix/creation-site-fix/value-call-fix
+  generators merged alongside it; every code action the menu can offer today
+  resolves through the cheap `move_result_json_simple` pure-rewrite branch.
+  (The LSP backend, `crates/brink-lsp/src/backend.rs`, does construct those
+  variants for its own resolver — a different transport, not a path through
+  this callback.) Wrapping an always-cheap call would add an idle-hop and a
+  pending-indicator flash for zero benefit — the regression this whole
+  invariant exists to prevent, not a fix. Left synchronous.
 
 ### 7.8 Editor groups & the document-type API
 
