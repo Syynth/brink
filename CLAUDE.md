@@ -159,6 +159,21 @@ On a fresh checkout (including cloud sessions with no local toolchain cache), ru
   - `pnpm check:wasm-pkg` (`scripts/check-wasm-pkg.mjs`) remains the standalone diagnostic, running two independent fast checks with different remediations — `checkWasmPkg` (does `crates/brink-web/www/pkg` hold a built wasm-pack output? → build wasm) and `checkWasmPkgLink` (did it resolve into `packages/wasm/node_modules/brink-web`? #2514 → reinstall). `install:checked` composes both; run `check:wasm-pkg` directly when diagnosing an already-broken tree.
   - Most CI lanes need neither: the ordering is CI-self-enforcing (#2504) via `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` (`packages/brink-desktop/src-tauri/src/lib.rs`), which parses every job in every `.github/workflows/*.yml` file and fails if any `pnpm install --frozen-lockfile` step lacks a preceding `wasm-pack build crates/brink-web` step in the same job. That test guards the lanes it can see in workflow YAML — but `.github/workflows/book.yml` runs `just book-assets`, whose recipe body invokes `pnpm install:checked` from inside a `justfile` recipe rather than a literal workflow step, so the YAML parser has no visibility into it. `book-assets` is guarded precisely because of that blind spot; `install:checked` covers both the local path the CI-self-enforcing test cannot see and this one CI lane it cannot see either.
 
+## Which gate covers which files
+
+Pick the gate from the files you actually touched, not from the directory's name. The mapping is not guessable, and getting it wrong ships a change whose tests never ran — the commands below are correct, but none of them tells you *which* one owns a given file.
+
+| You edited | The gate that covers it | Trap |
+|---|---|---|
+| `scripts/*.mjs` | `pnpm test:scripts` | — |
+| **`packages/*/scripts/*.mjs`** | **`pnpm --filter @brink/desktop test`** | ⚠ **NOT `pnpm test:scripts`.** That script is `node --test scripts/*.test.mjs` — a non-recursive glob rooted at the repo, blind to `packages/*/scripts/`. The three files in `packages/brink-desktop/scripts/` are tested from `packages/brink-desktop/src/__tests__/*.test.ts` under vitest, nowhere near their own directory. |
+| `packages/brink-desktop/src-tauri/**` | `cd packages/brink-desktop/src-tauri && cargo test` | ⚠ A root `cargo test` does **not** run it. Not via the root `exclude` list (it isn't in it) — root `members` globs only `crates/…`, so `packages/**` is never matched, and `src-tauri/Cargo.toml` declares its own `[workspace]`. Outside by construction, twice over. |
+| `packages/brink-studio/**`, the `brink-web` mock | `pnpm --filter @brink-lang/studio test` | Needs the wasm pkg built first (#2464). |
+| `crates/brink-web/**` | `cargo test -p brink-web --lib` + the studio suite | Fixture changes are mirrored on the TS side; the Rust test alone is half the pin. |
+| `.github/workflows/*.yml` | `cd packages/brink-desktop/src-tauri && cargo test` | The workflow-YAML guards (`every_pnpm_install_lane_builds_wasm_first_in_the_same_job`, `every_workflow_job_sets_timeout_minutes`) live in the **excluded** workspace, so a root `cargo test` misses them too. |
+
+The `packages/*/scripts/` row is here because it cost a CI failure (#2702): a change to `ensure-cli-sidecar.mjs`/`ensure-wasm.mjs` ran a gate of `test:scripts` + `src-tauri cargo test` — neither of which executes those files' tests — and a dead-code predicate (`error.killed`, which `execSync` never sets on a timeout) reached CI. **A gate scoped narrower than the diff is not a green gate.** After writing a gate, list the files the diff touches and confirm each one has a row above.
+
 ## Key commands
 
 ```sh
