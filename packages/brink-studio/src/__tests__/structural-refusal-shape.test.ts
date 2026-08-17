@@ -389,6 +389,21 @@ const ALT_STITCHES =
   "=== one ===\nFirst.\n= a\nA.\n=> x\nStill a.\n= > y\nStill a too.\n=c\nC.\n  = b\nB.\n\n=== two ===\nSecond.\n";
 
 /**
+ * A file with NO trailing newline at all, byte-identical to the Rust
+ * driver's `NO_TRAILING_NEWLINE`. Every other source fixture above ends in
+ * `\n`, which is structurally why the TRAILING newline-insertion guards on
+ * `move_stitch`/`promote_stitch` stayed unpinned (#2739, the TRAILING half
+ * of #2730 — that fixture named only the LEADING `needs_newline_before`/
+ * `needs_nl` guard). Stitch `b` is the file's own last byte: moving it (or
+ * promoting it) inserts content with nothing but EOF or the next header
+ * following, exercising `structural_move.rs`'s `needs_newline_after`
+ * (`move_stitch`) and `!promoted_text.ends_with('\n')`
+ * (`promote_stitch_to_knot`) guards, which `ALT_FENCES`'s `three` boundary
+ * cannot: `three` is only ever the DESTINATION there, never the thing moved.
+ */
+const NO_TRAILING_NEWLINE = "=== one ===\nFirst.\n=== two ===\nSecond.\n= b\nB.";
+
+/**
  * A file whose very FIRST knot header is itself indented (#2706), byte-
  * identical to the Rust driver's `INDENTED_FIRST_KNOT`.
  *
@@ -1054,6 +1069,20 @@ const acceptanceCases: Array<{ key: string; call: () => string }> = [
     key: "demote_knot:alt-fence-three-boundary",
     call: () => sessionWith({ "main.ink": ALT_FENCES }).demote_knot("main.ink", "two", "three"),
   },
+  // ── #2739 (the TRAILING half of #2730): `NO_TRAILING_NEWLINE`'s stitch `b`
+  // is the file's own last byte, with no `\n` at all — the shape that
+  // stresses `move_stitch`/`promote_stitch_to_knot`'s own TRAILING guard,
+  // which `ALT_FENCES`'s `three` above (a LEADING-guard case) does not.
+  {
+    key: "move_stitch:no-trailing-newline",
+    call: () =>
+      sessionWith({ "main.ink": NO_TRAILING_NEWLINE }).move_stitch("main.ink", "two", "b", "one"),
+  },
+  {
+    key: "promote_stitch:no-trailing-newline",
+    call: () =>
+      sessionWith({ "main.ink": NO_TRAILING_NEWLINE }).promote_stitch("main.ink", "two", "b"),
+  },
 ];
 
 describe("the mock accepts exactly what production accepts (#2661)", () => {
@@ -1071,6 +1100,7 @@ describe("the mock accepts exactly what production accepts (#2661)", () => {
       KNOT_AND_FUNCTION,
       LEADING_BLANK_LINE,
       MAIN,
+      NO_TRAILING_NEWLINE,
       PARAM_STITCH,
       STITCHLESS_KNOTS,
       STITCH_SHADOWS_FUNCTION,
@@ -1450,6 +1480,35 @@ describe("extract_to_function chooses the call form production does (#2675 Gap A
  * a separating newline inserted before the moved/demoted content). Fixed in
  * `move_stitch`/`demote_knot` (`packages/brink-studio/src/__mocks__/
  * brink-web.ts`) with the matching guard.
+ *
+ * #2739 is the TRAILING half of that same #2730 gap — #2730's own title named
+ * only the LEADING `needs_newline_before`/`needs_nl` guard; review on #2734
+ * found `move_stitch`'s TRAILING counterpart (`structural_move.rs`'s
+ * `needs_newline_after`, `move_stitch:653/666`) still had no mock code at
+ * all, and asked whether `promote_stitch_to_knot`'s own TRAILING guard
+ * (`structural_move.rs:791`) was unmirrored too rather than assuming it.
+ * `ALT_FENCES`'s `three` cannot answer either question: it is only ever the
+ * DESTINATION in the cases above, never the thing being moved, so its bare
+ * `"  "` boundary only ever exercises a LEADING guard. `NO_TRAILING_NEWLINE`'s
+ * stitch `b` — the file's own last byte, with no `\n` at all — is the thing
+ * moved/promoted instead. Confirmed by running this driver against real
+ * production: `move_stitch:no-trailing-newline` WAS a genuine gap — the mock
+ * glued the moved stitch onto the next header, `"...First.\nB.=== two
+ * ===..."`, where production separates them, `"...First.\n= b\nB.\n===
+ * two===..."` — and is fixed the same way as #2730's pair, in `move_stitch`
+ * (`packages/brink-studio/src/__mocks__/brink-web.ts`).
+ * `promote_stitch:no-trailing-newline` was NOT a gap: `promote_stitch`'s own
+ * trailing-newline line (`if (!promoted.endsWith("\n")) promoted += "\n";`,
+ * present since #2721) is unconditional on the promoted text's own ending —
+ * the same shape as `structural_move.rs:791`'s `if
+ * !promoted_text.ends_with('\n')` — so it already matched with no change
+ * needed; this case is new coverage of that fact, not a fix.
+ * `demote_knot_to_stitch`'s own trailing guard (`structural_move.rs:874`) is
+ * unconditional the same way and needs no new case here at all: the
+ * pre-existing `demote_knot:alt-fence-knot` case above (#2706) already drives
+ * it — demoting `three` forces the identical trailing `\n` onto the same bare
+ * `"  "` boundary `promote_stitch:no-trailing-newline`'s doc references, and
+ * that pin has been green all along.
  */
 describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees with production (#2675 Gap C, #2685 Gap 3, #2706)", () => {
   const payloadCalls: Record<string, () => string> = {
@@ -1536,6 +1595,15 @@ describe("reorder_knots/reorder_stitches/move_stitch/extract_* new_source agrees
       sessionWith({ "main.ink": ALT_FENCES }).move_stitch("main.ink", "one", "a", "three"),
     "demote_knot:alt-fence-three-boundary": () =>
       sessionWith({ "main.ink": ALT_FENCES }).demote_knot("main.ink", "two", "three"),
+    // #2739 (the TRAILING half of #2730): `two`'s stitch `b` is the file's
+    // own last byte, with no `\n` after it — the shape that stresses
+    // `move_stitch`/`promote_stitch_to_knot`'s own TRAILING guard, which
+    // nothing above does (`ALT_FENCES`'s `three` is only ever the
+    // destination, never the thing moved).
+    "move_stitch:no-trailing-newline": () =>
+      sessionWith({ "main.ink": NO_TRAILING_NEWLINE }).move_stitch("main.ink", "two", "b", "one"),
+    "promote_stitch:no-trailing-newline": () =>
+      sessionWith({ "main.ink": NO_TRAILING_NEWLINE }).promote_stitch("main.ink", "two", "b"),
   };
 
   it("every driven payload has a call site here", () => {
