@@ -262,11 +262,37 @@ test.describe("knot/stitch rename (#305)", () => {
   });
 
   test("a colliding rename shows the breakage report; Force overrides", async ({ page }) => {
-    // The Enter-triggered rename runs the collision analysis synchronously in
-    // wasm on the main thread before the report can mount — under CI's
-    // parallel workers that occasionally exceeds the default 5s expect
-    // timeout (#696). Widen the budget for this test and the specific wait.
-    test.slow();
+    // #696 — this used to flake on `report.toBeVisible()`: the collision
+    // analysis (`performSymbolRename` → `EditorSession.rename_symbol`, a
+    // synchronous wasm call) ran inline in the Enter handler's own frame, so
+    // under CI's parallel workers it could occasionally block paint (and
+    // Playwright's CDP polling) past even a widened timeout — PR #714's
+    // "raise the timeout" fix (`test.slow()` + 20s waits, both removed here)
+    // reduced but never eliminated the recurrence (PR #1500, PR #1888).
+    //
+    // #722 later fixed this exact defect for the sibling INLINE rename
+    // widget (see "inline rename shows '⚠ breaks N'..." above in this file,
+    // which needs no special timeout) by committing a `.brink-inline-rename-
+    // badge--pending` state synchronously — so a paint lands before the
+    // heavy call runs — then deferring the call itself off the paint path.
+    // It never touched this MODAL prompt, which is the surface this test
+    // actually drives; that gap is why the flake outlived #722.
+    // `SymbolRenamePrompt` now takes the same discipline (see its OFF THE
+    // PAINT PATH doc comment) via a `.brink-rename-pending` indicator, so the
+    // analysis is no longer racing paint here either — this test now passes
+    // reliably on the same default (unwidened) timeouts the inline test above
+    // already relies on.
+    //
+    // The pending indicator itself is real (and DOM-committed before the
+    // deferred call ever starts — see the doc comment on `SymbolRenamePrompt`
+    // and the deterministic, fake-timer-driven proof in
+    // `symbol-rename-prompt-pending.test.tsx`), but it is deliberately NOT
+    // asserted here: measured with `--repeat-each=15` against this real
+    // browser, its visibility flashed too briefly for Playwright's CDP
+    // polling to reliably observe on a mostly-idle page (10/15 runs missed
+    // it, 0/15 missed the report) — an assertion on it would trade one flake
+    // for another. A live browser's polling granularity is the wrong tool for
+    // proving a sub-poll-interval ordering; the unit test's fake timers are.
     await page.goto("/");
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
@@ -276,19 +302,16 @@ test.describe("knot/stitch rename (#305)", () => {
     await page.keyboard.press("Enter");
 
     // Safe-by-default: the rename is blocked and the report is shown instead.
-    // Wait on the actual UI condition (the report mounting) with a timeout
-    // sized for the wasm analysis, not the default — never a fixed sleep.
     const report = page.locator(".brink-rename-report");
-    await expect(report).toBeVisible({ timeout: 20000 });
+    await expect(report).toBeVisible();
     await expect(report).toContainText(/would break/i);
     await expect(report.locator(".brink-rename-diag")).not.toHaveCount(0);
     // Still not applied — `threshold` is intact.
     await expect(binderKnot(page, "threshold")).toHaveCount(1);
 
     // Force overrides; the report closes and the rename applies (now two `intro`).
-    // Same wasm-bound apply path — give it the same generous, condition-based budget.
     await page.locator(".brink-rename-force").click();
-    await expect(report).toBeHidden({ timeout: 20000 });
+    await expect(report).toBeHidden();
     await expect(binderKnot(page, "threshold")).toHaveCount(0);
     await expect(binderKnot(page, "intro")).toHaveCount(2);
   });

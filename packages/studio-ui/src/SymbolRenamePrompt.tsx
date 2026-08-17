@@ -10,11 +10,27 @@
  *
  * Mounted once near the studio root (next to `SymbolContextMenuHost`); driven
  * by the `renamePrompt` request the shared context menu raises.
+ *
+ * OFF THE PAINT PATH (#696, mirroring #722): `performSymbolRename`'s
+ * collision analysis is a synchronous wasm call (`EditorSession.rename_symbol`
+ * / `rename_symbol_at`, `crates/brink-web/src/editor/refactor.rs`) with no
+ * yield point of its own — under CPU contention it can block the JS main
+ * thread (and therefore paint) for long enough to blow past any expect
+ * timeout, which is what made `e2e/symbol-rename.spec.ts`'s breakage-report
+ * assertion flake (originally diagnosed in PR #714's RCA). #722 fixed this
+ * exact defect for the sibling **inline** rename widget but never touched
+ * this **modal** prompt — the surface the flaky test actually drives — so
+ * the flake recurred on PR #1500 and PR #1888 after #722 had already shipped.
+ * `run()` below applies the same fix here: it commits `busy` synchronously
+ * (so React can paint the pending indicator) and defers the heavy call to
+ * the next idle slot via `scheduleIdleWork`, instead of running it inline in
+ * the same frame as the triggering Enter/click.
  */
 
 import { useEffect, useRef, useState } from "react";
 import { Overlay, EDITOR_REVEAL_COMMAND_ID, useShell } from "@brink/studio-shell";
 import type { RenameDiagnostic } from "@brink/wasm-types";
+import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "@brink-lang/editor";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { performSymbolRename } from "./symbolMenuActions.js";
 
@@ -44,6 +60,18 @@ export function SymbolRenamePrompt() {
   const [report, setReport] = useState<RenameDiagnostic[] | null>(null);
   const [pendingName, setPendingName] = useState("");
   const [busy, setBusy] = useState(false);
+  const idleHandleRef = useRef<IdleHandle | null>(null);
+
+  // Cancel a still-pending deferred analysis on unmount so it never resolves
+  // against a torn-down component.
+  useEffect(() => {
+    return () => {
+      if (idleHandleRef.current !== null) {
+        cancelIdleWork(idleHandleRef.current);
+        idleHandleRef.current = null;
+      }
+    };
+  }, []);
 
   const open = req != null;
   const currentName = req ? (req.currentName ?? req.stitch ?? req.knot ?? "") : "";
@@ -90,7 +118,16 @@ export function SymbolRenamePrompt() {
 
   const run = async (newName: string, force: boolean): Promise<void> => {
     if (busy) return;
+    // Commit `busy` synchronously so React paints the pending indicator
+    // (below) before the heavy call runs, then yield to the next idle slot
+    // (falling back to a macrotask) rather than calling `performSymbolRename`
+    // inline in this same event's frame — see the OFF THE PAINT PATH note on
+    // the component doc comment (#696/#722).
     setBusy(true);
+    await new Promise<void>((resolve) => {
+      idleHandleRef.current = scheduleIdleWork(resolve);
+    });
+    idleHandleRef.current = null;
     const outcome = await performSymbolRename(
       storeApi.getState(),
       applyMoveResult,
@@ -132,6 +169,15 @@ export function SymbolRenamePrompt() {
 
   return (
     <Overlay open={open} onClose={close} className="shell-palette brink-rename-prompt">
+      {busy ? (
+        // Deterministic completion signal (#696/#722): committed and painted
+        // BEFORE the deferred analysis call runs (see `run()`), so a test can
+        // wait on this appearing without depending on the analysis's own
+        // duration. Mirrors `.brink-inline-rename-badge--pending`.
+        <p className="brink-rename-pending" role="status" aria-live="polite" aria-busy="true">
+          Checking for conflicts…
+        </p>
+      ) : null}
       {report == null ? (
         <div className="brink-rename-input-row">
           <label className="brink-rename-label" htmlFor="brink-rename-input">

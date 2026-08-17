@@ -87,6 +87,16 @@ export type {
   InlineNameBreakageContext,
 } from "./inline-name-input.js";
 
+// Idle-callback scheduling (#722): lets a heavy synchronous wasm call (a
+// breakage/collision analysis) be kicked off a tick after the caller has
+// already painted whatever "pending" UI it needs, instead of running inline
+// in the same frame as the triggering event. `InlineNameInput` (above) is
+// the in-tree consumer; exported so other rename/analysis surfaces — e.g.
+// the modal `SymbolRenamePrompt` (#696) — can take the same off-paint-path
+// discipline instead of re-implementing it.
+export { scheduleIdleWork, cancelIdleWork } from "./idle-schedule.js";
+export type { IdleHandle } from "./idle-schedule.js";
+
 // Extract selection → knot/function code actions (#315 H): the code-actions
 // menu entries + the name-prompt → wasm extract → apply flow.
 export {
