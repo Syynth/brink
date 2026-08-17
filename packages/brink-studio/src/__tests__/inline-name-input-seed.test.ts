@@ -29,7 +29,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Location, StructuralResult } from "@brink/wasm-types";
-import { renameExtension, startInlineRename } from "@brink-lang/editor";
+import { renameExtension, startInlineRename, InlineNameInput } from "@brink-lang/editor";
 
 const DOC = "=== hello ===\nHi.\n-> hello\n";
 const SYMBOL = "hello";
@@ -41,6 +41,22 @@ const safe = (): StructuralResult => ({
   cross_file_edits: [],
   introduced_diagnostics: [],
   safe: true,
+});
+
+const unsafe = (n: number): StructuralResult => ({
+  ok: true,
+  path: "main.ink",
+  new_source: "=== hello ===\n",
+  cross_file_edits: [{ path: "other.ink", new_source: "-> hello\n" }],
+  introduced_diagnostics: Array.from({ length: n }, (_, i) => ({
+    severity: "error" as const,
+    code: "E022",
+    message: `unresolved divert ${i}`,
+    path: "other.ink",
+    line: i + 1,
+    col: 1,
+  })),
+  safe: false,
 });
 
 /** A view wired with the inline rename extension, opened on `hello`. The
@@ -133,5 +149,108 @@ describe("InlineNameInput deferred focus/select (#2535)", () => {
     vi.advanceTimersByTime(0);
     expect(document.activeElement).toBe(input);
     view.destroy();
+  });
+
+  // ── #2557 regression: clear-before-set on the two deferred focus timers ──
+  //
+  // `render()`'s post-mount `focusTimer` and `renderReport()`'s
+  // `forceFocusTimer` are stored on instance fields specifically so
+  // `dispose()` can cancel them. Both `InlineRenameWidget.eq()` (rename.ts)
+  // and `ExtractPromptWidget.eq()` (extract-actions.ts) return `false`
+  // unconditionally, so CM6 is free to call `toDOM()` -> `render()` again on
+  // the *same* `InlineNameInput` instance. Without a clear-before-set guard
+  // at each assignment, a second call overwrites the field and orphans the
+  // first handle: `dispose()` can only cancel whatever the field currently
+  // holds, so the orphaned timer survives teardown and still fires. These
+  // tests exercise `InlineNameInput` directly (rather than through
+  // `renameExtension`) so they pin the guard as a property of the class
+  // itself, independent of whether any *current* call site happens to avoid
+  // re-invoking `render()`/the report a second time.
+
+  it("clears an orphaned focusTimer when render() runs again on the same instance", () => {
+    const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus");
+    const controller = new InlineNameInput(
+      {
+        initialValue: SYMBOL,
+        ariaLabel: "Rename hello",
+        forceLabel: "Rename anyway",
+        query: () => null,
+        onCommit: () => {},
+      },
+      () => {},
+    );
+
+    // First mount (e.g. CM6's initial `toDOM()`) — schedules `focusTimer`.
+    const first = controller.render();
+    document.body.appendChild(first);
+
+    // A decoration redraw before that timer fires calls `render()` again on
+    // the same controller, producing a second (about-to-be-detached) root.
+    first.remove();
+    const second = controller.render();
+    document.body.appendChild(second);
+
+    controller.dispose();
+    vi.runAllTimers();
+
+    // No orphaned timer should survive teardown to call `.focus()` — with
+    // the bug, the first render's timer is never cancelled and still fires.
+    expect(focusSpy).not.toHaveBeenCalled();
+    focusSpy.mockRestore();
+    document.body.replaceChildren();
+  });
+
+  it("clears an orphaned forceFocusTimer when renderReport() runs again while the report is open", () => {
+    const focusSpy = vi.spyOn(HTMLButtonElement.prototype, "focus");
+    const results: Record<string, StructuralResult> = { bad: unsafe(1), worse: unsafe(2) };
+    const controller = new InlineNameInput(
+      {
+        initialValue: SYMBOL,
+        ariaLabel: "Rename hello",
+        forceLabel: "Rename anyway",
+        liveBadge: true,
+        query: (name) => results[name] ?? null,
+        onCommit: () => {},
+      },
+      () => {},
+    );
+    const root = controller.render();
+    document.body.appendChild(root);
+    vi.advanceTimersByTime(0); // settle the initial focus/select deferral
+
+    const input = root.querySelector<HTMLInputElement>(".brink-inline-rename-input");
+    if (input === null) throw new Error("input not mounted");
+    input.value = "bad";
+    input.dispatchEvent(new Event("input"));
+    vi.advanceTimersByTime(251); // debounce settle + deferred query resolve
+
+    const badge = root.querySelector<HTMLButtonElement>(".brink-inline-rename-badge");
+    if (badge === null) throw new Error("badge not mounted");
+    badge.click(); // opens the report -> schedules forceFocusTimer #1
+
+    // A badge refresh while the report is already open re-renders it
+    // (`updateBadge()`'s `if (this.reportOpen) this.renderReport(result)`
+    // branch), which clears forceFocusTimer #1 and schedules #2.
+    //
+    // NOTE the 251ms advance below also flushes forceFocusTimer #1 (a 0ms
+    // timer) BEFORE the 250ms debounce triggers that re-render — so exactly
+    // one focus legitimately lands here, while the controller is still alive
+    // and the report is open. That call is correct behaviour, not a leak, so
+    // this asserts the DELTA across dispose() rather than an absolute zero.
+    // The delta is still the real test: if renderReport()'s re-render left #2
+    // uncleared, or dispose() failed to clear it, runAllTimers() would add a
+    // second call here.
+    input.value = "worse";
+    input.dispatchEvent(new Event("input"));
+    vi.advanceTimersByTime(251);
+
+    const focusCallsBeforeDispose = focusSpy.mock.calls.length;
+
+    controller.dispose();
+    vi.runAllTimers();
+
+    expect(focusSpy).toHaveBeenCalledTimes(focusCallsBeforeDispose);
+    focusSpy.mockRestore();
+    document.body.replaceChildren();
   });
 });
