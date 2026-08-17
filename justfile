@@ -1,3 +1,55 @@
+# Every network-touching command in the recipes below is bounded by
+# run_with_timeout, sourced from scripts/lib/run-with-timeout.sh — the same
+# wedged-proxy hang class #2591/#2638/#2642 bounded in setup-dev.sh and #2667
+# bounded in refresh-excluded-lockfiles.sh. These recipes were left BARE until
+# #2677 because scripts/check-scripts.mjs only ever discovered
+# scripts/**/*.sh: a justfile recipe body was a whole developer-facing surface
+# outside the scan, and `just book-assets` is additionally a CI lane
+# (.github/workflows/book.yml) that no workflow-YAML parser can see into.
+#
+#   Knob                                     Default  On timeout
+#   ---------------------------------------------------------------------
+#   BRINK_JUST_WASM_TIMEOUT                     900s   FAIL (exit 1). Covers a
+#                                                      COLD release build of
+#                                                      the brink-web crate tree
+#                                                      plus, on a cache miss,
+#                                                      the binaryen/wasm-opt
+#                                                      tarball wasm-pack pulls
+#                                                      from GitHub releases.
+#   BRINK_JUST_NPM_INSTALL_TIMEOUT              600s   FAIL (exit 1). The
+#                                                      book's ts-check project
+#                                                      installs the PUBLISHED
+#                                                      @brink-lang packages
+#                                                      from the npm registry;
+#                                                      it is a small tree, so
+#                                                      600s is already generous
+#                                                      for a cold fetch.
+#   BRINK_JUST_NPM_CHECK_TIMEOUT                600s   FAIL (exit 1). `npm run
+#                                                      check` is a local tsc
+#                                                      run; it is bounded only
+#                                                      because npm resolves
+#                                                      through corepack's shim
+#                                                      and so can itself fetch
+#                                                      on a cache miss (#2642).
+#   BRINK_JUST_PNPM_INSTALL_TIMEOUT             900s   FAIL (exit 1). The
+#                                                      guarded workspace
+#                                                      install; a truncated one
+#                                                      is the half-written
+#                                                      node_modules of
+#                                                      #2479/#2593.
+#   BRINK_JUST_STUDIO_BUILD_TIMEOUT             900s   FAIL (exit 1). The
+#                                                      studio's Vite build,
+#                                                      bounded for the same
+#                                                      corepack-shim reason as
+#                                                      the npm check above.
+#
+# EVERY row says FAIL, and none of them may warn-and-continue: unlike
+# setup-dev.sh — where the prebuilt-tarball fetches WARN because a from-source
+# build is a real fallback — each command here IS the recipe's entire output.
+# A timeout that exited 0 would leave `just wasm` reporting success with a
+# stale or missing pkg, which is the silent-stale-instrument failure
+# packages/brink-desktop/scripts/ensure-wasm.mjs exists to prevent.
+
 # Setup git hooks
 setup:
     git config core.hooksPath .githooks
@@ -47,7 +99,17 @@ cross-language-benchmark:
 
 # Build brink-web wasm package
 wasm:
-    wasm-pack build crates/brink-web --target web --out-dir www/pkg
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/lib/run-with-timeout.sh
+    BRINK_JUST_WASM_TIMEOUT="${BRINK_JUST_WASM_TIMEOUT:-900}"
+    rc=0
+    run_with_timeout "${BRINK_JUST_WASM_TIMEOUT}" wasm-pack build crates/brink-web --target web --out-dir www/pkg || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x wasm-pack build TIMED OUT after ${BRINK_JUST_WASM_TIMEOUT}s — the binaryen/wasm-opt download or the crates.io fetch behind it never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_JUST_WASM_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
 
 # Compile-check the book's Rust examples. Two mechanisms, by chapter:
 #
@@ -109,22 +171,59 @@ book-test:
 book-ts-check:
     #!/usr/bin/env bash
     set -euo pipefail
+    . scripts/lib/run-with-timeout.sh
+    BRINK_JUST_NPM_INSTALL_TIMEOUT="${BRINK_JUST_NPM_INSTALL_TIMEOUT:-600}"
+    BRINK_JUST_NPM_CHECK_TIMEOUT="${BRINK_JUST_NPM_CHECK_TIMEOUT:-600}"
     cd docs/book/ts-check
-    npm install --no-audit --no-fund --silent
-    npm run check
+    rc=0
+    run_with_timeout "${BRINK_JUST_NPM_INSTALL_TIMEOUT}" npm install --no-audit --no-fund --silent || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x npm install TIMED OUT after ${BRINK_JUST_NPM_INSTALL_TIMEOUT}s in docs/book/ts-check — the npm-registry fetch of the published @brink-lang packages never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_JUST_NPM_INSTALL_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
+    rc=0
+    run_with_timeout "${BRINK_JUST_NPM_CHECK_TIMEOUT}" npm run check || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x npm run check TIMED OUT after ${BRINK_JUST_NPM_CHECK_TIMEOUT}s — tsc itself is local, so this is almost certainly npm resolving through corepack's shim against a stalled proxy. Retry when network is stable, or raise BRINK_JUST_NPM_CHECK_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
 
 # Build the full brink-studio as a standalone static app and stage it into
 # docs/book/src/playground/ (the embedded book playground).
 book-assets:
     #!/usr/bin/env bash
     set -euo pipefail
+    . scripts/lib/run-with-timeout.sh
+    BRINK_JUST_WASM_TIMEOUT="${BRINK_JUST_WASM_TIMEOUT:-900}"
+    BRINK_JUST_PNPM_INSTALL_TIMEOUT="${BRINK_JUST_PNPM_INSTALL_TIMEOUT:-900}"
+    BRINK_JUST_STUDIO_BUILD_TIMEOUT="${BRINK_JUST_STUDIO_BUILD_TIMEOUT:-900}"
     dest="docs/book/src/playground"
     # The studio's Vite build resolves `brink-web` against this wasm pkg, so it
     # must exist first (out-dir is relative to the crate -> crates/brink-web/www/pkg).
-    wasm-pack build crates/brink-web --target web --out-dir www/pkg
+    rc=0
+    run_with_timeout "${BRINK_JUST_WASM_TIMEOUT}" wasm-pack build crates/brink-web --target web --out-dir www/pkg || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x wasm-pack build TIMED OUT after ${BRINK_JUST_WASM_TIMEOUT}s — the binaryen/wasm-opt download or the crates.io fetch behind it never completed, likely a stalled proxy. Retry when network is stable, or raise BRINK_JUST_WASM_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
     # Install JS deps and build the studio as a self-contained static bundle.
-    pnpm install:checked -- --frozen-lockfile
-    pnpm --filter @brink-lang/studio build:embed
+    rc=0
+    run_with_timeout "${BRINK_JUST_PNPM_INSTALL_TIMEOUT}" pnpm install:checked -- --frozen-lockfile || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x pnpm install:checked TIMED OUT after ${BRINK_JUST_PNPM_INSTALL_TIMEOUT}s — the npm-registry fetch never completed, likely a stalled proxy. node_modules is now HALF-WRITTEN (#2479/#2593); rerun after the network is stable, or raise BRINK_JUST_PNPM_INSTALL_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
+    rc=0
+    run_with_timeout "${BRINK_JUST_STUDIO_BUILD_TIMEOUT}" pnpm --filter @brink-lang/studio build:embed || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x studio build:embed TIMED OUT after ${BRINK_JUST_STUDIO_BUILD_TIMEOUT}s — the Vite build is local, so this is almost certainly pnpm resolving through corepack's shim against a stalled proxy. Retry when network is stable, or raise BRINK_JUST_STUDIO_BUILD_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
     # Stage the static build (index.html + assets/, wasm bundled) into the book.
     rm -rf "$dest"
     mkdir -p "$dest"
@@ -136,11 +235,25 @@ book: book-assets
 
 # Run brink-studio dev server (builds wasm first)
 studio-dev: wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # check-scripts: allow-unbounded `pnpm dev` is a Vite dev server that runs until Ctrl-C, so a run_with_timeout bound would kill exactly the thing the recipe was asked to start. The one fetch it can do — corepack resolving the pinned pnpm tarball on a cache miss (#2642) — happens before the server starts, and the `wasm` dependency this recipe declares has already run that same shim under BRINK_JUST_WASM_TIMEOUT.
     cd packages/brink-studio && pnpm dev
 
 # Build brink-studio for production (builds wasm first)
 studio-build: wasm
-    cd packages/brink-studio && pnpm build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . scripts/lib/run-with-timeout.sh
+    BRINK_JUST_STUDIO_BUILD_TIMEOUT="${BRINK_JUST_STUDIO_BUILD_TIMEOUT:-900}"
+    cd packages/brink-studio
+    rc=0
+    run_with_timeout "${BRINK_JUST_STUDIO_BUILD_TIMEOUT}" pnpm build || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "==> x studio build TIMED OUT after ${BRINK_JUST_STUDIO_BUILD_TIMEOUT}s — the Vite build is local, so this is almost certainly pnpm resolving through corepack's shim against a stalled proxy. Retry when network is stable, or raise BRINK_JUST_STUDIO_BUILD_TIMEOUT." >&2
+        exit 1
+    fi
+    [ "$rc" -eq 0 ] || exit "$rc"
 
 # Duration per fuzz target in seconds (default: 5 minutes)
 fuzz_duration := "300"

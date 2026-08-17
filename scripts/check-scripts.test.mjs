@@ -16,15 +16,21 @@
 //      table row) so the checks are proved non-vacuous against the actual
 //      file, not just against fixtures shaped to suit them.
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  BENCHMARKS_SETUP_PATH,
+  JUSTFILE_PATH,
+  KNOB_TABLES,
   LOCAL_COMMANDS,
+  MIN_WAIVER_REASON,
   NETWORK_COMMANDS,
   POINTER_DOCS,
+  REFRESH_LOCKFILES_PATH,
   REPO_ROOT,
   SETUP_DEV_PATH,
   checkDocPointers,
@@ -32,11 +38,15 @@ import {
   checkScripts,
   commandHead,
   discoverShellScripts,
+  discoverShellSources,
   findFunctionNames,
   findKnobAssignments,
   findUnboundedFetches,
   findUnclassifiedCommands,
+  findUnregisteredKnobTables,
   findUnrecognizedKnobShapes,
+  findWaivers,
+  justfileShellView,
   networkBinaries,
   nextTokenIsVersionFlag,
   parseKnobTable,
@@ -46,8 +56,21 @@ import {
 } from "./check-scripts.mjs";
 
 const realSetupDev = readFileSync(join(REPO_ROOT, SETUP_DEV_PATH), "utf8");
-const REFRESH_LOCKFILES_PATH = "scripts/refresh-excluded-lockfiles.sh";
 const realRefreshLockfiles = readFileSync(join(REPO_ROOT, REFRESH_LOCKFILES_PATH), "utf8");
+const realJustfile = readFileSync(join(REPO_ROOT, JUSTFILE_PATH), "utf8");
+const realBenchmarksSetup = readFileSync(join(REPO_ROOT, BENCHMARKS_SETUP_PATH), "utf8");
+
+/** Strip every `run_with_timeout` wrapper out of real script text. */
+function stripBounds(text) {
+  return text
+    .split("\n")
+    .map((line) =>
+      /^\s*#/.test(line)
+        ? line
+        : line.replace(/run_with_timeout\s+"[^"]*"\s*/g, "").replace(/\brun_with_timeout\b/g, ""),
+    )
+    .join("\n");
+}
 
 describe("toLogicalLines", () => {
   it("joins a backslash continuation", () => {
@@ -122,6 +145,10 @@ describe("findUnboundedFetches — planted red, one per allowlisted command shap
     "wasm-pack": "wasm-pack build crates/brink-web --target web",
     "cargo-deny-binary": "cargo-deny check advisories",
     "cargo-nextest-binary": "cargo-nextest run --workspace",
+    // #2677: added once repo-wide discovery reached benchmarks/setup.sh, where
+    // `brew install hyperfine` was unbounded AND unallowlisted — check 3
+    // reported it as unclassified before check 1 could see it at all.
+    homebrew: "brew install hyperfine",
   };
 
   for (const command of NETWORK_COMMANDS) {
@@ -373,7 +400,7 @@ describe("parseKnobTable / findKnobAssignments", () => {
   it("goes red when the header table is missing entirely", () => {
     const result = checkKnobTable('BRINK_SETUP_A_TIMEOUT="${BRINK_SETUP_A_TIMEOUT:-120}"');
     assert.equal(result.ok, false);
-    assert.match(result.problems.join("\n"), /no parseable knob table/);
+    assert.match(result.problems.join("\n"), /no parseable table row was found/);
   });
 });
 
@@ -627,8 +654,93 @@ describe("discoverShellScripts (#2667)", () => {
     assert.deepEqual(scripts, [...scripts].sort());
   });
 
-  it("returns only .sh files", () => {
-    for (const path of scripts) assert.match(path, /\.sh$/);
+  // Since #2677 the walk starts at the repo root, so `.sh` is no longer the
+  // only admissible shape: `.githooks/` holds extensionless git hooks that git
+  // executes as shell.
+  it("returns only .sh files and .githooks entries", () => {
+    for (const path of scripts) {
+      assert.equal(
+        path.endsWith(".sh") || path.startsWith(".githooks/"),
+        true,
+        `unexpected discovered path ${path}`,
+      );
+    }
+  });
+
+  it("never returns a *.test.sh — the excluded-by-design harnesses", () => {
+    for (const path of scripts) assert.equal(path.endsWith(".test.sh"), false, path);
+  });
+
+  // The #2677 regression: benchmarks/setup.sh sat one directory outside the
+  // scripts/ walk with three unbounded fetches in it, reachable from
+  // `just cross-language-benchmark`.
+  it("reaches benchmarks/setup.sh — the script #2677 found outside the scripts/ walk", () => {
+    assert.equal(scripts.includes(BENCHMARKS_SETUP_PATH), true, JSON.stringify(scripts));
+  });
+
+  // A repo-root walk must not wander into the agent worktrees under
+  // .claude/worktrees/, each of which is a full second copy of this tree.
+  it("prunes nested checkouts, so no path repeats a whole second tree", () => {
+    for (const path of scripts) {
+      assert.equal(path.includes("/worktrees/"), false, `walked into a nested checkout: ${path}`);
+      assert.equal(path.includes("node_modules"), false, `walked into dependencies: ${path}`);
+    }
+  });
+});
+
+// The real-repo assertion above (`prunes nested checkouts`) is VACUOUS on CI
+// and on any machine without agent worktrees: discoverShellScripts() over the
+// real tree just never contains a nested path to begin with, so the assertion
+// has nothing to catch. This is exactly how the #2692 review finding shipped
+// — `.claude/worktrees/wf_stale/benchmarks/setup.sh` (a worktree with its
+// `.git` file stripped) walked straight through the `.git`-only check with no
+// test able to see it. Build a synthetic repo tree instead, so all three
+// shapes the walk must tell apart are exercised directly.
+describe("discoverShellScripts nested-checkout pruning (#2692 review)", () => {
+  it("prunes a nested dir with its own `.git` FILE, keeps a plain nested dir with a real script, and — per the fix above — also prunes a nested tree copy with NO `.git` at all", () => {
+    const root = mkdtempSync(join(tmpdir(), "check-scripts-nested-"));
+    try {
+      // Shape 1: a real git worktree/submodule — a `.git` FILE (not a
+      // directory), the same as `.claude/worktrees/<id>/.git`. Must be pruned.
+      mkdirSync(join(root, "worktree-with-git", "scripts"), { recursive: true });
+      writeFileSync(join(root, "worktree-with-git", ".git"), "gitdir: /elsewhere/.git\n");
+      writeFileSync(join(root, "worktree-with-git", "scripts", "inner.sh"), "#!/usr/bin/env bash\n");
+
+      // Shape 2: a tree copy with NO `.git` at all — an extracted archive, a
+      // `cp -r` backup, or a worktree stripped of its `.git` file, matching
+      // the reproduction in the review finding. Only catchable by shape
+      // (Cargo.toml + justfile), which is exactly what the fix above adds.
+      mkdirSync(join(root, "copy-no-git", "scripts"), { recursive: true });
+      writeFileSync(join(root, "copy-no-git", "Cargo.toml"), "[workspace]\n");
+      writeFileSync(join(root, "copy-no-git", "justfile"), "default:\n  echo hi\n");
+      writeFileSync(join(root, "copy-no-git", "scripts", "inner2.sh"), "#!/usr/bin/env bash\n");
+
+      // Shape 3: an ordinary nested directory that is NOT a checkout copy —
+      // no `.git`, no Cargo.toml/justfile pair — holding a real script that
+      // must still be discovered.
+      mkdirSync(join(root, "plain-subdir"), { recursive: true });
+      writeFileSync(join(root, "plain-subdir", "util.sh"), "#!/usr/bin/env bash\n");
+
+      const found = discoverShellScripts(root);
+
+      assert.deepEqual(
+        found.filter((p) => p.startsWith("worktree-with-git/")),
+        [],
+        "a nested dir with its own .git file must be pruned",
+      );
+      assert.deepEqual(
+        found.filter((p) => p.startsWith("copy-no-git/")),
+        [],
+        "a nested tree copy with no .git (Cargo.toml + justfile) must also be pruned",
+      );
+      assert.deepEqual(
+        found,
+        ["plain-subdir/util.sh"],
+        "a plain nested directory's real script must still be discovered",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -849,5 +961,350 @@ describe("the REAL repo, widened scan (#2667/#2666)", () => {
     for (const expected of ["cargo", "grep", "sed", "sort"]) {
       assert.equal(heads.has(expected), true, `expected to see \`${expected}\`; saw ${JSON.stringify([...heads])}`);
     }
+  });
+});
+
+// =============================================================================
+// #2677 — the scan reaches past scripts/**/*.sh: justfile recipe bodies and
+// every other shell script in the repo. #2678 — the knob-table check is
+// per-(script, prefix) instead of hardwired to BRINK_SETUP_.
+// =============================================================================
+
+describe("justfileShellView (#2677)", () => {
+  const view = justfileShellView(realJustfile);
+
+  it("preserves line numbers exactly, so a report points at the real line", () => {
+    assert.equal(view.split("\n").length, realJustfile.split("\n").length);
+  });
+
+  it("blanks recipe HEADERS, which are just syntax rather than shell", () => {
+    const lines = view.split("\n");
+    const headerIndex = realJustfile.split("\n").findIndex((line) => line === "book-assets:");
+    assert.ok(headerIndex >= 0, "the book-assets recipe must still exist");
+    assert.equal(lines[headerIndex], "");
+  });
+
+  it("keeps recipe BODY lines verbatim", () => {
+    assert.match(view, /pnpm --filter @brink-lang\/studio build:embed/);
+  });
+
+  it("blanks a `name := value` assignment rather than reading it as a recipe header", () => {
+    const lines = view.split("\n");
+    const index = realJustfile.split("\n").findIndex((line) => line.startsWith("fuzz_duration :="));
+    assert.ok(index >= 0, "the fuzz_duration assignment must still exist");
+    assert.equal(lines[index], "");
+    // If `:=` had read as a recipe header, every following line would have
+    // been treated as a body.
+    assert.equal(view.includes("fuzz_duration :="), false);
+  });
+
+  it("keeps comment lines, which is where the knob table and the waivers live", () => {
+    assert.match(view, /BRINK_JUST_WASM_TIMEOUT\s+900s/);
+    assert.match(view, /check-scripts: allow-unbounded/);
+  });
+});
+
+describe("the REAL justfile (#2677)", () => {
+  const view = justfileShellView(realJustfile);
+
+  it("is one of the scanned sources", () => {
+    assert.equal(
+      discoverShellSources().some((source) => source.path === JUSTFILE_PATH),
+      true,
+    );
+  });
+
+  it("has no unbounded fetch as committed", () => {
+    assert.deepEqual(findUnboundedFetches(view, JUSTFILE_PATH).problems, []);
+  });
+
+  // NON-VACUITY, the #2656 standard applied to the newly-scanned surface:
+  // strip every bound out of the REAL justfile and the scan must light up on
+  // the fetches that were behind them. Before #2677 this scan did not exist,
+  // so all of these shipped bare.
+  it("detects the real justfile fetches once their bounds are stripped", () => {
+    const unwrapped = stripBounds(view);
+    assert.notEqual(unwrapped, view, "the justfile's fetches must still be wrapped");
+
+    const result = findUnboundedFetches(unwrapped, JUSTFILE_PATH);
+    const ids = new Set(result.findings.map((finding) => finding.id));
+
+    for (const id of ["wasm-pack", "npm", "pnpm"]) {
+      assert.equal(ids.has(id), true, `expected a "${id}" finding; saw ${JSON.stringify([...ids])}`);
+    }
+    assert.equal(
+      result.findings.length >= 7,
+      true,
+      `expected >=7 fetch sites in the unwrapped justfile, saw ${result.findings.length}`,
+    );
+  });
+
+  it("goes red when one specific real bound is removed", () => {
+    const unwrapped = view.replace(
+      'run_with_timeout "${BRINK_JUST_PNPM_INSTALL_TIMEOUT}" pnpm install:checked',
+      "pnpm install:checked",
+    );
+    assert.notEqual(unwrapped, view, "the book-assets install must still be wrapped");
+
+    const result = findUnboundedFetches(unwrapped, JUSTFILE_PATH);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /pnpm install:checked/);
+  });
+
+  it("invokes the commands we think it does — the head extractor is not silent", () => {
+    const functions = new Set();
+    for (const source of discoverShellSources()) {
+      for (const name of findFunctionNames(source.text)) functions.add(name);
+    }
+    const heads = new Set(findUnclassifiedCommands(view, JUSTFILE_PATH, functions).heads.map((h) => h.head));
+    // `run_with_timeout` is deliberately absent: `commandHead` PEELS it as a
+    // wrapper, so a bounded fetch reports the wrapped binary instead. That is
+    // what makes the inventory see `wasm-pack`/`pnpm` at all.
+    for (const expected of ["cargo", "wasm-pack", "pnpm", "npm", "mdbook", "git"]) {
+      assert.equal(heads.has(expected), true, `expected \`${expected}\`; saw ${JSON.stringify([...heads])}`);
+    }
+  });
+
+  // The phantom heads the justfile scan produced before the tokenizer fixes.
+  it("reports no phantom command from the fuzz recipe's multi-line array literal", () => {
+    const problems = findUnclassifiedCommands(view, JUSTFILE_PATH, new Set(["run_with_timeout"])).problems.join("\n");
+    assert.equal(problems.includes("brink-format:"), false, problems);
+    assert.equal(problems.includes("brink-syntax:"), false, problems);
+  });
+});
+
+describe("the REAL benchmarks/setup.sh (#2677)", () => {
+  it("is discovered — the script that sat one directory outside the scripts/ walk", () => {
+    assert.equal(
+      discoverShellSources().some((source) => source.path === BENCHMARKS_SETUP_PATH),
+      true,
+    );
+  });
+
+  it("has no unbounded fetch as committed", () => {
+    assert.deepEqual(findUnboundedFetches(realBenchmarksSetup, BENCHMARKS_SETUP_PATH).problems, []);
+  });
+
+  // NON-VACUITY for the second newly-reached file.
+  it("detects its three installs once their bounds are stripped", () => {
+    const unwrapped = stripBounds(realBenchmarksSetup);
+    assert.notEqual(unwrapped, realBenchmarksSetup);
+
+    const ids = new Set(findUnboundedFetches(unwrapped, BENCHMARKS_SETUP_PATH).findings.map((f) => f.id));
+    for (const id of ["cargo-network", "npm", "homebrew"]) {
+      assert.equal(ids.has(id), true, `expected a "${id}" finding; saw ${JSON.stringify([...ids])}`);
+    }
+  });
+});
+
+describe("toLogicalLines — the multi-line array literal (#2677)", () => {
+  it("joins across an unclosed `(`", () => {
+    const lines = toLogicalLines('targets=(\n    "a:b"\n    "c:d"\n)\necho done');
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].line, 1);
+    assert.match(lines[0].text, /targets=\(\s+"a:b"\s+"c:d"\s+\)/);
+    assert.match(lines[1].text, /echo done/);
+  });
+
+  it("does not treat a `case` label's lone `)` as a negative depth", () => {
+    const lines = toLogicalLines("case $x in\n  *) exit 0 ;;\nesac\necho after");
+    assert.equal(lines.length, 4);
+    assert.match(lines[3].text, /echo after/);
+  });
+
+  it("does not join on a `(` inside quotes", () => {
+    const lines = toLogicalLines('echo "a ( b"\necho next');
+    assert.equal(lines.length, 2);
+  });
+});
+
+describe("commandHead — an assignment whose quoted value continues (#2677)", () => {
+  it('invokes nothing for `pkgs="-p a -p b"`', () => {
+    assert.equal(commandHead('pkgs="-p brink-runtime -p brink-compiler"'), "");
+  });
+
+  it("still peels a BALANCED env prefix onto the command it wraps", () => {
+    assert.equal(commandHead('FOO="bar" curl https://example.test'), "curl");
+  });
+
+  it("still peels an unquoted env prefix", () => {
+    assert.equal(commandHead("FOO=bar curl https://example.test"), "curl");
+  });
+});
+
+describe("process substitution (#2677 gap 3)", () => {
+  it("flags a fetch reached through `< <( … )` behind a read builtin", () => {
+    const result = findUnboundedFetches('read -r v < <(curl -sSfL "https://example.test/x")');
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.findings.some((finding) => finding.id === "curl"),
+      true,
+      JSON.stringify(result.findings),
+    );
+  });
+
+  it("accepts the same shape once bounded", () => {
+    assert.deepEqual(
+      findUnboundedFetches('read -r v < <(run_with_timeout 10 curl -sSfL "https://example.test/x")').problems,
+      [],
+    );
+  });
+
+  it("still skips an echo that merely NAMES a tool with no substitution at all", () => {
+    assert.deepEqual(findUnboundedFetches('echo "install curl first"').problems, []);
+  });
+});
+
+describe("allow-unbounded waivers (#2677)", () => {
+  const reason = "x".repeat(MIN_WAIVER_REASON);
+
+  it("resolves a pragma to the next non-blank, non-comment line", () => {
+    const waivers = findWaivers(`# check-scripts: allow-unbounded ${reason}\n\n# noise\npnpm dev`);
+    assert.equal(waivers.length, 1);
+    assert.equal(waivers[0].target, 4);
+    assert.equal(waivers[0].reason, reason);
+  });
+
+  it("suppresses the finding on the waived line", () => {
+    assert.deepEqual(findUnboundedFetches(`# check-scripts: allow-unbounded ${reason}\npnpm dev`).problems, []);
+  });
+
+  it("does NOT suppress the line after the waived one", () => {
+    const result = findUnboundedFetches(`# check-scripts: allow-unbounded ${reason}\npnpm dev\npnpm build`);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /pnpm build/);
+  });
+
+  it("rejects a waiver whose reason is too short to be a reason", () => {
+    const result = findUnboundedFetches("# check-scripts: allow-unbounded ok\npnpm dev");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /at least \d+ characters/);
+  });
+
+  it("reports a STALE waiver whose command is bounded now", () => {
+    const result = findUnboundedFetches(`# check-scripts: allow-unbounded ${reason}\nrun_with_timeout 10 pnpm dev`);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /stale/);
+  });
+
+  it("the real justfile carries exactly one waiver, and it is load-bearing", () => {
+    const view = justfileShellView(realJustfile);
+    const waivers = findWaivers(view);
+    assert.equal(waivers.length, 1, JSON.stringify(waivers));
+    assert.equal(waivers[0].reason.length >= MIN_WAIVER_REASON, true);
+
+    // Load-bearing: delete it and the scan must go red on that very line.
+    const withoutWaiver = view
+      .split("\n")
+      .map((line) => (/check-scripts: allow-unbounded/.test(line) ? "" : line))
+      .join("\n");
+    const result = findUnboundedFetches(withoutWaiver, JUSTFILE_PATH);
+    assert.equal(result.ok, false);
+    assert.equal(
+      result.findings.some((finding) => finding.line === waivers[0].target),
+      true,
+      JSON.stringify(result.findings),
+    );
+  });
+});
+
+describe("checkKnobTable, generalized by (script, prefix) — #2678", () => {
+  it("registers refresh-excluded-lockfiles.sh's BRINK_REFRESH_ table — the #2678 gap", () => {
+    assert.equal(
+      KNOB_TABLES.some((entry) => entry.path === REFRESH_LOCKFILES_PATH && entry.prefix === "BRINK_REFRESH_"),
+      true,
+      JSON.stringify(KNOB_TABLES),
+    );
+  });
+
+  // NON-VACUITY for #2678: before this, `checkKnobTable(realRefreshLockfiles)`
+  // parsed ZERO rows and ZERO assignments (both regexes said BRINK_SETUP_), so
+  // it could not have caught a drift in that file at all.
+  it("parses the BRINK_REFRESH_ table that used to be invisible", () => {
+    const rows = parseKnobTable(realRefreshLockfiles, "BRINK_REFRESH_");
+    assert.deepEqual(
+      rows.map((row) => row.name),
+      ["BRINK_REFRESH_DRY_RUN_TIMEOUT", "BRINK_REFRESH_UPDATE_TIMEOUT"],
+    );
+    assert.equal(parseKnobTable(realRefreshLockfiles).length, 0, "the old BRINK_SETUP_ default finds nothing here");
+    assert.equal(findKnobAssignments(realRefreshLockfiles).length, 0, "the old BRINK_SETUP_ default finds nothing here");
+  });
+
+  it("catches a drifted default in EVERY registered table, not just setup-dev.sh's", () => {
+    const sources = new Map(discoverShellSources().map((source) => [source.path, source.text]));
+
+    for (const entry of KNOB_TABLES) {
+      const text = sources.get(entry.path);
+      assert.ok(text, `${entry.path} must be a scanned source`);
+
+      const assignments = findKnobAssignments(text, entry.prefix);
+      assert.equal(assignments.length > 0, true, `${entry.path} must assign at least one ${entry.prefix}* knob`);
+      assert.deepEqual(checkKnobTable(text, entry).problems, [], `${entry.path} must be green as committed`);
+
+      const victim = assignments[0];
+      const drifted = text.replace(`${victim.name}:-${victim.default}}`, `${victim.name}:-${victim.default + 7}}`);
+      assert.notEqual(drifted, text, `failed to drift ${victim.name} in ${entry.path}`);
+
+      const result = checkKnobTable(drifted, entry);
+      assert.equal(result.ok, false, `drifting ${victim.name} in ${entry.path} must go red`);
+      assert.match(result.problems.join("\n"), new RegExp(`${victim.name}.*${victim.default + 7}s`, "s"));
+    }
+  });
+
+  it("catches a deleted row in EVERY registered table", () => {
+    const sources = new Map(discoverShellSources().map((source) => [source.path, source.text]));
+
+    for (const entry of KNOB_TABLES) {
+      const text = sources.get(entry.path);
+      const rows = parseKnobTable(text, entry.prefix);
+      assert.equal(rows.length > 0, true, `${entry.path} must have a parseable table`);
+
+      const lines = text.split("\n");
+      const victim = rows[0];
+      let end = victim.line;
+      while (end < lines.length && new RegExp(`^#\\s{2,}(?!${entry.prefix})\\S`).test(lines[end])) end += 1;
+      const withoutRow = [...lines.slice(0, victim.line - 1), ...lines.slice(end)].join("\n");
+
+      const result = checkKnobTable(withoutRow, entry);
+      assert.equal(result.ok, false, `deleting ${victim.name}'s row in ${entry.path} must go red`);
+      assert.match(result.problems.join("\n"), new RegExp(victim.name));
+    }
+  });
+
+  it("keeps checkDocPointers scoped to setup-dev.sh — only its table has delegating docs", () => {
+    assert.deepEqual(
+      POINTER_DOCS.map((doc) => doc.path),
+      ["CLAUDE.md", "docs/desktop-shell-spec.md", "docs/releasing.md"],
+    );
+  });
+});
+
+describe("findUnregisteredKnobTables — the backstop under the registry (#2678)", () => {
+  it("is silent on the real repo", () => {
+    assert.deepEqual(findUnregisteredKnobTables(discoverShellSources()), []);
+  });
+
+  it("reports a knob table in a script nobody registered", () => {
+    const stray = findUnregisteredKnobTables([
+      { path: "scripts/brand-new.sh", text: 'BRINK_NEWTHING_FETCH_TIMEOUT="${BRINK_NEWTHING_FETCH_TIMEOUT:-30}"' },
+    ]);
+    assert.equal(stray.length, 1);
+    assert.equal(stray[0].name, "BRINK_NEWTHING_FETCH_TIMEOUT");
+  });
+
+  it("does not report a knob a registered prefix already covers", () => {
+    assert.deepEqual(
+      findUnregisteredKnobTables([
+        { path: SETUP_DEV_PATH, text: 'BRINK_SETUP_X_TIMEOUT="${BRINK_SETUP_X_TIMEOUT:-30}"' },
+      ]),
+      [],
+    );
+  });
+
+  it("goes red end-to-end: an unregistered knob planted in a real script", () => {
+    const planted = `${realBenchmarksSetup}\nBRINK_OTHER_X_TIMEOUT="\${BRINK_OTHER_X_TIMEOUT:-5}"\n`;
+    const stray = findUnregisteredKnobTables([{ path: BENCHMARKS_SETUP_PATH, text: planted }]);
+    assert.equal(stray.length, 1);
+    assert.equal(stray[0].name, "BRINK_OTHER_X_TIMEOUT");
   });
 });
