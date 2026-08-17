@@ -206,12 +206,18 @@ importers:
       '@brink/wasm-types':
         specifier: workspace:*
         version: link:../wasm-types
+      jsdom:
+        specifier: ^29.0.0
+        version: 29.0.1
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(@microsoft/api-extractor@7.58.8(@types/node@22.20.1))(postcss@8.5.8)(typescript@5.9.3)
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.0(@types/node@22.20.1)(jsdom@29.0.1)(vite@6.4.1(@types/node@22.20.1))
 
   packages/ink-operations:
     dependencies:
