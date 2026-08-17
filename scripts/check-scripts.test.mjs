@@ -24,17 +24,20 @@ import assert from "node:assert/strict";
 
 import {
   BENCHMARKS_SETUP_PATH,
+  CHECK_SCRIPTS_NPM_SCRIPT,
   JUSTFILE_PATH,
   KNOB_TABLES,
   LOCAL_COMMANDS,
   MIN_WAIVER_REASON,
   NETWORK_COMMANDS,
+  PACKAGE_JSON_PATH,
   POINTER_DOCS,
   REFRESH_LOCKFILES_PATH,
   REPO_ROOT,
   SETUP_DEV_PATH,
   checkDocPointers,
   checkKnobTable,
+  checkPackageScriptPath,
   checkScripts,
   commandHead,
   discoverShellScripts,
@@ -1276,6 +1279,115 @@ describe("checkKnobTable, generalized by (script, prefix) — #2678", () => {
       POINTER_DOCS.map((doc) => doc.path),
       ["CLAUDE.md", "docs/desktop-shell-spec.md", "docs/releasing.md"],
     );
+  });
+});
+
+describe("checkPackageScriptPath — the #2688 gap 2 self-consistency check", () => {
+  it("passes when the named script exists", () => {
+    const result = checkPackageScriptPath(
+      JSON.stringify({ scripts: { "check:scripts": "node scripts/check-scripts.mjs" } }),
+    );
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.ok, true);
+  });
+
+  it("goes red when the named script does not exist on disk — the #2681-style drift", () => {
+    const result = checkPackageScriptPath(
+      JSON.stringify({ scripts: { "check:scripts": "node scripts/does-not-exist.mjs" } }),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /does-not-exist\.mjs.*does not exist on disk/s);
+  });
+
+  it("goes red when package.json is not valid JSON", () => {
+    const result = checkPackageScriptPath("{ not json");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /not valid JSON/);
+  });
+
+  it("goes red when the script is missing entirely", () => {
+    const result = checkPackageScriptPath(JSON.stringify({ scripts: {} }));
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /has no "check:scripts" script/);
+  });
+
+  it("goes red on a shape it does not recognise, rather than silently passing", () => {
+    const result = checkPackageScriptPath(
+      JSON.stringify({ scripts: { "check:scripts": "node scripts/check-scripts.mjs --strict" } }),
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /not a bare `node <path>` invocation/);
+  });
+
+  it("respects a custom scriptName option", () => {
+    const result = checkPackageScriptPath(JSON.stringify({ scripts: { "check:pnpm-pin": "node scripts/check-pnpm-pin.mjs" } }), {
+      scriptName: "check:pnpm-pin",
+    });
+    assert.equal(result.ok, true);
+  });
+});
+
+describe("checkPackageScriptPath — the REAL root package.json", () => {
+  const realPackageJson = readFileSync(join(REPO_ROOT, PACKAGE_JSON_PATH), "utf8");
+
+  it("passes today", () => {
+    const result = checkPackageScriptPath(realPackageJson);
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.ok, true);
+  });
+
+  it("names the real script this repo currently uses", () => {
+    const parsed = JSON.parse(realPackageJson);
+    assert.equal(parsed.scripts[CHECK_SCRIPTS_NPM_SCRIPT], "node scripts/check-scripts.mjs");
+  });
+
+  // Non-vacuity, the #2688 house rule ("make it fail before you make it
+  // pass"): a real desync — package.json still pointing at the PRE-#2681
+  // filename — must be caught, not just a synthetic fixture shaped to suit
+  // the check.
+  it("goes red on the real #2681 desync shape, reproduced", () => {
+    const desynced = realPackageJson.replace(
+      '"check:scripts": "node scripts/check-scripts.mjs"',
+      '"check:scripts": "node scripts/check-setup-dev.mjs"',
+    );
+    assert.notEqual(desynced, realPackageJson, "the real package.json must still name check-scripts.mjs");
+
+    const result = checkPackageScriptPath(desynced);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /check-setup-dev\.mjs.*does not exist on disk/s);
+  });
+
+  it("is wired into checkScripts() end-to-end", () => {
+    // Same non-vacuity proof, through the aggregate entry point rather than
+    // the unit function, over a REAL temp checkout so `checkScripts`'s own
+    // `readFileSync(join(repoRoot, PACKAGE_JSON_PATH), ...)` reads the
+    // planted drift rather than this repo's real, healthy package.json.
+    const tmpRoot = mkdtempSync(join(tmpdir(), "check-scripts-pkg-"));
+    try {
+      mkdirSync(join(tmpRoot, "scripts"), { recursive: true });
+      writeFileSync(
+        join(tmpRoot, "package.json"),
+        JSON.stringify({ scripts: { "check:scripts": "node scripts/does-not-exist.mjs" } }),
+      );
+      // checkScripts() also requires setup-dev.sh + the three POINTER_DOCS
+      // to exist under repoRoot; stub them minimally so the ONLY problem
+      // produced is the package.json one this test cares about.
+      writeFileSync(join(tmpRoot, "scripts", "setup-dev.sh"), "#!/usr/bin/env bash\n");
+      for (const doc of POINTER_DOCS) {
+        mkdirSync(join(tmpRoot, doc.path, ".."), { recursive: true });
+        writeFileSync(join(tmpRoot, doc.path), "no pointer here");
+      }
+
+      const result = checkScripts({ repoRoot: tmpRoot });
+      assert.equal(result.ok, false);
+      assert.match(
+        result.problems.join("\n"),
+        /does-not-exist\.mjs.*does not exist on disk/s,
+        `expected checkScripts() to surface the planted package.json drift; problems: ${JSON.stringify(result.problems)}`,
+      );
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 

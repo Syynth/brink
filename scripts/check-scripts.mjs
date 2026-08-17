@@ -1603,6 +1603,94 @@ export function checkKnobTable(text, options = {}) {
   return { ok: problems.length === 0, problems };
 }
 
+/**
+ * The root `package.json` "check:scripts" npm script (#2688 gap 2).
+ *
+ * The #2681 rename (`check-setup-dev.mjs` → `check-scripts.mjs`) kept
+ * `package.json`'s `"check:scripts": "node scripts/check-scripts.mjs"` in
+ * sync with the file move BY HAND. Nothing pinned the two together, so a
+ * FUTURE rename desyncs them silently: no CI step runs `pnpm check:scripts`
+ * standalone — CI only reaches this module through `test:scripts`'s `node
+ * --test scripts/*.test.mjs`, which imports the module by its real path
+ * regardless of what package.json's script text says. CI would stay green
+ * while the standalone `pnpm run check:scripts` command was broken for
+ * every human and every doc that tells them to run it.
+ */
+export const PACKAGE_JSON_PATH = "package.json";
+
+/** The npm script this check resolves and verifies (#2688 gap 2). */
+export const CHECK_SCRIPTS_NPM_SCRIPT = "check:scripts";
+
+/**
+ * Check 2688-2: `package.json`'s `"check:scripts"` script names a file that
+ * actually exists on disk.
+ *
+ * Deliberately narrow, matching this file's own lexical-scan discipline:
+ * it recognises exactly the `node <path>` shape every script in this
+ * package.json's `scripts` block uses (see `check:pnpm-pin`,
+ * `check:wasm-pkg`, `install:checked` — all bare `node scripts/*.mjs`), and
+ * reports rather than guesses when the script text doesn't match that shape
+ * (extra flags, a non-`node` interpreter, `&&`-chained commands) — an
+ * unrecognised shape is exactly as suspicious as a missing file, since this
+ * check exists to catch drift, not to grow into a shell parser.
+ *
+ * @param {string} packageJsonText
+ * @param {{repoRoot?: string, scriptName?: string}} [options]
+ * @returns {{ok: boolean, problems: string[]}}
+ */
+export function checkPackageScriptPath(packageJsonText, options = {}) {
+  const { repoRoot = REPO_ROOT, scriptName = CHECK_SCRIPTS_NPM_SCRIPT } = options;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(packageJsonText);
+  } catch (error) {
+    return { ok: false, problems: [`root ${PACKAGE_JSON_PATH} is not valid JSON: ${error.message}`] };
+  }
+
+  const command = parsed.scripts?.[scriptName];
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return {
+      ok: false,
+      problems: [
+        `root ${PACKAGE_JSON_PATH} has no "${scriptName}" script — #2688's self-consistency check has ` +
+          `nothing to verify against. Restore the script, or update SELF_CONSISTENCY_SCRIPT in ` +
+          `scripts/check-scripts.mjs if it was intentionally renamed.`,
+      ],
+    };
+  }
+
+  const match = /^node\s+(\S+)\s*$/.exec(command.trim());
+  if (!match) {
+    return {
+      ok: false,
+      problems: [
+        `root ${PACKAGE_JSON_PATH}'s "${scriptName}" script is "${command}", not a bare \`node <path>\` ` +
+          `invocation — this check only knows how to resolve that shape (#2688), so it cannot verify the ` +
+          `file it names exists. Keep it a bare \`node <path>\`, or extend checkPackageScriptPath if the ` +
+          `shape has a legitimate reason to change.`,
+      ],
+    };
+  }
+
+  const relativePath = match[1];
+  const resolved = join(repoRoot, relativePath);
+  if (!existsSync(resolved)) {
+    return {
+      ok: false,
+      problems: [
+        `root ${PACKAGE_JSON_PATH}'s "${scriptName}" script points at "${relativePath}", which does not ` +
+          `exist on disk (resolved to ${resolved}). No CI step runs \`pnpm run ${scriptName}\` standalone — ` +
+          `it only rides \`pnpm test:scripts\`'s import of the module by its REAL path, so this drift stays ` +
+          `invisible to CI while the standalone command is broken for every human and doc that runs it ` +
+          `(#2688).`,
+      ],
+    };
+  }
+
+  return { ok: true, problems: [] };
+}
+
 /** Slice a markdown section out by heading text, to the next heading of the same level. */
 export function sliceSection(markdown, headingText) {
   const lines = markdown.split("\n");
@@ -1748,6 +1836,12 @@ export function checkScripts({ repoRoot = REPO_ROOT } = {}) {
   if (byPath.has(SETUP_DEV_PATH)) {
     problems.push(...checkDocPointers(docs).problems);
   }
+
+  // #2688 gap 2: package.json's "check:scripts" script still names a real
+  // file. Not gated on any other check's success — a broken standalone
+  // command is its own problem regardless of what else is true.
+  const packageJsonText = readFileSync(join(repoRoot, PACKAGE_JSON_PATH), "utf8");
+  problems.push(...checkPackageScriptPath(packageJsonText, { repoRoot }).problems);
 
   return { ok: problems.length === 0, problems, scripts: scripts.map((script) => script.path) };
 }
