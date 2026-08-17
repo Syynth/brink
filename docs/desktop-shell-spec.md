@@ -446,12 +446,21 @@ Five properties of `desktop-smoke.yml` are asserted by tests in
 `newestSource`, and `ensureCliSidecar` / `hostTriple` / `sidecarPaths` /
 `STUB_SIDECAR` — behind an `import.meta.url === pathToFileURL(argv[1])`
 main-guard, take every input as an option defaulting to the real one, and
-route external commands (`wasm-pack`, `rustc`, `cargo`) through a single
-injectable `runCommand`. Running either script standalone still does the
-whole job; importing it does nothing but hand over the functions, so
-`src/__tests__/ensure-wasm.test.ts` and
+route external commands through an injectable `runCommand`. Running either
+script standalone still does the whole job; importing it does nothing but
+hand over the functions, so `src/__tests__/ensure-wasm.test.ts` and
 `src/__tests__/ensure-cli-sidecar.test.ts` drive the real decisions without
 a toolchain.
+
+As of #2715, `ensure-cli-sidecar.mjs` is no longer a single-seam, single-job
+script: it carries a SECOND injectable seam (`runLipo`, alongside
+`runCommand`), a FOURTH external command it can invoke (`lipo`, joining
+`wasm-pack`/`rustc`/`cargo`), three more exports
+(`stageUniversalCliSidecar`, `defaultRunLipo`,
+`UNIVERSAL_DARWIN_SLICE_TRIPLES`), and a standalone run that branches on
+`TAURI_ENV_TARGET_TRIPLE` rather than always doing the same host-triple job
+— see "Reachability caveat" below for what that dispatch does and its
+limits.
 
 The default `runCommand` (`defaultRunCommand`, exported from each script)
 carries a bound: `DEFAULT_EXEC_TIMEOUT_MS` (#2697), overridable via
@@ -823,9 +832,15 @@ main-guard now dispatches to it instead of the ordinary host-triple
 `beforeBundleCommand` (#2687), so a real `tauri build --target
 universal-apple-darwin` now reaches `stageUniversalCliSidecar` via `pnpm
 build` before `assertRealSidecarStaged` ever runs against the result.
-`BRINK_SIDECAR_STUB=1` short-circuits straight to `ensureCliSidecar({
-triple: "universal-apple-darwin", stub: true })` — no slice builds, no
-`lipo` — for lanes that only need the file to exist.
+`BRINK_SIDECAR_STUB=1` short-circuits to three `ensureCliSidecar({ triple,
+stub: true })` calls — one per slice triple plus `universal-apple-darwin`
+itself — no slice builds, no `lipo` — for lanes that only need the files to
+exist. All three, not just the universal name: `tauri_build::build()`
+resolves `bundle.externalBin` against the per-arch `TARGET` during each of
+the two cargo passes a universal build runs, not only against the final
+universal name, so a stub lane that staged only the universal file would
+still die partway through a universal build at the exact unreachability
+#2715 was filed about.
 
 **What #2715 did NOT do, stated plainly.** This is a Linux container with no
 Apple toolchain: `lipo`, the `x86_64-apple-darwin`/`aarch64-apple-darwin`

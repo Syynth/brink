@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -190,11 +190,25 @@ describe("stageUniversalCliSidecar", () => {
   it("throws a diagnostic naming lipo and macOS when the combine step fails", () => {
     // Stands in for the one thing this Linux container genuinely cannot do:
     // running `lipo` at all (ENOENT — no such binary on PATH here).
+    //
+    // Asserts the WRAPPER's own diagnostic text, not the raw injected
+    // error: `/lipo.*ENOENT|`lipo -create` failed/s` matched the raw
+    // `new Error("spawnSync lipo ENOENT")` on its first alternative alone,
+    // so it stayed green with the entire try/catch diagnostic wrapper in
+    // `stageUniversalCliSidecar` deleted (review finding). Requiring the
+    // wrapper's own sentences — "`lipo -create` failed combining", "real
+    // macOS host with Xcode command line tools", and both slice
+    // basenames — only passes if the wrapper itself ran and built its
+    // message from the slice paths.
     const repoRoot = scratch();
     const srcTauriDir = scratch();
     const targetDir = join(repoRoot, "target");
+    const slicePaths = UNIVERSAL_DARWIN_SLICE_TRIPLES.map(
+      (triple) => sidecarPaths({ triple, repoRoot, srcTauriDir, targetDir }).destBin,
+    );
 
-    expect(() =>
+    let thrown: unknown;
+    try {
       stageUniversalCliSidecar({
         repoRoot,
         srcTauriDir,
@@ -204,8 +218,18 @@ describe("stageUniversalCliSidecar", () => {
           throw new Error("spawnSync lipo ENOENT");
         },
         log: () => {},
-      }),
-    ).toThrow(/lipo.*ENOENT|`lipo -create` failed/s);
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/`lipo -create` failed combining/);
+    expect(message).toMatch(/real macOS host with Xcode command line tools/);
+    for (const slicePath of slicePaths) {
+      expect(message).toContain(basename(slicePath));
+    }
 
     // Both slices WERE built and staged before the lipo failure — a partial
     // failure should not hide that progress from a developer diagnosing it.
@@ -238,6 +262,7 @@ describe("stageUniversalCliSidecar", () => {
   it("skips both slice builds and lipo entirely under the stub option (no toolchain needed)", () => {
     const repoRoot = scratch();
     const srcTauriDir = scratch();
+    const targetDir = join(repoRoot, "target");
     const commands: string[] = [];
     let lipoCalled = false;
 
@@ -261,6 +286,19 @@ describe("stageUniversalCliSidecar", () => {
     expect(destBin).toBe(join(srcTauriDir, "binaries", "brink-cli-universal-apple-darwin"));
     expect(existsSync(destBin)).toBe(true);
     expect(readFileSync(destBin, "utf8")).toBe(STUB_SIDECAR);
+
+    // #2715 review: a universal build's `tauri_build::build()` resolves
+    // `bundle.externalBin` against the per-arch TARGET during EACH of the
+    // two cargo passes it runs, not only against the final universal name —
+    // so a stub lane must stage the two per-arch slice names too, or a stub
+    // universal build still dies partway through at the exact
+    // unreachability #2715 was filed about. Only staging the universal name
+    // alone must fail this assertion.
+    for (const triple of UNIVERSAL_DARWIN_SLICE_TRIPLES) {
+      const sliceDest = sidecarPaths({ triple, repoRoot, srcTauriDir, targetDir }).destBin;
+      expect(existsSync(sliceDest)).toBe(true);
+      expect(readFileSync(sliceDest, "utf8")).toBe(STUB_SIDECAR);
+    }
   });
 
   it("reads BRINK_SIDECAR_STUB from the environment when the caller names no stub (mirrors ensureCliSidecar)", () => {

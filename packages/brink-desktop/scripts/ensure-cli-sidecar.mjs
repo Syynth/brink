@@ -443,10 +443,19 @@ function buildAndStageSlice({ repoRoot, srcTauriDir, targetDir, runCommand, trip
  * `stub` (default: `BRINK_SIDECAR_STUB=1`, matching `ensureCliSidecar`'s own
  * default) skips both the slice builds and `lipo` entirely: a stub lane's
  * whole point is running without a real toolchain, and there is no real
- * Mach-O slice to combine without one. It delegates straight to
- * `ensureCliSidecar({ triple: "universal-apple-darwin", stub: true, … })`,
- * which already knows how to stage `STUB_SIDECAR` under an arbitrary
- * triple-suffixed name — no second stub-staging code path is written here.
+ * Mach-O slice to combine without one. It delegates to `ensureCliSidecar({
+ * triple, stub: true, … })`, which already knows how to stage
+ * `STUB_SIDECAR` under an arbitrary triple-suffixed name — no second
+ * stub-staging code path is written here.
+ *
+ * It stages THREE files this way, not one (#2715 review): `tauri_build::build()`
+ * resolves `bundle.externalBin` against the per-arch `TARGET` during EACH of
+ * the two cargo passes a universal build runs, not only against the final
+ * `universal-apple-darwin` name — so a stub lane that staged only the
+ * universal file would still die partway through a universal build at the
+ * exact unreachability #2715 was filed about, just one step later. Staging
+ * both `sliceTriples` names plus `universal-apple-darwin` covers every
+ * triple `tauri_build` could probe for this target.
  *
  * The non-stub path cannot be exercised end-to-end outside a real macOS host
  * with Xcode's command line tools installed (`lipo` and the
@@ -471,18 +480,22 @@ export function stageUniversalCliSidecar({
 
   if (stub) {
     log(
-      "[ensure-cli-sidecar] stub requested for a universal build — staging the plain stub " +
-        "directly under universal-apple-darwin, no slice builds or lipo needed (#2715)",
+      "[ensure-cli-sidecar] stub requested for a universal build — staging the stub under " +
+        `both slice triples and ${universalTriple}, no real slice builds or lipo needed (#2715)`,
     );
-    return ensureCliSidecar({
-      repoRoot,
-      srcTauriDir,
-      targetDir,
-      runCommand,
-      log,
-      stub: true,
-      triple: universalTriple,
-    });
+    let universalStubDest = "";
+    for (const triple of [...sliceTriples, universalTriple]) {
+      universalStubDest = ensureCliSidecar({
+        repoRoot,
+        srcTauriDir,
+        targetDir,
+        runCommand,
+        log,
+        stub: true,
+        triple,
+      });
+    }
+    return universalStubDest;
   }
 
   const slicePaths = sliceTriples.map((triple) =>
