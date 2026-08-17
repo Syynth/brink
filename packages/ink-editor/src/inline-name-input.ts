@@ -190,6 +190,13 @@ export class InlineNameInput {
     // has touched; this mirrors the guard PR #2523 landed in
     // `packages/studio-ui/src/SymbolRenamePrompt.tsx`. Pinned by
     // `packages/brink-studio/src/__tests__/inline-name-input-seed.test.ts`.
+    // Clear-before-set: `eq()` always returns false (see rename.ts /
+    // extract-actions.ts), so CM6 may call `toDOM()` -> `render()` again on
+    // this same instance while a prior `focusTimer` is still pending. Without
+    // this guard the second assignment overwrites the first handle and
+    // `dispose()` has nothing left to clear for the orphaned timer —
+    // reintroducing the exact untracked-handle shape #2557 fixed.
+    if (this.focusTimer !== null) clearTimeout(this.focusTimer);
     this.focusTimer = setTimeout(() => {
       this.focusTimer = null;
       input.focus();
