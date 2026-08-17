@@ -77,6 +77,23 @@ fn progress_bar(pass: usize, total: usize, width: usize) -> String {
 #[test]
 #[expect(clippy::too_many_lines)]
 fn corpus_report() {
+    // #2054: a `CARGO_TARGET_DIR` shared across worktrees (the autonomous-pump
+    // convention) can silently reuse another worktree's stale — or currently
+    // different — build of a dependency, producing a confidently wrong
+    // number here. This test cannot detect that itself (dep-info in a
+    // shared target dir carries no absolute worktree path), so it can only
+    // point at the tool that can: run `pnpm check:target-freshness`
+    // (`scripts/check-target-freshness.mjs`) before trusting this report's
+    // numbers whenever `CARGO_TARGET_DIR` is set and other worktrees may be
+    // live.
+    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+        println!(
+            "[corpus_report] CARGO_TARGET_DIR is set — before trusting these numbers, run \
+             `pnpm check:target-freshness` to check for a shared-target-dir collision with \
+             another live worktree (issue #2054).\n"
+        );
+    }
+
     let root = tests_dir();
     let cases = collect_oracle_cases(&root);
 
