@@ -20,3 +20,24 @@ type, the moment the lambda body happened to reuse an outer name. A lambda
 parameter/temp genuinely shadowing an outer local now classifies from its
 own type (or "unclassifiable", never the outer binding's) throughout its
 own body, for every one of the checks above.
+
+Two of those consumers are **not** diagnostics-only, and both change
+observable behavior:
+
+- **`or`-coalescing changes emitted bytecode.** The analyzer records a
+  `CoalesceShape` per chain step, which reaches `lir::lower::expr`'s
+  `lower_coalesce_chain` through `coalesce_lir_lookup`. A chain whose
+  left-hand operand is an unannotated lambda param shadowing an outer
+  binding previously recorded `PreserveOption`/`Collapse` derived from the
+  *outer* binding's type — the wrong binding, so the wrong code. It now
+  records `RuntimeCheck`, which is the honest posture for an operand whose
+  Option-ness is not knowable at that point.
+
+- **UFCS receivers can now be a hard error where the code previously
+  compiled.** "Unclassifiable" means silence for E071/E078/E116/E117/E152,
+  but a UFCS receiver with no knowable type is `E142` ("annotate the
+  receiver"). An *unannotated* lambda param used as a method receiver, whose
+  name shadows an outer binding, previously resolved from that outer binding
+  and compiled; it now raises `E142`. This makes the shadowing case agree
+  with the already-existing `E142` for any other unannotated receiver, and
+  the fix is to annotate the lambda parameter.

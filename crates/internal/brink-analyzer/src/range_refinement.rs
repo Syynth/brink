@@ -194,6 +194,30 @@ impl HirVisitor for RefinementVisitor<'_> {
         check_call(expr, self.file, &ctx, &fold, self.diagnostics);
     }
 
+    /// ⚠ VACUOUS TODAY, kept deliberately (issue #2773 review finding).
+    ///
+    /// Unlike this fix's sibling consumers, E117 has **no reachable
+    /// fixture**: a range literal (`a..b`) parses only on the ink/brink
+    /// surface (`brink-syntax`), while a lambda literal (`|x| …`) parses
+    /// only on the native surface (`brink-syntax-native`) — the two are
+    /// mutually exclusive, so no source can put a range inside a lambda
+    /// body. `brink-syntax-native` has no `..` grammar at all, and
+    /// `annotations::resolve` has no `Range` arm, so a lambda param cannot
+    /// be annotated into `Ty::Range` either. `check_call`'s other leg needs
+    /// `Ty::Range { non_empty: false }`, which is only ever minted from a
+    /// range literal or `non_empty(...)` — both `..`-dependent.
+    ///
+    /// The frame is therefore installed for **uniformity, not coverage**:
+    /// the moment the native surface grows range literals, this consumer
+    /// would otherwise inherit the shadowing hazard silently, exactly as
+    /// this file and `contains_domain.rs` did before #2773 — so the hooks
+    /// stay rather than being removed and re-derived later.
+    /// `crates/brink-compiler/tests/driver.rs`'s
+    /// `compile_ink_brink_range_refinement_direct_var_initializer_is_e117`
+    /// records the same surface-disjointness finding for issue #1774.
+    ///
+    /// Stated here rather than papered over with a "test" that would only
+    /// prove the two surfaces don't mix.
     fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
         let pruned = structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
         self.lambda_locals.push(pruned);

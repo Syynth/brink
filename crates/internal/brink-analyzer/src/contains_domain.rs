@@ -759,4 +759,41 @@ mod tests {
         let diags = check_all("=== main ===\n~ x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
     }
+
+    // ─── issue #2773: a lambda-own binding must not inherit an outer
+    // same-named local's type ─────────────────────────────────────────
+
+    /// Review finding on issue #2773: E152 was one of the two consumers the
+    /// issue never named, so nothing in the corpus covered it — this file's
+    /// `enter_lambda`/`exit_lambda` frame shipped with no fixture at all.
+    ///
+    /// `build`'s own temp `k` is `array`-typed (`[1, 2, 3]`), which
+    /// `non_key_domain_kind_for_ty` maps to `"array"` — outside a
+    /// `Map<int, _>`'s key domain. The lambda's own `k: int` param shadows
+    /// it, and `int` is squarely *inside* that key domain. Pre-fix,
+    /// `classify_expr_ty` read the outer `array` by bare name and raised a
+    /// false-positive `E152`; post-fix the pruned frame seeds `k` from its
+    /// own annotation and the fixture is clean.
+    #[test]
+    fn lambda_param_shadowing_outer_array_local_is_not_misclassified_as_out_of_domain() {
+        let diags = check_all_native(
+            "fn build() {\n  let k = [1, 2, 3];\n  let f = |k: int| {\n    contains(Map { 1: \"a\" }, k)\n  };\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// The positive control: pruning must not *silence* a genuine
+    /// out-of-domain needle inside the lambda's own body. The lambda's own
+    /// `k: Map<int, int>` param really is outside a `Map<int, _>`'s key
+    /// domain, so `E152` must still fire — sourced from the lambda's own
+    /// annotation, not from the outer `k`.
+    #[test]
+    fn lambda_param_own_annotation_still_flags_a_genuine_out_of_domain_needle() {
+        let diags = check_all_native(
+            "fn build() {\n  let k = [1, 2, 3];\n  let f = |k: Map<int, int>| {\n    contains(Map { 1: \"a\" }, k)\n  };\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E152);
+        assert!(diags[0].message.contains("map"), "{:?}", diags[0].message);
+    }
 }
