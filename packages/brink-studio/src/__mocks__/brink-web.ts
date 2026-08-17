@@ -1589,7 +1589,28 @@ export class EditorSession {
     }
     const plan = planKnots(source, knots);
     const [moved] = plan.find((p) => p.name === srcKnot)!.stitches.splice(si, 1);
-    plan.find((p) => p.name === destKnot)!.stitches.push(moved!);
+    const destPlan = plan.find((p) => p.name === destKnot)!;
+    // #2730 (follow-up from #2725's review): mirrors `structural_move::
+    // move_stitch`'s own `needs_newline_before` guard (`insert_offset > 0 &&
+    // source.as_bytes().get(insert_offset - 1) != Some(&b'\n')`) — a
+    // separating newline before the moved stitch, needed when the
+    // DESTINATION knot's own existing content does not already end in one.
+    // Ordinarily it always does (a region boundary lands right after a
+    // `\n`), but not when an indented header's leading whitespace got glued
+    // onto the PRECEDING symbol's own trailing trivia (#2703): moving a
+    // stitch into ALT_FENCES's `three` (whose region ends in a bare "  "
+    // because of `four`'s indented header) reproduces the exact class of
+    // mismatch `promote_stitch_to_knot`'s guard was added for in #2725 —
+    // without this guard the mock glued the moved stitch directly onto that
+    // trailing "  " — `"...Third.\n\n  = a\nA.\n..."` where production
+    // answers `"...Third.\n\n  \n= a\nA.\n..."`. Driven and confirmed via
+    // `move_stitch:alt-fence-three-boundary` in
+    // `crates/brink-web/fixtures/refusal-shapes.json`, not assumed to already
+    // hold from the `full_start` fix alone.
+    const destTail = destPlan.head + destPlan.stitches.map((s) => s.text).join("");
+    let movedText = moved!.text;
+    if (!destTail.endsWith("\n")) movedText = `\n${movedText}`;
+    destPlan.stitches.push({ name: moved!.name, text: movedText });
     const rendered = renderKnots(source, knots, plan);
     const oldQual = `${srcKnot}.${stitch}`;
     const newQual = `${destKnot}.${stitch}`;
@@ -1682,7 +1703,18 @@ export class EditorSession {
     const [removed] = plan.splice(ki, 1);
     let demoted = knotHeaderToStitch(removed!.head);
     if (!demoted.endsWith("\n")) demoted += "\n";
-    plan.find((p) => p.name === destKnot)!.stitches.push({ name: knot, text: demoted });
+    const destPlan = plan.find((p) => p.name === destKnot)!;
+    // #2730 (follow-up from #2725's review): mirrors `structural_move::
+    // demote_knot_to_stitch`'s own `needs_nl` guard (`dest_insert > 0 &&
+    // source.as_bytes().get(dest_insert - 1) != Some(&b'\n')`) — the same
+    // separating-newline-before-insertion rule `move_stitch` above carries,
+    // needed for the same reason: an indented header's leading whitespace can
+    // leave the DESTINATION knot's own trailing trivia without a `\n`
+    // (#2703). Driven and confirmed via `demote_knot:alt-fence-three-
+    // boundary` in `crates/brink-web/fixtures/refusal-shapes.json`.
+    const destTail = destPlan.head + destPlan.stitches.map((s) => s.text).join("");
+    if (!destTail.endsWith("\n")) demoted = `\n${demoted}`;
+    destPlan.stitches.push({ name: knot, text: demoted });
     const rendered = renderKnots(source, knots, plan);
     const newQual = `${destKnot}.${knot}`;
     return EditorSession.structuralOk(
