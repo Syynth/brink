@@ -507,10 +507,13 @@ pub(crate) struct MistypeCtx<'a> {
 #[must_use]
 pub(crate) fn pruned_locals_for_lambda(
     l: &brink_ir::LambdaExpr,
-    stmts: &[BlockStmt],
     index: &SymbolIndex,
     outer_locals: Option<&BTreeMap<String, Ty>>,
 ) -> BTreeMap<String, Ty> {
+    let stmts: &[BlockStmt] = match &l.body {
+        brink_ir::LambdaBody::Block { stmts, .. } => stmts,
+        brink_ir::LambdaBody::Expr(_) => &[],
+    };
     let mut body_names: BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)> = BTreeMap::new();
     crate::infer::lambda_own_bindings(stmts, &mut body_names);
     let body_bound_names: BTreeSet<String> = body_names.keys().cloned().collect();
@@ -653,11 +656,7 @@ impl HirVisitor for ConstructionVisitor<'_> {
     }
 
     fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
-        let stmts: &[BlockStmt] = match &l.body {
-            brink_ir::LambdaBody::Block { stmts, .. } => stmts,
-            brink_ir::LambdaBody::Expr(_) => &[],
-        };
-        let pruned = pruned_locals_for_lambda(l, stmts, self.index, self.current_locals());
+        let pruned = pruned_locals_for_lambda(l, self.index, self.current_locals());
         self.lambda_locals.push(pruned);
     }
 

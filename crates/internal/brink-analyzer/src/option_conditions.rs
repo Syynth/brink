@@ -482,8 +482,7 @@ fn walk_expr_for_lambdas(
                 // distinguish "this is a condition position" — see the
                 // module doc), so it calls the shared function directly
                 // instead.
-                let pruned_locals =
-                    structs::pruned_locals_for_lambda(l, stmts, ctx.index, ctx.locals);
+                let pruned_locals = structs::pruned_locals_for_lambda(l, ctx.index, ctx.locals);
                 let pruned_ctx = MistypeCtx {
                     index: ctx.index,
                     globals: ctx.globals,

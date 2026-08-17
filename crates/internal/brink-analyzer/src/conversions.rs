@@ -204,11 +204,7 @@ impl HirVisitor for ConversionVisitor<'_> {
     }
 
     fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
-        let stmts: &[brink_ir::BlockStmt] = match &l.body {
-            brink_ir::LambdaBody::Block { stmts, .. } => stmts,
-            brink_ir::LambdaBody::Expr(_) => &[],
-        };
-        let pruned = structs::pruned_locals_for_lambda(l, stmts, self.index, self.current_locals());
+        let pruned = structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
         self.lambda_locals.push(pruned);
     }
 
@@ -433,6 +429,24 @@ mod tests {
         );
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E078);
+    }
+
+    /// Review finding on issue #2773: every fixture above exercises only
+    /// `LambdaBody::Block` — `pruned_locals_for_lambda`'s own
+    /// `LambdaBody::Expr(_) => &[]` arm (a bare-expression body binds no
+    /// extra names beyond its own params) was reachable in this file's
+    /// `enter_lambda`, but nothing pinned that the pruned frame is actually
+    /// pushed for that shape too. Same fixture as
+    /// `lambda_param_shadowing_outer_array_local_is_not_misclassified_as_out_of_domain`,
+    /// with the lambda's block body (`{ int(x) }`) collapsed to a bare
+    /// expression body (`int(x)`) — if a future edit made the `Expr(_)` arm
+    /// skip the frame push, this would regress to a false-positive `E078`
+    /// while every block-bodied fixture above stayed green.
+    #[test]
+    fn lambda_expr_body_param_shadowing_outer_array_local_is_not_misclassified() {
+        let diags =
+            check_all_native("fn build() {\n  let x = [1, 2, 3];\n  let f = |x: int| int(x);\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]

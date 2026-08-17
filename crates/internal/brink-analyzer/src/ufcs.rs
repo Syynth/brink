@@ -672,12 +672,7 @@ impl HirVisitor for UfcsVisitor<'_> {
     }
 
     fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
-        let stmts: &[brink_ir::BlockStmt] = match &l.body {
-            brink_ir::LambdaBody::Block { stmts, .. } => stmts,
-            brink_ir::LambdaBody::Expr(_) => &[],
-        };
-        let pruned =
-            crate::structs::pruned_locals_for_lambda(l, stmts, self.index, self.current_locals());
+        let pruned = crate::structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
         self.lambda_locals.push(pruned);
     }
 
