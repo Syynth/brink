@@ -80,12 +80,19 @@ export const STALE_TOKEN = "INLINE_WS+";
 
 /**
  * How many lines on either side of a `STALE_TOKEN` occurrence count as
- * "nearby" for `HISTORICAL_MARKER_RE`. Generous on purpose: the largest
- * distance measured across every legitimate mention in the repo today is 6
- * lines (crates/internal/brink-syntax/src/parser/tests/knot/cst.rs, where
- * the marker phrase wraps onto the following comment line's continuation).
+ * "nearby" for `HISTORICAL_MARKER_RE`. The largest distance measured across
+ * every legitimate mention in the repo today is 7 lines
+ * (crates/internal/brink-syntax/src/parser/tests/knot/cst.rs, where the
+ * marker phrase wraps onto the following comment line's continuation) —
+ * verified by sweeping `windowLines` over every real occurrence: the repo is
+ * clean at 7 and fails at 6. Kept at 8, one line of margin above the
+ * measured need, rather than a much wider blanket: a review on PR #2723
+ * found that a stale claim planted 15 lines away from an unrelated
+ * `INLINE_WS+` mention stayed invisible to this guard at the old
+ * `CONTEXT_WINDOW_LINES = 15`, because the wide window let an unrelated
+ * marker phrase satisfy it by proximity alone.
  */
-export const CONTEXT_WINDOW_LINES = 15;
+export const CONTEXT_WINDOW_LINES = 8;
 
 /**
  * Phrases that mark an `INLINE_WS+` quotation as an acknowledged HISTORICAL
@@ -104,7 +111,20 @@ export const HISTORICAL_MARKER_RE =
  */
 export const PRUNED_DIRS = new Set([".git", "node_modules", "target", "dist", "dist-embed", "pkg"]);
 
-/** Extensions scanned — the three surfaces #2718/#2719 actually found drift in. */
+/**
+ * Extensions scanned — docs (`.md`), Rust source (`.rs`), and TypeScript
+ * source (`.ts`/`.tsx`/`.mts`/`.cts`), the three surfaces #2718/#2719
+ * actually found drift in.
+ *
+ * `.mjs`/`.js`/`.mdx` are deliberately NOT in this list, not an oversight:
+ * this file's own `STALE_TOKEN = "INLINE_WS+"` literal and
+ * `check-grammar-drift.test.mjs`'s deliberately-unmarked planted fixtures
+ * would both trip the guard the moment `.mjs` were scanned (verified:
+ * scanning this file and its test as `.mjs` sources reports 4 and 7
+ * unmarked occurrences respectively). If `.mjs`/`.js`/`.mdx` is ever added
+ * here, exempt `scripts/check-grammar-drift*.mjs` by path first. No test
+ * covers this extension-selection choice today.
+ */
 const SCANNED_EXTENSIONS = [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"];
 
 /**
