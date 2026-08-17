@@ -2744,6 +2744,21 @@ mod tests {
     /// 120 sits at 2x the highest cap this repo has ever needed, leaving room
     /// for a future legitimately-long lane without moving the ceiling, while
     /// still rejecting a multi-day value by more than an order of magnitude.
+    ///
+    /// SCOPE, read narrowly: this ceiling only rejects a `timeout-minutes`
+    /// that is too HIGH. #2710's own motivating case for gap 2 was the
+    /// opposite direction — a cap sitting BELOW typical runtime
+    /// (release-plz's `release-pr` job capped at 15m while real runs took
+    /// 17m04s/17m31s/13m34s, silently killing a job that was still doing
+    /// real work) — and the issue's Ask #2 asked for a check that flags
+    /// caps sitting below typical duration. That half is NOT implemented
+    /// here: nothing in this guard reads any job's actual run history or
+    /// compares it against that job's own `timeout-minutes`, so a lane
+    /// whose cap sits below what it actually needs still passes this test
+    /// silently. Building that would mean querying the Actions API for
+    /// per-job run durations, which is a real design/cost call (a token,
+    /// a data source, a staleness policy) left to the maintainer rather
+    /// than guessed at here.
     #[test]
     fn every_workflow_job_sets_timeout_minutes() {
         const ALLOWLISTED_FILE: &str = "release.yml";
@@ -2785,10 +2800,21 @@ mod tests {
                 // A value this guard cannot parse is exactly the kind of
                 // thing it exists to catch, not something to skip past —
                 // treat it as violating the ceiling rather than silently
-                // passing an unrecognised format through.
-                let minutes: u32 = value.parse().unwrap_or(u32::MAX);
-                if minutes > TIMEOUT_MINUTES_CEILING {
-                    too_high.push(format!("{lane} ({minutes}m)"));
+                // passing an unrecognised format through. Keep the failure
+                // message honest about which case it is: folding a parse
+                // failure into `u32::MAX` would report a nonsense
+                // "(4294967295m)" for something like `timeout-minutes: 30  #
+                // comment` or a `${{ ... }}` expression, blaming the file
+                // for a value it never set.
+                match value.parse::<u32>() {
+                    Ok(minutes) => {
+                        if minutes > TIMEOUT_MINUTES_CEILING {
+                            too_high.push(format!("{lane} ({minutes}m)"));
+                        }
+                    }
+                    Err(_) => {
+                        too_high.push(format!("{lane} (unparseable value {value:?})"));
+                    }
                 }
             }
         }
@@ -2806,7 +2832,7 @@ mod tests {
         assert!(
             too_high.is_empty(),
             "these jobs set a `timeout-minutes` above this guard's {TIMEOUT_MINUTES_CEILING}-minute \
-             ceiling (#2710 gap 1): {too_high:?}. The ceiling exists so an absurd value (e.g. \
+             ceiling (#2710 gap 2): {too_high:?}. The ceiling exists so an absurd value (e.g. \
              4320 for 3 days) cannot pass this guard just by being present — every job's real \
              `timeout-minutes` in this tree today is 60 or less; if a job genuinely needs more \
              than {TIMEOUT_MINUTES_CEILING} minutes, raise the ceiling here with a fresh \
@@ -2875,13 +2901,50 @@ mod tests {
                  required-checks list; actual GitHub required-checks state is not readable from \
                  this tree (#2717) and is NOT what this assertion checks"
             );
+
+            // Scoped to the SAME contiguous comment block the "NON-REQUIRED"
+            // line lives in, not the whole file: a whole-file `contains`
+            // check is satisfied by any unrelated later mention of both
+            // issue numbers (e.g. desktop-bundle-smoke.yml's cargo-deny
+            // licence-report comment also happens to say "#2402/#2346"), so
+            // the header comment could be reworded to drop its citations
+            // entirely and this test would still pass — exactly the
+            // "docstring outruns its filter" class (#2610/#2613) this test
+            // itself invokes.
+            let block_opt = non_required_comment_block(&contents);
             assert!(
-                contents.contains("#2346") && contents.contains("#2402"),
-                "{file}'s NON-REQUIRED comment should cite both rulings it stands on (#2346 and \
-                 #2402) so the standing traces back to a real decision, not just an unattributed \
-                 claim"
+                block_opt.is_some(),
+                "{file}: NON-REQUIRED line found but its comment block could not be extracted"
+            );
+            let block = block_opt.expect("just asserted above");
+            assert!(
+                block.contains("#2346") && block.contains("#2402"),
+                "{file}'s NON-REQUIRED comment block should cite both rulings it stands on \
+                 (#2346 and #2402) so the standing traces back to a real decision, not just an \
+                 unattributed claim; block seen: {block:?}"
             );
         }
+    }
+
+    /// Returns the contiguous run of `#`-prefixed lines that contains the
+    /// first line mentioning "NON-REQUIRED", extended upward and downward
+    /// while lines keep starting with `#`. Used to scope the citation check
+    /// above to the same comment block as the standing claim, rather than
+    /// anywhere in the file.
+    fn non_required_comment_block(contents: &str) -> Option<String> {
+        let lines: Vec<&str> = contents.lines().collect();
+        let anchor = lines.iter().position(|l| l.contains("NON-REQUIRED"))?;
+
+        let mut start = anchor;
+        while start > 0 && lines[start - 1].trim_start().starts_with('#') {
+            start -= 1;
+        }
+        let mut end = anchor;
+        while end + 1 < lines.len() && lines[end + 1].trim_start().starts_with('#') {
+            end += 1;
+        }
+
+        Some(lines[start..=end].join("\n"))
     }
 
     #[test]
