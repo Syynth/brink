@@ -160,6 +160,8 @@ class ExtractPromptWidget extends WidgetType {
 class ExtractPrompt {
   decorations: DecorationSet = Decoration.none;
   private input: InlineNameInput | null = null;
+  /** Handle for `stop()`'s deferred `view.focus()` (#2557 sibling site). */
+  private focusTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly view: EditorView,
@@ -217,13 +219,23 @@ class ExtractPrompt {
     this.input.dispose();
     this.input = null;
     this.decorations = Decoration.none;
-    setTimeout(() => view.focus(), 0);
+    if (this.focusTimer !== null) clearTimeout(this.focusTimer);
+    this.focusTimer = setTimeout(() => {
+      this.focusTimer = null;
+      view.focus();
+    }, 0);
   }
 
   destroy(): void {
     this.input?.dispose();
     this.input = null;
     this.decorations = Decoration.none;
+    // #2557 sibling: clear a still-pending focus timer from stop() so it
+    // can't fire after the plugin (and its view) is torn down.
+    if (this.focusTimer !== null) {
+      clearTimeout(this.focusTimer);
+      this.focusTimer = null;
+    }
   }
 }
 
