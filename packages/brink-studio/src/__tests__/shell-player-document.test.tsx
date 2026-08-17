@@ -127,6 +127,40 @@ describe("story.openPlayer", () => {
     expect(s.focusedGroupId).toBe(entryGroupId);
   });
 
+  // The maximized-single-group case (review finding on #2787): closing the
+  // player collapses to one group, same as above, but this time the user
+  // maximized that lone group before reopening. openDocument's split-right
+  // branch must clear maximizedGroupId itself (mirroring splitGroup, §5.4) —
+  // otherwise the new player group is created behind the maximized group and
+  // EditorArea (which renders only the maximized group) never shows it.
+  it("clears maximizedGroupId when restoring the split from a maximized single group", () => {
+    const commands = new CommandRegistry();
+    const groups = createEditorGroupsStore();
+    registerOpenPlayerCommand(commands, groups);
+
+    groups
+      .getState()
+      .openDocument({ typeId: "ink-file", docId: "main.ink", title: "main.ink" });
+    const entryGroupId = groups.getState().focusedGroupId;
+    openPlayerSplit(groups);
+    const playerGroupId = groups
+      .getState()
+      .groups.find((g) => g.id !== entryGroupId)!.id;
+    groups.getState().closeTab(playerGroupId, documentKey(playerRef()));
+    expect(groups.getState().groups).toHaveLength(1);
+
+    // Maximize the sole remaining group before reopening the player.
+    groups.getState().toggleMaximizeGroup(entryGroupId);
+    expect(groups.getState().maximizedGroupId).toBe(entryGroupId);
+
+    commands.dispatch(OPEN_PLAYER_COMMAND_ID);
+
+    const s = groups.getState();
+    expect(s.groups).toHaveLength(2);
+    expect(s.maximizedGroupId).toBeNull();
+    expect(s.groups[1].tabs.map((t) => t.ref.typeId)).toEqual([PLAYER_TYPE_ID]);
+  });
+
   // Once the editor area is already split beyond the two-up, there is no
   // "missing" layout to restore — reopening should not keep stacking new
   // columns, so it falls back to the normal reveal/open-in-focused policy.

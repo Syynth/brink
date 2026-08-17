@@ -91,7 +91,7 @@ Default placement, mapped from existing components:
 | Surface | Kind | Default home | Today | Notes |
 |---|---|---|---|---|
 | **Binder** | tool window | left dock, start | [Binder.tsx](../packages/studio-ui/src/Binder.tsx) | Open by default. Component gets decomposed (tree / selection / DnD / context menu) during migration, not before. Below the project's own file tree, a collapsed-by-default "Library" section (issue #2306, ruled 2026-08-06 "Mounted stdlib presents as a read-only library node") lists mounted `std/` files — browsable (folder tree, click/double-click opens read-only) but with no drag/rename/delete/new-file affordances, excluded from save-all and search/replace. `list_files`/`project_outline`/`story_graph` list mounted files flagged `mounted: true` rather than excluding them (#2231's original "hide" default). |
-| **Player** | editor document (session-bound) | editor area, right split by default | the `player` document type ([PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx)) | Landed (#120): a singleton session document (§7.6 — placeholder + Start when no session), opened via `story.openPlayer` and at bootstrap in a right split (the Inky two-up: editor left, player right, focus on the editor). Reopening focuses the existing tab; only an explicit split duplicates the view (two store subscribers over one session). The component owns its Run/Restart/Maximize header (§7.8); maximize is `editor.maximizeGroup` (§5.4). The old tool window is gone; multi-session maps to player tabs. |
+| **Player** | editor document (session-bound) | editor area, right split by default | the `player` document type ([PlayerPane.tsx](../packages/studio-ui/src/PlayerPane.tsx)) | Landed (#120): a singleton session document (§7.6 — placeholder + Start when no session), opened via `story.openPlayer` and at bootstrap in a right split (the Inky two-up: editor left, player right, focus on the editor). Reopening focuses the existing tab; only an explicit split duplicates the view (two store subscribers over one session). **Reopening a closed player restores the split (#280):** if the player is not open *and* the editor area has collapsed to exactly one group that still holds other content, `story.openPlayer` calls the same bootstrap helper (`openPlayerSplit`) instead of dropping the tab into the focused group — restoring the Inky two-up and handing focus back to the editor. An empty single group (nothing opened yet) or a layout already split beyond one group falls through unchanged to the reveal/open-in-focused-group policy. The component owns its Run/Restart/Maximize header (§7.8); maximize is `editor.maximizeGroup` (§5.4). The old tool window is gone; multi-session maps to player tabs. |
 | **State View** (debugger) | tool window | right dock, start | [StateView.tsx](../packages/studio-ui/src/StateView.tsx) | Closed by default; opens when a story is running and the user toggles it. Took the right strip's start slot when the Player left the dock (#120). |
 | **Problems** | tool window | bottom dock, start | *new* (data exists in `CompileSlice` diagnostics) | Clickable diagnostics list → `editor.reveal` (§6.1). Status-bar error/warning segment opens it. |
 | **Output / compile log** | tool window | bottom dock, end | *new* | Compile timings, wasm/runtime errors that aren't source diagnostics. Replaces nothing; today this information is dropped. |
@@ -230,7 +230,12 @@ layout back exactly. Neither has a default keybinding (palette-discoverable).
 command while the other mode is active restores the other first, so at most
 one maximize is ever in effect. A maximized group that collapses (last tab
 closed) restores automatically, and splitting while maximized restores first
-(the new group must be visible).
+(the new group must be visible) — this holds for every path that creates a
+`"split-right"` group, not only the explicit `editor.split` command: the
+editor-groups store clears `maximizedGroupId` inside `openDocument`'s
+`"split-right"` branch itself, so `story.openPlayer`'s restore-the-split
+behavior (#280, §4 Player row) obeys the same rule as `splitGroup` without
+each caller having to remember it.
 
 ## 6. Command system
 
