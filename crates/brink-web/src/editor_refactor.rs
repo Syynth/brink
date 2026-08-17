@@ -532,9 +532,10 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// Five knots whose `=` fences are all legal and none of them the
     /// `=== name ===` shape every other fixture uses (#2662).
     ///
-    /// `brink_syntax`'s `knot_header` rule is
+    /// `brink_syntax`'s `knot_header` rule used to be
     /// `"==" ~ "="* ~ INLINE_WS* ~ ("function" ~ INLINE_WS+)? ~ identifier
-    /// … ~ INLINE_WS* ~ ("==" ~ "="*)?`, so production's vocabulary is **two or
+    /// … ~ INLINE_WS* ~ ("==" ~ "="*)?` (the comment now says `INLINE_WS*` after
+    /// `function` too, mismatch fixed separately by #2707), so production's vocabulary is **two or
     /// more** `=`, **zero or more** spaces, **tolerated leading indent**
     /// (`skip_ws` runs before the fence is even looked for), and an **optional**
     /// trailing fence of **any width** — `== one ==`, `===two===`,
@@ -563,7 +564,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// uses, plus two `=`-leading lines that are NOT headers (#2684).
     ///
     /// The stitch level had #2662's split one rung down. `brink_syntax`'s
-    /// `parser/knot.rs` documents `stitch_header` as
+    /// `parser/knot.rs` used to document `stitch_header` as
     ///
     /// ```text
     /// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
@@ -574,7 +575,9 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
     /// **zero** or more. So production's real vocabulary is: a **tolerated
     /// leading indent** (`current()` skips trivia), **exactly one** `=`, a
     /// negative lookahead excluding `=` and `>`, and **optional** whitespace —
-    /// the `INLINE_WS+` in the doc comment is not what the parser does.
+    /// the `INLINE_WS+` that used to be in the doc comment was never what the
+    /// parser does (the comment now says `INLINE_WS*`, mismatch fixed
+    /// separately by #2695).
     ///
     /// Driven, not read (the whole lesson of #2662): `file_symbols` reports a
     /// stitch for each of `= a`, `  = b`, `=c`, `   =d`, `= e(n)` and

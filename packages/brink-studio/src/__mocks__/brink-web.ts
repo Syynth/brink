@@ -149,13 +149,14 @@ const KNOT_IS_FUNCTION_RE = new RegExp(`^\\s*${KNOT_FENCE_EQUALS}\\s*function\\s
  * file, which is why #2684 exists at all.
  *
  * Read off production's `parser/knot.rs` — but only after DRIVING it, because
- * the doc comment there and the code disagree. The comment says
+ * the doc comment there and the code used to disagree. The comment used to say
  *
  * ```text
  * stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ … }
  * ```
  *
- * with `INLINE_WS+` — REQUIRED whitespace. The code is `at_stitch`
+ * with `INLINE_WS+` — REQUIRED whitespace (the comment now says `INLINE_WS*`,
+ * mismatch fixed separately by #2695, matching the code below). The code is `at_stitch`
  * (`current() == EQ && nth(1) != EQ && nth(1) != GT`) followed by
  * `p.skip_ws()`, and `skip_ws` matches **zero** or more. So the real
  * vocabulary is: a tolerated leading indent (`current()` skips trivia,
