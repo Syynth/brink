@@ -267,7 +267,16 @@ the config above as follows:
 - **Stale-binary hazard**: the shared target can serve test binaries compiled
   from a since-DELETED sibling worktree (baked `CARGO_MANIFEST_DIR` → phantom
   insta snapshot-not-found failures). `cargo clean -p <crate>` cures; suspect
-  it whenever snapshot failures appear only in shared-cache runs.
+  it whenever snapshot failures appear only in shared-cache runs. The live
+  (not-yet-deleted) sibling case is the same root cause with a different
+  symptom — a colliding `-C metadata` hash between two CURRENTLY-live
+  worktrees of the same package silently serves one worktree's stale, or
+  currently-different, artifact to the other (issue #2054). Before trusting
+  a corpus/bucket number measured locally, run `pnpm check:target-freshness`
+  (`scripts/check-target-freshness.mjs`, CLAUDE.md Rules) — it detects a
+  live sibling worktree plus an existing cached artifact and exits non-zero;
+  `corpus_report`/`full_corpus_sweep` print a pointer to it automatically
+  whenever `CARGO_TARGET_DIR` is set.
 
 ### Gates
 - ⚠ **CORRECTED 2026-08-13.** The previous rule here said `wasm-pack

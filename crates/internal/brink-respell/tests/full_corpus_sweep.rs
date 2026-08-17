@@ -46,6 +46,25 @@ fn repo_root() -> PathBuf {
 #[test]
 #[ignore = "diagnostic sweep over the whole corpus; not a pass/fail assertion, run manually"]
 fn sweep() {
+    // #2054: this exact sweep is the one that produced a confidently wrong
+    // bucket count during PR #2030 — a `CARGO_TARGET_DIR` shared across
+    // worktrees (the autonomous-pump convention) silently reused a
+    // different worktree's stale build, and the printed "thread-start
+    // splice" bucket sat at 21 across several runs when the true number
+    // (after `cargo clean -p …`) was 17. This test cannot detect that
+    // itself (dep-info in a shared target dir carries no absolute worktree
+    // path), so it can only point at the tool that can: run
+    // `pnpm check:target-freshness` (`scripts/check-target-freshness.mjs`)
+    // before trusting this sweep's numbers whenever `CARGO_TARGET_DIR` is
+    // set and other worktrees may be live.
+    if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+        println!(
+            "[full_corpus_sweep] CARGO_TARGET_DIR is set — before trusting these numbers, run \
+             `pnpm check:target-freshness` to check for a shared-target-dir collision with \
+             another live worktree (issue #2054).\n"
+        );
+    }
+
     let root = repo_root();
     let cases = collect_oracle_cases(&root.join("tests"));
     let mut ok = 0usize;
