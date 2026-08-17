@@ -813,6 +813,25 @@ fn type_ref_to_ty(t: &TypeRef, types: &BTreeMap<String, brink_ir::SemanticTypeDe
     }
 }
 
+/// The synthetic `DefinitionId` `hir.root_content`'s own inference results
+/// are keyed under (issue #1903). Root content has no parameters, no
+/// return type, and no `DefinitionId` in the symbol table, so this mixes a
+/// tag bit into the `FileId` to avoid colliding with a real definition id;
+/// the id is never looked up in the symbol table, only used to key
+/// `inference.bodies` so a later check can read the results back out.
+///
+/// This is the scheme's origin — [`collect_defs`] below synthesizes it to
+/// drive inference over `root_content` in the first place. Issue #2772
+/// review finding: every other site that needs to key into
+/// `inference.bodies` for root content's own def
+/// (`strict::check_direct_call_args`, `strict::body_def_ids`,
+/// `option_conditions::check`) must call this rather than re-deriving the
+/// formula inline, so a future move to module-qualified ids only has to
+/// change once.
+pub(crate) fn root_content_def_id(file: FileId) -> DefinitionId {
+    DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0))
+}
+
 /// Every inferable (knot/stitch) def in the project, resolved back to its
 /// own `DefinitionId` via `(file, kind, qualified name)` — HIR `Knot`/
 /// `Stitch` nodes carry only a bare `Name`, not their own id.
@@ -844,7 +863,7 @@ pub(crate) fn collect_defs<'a>(
         // the ID is never looked up in the symbol table, only used to key
         // `inference.bodies` so that strict checks later read the results.
         if !hir.root_content.stmts.is_empty() {
-            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file_id.0));
+            let synthetic_id = root_content_def_id(file_id);
             defs.push(Def {
                 id: synthetic_id,
                 file: file_id,

@@ -78,7 +78,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brink_format::{DefinitionId, DefinitionTag};
+use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Content, ContentPart, ElseBranch, Expr, FileId, HirFile, IfStmt, Path,
     ResolutionMap, Stmt, SymbolIndex, SymbolKind, TypeExpr,
@@ -1086,7 +1086,7 @@ fn check_direct_call_args(
         // root_content silently drops its recorded facts (2026-08 review,
         // issue #2001).
         if !hir.root_content.stmts.is_empty() {
-            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+            let synthetic_id = crate::infer::root_content_def_id(file);
             def_ids.push(synthetic_id);
         }
         for knot in &hir.knots {
@@ -1169,7 +1169,7 @@ fn check_direct_call_args(
 fn body_def_ids(file: FileId, hir: &HirFile, index: &SymbolIndex) -> Vec<DefinitionId> {
     let mut def_ids: Vec<DefinitionId> = Vec::new();
     if !hir.root_content.stmts.is_empty() {
-        let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+        let synthetic_id = crate::infer::root_content_def_id(file);
         def_ids.push(synthetic_id);
     }
     for knot in &hir.knots {

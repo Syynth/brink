@@ -61,13 +61,17 @@
 //! (file-scope content before the first knot/stitch header — this fix).
 //! The remaining `HirFile` fields (`lists`, `structs`, `externals`,
 //! `includes`, `module`, `imports`, `visibility`, `was_directives`,
-//! `allow_scopes`, `element_matches`, `cue_names`) carry no `Stmt`/`Expr`
-//! tree of their own and so can never hold a condition or a lambda body —
-//! there is nothing left in `HirFile` for this walk to reach.
+//! `allow_scopes`, `element_matches`, `cue_names`, `native`,
+//! `claim_handlers`) carry no `Stmt`/`Expr` tree of their own and so can
+//! never hold a condition or a lambda body — `native` is a bare `bool` and
+//! `claim_handlers` is a `Vec<ClaimHandlerDecl>` whose own fields are only
+//! `Name`/`TextRange`/`Vec<String>`/`String`/`bool`/`i64`/`Option<String>`
+//! (`crates/internal/brink-ir/src/hir/types.rs`) — there is nothing left in
+//! `HirFile` for this walk to reach.
 
 use std::collections::BTreeMap;
 
-use brink_format::{DefinitionId, DefinitionTag};
+use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, Diagnostic,
     DiagnosticCode, ElseBranch, Expr, FileId, HirFile, IfStmt, LambdaBody, PrefixOp, ResolutionMap,
@@ -128,15 +132,16 @@ pub(crate) fn check(
         // and reference them in a condition (the issue's own repro shape),
         // so `locals: None` would be wrong here: it would leave every
         // root-scope temp unclassifiable. Instead this looks up root
-        // content's own inferred locals via the same synthetic
-        // `DefinitionId` `strict.rs::body_def_ids` (issue #1903) already
-        // established for exactly this scope — `collect_defs` synthesizes
-        // that id for inference, so a body-level check must look it up
-        // under the identical scheme.
+        // content's own inferred locals via `infer::root_content_def_id`
+        // (issue #1903, factored out for #2772 so this and `strict.rs`'s
+        // own root-content lookups share one derivation rather than each
+        // re-deriving the id inline) — `collect_defs` synthesizes that same
+        // id for inference, so a body-level check must look it up under
+        // the identical scheme.
         let root_locals = if hir.root_content.stmts.is_empty() {
             None
         } else {
-            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+            let synthetic_id = crate::infer::root_content_def_id(file);
             inference.bodies.get(&synthetic_id).map(|b| &b.locals)
         };
         let root_ctx = MistypeCtx {
@@ -827,6 +832,26 @@ mod tests {
     fn root_content_non_option_condition_stays_clean() {
         let diags = check_all("~ temp n = 3\n{n: nonzero.}\n=== main ===\n-> DONE\n");
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Issue #2772's own literal repro shape (review finding): a
+    /// **file-scope global** `VAR … : Option<T> = none` conditioned on in
+    /// root content, not a `~ temp`. [`root_content_condition_on_option_is_e116`]
+    /// above only exercises the `root_locals` half of this fix (a local
+    /// declared *within* root content); a condition on a project-wide
+    /// global reads through `ctx.globals` instead (`condition_is_option`'s
+    /// `structs::classify_expr_ty` fallback), which was already reachable
+    /// before this fix via `infer::collect_globals` — but `check()` never
+    /// walked `hir.root_content` at all, so the condition *statement*
+    /// itself was unreachable regardless of which lookup would have
+    /// classified it. Pins that the globals-through-root-content path gets
+    /// covered too, not just the new `root_locals` path.
+    #[test]
+    fn root_content_global_option_condition_is_e116() {
+        let diags =
+            check_all("VAR opt: Option<int> = none\n{opt: has value.}\n=== main ===\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E116);
     }
 
     #[test]
