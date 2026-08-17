@@ -41,12 +41,28 @@ const here = resolve(fileURLToPath(import.meta.url), "..");
 const defaultRepoRoot = resolve(here, "../../..");
 
 /**
+ * Default bound for every command this module shells out to (#2697). Before
+ * this, `wasm-pack build` ran on no clock at all on the `pnpm --filter
+ * @brink/desktop dev` preflight path — the same wedged-proxy hang class
+ * scripts/check-scripts.mjs bounds for shell scripts via `run_with_timeout`,
+ * one language over: `wasm-pack build` fetches binaryen/wasm-opt from GitHub
+ * releases on a cache miss, and a stalled fetch there hung the whole preflight
+ * forever with no diagnostic. 10 minutes is generous for a wasm build on a
+ * warm toolchain cache; baked into `defaultRunCommand`'s own `execSync` call
+ * (before `...options`) rather than into each call site, so it is the one
+ * real bound instead of something every future caller has to remember to
+ * pass — a caller can still override it by spreading its own `timeout` in
+ * afterward.
+ */
+export const DEFAULT_EXEC_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
  * Run a command and capture its stdout. The single seam through which this
  * module talks to `wasm-pack`, so a caller can drive the freshness logic
  * without a toolchain.
  */
 function defaultRunCommand(command, options = {}) {
-  return execSync(command, { encoding: "utf8", ...options });
+  return execSync(command, { encoding: "utf8", timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });
 }
 
 /** Newest mtime of any .rs / Cargo.toml under `dir`, skipping build output. */

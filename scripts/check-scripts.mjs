@@ -1116,6 +1116,251 @@ export function splitSegmentsQuoteAware(line) {
   return segments;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CHECK 4 (`findUnboundedExecCalls`) — #2697 gap 2
+//
+// The rest of this file's checks are a SHELL tokenizer, stated in the header
+// as deliberately NOT covering `packages/*/scripts/*.mjs`: those are Node
+// ESM, and running a shell-line scanner over JavaScript is a category error,
+// not a conservative approximation. But `packages/brink-desktop/scripts/
+// ensure-wasm.mjs` and `ensure-cli-sidecar.mjs` shell out to `wasm-pack`/
+// `cargo`/`rustc` via `execSync` with no bound, on the exact same
+// `pnpm --filter @brink/desktop dev` preflight path a wedged proxy can hang
+// forever — the same hazard class check 1 exists for, one language over. The
+// bound here is `execSync`'s/`spawnSync`'s own `timeout` option, so the check
+// has to be JS-level: does this call's own argument text carry a `timeout`
+// key?
+//
+// WHAT THIS DOES: a lexical scan of `packages/*/scripts/*.mjs`, block/line
+// comments blanked first (`stripJsComments`, preserving line numbers) so a
+// comment merely MENTIONING "timeout:" cannot satisfy the check. Every
+// `execSync(` / `spawnSync(` call is found by name, its balanced argument
+// list extracted (`extractBalancedArgs`, quote-aware so a paren inside a
+// string doesn't unbalance the count), and the raw argument text is searched
+// for a literal `timeout` key.
+//
+// WHAT THIS DELIBERATELY DOES NOT DO: trace call-site indirection. Both real
+// files route every invocation through one local wrapper —
+// `defaultRunCommand(command, options) { execSync(command, { ...,
+// ...options }) }` — and callers pass a `runCommand` PARAMETER, not the
+// literal name `execSync`. A checker that tried to resolve "does the caller's
+// options eventually carry a timeout" would need real scope/data-flow
+// analysis, which this file has never attempted for shell and should not
+// start attempting for JS. Instead the fix baked into `defaultRunCommand`
+// puts a literal `timeout: DEFAULT_EXEC_TIMEOUT_MS` INSIDE the `execSync`
+// call itself, before the `...options` spread — visible to this lexical scan
+// at the one place the child process actually gets spawned, and still
+// override-able by a caller that spreads its own `timeout` in after it. A
+// future wrapper that reads differently (no literal `timeout:` in its own
+// `execSync`/`spawnSync` call) is reported, same as an unbounded shell fetch
+// — the prompt is "put a real bound at the actual spawn site", not "restate
+// the same default at every call site".
+//
+// EXACTLY WHAT THIS CANNOT SEE:
+//   - A `timeout:` key that is only true SEMANTICALLY, not lexically — e.g.
+//     one merged in from a spread object this scan does not evaluate
+//     (`...TIMEOUT_OPTS` where `TIMEOUT_OPTS = { timeout: 5000 }` lives
+//     elsewhere). Over-permissive in that direction: a call with a spread and
+//     no literal `timeout:` key anywhere in its own argument text is still
+//     reported, even if the spread WOULD have supplied one — the literal
+//     `timeout:` bake-in above is what makes the two real files pass without
+//     hitting this hole.
+//   - A `timeout:` key whose VALUE is unreasonable (`0`, a negative number, a
+//     value so large it is not really a bound). Presence is all that is
+//     checked, exactly like check 1's "bounded" is lexical presence of
+//     `run_with_timeout`, not a sanity check on the duration passed to it.
+//   - Deeply nested strings/template literals inside the argument list that
+//     defeat `extractBalancedArgs`'s quote tracking (a backtick template
+//     containing an unescaped backtick via `${...}` interpolation, for
+//     instance) — over-scans rather than under-scans, the same safe
+//     direction check 1 takes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** `execSync`/`spawnSync` — the two Node APIs whose own `timeout` option is the bound. */
+export const EXEC_CALL_NAMES = ["execSync", "spawnSync"];
+
+/**
+ * Strip `//` line comments and `/* … *\/` block comments from JS source,
+ * quote-aware (single, double, template) so a `//` or `/*` inside a string
+ * literal is left alone. Every stripped character that was a newline is
+ * PRESERVED, so line numbers computed against the stripped text still match
+ * the original file — the same "line-preserving view" approach
+ * `justfileShellView` above uses for the justfile.
+ *
+ * Not a real JS lexer: a template literal's `${ … }` interpolation is not
+ * specially tracked, so a `//`/`/*` written inside one is treated as still
+ * "in a string" and left alone (under-stripped, not over-stripped — the safe
+ * direction, since the goal is never to blank out a REAL `timeout:` key).
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripJsComments(text) {
+  let out = "";
+  let quote = null;
+  let i = 0;
+
+  while (i < text.length) {
+    const char = text[i];
+
+    if (quote) {
+      out += char;
+      if (char === "\\" && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (char === quote) quote = null;
+      i += 1;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      out += char;
+      i += 1;
+      continue;
+    }
+
+    if (char === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      continue;
+    }
+
+    if (char === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
+        if (text[i] === "\n") out += "\n";
+        i += 1;
+      }
+      i += 2;
+      continue;
+    }
+
+    out += char;
+    i += 1;
+  }
+
+  return out;
+}
+
+/**
+ * The text between a call's opening `(` (at `openIndex`) and its matching
+ * `)`, quote-aware so a paren inside a string/template literal does not
+ * unbalance the count. Returns `null` when the parens never balance (an
+ * unclosed call — over-scanning a false find is worse than skipping one this
+ * check cannot make sense of).
+ *
+ * @param {string} text
+ * @param {number} openIndex index of the `(` itself
+ * @returns {{args: string, end: number} | null} `end` is the index of the closing `)`
+ */
+export function extractBalancedArgs(text, openIndex) {
+  let depth = 0;
+  let quote = null;
+
+  for (let i = openIndex; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (quote) {
+      if (char === "\\" && i + 1 < text.length) {
+        i += 1;
+        continue;
+      }
+      if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return { args: text.slice(openIndex + 1, i), end: i };
+    }
+  }
+
+  return null;
+}
+
+/** A literal `timeout` key, e.g. `timeout: 5000` — comma/brace/whitespace before, `:` after. */
+const TIMEOUT_KEY = /(?:^|[{,\s])timeout\s*:/;
+
+/**
+ * Every `execSync(…)` / `spawnSync(…)` call in `text` whose own argument list
+ * carries no literal `timeout` key (#2697 gap 2). See the header above this
+ * section for exactly what "own argument list" means and does not trace.
+ *
+ * @param {string} text
+ * @param {string} path label used in problem messages
+ * @returns {{ok: boolean, problems: string[], findings: {line: number, name: string}[]}}
+ */
+export function findUnboundedExecCalls(text, path) {
+  const stripped = stripJsComments(text);
+  const findings = [];
+
+  for (const name of EXEC_CALL_NAMES) {
+    const callPattern = new RegExp(`\\b${name}\\s*\\(`, "g");
+    let match;
+    while ((match = callPattern.exec(stripped))) {
+      const openIndex = match.index + match[0].length - 1;
+      const call = extractBalancedArgs(stripped, openIndex);
+      if (!call) continue; // unclosed call — nothing sensible to report
+
+      const line = stripped.slice(0, match.index).split("\n").length;
+      const bounded = TIMEOUT_KEY.test(call.args);
+      findings.push({ line, name, bounded });
+      callPattern.lastIndex = call.end;
+    }
+  }
+
+  const unbounded = findings.filter((finding) => !finding.bounded);
+  const problems = unbounded.map(
+    (finding) =>
+      `${path}:${finding.line} calls ${finding.name}(...) with no \`timeout\` option — an unbounded child ` +
+      `process hangs this preflight forever on a wedged proxy or toolchain fetch, the same hazard class ` +
+      `check 1 bounds for shell scripts, one language over (#2697). Pass \`{ timeout: <ms>, ...options }\` at ` +
+      `the actual execSync/spawnSync call site, not only at a caller several layers up.`,
+  );
+
+  return { ok: problems.length === 0, problems, findings };
+}
+
+/**
+ * Every `*.mjs` directly under a `packages/<name>/scripts/` directory,
+ * DISCOVERED rather than hand-listed (matching `discoverShellScripts`'s own
+ * discipline above) — a hardcoded two-file list would be exactly the
+ * enumeration failure this whole module exists to end, one surface over.
+ * Non-recursive: `packages/*\/scripts/*.mjs` is the shape #2697 named, not
+ * `packages/**\/scripts/**\/*.mjs`.
+ *
+ * @param {string} [repoRoot]
+ * @returns {{path: string, text: string}[]}
+ */
+export function discoverPackageScriptSources(repoRoot = REPO_ROOT) {
+  const packagesDir = join(repoRoot, "packages");
+  if (!existsSync(packagesDir)) return [];
+
+  const sources = [];
+  for (const pkg of readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    const scriptsDir = join(packagesDir, pkg.name, "scripts");
+    if (!existsSync(scriptsDir)) continue;
+
+    for (const entry of readdirSync(scriptsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".mjs")) continue;
+      const relative = `packages/${pkg.name}/scripts/${entry.name}`;
+      sources.push({ path: relative, text: readFileSync(join(scriptsDir, entry.name), "utf8") });
+    }
+  }
+
+  sources.sort((a, b) => a.path.localeCompare(b.path));
+  return sources;
+}
+
 /**
  * Text inside every `$( … )` in a segment.
  *
@@ -1843,7 +2088,19 @@ export function checkScripts({ repoRoot = REPO_ROOT } = {}) {
   const packageJsonText = readFileSync(join(repoRoot, PACKAGE_JSON_PATH), "utf8");
   problems.push(...checkPackageScriptPath(packageJsonText, { repoRoot }).problems);
 
-  return { ok: problems.length === 0, problems, scripts: scripts.map((script) => script.path) };
+  // #2697 gap 2: packages/*/scripts/*.mjs — a different check over a
+  // different file type (JS, not shell), same hazard class check 1 covers.
+  const packageScripts = discoverPackageScriptSources(repoRoot);
+  for (const script of packageScripts) {
+    problems.push(...findUnboundedExecCalls(script.text, script.path).problems);
+  }
+
+  return {
+    ok: problems.length === 0,
+    problems,
+    scripts: scripts.map((script) => script.path),
+    packageScripts: packageScripts.map((script) => script.path),
+  };
 }
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
@@ -1857,9 +2114,11 @@ if (invokedDirectly) {
         `invoked is classified as network or local. The ${KNOB_TABLES.length} registered knob tables ` +
         `(${KNOB_TABLES.map((entry) => `${entry.path}:${entry.prefix}*`).join(", ")}) each match their own ` +
         `script, no unregistered script assigns a BRINK_*_TIMEOUT, and ${SETUP_DEV_PATH}'s three delegating ` +
-        `docs still point at it. ` +
-        `(Read this file's header for what these scans CANNOT see — workflow run: blocks, packages/*/scripts, ` +
-        `heredocs and *.test.sh are NOT scanned, and the header says why for each.)`,
+        `docs still point at it. package.json's "${CHECK_SCRIPTS_NPM_SCRIPT}" script still resolves to this ` +
+        `file, and across ${result.packageScripts.length} packages/*/scripts/*.mjs source(s) ` +
+        `(${result.packageScripts.join(", ")}) every execSync/spawnSync call sets a timeout. ` +
+        `(Read this file's header for what these scans CANNOT see — workflow run: blocks, heredocs and ` +
+        `*.test.sh are NOT scanned, and the header says why for each.)`,
     );
   } else {
     console.error(`shell-source checks FAILED (#2648/#2647/#2666/#2667/#2677/#2678):`);

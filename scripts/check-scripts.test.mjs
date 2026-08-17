@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import {
   BENCHMARKS_SETUP_PATH,
   CHECK_SCRIPTS_NPM_SCRIPT,
+  EXEC_CALL_NAMES,
   JUSTFILE_PATH,
   KNOB_TABLES,
   LOCAL_COMMANDS,
@@ -40,10 +41,13 @@ import {
   checkPackageScriptPath,
   checkScripts,
   commandHead,
+  discoverPackageScriptSources,
   discoverShellScripts,
   discoverShellSources,
+  extractBalancedArgs,
   findFunctionNames,
   findKnobAssignments,
+  findUnboundedExecCalls,
   findUnboundedFetches,
   findUnclassifiedCommands,
   findUnregisteredKnobTables,
@@ -55,6 +59,7 @@ import {
   parseKnobTable,
   sliceSection,
   splitSegmentsQuoteAware,
+  stripJsComments,
   toLogicalLines,
 } from "./check-scripts.mjs";
 
@@ -1388,6 +1393,180 @@ describe("checkPackageScriptPath — the REAL root package.json", () => {
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("stripJsComments (#2697)", () => {
+  it("blanks a line comment but keeps the newline", () => {
+    const out = stripJsComments('const x = 1; // timeout: 5000\nconst y = 2;');
+    assert.equal(out.includes("timeout"), false);
+    assert.equal(out.split("\n").length, 2);
+  });
+
+  it("blanks a block comment, preserving embedded newlines for line counting", () => {
+    const out = stripJsComments("const x = 1;\n/* timeout:\n   5000 */\nconst y = 2;");
+    assert.equal(out.includes("timeout"), false);
+    assert.equal(out.split("\n").length, 4);
+  });
+
+  it("leaves // and /* inside string/template literals alone", () => {
+    const out = stripJsComments('const url = "https://example.com"; const s = `a/*b`;');
+    assert.match(out, /https:\/\/example\.com/);
+    assert.match(out, /a\/\*b/);
+  });
+});
+
+describe("extractBalancedArgs (#2697)", () => {
+  it("extracts a simple call's args", () => {
+    const text = 'execSync("cmd", { timeout: 5000 })';
+    const call = extractBalancedArgs(text, text.indexOf("("));
+    assert.equal(call.args, '"cmd", { timeout: 5000 }');
+  });
+
+  it("does not unbalance on a paren inside a string argument", () => {
+    const text = 'execSync("echo (hi)", { timeout: 5000 })';
+    const call = extractBalancedArgs(text, text.indexOf("("));
+    assert.equal(call.args, '"echo (hi)", { timeout: 5000 }');
+  });
+
+  it("returns null for an unclosed call", () => {
+    const text = 'execSync("cmd", { timeout: 5000 }';
+    assert.equal(extractBalancedArgs(text, text.indexOf("(")), null);
+  });
+});
+
+describe("findUnboundedExecCalls — planted red and green, one per shape (#2697)", () => {
+  it("reports a bare execSync call with no options at all", () => {
+    const result = findUnboundedExecCalls('execSync("cargo build --release");', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execSync.*no `timeout` option/);
+  });
+
+  it("reports execSync with an options object that omits timeout", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("cargo build --release", { cwd: repoRoot, stdio: "inherit" });',
+      "fixture.mjs",
+    );
+    assert.equal(result.ok, false);
+  });
+
+  it("reports spawnSync the same way execSync is reported", () => {
+    const result = findUnboundedExecCalls('spawnSync("wasm-pack", ["build"]);', "fixture.mjs");
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /spawnSync/);
+  });
+
+  it("passes when the call's own args carry a literal timeout key", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("cargo build --release", { cwd: repoRoot, timeout: 1200000, stdio: "inherit" });',
+      "fixture.mjs",
+    );
+    assert.deepEqual(result.problems, []);
+    assert.equal(result.ok, true);
+  });
+
+  it("passes when timeout is set before a spread — the real defaultRunCommand shape", () => {
+    const result = findUnboundedExecCalls(
+      'function defaultRunCommand(command, options = {}) {\n' +
+        "  return execSync(command, { encoding: 'utf8', timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });\n" +
+        "}",
+      "fixture.mjs",
+    );
+    assert.deepEqual(result.problems, []);
+  });
+
+  // The #2689 house rule: prove the heuristic does not cry wolf on
+  // legitimate output — here, a comment that merely MENTIONS "timeout:"
+  // must not satisfy the check. Comments are stripped before scanning
+  // specifically so this cannot happen.
+  it("does NOT treat a comment mentioning timeout as bounding the call", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("cargo build --release", {\n' +
+        "  // no timeout: set intentionally, revisit later\n" +
+        '  stdio: "inherit",\n' +
+        "});",
+      "fixture.mjs",
+    );
+    assert.equal(result.ok, false);
+  });
+
+  it("reports the real line number, comments and all", () => {
+    const text = '// header comment\n\nfunction f() {\n  execSync("cmd");\n}\n';
+    const result = findUnboundedExecCalls(text, "fixture.mjs");
+    assert.equal(result.findings[0].line, 4);
+  });
+
+  it("is non-vacuous: a healthy fixture with two bounded calls reports nothing", () => {
+    const result = findUnboundedExecCalls(
+      'execSync("a", { timeout: 1000 });\nspawnSync("b", { timeout: 2000 });',
+      "fixture.mjs",
+    );
+    assert.deepEqual(result.problems, []);
+  });
+});
+
+describe("EXEC_CALL_NAMES / discoverPackageScriptSources (#2697)", () => {
+  it("names exactly execSync and spawnSync", () => {
+    assert.deepEqual([...EXEC_CALL_NAMES].sort(), ["execSync", "spawnSync"]);
+  });
+
+  it("discovers the real packages/*/scripts/*.mjs sources, non-recursively", () => {
+    const sources = discoverPackageScriptSources();
+    const paths = sources.map((s) => s.path);
+    assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-wasm.mjs"), true, paths.join(", "));
+    assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"), true, paths.join(", "));
+    // Sorted, for deterministic output.
+    assert.deepEqual([...paths].sort(), paths);
+  });
+
+  it("is silent (empty) for a repoRoot with no packages/ directory", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "check-scripts-nopkgs-"));
+    try {
+      assert.deepEqual(discoverPackageScriptSources(tmpRoot), []);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("findUnboundedExecCalls — the REAL packages/*/scripts/*.mjs (#2697)", () => {
+  const realSources = discoverPackageScriptSources();
+
+  it("passes on the real tree today", () => {
+    for (const source of realSources) {
+      const result = findUnboundedExecCalls(source.text, source.path);
+      assert.deepEqual(result.problems, [], `${source.path}: ${JSON.stringify(result.problems)}`);
+    }
+  });
+
+  it("is non-vacuous: stripping the real timeout out of ensure-wasm.mjs goes red", () => {
+    const source = realSources.find((s) => s.path.endsWith("ensure-wasm.mjs"));
+    assert.notEqual(source, undefined, "expected to discover ensure-wasm.mjs");
+
+    const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
+    assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");
+
+    const result = findUnboundedExecCalls(stripped, source.path);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execSync/);
+  });
+
+  it("is non-vacuous: stripping the real timeout out of ensure-cli-sidecar.mjs goes red", () => {
+    const source = realSources.find((s) => s.path.endsWith("ensure-cli-sidecar.mjs"));
+    assert.notEqual(source, undefined, "expected to discover ensure-cli-sidecar.mjs");
+
+    const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
+    assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");
+
+    const result = findUnboundedExecCalls(stripped, source.path);
+    assert.equal(result.ok, false);
+    assert.match(result.problems.join("\n"), /execSync/);
+  });
+
+  it("is wired into checkScripts() end-to-end", () => {
+    const result = checkScripts();
+    assert.equal(result.ok, true);
+    assert.equal(result.packageScripts.includes("packages/brink-desktop/scripts/ensure-wasm.mjs"), true);
   });
 });
 

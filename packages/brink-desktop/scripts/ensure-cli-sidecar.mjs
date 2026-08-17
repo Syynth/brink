@@ -56,12 +56,28 @@ const defaultRepoRoot = resolve(here, "../../..");
 const defaultSrcTauriDir = resolve(here, "..", "src-tauri");
 
 /**
+ * Default bound for every command this module shells out to (#2697), matching
+ * `ensure-wasm.mjs`'s identical `DEFAULT_EXEC_TIMEOUT_MS` (that module's own
+ * doc comment explains the hazard: an unbounded `execSync` on this same
+ * `pnpm --filter @brink/desktop dev` preflight path hangs forever on a
+ * wedged proxy/toolchain fetch, with no diagnostic). 20 minutes here, not 10:
+ * `hostTriple`'s `rustc -vV` is near-instant, but `ensureCliSidecar`'s
+ * `cargo build -p brink-cli --release` is a real release build of the whole
+ * crate's dependency graph, so the single default this module bakes in has
+ * to be generous enough to cover the slower of the two commands routed
+ * through it. Baked into `defaultRunCommand`'s own `execSync` call (before
+ * `...options`) rather than into each call site — a caller can still
+ * override it by spreading its own `timeout` in afterward.
+ */
+export const DEFAULT_EXEC_TIMEOUT_MS = 20 * 60 * 1000;
+
+/**
  * Run a command and capture its stdout. The single seam through which this
  * module talks to `rustc`/`cargo`, so a caller can drive the staging logic
  * without a toolchain.
  */
 function defaultRunCommand(command, options = {}) {
-  return execSync(command, { encoding: "utf8", ...options });
+  return execSync(command, { encoding: "utf8", timeout: DEFAULT_EXEC_TIMEOUT_MS, ...options });
 }
 
 /**
