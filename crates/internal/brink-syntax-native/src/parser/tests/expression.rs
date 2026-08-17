@@ -938,6 +938,173 @@ fn lambda_takes_a_colon_return_annotation_before_a_braced_body() {
     assert!(has_node_kind(lambda.syntax(), SyntaxKind::STMT_BLOCK));
 }
 
+/// Issue #2775: `lambda_param` calls the exact same `types::type_annotation`
+/// entry point `VAR`/`CONST`/fn-params/return-types use, so a generic-typed
+/// annotation was never lambda-specific — pin it so the coverage gap that
+/// let `|y: Option[int]|` get mistaken for a real gap doesn't reopen.
+/// `Option<int>` (angle brackets) is the RULED spelling
+/// (`docs/decision-log.md` 2026-07-27 "Type-name surface ruled: angle
+/// brackets"); `Option[int]` fails everywhere in this grammar, not just
+/// here — see
+/// `lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position`.
+#[test]
+fn lambda_param_takes_a_generic_type_annotation() {
+    let p = assert_lossless("var f = |y: Option<int>| { y }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let params = lambda_params_of(&lambda);
+    let param = params.children().find_map(ast::Param::cast).expect("PARAM");
+    let te = param
+        .type_annotation()
+        .expect("annotation")
+        .type_expr()
+        .expect("type expr");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Option".to_string()));
+    assert_eq!(g.args().count(), 1);
+}
+
+/// Same shape on the lambda's own return annotation — `type_expr` is
+/// reached identically from the return-annotation call site
+/// (`lambda_expr`) as from the per-param one (`lambda_param`).
+#[test]
+fn lambda_return_annotation_takes_a_generic_type() {
+    let p = assert_lossless("var f = |y: int|: Option<int> { none }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let annotation = lambda
+        .syntax()
+        .children()
+        .find_map(ast::TypeAnnotation::cast)
+        .expect("the lambda's own return annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Option".to_string()));
+    assert_eq!(g.args().count(), 1);
+}
+
+/// The full annotation surface #2775 asked to be enumerated, not just
+/// `Option<int>`: `Array<T>`, `Map<K, V>`, a nested `Option<Array<int>>`,
+/// and a bare `Option` (no type args) all parse cleanly in lambda-param
+/// position, exactly as they do in every other annotation position.
+///
+/// Each case asserts the actual node shape, not just `errors().is_empty()`
+/// — a regression that consumed `<string, int>` but produced a one-arg
+/// `TYPE_GENERIC`, or that flattened the nested case, or that mis-typed
+/// bare `Option` as a `Generic`, would still parse with zero errors and
+/// stay silent here otherwise (the silent-data-drop class CLAUDE.md says
+/// to flag).
+#[test]
+fn lambda_param_generic_annotation_surface() {
+    fn type_expr_of(src: &str) -> ast::TypeExpr {
+        let p = assert_lossless(src);
+        assert!(
+            p.errors().is_empty(),
+            "src={src:?} errors: {:?}",
+            p.errors()
+        );
+        let lambda = lambda_of(&p);
+        let params = lambda_params_of(&lambda);
+        let param = params.children().find_map(ast::Param::cast).expect("PARAM");
+        param
+            .type_annotation()
+            .expect("annotation")
+            .type_expr()
+            .expect("type expr")
+    }
+
+    // `Array<int>` — head name + one type argument.
+    let te = type_expr_of("var f = |y: Array<int>| { y }\n");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Array".to_string()));
+    assert_eq!(g.args().count(), 1);
+
+    // `Map<string, int>` — two type arguments. A regression that flattened
+    // or truncated the arg list to one still parses cleanly without this
+    // count check.
+    let te = type_expr_of("var f = |y: Map<string, int>| { y }\n");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Map".to_string()));
+    assert_eq!(g.args().count(), 2);
+
+    // `Option<Array<int>>` — the single type argument must itself be a
+    // `Generic` named `Array`, not e.g. flattened into `Option`'s own
+    // arg list.
+    let te = type_expr_of("var f = |y: Option<Array<int>>| { y }\n");
+    let Some(ast::TypeExprKind::Generic(g)) = te.kind() else {
+        unreachable!("expected a generic type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(g.name(), Some("Option".to_string()));
+    let mut args = g.args();
+    let arg = args.next().expect("Option's single type argument");
+    assert!(
+        args.next().is_none(),
+        "Option<Array<int>> takes exactly one type argument"
+    );
+    let Some(ast::TypeExprKind::Generic(inner)) = arg.kind() else {
+        unreachable!(
+            "expected the nested arg to be a generic type, tree: {:#?}",
+            arg.syntax()
+        )
+    };
+    assert_eq!(inner.name(), Some("Array".to_string()));
+    assert_eq!(inner.args().count(), 1);
+
+    // Bare `Option` (no type args) comes back as a `Name`, not a
+    // `Generic` — pinning that no-args parsing doesn't spuriously produce
+    // an empty-arg `TYPE_GENERIC` node instead.
+    let te = type_expr_of("var f = |y: Option| { y }\n");
+    let Some(ast::TypeExprKind::Name(n)) = te.kind() else {
+        unreachable!("expected a nominal type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(n.name(), Some("Option".to_string()));
+}
+
+/// Negative control, pinning the *other* half of #2775's determination:
+/// `[…]` is not a valid type-argument delimiter in lambda-param, `fn`-param,
+/// or `fn`-return position (reserved for array literals, `[1, 2, 3]`,
+/// #1490) — it fails identically across those three. This is why the fix
+/// is documentation, not parser acceptance of `[…]`: widening only the
+/// lambda position would make it the one place `[…]` silently meant
+/// something, instead of consistently meaning nothing.
+///
+/// This does NOT cover `var`/`const` position: `var x: Option[int] = none`
+/// does not error at all — it silently parses the bare `Option` and
+/// reinterprets the trailing `[int] = none` as an unrelated `CONTENT_LINE`
+/// (recorded in the PR body's "Scope found beyond this issue" section as a
+/// real gap, deliberately left unfixed here since it's outside #2775's
+/// parser-only fence). Fixing that quirk would not flip this test, since
+/// this test never asserted anything about `var`/`const`.
+///
+/// The lambda case additionally pins the exact diagnostic shape (rather
+/// than just "some error fired") so a regression to an unrelated failure
+/// mode — e.g. a depth-limit or generic recovery diagnostic — doesn't slip
+/// through silently.
+#[test]
+fn lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position() {
+    let lambda = assert_lossless("var f = |y: Option[int]| { y }\n");
+    assert_eq!(
+        lambda.errors().first().map(|e| e.message.as_str()),
+        Some("expected PIPE, found L_BRACKET"),
+        "errors: {:?}",
+        lambda.errors()
+    );
+
+    let fn_param = parse("fn f(x: Option[int]) {}\n");
+    assert!(!fn_param.errors().is_empty());
+
+    let fn_return = parse("fn f(): Option[int] { none }\n");
+    assert!(!fn_return.errors().is_empty());
+}
+
 #[test]
 fn zero_arg_lambda_takes_a_return_annotation() {
     let p = assert_lossless("var f = ||: int { 1 }\n");

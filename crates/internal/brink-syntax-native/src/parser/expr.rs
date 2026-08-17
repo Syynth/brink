@@ -274,6 +274,23 @@ fn paren_expr(p: &mut Parser<'_, '_>) {
 /// `type_expr` never swallows a following `{` (a `TYPE_NAME` stops at the
 /// identifier, so `|g|: bool { g.awake }` reads `bool` as the return type
 /// and the brace as the body — not a `bool { … }` construction literal).
+///
+/// **Generic-typed annotations (issue #2775):** both the per-param
+/// annotation ([`lambda_param`]) and this return annotation call
+/// `super::types::type_annotation` — the exact same entry point
+/// `VAR`/`CONST` (`decl.rs::var_decl`) and `fn`/`flow` params/returns
+/// (`decl.rs::param`) use. There is no lambda-specific, narrower
+/// annotation parser: `|y: Option<int>| { y }` already parses (angle
+/// brackets are the RULED type-argument delimiter,
+/// `docs/decision-log.md` 2026-07-27 "Type-name surface ruled: angle
+/// brackets"). `|y: Option[int]| { y }` fails with `expected PIPE, found
+/// L_BRACKET` — not because this position is missing generic support, but
+/// because `[…]` is not a valid type-argument delimiter *anywhere* in this
+/// grammar (it is reserved for array literals, `[1, 2, 3]`, #1490; the
+/// 2026-07-27 ruling explicitly retracts the older `Option[T]` spelling).
+/// See `brink-ir/tests/native_lambdas.rs`'s
+/// `generic_typed_param_lowers_through_the_shared_type_annotation_entry_point`
+/// for the lowering-level proof.
 fn lambda_expr(p: &mut Parser<'_, '_>) {
     p.start_node(LAMBDA_EXPR);
     lambda_params(p);
