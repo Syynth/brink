@@ -12,6 +12,7 @@
  */
 
 import { ensureStructuralStyles } from "./structural-styles.js";
+import { registerDismissible } from "./dismiss-registry.js";
 
 export interface PopoverHandle {
   close(): void;
@@ -47,6 +48,9 @@ export function openPopover(
   // Reposition when the panel's own size changes — e.g. the form's inline color
   // picker expanding — so a grown panel re-flips instead of clipping off-screen.
   const resizeObserver = new ResizeObserver(() => reposition());
+  // Global Escape safety net (#279) — a second, independent registration
+  // alongside the popover's own listeners below (see dismiss-registry.ts).
+  const unregisterDismiss = registerDismissible(() => close());
 
   const close = (): void => {
     if (closed) return;
@@ -56,6 +60,7 @@ export function openPopover(
     window.removeEventListener("resize", reposition);
     window.removeEventListener("scroll", reposition, true);
     resizeObserver.disconnect();
+    unregisterDismiss();
     panel.remove();
     onClose();
   };
