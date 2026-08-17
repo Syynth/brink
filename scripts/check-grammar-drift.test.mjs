@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   CONTEXT_WINDOW_LINES,
@@ -35,6 +36,7 @@ import {
   KNOWN_UNCOVERED_TRIVIA_PRIMITIVES,
   PARSER_SRC_DIR,
   REPO_ROOT,
+  SCANNED_EXTENSIONS,
   STALE_TOKEN,
   censusWhitespacePrimitives,
   censusWhitespacePrimitivesInText,
@@ -220,6 +222,57 @@ describe("discoverScanFiles", () => {
       files.some((f) => f.split("/").includes("node_modules") || f.split("/").includes("target")),
       false,
     );
+  });
+});
+
+describe("SCANNED_EXTENSIONS — the self-exemption bound (#2741)", () => {
+  // The guard's own header comment claims `.mjs`/`.js`/`.mdx` are excluded
+  // ON PURPOSE, not by oversight, because scanning this file (and its own
+  // test) as an `.mjs` source would trip the guard on its own prose. A test
+  // asserting only "the header says X" would be worthless — this instead
+  // measures the counterfactual the header is claiming, turning a prose
+  // excuse into a verified fact.
+
+  it("does not include .mjs, .js, or .mdx", () => {
+    for (const excluded of [".mjs", ".js", ".mdx"]) {
+      assert.equal(
+        SCANNED_EXTENSIONS.includes(excluded),
+        false,
+        `${excluded} must stay out of SCANNED_EXTENSIONS until scripts/check-grammar-drift*.mjs is exempted by path`,
+      );
+    }
+  });
+
+  it("still includes the three surfaces #2718/#2719 found drift in", () => {
+    for (const included of [".md", ".rs", ".ts", ".tsx", ".mts", ".cts"]) {
+      assert.equal(SCANNED_EXTENSIONS.includes(included), true, `expected ${included} to stay scanned`);
+    }
+  });
+
+  it("MAKE IT FAIL (counterfactual): scanning this guard's own source as text WOULD flag it, which is precisely why .mjs is excluded", () => {
+    // Not a hypothetical: run the real checker over the guard's own real
+    // file content, exactly as discoverScanFiles would if .mjs were ever
+    // added to SCANNED_EXTENSIONS. A nonzero count here is the measured
+    // fact the header comment asserts in prose.
+    const selfPath = fileURLToPath(new URL("./check-grammar-drift.mjs", import.meta.url));
+    const selfText = readFileSync(selfPath, "utf8");
+    const result = checkFileForGrammarDrift("scripts/check-grammar-drift.mjs", selfText);
+    assert.equal(result.ok, false, "the guard's own source must contain unmarked INLINE_WS+ occurrences today");
+    assert.ok(result.problems.length > 0, "expected at least one flagged occurrence in this file's own prose");
+  });
+
+  it("MAKE IT FAIL (counterfactual): scanning this guard's own test file as text WOULD flag it too", () => {
+    const testPath = fileURLToPath(new URL("./check-grammar-drift.test.mjs", import.meta.url));
+    const testText = readFileSync(testPath, "utf8");
+    const result = checkFileForGrammarDrift("scripts/check-grammar-drift.test.mjs", testText);
+    assert.equal(result.ok, false, "the test file's own deliberately-unmarked planted fixtures must trip the guard");
+    assert.ok(result.problems.length > 0, "expected at least one flagged occurrence in the planted fixtures");
+  });
+
+  it("confirms the real scan excludes this guard's own files (not just claims to)", () => {
+    const files = new Set(discoverScanFiles(REPO_ROOT));
+    assert.equal(files.has("scripts/check-grammar-drift.mjs"), false);
+    assert.equal(files.has("scripts/check-grammar-drift.test.mjs"), false);
   });
 });
 

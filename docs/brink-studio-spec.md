@@ -774,6 +774,17 @@ fixed separately, on main, ahead of this PR — see #2695/#2700's `docs: fix
 stitch_header grammar comment and trust-hierarchy reachability` and #2701's
 follow-up corpus citations.)
 
+**This section's "`skip_ws` matches zero or more" claim is mechanically
+pinned, not just prose (#2741).** Both `knot_header`'s and `stitch_header`'s
+analysis above rest on `brink-syntax`'s parser exposing exactly one
+`ws`/`whitespace`-named primitive, `Parser::skip_ws`, and on that primitive
+matching zero-or-more. `scripts/check-grammar-drift.mjs`'s
+`checkWhitespacePrimitivePremise` (#2728) is the CI-enforced guard pinning
+that premise — see its own header comment ("Whitespace-primitive premise
+pin") before adding a new whitespace-consuming parser primitive, so doing so
+is a documented, deliberate act rather than a CI surprise discovered only
+after this section has quietly gone stale again.
+
 ## Visual hierarchy
 
 ink's structural elements map to a three-level hierarchy inspired by Scrivener's organizational model:
