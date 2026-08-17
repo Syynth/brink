@@ -494,6 +494,45 @@ fn const_without_initializer_shape_is_prose_not_a_decl() {
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::CONST_DECL));
 }
 
+/// Issue #2781: `var x: Option[int] = none` used to produce **zero**
+/// diagnostics — `type_name_or_generic` stops at the bare `Option` (since
+/// `[` isn't part of the type-annotation grammar), and with no `expect`
+/// left to catch the leftover `[int] = none`, `var_decl` finished cleanly
+/// and the caller silently reinterpreted the rest of the line as an
+/// unrelated `CONTENT_LINE` (narrative prose) — a silent data drop
+/// (CLAUDE.md: "flag silent data drops... silent drops are always bugs
+/// until proven otherwise"). `[…]` is not the type-argument delimiter
+/// (`docs/decision-log.md` 2026-07-27 retracted `Option[T]`; angle
+/// brackets are RULED, `[…]` is reserved for array literals, #1490) — this
+/// now fails loudly here the same way it already does in `fn`/`flow`
+/// params, return types, and lambda params (pinned by
+/// `lambda_param_square_bracket_generic_fails_in_lambda_param_fn_param_and_return_position`
+/// in `expression.rs`, which this position was previously carved out of).
+#[test]
+fn var_decl_square_bracket_after_type_name_fails_loudly_instead_of_dropping_to_content() {
+    let p = parse("var x: Option[int] = none\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+}
+
+/// Same shape, `const` position — `const_decl` shares `var_decl`'s
+/// no-initializer recovery path (`binding_annotation`), so the silent drop
+/// applied identically here before the fix.
+#[test]
+fn const_decl_square_bracket_after_type_name_fails_loudly_instead_of_dropping_to_content() {
+    let p = parse("const MAX: Option[int] = none\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+}
+
 // ── flags: active-marker accessor, dangling/malformed shapes ──────────
 
 #[test]
