@@ -35,13 +35,18 @@ use std::sync::Arc;
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
 use brink_runtime::{DotNetRng, Step, Story};
 
-fn compile_ink(
+/// Single parameterized compile entry point — `dialect`/`types` are the only
+/// axis the tests below vary; carrying separate `compile_ink`/`compile_brink`
+/// copies duplicated ~30 lines for no reason (PR #2865 review).
+fn compile_with(
     source: &str,
+    dialect: Dialect,
+    types: Option<TypePolicy>,
 ) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let options = AnalysisOptions {
-        dialect: Dialect::StrictInk,
-        types: Some(TypePolicy::Gradual),
+        dialect,
+        types,
         ..AnalysisOptions::default()
     };
     brink_compiler::compile_with_options(
@@ -59,8 +64,8 @@ fn compile_ink(
 }
 
 /// Compile and run to completion, returning the concatenated output.
-fn run(source: &str) -> String {
-    let output = compile_ink(source).expect("compile");
+fn run_with(source: &str, dialect: Dialect, types: Option<TypePolicy>) -> String {
+    let output = compile_with(source, dialect, types).expect("compile");
     let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
     let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
     let mut out = String::new();
@@ -79,12 +84,16 @@ fn run(source: &str) -> String {
 /// fix.
 #[test]
 fn var_shadows_builtin_at_read_site() {
-    let out = run("\
+    let out = run_with(
+        "\
 VAR RANDOM = 42
 
 The value is {RANDOM}.
 -> DONE
-");
+",
+        Dialect::StrictInk,
+        Some(TypePolicy::Gradual),
+    );
     assert_eq!(out.trim(), "The value is 42.");
 }
 
@@ -96,13 +105,17 @@ The value is {RANDOM}.
 /// instead, printing `5` (`FLOOR(5.0)`) rather than the author's `-995`.
 #[test]
 fn knot_shadows_builtin_at_call_site() {
-    let out = run("\
+    let out = run_with(
+        "\
 Result: {FLOOR(5)}
 -> DONE
 
 === function FLOOR(x) ===
 ~ return x - 1000
-");
+",
+        Dialect::StrictInk,
+        Some(TypePolicy::Gradual),
+    );
     assert_eq!(out.trim(), "Result: -995");
 }
 
@@ -111,7 +124,11 @@ Result: {FLOOR(5)}
 /// precedence when a real author declaration exists.
 #[test]
 fn unshadowed_builtin_still_works() {
-    let out = run("The sum: {FLOOR(3.7)}\n-> DONE\n");
+    let out = run_with(
+        "The sum: {FLOOR(3.7)}\n-> DONE\n",
+        Dialect::StrictInk,
+        Some(TypePolicy::Gradual),
+    );
     assert_eq!(out.trim(), "The sum: 3");
 }
 
@@ -132,11 +149,134 @@ fn unshadowed_builtin_still_works() {
 /// *bare read* `{RANDOM}` shadow keeps working.
 #[test]
 fn var_named_builtin_is_not_callable_at_call_site() {
-    let out = run("\
+    let out = run_with(
+        "\
 VAR MAX = 10
 
 value: {MAX(1, 2)}
 -> DONE
-");
+",
+        Dialect::StrictInk,
+        Some(TypePolicy::Gradual),
+    );
     assert_eq!(out.trim(), "value: 2");
+}
+
+/// `docs/diagnostics/E035.md` shape 4 (issue #2862): a `CONST` named after a
+/// builtin behaves the same as the `VAR` case above at a call site — the
+/// real `MAX()` builtin answers `MAX(1, 2)`, not the constant. Mechanically
+/// this is not the same guard: `resolve_function`'s call-site lookups never
+/// try `SymbolKind::Constant` at all (only `SymbolKind::Variable`/`List` are
+/// tried and then gated by `reserved_call_site`), so a `CONST` never reaches
+/// a callable-lookup arm to begin with — it falls through to
+/// `is_builtin_function`/`recognize_builtin` by the same path an
+/// undeclared name would. The *outcome* at the call site is identical to
+/// `VAR`, though: the constant is bypassed, and the real builtin runs.
+#[test]
+fn const_named_builtin_is_not_callable_at_call_site() {
+    let out = run_with(
+        "\
+CONST MAX = 10
+
+value: {MAX(1, 2)}
+-> DONE
+",
+        Dialect::StrictInk,
+        Some(TypePolicy::Gradual),
+    );
+    assert_eq!(out.trim(), "value: 2");
+}
+
+/// `docs/diagnostics/E035.md` shape 5 (issue #2862): a `LIST` item named
+/// after a T1b stdlib verb (`push`) shadows it at a **bare-reference** read
+/// (`{push}`, an ordinary list-item value read, `arg_count.is_none()`) —
+/// but with no `E035` warning, because `manifest.rs`'s shadow-warn gate only
+/// covers `SymbolKind::{Knot, Variable, Constant, External}`, not
+/// `List`/`ListItem`. This is not an inconsistency: a bare list-item read
+/// and a stdlib-verb **call** (`push(arr, 3)`, `arg_count.is_some()`) are
+/// disjoint syntactic positions that never actually collide — see
+/// `list_item_named_push_does_not_break_the_real_push_call` below, which
+/// proves the real `push()` verb still works normally against an unrelated
+/// array in the very same program. Nothing is silently overridden either
+/// way, so there is nothing for E035 to warn about.
+#[test]
+fn list_item_shadows_stdlib_verb_name_at_bare_reference_without_e035_warning() {
+    let source = "\
+LIST Ops = alpha, push, gamma
+
+Item: {push}
+-> DONE
+";
+    let out = compile_with(source, Dialect::Brink, None).expect("compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "a list item is not in E035's warn set, expected no warning, got {:?}",
+        out.warnings
+    );
+    let text = run_with(source, Dialect::Brink, None);
+    assert_eq!(text.trim(), "Item: push");
+}
+
+/// Companion to the test above: the list item named `push` does not shadow
+/// the real `push()` stdlib verb at its own call site — `arg_count.is_some()`
+/// keeps routing to the stdlib call regardless of the list item's existence.
+#[test]
+fn list_item_named_push_does_not_break_the_real_push_call() {
+    let out = run_with(
+        "LIST Ops = alpha, push, gamma\n~ temp arr = #[1, 2]\n~ push(arr, 3)\nLen: {len(arr)}\n-> DONE\n",
+        Dialect::Brink,
+        None,
+    );
+    assert_eq!(out.trim(), "Len: 3");
+}
+
+/// `docs/diagnostics/E035.md`'s locals shape (PR #2865 review, issue
+/// #2862): a `temp` local named after a classic uppercase built-in
+/// (`MAX`) is not covered by E035 at all — `insert_local`
+/// (`brink-analyzer::manifest`) never runs the module-level shadow-warn
+/// check. And unlike `VAR`/`List`, `resolve_function`'s locals arm
+/// (`lookup_local_in_scope`) is not gated by `reserved_call_site`: a local
+/// DOES claim its own reserved-name call site. So this compiles clean
+/// under strict-ink with no E035 and no E183, then faults at runtime with
+/// `RuntimeError::NotCallable("int")` — the mirror image of the `VAR`/
+/// `CONST` cases above, which fall through to the real builtin instead of
+/// faulting.
+#[test]
+fn local_named_builtin_faults_at_runtime_not_callable() {
+    let source = "\
+~ temp MAX = 10
+
+value: {MAX(1, 2)}
+-> DONE
+";
+    let compiled = compile_with(source, Dialect::StrictInk, Some(TypePolicy::Gradual))
+        .expect("compile should succeed with no E035/E183 diagnostic");
+    assert!(
+        !compiled
+            .warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "a local is not in E035's warn set, expected no warning, got {:?}",
+        compiled.warnings
+    );
+    let (program, line_tables) = brink_runtime::link(&compiled.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
+    let mut fault = None;
+    loop {
+        match story.continue_single() {
+            Ok(Step::Line(_)) => {}
+            Ok(Step::Choices(_)) => panic!("this program is choice-free"),
+            Ok(Step::Done | Step::End | Step::Suspended) => break,
+            Err(err) => {
+                fault = Some(err);
+                break;
+            }
+        }
+    }
+    assert!(
+        matches!(fault, Some(brink_runtime::RuntimeError::NotCallable(_))),
+        "expected a NotCallable runtime fault, got {fault:?}"
+    );
 }
