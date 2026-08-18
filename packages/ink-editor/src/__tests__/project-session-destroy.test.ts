@@ -144,3 +144,214 @@ describe("ProjectSession.destroy() during a deferred gated call (#2794)", () => 
     expect(() => project.destroy()).not.toThrow();
   });
 });
+
+/**
+ * `ProjectSession.destroy()` during the LARGER window that opens right
+ * after `deferGatedCall`'s idle yield settles — issue #2802.
+ *
+ * #2794/#2798 (above) close only the ≤300ms `scheduleIdleWork` window.
+ * Every method here goes on to `await` the host provider itself (Tauri IPC
+ * — unbounded, and typically far longer than that window), then resumes
+ * touching `this.session`/`this.changes` with no re-check. `destroy()`
+ * cannot reject that await — it is not a tracked idle handle — so a
+ * teardown landing during it used to reach a freed wasm handle one `await`
+ * later: the exact use-after-free #2794 set out to close, unclosed for this
+ * shape.
+ *
+ * Each case below uses a stub provider whose relevant method resolves
+ * *strictly after* `destroy()` has already run, so the assertions actually
+ * exercise the post-await continuation — not merely the idle-yield window
+ * the #2794 suite above already covers.
+ */
+describe("ProjectSession.destroy() during the post-host-IO-await window (#2802)", () => {
+  /** A promise this test controls the settlement of, so `destroy()` can be
+   *  made to land strictly before the provider call resolves. */
+  function makeDeferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  }
+
+  /** Advance past whatever microtask hops separate "call the async method"
+   *  from "it is now suspended on the provider await under test" — plain
+   *  `Promise` continuations, unaffected by `vi.useFakeTimers()` (which
+   *  fakes timers, not microtasks). */
+  async function flushMicrotasks(times = 5): Promise<void> {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve();
+    }
+  }
+
+  it("renameFile: destroy() landing during the provider.renameFile await stops the post-await continuation from touching the freed session", async () => {
+    const session = makeStubSession();
+    const deferred = makeDeferred<void>();
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n", "lib.ink": "-> END\n" });
+    // Overwrite renameFile with one this test controls the settlement of —
+    // resolves strictly AFTER destroy() runs below.
+    provider.renameFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    // A project-config-named destination so the post-await continuation
+    // would (absent the fix) call `applyProjectConfig` -> `discoverProjectConfig`
+    // on the freed session — the exact hazard the issue names.
+    const pending = project.renameFile("lib.ink", "brink.toml");
+    pending.catch(() => {});
+
+    // Clear the idle-yield window first (#2794's guard, already proven
+    // above) so this test lands squarely in the NEW window.
+    await vi.runAllTimersAsync();
+    await flushMicrotasks();
+
+    // The session-level rename already ran (it's synchronous, before the
+    // provider await) — that part is not the hazard under test.
+    expect(session.renameFile).toHaveBeenCalledOnce();
+
+    project.destroy();
+    expect(session.free).toHaveBeenCalledOnce();
+
+    // Only now does the host IPC "complete" — strictly after destroy().
+    deferred.resolve();
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    // The post-await continuation must never have reached the freed
+    // session: no `discoverProjectConfig` (applyProjectConfig's call),
+    // and no further `getFileSource`/`updateFile` beyond what already ran
+    // synchronously before the provider await.
+    expect(session.discoverProjectConfig).not.toHaveBeenCalled();
+  });
+
+  it("deleteFile: destroy() landing during the provider.deleteFile await stops removeFile from reaching the freed session", async () => {
+    const session = makeStubSession();
+    const deferred = makeDeferred<void>();
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n", "lib.ink": "-> END\n" });
+    provider.deleteFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    const pending = project.deleteFile("lib.ink");
+    pending.catch(() => {});
+    await flushMicrotasks();
+
+    project.destroy();
+    deferred.resolve();
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    expect(session.removeFile).not.toHaveBeenCalled();
+  });
+
+  it("requestFile: destroy() landing during the provider.requestFile await stops updateFile from reaching the freed session", async () => {
+    const session = makeStubSession();
+    const deferred = makeDeferred<string | null>();
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n" });
+    provider.requestFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    const pending = project.requestFile("newly-included.ink");
+    pending.catch(() => {});
+    await flushMicrotasks();
+
+    project.destroy();
+    deferred.resolve("late content");
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    expect(session.updateFile).not.toHaveBeenCalled();
+  });
+
+  it("resolveIncludes (via refreshIncludes): destroy() landing during the provider.requestFile await stops updateFile from reaching the freed session", async () => {
+    const deferred = makeDeferred<string | null>();
+    const session = {
+      generation: 0,
+      updateFile: vi.fn(),
+      removeFile: vi.fn(),
+      getFileSource: vi.fn(() => null),
+      discoverProjectConfig: vi.fn(() => []),
+      getFileIncludes: vi.fn(() => [{ loaded: false, resolved: "included.ink" }]),
+      listFiles: vi.fn(() => [{ path: "main.ink", mounted: false }]),
+      renameFile: vi.fn(),
+      compileProject: vi.fn(),
+      free: vi.fn(),
+    };
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n" });
+    provider.requestFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    const pending = project.refreshIncludes();
+    pending.catch(() => {});
+    await flushMicrotasks();
+
+    project.destroy();
+    deferred.resolve("included content");
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    expect(session.updateFile).not.toHaveBeenCalled();
+  });
+
+  it("initialize: destroy() landing during the provider.readFile await stops the file-load loop from touching the freed session", async () => {
+    const deferred = makeDeferred<string>();
+    const session = makeStubSession();
+    const provider = new InMemoryFileProvider();
+    provider.listFiles = vi.fn(async () => ["main.ink"]);
+    provider.readFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    const pending = project.initialize();
+    pending.catch(() => {});
+    await flushMicrotasks();
+    expect(provider.readFile).toHaveBeenCalledWith("main.ink");
+
+    project.destroy();
+    deferred.resolve("main content");
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    expect(session.updateFile).not.toHaveBeenCalled();
+  });
+
+  it("addFile: destroy() landing during the provider.createFile await stops updateFile from reaching the freed session", async () => {
+    const session = makeStubSession();
+    const deferred = makeDeferred<void>();
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n" });
+    provider.createFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    const pending = project.addFile("new.ink", "-> END\n");
+    pending.catch(() => {});
+    await flushMicrotasks();
+
+    project.destroy();
+    deferred.resolve();
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    expect(session.updateFile).not.toHaveBeenCalled();
+  });
+});

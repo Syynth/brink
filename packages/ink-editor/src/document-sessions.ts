@@ -962,7 +962,11 @@ export class DocumentSessions {
         slot.handle?.pushSource(source);
         project.notifyFileChanged(slot.path);
         // Kick off async INCLUDE resolution — next compile picks up new files.
-        void project.refreshIncludes();
+        // Rejects if destroy() lands mid-await (#2802's assertLive, this PR) —
+        // this call site has no result to await and nothing to react to a
+        // rejection with, so swallow it rather than surface an unhandled
+        // promise rejection at unmount.
+        void project.refreshIncludes().catch(() => {});
         return project.compileProject();
       },
       onCompile: (result) => this.deliverCompile(result),
