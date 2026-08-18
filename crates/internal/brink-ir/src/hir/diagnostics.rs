@@ -1772,6 +1772,30 @@ pub enum DiagnosticCode {
     /// call's own site, which may be inside a different definition (and a
     /// different file) than the handler's own declaration.
     E182,
+    /// `brink_ir::lir::lower::expr::lower_call`'s resolved-target match
+    /// found a symbol kind that is not callable — a `ListItem`, `Label`,
+    /// `Stitch`, `Param`, `Temp`, or `Struct` sitting at a call position
+    /// (issue #2837, filed from the #2836/w187 review). `SymbolKind::Knot`
+    /// is the one non-`External`/`List`/`Variable`/`Constant` kind that
+    /// *is* callable — ink allows any knot as a function via tunnels, per
+    /// `brink_analyzer::resolve::resolve_function`'s own comment — so it
+    /// keeps its own `lir::Expr::Call` arm; every other kind reaching this
+    /// match is either analyzer-unreachable today (`resolve_function` never
+    /// hands back `Stitch`/`Label`/`Struct` for a real call site, and only
+    /// hands back a bare `ListItem` for a `#fn(target)` literal, which never
+    /// reaches `lower_call` at all) or a defensive backstop
+    /// (`Param`/`Temp`, which `ctx.temp_slot` is expected to intercept
+    /// before resolution is even consulted — the same backstop posture
+    /// `lower_path`'s own `SymbolKind::Temp` fallback arm takes).
+    ///
+    /// Refused loudly rather than silently emitting `lir::Expr::Call`
+    /// against the resolved id: that catch-all is exactly the mechanism
+    /// that let PR #2836's first attempt compile a program clean — 7,941
+    /// tests, the oracle ratchet, and clippy all green — while it then
+    /// faulted at runtime with `UnresolvedDefinition(ListItem(..))`. Same
+    /// "compile error over runtime fault" posture as [`Self::E144`]'s UFCS
+    /// refusal in the same module.
+    E183,
 }
 
 impl DiagnosticCode {
@@ -1966,6 +1990,7 @@ impl DiagnosticCode {
         Self::E180,
         Self::E181,
         Self::E182,
+        Self::E183,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2157,6 +2182,7 @@ impl DiagnosticCode {
             Self::E180 => "E180",
             Self::E181 => "E181",
             Self::E182 => "E182",
+            Self::E183 => "E183",
         }
     }
 
@@ -2465,6 +2491,7 @@ impl DiagnosticCode {
             Self::E182 => {
                 "a `@[convention]` handler's call closure reaches a world-reading (or unclassified) `EXTERNAL` — handlers may call pure functions and commands, but never read world state"
             }
+            Self::E183 => "call target resolved to a symbol kind that is not callable",
         }
     }
 
@@ -2721,6 +2748,7 @@ impl DiagnosticCode {
             "E180" => Some(Self::E180),
             "E181" => Some(Self::E181),
             "E182" => Some(Self::E182),
+            "E183" => Some(Self::E183),
             _ => None,
         }
     }

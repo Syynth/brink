@@ -913,13 +913,33 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                     args: call_args,
                 }
             }
-            _ => {
+            // Ink allows any knot as a function via tunnels
+            // (`brink-analyzer::resolve::resolve_function`'s own comment on
+            // its `SymbolKind::Knot` lookup) — no `is_function_definition`
+            // gate here, matching that resolution-side lookup exactly.
+            SymbolKind::Knot => {
                 let call_args = lower_call_args(args, &info.params, ctx);
                 lir::Expr::Call {
                     target: info.id,
                     args: call_args,
                 }
             }
+            // Every other resolved kind is not callable (issue #2837 — see
+            // `DiagnosticCode::E183`'s own doc for the full reachability
+            // argument: `resolve_function` cannot hand back `Stitch`/
+            // `Label`/`Struct` for a real call site today, and `Param`/
+            // `Temp` are a defensive backstop for `ctx.temp_slot` missing a
+            // local). Refuse with a diagnostic naming the kind actually
+            // found, rather than emitting `lir::Expr::Call` against
+            // whatever id happens to be resolved there — that catch-all is
+            // exactly the mechanism that let a resolution bug become a
+            // silent runtime fault instead of a compile error.
+            kind @ (SymbolKind::Stitch
+            | SymbolKind::ListItem
+            | SymbolKind::Label
+            | SymbolKind::Param
+            | SymbolKind::Temp
+            | SymbolKind::Struct) => push_non_callable_refusal(&name, kind, path.range, ctx),
         }
     } else if let Some(expr) = lower_t1b_stdlib_call(&name, args, path.range, ctx) {
         expr
@@ -930,6 +950,33 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         );
         lir::Expr::Null
     }
+}
+
+/// Issue #2837: `lower_call`'s resolved-target match found a symbol kind
+/// that is not callable — refuse with a diagnostic naming the kind actually
+/// found (`ListItem`, `Label`, `Stitch`, …) rather than emitting
+/// `lir::Expr::Call` against whatever id happens to be resolved there, which
+/// is exactly the mechanism that let PR #2836's first attempt compile a
+/// program clean and then fault at runtime with
+/// `UnresolvedDefinition(ListItem(..))`. See [`crate::DiagnosticCode::E183`]'s
+/// own doc for the reachability argument (which kinds can land here today
+/// and why they're either analyzer-unreachable or a defensive backstop).
+fn push_non_callable_refusal(
+    name: &str,
+    kind: SymbolKind,
+    range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: `{name}` resolves to a {kind:?}, which cannot be called",
+            crate::DiagnosticCode::E183.title(),
+        ),
+        code: crate::DiagnosticCode::E183,
+    });
+    lir::Expr::Null
 }
 
 /// B3a UFCS lowering (issue #1506): consume `ctx.tables.ufcs`'s verdict (threaded
