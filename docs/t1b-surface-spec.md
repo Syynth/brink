@@ -132,9 +132,11 @@ flags land), never OOB-faulting. See `docs/stdlib-spec.md` §4/§10.
   them (no collision surface for vanilla ink).
 - An author-defined function with the same name **shadows** the
   builtin, with a warning diagnostic. (Imported vanilla ink that
-  defines `len` keeps working under the brink dialect.) See
-  [E035](diagnostics/E035.md) for the full symbol-kind/call-site rule
-  this warning documents.
+  defines `len` keeps working under the brink dialect.) The warned
+  kinds are `VAR` / `CONST` / `EXTERNAL` / knot only — `LIST` and
+  `LIST` items are deliberately outside that set, not by oversight.
+  See [E035](diagnostics/E035.md) for the full symbol-kind/call-site
+  rule this warning documents.
 - **Mutators require an lvalue** first argument (a variable, temp, or
   indexed path); passing an rvalue is a compile error ("`push` mutates
   its first argument — bind it to a variable first"). They lower

@@ -270,6 +270,81 @@ fn list_item_named_push_does_not_break_the_real_push_call() {
     assert_eq!(out.trim(), "Len: 3");
 }
 
+/// Issue #2877 review (PR #2878): `none` is the one E035-reserved name
+/// that is *itself* read bare — the Option absence literal
+/// (`resolve_variable`'s NS-A1 comment) — not reached only at a call
+/// site the way `push`/`len`/etc. are. So unlike the disjoint-position
+/// argument the two tests above rely on, a `LIST` item literally named
+/// `none` occupies the exact same bare-read syntactic position as the
+/// reserved literal, and genuinely shadows it there:
+/// `resolve_variable`'s `lookup_variable` finds the list item first and
+/// the reference never reaches the bare-`none`-literal fallback in
+/// `resolve.rs`. `LIST_VALUE(none)` disambiguates the two readings —
+/// only the list item has an ordinal for `LIST_VALUE` to report, so a
+/// clean compile printing that ordinal proves the list item won, not
+/// the (textually identical, `Hi: none`) Option-literal rendering. No
+/// `E035` fires all the same, but for the blunter reason `docs/stdlib-
+/// spec.md` item 3 now states: `List`/`ListItem` are outside the
+/// warned-kind set outright, not because this collision had nothing to
+/// report.
+#[test]
+fn list_item_named_none_shadows_option_literal_at_bare_reference_without_e035_warning() {
+    let source = "LIST Answers = yes, none = 7, maybe\n\nVal: {LIST_VALUE(none)}\n-> DONE\n";
+    let out = compile_with(source, Dialect::Brink, None).expect("compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "a list item is not in E035's warn set, expected no warning, got {:?}",
+        out.warnings
+    );
+    let text = run_with(source, Dialect::Brink, None);
+    assert_eq!(text.trim(), "Val: 7");
+}
+
+/// Issue #2877 review (PR #2878): `docs/stdlib-spec.md` item 6/F6 pins that
+/// the `E113` protocol-name reservation (`display`/`compare`/`next`) and
+/// the `E035` shadow warning are NOT the same rule scoped by dialect —
+/// `E113` is brink-only (the protocol registry doesn't exist under
+/// strict-ink), while `E035` never reserved these three names in *either*
+/// dialect to begin with (they are absent from `is_builtin_function`,
+/// `is_t1b_stdlib_name`, and the special-cased `none`). A knot named
+/// `display` therefore gets `E113` under brink and nothing at all under
+/// strict-ink, but never `E035` in either dialect.
+#[test]
+fn protocol_name_never_gets_e035_in_either_dialect() {
+    let source = "== display ==\nHello.\n-> DONE\n";
+
+    // Brink: E113 fires (hard error); E035 must not appear alongside it.
+    let brink_err = compile_with(source, Dialect::Brink, None)
+        .expect_err("display should be E113-reserved under brink");
+    let brink_compiler::CompileError::Diagnostics(diags) = brink_err else {
+        panic!("expected a Diagnostics compile error, got a different variant");
+    };
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E113),
+        "expected E113, got {diags:?}"
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E035),
+        "E035 never reserved `display` — expected no E035 alongside E113, got {diags:?}"
+    );
+
+    // Strict-ink: no protocol registry at all — clean compile, no E113,
+    // and (the point of this test) still no E035 either.
+    let out = compile_with(source, Dialect::StrictInk, None)
+        .expect("strict-ink has no protocol registry, display is an ordinary knot name");
+    assert!(
+        out.warnings.is_empty(),
+        "expected zero warnings under strict-ink, got {:?}",
+        out.warnings
+    );
+}
+
 /// `docs/diagnostics/E035.md`'s locals shape (PR #2865 review, issue
 /// #2862): a `temp` local named after a classic uppercase built-in
 /// (`MAX`) is not covered by E035 at all — `insert_local`
