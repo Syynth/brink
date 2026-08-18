@@ -1161,7 +1161,7 @@ enrolment family's gap, not this PR's":
 `scheduleIdleWork` yield only — `deferGatedCall` tracks that one idle handle
 and rejects it on `destroy()`. It has nothing to say about what happens
 right after: `renameFile`, `deleteFile`, `requestFile`, `resolveIncludes`,
-and the initial `initialize()` load all `await` the host provider itself
+`addFile`, and the initial `initialize()` load all `await` the host provider itself
 (Tauri IPC — unbounded, and often far longer than the idle window's ≤300ms
 ceiling) and then resume touching `this.session`/`this.changes` with no
 re-check. `destroy()` cannot reject those awaits — they are not idle handles
@@ -1172,7 +1172,7 @@ on whether it blocked that PR; the fix that shipped there applied the
 non-blocking read, so this gap shipped unowned until #2802.
 
 The fix generalizes past the idle-yield-specific guard rather than adding a
-per-site `if (this.destroyed)` check at each of the five call sites above:
+per-site `if (this.destroyed)` check at each of the six call sites above:
 `ProjectSession.assertLive()` (private) is one seam every post-host-IO-await
 continuation calls the instant it resumes, before touching session state
 again — throwing the same error family `deferGatedCall` rejects with, so a

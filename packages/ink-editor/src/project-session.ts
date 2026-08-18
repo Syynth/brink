@@ -366,7 +366,7 @@ export class ProjectSession {
    * post-host-IO-await touch goes through (issue #2802), generalizing past
    * the idle-yield-specific guard above rather than repeating a per-site
    * `if (this.destroyed)` check at each of `renameFile`, `deleteFile`,
-   * `requestFile`, `resolveIncludes`, and `initialize`. Throws the same
+   * `requestFile`, `resolveIncludes`, `initialize`, and `addFile`. Throws the same
    * error family {@link deferGatedCall} rejects with, so a caller catching
    * a destroy()-during-await race sees one shape regardless of which await
    * it landed in.
@@ -394,6 +394,7 @@ export class ProjectSession {
    *  a "created" change — the host learns about the file's existence. */
   async addFile(path: string, content: string = ""): Promise<void> {
     await this.provider.createFile(path, content);
+    this.assertLive();
     this.session.updateFile(path, content);
     this.changes.record(path, "created");
     // A `brink.toml` created after mount (issue #2324) was previously

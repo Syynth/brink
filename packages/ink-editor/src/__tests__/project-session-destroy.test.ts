@@ -331,4 +331,27 @@ describe("ProjectSession.destroy() during the post-host-IO-await window (#2802)"
     await expect(pending).rejects.toThrow(/destroyed/i);
     expect(session.updateFile).not.toHaveBeenCalled();
   });
+
+  it("addFile: destroy() landing during the provider.createFile await stops updateFile from reaching the freed session", async () => {
+    const session = makeStubSession();
+    const deferred = makeDeferred<void>();
+    const provider = new InMemoryFileProvider({ "main.ink": "-> END\n" });
+    provider.createFile = vi.fn(() => deferred.promise);
+    const project = new ProjectSession({
+      provider,
+      entryFile: "main.ink",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand stub, see makeStubSession's doc
+      session: session as any,
+    });
+
+    const pending = project.addFile("new.ink", "-> END\n");
+    pending.catch(() => {});
+    await flushMicrotasks();
+
+    project.destroy();
+    deferred.resolve();
+
+    await expect(pending).rejects.toThrow(/destroyed/i);
+    expect(session.updateFile).not.toHaveBeenCalled();
+  });
 });
