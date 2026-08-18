@@ -1328,4 +1328,65 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E116);
     }
+
+    /// Issue #2784: keeps `HirFile`'s field list in sync with this
+    /// module's own "every container `HirFile` exposes that can hold a
+    /// condition, walked exhaustively" doc table above, instead of relying
+    /// on that table staying accurate by hand. Three separate gaps were
+    /// found in this exact walk one at a time — lambda-body descent plus
+    /// `hir.variables`/`hir.constants` (#2768), then `hir.root_content`
+    /// (#2772/PR #2779) — exactly what an exhaustive enumeration catches in
+    /// one shot instead of piecemeal.
+    ///
+    /// `HirFile` is a **struct**, so there is no enum-exhaustiveness match
+    /// the compiler enforces for free the way the `classify_*` idiom does
+    /// (#2752/#1767). The struct analogue is destructuring every field by
+    /// name with **no `..` rest pattern**: add a field to `HirFile` without
+    /// extending this list and the destructure below fails to compile
+    /// (E0027, "pattern does not mention field `…`") — a compile-time RED
+    /// rather than a runtime assertion failure, but it fails the gate the
+    /// same way. Verified red locally by adding a dummy field to `HirFile`
+    /// before relying on this guard (see the PR description); reverted
+    /// before landing.
+    ///
+    /// Each walked field below already has a positive-control test proving
+    /// it's *actually* reached, not just present in this list:
+    /// [`root_content_condition_on_option_is_e116`] (`root_content`),
+    /// [`top_level_condition_on_option_is_e116_native`] (`knots`, plus
+    /// stitches via the ink-frontend fixtures above), and
+    /// [`var_lambda_body_condition_on_option_is_e116`] (`variables`, and by
+    /// construction the identical `constants` arm right beside it in
+    /// [`check`]).
+    #[test]
+    fn hir_file_condition_bearing_fields_stay_in_sync_with_the_e116_walk() {
+        let parsed = brink_syntax::parse("=== main ===\nHi.\n-> DONE\n");
+        let (hir, _manifest, diags) = lower(FileId(0), &parsed.tree());
+        assert!(diags.is_empty(), "fixture must lower cleanly: {diags:?}");
+
+        let HirFile {
+            // Walked for a condition or an embedded lambda's block body
+            // (this module's doc table above; `constants` mirrors
+            // `variables` byte-for-byte in `check`'s file-scope loop).
+            root_content: _,
+            knots: _,
+            variables: _,
+            constants: _,
+            // No `Stmt`/`Expr` tree of their own (this module's doc table
+            // names this exact remainder) — can never hold a condition or
+            // a lambda body, so `check` never needs to visit them.
+            lists: _,
+            structs: _,
+            externals: _,
+            includes: _,
+            module: _,
+            imports: _,
+            visibility: _,
+            was_directives: _,
+            allow_scopes: _,
+            element_matches: _,
+            cue_names: _,
+            native: _,
+            claim_handlers: _,
+        } = hir;
+    }
 }
