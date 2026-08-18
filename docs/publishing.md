@@ -8,8 +8,20 @@ Two packages publish to npm under the `@brink-lang` org
 | `@brink-lang/web` | `packages/wasm` | wasm compiler/IDE/runtime + TS wrappers; `@brink/wasm-types` rolled into its declarations |
 | `@brink-lang/studio` | `packages/brink-studio` | `mountStudio` IDE surface; bundles the private `@brink/*` internals; depends on `@brink-lang/web`; react/react-dom peers |
 
-Everything else under `packages/` stays `private: true` and is never
-published.
+`@brink-lang/studio` bundles five `private: true` packages into its
+published output: `packages/brink-studio` itself, plus `studio-ui`,
+`studio-shell`, `ink-operations`, and `studio-store`. None of those four
+publish under their own name — a change to any of their `src/` trees
+(excluding test-only files) has no attribution route except a changeset
+naming `@brink-lang/studio`. `scripts/check-studio-changeset.mjs`
+(CI's `studio-changeset-guard` job) enforces this; see that script's
+header for the carve-out rules.
+
+Everything else under `packages/` — including those four bundled
+packages — stays `private: true` and is never published on its own.
+(`packages/ink-editor` is a separate case: it is not bundled into
+`@brink-lang/studio` at all — it publishes its own
+`@brink-lang/editor` package and is out of scope for the guard above.)
 
 ## The release flow (after first publish)
 
@@ -17,7 +29,13 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets):
 
 1. **Land a change** with a changeset: run `pnpm changeset` in the PR,
    pick the affected public package(s) and bump level, write a summary.
-   Changes that don't touch the published packages need no changeset.
+   Changes that don't touch a published package's surface — directly,
+   or indirectly through one of the four `private: true` packages
+   `@brink-lang/studio` bundles (see the table above) — need no
+   changeset. A change to `packages/{brink-studio,studio-ui,studio-shell,
+   ink-operations,studio-store}/src` (excluding test-only files) DOES
+   need one, naming `@brink-lang/studio`; `scripts/check-studio-changeset.mjs`
+   (CI's `studio-changeset-guard` job) enforces this.
 2. **Version PR** — on push to main, `.github/workflows/npm-release.yml`
    sees pending changesets and opens/updates a "Version Packages" PR that
    applies the bumps and writes `CHANGELOG.md`s.

@@ -2503,6 +2503,7 @@ on:
         assert_eq!(
             ids,
             vec![
+                "studio-changeset-guard".to_owned(),
                 "check".to_owned(),
                 "wasm-test".to_owned(),
                 "test".to_owned(),
