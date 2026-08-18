@@ -916,6 +916,34 @@ a surface a *second* time with the registry listener already live, asserting
 the surface's own handler ran (`event.defaultPrevented`, a focus-return spy)
 rather than a bare fallback from the net.
 
+**Enrolment is itself enforced, not merely instructed (#2766).** Nothing
+above stopped a surface #11 from shipping its own `document`-level
+`keydown`/`pointerdown` dismiss listener without also calling
+`registerDismissible()` — silently falling back into the unescapable-menu
+failure mode #279 was filed for, invisibly (no test failure, no diagnostic).
+`packages/brink-studio/src/__tests__/dismiss-registry-enrolment.test.ts`
+closes that gap the same way `select-call-enrolment.test.ts` closes it for
+§7.7.1's selection invariant: it walks every workspace `src/` tree (roots
+derived from `pnpm-workspace.yaml`, not hand-typed) for every real
+`document.addEventListener("keydown" | "pointerdown", ...)` call, and
+requires each one to be either **module-enrolled** — the file imports
+`registerDismissible` (from its own `./dismiss-registry`, or, for a package
+with no registry of its own, from a registry-owning package's published
+name — e.g. `studio-ui`'s [`BinderContextMenu.tsx`](../packages/studio-ui/src/BinderContextMenu.tsx)
+importing from `"@brink/studio-shell"`) and calls it, which covers every
+listener call site in that file — or marked with a `// DISMISS-NET-EXEMPT:
+<reason>` comment (mirroring `SAVE-PATH-EXEMPT`) directly above the call
+site. `studio-shell`'s three Escape-cancels-a-gesture/layout-restore
+listeners (`tab-drag.ts`, `strip-drag.ts`, `regions.tsx`) carry that marker:
+they manage transient interaction/layout state, not a floating
+menu/popover/modal DOM surface, so `registerDismissible()` does not apply.
+[`ElementDropdown.tsx`](../packages/studio-ui/src/ElementDropdown.tsx) also
+carries one: its listener handles arrow/Enter/shortcut-key navigation only,
+not Escape dismissal, which its wrapping `Overlay` (already enrolled) owns.
+The guard does not unify the two registries — Escape still only dismisses
+surfaces within one package at a time — it only ensures every qualifying
+listener, in either package, is accounted for by one or the other.
+
 #### 7.7.4 Off-paint-path analysis deferral (invariant)
 
 A third, related hazard: a synchronous call that is not merely deferred (§7.7.2)

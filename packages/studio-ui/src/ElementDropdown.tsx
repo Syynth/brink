@@ -58,6 +58,8 @@ function ElementDropdownInner({ open, anchor, onSelect, onDismiss }: ElementDrop
 
   useEffect(() => {
     if (!open) return;
+    // DISMISS-NET-EXEMPT: arrow/Enter/shortcut navigation only — Escape
+    // dismissal is the wrapping Overlay's job, and Overlay is enrolled.
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open, handleKeyDown]);
