@@ -321,6 +321,8 @@ fn inferred_local_type_str(
 mod tests {
     use rowan::TextSize;
 
+    use brink_ir::FileId;
+
     use super::hover;
     use crate::session::IdeSession;
 
@@ -342,11 +344,58 @@ mod tests {
         .content
     }
 
-    /// Like `hover_at`, but for a native `.brink` fixture (B3a UFCS
-    /// resolution is native-only — see `crate::ufcs_hover`'s module doc).
-    fn hover_at_native(src: &str, needle: &str) -> Option<String> {
+    /// Load `src` into a session the way a real native project reaches it —
+    /// through a `brink.toml` declaring `dialect = "brink"`, parsed by
+    /// [`brink_project_config::parse_str`] and applied via
+    /// [`brink_analyzer::AnalysisOptions::apply_project_config`] +
+    /// [`IdeSession::apply_analysis_options`] — instead of a bare,
+    /// unconfigured `IdeSession::new()`.
+    ///
+    /// Issue #2885: a bare session's `language_dialect` defaults to
+    /// `Dialect::StrictInk` (`AnalysisOptions::default()`), which is not
+    /// what a native project actually resolves to once it opts into the
+    /// native typed-mode track (`dialect = "brink"` in `brink.toml`) — the
+    /// same seam `brink-cli`'s `Project::ide_session()` and `brink-web`'s
+    /// `EditorSession::apply_parsed_config` both funnel through. A test
+    /// named "native" that never goes through this seam is exercising a
+    /// configuration no such author runs, the same class of gap #2324 (the
+    /// playground never applying `brink.toml` at all) already burned this
+    /// project on.
+    ///
+    /// Also fixes the db-direct road for free: `apply_analysis_options`
+    /// re-analyzes through [`IdeSession`]'s `reanalyze`, which syncs the
+    /// session's resolved options into its own `ProjectDb`
+    /// ([`IdeSession::sync_db_options`] — issue #1553) — unlike
+    /// `update_and_analyze` alone, which does not (see that method's own
+    /// doc comment, and `tests/live_typing_db_divergence.rs`).
+    fn native_session(path: &str, src: &str) -> (IdeSession, FileId) {
         let mut session = IdeSession::new();
-        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let file_id = session.update_source(path, src.to_string());
+
+        let (config, config_warnings) =
+            brink_project_config::parse_str("[project]\ndialect = \"brink\"\n")
+                .expect("hand-written brink.toml literal must parse");
+        assert!(
+            config_warnings.is_empty(),
+            "unexpected brink.toml warnings: {config_warnings:?}"
+        );
+        let mut options = brink_analyzer::AnalysisOptions::default();
+        let apply_warnings = options.apply_project_config(&config, false, false);
+        assert!(
+            apply_warnings.is_empty(),
+            "unexpected apply_project_config warnings: {apply_warnings:?}"
+        );
+        session.apply_analysis_options(&options);
+
+        (session, file_id)
+    }
+
+    /// Like `hover_at`, but for a native `.brink` fixture (B3a UFCS
+    /// resolution is native-only — see `crate::ufcs_hover`'s module doc),
+    /// analyzed through [`native_session`] rather than a bare session
+    /// (issue #2885).
+    fn hover_at_native(src: &str, needle: &str) -> Option<String> {
+        let (session, file_id) = native_session("test.brink", src);
         let analysis = session.analysis().expect("analysis");
         let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
         hover(
@@ -872,9 +921,21 @@ fn main() {
     /// Assert hover at `needle` in `src` resolves to the author's own
     /// declaration — never falling through to `builtin_hover_text`'s
     /// name-keyed table — on both analysis roads.
-    fn assert_shadowing_hover_wins_on_both_roads(path: &str, src: &str, needle: &str) {
-        let mut session = IdeSession::new();
-        let file_id = session.update_and_analyze(path, src.to_string());
+    ///
+    /// Takes an already-built `(session, file_id)` pair rather than
+    /// constructing one itself (issue #2885): the ink caller below still
+    /// builds a bare `IdeSession::new()` (matching what an unconfigured
+    /// `.ink` project actually runs under), while the native caller routes
+    /// through [`native_session`] — the real `brink.toml`/
+    /// `apply_analysis_options` configuration path a native project
+    /// reaches `dialect = brink` through, rather than the same bare
+    /// session under the wrong dialect.
+    fn assert_shadowing_hover_wins_on_both_roads(
+        session: &IdeSession,
+        file_id: FileId,
+        src: &str,
+        needle: &str,
+    ) {
         let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
 
         let off_db = session.analysis().expect("off-db (IdeSnapshot::analyze)");
@@ -930,7 +991,9 @@ fn main() {
 Done.
 -> END
 ";
-        assert_shadowing_hover_wins_on_both_roads("test.ink", src, "FLOOR(3)");
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        assert_shadowing_hover_wins_on_both_roads(&session, file_id, src, "FLOOR(3)");
     }
 
     #[test]
@@ -939,6 +1002,13 @@ Done.
         // a free function named after a classic builtin, called directly
         // (not through UFCS method-call syntax, which `ufcs_hover` — a
         // different, narrower override — already covers separately).
+        //
+        // Analyzed through `native_session` (issue #2885), not a bare
+        // `IdeSession::new()`: a native fixture named "native" must
+        // actually reach `dialect = brink` the way a real native project
+        // does, and the db-direct road must read the SAME resolved options
+        // the off-db road does (`apply_analysis_options`, not
+        // `update_and_analyze` alone — see `native_session`'s doc comment).
         let src = "\
 fn FLOOR(x) {
   return x - 1;
@@ -948,6 +1018,7 @@ flow main() {
   Sum: {FLOOR(3)} -> END
 }
 ";
-        assert_shadowing_hover_wins_on_both_roads("test.brink", src, "FLOOR(3)");
+        let (session, file_id) = native_session("test.brink", src);
+        assert_shadowing_hover_wins_on_both_roads(&session, file_id, src, "FLOOR(3)");
     }
 }

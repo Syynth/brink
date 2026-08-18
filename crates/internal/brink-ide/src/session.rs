@@ -585,6 +585,24 @@ impl IdeSession {
     }
 
     /// Convenience: update source, snapshot, analyze, and store the result.
+    ///
+    /// ⚠ Unlike every option setter (`set_language_dialect`/`set_type_policy`/
+    /// `set_lint_policy`/`set_conventions`/`apply_analysis_options`, all of
+    /// which funnel through [`Self::reanalyze`]), this does **not** call
+    /// [`Self::sync_db_options`]. A caller whose *only* interaction with a
+    /// session is `update_source`/`update_and_analyze` — never a setter —
+    /// leaves the db's `AnalysisOptions` input at whatever it was last
+    /// synced to (its own construction-time default if never synced at
+    /// all), even if the off-db road (`Self::analysis`, read right after
+    /// this call) is analyzing under different options. This is an open
+    /// question flagged, not resolved, by issue #2885 — see that issue's
+    /// tracking comment for the investigation — rather than a documented
+    /// design choice; do not assume it is intentional. Existing production
+    /// callers (`brink-web`'s `EditorSession`) happen to always call a
+    /// setter (`apply_parsed_config` → `apply_analysis_options`) before
+    /// this method is ever reached, which is why the gap has not shown up
+    /// as a live divergence there — see `tests/live_typing_db_divergence.rs`
+    /// for a test suite that already had to work around it by construction.
     pub fn update_and_analyze(&mut self, path: &str, source: String) -> FileId {
         let file_id = self.update_source(path, source);
         let snap = self.snapshot();

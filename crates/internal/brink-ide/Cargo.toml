@@ -32,6 +32,12 @@ brink-runtime = { path = "../../brink-runtime" }
 # itself feeds `IdeSession::update_source` with — a hand-copied stand-in
 # would drift from the real preset the moment it changes.
 brink-environment = { workspace = true }
+# `parse_str` (issue #2885): native test fixtures resolve their
+# `AnalysisOptions` through a real `brink.toml` + `apply_project_config`,
+# the same seam `brink-cli`'s `Project::ide_session()` and `brink-web`'s
+# `EditorSession::apply_parsed_config` use — not a bare, unconfigured
+# session. See `crate::hover::tests::native_session`.
+brink-project-config = { workspace = true }
 insta.workspace = true
 serde_json.workspace = true
 
