@@ -839,4 +839,115 @@ fn main() {
         assert!(content.contains("bump(ref g, …)"), "{content}");
         assert!(content.contains("passed by reference"), "{content}");
     }
+
+    // ── Issue #2864: a shadowing declaration wins over the name-keyed
+    // builtin table, on both analysis roads ──────────────────────────────
+    //
+    // #2856/PR #2859 fixed the *compiler* so a declared symbol (`VAR
+    // RANDOM`, a knot named `FLOOR`, …) shadows a same-named classic ink
+    // builtin at resolution/lowering time. #2864's investigation (see the
+    // issue's comments) found `hover()` above already resolves correctly on
+    // both roads, for a reason that predates #2859 and needed no change:
+    // `find_def_at_offset(analysis, …)` — which reads `analysis.resolutions`,
+    // the very map #2859 fixed — is tried *before* the fallback to the
+    // name-keyed `builtin_hover_text` table a few lines up in this file.
+    // Nothing pinned that ordering as a regression, so a future refactor of
+    // `hover()` could silently reintroduce exactly the defect #2864
+    // originally (and wrongly) reported. These tests pin it.
+    //
+    // "Both roads" (CLAUDE.md): the off-db `IdeSnapshot::analyze` result
+    // (`session.analysis()` — what the studio's live-typing/off-db path
+    // uses) and the db-direct `ProjectDb::analysis()` result
+    // (`session.db().analysis()` — what the studio's Problems panel
+    // renders, per `ProjectDb::analysis`'s own doc comment). A change could
+    // be correct on one and wrong on the other, so both are exercised
+    // explicitly and separately below rather than picking one.
+    //
+    // Reached the same way a real hover request is: through the exact
+    // `brink_ide::hover::hover` entry point that both
+    // `crates/brink-web/src/editor/hover.rs`'s `EditorSession::hover` (the
+    // studio) and `crates/brink-lsp/src/backend.rs`'s LSP `hover` handler
+    // call — not a private helper.
+
+    /// Assert hover at `needle` in `src` resolves to the author's own
+    /// declaration — never falling through to `builtin_hover_text`'s
+    /// name-keyed table — on both analysis roads.
+    fn assert_shadowing_hover_wins_on_both_roads(path: &str, src: &str, needle: &str) {
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze(path, src.to_string());
+        let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
+
+        let off_db = session.analysis().expect("off-db (IdeSnapshot::analyze)");
+        let off_db_content = hover(off_db, session.db(), file_id, src, TextSize::from(pos), &[])
+            .expect("off-db hover")
+            .content;
+        assert!(
+            off_db_content.contains("**knot**"),
+            "off-db road (IdeSnapshot::analyze) must resolve to the author's own \
+             declaration: {off_db_content}"
+        );
+        assert!(
+            !off_db_content.contains("**built-in**"),
+            "off-db road (IdeSnapshot::analyze) fell through to the name-keyed \
+             builtin table despite the shadowing declaration: {off_db_content}"
+        );
+
+        let db_direct = session.db().analysis();
+        let db_content = hover(
+            db_direct,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[],
+        )
+        .expect("db-direct hover")
+        .content;
+        assert!(
+            db_content.contains("**knot**"),
+            "db-direct road (ProjectDb::analysis) must resolve to the author's own \
+             declaration: {db_content}"
+        );
+        assert!(
+            !db_content.contains("**built-in**"),
+            "db-direct road (ProjectDb::analysis) fell through to the name-keyed \
+             builtin table despite the shadowing declaration: {db_content}"
+        );
+    }
+
+    #[test]
+    fn hover_on_a_shadowing_ink_function_knot_wins_over_the_builtin_table_on_both_roads() {
+        // `FLOOR` is both a classic ink builtin (`text.rs`'s
+        // `builtin_hover_text` table: "Round down to nearest integer") and,
+        // here, an author-declared function knot. Hovering the call site
+        // must show the author's own knot, never the builtin's doc.
+        let src = "\
+=== function FLOOR(x) ===
+~ return x - 1
+
+=== start ===
+~ temp y = FLOOR(3)
+Done.
+-> END
+";
+        assert_shadowing_hover_wins_on_both_roads("test.ink", src, "FLOOR(3)");
+    }
+
+    #[test]
+    fn hover_on_a_shadowing_native_fn_wins_over_the_builtin_table_on_both_roads() {
+        // Same shape as the ink case above, on the native `.brink` surface:
+        // a free function named after a classic builtin, called directly
+        // (not through UFCS method-call syntax, which `ufcs_hover` — a
+        // different, narrower override — already covers separately).
+        let src = "\
+fn FLOOR(x) {
+  return x - 1;
+}
+
+flow main() {
+  Sum: {FLOOR(3)} -> END
+}
+";
+        assert_shadowing_hover_wins_on_both_roads("test.brink", src, "FLOOR(3)");
+    }
 }
