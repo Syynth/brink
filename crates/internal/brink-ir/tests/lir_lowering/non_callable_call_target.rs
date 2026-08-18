@@ -5,17 +5,15 @@
 //! there.
 //!
 //! `brink-analyzer::resolve::resolve_function` cannot legitimately produce
-//! any of these kinds for a real call site today (see `DiagnosticCode::
-//! E183`'s own doc for the full reachability argument), so this test
-//! cannot be written as ordinary `.ink` source through the full pipeline
-//! — there is no author-writable program that reaches the refusal via
-//! real resolution. Instead it reproduces the *shape* of the bug PR #2836
-//! exposed: take a real analysis result and simulate a resolution mistake
-//! by pointing one call site's resolution at a genuinely non-callable
-//! symbol already present in the index (a declared `LIST` item), the same
-//! way a future resolver regression could. This is `lower_call`'s
-//! defensive backstop, exercised directly rather than through the
-//! analyzer that is not supposed to produce this input in the first place.
+//! `Stitch`/`ListItem`/`Label`/`Struct` for a real call site (see
+//! `DiagnosticCode::E183`'s own doc for the full reachability argument),
+//! so the first test below simulates that shape by hand — there is no
+//! author-writable program that reaches *those four kinds'* refusal via
+//! real resolution. `Param`/`Temp` are different: a genuine forward
+//! reference (calling a name before its declaring binding) reaches this
+//! same match on ordinary `.ink` source with no simulation at all, and a
+//! block-scoped-temp-after-close call must land on `E082` instead — both
+//! covered by real-pipeline tests further down this file.
 
 use std::collections::HashMap;
 
@@ -23,6 +21,8 @@ use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolvedRef, Severity, SymbolKind, SymbolManifest,
     hir, lir,
 };
+
+use crate::support::{find_diag, lower_ink_with_warnings};
 
 /// Find the callee `Path`'s range of the first bare-call statement
 /// (`~ name()`, HIR `Stmt::ExprStmt(Expr::Call(path, _))`) in a file's root
@@ -117,5 +117,55 @@ fn lower_call_refuses_a_resolution_pointed_at_a_non_callable_symbol() {
     assert!(
         !has_bogus_call,
         "lowering must never emit Call against the non-callable resolved id"
+    );
+}
+
+// ── Real-source coverage: the two shapes an author actually hits ─────────
+//
+// Unlike the hand-constructed-resolution test above, both shapes below
+// compile through the full `.ink` pipeline with no simulated resolution —
+// review of #2848 found real, author-writable source reaches this match's
+// `Temp`/`Param` arms today (a genuine forward reference), and that the
+// block-scoped-temp-after-close shape must land on E082, not E183, to
+// match `lower_path`'s own guard for the identical mistake.
+
+#[test]
+fn calling_a_block_scoped_temp_after_its_block_closes_is_e082_not_e183() {
+    // Same defect `block_scoped_temp_read_after_block_closes.rs` proves for
+    // a value-read and a `ref`-argument call — here the block-scoped temp
+    // itself is the call target. Must land on E082 (mirroring
+    // `lower_path`'s own guard), never on the generic E183 refusal.
+    let src = "VAR gold = 100\n~ {\n    temp f = 1\n}\n~ f()\n-> END\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+
+    assert!(
+        find_diag(&diags, DiagnosticCode::E082).is_some(),
+        "expected E082 for a block-scoped temp called after its block closed: {diags:?}"
+    );
+    assert!(
+        find_diag(&diags, DiagnosticCode::E183).is_none(),
+        "block-scoped-temp-after-close must not also/instead report E183: {diags:?}"
+    );
+}
+
+#[test]
+fn calling_a_temp_before_its_declaration_is_e183_with_a_forward_reference_message() {
+    // A genuine forward reference — `f` is called before its own `temp`
+    // declaration. `ctx.temp_slot` has nothing open for `f` at the call
+    // site, so this reaches `lower_call`'s non-callable-kind match on real
+    // source, no hand-constructed `ResolvedRef` needed. This reproduces on
+    // the plain ink surface with no `--dialect brink`.
+    let src = "~ f()\n~ temp f = 1\n-> END\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+
+    let e183 = find_diag(&diags, DiagnosticCode::E183)
+        .expect("expected E183 for a temp called before its own declaration");
+    assert_eq!(e183.code.severity(), Severity::Error);
+    assert!(
+        e183.message.contains("before its declaration")
+            && !e183.message.contains("resolves to a Temp"),
+        "forward-reference message must name the real defect, not the misleading \
+         'resolves to a Temp, which cannot be called' wording: {}",
+        e183.message
     );
 }

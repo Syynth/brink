@@ -1779,14 +1779,24 @@ pub enum DiagnosticCode {
     /// is the one non-`External`/`List`/`Variable`/`Constant` kind that
     /// *is* callable — ink allows any knot as a function via tunnels, per
     /// `brink_analyzer::resolve::resolve_function`'s own comment — so it
-    /// keeps its own `lir::Expr::Call` arm; every other kind reaching this
-    /// match is either analyzer-unreachable today (`resolve_function` never
-    /// hands back `Stitch`/`Label`/`Struct` for a real call site, and only
-    /// hands back a bare `ListItem` for a `#fn(target)` literal, which never
-    /// reaches `lower_call` at all) or a defensive backstop
-    /// (`Param`/`Temp`, which `ctx.temp_slot` is expected to intercept
-    /// before resolution is even consulted — the same backstop posture
-    /// `lower_path`'s own `SymbolKind::Temp` fallback arm takes).
+    /// keeps its own `lir::Expr::Call` arm.
+    ///
+    /// This *is* reachable from ordinary author source, not only from a
+    /// hypothetical future resolution regression: `Temp`/`Param` reach this
+    /// arm whenever `ctx.temp_slot` does not have the name open at the call
+    /// site — which is the normal, expected shape of two ordinary author
+    /// mistakes, not a `temp_slot` bug. Calling a T1b block-scoped temp
+    /// (`~ { … }`) after its own block has closed is diverted to
+    /// [`Self::E082`] instead (mirroring `lower_path`'s own guard for the
+    /// same case), but a genuine forward reference — calling a name before
+    /// its declaring `temp`/param binding — falls through to this arm and
+    /// reports `E183` today; that reproduces on the plain `.ink` surface
+    /// with no `--dialect brink` needed. `Stitch`, `ListItem`, `Label`, and
+    /// `Struct` remain analyzer-unreachable for a real call site as far as
+    /// this code can tell (`resolve_function` never hands back `Stitch`/
+    /// `Label`/`Struct` there, and only hands back a bare `ListItem` for a
+    /// `#fn(target)` literal, which never reaches `lower_call` at all) —
+    /// those four are the defensive-backstop part of this diagnostic.
     ///
     /// Refused loudly rather than silently emitting `lir::Expr::Call`
     /// against the resolved id: that catch-all is exactly the mechanism

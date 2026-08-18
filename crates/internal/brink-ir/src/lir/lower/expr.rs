@@ -924,16 +924,41 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
                     args: call_args,
                 }
             }
+            // Mirrors `lower_path`'s own `SymbolKind::Temp if
+            // block_scoped_temp_names.contains(&name)` arm above (#680/E082):
+            // a T1b block-scoped temp called after its own `~ { … }` block
+            // has closed is the identical author mistake as reading it by
+            // value or by `ref` argument, and must answer with the same
+            // E082 — not fall through to the generic E183 refusal below,
+            // which would give the same mistake a different, worse code.
+            SymbolKind::Temp if ctx.block_scoped_temp_names.contains(&name) => {
+                ctx.diagnostics.push(crate::Diagnostic {
+                    file: ctx.file,
+                    range: path.range,
+                    message: format!(
+                        "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
+                         closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
+                         visible for the rest of their own block",
+                        crate::DiagnosticCode::E082.title(),
+                    ),
+                    code: crate::DiagnosticCode::E082,
+                });
+                lir::Expr::Null
+            }
             // Every other resolved kind is not callable (issue #2837 — see
             // `DiagnosticCode::E183`'s own doc for the full reachability
-            // argument: `resolve_function` cannot hand back `Stitch`/
-            // `Label`/`Struct` for a real call site today, and `Param`/
-            // `Temp` are a defensive backstop for `ctx.temp_slot` missing a
-            // local). Refuse with a diagnostic naming the kind actually
-            // found, rather than emitting `lir::Expr::Call` against
-            // whatever id happens to be resolved there — that catch-all is
-            // exactly the mechanism that let a resolution bug become a
-            // silent runtime fault instead of a compile error.
+            // argument). `Stitch`/`ListItem`/`Label`/`Struct` are
+            // analyzer-unreachable for a real call site today
+            // (`resolve_function` cannot hand back any of them there).
+            // `Param`/non-block-scoped `Temp` are reachable from ordinary
+            // source, though: a genuine forward reference — calling a name
+            // before its declaring binding — lands here too, since
+            // `ctx.temp_slot` has nothing open for it yet. Refuse with a
+            // diagnostic naming the kind actually found, rather than
+            // emitting `lir::Expr::Call` against whatever id happens to be
+            // resolved there — that catch-all is exactly the mechanism that
+            // let a resolution bug become a silent runtime fault instead of
+            // a compile error.
             kind @ (SymbolKind::Stitch
             | SymbolKind::ListItem
             | SymbolKind::Label
@@ -967,13 +992,27 @@ fn push_non_callable_refusal(
     range: rowan::TextRange,
     ctx: &mut LowerCtx<'_>,
 ) -> lir::Expr {
-    ctx.diagnostics.push(crate::Diagnostic {
-        file: ctx.file,
-        range,
-        message: format!(
+    // `Param`/`Temp` reaching here is a genuine forward reference (the call
+    // is lexically before the declaring binding), not a value of the wrong
+    // shape sitting at the call position — `lower_path`'s own `SymbolKind::
+    // Temp` fallback three arms above routinely calls temps/params holding
+    // a divert target (`CallVariableTemp`), so "resolves to a Temp, which
+    // cannot be called" would be actively misleading for this kind. Name
+    // the real defect instead.
+    let message = match kind {
+        SymbolKind::Temp | SymbolKind::Param => format!(
+            "{}: `{name}` is used here before its declaration — it is not in scope at this call site",
+            crate::DiagnosticCode::E183.title(),
+        ),
+        _ => format!(
             "{}: `{name}` resolves to a {kind:?}, which cannot be called",
             crate::DiagnosticCode::E183.title(),
         ),
+    };
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message,
         code: crate::DiagnosticCode::E183,
     });
     lir::Expr::Null
