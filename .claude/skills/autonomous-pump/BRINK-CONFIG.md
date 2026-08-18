@@ -282,14 +282,18 @@ the config above as follows:
   currently-different, artifact to the other (issue #2054). Before trusting
   a corpus/bucket number measured locally, run `pnpm check:target-freshness`
   (`scripts/check-target-freshness.mjs`, CLAUDE.md Rules) — it now compares a
-  per-worktree build stamp each tracked package's `build.rs` writes on every
-  build (#2759) against `git worktree list`, and exits non-zero only when a
-  package's OWN stamp names a different, still-live worktree as its last
-  builder — not merely "a sibling is live and some artifact exists" (that
-  older precondition-only shape from #2753 was a near-constant false
-  positive in this pump's normal shared-cache mode); `corpus_report`/
-  `full_corpus_sweep` print a pointer to it automatically whenever
-  `CARGO_TARGET_DIR` is set.
+  per-worktree build stamp each tracked package's `build.rs` writes whenever
+  cargo actually re-runs that build script (#2759 — no `rerun-if-changed` is
+  emitted, but cargo's real default without one is to rerun only when a file
+  in the package changed, not on every invocation; the stamp still names the
+  correct worktree because a no-op repeat build in the SAME worktree leaves
+  it naming that same worktree) against `git worktree list`, and exits
+  non-zero only when a package's OWN stamp names a different, still-live
+  worktree as its last builder — not merely "a sibling is live and some
+  artifact exists" (that older precondition-only shape from #2753 was a
+  near-constant false positive in this pump's normal shared-cache mode);
+  `corpus_report`/`full_corpus_sweep` print a pointer to it automatically
+  whenever `CARGO_TARGET_DIR` is set.
 
 ### Gates
 - ⚠ **CORRECTED 2026-08-13.** The previous rule here said `wasm-pack

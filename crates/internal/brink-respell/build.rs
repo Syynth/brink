@@ -14,14 +14,34 @@
 // than propagated with `?`/`unwrap`/`expect` (all denied by workspace
 // lints, and rightly so for a build script's side channel).
 //
-// No `cargo:rerun-if-changed` is emitted, on purpose: with none given,
-// cargo's documented default is to rerun a build script on *every*
-// invocation that touches this package, even when the compiled artifact
-// itself is already up to date and the recompile is skipped. That is
-// exactly the freshness signal wanted here — the stamp always reflects
-// whichever worktree most recently asked cargo to build/check/test this
-// package, not only the worktree that last forced a real recompile.
+// No `cargo:rerun-if-changed` is emitted, on purpose — but NOT because
+// cargo reruns build scripts on every invocation by default; it does not.
+// Cargo's documented default (absent any `rerun-if-*` directive) is to
+// rerun a build script only when a file inside the package has changed
+// since the last run that actually executed it. What this design relies on
+// is narrower and still holds under that real default: the stamp always
+// names the last worktree for which cargo actually re-ran this build
+// script — and a no-op repeat build in the *same* worktree (nothing
+// changed, so the script does not rerun) simply leaves the stamp naming
+// that same worktree, which is still the correct answer. The stamp
+// reflects the most recent worktree that caused a rerun, not every
+// worktree that has ever built this package — that is enough for the
+// freshness check's purposes.
+//
+// This crate is published to crates.io (see docs/releasing.md's "Publish
+// surface: build.rs worktree stamp" section) — the `CARGO_TARGET_DIR` guard
+// below keeps this a no-op off the shared-cache convention this tool exists
+// for, so a downstream consumer of the published crate never gets a stamp
+// file written under their own target dir for no reason.
 fn main() {
+    // Only the pump's shared-cache convention sets `CARGO_TARGET_DIR`
+    // explicitly (see `.claude/skills/autonomous-pump/BRINK-CONFIG.md`'s
+    // Disk rule). A downstream consumer of this published crate almost
+    // never does, so bail out before touching `OUT_DIR` at all in that
+    // case.
+    if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        return;
+    }
     let Ok(out_dir) = std::env::var("OUT_DIR") else {
         return;
     };

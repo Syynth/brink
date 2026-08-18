@@ -45,15 +45,29 @@
 // e.g. `crates/internal/brink-respell/build.rs`) that writes its own
 // `CARGO_MANIFEST_DIR` — an absolute path, worktree-specific by
 // construction, unlike dep-info's relative one — into `OUT_DIR/
-// worktree-stamp.txt` on every build invocation that touches the package
-// (no `cargo:rerun-if-changed` is emitted, so cargo's documented default
-// reruns the build script every time, even when the compile itself is
-// skipped as already up to date). `findNewestStamp` below locates the
-// newest such file the same way `findNewestArtifact` locates the newest
-// dep-info file — scanning `<target>/<profile>/build/` for this package's
-// hash-suffixed directories, since the metadata hash (like the dep-info
-// one) carries no worktree identity of its own — that identity comes only
-// from the stamp's own contents.
+// worktree-stamp.txt` whenever cargo actually re-runs the build script for
+// this package. No `cargo:rerun-if-changed` is emitted, but that is NOT
+// because cargo reruns build scripts on every invocation by default — it
+// does not; absent a `rerun-if-*` directive, cargo's documented default is
+// to rerun a build script only when a file in the package has changed
+// since the run that last executed it. The guarantee this design actually
+// relies on, and gets, is narrower: the stamp always names the last
+// worktree cargo actually re-ran this script for, and a no-op repeat build
+// in that SAME worktree (nothing changed, script does not rerun) simply
+// leaves the stamp naming that same worktree — which is still the correct
+// answer. `findNewestStamp` below locates the newest such file the same
+// way `findNewestArtifact` locates the newest dep-info file — scanning
+// `<target>/<profile>/build/` for this package's hash-suffixed
+// directories, since the metadata hash (like the dep-info one) carries no
+// worktree identity of its own — that identity comes only from the
+// stamp's own contents. A single package can have MULTIPLE such
+// hash-suffixed directories live at once (e.g. a `cargo test` invocation
+// and a `cargo clippy --all-targets` invocation of the same package can
+// legitimately produce two build-script units with different metadata
+// hashes) — `findAllStamps`/`classifyPackageStamps` below classify every
+// one of them rather than letting whichever has the newest mtime stand in
+// for the whole package; see `classifyPackageStamps`'s doc comment for the
+// aggregation rule.
 //
 // `classifyStamp` then compares the stamp's manifest dir against `git
 // worktree list` to produce one of four verdicts:
@@ -192,10 +206,12 @@ export function findNewestArtifact(
 }
 
 /**
- * Find the newest per-worktree build stamp for `pkg`'s build-script output
- * under `<targetDir>/<profile>/build/` (#2759). Cargo lays a build script's
- * `OUT_DIR` out as `<target>/<profile>/build/<pkg>-<hash>/out/`, using the
- * same collision-prone `-C metadata` hash as `findNewestArtifact` — so, as
+ * Find the single newest per-worktree build stamp for `pkg`'s build-script
+ * output under `<targetDir>/<profile>/build/` (#2759) — a thin wrapper over
+ * `findAllStamps` (below) that reduces its list to the entry with the
+ * greatest `mtimeMs`. Cargo lays a build script's `OUT_DIR` out as
+ * `<target>/<profile>/build/<pkg>-<hash>/out/`, using the same
+ * collision-prone `-C metadata` hash as `findNewestArtifact` — so, as
  * there, the hash is intentionally NOT matched exactly, only the package
  * name prefix. Unlike the normalized (`-` → `_`) crate-object names
  * `findNewestArtifact` matches under `deps/`, this `build/<pkg>-<hash>`
@@ -208,16 +224,47 @@ export function findNewestArtifact(
  * distinct from returning `null` outright, which means no stamp exists at
  * all for this package. Both cases are handled explicitly by
  * `classifyStamp`; neither one throws.
+ *
+ * NOTE: a package can have more than one such unit alive at once (see
+ * `findAllStamps`), and this single "newest" one is NOT necessarily the
+ * unit backing whatever artifact `findNewestArtifact` finds — the two are
+ * found under different hash namespaces and cannot be correlated by hash.
+ * Use this only for display of "the most recent stamp activity for this
+ * package"; use `classifyPackageStamps` (which considers every unit) to
+ * decide whether a package is actually safe.
  */
 export function findNewestStamp(
   targetDir,
   pkg,
+  opts = {},
+) {
+  const stamps = findAllStamps(targetDir, pkg, opts);
+  if (stamps.length === 0) return null;
+  return stamps.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a));
+}
+
+/**
+ * Find EVERY per-worktree build stamp for `pkg`'s build-script output under
+ * `<targetDir>/<profile>/build/` (#2759 finding: a package can legitimately
+ * have more than one such hash-suffixed unit alive at once — e.g. a
+ * `cargo test` invocation and a `cargo clippy --all-targets` invocation of
+ * the same package produce build-script units under different `-C
+ * metadata` hashes, which can belong to different worktrees). Returns one
+ * entry per matching directory — `{ path, mtimeMs, data }`, `data` being
+ * the trimmed stamp content or `null` when present-but-unreadable (see
+ * `findNewestStamp`'s doc comment for the directory-naming details this
+ * shares with it). `findNewestStamp` is now a thin wrapper that reduces
+ * this list to the single newest entry.
+ */
+export function findAllStamps(
+  targetDir,
+  pkg,
   { profiles = ["debug", "release"], stat = statSync, readFile = readFileSync } = {},
 ) {
-  // NOT normalized to underscores — see this function's doc comment.
+  // NOT normalized to underscores — see `findNewestStamp`'s doc comment.
   const pattern = new RegExp(`^${pkg}-[0-9a-f]+$`);
 
-  let newest = null;
+  const stamps = [];
   for (const profile of profiles) {
     const buildDir = join(targetDir, profile, "build");
     if (!existsSync(buildDir)) continue;
@@ -234,22 +281,19 @@ export function findNewestStamp(
         if (err && err.code === "ENOENT") continue;
         throw err;
       }
-      if (!newest || mtimeMs > newest.mtimeMs) {
-        newest = { path: stampPath, mtimeMs };
+
+      let data = null;
+      try {
+        const raw = readFile(stampPath, "utf8").trim();
+        if (raw.length > 0) data = raw;
+      } catch {
+        data = null; // exists but unreadable (permissions, race, truncated write)
       }
+
+      stamps.push({ path: stampPath, mtimeMs, data });
     }
   }
-  if (!newest) return null;
-
-  let data = null;
-  try {
-    const raw = readFile(newest.path, "utf8").trim();
-    if (raw.length > 0) data = raw;
-  } catch {
-    data = null; // exists but unreadable (permissions, race, truncated write)
-  }
-
-  return { path: newest.path, mtimeMs: newest.mtimeMs, data };
+  return stamps;
 }
 
 /**
@@ -296,23 +340,115 @@ export function classifyStamp(stamp, { repoRootAbs, worktrees }) {
   return { kind: "live-sibling", manifestDir: manifestDirAbs, worktree: owner };
 }
 
+/**
+ * Classify EVERY build-script stamp unit `findAllStamps` finds for `pkg`,
+ * then reduce them to one package-level verdict under an EXPLICIT
+ * aggregation rule — not mtime order.
+ *
+ * Why this exists (finding against the original `findNewestStamp`-only
+ * design): a package can have more than one build-script unit alive at
+ * once under different `-C metadata` hashes — e.g. worktree A runs
+ * `cargo test -p pkg` (stamps unit 1, owned by A) and, later, sibling
+ * worktree B runs `cargo clippy -p pkg --all-targets` (stamps unit 2,
+ * owned by B, now the newer one by mtime). Collapsing to "whichever stamp
+ * is newest" before classifying made A's own check report a false-positive
+ * RISK for `pkg`, even though the unit A's own measurement actually
+ * depends on is still A's.
+ *
+ * Aggregation rule (explicit):
+ *   1. If ANY unit is classified "self", the package is safe — this
+ *      worktree has direct proof, from cargo's own build-script run, that
+ *      it built this package itself. A different, merely-newer unit
+ *      belonging to someone else (a different feature/profile/target
+ *      invocation) does not make that proof less true.
+ *   2. Else, if ANY unit is classified "live-sibling", the package is a
+ *      confirmed collision — this is the real, provable hazard signal.
+ *   3. Else, if ANY unit is "dead-worktree", report that (safe — nothing
+ *      currently live is contending for this package).
+ *   4. Else "unreadable" if every unit was found but unreadable.
+ *   5. Else "missing" (no units at all).
+ *
+ * Returns `{ kind, worktree?, manifestDir?, units }` — `units` is every
+ * classified stamp (`{ path, mtimeMs, data, verdict }`), always present,
+ * so callers can surface per-unit ownership rather than only the
+ * aggregate.
+ */
+export function classifyPackageStamps(targetDir, pkg, { repoRootAbs, worktrees, ...opts }) {
+  const units = findAllStamps(targetDir, pkg, opts).map((stamp) => ({
+    ...stamp,
+    verdict: classifyStamp(stamp, { repoRootAbs, worktrees }),
+  }));
+
+  if (units.length === 0) return { kind: "missing", units };
+
+  const self = units.find((u) => u.verdict.kind === "self");
+  if (self) return { kind: "self", manifestDir: self.verdict.manifestDir, units };
+
+  const liveSibling = units.find((u) => u.verdict.kind === "live-sibling");
+  if (liveSibling) {
+    return {
+      kind: "live-sibling",
+      manifestDir: liveSibling.verdict.manifestDir,
+      worktree: liveSibling.verdict.worktree,
+      units,
+    };
+  }
+
+  const dead = units.find((u) => u.verdict.kind === "dead-worktree");
+  if (dead) return { kind: "dead-worktree", manifestDir: dead.verdict.manifestDir, units };
+
+  if (units.every((u) => u.verdict.kind === "unreadable")) return { kind: "unreadable", units };
+
+  return { kind: "missing", units };
+}
+
 function formatEvidenceLine({ package: pkg, artifact, verdict }) {
-  if (!artifact) return `    - ${pkg}: no build artifact found yet`;
+  const units = verdict?.units ?? [];
+  const unitLines =
+    units.length > 1
+      ? units.map((u) => {
+          const age = new Date(u.mtimeMs).toISOString();
+          switch (u.verdict?.kind) {
+            case "self":
+              return `        · unit ${age} — ${u.path} (built by this worktree)`;
+            case "live-sibling":
+              return `        · unit ${age} — ${u.path} (built by LIVE sibling ${u.verdict.worktree.path})`;
+            case "dead-worktree":
+              return `        · unit ${age} — ${u.path} (built by a worktree that no longer exists — ${u.verdict.manifestDir})`;
+            case "unreadable":
+              return `        · unit ${age} — ${u.path} (stamp unreadable)`;
+            default:
+              return `        · unit ${age} — ${u.path}`;
+          }
+        })
+      : [];
+
+  if (!artifact) {
+    const base = `    - ${pkg}: no build artifact found yet`;
+    return unitLines.length > 0
+      ? [`${base}, but ${units.length} build-script stamp unit(s) exist:`, ...unitLines].join("\n")
+      : base;
+  }
+
   const age = new Date(artifact.mtimeMs).toISOString();
   const base = `    - ${pkg}: last (re)built ${age} — ${artifact.path}`;
-  switch (verdict?.kind) {
-    case "self":
-      return `${base} (stamp: built by this worktree)`;
-    case "live-sibling":
-      return `${base} (stamp: built by LIVE sibling worktree ${verdict.worktree.path})`;
-    case "dead-worktree":
-      return `${base} (stamp: built by a worktree that no longer exists — ${verdict.manifestDir} — not currently a risk)`;
-    case "unreadable":
-      return `${base} (stamp exists but could not be read/parsed — unverified, rebuild for a real signal)`;
-    case "missing":
-    default:
-      return `${base} (no worktree stamp found — predates #2759, or was built without it — unverified, rebuild for a real signal)`;
-  }
+  const summary = (() => {
+    switch (verdict?.kind) {
+      case "self":
+        return `${base} (stamp: built by this worktree)`;
+      case "live-sibling":
+        return `${base} (stamp: built by LIVE sibling worktree ${verdict.worktree.path})`;
+      case "dead-worktree":
+        return `${base} (stamp: built by a worktree that no longer exists — ${verdict.manifestDir} — not currently a risk)`;
+      case "unreadable":
+        return `${base} (stamp exists but could not be read/parsed — unverified, rebuild for a real signal)`;
+      case "missing":
+      default:
+        return `${base} (no worktree stamp found — predates #2759, or was built without it — unverified, rebuild for a real signal)`;
+    }
+  })();
+
+  return unitLines.length > 0 ? [summary, ...unitLines].join("\n") : summary;
 }
 
 /**
@@ -371,7 +507,10 @@ export function checkTargetFreshness({
   const evidence = packages.map((pkg) => {
     const artifact = findNewestArtifact(targetDirAbs, pkg);
     const stamp = findNewestStamp(targetDirAbs, pkg);
-    const verdict = classifyStamp(stamp, { repoRootAbs, worktrees: liveWorktrees });
+    const verdict = classifyPackageStamps(targetDirAbs, pkg, {
+      repoRootAbs,
+      worktrees: liveWorktrees,
+    });
     return { package: pkg, artifact, stamp, verdict };
   });
 
@@ -384,7 +523,13 @@ export function checkTargetFreshness({
     return { safe: true, shared: true, siblingWorktrees, evidence };
   }
 
-  const collisions = evidence.filter((e) => e.verdict.kind === "live-sibling");
+  // `e.artifact &&` keeps this consistent with `unverified` below: a
+  // package whose build script ran (so its stamp exists and can even name
+  // a live sibling) but whose actual compile never produced a cached
+  // artifact must not flip the whole run RED while its own evidence line
+  // reports "no build artifact found yet" — that contradiction was a
+  // reported finding against the original filter.
+  const collisions = evidence.filter((e) => e.artifact && e.verdict.kind === "live-sibling");
   const unverified = evidence.filter(
     (e) => e.artifact && (e.verdict.kind === "missing" || e.verdict.kind === "unreadable"),
   );

@@ -20,7 +20,9 @@ import assert from "node:assert/strict";
 
 import {
   checkTargetFreshness,
+  classifyPackageStamps,
   classifyStamp,
+  findAllStamps,
   findNewestArtifact,
   findNewestStamp,
   listLiveWorktrees,
@@ -283,6 +285,139 @@ describe("classifyStamp", () => {
     const stamp = { path: "/x", mtimeMs: 0, data: `${repoRootAbs}-decoy/crates/internal/brink-respell` };
     const verdict = classifyStamp(stamp, { repoRootAbs, worktrees });
     assert.equal(verdict.kind, "dead-worktree");
+  });
+
+  describe("with a worktree nested inside another (production layout)", () => {
+    // This repo's real worktree layout nests agent worktrees INSIDE the
+    // main checkout (`/home/user/brink/.claude/worktrees/wf_*`), which is
+    // exactly why `classifyStamp`'s longest-prefix loop exists: a
+    // shortest-prefix (or first-match) resolution would classify every
+    // self-built package as `live-sibling` (the main checkout "contains"
+    // every nested worktree path too) and make this check always-red again
+    // — the exact regression this file guards against. The two flat
+    // siblings above never exercise that nesting; this block does.
+    const mainAbs = "/home/user/brink";
+    const aAbs = "/home/user/brink/.claude/worktrees/a";
+    const bAbs = "/home/user/brink/.claude/worktrees/b";
+    const nestedWorktrees = [
+      { path: mainAbs, locked: false },
+      { path: aAbs, locked: false },
+      { path: bAbs, locked: false },
+    ];
+
+    it("is 'self' for a stamp under the nested worktree that IS repoRootAbs, not the enclosing main checkout", () => {
+      const stamp = { path: "/x", mtimeMs: 0, data: `${bAbs}/crates/internal/brink-respell` };
+      const verdict = classifyStamp(stamp, { repoRootAbs: bAbs, worktrees: nestedWorktrees });
+      assert.equal(verdict.kind, "self");
+    });
+
+    it("is 'live-sibling' naming the nested worktree, not the enclosing main checkout, when repoRootAbs is a different nested worktree", () => {
+      const stamp = { path: "/x", mtimeMs: 0, data: `${aAbs}/crates/internal/brink-respell` };
+      const verdict = classifyStamp(stamp, { repoRootAbs: bAbs, worktrees: nestedWorktrees });
+      assert.equal(verdict.kind, "live-sibling");
+      assert.equal(verdict.worktree.path, aAbs);
+    });
+  });
+});
+
+describe("findAllStamps", () => {
+  it("returns every matching hash-suffixed unit, not just the newest", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    writeStamp(targetDir, "brink-test-harness", "aaaaaaaaaaaaaaaa", "/worktree-a/crates/internal/brink-test-harness", {
+      ageMs: 60_000,
+    });
+    writeStamp(targetDir, "brink-test-harness", "bbbbbbbbbbbbbbbb", "/worktree-b/crates/internal/brink-test-harness", {
+      ageMs: 1_000,
+    });
+    const all = findAllStamps(targetDir, "brink-test-harness");
+    assert.equal(all.length, 2);
+    assert.deepEqual(
+      all.map((s) => s.data).sort(),
+      ["/worktree-a/crates/internal/brink-test-harness", "/worktree-b/crates/internal/brink-test-harness"],
+    );
+  });
+
+  it("returns an empty array (not null) when nothing has stamped this package", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    assert.deepEqual(findAllStamps(targetDir, "brink-test-harness"), []);
+  });
+});
+
+describe("classifyPackageStamps", () => {
+  // Reproduces the exact false-positive scenario a reported finding named
+  // against the original `findNewestStamp`-only design: worktree A runs
+  // `cargo test -p brink-test-harness` (stamps unit 1, owned by A);
+  // sibling worktree B later runs `cargo clippy -p brink-test-harness
+  // --all-targets` under a DIFFERENT `-C metadata` hash (stamps unit 2,
+  // owned by B, now the newer unit by mtime). A's own freshness check must
+  // still report this package safe, because A's own unit proves A built it
+  // itself — a different, merely-newer unit belonging to a sibling must not
+  // outrank that.
+  it("is 'self' when this worktree owns ANY unit, even if a live sibling's unit is newer", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    const repoRootAbs = "/home/user/brink/.claude/worktrees/a";
+    const siblingAbs = "/home/user/brink/.claude/worktrees/b";
+    const worktrees = [
+      { path: repoRootAbs, locked: false },
+      { path: siblingAbs, locked: false },
+    ];
+
+    // A's own unit — older.
+    writeStamp(
+      targetDir,
+      "brink-test-harness",
+      "aaaaaaaaaaaaaaaa",
+      join(repoRootAbs, "crates", "internal", "brink-test-harness"),
+      { ageMs: 60_000 },
+    );
+    // Sibling B's unit — newer, DIFFERENT hash (simulating a different
+    // cargo invocation, e.g. `--all-targets`).
+    writeStamp(
+      targetDir,
+      "brink-test-harness",
+      "bbbbbbbbbbbbbbbb",
+      join(siblingAbs, "crates", "internal", "brink-test-harness"),
+      { ageMs: 1_000 },
+    );
+
+    const verdict = classifyPackageStamps(targetDir, "brink-test-harness", { repoRootAbs, worktrees });
+    assert.equal(verdict.kind, "self");
+    assert.equal(verdict.units.length, 2);
+    // Both units are still surfaced, each with its own verdict, so a
+    // caller can render per-unit ownership rather than only the aggregate.
+    const kinds = verdict.units.map((u) => u.verdict.kind).sort();
+    assert.deepEqual(kinds, ["live-sibling", "self"]);
+  });
+
+  it("is 'live-sibling' when NO unit is self but at least one live sibling unit exists", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    const repoRootAbs = "/home/user/brink/.claude/worktrees/a";
+    const siblingAbs = "/home/user/brink/.claude/worktrees/b";
+    const worktrees = [
+      { path: repoRootAbs, locked: false },
+      { path: siblingAbs, locked: false },
+    ];
+
+    writeStamp(
+      targetDir,
+      "brink-test-harness",
+      "bbbbbbbbbbbbbbbb",
+      join(siblingAbs, "crates", "internal", "brink-test-harness"),
+    );
+
+    const verdict = classifyPackageStamps(targetDir, "brink-test-harness", { repoRootAbs, worktrees });
+    assert.equal(verdict.kind, "live-sibling");
+    assert.equal(verdict.worktree.path, siblingAbs);
+  });
+
+  it("is 'missing' when no stamp units exist at all", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    const verdict = classifyPackageStamps(targetDir, "brink-test-harness", {
+      repoRootAbs: "/home/user/brink",
+      worktrees: [{ path: "/home/user/brink", locked: false }],
+    });
+    assert.equal(verdict.kind, "missing");
+    assert.deepEqual(verdict.units, []);
   });
 });
 
@@ -656,5 +791,100 @@ describe("checkTargetFreshness", () => {
       result.evidence.map((e) => e.package),
       DEFAULT_PACKAGES,
     );
+  });
+
+  it("is safe (not RISK) when this worktree's own build stamp is older than a sibling's for the same package (#2759 finding)", () => {
+    // Full-pipeline reproduction of the classifyPackageStamps false-positive
+    // scenario: this worktree built `brink-test-harness` first (unit 1),
+    // then a live sibling ran a differently-invoked build of the same
+    // package under a different hash (unit 2, newer mtime). The overall
+    // result must stay safe for this package because THIS worktree's own
+    // unit proves it built it itself.
+    const repoRoot = scratchDir("check-target-freshness-repo-");
+    const targetDir = join(repoRoot, "target");
+    const siblingPath = scratchDir("check-target-freshness-sibling-");
+
+    writeArtifact(targetDir, "brink_test_harness", "aaaaaaaaaaaaaaaa");
+    writeStamp(
+      targetDir,
+      "brink-test-harness",
+      "aaaaaaaaaaaaaaaa",
+      join(repoRoot, "crates", "internal", "brink-test-harness"),
+      { ageMs: 60_000 },
+    );
+    writeStamp(
+      targetDir,
+      "brink-test-harness",
+      "bbbbbbbbbbbbbbbb",
+      join(siblingPath, "crates", "internal", "brink-test-harness"),
+      { ageMs: 1_000 },
+    );
+
+    const result = checkTargetFreshness({
+      repoRoot,
+      targetDir,
+      packages: ["brink-test-harness"],
+      listWorktrees: () => [
+        { path: repoRoot, locked: false },
+        { path: siblingPath, locked: false },
+      ],
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(result.safe, true);
+    assert.equal(result.evidence[0].verdict.kind, "self");
+  });
+
+  it("does not report RISK for a package whose stamp names a live sibling but which never produced a cached artifact", () => {
+    // Reported finding: `collisions` used to test only
+    // `verdict.kind === "live-sibling"`, while the adjacent `unverified`
+    // filter (and `formatEvidenceLine`'s early return) required an
+    // artifact too — so a package whose build script ran (stamp present,
+    // naming a live sibling) but whose compile never produced a `deps/*.d`
+    // artifact flipped the WHOLE run RED while its own evidence line read
+    // "no build artifact found yet", contradicting the "Confirmed
+    // collisions" block above it. `collisions` must require `e.artifact`
+    // just like `unverified` does.
+    //
+    // A second, unrelated package (with a real artifact) is included so
+    // the run does not take the earlier "no artifact for ANY package"
+    // early-return path — that path already reported safe before this fix,
+    // so on its own it would not exercise the `collisions` filter at all.
+    const repoRoot = scratchDir("check-target-freshness-repo-");
+    const targetDir = join(repoRoot, "target");
+    const siblingPath = scratchDir("check-target-freshness-sibling-");
+
+    // brink-respell: a normal, unrelated, genuinely-safe package with a
+    // real artifact, so the run does not short-circuit on "nothing built".
+    writeArtifact(targetDir, "brink_respell", "aaaaaaaaaaaaaaaa");
+
+    // brink-test-harness: build script ran and stamped a LIVE sibling as
+    // owner, but the compile itself never produced a deps/*.d file.
+    writeStamp(
+      targetDir,
+      "brink-test-harness",
+      "cccccccccccccccc",
+      join(siblingPath, "crates", "internal", "brink-test-harness"),
+    );
+
+    const warnings = [];
+    const result = checkTargetFreshness({
+      repoRoot,
+      targetDir,
+      packages: ["brink-respell", "brink-test-harness"],
+      listWorktrees: () => [
+        { path: repoRoot, locked: false },
+        { path: siblingPath, locked: false },
+      ],
+      log: () => {},
+      warn: (msg) => warnings.push(msg),
+    });
+
+    assert.equal(result.safe, true);
+    assert.equal(warnings.length, 0);
+    const harnessEvidence = result.evidence.find((e) => e.package === "brink-test-harness");
+    assert.equal(harnessEvidence.artifact, null);
+    assert.equal(harnessEvidence.verdict.kind, "live-sibling");
   });
 });
