@@ -930,6 +930,32 @@ fn resolve_function(
         return;
     }
 
+    // Bare list item name colliding with a stdlib verb (issue #2830): a
+    // `RefKind::Function` reference whose path names a real declared list
+    // item (e.g. `pop`, when some `LIST` declares an item literally called
+    // `pop`) must resolve to that item — an author-declared symbol always
+    // shadows a same-named stdlib builtin, exactly as `resolve_variable`'s
+    // `lookup_variable` step 3 already does for `RefKind::Variable` refs.
+    // Without this step, `is_t1b_stdlib_name` below silently claims the
+    // name first (it has no way to know a real symbol exists) and the ref
+    // is dropped with neither a resolution nor a diagnostic — the
+    // `completeness` proptest counterexample this fixes.
+    match lookup_list_item_bare(index, path) {
+        BareItemResult::Unique(id) => {
+            map.push(ResolvedRef {
+                file: file_id,
+                range: uref.range,
+                target: id,
+            });
+            return;
+        }
+        BareItemResult::Ambiguous => {
+            diagnostics.push(ambiguous_diag(file_id, uref.range, path));
+            return;
+        }
+        BareItemResult::NotFound => {}
+    }
+
     // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
     // `values`/`contains`/`push`/`insert`/`remove`/`remove_at` with no
     // matching user symbol are the brink-dialect builtins, handled at LIR

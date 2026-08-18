@@ -764,6 +764,46 @@ LIST Colors = red, green, blue
     assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
 }
 
+/// Issue #2830: a bare list-item name that collides with a stdlib list verb
+/// (`pop`), referenced from inside a knot whose name also collides with the
+/// declaring list's name (`a`), must still resolve to the list item rather
+/// than being silently swallowed by the `is_t1b_stdlib_name` fallback in
+/// `resolve_function` — the exact shape the `completeness` proptest's pinned
+/// regression seed (`proptest_resolve.proptest-regressions`) shrunk down to.
+/// `#fn(target)` is a real-syntax `RefKind::Function` site with
+/// `arg_count: None` (`brink_ir::symbols::project::Projector::walk_expr`'s
+/// `Expr::FnLiteral` arm), matching the counterexample's shape exactly.
+#[test]
+fn integration_bare_list_item_collides_with_stdlib_verb_name() {
+    let result = analyze_ink(
+        "\
+LIST a = pop, other
+
+== a ==
+~ temp f = #fn(pop)
+-> END
+",
+    );
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
+    // The completeness guarantee this issue is about: an empty diagnostics
+    // list is not enough proof by itself — a *silent drop* also produces no
+    // diagnostic, so the regression this test guards against would pass the
+    // assertion above even while dropping the ref. Assert the reference was
+    // actually resolved (not just "not diagnosed").
+    assert_eq!(
+        result.resolutions.len(),
+        1,
+        "expected the `#fn(pop)` target to resolve to the `a.pop` list item; \
+         resolutions: {:?}",
+        result.resolutions
+    );
+}
+
 #[test]
 fn integration_function_call_to_external() {
     let result = analyze_ink(
