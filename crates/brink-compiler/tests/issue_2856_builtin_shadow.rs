@@ -63,6 +63,44 @@ fn compile_with(
     )
 }
 
+/// Compile (asserting no `E035`/`E183` diagnostic) and run to completion,
+/// returning the runtime fault the program dies with, if any. Shared by
+/// `local_named_builtin_faults_at_runtime_not_callable` and
+/// `param_named_builtin_faults_at_runtime_not_callable` — extracted per PR
+/// #2865's review, which rejected the same ~28 lines duplicated verbatim
+/// between the temp and param variants of this exact test shape.
+fn run_expecting_fault(
+    source: &str,
+    dialect: Dialect,
+    types: Option<TypePolicy>,
+) -> Option<brink_runtime::RuntimeError> {
+    let compiled = compile_with(source, dialect, types)
+        .expect("compile should succeed with no E035/E183 diagnostic");
+    assert!(
+        !compiled
+            .warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "expected no E035 warning, got {:?}",
+        compiled.warnings
+    );
+    let (program, line_tables) = brink_runtime::link(&compiled.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
+    let mut fault = None;
+    loop {
+        match story.continue_single() {
+            Ok(Step::Line(_)) => {}
+            Ok(Step::Choices(_)) => panic!("this program is choice-free"),
+            Ok(Step::Done | Step::End | Step::Suspended) => break,
+            Err(err) => {
+                fault = Some(err);
+                break;
+            }
+        }
+    }
+    fault
+}
+
 /// Compile and run to completion, returning the concatenated output.
 fn run_with(source: &str, dialect: Dialect, types: Option<TypePolicy>) -> String {
     let output = compile_with(source, dialect, types).expect("compile");
@@ -251,30 +289,39 @@ fn local_named_builtin_faults_at_runtime_not_callable() {
 value: {MAX(1, 2)}
 -> DONE
 ";
-    let compiled = compile_with(source, Dialect::StrictInk, Some(TypePolicy::Gradual))
-        .expect("compile should succeed with no E035/E183 diagnostic");
+    let fault = run_expecting_fault(source, Dialect::StrictInk, Some(TypePolicy::Gradual));
     assert!(
-        !compiled
-            .warnings
-            .iter()
-            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
-        "a local is not in E035's warn set, expected no warning, got {:?}",
-        compiled.warnings
+        matches!(fault, Some(brink_runtime::RuntimeError::NotCallable(_))),
+        "expected a NotCallable runtime fault, got {fault:?}"
     );
-    let (program, line_tables) = brink_runtime::link(&compiled.data).expect("link");
-    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
-    let mut fault = None;
-    loop {
-        match story.continue_single() {
-            Ok(Step::Line(_)) => {}
-            Ok(Step::Choices(_)) => panic!("this program is choice-free"),
-            Ok(Step::Done | Step::End | Step::Suspended) => break,
-            Err(err) => {
-                fault = Some(err);
-                break;
-            }
-        }
-    }
+}
+
+/// Issue #2867: the param-shaped sibling of
+/// `local_named_builtin_faults_at_runtime_not_callable` above.
+/// `lookup_local_in_scope` (`resolve.rs`) can only ever return
+/// `SymbolKind::Param` or `SymbolKind::Temp` (the complete enumeration —
+/// see `push_local`'s call sites in `brink_ir::symbols::project`); the
+/// `temp` test above pins one, this pins the other, exactly as issue
+/// #2867 asks ("pin the param variant alongside the temp variant — #2865
+/// pinned only the strict-ink `temp` shape, deliberately, since it was
+/// documenting rather than fixing"). `=== function f(MAX) ===` shadows the
+/// classic uppercase built-in `MAX` as its own parameter name; calling
+/// `MAX(1, 2)` inside `f`'s body compiles clean under strict-ink (no
+/// `E035`, no `E183`) and then faults at runtime with
+/// `RuntimeError::NotCallable("int")` — identical shape to the `temp`
+/// case, confirmed live against the real compiler + VM. This test
+/// documents current (unfixed) behavior; it does not assert this is
+/// correct. See issue #2867 for the maintainer ruling this is pending on.
+#[test]
+fn param_named_builtin_faults_at_runtime_not_callable() {
+    let source = "\
+value: {f(0)}
+-> DONE
+
+=== function f(MAX) ===
+~ return MAX(1, 2)
+";
+    let fault = run_expecting_fault(source, Dialect::StrictInk, Some(TypePolicy::Gradual));
     assert!(
         matches!(fault, Some(brink_runtime::RuntimeError::NotCallable(_))),
         "expected a NotCallable runtime fault, got {fault:?}"

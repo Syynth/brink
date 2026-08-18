@@ -953,6 +953,27 @@ fn resolve_function(
     }
 
     // Try locals (temps/params used as function names, e.g. `{storyletFunction(args)}`)
+    //
+    // ⚠ issue #2867 (open, unruled): unlike the `List`/`Variable` arms just
+    // above, this lookup is NOT covered by `reserved_call_site`. Per
+    // `push_local`'s own call sites (`brink_ir::symbols::project`),
+    // `lookup_local_in_scope` can only ever return a `LocalSymbol` of kind
+    // `SymbolKind::Param` (knot/stitch/function params) or
+    // `SymbolKind::Temp` (`~ temp`, `for`-loop bindings, lambda params) —
+    // that is the complete enumeration of kinds this arm can claim a call
+    // site with. Neither kind is gated: both unconditionally claim this
+    // arm today. `~ temp MAX = 10` + `{MAX(1, 2)}` under strict-ink compiles clean
+    // (no `E035`, no `E183`) and then faults at runtime with
+    // `RuntimeError::NotCallable("int")` — no diagnostic of any kind,
+    // unlike the sibling `VAR`/`List` cases, which fall through to the
+    // real builtin instead. Pinned (not yet fixed) by
+    // `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs`'s
+    // `local_named_builtin_faults_at_runtime_not_callable` (temp) and
+    // `param_named_builtin_faults_at_runtime_not_callable` (param). Fixing
+    // this is a maintainer ruling (issue #2867's "Ask"): gate locals like
+    // `VAR`/`List` so the call falls through to the real builtin, or
+    // refuse with a compile diagnostic naming the local and its type —
+    // deliberately not decided here.
     if let Some(id) = lookup_local_in_scope(locals, path, &uref.scope) {
         map.push(ResolvedRef {
             file: file_id,
