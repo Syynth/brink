@@ -300,7 +300,22 @@ explicitly not the direction.
   arity/argument mismatches are compile errors; if the callee's type
   is `Unknown`/`Conflicted`, that is an escape error (the existing
   TM-3 escape rule applied to call position). A strict-mode author
-  can never reach the §3 runtime fault.
+  can never reach the §3 runtime fault — **inside a named knot or
+  stitch.** Measured exception (issue #2872,
+  `crates/brink-compiler/tests/issue_2872_e063_policy_audit.rs`,
+  `root_flow_e063_never_fires_regardless_of_policy`):
+  `strict::check_value_calls` only walks `hir.knots` to find inference
+  bodies to check; the file's own root/entry flow (`HirFile.root_content`
+  — a separate field, populated by the ink frontend's `hir::lower::lower`
+  from the file's literal top-level weave body, or synthesized by the
+  native frontend's `entry_root_content` when a top-level `flow main()`
+  exists) is never scanned. A value-call mistake sitting in the
+  root/entry flow therefore compiles clean under `types = strict` today
+  and does reach the §3 runtime fault after all — the "can never reach"
+  guarantee above holds only inside named knots/stitches, not file-wide.
+  Whether `check_value_calls` should also cover the root/entry flow is an
+  open ruling question (issue #2872, "surfaced, not decided" — see also
+  §8 Diagnostics below and `docs/diagnostics/E035.md`).
 - **Boundary annotations gain the `fn(T…): R` form** so fn-typed
   params can cross host boundaries under strict (`cb: fn(int): int`).
 - Gradual mode: everything stays advisory; the runtime fault is the
