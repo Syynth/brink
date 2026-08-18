@@ -305,20 +305,19 @@ pub struct RenameResult {
 
 ```rust
 pub struct HoverInfo {
-    /// Symbol kind label (e.g., "knot", "stitch", "variable").
-    pub kind: String,
-    /// Symbol name.
-    pub name: String,
-    /// Formatted parameter list, e.g., "(ref x, -> target)". Empty if none.
-    pub params: String,
-    /// Additional detail (e.g., "function" for function knots).
-    pub detail: Option<String>,
-    /// Path of the file where this symbol is defined.
-    pub defined_in: Option<String>,
+    /// Markdown-formatted content: kind tag + signature + initializer +
+    /// `///` docs + "Defined in `path`", or builtin docs on fallback.
+    pub content: String,
     /// Range of the hovered word/symbol for highlighting.
     pub range: Option<TextRange>,
 }
 ```
+
+Resolution wins: `find_def_at_offset` (the author's own declaration, via
+`analysis.resolutions`) is tried first; the name-keyed `builtin_hover_text`
+table is consulted only when nothing resolves. A shadowing declaration —
+e.g. a user-defined knot named `FLOOR` — therefore always wins over a
+same-named classic-ink builtin (issue #2864, PR #2888).
 
 ### Completion
 
@@ -677,6 +676,7 @@ pub fn rename(
 /// Compute hover information for the symbol at `offset`.
 pub fn hover(
     analysis: &AnalysisResult,
+    db: &ProjectDb,
     file_id: FileId,
     source: &str,
     offset: TextSize,

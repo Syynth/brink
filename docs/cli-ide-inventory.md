@@ -141,7 +141,7 @@ script can decide for itself regardless of exit code.
 
 | Command | `brink-ide` fn | Notes |
 |---|---|---|
-| `brink ide hover <sym\|--at>` | `hover::hover` → `HoverInfo{content(markdown),range}` | Kind tag + signature + initializer + `///` docs + "Defined in `path`". Falls back to builtin docs. |
+| `brink ide hover <sym\|--at>` | `hover::hover` → `HoverInfo{content(markdown),range}` | Kind tag + signature + initializer + `///` docs + "Defined in `path`". Resolution wins; falls back to builtin docs only when the symbol at `offset` doesn't resolve to a declaration (issue #2864). |
 | `brink ide signature --at FILE:L:C` | `signature::signature_help` → `SignatureInfo{label,parameters[],active_parameter,documentation}` | Signature of the innermost active call; position-only (it's mid-call). |
 | `brink ide values --at FILE:L:C` | `signature::argument_value_completions` | Pickable values for the argument's semantic type (manifest `--manifest`, host values N/A from CLI). |
 | `brink ide complete --at FILE:L:C` | `completion::detect_completion_context` + `is_visible_in_context` | The symbols valid at a position (divert targets / expr / logic / args / general). Niche for CLI; useful for editor backends. |

@@ -2220,6 +2220,7 @@ dependencies = [
  "brink-fmt",
  "brink-format",
  "brink-ir",
+ "brink-project-config",
  "brink-runtime",
  "brink-syntax",
  "brink-syntax-native",
