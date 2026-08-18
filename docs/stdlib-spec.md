@@ -607,7 +607,16 @@ precedent, oracle byte-identical):
    (maps) · `contains count` (flags) · nothing from rand/
    collections. Name-collision policy: prelude names are
    **shadowable with the E035-lineage warning** (stdlib-slice-1
-   posture carries over). See [E035](diagnostics/E035.md) for the
+   posture carries over). The warning's kind coverage is `VAR` /
+   `CONST` / `EXTERNAL` / knot only — `LIST` names and `LIST` items
+   sit outside it deliberately, not by oversight: a `LIST` item is
+   read bare (`{push}`, no arg list) while a colliding builtin/
+   stdlib verb is only ever reached at a call site (`push(a, v)`),
+   so the two never occupy the same syntactic position and there is
+   nothing for a shadow warning to report (confirmed by compiling
+   `LIST push = a, b` and `LIST Ops = alpha, push, gamma` under the
+   brink dialect: both compile clean with zero diagnostics). See
+   [E035](diagnostics/E035.md) for the
    full rule, including the call-site divergence between a
    shadowing knot/external (always wins) and a shadowing `VAR`/
    `CONST` (never wins a real call site — falls through to the real
@@ -646,7 +655,18 @@ precedent, oracle byte-identical):
      (2026-07-19)**: the registry method names (`display`,
      `compare`, `next`) are RESERVED — author shadowing is a hard
      compile error, not an E035 warning; a shadowed `display`
-     would make interpolation untrustworthy.
+     would make interpolation untrustworthy. **Brink-dialect
+     only**: the protocol registry itself exists only under
+     `Dialect::Brink` (`brink-analyzer::protocols::
+     check_reserved_names`, `E113`, is wired inside the brink-only
+     gate in `crates/internal/brink-analyzer/src/lib.rs`), so this
+     reservation binds there and nowhere else — under `strict-ink`
+     the three names are ordinary vanilla-ink identifiers and a
+     knot/function/local declared `display` gets neither `E113` nor
+     the `E035` shadow warning (confirmed by compiling `=== display
+     === \n -> DONE` under both dialects: `Dialect::Brink` raises
+     `E113`; `Dialect::StrictInk` compiles clean with zero
+     diagnostics).
    - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; user
      impls slot into the RULED ordering doctrine (§4b). Coherence RULED
      2026-07-19: `compare` is ORDERING ONLY — equality stays
