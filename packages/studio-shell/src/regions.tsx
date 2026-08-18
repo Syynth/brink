@@ -234,6 +234,11 @@ export function ShellFrame() {
         editorGroups.getState().toggleMaximizeGroup();
       }
     };
+    // DISMISS-NET-EXEMPT: restores tool-window/editor-group maximize (layout
+    // store state), not a floating menu/popover/modal surface — the
+    // dismiss-registry-enrolment.test.ts scan requires this marker or a
+    // registerDismissible() enrolment for every document-level keydown /
+    // pointerdown listener it finds.
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [maximized, groupMaximized, layout, editorGroups]);

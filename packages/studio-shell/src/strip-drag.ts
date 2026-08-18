@@ -260,6 +260,11 @@ export function useStripDrag(layout: ShellLayoutStore): StripDragController {
       gesture.cancel();
       finishDrag(false);
     };
+    // DISMISS-NET-EXEMPT: cancels an in-progress strip-icon drag gesture
+    // (transient React state), not a floating menu/popover/modal surface —
+    // the dismiss-registry-enrolment.test.ts scan requires this marker or a
+    // registerDismissible() enrolment for every document-level keydown /
+    // pointerdown listener it finds.
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [dragging, gesture, finishDrag]);
