@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 3361d086a7d28e5f830bfb6a243fc33679ff70b7156ae88830ebf7537f5592aa # shrinks to name = "a"
 cc f1681355f188d51a82bcfe2224f7907ff935282f034adeeb2c972ecd9254987e # shrinks to name = "a"
+cc 4ef68c976c9757281591233891f4445b1f305ace6a980f63ece60ba48f87d9a5
