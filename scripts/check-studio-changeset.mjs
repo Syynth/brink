@@ -43,13 +43,14 @@
 //     shallow checkout's HEAD is grafted (no parent objects at all), so no
 //     amount of fetching origin/<base> after the fact can make a merge-base
 //     resolve — the checkout step itself has to bring full history.
-//   - Carve-out: a changed file whose path has a `__tests__/` directory
-//     segment, or a `.test.ts(x)`/`.spec.ts(x)` suffix, does not by itself
-//     require a changeset (test-only changes are not published behavior).
-//     A PR is only forced into a changeset when it touches at least one
-//     NON-test-only file under a guarded package. Without this carve-out
-//     the guard trains people to add empty changesets to silence it, which
-//     the issue names as worse than the current state.
+//   - Carve-out: a changed file whose path has a `__tests__/`, `__mocks__/`,
+//     or `__fixtures__/` directory segment, or a `.test.ts(x)`/`.spec.ts(x)`
+//     suffix, does not by itself require a changeset (test-support changes
+//     are not published behavior). A PR is only forced into a changeset
+//     when it touches at least one NON-test-only file under a guarded
+//     package. Without this carve-out the guard trains people to add empty
+//     changesets to silence it, which the issue names as worse than the
+//     current state.
 //
 // Exported as pure functions over string paths + changeset text so
 // scripts/check-studio-changeset.test.mjs can drive every branch with
@@ -89,16 +90,25 @@ export function isGuardedPath(path) {
 }
 
 /**
- * Test-only carve-out: a `__tests__/` directory segment anywhere in the
- * path, or a `.test.ts(x)`/`.spec.ts(x)` filename suffix — the two shapes
- * every test file in these packages actually uses today (see
- * packages/brink-studio/src/__tests__/*.test.ts(x)).
+ * Test-only carve-out: a `__tests__/`, `__mocks__/`, or `__fixtures__/`
+ * directory segment anywhere in the path, or a `.test.ts(x)`/`.spec.ts(x)`
+ * filename suffix. `__mocks__` is not hypothetical: commit f88a3a7b (the
+ * grammar-drift guard PR) touched only
+ * `packages/brink-studio/src/__mocks__/brink-web.ts` plus a `__tests__`
+ * file, with no changeset — under this guard without the carve-out that
+ * would go red and push toward an empty changeset, the exact outcome #2820
+ * names as worse than the status quo. Other in-tree guards already
+ * special-case `__mocks__` (a glob ignore pattern for any `__mocks__`
+ * directory, in fold-kinds.test.ts and chromium88-color-mix.test.ts);
+ * `__fixtures__` is added for symmetry.
  *
  * @param {string} path @returns {boolean}
  */
 export function isTestOnlyPath(path) {
   const segments = path.split("/");
   if (segments.includes("__tests__")) return true;
+  if (segments.includes("__mocks__")) return true;
+  if (segments.includes("__fixtures__")) return true;
   const filename = segments[segments.length - 1] ?? "";
   return TEST_SUFFIX.test(filename);
 }
@@ -114,14 +124,21 @@ export function isChangesetPath(path) {
 }
 
 /**
- * Does a changeset's frontmatter name @brink-lang/studio? Changesets list
- * packages as quoted frontmatter keys (`"@brink-lang/studio": patch`) —
- * see any existing .changeset/*.md naming it.
+ * Does a changeset's frontmatter name @brink-lang/studio? Changesets
+ * conventionally list packages as double-quoted frontmatter keys
+ * (`"@brink-lang/studio": patch`), but @changesets/cli's YAML frontmatter
+ * parser also accepts single-quoted keys and indented keys — both are
+ * valid YAML it reads fine (e.g. `'@brink-lang/studio': patch` or
+ * `  "@brink-lang/studio": patch`), so a stricter regex here would
+ * red-flag a PR that already carries a valid changeset. The leading
+ * `["']?` is intentionally optional on both sides rather than paired,
+ * since YAML itself allows an unquoted plain-scalar key here too.
  *
  * @param {string} changesetText @returns {boolean}
  */
 export function changesetNamesStudio(changesetText) {
-  return new RegExp(`^"${STUDIO_PACKAGE.replace(/[/]/g, "\\/")}"\\s*:`, "m").test(changesetText);
+  const escaped = STUDIO_PACKAGE.replace(/[/]/g, "\\/");
+  return new RegExp(`^\\s*["']?${escaped}["']?\\s*:`, "m").test(changesetText);
 }
 
 /**
@@ -152,14 +169,16 @@ export function checkStudioChangeset({ changedFiles, addedChangesets }) {
     problems: [
       `This PR touches a file bundled into the published ${STUDIO_PACKAGE} but adds no changeset ` +
         `naming it:\n${fileList}\n\n` +
-        `These packages are private:true, but docs/publishing.md records them as BUNDLED into the ` +
-        `published ${STUDIO_PACKAGE}, and .changeset/config.json sets privatePackages.version:false — ` +
-        `so ${STUDIO_PACKAGE} is the ONLY attribution route a change to one of them has. "This isn't ` +
-        `wasm-observable, so no changeset" is the WRONG rule here (that one is about @brink-lang/web) — ` +
-        `it has already been reached for, and been wrong, three times (#2787, #2817). ` +
+        `Four of these five packages (studio-ui, studio-shell, ink-operations, studio-store) are ` +
+        `private:true; the fifth, brink-studio, IS ${STUDIO_PACKAGE} itself. docs/publishing.md records ` +
+        `the four private ones as BUNDLED into the published ${STUDIO_PACKAGE}, and ` +
+        `.changeset/config.json sets privatePackages.version:false — so ${STUDIO_PACKAGE} is the ONLY ` +
+        `attribution route a change to any of them has. "This isn't wasm-observable, so no changeset" is ` +
+        `the WRONG rule here (that one is about @brink-lang/web) — it has already been reached for, and ` +
+        `been wrong, three times (#2787, #2798, #2817). ` +
         `Run \`pnpm changeset\`, pick ${STUDIO_PACKAGE}, and describe the change. ` +
-        `(If every touched file above is test-only, see #2820's carve-out — a path under __tests__/ or ` +
-        `ending .test.ts(x)/.spec.ts(x) does not itself trigger this guard.)`,
+        `(If every touched file above is test-only, see #2820's carve-out — a path under __tests__/, ` +
+        `__mocks__/, __fixtures__/, or ending .test.ts(x)/.spec.ts(x) does not itself trigger this guard.)`,
     ],
   };
 }

@@ -69,6 +69,14 @@ describe("isTestOnlyPath", () => {
   it("does not false-positive on a file merely mentioning 'test' in its name", () => {
     assert.equal(isTestOnlyPath("packages/studio-ui/src/latest-widget.ts"), false);
   });
+
+  it("treats any file under a __mocks__/ directory as test-only — commit f88a3a7b's shape", () => {
+    assert.equal(isTestOnlyPath("packages/brink-studio/src/__mocks__/brink-web.ts"), true);
+  });
+
+  it("treats any file under a __fixtures__/ directory as test-only", () => {
+    assert.equal(isTestOnlyPath("packages/studio-ui/src/__fixtures__/sample-project.ts"), true);
+  });
 });
 
 describe("isChangesetPath", () => {
@@ -114,6 +122,22 @@ describe("changesetNamesStudio", () => {
       changesetNamesStudio('---\n"@brink-lang/web": patch\n---\n\nAlso touches @brink-lang/studio internals.\n'),
       false,
     );
+  });
+
+  it("matches a single-quoted frontmatter key — valid YAML @changesets/cli reads fine", () => {
+    assert.equal(changesetNamesStudio("---\n'@brink-lang/studio': patch\n---\n\nSummary.\n"), true);
+  });
+
+  it("matches an indented double-quoted frontmatter key — valid YAML @changesets/cli reads fine", () => {
+    assert.equal(changesetNamesStudio('---\n  "@brink-lang/studio": patch\n---\n\nSummary.\n'), true);
+  });
+
+  it("matches with a CRLF line ending", () => {
+    assert.equal(changesetNamesStudio('---\r\n"@brink-lang/studio": patch\r\n---\r\n\r\nSummary.\r\n'), true);
+  });
+
+  it("matches a major bump, not just patch", () => {
+    assert.equal(changesetNamesStudio('---\n"@brink-lang/studio": major\n---\n\nSummary.\n'), true);
   });
 });
 
@@ -198,6 +222,18 @@ describe("checkStudioChangeset", () => {
       addedChangesets: [],
     });
     assert.equal(result.ok, true, "a test-only diff must not be forced into an empty changeset");
+    assert.deepEqual(result.problems, []);
+  });
+
+  it("passes for a __mocks__ + __tests__ diff with no changeset — commit f88a3a7b's shape", () => {
+    const result = checkStudioChangeset({
+      changedFiles: [
+        "packages/brink-studio/src/__mocks__/brink-web.ts",
+        "packages/brink-studio/src/__tests__/fold-kinds.test.ts",
+      ],
+      addedChangesets: [],
+    });
+    assert.equal(result.ok, true, "a __mocks__-only diff must not be forced into an empty changeset");
     assert.deepEqual(result.problems, []);
   });
 

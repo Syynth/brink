@@ -43,10 +43,11 @@ env:
 jobs:
   # CI-self-enforcing counterpart to `every_pnpm_install_lane_builds_wasm_first_
   # in_the_same_job` (#2504), for a different recurring defect (#2820): a PR
-  # touching a private package BUNDLED into the published @brink-lang/studio
-  # (packages/brink-studio, studio-ui, studio-shell, ink-operations,
-  # studio-store — see docs/publishing.md) but carrying no @brink-lang/studio
-  # changeset. Three real instances (PR #2787, #2798, #2817) — see
+  # touching packages/{brink-studio,studio-ui,studio-shell,ink-operations,
+  # studio-store}/src — the published @brink-lang/studio itself plus the
+  # four private packages BUNDLED into it (see docs/publishing.md) — but
+  # carrying no @brink-lang/studio changeset. Three real instances
+  # (PR #2787, #2798, #2817) — see
   # scripts/check-studio-changeset.mjs's header for the full history and why
   # "not wasm-observable" is the wrong (but tempting) rule to reach for here.
   #
