@@ -42,6 +42,29 @@ Versioning is **unified**: all crates inherit `version.workspace = true`, and
 internal deps are centralized in root `[workspace.dependencies]` with versions.
 release-plz bumps the workspace version and those dep versions in lockstep.
 
+### Publish surface: build.rs worktree stamp (#2759)
+
+Three of the five packages the `scripts/check-target-freshness.mjs`
+worktree-collision check tracks — `brink-runtime`, `brink-ir`,
+`brink-syntax-native` — are published crates.io crates (see "What gets
+published" above); the other two, `brink-respell` and `brink-test-harness`,
+already carry `publish = false`. All five carry a small `build.rs` (#2759)
+that writes this repo's pump-worktree convention (`CARGO_MANIFEST_DIR` into
+an `OUT_DIR` stamp file) so the freshness check can prove which live
+worktree last built a shared-cache artifact.
+
+That build script is repo-internal tooling with no reason to run for a
+downstream consumer of the published crate — so it early-returns as a no-op
+whenever `CARGO_TARGET_DIR` is unset, which is the only configuration where
+both the shared-cache hazard and this check exist in the first place (the
+pump exports `CARGO_TARGET_DIR` explicitly per
+`.claude/skills/autonomous-pump/BRINK-CONFIG.md`'s Disk rule, and
+`check-target-freshness.mjs` itself falls back to it). A plain `cargo build`
+of the published crate from crates.io — or any consumer that has not opted
+into the pump's shared-cache convention — never has `CARGO_TARGET_DIR` set
+by this repo's convention, so the build script does nothing beyond reading
+one environment variable.
+
 ## One-time setup
 
 ### 1. GitHub secrets

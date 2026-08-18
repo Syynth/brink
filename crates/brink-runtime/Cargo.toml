@@ -9,6 +9,10 @@ keywords.workspace = true
 categories.workspace = true
 description = "Runtime/VM for executing compiled ink stories"
 
+# Per-worktree build stamp for scripts/check-target-freshness.mjs (#2759) —
+# see build.rs's own header for what it writes and why.
+build = "build.rs"
+
 [package.metadata.docs.rs]
 all-features = true
 
