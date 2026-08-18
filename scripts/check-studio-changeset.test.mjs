@@ -12,25 +12,39 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   CHANGESET_README,
   DEFAULT_BASE_REF,
+  GUARDED_BUNDLE_FILES,
   GUARDED_PREFIXES,
+  PACKAGE_JSON_BUNDLE_FILES,
+  REPO_ROOT,
   STUDIO_PACKAGE,
   changesetNamesStudio,
   checkStudioChangeset,
   isChangesetPath,
   isGuardedPath,
   isTestOnlyPath,
+  packageJsonChangeIsIgnorable,
   parseNameStatus,
   resolveBaseRef,
+  selectPackageJsonEntries,
+  selectRelevantChangesets,
 } from "./check-studio-changeset.mjs";
 
 describe("isGuardedPath", () => {
   for (const prefix of GUARDED_PREFIXES) {
     it(`matches a file under ${prefix}`, () => {
       assert.equal(isGuardedPath(`${prefix}foo/bar.ts`), true);
+    });
+  }
+
+  for (const file of GUARDED_BUNDLE_FILES) {
+    it(`matches the bundle-shaping file ${file} (#2834 item 1)`, () => {
+      assert.equal(isGuardedPath(file), true);
     });
   }
 
@@ -42,8 +56,12 @@ describe("isGuardedPath", () => {
     assert.equal(isGuardedPath("packages/wasm/src/foo.ts"), false);
   });
 
-  it("does not match a guarded package's root (README, package.json) outside src/", () => {
-    assert.equal(isGuardedPath("packages/studio-shell/package.json"), false);
+  it("does not match a non-allowlisted file in a guarded package's root", () => {
+    assert.equal(isGuardedPath("packages/studio-shell/README.md"), false);
+  });
+
+  it("does not match package.json for a guarded package NOT in the bundle-files allowlist", () => {
+    assert.equal(isGuardedPath("packages/studio-ui/package.json"), false);
   });
 
   it("does not match a Rust crate", () => {
@@ -198,7 +216,7 @@ describe("checkStudioChangeset", () => {
   it("passes when no guarded package is touched at all", () => {
     const result = checkStudioChangeset({
       changedFiles: ["crates/brink-web/src/lib.rs", "docs/publishing.md"],
-      addedChangesets: [],
+      relevantChangesets: [],
     });
     assert.equal(result.ok, true);
     assert.deepEqual(result.problems, []);
@@ -207,7 +225,7 @@ describe("checkStudioChangeset", () => {
   it("passes when a guarded package is touched and a @brink-lang/studio changeset is added", () => {
     const result = checkStudioChangeset({
       changedFiles: ["packages/studio-shell/src/panel.tsx"],
-      addedChangesets: [{ path: ".changeset/foo.md", text: '---\n"@brink-lang/studio": patch\n---\n\nx\n' }],
+      relevantChangesets: [{ path: ".changeset/foo.md", text: '---\n"@brink-lang/studio": patch\n---\n\nx\n' }],
     });
     assert.equal(result.ok, true);
     assert.deepEqual(result.problems, []);
@@ -219,7 +237,7 @@ describe("checkStudioChangeset", () => {
         "packages/brink-studio/src/__tests__/binder-tree.test.ts",
         "packages/studio-ui/src/widgets/button.spec.tsx",
       ],
-      addedChangesets: [],
+      relevantChangesets: [],
     });
     assert.equal(result.ok, true, "a test-only diff must not be forced into an empty changeset");
     assert.deepEqual(result.problems, []);
@@ -231,7 +249,7 @@ describe("checkStudioChangeset", () => {
         "packages/brink-studio/src/__mocks__/brink-web.ts",
         "packages/brink-studio/src/__tests__/fold-kinds.test.ts",
       ],
-      addedChangesets: [],
+      relevantChangesets: [],
     });
     assert.equal(result.ok, true, "a __mocks__-only diff must not be forced into an empty changeset");
     assert.deepEqual(result.problems, []);
@@ -240,7 +258,7 @@ describe("checkStudioChangeset", () => {
   it("fails when a guarded package is touched and no changeset is added at all — PR #2787's shape", () => {
     const result = checkStudioChangeset({
       changedFiles: ["packages/brink-studio/src/binder/reveal.tsx", "packages/studio-store/src/slices/conflict.ts"],
-      addedChangesets: [],
+      relevantChangesets: [],
     });
     assert.equal(result.ok, false);
     assert.equal(result.problems.length, 1);
@@ -252,7 +270,7 @@ describe("checkStudioChangeset", () => {
   it("fails when a changeset is added but names only @brink-lang/web — the wrong-rule reasoning, PR #2817's shape", () => {
     const result = checkStudioChangeset({
       changedFiles: ["packages/studio-shell/src/toolbar.tsx"],
-      addedChangesets: [{ path: ".changeset/foo.md", text: '---\n"@brink-lang/web": patch\n---\n\nx\n' }],
+      relevantChangesets: [{ path: ".changeset/foo.md", text: '---\n"@brink-lang/web": patch\n---\n\nx\n' }],
     });
     assert.equal(result.ok, false);
     assert.match(result.problems[0], /wasm-observable/);
@@ -261,7 +279,7 @@ describe("checkStudioChangeset", () => {
   it("fails when the added changeset is empty/placeholder (no package named)", () => {
     const result = checkStudioChangeset({
       changedFiles: ["packages/ink-operations/src/splice.ts"],
-      addedChangesets: [{ path: ".changeset/foo.md", text: "---\n---\n" }],
+      relevantChangesets: [{ path: ".changeset/foo.md", text: "---\n---\n" }],
     });
     assert.equal(result.ok, false);
   });
@@ -269,7 +287,7 @@ describe("checkStudioChangeset", () => {
   it("mixed diff: passes as long as ONE added changeset names studio, even alongside unrelated ones", () => {
     const result = checkStudioChangeset({
       changedFiles: ["packages/studio-ui/src/list.tsx"],
-      addedChangesets: [
+      relevantChangesets: [
         { path: ".changeset/a.md", text: '---\n"@brink-lang/web": patch\n---\n\nx\n' },
         { path: ".changeset/b.md", text: '---\n"@brink-lang/studio": patch\n---\n\ny\n' },
       ],
@@ -283,7 +301,7 @@ describe("checkStudioChangeset", () => {
         "packages/brink-studio/src/__tests__/binder-tree.test.ts",
         "packages/brink-studio/src/binder/reveal.tsx",
       ],
-      addedChangesets: [],
+      relevantChangesets: [],
     });
     assert.equal(result.ok, false);
     assert.match(result.problems[0], /binder\/reveal\.tsx/);
@@ -293,20 +311,287 @@ describe("checkStudioChangeset", () => {
   it("does not require a changeset for a change to the published packages/ink-editor", () => {
     const result = checkStudioChangeset({
       changedFiles: ["packages/ink-editor/src/rename.ts"],
-      addedChangesets: [],
+      relevantChangesets: [],
     });
     assert.equal(result.ok, true);
   });
 
-  it("does not treat a MODIFIED (not added) changeset as satisfying the guard", () => {
-    // gatherDiff only ever includes status "A" changesets in addedChangesets
-    // (see its filter), so a diff that merely edits an existing, unrelated
-    // changeset must not appear here at all — modeled by simply not passing
-    // it, proving the guard still fails on the guarded file.
+  it("still fails a guarded change when an unrelated MODIFIED changeset carries no studio key", () => {
+    // Models gatherDiff surfacing a MODIFIED changeset (#2834 item 2) whose
+    // current text doesn't name studio — the guard must still fail, same as
+    // if that changeset weren't in the diff at all.
     const result = checkStudioChangeset({
       changedFiles: ["packages/studio-store/src/store.ts"],
-      addedChangesets: [],
+      relevantChangesets: [{ path: ".changeset/unrelated.md", text: '---\n"@brink-lang/web": patch\n---\n\nx\n' }],
     });
     assert.equal(result.ok, false);
+  });
+
+  // #2834 item 2: gatherDiff now surfaces both ADDED and MODIFIED
+  // changesets (identically, as `relevantChangesets`), so this proves both
+  // shapes satisfy the guard through the same decision path — checkStudioChangeset
+  // itself does not distinguish "add" from "edit"; that distinction lives
+  // only in which git status gatherDiff collected the file under.
+  it("ADD shape: passes when a NEW changeset naming studio is added alongside the guarded change", () => {
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/studio-store/src/store.ts"],
+      relevantChangesets: [{ path: ".changeset/new-file.md", text: '---\n"@brink-lang/studio": patch\n---\n\nx\n' }],
+    });
+    assert.equal(result.ok, true);
+  });
+
+  it("EDIT shape: passes when an EXISTING changeset is edited to add the studio key", () => {
+    // Reproduces the #2834 false positive: a PR satisfies the rule by
+    // editing a changeset that already existed on main (so it's an M, not
+    // an A) to add the @brink-lang/studio key. gatherDiff collects this as
+    // a relevantChangesets entry the same way it does an A — this test
+    // proves the decision function accepts it.
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/studio-store/src/store.ts"],
+      relevantChangesets: [
+        { path: ".changeset/existing.md", text: '---\n"@brink-lang/web": patch\n"@brink-lang/studio": patch\n---\n\nx\n' },
+      ],
+    });
+    assert.equal(result.ok, true);
+  });
+
+  // #2834 item 1: bundle-shaping non-src files.
+  for (const file of GUARDED_BUNDLE_FILES) {
+    it(`fails when only ${file} is touched with no changeset`, () => {
+      const result = checkStudioChangeset({
+        changedFiles: [file],
+        relevantChangesets: [],
+      });
+      assert.equal(result.ok, false);
+      assert.match(result.problems[0], new RegExp(file.replace(/[/.]/g, "\\$&")));
+    });
+  }
+
+  it("passes when a bundle-shaping config file is touched and a studio changeset is added", () => {
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/brink-studio/tsup.config.ts"],
+      relevantChangesets: [{ path: ".changeset/foo.md", text: '---\n"@brink-lang/studio": patch\n---\n\nx\n' }],
+    });
+    assert.equal(result.ok, true);
+  });
+
+  // #2834 review finding (BLOCKER): PACKAGE_JSON_IGNORABLE_KEYS_BY_PATH is
+  // PER FILE, not one blanket set — packages/brink-studio/package.json puts
+  // every bundled dep (all four @brink/* privates, plus codemirror/zustand)
+  // in devDependencies, so a devDependencies-only edit there DOES shape the
+  // bundle and must NOT be carved out.
+  it("DOES require a changeset for packages/brink-studio/package.json touching only devDependencies", () => {
+    const oldText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0", devDependencies: { a: "1.0.0" } });
+    const newText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0", devDependencies: { a: "1.1.0" } });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/brink-studio/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/brink-studio/package.json", oldText, newText }],
+    });
+    assert.equal(
+      result.ok,
+      false,
+      "brink-studio's devDependencies IS its bundle manifest (all four @brink/* privates plus codemirror/zustand) — a bump there is bundle-shaping",
+    );
+  });
+
+  it("still does not require a changeset for packages/brink-studio/package.json touching only version", () => {
+    const oldText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0" });
+    const newText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.1" });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/brink-studio/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/brink-studio/package.json", oldText, newText }],
+    });
+    assert.equal(result.ok, true, "a version-only bump alters nothing published");
+  });
+
+  it("does not require a changeset for packages/studio-shell/package.json touching only devDependencies", () => {
+    // Unlike brink-studio, studio-shell has no devDependencies at all in
+    // the real file — its real deps live in "dependencies" (never carved
+    // out) — so devDependencies is safely ignorable specifically here.
+    const oldText = JSON.stringify({ name: "@brink/studio-shell", version: "0.0.1", devDependencies: { a: "1.0.0" } });
+    const newText = JSON.stringify({ name: "@brink/studio-shell", version: "0.0.1", devDependencies: { a: "1.1.0" } });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/studio-shell/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/studio-shell/package.json", oldText, newText }],
+    });
+    assert.equal(result.ok, true, "studio-shell keeps its real deps in dependencies, never devDependencies");
+  });
+
+  it("does not require a changeset for a package.json edit that only bumps version", () => {
+    const oldText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0" });
+    const newText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.1" });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/studio-shell/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/studio-shell/package.json", oldText, newText }],
+    });
+    assert.equal(result.ok, true, "a version-only bump alters nothing published");
+  });
+
+  it("DOES require a changeset for a package.json edit touching dependencies", () => {
+    const oldText = JSON.stringify({ name: "@brink-lang/studio", dependencies: { a: "1.0.0" } });
+    const newText = JSON.stringify({ name: "@brink-lang/studio", dependencies: { a: "2.0.0" } });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/brink-studio/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/brink-studio/package.json", oldText, newText }],
+    });
+    assert.equal(result.ok, false, "a dependencies edit shapes the published bundle");
+  });
+
+  it("requires a changeset for a NEWLY ADDED package.json (no old side to carve out)", () => {
+    const newText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0" });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/brink-studio/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/brink-studio/package.json", oldText: "", newText }],
+    });
+    assert.equal(result.ok, false);
+  });
+});
+
+describe("packageJsonChangeIsIgnorable", () => {
+  it("is true when only version differs", () => {
+    const oldText = JSON.stringify({ name: "x", version: "1.0.0", dependencies: { a: "1" } });
+    const newText = JSON.stringify({ name: "x", version: "1.0.1", dependencies: { a: "1" } });
+    assert.equal(packageJsonChangeIsIgnorable(oldText, newText), true);
+  });
+
+  it("is true when only devDependencies differs", () => {
+    const oldText = JSON.stringify({ name: "x", devDependencies: { a: "1" } });
+    const newText = JSON.stringify({ name: "x", devDependencies: { a: "2" } });
+    assert.equal(packageJsonChangeIsIgnorable(oldText, newText), true);
+  });
+
+  it("is false when dependencies differs", () => {
+    const oldText = JSON.stringify({ name: "x", dependencies: { a: "1" } });
+    const newText = JSON.stringify({ name: "x", dependencies: { a: "2" } });
+    assert.equal(packageJsonChangeIsIgnorable(oldText, newText), false);
+  });
+
+  it("is false when exports differs", () => {
+    const oldText = JSON.stringify({ name: "x", exports: { ".": "./a.js" } });
+    const newText = JSON.stringify({ name: "x", exports: { ".": "./b.js" } });
+    assert.equal(packageJsonChangeIsIgnorable(oldText, newText), false);
+  });
+
+  it("is true when nothing differs at all", () => {
+    const text = JSON.stringify({ name: "x", version: "1.0.0" });
+    assert.equal(packageJsonChangeIsIgnorable(text, text), true);
+  });
+
+  it("does not false-positive on key reordering inside an ignored key's nested object", () => {
+    const oldText = '{"name":"x","devDependencies":{"a":"1","b":"2"}}';
+    const newText = '{"name":"x","devDependencies":{"b":"2","a":"1"}}';
+    assert.equal(packageJsonChangeIsIgnorable(oldText, newText), true);
+  });
+
+  it("is false (conservative) when either side fails to parse as JSON", () => {
+    assert.equal(packageJsonChangeIsIgnorable("not json", JSON.stringify({ name: "x" })), false);
+    assert.equal(packageJsonChangeIsIgnorable(JSON.stringify({ name: "x" }), "not json"), false);
+  });
+
+  it("is false (conservative) for an empty old side — a newly added file", () => {
+    assert.equal(packageJsonChangeIsIgnorable("", JSON.stringify({ name: "x", version: "1.0.0" })), false);
+  });
+});
+
+describe("GUARDED_BUNDLE_FILES / PACKAGE_JSON_BUNDLE_FILES", () => {
+  it("PACKAGE_JSON_BUNDLE_FILES is a subset of GUARDED_BUNDLE_FILES", () => {
+    for (const path of PACKAGE_JSON_BUNDLE_FILES) {
+      assert.ok(GUARDED_BUNDLE_FILES.includes(path), `${path} should also be in GUARDED_BUNDLE_FILES`);
+    }
+  });
+
+  it("names exactly the files from #2834 item 1", () => {
+    assert.deepEqual(
+      [...GUARDED_BUNDLE_FILES].sort(),
+      [
+        "packages/brink-studio/alias-map.ts",
+        "packages/brink-studio/index.html",
+        "packages/brink-studio/package.json",
+        "packages/brink-studio/tsup.config.ts",
+        "packages/brink-studio/vite.config.embed.ts",
+        "packages/brink-studio/vite.config.ts",
+        "packages/studio-shell/package.json",
+      ].sort(),
+    );
+  });
+
+  // #2834 review finding: the previous test above is a tautology — it
+  // restates the same literal and keeps passing after someone renames
+  // vite.config.embed.ts or drops alias-map.ts from the repo, silently
+  // reopening exactly the gap #2834 item 4 is about (a stale enumeration
+  // going authoritative-looking and wrong). This asserts every entry still
+  // exists on disk.
+  for (const file of GUARDED_BUNDLE_FILES) {
+    it(`${file} still exists in the repo (GUARDED_BUNDLE_FILES rot guard)`, () => {
+      assert.ok(existsSync(resolve(REPO_ROOT, file)), `${file} is named in GUARDED_BUNDLE_FILES but missing on disk`);
+    });
+  }
+});
+
+// #2834 review finding: the actual code change in gatherDiff (A-or-M
+// changeset selection, and the packageJsonDiffs selection) was previously
+// untested — no test called these functions with A/M/D/R100-shaped rows.
+// Extracted as pure helpers so they can be driven directly here.
+describe("selectRelevantChangesets", () => {
+  it("selects ADDED changeset files", () => {
+    const entries = [{ status: "A", path: ".changeset/foo.md" }];
+    assert.deepEqual(selectRelevantChangesets(entries), entries);
+  });
+
+  it("selects MODIFIED changeset files (#2834 item 2)", () => {
+    const entries = [{ status: "M", path: ".changeset/existing.md" }];
+    assert.deepEqual(selectRelevantChangesets(entries), entries);
+  });
+
+  it("does not select DELETED changeset files", () => {
+    assert.deepEqual(selectRelevantChangesets([{ status: "D", path: ".changeset/foo.md" }]), []);
+  });
+
+  it("does not select a RENAMED changeset file — parseNameStatus collapses R100 to 'R', which matches neither A nor M", () => {
+    const entries = parseNameStatus("R100\t.changeset/old.md\t.changeset/new.md\n");
+    assert.deepEqual(entries, [{ status: "R", path: ".changeset/new.md" }]);
+    assert.deepEqual(selectRelevantChangesets(entries), []);
+  });
+
+  it("does not select a non-changeset file regardless of status", () => {
+    assert.deepEqual(selectRelevantChangesets([{ status: "A", path: "packages/brink-studio/src/app.tsx" }]), []);
+  });
+});
+
+describe("selectPackageJsonEntries", () => {
+  it("selects an ADDED guarded package.json", () => {
+    const entries = [{ status: "A", path: "packages/brink-studio/package.json" }];
+    assert.deepEqual(selectPackageJsonEntries(entries), entries);
+  });
+
+  it("selects a MODIFIED guarded package.json", () => {
+    const entries = [{ status: "M", path: "packages/studio-shell/package.json" }];
+    assert.deepEqual(selectPackageJsonEntries(entries), entries);
+  });
+
+  it("does not select a DELETED guarded package.json", () => {
+    assert.deepEqual(selectPackageJsonEntries([{ status: "D", path: "packages/brink-studio/package.json" }]), []);
+  });
+
+  it("selects a RENAMED guarded package.json (fails closed downstream via an unresolvable old side)", () => {
+    const entries = parseNameStatus(
+      "R100\tpackages/brink-studio/old-name.json\tpackages/brink-studio/package.json\n",
+    );
+    assert.deepEqual(entries, [{ status: "R", path: "packages/brink-studio/package.json" }]);
+    assert.deepEqual(selectPackageJsonEntries(entries), entries);
+  });
+
+  it("does not select a guarded-prefix src file (not a package.json bundle file)", () => {
+    assert.deepEqual(selectPackageJsonEntries([{ status: "M", path: "packages/brink-studio/src/app.tsx" }]), []);
+  });
+
+  it("does not select an un-guarded package.json", () => {
+    assert.deepEqual(selectPackageJsonEntries([{ status: "M", path: "packages/studio-ui/package.json" }]), []);
   });
 });
