@@ -961,8 +961,8 @@ fn resolve_function(
     // `SymbolKind::Param` (knot/stitch/function params) or
     // `SymbolKind::Temp` (`~ temp`, `for`-loop bindings, lambda params) —
     // that is the complete enumeration of kinds this arm can claim a call
-    // site with. Both are unconditionally gated *out* of this arm today:
-    // `~ temp MAX = 10` + `{MAX(1, 2)}` under strict-ink compiles clean
+    // site with. Neither kind is gated: both unconditionally claim this
+    // arm today. `~ temp MAX = 10` + `{MAX(1, 2)}` under strict-ink compiles clean
     // (no `E035`, no `E183`) and then faults at runtime with
     // `RuntimeError::NotCallable("int")` — no diagnostic of any kind,
     // unlike the sibling `VAR`/`List` cases, which fall through to the
