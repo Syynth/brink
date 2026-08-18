@@ -1297,4 +1297,68 @@ mod tests {
         assert_eq!(iterate_element_ty(&Ty::String), None);
         assert_eq!(iterate_element_ty(&Ty::List("Mood".into())), None);
     }
+
+    // ─── HirFile field coverage guard (issue #2784) ──────────────────
+
+    /// Issue #2784: [`option_conditions.rs`]'s twin guard
+    /// (`option_conditions::tests::
+    /// hir_file_condition_bearing_fields_stay_in_sync_with_the_e116_walk`)
+    /// for [`check_reserved_names`] — this module's doc comment on that
+    /// function names `protocols.rs`'s own walk as the template
+    /// `option_conditions.rs`'s E116 walk mirrors, so both share the same
+    /// container list and the same risk: a new `Stmt`/`Expr`-bearing
+    /// `HirFile` field landing without a corresponding walk here.
+    ///
+    /// `HirFile` is a **struct**, so there is no enum-exhaustiveness match
+    /// the compiler enforces for free the way the `classify_*` idiom does
+    /// (#2752/#1767). The struct analogue is destructuring every field by
+    /// name with **no `..` rest pattern**: add a field to `HirFile`
+    /// without extending this list and the destructure below fails to
+    /// compile (E0027, "pattern does not mention field `…`") — a
+    /// compile-time RED rather than a runtime assertion failure, but it
+    /// fails the gate the same way. Verified red locally by adding a dummy
+    /// field to `HirFile` before relying on this guard (see the PR
+    /// description); reverted before landing.
+    ///
+    /// Each walked field below already has a positive-control test proving
+    /// it's *actually* reached: [`knot_named_display_is_reserved`] /
+    /// [`stitch_named_next_is_reserved`] (`knots`),
+    /// [`var_const_external_named_reserved`] (`variables`/`constants`,
+    /// plus `externals`, which has no `Stmt`/`Expr` tree to walk but does
+    /// carry a `Name` this same function reserves), and the module-level
+    /// `e113_*` fixtures in `brink-compiler`'s own diagnostics suite that
+    /// cover root-content declarations directly (`root_content`).
+    #[test]
+    fn hir_file_condition_bearing_fields_stay_in_sync_with_the_e113_walk() {
+        let (hir, _manifest) = lower("=== main ===\nHi.\n-> DONE\n");
+
+        let HirFile {
+            // Walked by `check_reserved_names`: `root_content`/`knots`
+            // (each `Knot`, function or not, plus every `stitch`) are
+            // walked via `walk_stmts`/`walk_expr_for_lambdas` for both
+            // declaration sites and embedded lambda params;
+            // `variables`/`constants`/`externals` are walked for their own
+            // declared `Name` plus (for `variables`/`constants`) an
+            // embedded lambda's param row.
+            root_content: _,
+            knots: _,
+            variables: _,
+            constants: _,
+            externals: _,
+            // No `Stmt`/`Expr` tree and no reservable `Name` of their own
+            // — `check_reserved_names` never needs to visit them.
+            lists: _,
+            structs: _,
+            includes: _,
+            module: _,
+            imports: _,
+            visibility: _,
+            was_directives: _,
+            allow_scopes: _,
+            element_matches: _,
+            cue_names: _,
+            native: _,
+            claim_handlers: _,
+        } = hir;
+    }
 }
