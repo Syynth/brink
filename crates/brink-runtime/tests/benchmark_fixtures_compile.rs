@@ -54,10 +54,14 @@
 //!   `all_benchmarks_stories_fixtures_are_covered` (below) pins the
 //!   fixture *set*; nothing pins the *mapping*. A mechanical pin would be
 //!   strictly better — e.g. compiling `benches/runtime.rs` itself so the
-//!   two can be checked against each other — but `runtime.rs` uses
-//!   `harness = false`, which keeps it out of `cargo test` entirely, so
-//!   wiring that up is a larger question than this doc note and is left
-//!   open (#2810).
+//!   two can be checked against each other — and that's not blocked by
+//!   `runtime.rs` going uncompiled: it *is* compiled on every PR via the
+//!   required Static-checks lane (`cargo clippy --workspace --all-targets
+//!   -- -D warnings` covers `--benches`). The real obstacle is that an
+//!   integration-test target can't import a bench target, so a real pin
+//!   needs the dialect/`TypePolicy` mapping extracted into a module both
+//!   targets share — a larger question than this doc note, left open —
+//!   see #2810 for the analysis; no tracking issue yet.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
