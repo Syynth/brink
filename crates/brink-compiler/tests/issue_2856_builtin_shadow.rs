@@ -135,3 +135,107 @@ value: {MAX(1, 2)}
 ");
     assert_eq!(out.trim(), "value: 2");
 }
+
+/// `docs/diagnostics/E035.md` shape 4 (issue #2862): a `CONST` named after a
+/// builtin behaves the same as the `VAR` case above at a call site — the
+/// real `MAX()` builtin answers `MAX(1, 2)`, not the constant. Mechanically
+/// this is not the same guard: `resolve_function`'s call-site lookups never
+/// try `SymbolKind::Constant` at all (only `SymbolKind::Variable`/`List` are
+/// tried and then gated by `reserved_call_site`), so a `CONST` never reaches
+/// a callable-lookup arm to begin with — it falls through to
+/// `is_builtin_function`/`recognize_builtin` by the same path an
+/// undeclared name would. The *outcome* at the call site is identical to
+/// `VAR`, though: the constant is bypassed, and the real builtin runs.
+#[test]
+fn const_named_builtin_is_not_callable_at_call_site() {
+    let out = run("\
+CONST MAX = 10
+
+value: {MAX(1, 2)}
+-> DONE
+");
+    assert_eq!(out.trim(), "value: 2");
+}
+
+/// `docs/diagnostics/E035.md` shape 5 (issue #2862): a `LIST` item named
+/// after a T1b stdlib verb (`push`) shadows it at a **bare-reference** read
+/// (`{push}`, an ordinary list-item value read, `arg_count.is_none()`) —
+/// but with no `E035` warning, because `manifest.rs`'s shadow-warn gate only
+/// covers `SymbolKind::{Knot, Variable, Constant, External}`, not
+/// `List`/`ListItem`. This is not an inconsistency: a bare list-item read
+/// and a stdlib-verb **call** (`push(arr, 3)`, `arg_count.is_some()`) are
+/// disjoint syntactic positions that never actually collide — see
+/// `list_item_named_push_does_not_break_the_real_push_call` below, which
+/// proves the real `push()` verb still works normally against an unrelated
+/// array in the very same program. Nothing is silently overridden either
+/// way, so there is nothing for E035 to warn about.
+#[test]
+fn list_item_shadows_stdlib_verb_name_at_bare_reference_without_e035_warning() {
+    let source = "\
+LIST Ops = alpha, push, gamma
+
+Item: {push}
+-> DONE
+";
+    let out = compile_brink(source).expect("compile");
+    assert!(
+        !out.warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "a list item is not in E035's warn set, expected no warning, got {:?}",
+        out.warnings
+    );
+    let text = run_brink(source);
+    assert_eq!(text.trim(), "Item: push");
+}
+
+/// Companion to the test above: the list item named `push` does not shadow
+/// the real `push()` stdlib verb at its own call site — `arg_count.is_some()`
+/// keeps routing to the stdlib call regardless of the list item's existence.
+#[test]
+fn list_item_named_push_does_not_break_the_real_push_call() {
+    let out = run_brink(
+        "LIST Ops = alpha, push, gamma\n~ temp arr = #[1, 2]\n~ push(arr, 3)\nLen: {len(arr)}\n-> DONE\n",
+    );
+    assert_eq!(out.trim(), "Len: 3");
+}
+
+fn compile_brink(
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files.get(path).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("file not found: {path}"),
+                )
+            })
+        },
+        options,
+    )
+}
+
+/// Brink-dialect counterpart of `run` above, for the T1b-stdlib-verb cases
+/// (`push`/`len`) that `--dialect brink` — not `StrictInk` — is the natural
+/// home for.
+fn run_brink(source: &str) -> String {
+    let output = compile_brink(source).expect("compile");
+    let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("no runtime fault") {
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => panic!("these programs are choice-free"),
+            Step::Done | Step::End | Step::Suspended => break,
+        }
+    }
+    out
+}
