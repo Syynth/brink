@@ -249,8 +249,10 @@ export class ProjectSession {
   /** Load all files from provider and resolve INCLUDEs. */
   async initialize(): Promise<void> {
     const files = await this.provider.listFiles();
+    this.assertLive();
     for (const file of files) {
       const content = await this.provider.readFile(file);
+      this.assertLive();
       this.session.updateFile(file, content);
       // Host-loaded content is the clean baseline: the project starts with
       // zero dirty files, and a no-op edit flush never reaches the host.
@@ -258,6 +260,7 @@ export class ProjectSession {
     }
 
     await this.resolveIncludes();
+    this.assertLive();
 
     // `brink.toml` (issue #2324): every project file is loaded above, so
     // discovery can run once, right here, before anything analyzes/compiles.
@@ -350,6 +353,31 @@ export class ProjectSession {
   }
 
   /**
+   * Guard against resuming `this.session.*`/`this.changes.*` work after
+   * `destroy()` has already freed the wasm handle. {@link deferGatedCall}
+   * only closes the destroy()-safety window around its own ≤300ms idle
+   * yield (issue #2794/#2798) — it has nothing to say about the LARGER
+   * window that opens right after, when a method `await`s the host
+   * provider itself (Tauri IPC, unbounded, and not a handle `destroy()` can
+   * cancel the way it cancels a pending idle handle via {@link
+   * pendingIdleWork}). Every method here that resumes session state after
+   * such an await calls this the instant its continuation runs, before
+   * touching `this.session`/`this.changes` again — one seam every
+   * post-host-IO-await touch goes through (issue #2802), generalizing past
+   * the idle-yield-specific guard above rather than repeating a per-site
+   * `if (this.destroyed)` check at each of `renameFile`, `deleteFile`,
+   * `requestFile`, `resolveIncludes`, and `initialize`. Throws the same
+   * error family {@link deferGatedCall} rejects with, so a caller catching
+   * a destroy()-during-await race sees one shape regardless of which await
+   * it landed in.
+   */
+  private assertLive(): void {
+    if (this.destroyed) {
+      throw new Error("ProjectSession destroyed while awaiting the host provider");
+    }
+  }
+
+  /**
    * The project's entry file — for compilation, and (via `mountStudio`,
    * read after `initialize()`) the initial tab. This is the constructor's
    * `entryFile` option ({@link hostEntryFile}) UNLESS `applyProjectConfig`
@@ -409,6 +437,7 @@ export class ProjectSession {
       return false;
     }
     await this.provider.deleteFile?.(path);
+    this.assertLive();
     this.session.removeFile(path);
     this.changes.record(path, "deleted");
     // A deleted `brink.toml` (issue #2324) may uncover an ancestor
@@ -482,6 +511,7 @@ export class ProjectSession {
       await this.provider.createFile(newPath, newSource);
       await this.provider.deleteFile?.(oldPath);
     }
+    this.assertLive();
 
     // Host egress for the moved file itself.
     this.changes.record(newPath, "created");
@@ -809,6 +839,7 @@ export class ProjectSession {
     const existing = this.session.getFileSource(path);
     if (existing !== null) return existing;
     const content = await this.provider.requestFile(path);
+    this.assertLive();
     if (content !== null) {
       this.session.updateFile(path, content);
       this.changes.setBaseline(path, content);
@@ -862,6 +893,7 @@ export class ProjectSession {
         }
 
         const content = await this.provider.requestFile(inc.resolved);
+        this.assertLive();
         if (content !== null) {
           this.session.updateFile(inc.resolved, content);
           // Provider-supplied content = host-synced = clean baseline.
