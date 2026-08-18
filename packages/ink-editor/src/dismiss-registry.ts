@@ -93,6 +93,17 @@ export function installGlobalDismissNet(): void {
     if (event.key !== "Escape" || event.defaultPrevented) return;
     dismissAllTransientSurfaces();
   };
+  // DISMISS-NET-EXEMPT: this IS the global net's own installation, not a
+  // surface that needs to enrol INTO it — attaching on `window` is exactly
+  // the shape #2846 widened the dismiss-registry-enrolment.test.ts scan to
+  // catch (a future surface copying "attach the way the registry does"
+  // would land here unenrolled and unflagged otherwise), and this call site
+  // is where that widening first found something real. Behaviourally backed
+  // by `dismiss-registry-net-listener.test.ts` (this exact line installs
+  // exactly one `window`, bubble-phase `keydown` listener, once) plus the
+  // net's whole existing orphan-listener suite (dismiss-registry-orphan.test.ts,
+  // code-actions-escape-dismiss.test.ts, inline-name-input-escape-dismiss.test.ts),
+  // which already exercises what this listener does end-to-end.
   window.addEventListener("keydown", installedListener, false);
 }
 

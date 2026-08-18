@@ -81,12 +81,76 @@
  * (one `registerDismissible()` call covers a surface's whole lifecycle) and
  * is why the proof above uses a new file rather than adding to an
  * already-enrolled one.
+ *
+ * ── #2846 follow-ups to the above (three of its four points; point 3, the
+ * two-registries-uncoordinated design question, is out of scope for this
+ * guard and left to a maintainer ruling) ──
+ *
+ *  - **Point 1 — the LISTENER pattern was `document`-only.** `dismiss-registry.ts`
+ *    ITSELF attaches its net listener on `window` (see that file's
+ *    "LISTENER ORDERING" note), so "attach the way the registry does" was
+ *    the single most plausible next-surface shape and it evaded this scan
+ *    entirely — unguarded AND unflagged. {@link LISTENER}'s doc comment
+ *    records the exact widening chosen (target: `document`/`window`/
+ *    `ownerDocument`; event: `keydown`/`keyup`/`pointerdown`) and why it
+ *    stops there. Proof this widening actually fails on a real violation:
+ *    a `window.addEventListener("keydown", ...)` dismiss-shaped listener
+ *    (the exact shape named above) was added to a NEW, unenrolled file,
+ *    `packages/studio-shell/src/__scratch-violation-2846.ts` — not
+ *    `overlay.tsx` or any other already-enrolled file, for the same reason
+ *    the original #2766 proof avoided one (see the corollary above: a call
+ *    site in an already-enrolled file inherits that file's module-level
+ *    enrolment and cannot go red on its own). Running this suite against
+ *    that file found FOUR failures, not one: the scratch file itself (both
+ *    "source scan is AHEAD of EXPECTED_LISTENER_FILES" and "call site is
+ *    enrolled or exempt"), plus — because the widened target now also
+ *    matches `window.addEventListener("keydown", ...)` in the two REAL
+ *    `dismiss-registry.ts` files' own `installGlobalDismissNet()` — those
+ *    two call sites failed the same "enrolled or exempt" check for the
+ *    first time. The scratch file was then deleted (not part of this PR's
+ *    diff); the two real call sites needed an actual fix — see the next
+ *    point.
+ *  - **Point 1's fallout — the registries' own net listeners.** Both
+ *    `dismiss-registry.ts` files now carry a `DISMISS-NET-EXEMPT` marker on
+ *    their own `window.addEventListener("keydown", ...)` call (the widening
+ *    made it a discovered site — see the comment on `EXPECTED_LISTENER_FILES`
+ *    below), each with its own behavioural-backing test file
+ *    (`dismiss-registry-net-listener.test.ts` in both `ink-editor` and this
+ *    package, per point 2 below).
+ *  - **Point 2 — exempt markers asserted a claim nothing checked.** The
+ *    `SAVE-PATH` precedent this guard was modelled on
+ *    (`docs/studio-shell-spec.md` §7.7.1, #2571) requires a marker's
+ *    justification to be PROVEN, not just present. Every `DISMISS-NET-EXEMPT`
+ *    marker in the workspace — the three pre-existing ones
+ *    (`tab-drag.ts`, `strip-drag.ts`, `regions.tsx`) plus `ElementDropdown.tsx`
+ *    (present before #2846 but not named in its issue body) plus the two new
+ *    ones from point 1's fallout — now has a dedicated behavioural test
+ *    proving its claim against the real production module, not a
+ *    reimplementation: see `dismiss-net-exempt-claims.test.ts` for the
+ *    first four and `dismiss-registry-net-listener.test.ts` (both packages)
+ *    for the net-listener two.
+ *  - **Point 4 — a JSDoc-quoted example counted as a real call.**
+ *    `scanListenerSites` used to skip `//`-prefixed lines only, so a block
+ *    comment (`/** ... *\/`) mentioning the listener shape in prose (e.g.
+ *    documenting the pattern this very guard looks for) counted as a real
+ *    call site with no way to mark it exempt — the exempt-marker walk-up
+ *    only ever recognized a `//` comment directly above a call. Fixed by
+ *    {@link blankBlockComments}: block-comment spans are blanked (not
+ *    removed — line numbers stay stable) before the LISTENER scan runs, so
+ *    only real, uncommented calls are found; the raw lines are still used
+ *    for the exempt-marker walk-up and the reported source text. See the
+ *    "scanListenerSites ignores a listener call quoted inside a block
+ *    comment" describe block below for the fixture-backed proof (including
+ *    the false-positive reproduced by temporarily scanning raw lines
+ *    instead of {@link blankBlockComments}'s output, during development of
+ *    this fix).
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { deriveScanRoots, parseWorkspacePackageGlobs } from "./workspace-roots.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -98,8 +162,36 @@ const workspaceYamlPath = resolve(repoRoot, "pnpm-workspace.yaml");
 
 const REGISTRY_FILE = "dismiss-registry.ts";
 
-/** A real `document`-level dismiss-shaped listener call (not a declaration). */
-const LISTENER = /document\.addEventListener\(\s*(["'])(keydown|pointerdown)\1/;
+/**
+ * A real dismiss-shaped listener call (not a declaration) — widened by
+ * #2846 along both axes it names, symmetrically:
+ *
+ *  - target: `document` (the original #2766 scope) plus `window` — the
+ *    registry's OWN net listener (`dismiss-registry.ts`) attaches on
+ *    `window`, bubble phase (see that file's "LISTENER ORDERING" note), so
+ *    "attach the way the registry does" was the single most plausible
+ *    unguarded next shape and it evaded the scan entirely — plus
+ *    `ownerDocument`, common in portal/iframe-aware components reaching for
+ *    the document that actually owns their DOM node rather than the host
+ *    page's `document`.
+ *  - event: `keydown` / `pointerdown` (the original scope) plus `keyup` —
+ *    the same dismiss shape, one key event later.
+ *
+ * Deliberately NOT widened further (e.g. `pointerup`, `touchstart`, a bare
+ * `addEventListener` on an arbitrary element): #2846 warns explicitly that
+ * over-widening trades a coverage hole for marker-noise that erodes the
+ * `DISMISS-NET-EXEMPT` convention (#2766's own boilerplate-nobody-reads
+ * failure mode) — a global hotkey or focus-tracking listener that happens
+ * to reuse `document`/`window`/`ownerDocument` + one of these three events
+ * is exactly the false-positive shape the issue names, and going further
+ * (matching every event, or every listener target) would multiply that
+ * cost for no discovered real-world dismiss-shaped listener beyond the two
+ * this widening actually surfaced (both registries' own net listener,
+ * #2846 point 1 — see the `DISMISS-NET-EXEMPT` markers added to
+ * `dismiss-registry.ts` in both packages). Revisit the width if a real
+ * listener of one of the excluded shapes ever appears.
+ */
+const LISTENER = /\b(?:document|window|ownerDocument)\.addEventListener\(\s*(["'])(keydown|keyup|pointerdown)\1/;
 const EXEMPT_MARKER = /^\/\/\s*DISMISS-NET-EXEMPT:\s*(.+)$/;
 const ENROLLING_CALL = /\bregisterDismissible\s*\(/;
 
@@ -183,15 +275,35 @@ interface ListenerSite {
   exemptReason: string | null;
 }
 
+/**
+ * Blank out every `/* … *\/` block-comment span, keeping the exact line
+ * count (each replaced character becomes a space, `\n` left alone) so line
+ * numbers computed from the result still line up with the original file.
+ * #2846 point 4: `scanListenerSites` used to skip `//` lines only, so a
+ * JSDoc line quoting the listener shape as an example (e.g. this very
+ * function's own doc comment, if it named the pattern) counted as a real
+ * call site with no way to mark it exempt short of rewording the prose —
+ * the exempt-marker walk-up only recognizes a `//` comment directly above a
+ * call, and a block comment's `*` continuation lines do not qualify as one.
+ * Scanning this blanked copy instead — rather than the raw source — for
+ * call sites (while still using the RAW lines for the exempt-marker walk
+ * and the reported `code` text) means a block comment can name the pattern
+ * freely; only a real, uncommented call is ever flagged.
+ */
+function blankBlockComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "));
+}
+
 /** Every real listener call site in `file`, paired with any exempt marker above it. */
 function scanListenerSites(file: string): ListenerSite[] {
   const text = readFileSync(file, "utf8");
   const lines = text.split("\n");
+  const codeLines = blankBlockComments(text).split("\n");
   const sites: ListenerSite[] = [];
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
     if (trimmed.startsWith("//")) continue; // prose about a call, not a call
-    if (!LISTENER.test(lines[i])) continue;
+    if (!LISTENER.test(codeLines[i])) continue; // block-comment prose is not a call either
 
     // Walk up through the contiguous comment block directly above the call
     // (no blank or code line in between) looking for the exempt marker.
@@ -224,10 +336,98 @@ function isModuleEnrolled(file: string, enrollingImportPattern: RegExp): boolean
  * the two disagree, so this list going stale is itself caught.
  */
 const EXPECTED_LISTENER_FILES: Record<string, string[]> = {
-  "studio-shell": ["overlay.tsx", "regions.tsx", "strip-drag.ts", "tab-drag.ts"],
-  "ink-editor": ["code-actions.ts", "keybindings.ts", "widget-modal.ts", "widget-popover.ts"],
+  // "dismiss-registry.ts" itself joined this list under #2846's widened
+  // LISTENER pattern (target now includes `window`, not just `document`):
+  // its own net-install listener (`window.addEventListener("keydown", ...)`)
+  // is now a discovered call site in BOTH packages, and — being the net,
+  // not a surface that dismisses INTO the net — carries its own
+  // DISMISS-NET-EXEMPT marker rather than an enrolment (see that file).
+  "studio-shell": [
+    "dismiss-registry.ts",
+    "overlay.tsx",
+    "regions.tsx",
+    "strip-drag.ts",
+    "tab-drag.ts",
+  ],
+  "ink-editor": [
+    "code-actions.ts",
+    "dismiss-registry.ts",
+    "keybindings.ts",
+    "widget-modal.ts",
+    "widget-popover.ts",
+  ],
   "studio-ui": ["BinderContextMenu.tsx", "ElementDropdown.tsx"],
 };
+
+describe("scanListenerSites ignores a listener call quoted inside a block comment (#2846 point 4)", () => {
+  let scratchDir = "";
+
+  beforeEach(() => {
+    scratchDir = mkdtempSync(join(tmpdir(), "dismiss-net-exempt-scan-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratchDir, { recursive: true, force: true });
+  });
+
+  it("a JSDoc example naming the exact call shape is not counted as a real call site", () => {
+    const file = join(scratchDir, "jsdoc-only.ts");
+    writeFileSync(
+      file,
+      [
+        "/**",
+        " * Example usage (do not copy verbatim, see the real call below):",
+        ' * document.addEventListener("keydown", handler, true);',
+        " */",
+        "export function noop(): void {}",
+        "",
+      ].join("\n"),
+    );
+
+    expect(scanListenerSites(file)).toEqual([]);
+  });
+
+  it("a real call site AFTER a JSDoc block naming the same shape is still found, at the right line", () => {
+    const file = join(scratchDir, "jsdoc-then-real.ts");
+    const lines = [
+      "/**",
+      " * See the pattern below:",
+      ' * document.addEventListener("keydown", handler, true);',
+      " */",
+      "export function attach(handler: (e: KeyboardEvent) => void): void {",
+      '  document.addEventListener("keydown", handler, true);',
+      "}",
+      "",
+    ];
+    writeFileSync(file, lines.join("\n"));
+
+    const sites = scanListenerSites(file);
+    expect(sites).toHaveLength(1);
+    // 1-based line of the REAL call — the 6th line, not the 3rd (JSDoc).
+    expect(sites[0].line).toBe(6);
+    expect(sites[0].exemptReason).toBeNull();
+  });
+
+  it("a genuinely unmarked call directly beneath an UNRELATED block comment (no exempt marker inside it) still fails enrolment — block comments never satisfy the exempt walk-up", () => {
+    const file = join(scratchDir, "block-comment-then-unmarked-call.ts");
+    const lines = [
+      "/**",
+      " * Some unrelated explanation of what this does.",
+      " */",
+      'document.addEventListener("keydown", () => {}, true);',
+      "",
+    ];
+    writeFileSync(file, lines.join("\n"));
+
+    const sites = scanListenerSites(file);
+    expect(sites).toHaveLength(1);
+    // The walk-up only recognizes a `//` exempt marker directly above —
+    // this call is real and unmarked, matching today's behaviour for a
+    // JSDoc block that does NOT carry the marker (only #2846's fix to the
+    // false-POSITIVE case above changed; a genuine miss must still fail).
+    expect(sites[0].exemptReason).toBeNull();
+  });
+});
 
 describe("every document-level dismiss-shaped listener enrols in its package's dismiss-registry (#2766)", () => {
   const allPkgDirs = discoverPackageDirs();
