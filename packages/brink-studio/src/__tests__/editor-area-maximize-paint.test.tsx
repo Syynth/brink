@@ -15,9 +15,10 @@
  */
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { act, createElement, type ReactNode } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
+  CommandRegistry,
   DocumentTypeRegistry,
   EditorArea,
   ShellProvider,
@@ -26,7 +27,6 @@ import {
   type DocumentViewProps,
   type EditorGroupsStore,
 } from "@brink/studio-shell";
-import { CommandRegistry } from "@brink/studio-shell";
 
 // jsdom has no ResizeObserver; GroupTabBar (mounted by every editor group)
 // uses one to compute the overflow-chevron state (#278) — see
@@ -56,7 +56,7 @@ function ref(docId: string): DocumentRef {
 
 /** Renders the doc's id as plain text so a test can assert on paint. */
 function TestDoc({ doc }: DocumentViewProps) {
-  return createElement("div", { "data-testid": "doc-body" }, doc.docId);
+  return <div data-testid="doc-body">{doc.docId}</div>;
 }
 
 function documents(): DocumentTypeRegistry {
@@ -82,11 +82,9 @@ function mount(editorGroups: EditorGroupsStore, docs: DocumentTypeRegistry): HTM
   const commands = new CommandRegistry();
   act(() => {
     root!.render(
-      createElement(
-        ShellProvider,
-        { commands, editorGroups, documents: docs, children: null } as never,
-        createElement(EditorArea) as ReactNode,
-      ),
+      <ShellProvider commands={commands} editorGroups={editorGroups} documents={docs}>
+        <EditorArea />
+      </ShellProvider>,
     );
   });
   return container;

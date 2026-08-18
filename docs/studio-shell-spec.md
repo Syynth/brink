@@ -231,22 +231,46 @@ command while the other mode is active restores the other first, so at most
 one maximize is ever in effect. A maximized group that collapses (last tab
 closed) restores automatically, and splitting while maximized restores first
 (the new group must be visible) — this holds for every path that creates a
-`"split-right"` group, not only the explicit `editor.split` command: the
-editor-groups store clears `maximizedGroupId` inside `openDocument`'s
-`"split-right"` branch itself, so `story.openPlayer`'s restore-the-split
-behavior (#280, §4 Player row) obeys the same rule as `splitGroup` without
-each caller having to remember it.
+`"split-right"` group, not only the explicit `editor.split` command:
+`splitGroup` itself unconditionally clears `maximizedGroupId`, so
+`story.openPlayer`'s restore-the-split behavior (#280, §4 Player row) obeys
+the same rule as `editor.split` without each caller having to remember it.
 
-**Revealing an already-open tab also restores first, when needed (#2797).**
-`openDocument`'s default `"focused"` target (a plain reveal — the Binder's
-open-file click among others) focuses an existing tab wherever it lives,
-which can be a group other than the one currently maximized. Because
-`EditorArea` renders only the maximized group, a reveal landing in a
-different, hidden group would move focus internally but paint nothing — the
-click would appear to do nothing. `openDocument`'s `"focused"` branch clears
-`maximizedGroupId` whenever the revealed tab's group differs from the
-maximized one, leaving it untouched when the reveal targets the maximized
-group itself (already the only thing rendered, nothing to restore).
+**The general invariant: focus must never land in a group `EditorArea` is
+not rendering (#2787, #2797, #2826).** Because `EditorArea` renders only the
+maximized group while one is active, any operation that can move
+`focusedGroupId` to a different group must also restore — otherwise the
+operation moves focus internally but paints nothing, and the trigger (a
+Binder click, a tab drag) appears to do nothing. Two store actions carry this
+responsibility, each computing its resolved target group first and then
+clearing `maximizedGroupId` iff it is set and differs from that target,
+leaving it untouched when the target is the maximized group itself (already
+the only thing rendered, nothing to restore):
+
+- **`openDocument`** — every target it can resolve to: revealing an
+  already-open tab wherever it lives (#2797, the default `"focused"`
+  behavior), a `"split-right"` group, an explicit `{ group }` id, and the
+  new-tab fall-through into the focused group when the document isn't open
+  anywhere yet (#2826). All four share one final clear keyed on the resolved
+  `groupId`, so no target can be added later without inheriting the
+  protection.
+- **`moveTabToGroup`** (#2826, "Related, same invariant") — reachable both
+  by tab drag-and-drop and via the `editor.moveTabRight` / `moveTabLeft`
+  commands (`editor-commands.ts`), whose `when` clauses check only group
+  index and tab count, not maximize state. A move that lands in `toGroupId`
+  clears `maximizedGroupId` whenever it differs from that target, which
+  also covers the source group collapsing away when it was the maximized
+  one (a collapsing source can never equal the target, since
+  `fromGroupId === toGroupId` is a no-op).
+
+**Not yet covered: `editor.focusNextGroup`.** Its `when` clause
+(`groups.length > 1`) stays true while a group is maximized, so the command
+still runs and can park focus in a hidden sibling group with nothing in this
+invariant clearing it. Whether the fix should be "clear `maximizedGroupId`
+when it moves focus" (matching the two actions above) or "make `when` false
+while maximized so the command isn't offered at all" is an open maintainer
+call (#2826) — those two options differ in user-visible behavior, so neither
+is implemented pending a ruling.
 
 ## 6. Command system
 
