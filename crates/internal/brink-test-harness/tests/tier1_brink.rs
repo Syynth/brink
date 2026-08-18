@@ -421,6 +421,102 @@ fn choice_display_text_inline_conditional_indexed_assignment_writes_the_value() 
     assert_eq!(out, "Pick\nChosen.\n[99, 2, 3]\n");
 }
 
+// ── #2222: `content::lower_inline_block` field-assignment/mutator parity ──
+//
+// #2211/#2174 gave `lower_inline_block` the `Index`-assignment third of
+// `mod.rs`'s three-helper classic-line dispatch
+// (`try_lower_field_assignment` / `try_lower_indexed_assignment` /
+// `try_lower_mutator_stmt`, `mod.rs:1359-1394`). The other two-thirds were
+// never brought over. Both cases below reproduce a real compile+run before
+// asserting (rule 20a): with the fix reverted, the field-assignment case
+// compiled clean and **corrupted the record** at runtime (a `~ p.hp = 99`
+// inside a choice's inline conditional branch resolved to the bare root
+// `p` — same misrouting class as #2121/#2174, but reached through
+// `stmts::lower_stmt`'s plain-`Path` `lower_assign_target` instead of a
+// diagnostic — and the very next read of `p` as a struct faulted with
+// `NotARecord("int")`), while the mutator case was rejected outright with
+// E056 ("collection mutator used in expression position").
+
+/// A classic FIELD assignment (`~ p.hp = 99`) inside a choice's inline
+/// conditional branch. Before this fix: compiled with zero diagnostics,
+/// then **faulted at runtime** with `RuntimeError::NotARecord("int")` on
+/// the following `{p.hp}` read — `try_lower_field_assignment` was never
+/// tried in this position, so `p.hp`'s assignment resolved to the bare
+/// root `p` and overwrote the whole record with `99` (an `int`) instead of
+/// writing the `hp` field.
+#[test]
+fn choice_display_text_inline_conditional_field_assignment_writes_the_field() {
+    let source = "\
+STRUCT P = #{
+    hp: int,
+}
+VAR p = P#{hp: 1}
+* Pick {2 > 0:
+- true: ~ p.hp = 99
+}
+Chosen.
+{p.hp}
+-> END
+";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("runtime error") {
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => {
+                story.choose(0).expect("choose");
+            }
+            Step::Done => {}
+            Step::End | Step::Suspended => break,
+        }
+    }
+    assert_eq!(out, "Pick\nChosen.\n99\n");
+}
+
+/// A collection MUTATOR call (`~ push(a, 9)`) inside a choice's inline
+/// conditional branch. Before this fix: rejected outright with E056
+/// ("collection mutator used in expression position") — `stmts::lower_stmt`
+/// has no dispatch for a bare mutator call as an expression statement, and
+/// `try_lower_mutator_stmt` was never tried in this position — inconsistent
+/// with both the `~ { … }` block form and the top-level classic line,
+/// which both accept it.
+///
+/// Asserts `push` fires TWICE, not once — verified against the compiler's
+/// actual behavior (rule 20a), not assumed. `mod.rs`'s `emit_choice`
+/// (`crates/internal/brink-codegen-inkb/src/container.rs`) independently
+/// lowers a choice's `start_content` twice: once for the choice-list label
+/// (`display_emission`/`emit_choice_content(display)`) and once for the
+/// post-selection output echo (the `ChoiceOutput` preamble, built from a
+/// `.clone()` of the same lowered `start_content` parts, `mod.rs:~1648`).
+/// This is the same "start text evaluated twice" semantic the oracle-backed
+/// `tests/tier1/choices/logic-in-choices/story.ink` case exercises with a
+/// pure function (`name()`, called once per independent occurrence — twice
+/// building the label, twice again building the output — invisible there
+/// only because `name()` has no side effect to double-count). This is
+/// pre-existing choice-lowering behavior, not something this fix
+/// introduces or changes — before this fix a mutator here never reached
+/// codegen at all (E056), so the double evaluation was unobservable.
+#[test]
+fn choice_display_text_inline_conditional_mutator_call_writes_the_value() {
+    let source =
+        "VAR a = #[1, 2, 3]\n* Pick {2 > 0:\n- true: ~ push(a, 9)\n}\nChosen.\n{a}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    let mut out = String::new();
+    loop {
+        match story.continue_single().expect("runtime error") {
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => {
+                story.choose(0).expect("choose");
+            }
+            Step::Done => {}
+            Step::End | Step::Suspended => break,
+        }
+    }
+    assert_eq!(out, "Pick\nChosen.\n[1, 2, 3, 9, 9]\n");
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject
