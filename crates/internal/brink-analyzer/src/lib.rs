@@ -106,6 +106,22 @@ pub use ufcs::{
     resolve as resolve_ufcs_calls, to_lir_lookup as ufcs_lir_lookup,
 };
 
+/// Issue #2856: test-only re-export of the resolver's compiler-reserved
+/// name predicates, so `tests/proptest_resolve.rs`'s `completeness`
+/// property can filter by the REAL production name sets rather than a
+/// hand-duplicated copy that would silently drift the moment a name is
+/// added to either list (both lists already say, in their own doc
+/// comments, that they drift by hand against a `brink-ir` codegen-side
+/// copy — a third hand-copy in a test file was rejected for the identical
+/// reason). `#[doc(hidden)]`: not part of this crate's real public API,
+/// only reachable because `mod resolve` is private and re-exporting is the
+/// one way to hand a `pub(crate)`-adjacent item to an external test crate
+/// without also exposing the whole `resolve` module.
+#[doc(hidden)]
+pub mod test_support {
+    pub use crate::resolve::{is_builtin_function, is_t1b_stdlib_name};
+}
+
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DiagnosticCode, DocBlock, HirFile, HostManifest, ManifestExternal, SemanticTypeDef,

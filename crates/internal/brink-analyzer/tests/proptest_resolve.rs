@@ -33,6 +33,7 @@ use proptest::prelude::*;
 use rowan::{TextRange, TextSize};
 
 use brink_analyzer::analyze;
+use brink_analyzer::test_support::{is_builtin_function, is_t1b_stdlib_name};
 use brink_ir::HirFile;
 
 // ─── Strategies ─────────────────────────────────────────────────────
@@ -297,6 +298,62 @@ fn empty_hir() -> HirFile {
     }
 }
 
+/// Issue #2856: names the second category `completeness` below excludes,
+/// alongside `RefKind::Type` — an unresolved ref whose `path` names one of
+/// the analyzer's compiler-reserved, resolution-optional identifiers
+/// (`resolve::is_builtin_function`'s classic uppercase ink intrinsics —
+/// `TURNS_SINCE`, `RANDOM`, … — or `resolve::is_t1b_stdlib_name`'s
+/// lowercase T1b stdlib names — `len`, `push`, … — re-exported for this
+/// purpose via `brink_analyzer::test_support`, not hand-duplicated here:
+/// see `is_builtin_function`'s own doc for why a third hand-copy was
+/// rejected). `resolve_variable`/`resolve_function` may skip resolving such
+/// a reference with NO diagnostic — but, as of issue #2856 point 3's fix,
+/// ONLY once every real lookup (locals, globals, list items, knots,
+/// externals, …) has already failed to find a matching **declared**
+/// symbol; a declared symbol of the same name always wins first and is
+/// fully counted by `completeness` as resolved, never silently skipped
+/// (`integration_var_shadows_uppercase_builtin_name` below pins this at the
+/// analyzer layer; `crates/brink-compiler/tests/
+/// issue_2856_builtin_shadow.rs` pins the same guarantee end-to-end through
+/// codegen + the VM).
+///
+/// **Why the exclusion is safe, not merely incidental:** the silent skip
+/// this predicate targets fires only when NOTHING in the whole project
+/// declares a symbol under that name — which is the intended "defer
+/// resolution to the VM-native builtin at LIR lowering, no false E025"
+/// behavior the 2026-03-06 "Built-in function recognition belongs in the
+/// analyzer" decision-log ruling establishes, not a drop of real reference
+/// data. Issue #2836 previously found the opposite failure mode — an
+/// author-declared `pop` list item losing to the stdlib verb — WAS a real
+/// bug; that shape is excluded from this predicate's reach precisely
+/// because the lookup-before-fallback ordering (fixed for `pop`/
+/// `is_t1b_stdlib_name` by #2830/#2836, and for `is_builtin_function` by
+/// #2856 itself) makes the declared symbol win resolution instead of ever
+/// reaching here.
+///
+/// **Why this predicate is presently unreachable, not presently
+/// vacuous:** `arb_manifest`'s generator only ever produces a ref `path`
+/// that either exactly matches a declared symbol's name (which resolves
+/// normally, per the guarantee above — this predicate is never even
+/// consulted for it) or is the fixed `"definitely_missing"` sentinel
+/// (which is not a reserved name, so this predicate returns `false` for
+/// it too). No generated ref can currently be both "genuinely undeclared"
+/// and "a reserved name" at once — `arb_ident`'s `[a-z][a-z_]{0,11}`
+/// charset additionally makes `is_builtin_function`'s all-uppercase set
+/// unreachable by construction, independent of the sentinel argument. If
+/// the generator is ever extended to emit such a ref (a `path` that names
+/// a reserved identifier while nothing in the manifest declares a matching
+/// symbol), THIS predicate — not an accidental generator gap — is what
+/// keeps `completeness` correctly excluding it, rather than reopening a
+/// #2830-shaped intermittent flake on an unrelated PR.
+fn is_generator_unreachable_reserved_name(path: &str) -> bool {
+    // NS-A1 (`docs/stdlib-spec.md` §1.4): the bare `none` Option-absence
+    // literal gets the identical silent-skip treatment in `resolve_variable`
+    // (see that function's own doc) but lives outside `is_t1b_stdlib_name`
+    // — it is a value-position literal, not a call name.
+    path == "none" || is_builtin_function(path) || is_t1b_stdlib_name(path)
+}
+
 // ─── Property tests ─────────────────────────────────────────────────
 
 proptest! {
@@ -305,26 +362,45 @@ proptest! {
     /// Every unresolved ref either resolves to a valid ID or produces exactly
     /// one diagnostic. No ref is silently dropped.
     ///
-    /// **`RefKind::Type` is excluded from this count (issue #2249).** Every
-    /// other `RefKind` names something that must be declared to be valid —
-    /// an unresolved one is unconditionally an error. A TM-2 type
-    /// annotation is not: `int`, `float`, `List`, … are equally legal
-    /// `Named` leaves that were never meant to resolve as a struct at all
-    /// (`resolve::resolve_type_ref`'s own doc), so "no declared struct
-    /// named this" is the overwhelmingly common, entirely legal outcome —
-    /// diagnosing it would misfire on every scalar-typed annotation in
-    /// every corpus file. This property's "resolved xor diagnosed, never
-    /// neither" dichotomy genuinely does not hold for this one kind; a
-    /// third, legal "resolved to nothing, nothing wrong" state is included
-    /// in coverage (via `arb_ref_kind`/`resolved_ids_are_valid`) but
-    /// excluded from this specific count.
+    /// **Two categories are excluded from this count — both filtered out
+    /// deliberately below, not merely absent from what the generator
+    /// happens to emit:**
+    ///
+    /// 1. **`RefKind::Type` (issue #2249).** Every other `RefKind` names
+    ///    something that must be declared to be valid — an unresolved one
+    ///    is unconditionally an error. A TM-2 type annotation is not:
+    ///    `int`, `float`, `List`, … are equally legal `Named` leaves that
+    ///    were never meant to resolve as a struct at all
+    ///    (`resolve::resolve_type_ref`'s own doc), so "no declared struct
+    ///    named this" is the overwhelmingly common, entirely legal outcome
+    ///    — diagnosing it would misfire on every scalar-typed annotation in
+    ///    every corpus file. This property's "resolved xor diagnosed,
+    ///    never neither" dichotomy genuinely does not hold for this one
+    ///    kind; a third, legal "resolved to nothing, nothing wrong" state
+    ///    is included in coverage (via `arb_ref_kind`/`resolved_ids_are_valid`)
+    ///    but excluded from this specific count.
+    /// 2. **A reserved compiler name with nothing declared under it
+    ///    (issue #2856), per [`is_generator_unreachable_reserved_name`] —
+    ///    see that predicate's own doc for the full "why excluded" and "why
+    ///    presently unreachable, not vacuous" argument.** In short:
+    ///    `resolve_variable`/`resolve_function` may skip such a reference
+    ///    with no diagnostic, but only once a real declared symbol of the
+    ///    same name has already failed to be found — and a declared
+    ///    symbol always wins resolution first (issue #2856 point 3 made
+    ///    this true for `is_builtin_function`'s classic uppercase set too,
+    ///    matching `is_t1b_stdlib_name`'s pre-existing correct ordering),
+    ///    so this predicate's exclusion is currently a no-op against what
+    ///    `arb_manifest` can generate, not a live carve-out papering over a
+    ///    real gap.
     #[test]
     fn completeness(manifest in arb_manifest()) {
         let manifest = SymbolManifest {
             unresolved: manifest
                 .unresolved
                 .into_iter()
-                .filter(|r| r.kind != RefKind::Type)
+                .filter(|r| {
+                    r.kind != RefKind::Type && !is_generator_unreachable_reserved_name(&r.path)
+                })
                 .collect(),
             ..manifest
         };
@@ -865,6 +941,86 @@ LIST a = pop, other
             .any(|d| d.code == DiagnosticCode::E079),
         "expected `#fn(pop)` (resolved to a ListItem) to be refused as an \
          invalid function-value target by E079; diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+/// Issue #2856 point 3: a `VAR` declared with the same name as a classic
+/// uppercase ink built-in (`is_builtin_function`) must shadow the builtin at
+/// every *reference* site, exactly as the `E035` diagnostic fired at its
+/// declaration (`manifest.rs`) already promises — "an author-defined
+/// function with the same name shadows the builtin, with a warning
+/// diagnostic," worded identically for `is_builtin_function` and
+/// `is_t1b_stdlib_name`. Before this fix, `resolve_variable`/
+/// `resolve_function` checked `is_builtin_function` *before* any lookup
+/// (unlike `is_t1b_stdlib_name`, checked only as a post-lookup fallback), so
+/// the declared `VAR RANDOM` was never consulted at the reference site: the
+/// ref was silently skipped (no resolution, no diagnostic — a real
+/// `completeness`-violating silent drop, reproduced end-to-end via
+/// `brink-cli compile` + `play`: `{RANDOM}` rendered as empty text instead
+/// of `42`, with a clean exit 0 and no diagnostic at default log level).
+#[test]
+fn integration_var_shadows_uppercase_builtin_name() {
+    let result = analyze_ink(
+        "\
+VAR RANDOM = 42
+
+The value is {RANDOM}.
+-> DONE
+",
+    );
+
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
+
+    // Two `RANDOM` refs exist in this source: the `VAR RANDOM = 42`
+    // initializer's own name isn't a reference, but the interpolation site
+    // is — assert it actually resolved to the declared `VAR`, not merely
+    // "produced no E025" (a silent drop also produces no E025).
+    let random_resolutions: Vec<_> = result
+        .resolutions
+        .iter()
+        .filter(|r| {
+            result
+                .index
+                .symbols
+                .get(&r.target)
+                .is_some_and(|info| info.name == "RANDOM")
+        })
+        .collect();
+    assert_eq!(
+        random_resolutions.len(),
+        1,
+        "expected the `{{RANDOM}}` interpolation to resolve to the declared \
+         `VAR RANDOM`; resolutions: {:?}",
+        result.resolutions
+    );
+    let target = random_resolutions[0].target;
+    let info = result
+        .index
+        .symbols
+        .get(&target)
+        .expect("just asserted above");
+    assert_eq!(
+        info.kind,
+        SymbolKind::Variable,
+        "expected `{{RANDOM}}` to resolve to the declared `VAR`, got {:?}",
+        info.kind,
+    );
+
+    // The declaration-site `E035` warning ("name shadows a built-in
+    // function") still fires — shadowing is legal but discouraged, not
+    // silent.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E035),
+        "expected E035 at the `VAR RANDOM` declaration; diagnostics: {:?}",
         result.diagnostics
     );
 }
