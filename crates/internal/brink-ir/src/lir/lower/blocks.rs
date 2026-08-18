@@ -2107,3 +2107,42 @@ fn writeback_lvalue_container_chain(
         value: lir::Expr::GetTemp(root_slot, root_name),
     });
 }
+
+#[cfg(test)]
+mod mutator_kind_tests {
+    use super::MutatorKind;
+
+    /// Issue #2863: [`MutatorKind::from_name`]'s own doc claims its names
+    /// are "a subset of `super::expr::is_t1b_stdlib_name`" — mechanically
+    /// checked here rather than trusted. A name recognized as a mutator
+    /// but *not* a real T1b stdlib name would mean a statement-position
+    /// call to it silently takes the mutator RMW path instead of falling
+    /// through to ordinary call lowering (or an E025 for a genuinely
+    /// unresolved name) — the exact "one copy edited, the other
+    /// forgotten" drift shape this issue is about, just with a subset
+    /// relationship instead of an equality one.
+    #[test]
+    fn every_mutator_name_is_a_real_t1b_stdlib_name() {
+        for name in [
+            "push",
+            "insert",
+            "remove",
+            "remove_at",
+            "clear",
+            "shuffle",
+            "sort",
+            "sort_by",
+            "heap_push",
+        ] {
+            assert!(
+                MutatorKind::from_name(name).is_some(),
+                "`{name}` should be recognized as a mutator kind by this test's own list"
+            );
+            assert!(
+                super::super::expr::is_t1b_stdlib_name(name),
+                "`{name}` is recognized as a mutator but is_t1b_stdlib_name doesn't know it \
+                 — MutatorKind::from_name has drifted out of the subset its own doc claims"
+            );
+        }
+    }
+}

@@ -1303,55 +1303,45 @@ fn lookup_local_in_scope(
 /// Ink built-in functions that are resolved at LIR lowering, not by the
 /// symbol index.
 ///
+/// Delegates to `brink_ir::lir::is_builtin_function` (issue #2863) rather
+/// than hand-keeping its own copy of the 22-name list: this crate already
+/// depends on `brink-ir` (the edge only runs one way — `brink-ir` cannot
+/// depend back on `brink-analyzer`), so `brink-ir` is where the canonical
+/// list lives, alongside the `recognize_builtin` table it must agree with
+/// by construction. Before this fix, the two crates hand-kept two
+/// independent copies of this same list — the exact drift risk that PR
+/// #2859's review flagged: the lists agreed on *content* (22 names each)
+/// and a resolution-*order* bug still reached production, because content
+/// equality alone doesn't prove the two call sites consult the list at the
+/// same point in resolution. A single shared implementation removes the
+/// "one copy edited, the other forgotten" half of that risk; the *order*
+/// half is a separate, per-call-site invariant, pinned end-to-end by
+/// `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs` and by this
+/// crate's own `crates/internal/brink-analyzer/tests/
+/// reserved_names_cross_crate.rs`.
+///
 /// `pub` rather than `pub(crate)` (module `resolve` itself stays private) so
 /// `lib.rs`'s `#[doc(hidden)] pub mod test_support` can re-export it —
 /// issue #2856: the `completeness` proptest
 /// (`tests/proptest_resolve.rs`) needs the REAL name set this function
-/// checks, not a hand-duplicated copy that would drift the moment a name is
-/// added here (this list already drifts by hand against
-/// `brink-ir::lir::lower::expr::recognize_builtin`, its own doc says so —
-/// adding a third hand-copy in a test file was rejected for the same
-/// reason).
+/// checks, not a hand-duplicated copy.
 pub fn is_builtin_function(name: &str) -> bool {
-    matches!(
-        name,
-        "TURNS_SINCE"
-            | "CHOICE_COUNT"
-            | "RANDOM"
-            | "SEED_RANDOM"
-            | "INT"
-            | "FLOAT"
-            | "FLOOR"
-            | "CEILING"
-            | "POW"
-            | "MIN"
-            | "MAX"
-            | "LIST_COUNT"
-            | "LIST_MIN"
-            | "LIST_MAX"
-            | "LIST_ALL"
-            | "LIST_INVERT"
-            | "LIST_RANGE"
-            | "LIST_RANDOM"
-            | "LIST_VALUE"
-            | "LIST_FROM_INT"
-            | "READ_COUNT"
-            | "TURNS"
-    )
+    brink_ir::lir::is_builtin_function(name)
 }
 
 /// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
 /// the TM-3-completion pure conversion intrinsics `int`/`float`/`string`
 /// (`docs/typed-mode-spec.md` §4, maintainer ruling 2026-07-13, issue #659,
 /// "per the stdlib slice-1 pattern"). Lowercase free functions,
-/// brink-dialect-gated. Kept in sync by hand with
-/// `brink_ir`'s LIR-lowering copy of this same list (`lir::lower::expr::
-/// is_t1b_stdlib_name`) — the crates don't share a dependency edge for this
-/// purpose in the analysis → codegen direction, mirroring the existing
-/// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
-/// ink intrinsics above.
+/// brink-dialect-gated.
 ///
-/// A name in this list is *not* unconditionally treated as reserved:
+/// Delegates to `brink_ir::lir::is_t1b_stdlib_name` (issue #2863) for the
+/// same reason as [`is_builtin_function`] just above — this used to be a
+/// second hand-kept copy of `brink_ir`'s LIR-lowering list
+/// (`lir::lower::expr::is_t1b_stdlib_name`); now there is exactly one
+/// place this list is spelled out, and this function is a thin delegate to
+/// it.
+///
 /// `resolve_function`'s lookup chain (externals, knots, lists, variables,
 /// locals) always runs first, so an author-defined symbol of the same name
 /// resolves normally — shadowing the builtin (§5's ruling) — and only a
@@ -1365,140 +1355,7 @@ pub fn is_builtin_function(name: &str) -> bool {
 /// `pub` rather than `pub(crate)` for the same `test_support` re-export
 /// reason as `is_builtin_function` above.
 pub fn is_t1b_stdlib_name(name: &str) -> bool {
-    matches!(
-        name,
-        "len"
-            | "keys"
-            | "values"
-            | "contains"
-            | "push"
-            | "insert"
-            | "remove"
-            // `remove_at(a, i)` (issue #1484, `docs/stdlib-spec.md` §4/§10):
-            // faulting array-index removal, split off `remove` (now
-            // map-only — identity-based, idempotent-total, matching flags
-            // `remove`) so one name no longer spans two removal postures.
-            | "remove_at"
-            | "int"
-            | "float"
-            | "string"
-            // T1c call forms (docs/t1c-spec.md §3): `call(f, args…)` (explicit
-            // invocation) and `bind(f, args…)` (val-only currying) are
-            // brink-dialect stdlib names so an unresolved use isn't E025 —
-            // they lower to `CallValue`/`BindValue` and dispatch through a
-            // function value. `bind` is effect-transparent (copies the value's
-            // row); its typing rule (consume the head of the param row) is
-            // wired into the checker (issue #733, `infer::body::
-            // check_bind_value`) — under `types = strict` a known `Ty::Fn`
-            // callee is statically checked (over-binding is `E063`); an
-            // `Unknown`/`Conflicted` callee still escapes as `E065`/`E066`.
-            // Gradual mode is unaffected: the runtime fault stays the
-            // backstop for both `call` and `bind`, exactly as before.
-            | "call"
-            | "bind"
-            // `char_at(s, i)` (T1b stdlib slice 1 completion, issue #857):
-            // chars-indexed (Unicode scalar values, not bytes) single-
-            // character-`String` read into `s`. VM-native, same
-            // shadowing/dialect-gate machinery as the rest of this list.
-            | "char_at"
-            // NS-A1 (issue #1107, `docs/stdlib-spec.md` §§3-5 + §1.4): the
-            // Option verb flips — text `find`, seq `index_of`/`min`/`max`/
-            // `first`/`last`/`pop`, map `get`/`contains_value`/`clear` —
-            // plus the `some(x)` Option constructor. Same slice-1 machinery
-            // end to end (shadowable with E035, `strict-ink` rejection via
-            // the dialect gate). The bare `none` literal resolves in
-            // *variable* position (see `resolve_variable`), not here.
-            | "find"
-            | "index_of"
-            | "min"
-            | "max"
-            | "first"
-            | "last"
-            | "pop"
-            | "get"
-            | "contains_value"
-            | "clear"
-            | "some"
-            // NS-A6 (issue #1112, `docs/stdlib-spec.md` §7): the
-            // `std::rand` draw verbs — every one an ordinary *write* to
-            // the RNG state cell (`DefinitionId::RNG_CELL`) in the effect
-            // row. `float` (nullary draw / unary conversion — the F4
-            // arity split, resolved in-wave) and `int` (conversion only;
-            // `int(range)` waits on A5's inhabited-range refinement) are
-            // already listed above. Same slice-1 machinery end to end:
-            // shadowable with E035, `strict-ink` rejection via the
-            // dialect gate.
-            | "chance"
-            | "pick"
-            | "shuffle"
-            | "shuffled"
-            | "seed"
-            // NS-A5 (issue #1111, `docs/stdlib-spec.md` §7): the
-            // inhabited-range validator `non_empty(r)` →
-            // `Option[NonEmptyRange]`. Pure — no draw. `int(range)` (the
-            // draw leg) needs no entry: `int` is already listed above and
-            // the VM dispatches on the operand. Same slice-1 machinery:
-            // shadowable with E035, `strict-ink` rejection via the
-            // dialect gate.
-            | "non_empty"
-            // NS-A7 (issue #1113, `docs/stdlib-spec.md` §8): `Weighted[T]`
-            // construction (`weighted(w1, v1, …)` — E120 refuses
-            // statically-malformed tables), the `roll(w)` draw (an
-            // RNG-cell write like the NS-A6 verbs), and the humble heap
-            // (`heap_push`/`heap_pop`/`heap_peek` over ordinary arrays,
-            // §4b ordering). Same slice-1 machinery: shadowable with
-            // E035, `strict-ink` rejection via the dialect gate.
-            | "weighted"
-            | "roll"
-            | "heap_push"
-            | "heap_pop"
-            | "heap_peek"
-            // NS-A4 (issue #1110, `docs/stdlib-spec.md` §4b, F0): the
-            // ordering verbs — imperative in-place `sort`/`sort_by` +
-            // functional past-participle twins `sorted`/`sorted_by`.
-            // Same slice-1 machinery: shadowable with E035, `strict-ink`
-            // rejection via the dialect gate.
-            | "sort"
-            | "sort_by"
-            | "sorted"
-            | "sorted_by"
-            // NS-A8 (issue #1114, `docs/tower-mini-spec.md`; ruled shape
-            // `docs/stdlib-spec.md` §2b): the numeric tower — constructors
-            // (`vec2(x, y)` … `mat4(c0, c1, c2, c3)`, matrices from
-            // column vectors per T3's column-major pin), `dot`/`cross`,
-            // and the tower-wide `clamp`/`lerp` (`min`/`max` are already
-            // listed above — their two-arg call shape lowers to the tower
-            // componentwise forms, the one-arg shape stays the NS-A1
-            // array extremum). Same slice-1 machinery end to end:
-            // shadowable with E035, `strict-ink` rejection via the
-            // dialect gate. All pure.
-            | "vec2"
-            | "vec3"
-            | "vec4"
-            | "quat"
-            | "mat2"
-            | "mat3"
-            | "mat4"
-            | "dot"
-            | "cross"
-            | "clamp"
-            | "lerp"
-            // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
-            // §4): the pure quartet `map`/`filter`/`fold`/`filter_map` —
-            // callbacks are pure·silent-required (RULED 2026-07-18),
-            // enforced where provable by `crate::comparator_contract`'s
-            // E119. Plus the ruled effectful spellings `each`/`map_each`
-            // (slice 2), deliberately NOT E119-gated — their whole purpose
-            // is to be the legal home for the effects the gate rejects.
-            // Same slice-1 machinery for all six: shadowable with E035,
-            // `strict-ink` rejection via the dialect gate.
-            | "map"
-            | "filter"
-            | "fold"
-            | "filter_map"
-            | "each"
-            | "map_each"
-    )
+    brink_ir::lir::is_t1b_stdlib_name(name)
 }
 
 /// `pub(crate)`: reused by `signature.rs` (issue #712) to resolve a `#fn`

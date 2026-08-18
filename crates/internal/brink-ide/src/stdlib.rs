@@ -10,11 +10,27 @@
 //! `Brink` only, per the issue's "never offered in `StrictInk`" rule; hover
 //! stays informational in both dialects, mirroring [`crate::builtin_hover_text`]).
 //!
-//! Kept in sync by hand with `brink_analyzer::resolve::is_t1b_stdlib_name`
-//! and `brink_ir::lir::lower::expr::is_t1b_stdlib_name` — a third hand-kept
-//! copy of the same names, for the same reason the other two give (#571):
-//! no shared dependency edge from the IDE layer down into either crate's
-//! private list, and eight literals aren't worth inventing one for.
+//! NOT a full hand-kept copy of `brink_ir::lir::is_t1b_stdlib_name` (issue
+//! #2863 investigation): that list has grown well past slice 1 (NS-A1
+//! through NS-A8, the numeric tower, the fn-value verb layer, …) while
+//! this table has deliberately stayed at slice 1's original eight — an
+//! older version of this comment claimed it was "a third hand-kept copy of
+//! the same names," which stopped being true the first time
+//! `is_t1b_stdlib_name` grew past slice 1 without a matching entry here.
+//! This is a genuinely smaller, differently-shaped table: hover/completion
+//! metadata (param names, lvalue-ness, return type, doc text) that the
+//! canonical name-only list doesn't carry, curated to the names this
+//! surface actually documents.
+//!
+//! What *is* mechanically enforced (issue #2863): every name in
+//! [`STDLIB_FUNCTIONS`] is a real stdlib name — `tests::every_stdlib_fn_name_is_a_real_t1b_stdlib_name`
+//! below asserts each one against `brink_ir::lir::is_t1b_stdlib_name`
+//! (the canonical list `brink_analyzer::resolve::is_t1b_stdlib_name`
+//! itself delegates to), catching a rename/removal upstream leaving a
+//! stale entry here. It does not — and structurally cannot — assert the
+//! reverse (every canonical name has an entry here): that direction is a
+//! deliberate, ongoing content gap (slice 2+ names have no hover/
+//! completion metadata yet), not a bug.
 
 /// One stdlib slice-1 function's static signature + docs.
 #[derive(Debug, Clone, Copy)]
@@ -226,5 +242,27 @@ mod tests {
             stdlib_fn("INT").is_none(),
             "classic uppercase builtins aren't in this table"
         );
+    }
+
+    /// Issue #2863: the mechanical half of "makes the ide copies
+    /// consistent" — every name this hover/completion table documents must
+    /// be a real T1b stdlib name, checked against `brink_ir::lir::
+    /// is_t1b_stdlib_name` (the canonical list `brink_analyzer::resolve::
+    /// is_t1b_stdlib_name` itself now delegates to; see that function's own
+    /// doc). This is a subset check, not an equality check, by design —
+    /// [`STDLIB_FUNCTIONS`]'s module doc explains why the reverse direction
+    /// (every canonical name has an entry here) is a deliberate content
+    /// gap, not a bug this test should flag.
+    #[test]
+    fn every_stdlib_fn_name_is_a_real_t1b_stdlib_name() {
+        for f in STDLIB_FUNCTIONS {
+            assert!(
+                brink_ir::lir::is_t1b_stdlib_name(f.name),
+                "STDLIB_FUNCTIONS lists `{}`, which brink_ir::lir::is_t1b_stdlib_name \
+                 (the canonical T1b stdlib name list) no longer recognizes — renamed \
+                 or removed upstream without updating this hover/completion table",
+                f.name,
+            );
+        }
     }
 }

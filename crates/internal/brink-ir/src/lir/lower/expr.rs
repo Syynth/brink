@@ -1973,12 +1973,21 @@ fn lower_weighted_call(
 /// plus the TM-3-completion pure conversion intrinsics (`docs/
 /// typed-mode-spec.md` §4, issue #659) — brink-dialect-gated free functions,
 /// all sharing the same resolution-fallback/shadowing/dialect-gate
-/// machinery (the #659 ruling: "per the stdlib slice-1 pattern"). Kept in
-/// sync by hand with `brink_analyzer::resolve::is_t1b_stdlib_name` — the two
-/// crates don't share a dependency edge for this purpose (mirrors the
-/// existing `recognize_builtin`/`is_builtin_function` split for the classic
-/// uppercase ink intrinsics).
-pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
+/// machinery (the #659 ruling: "per the stdlib slice-1 pattern").
+///
+/// Canonical (issue #2863): this crate has no upward dependency on
+/// `brink-analyzer` — the edge runs the other way (`brink-analyzer`
+/// depends on `brink-ir`) — so this is the one place this list is spelled
+/// out. `brink_analyzer::resolve::is_t1b_stdlib_name` delegates here rather
+/// than hand-keeping its own copy, which is what the two independent
+/// copies used to be (mirrors the `recognize_builtin`/`is_builtin_function`
+/// unification for the classic uppercase ink intrinsics, same issue). A
+/// single shared list only removes the "one list edited, the other
+/// forgotten" drift risk — it does not by itself prove every *consumer* of
+/// this list checks it in the right order relative to real symbol
+/// resolution; that's a separate, ordering-shaped invariant pinned by
+/// `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs`.
+pub fn is_t1b_stdlib_name(name: &str) -> bool {
     matches!(
         name,
         "len"
@@ -2337,8 +2346,29 @@ pub fn path_to_string(path: &hir::Path) -> String {
         .join(".")
 }
 
+/// Whether `name` is one of the classic uppercase ink intrinsics
+/// [`recognize_builtin`] maps to a real `BuiltinFn` — the crate-external,
+/// canonical answer to "is this name reserved as a classic builtin".
+///
+/// This is the single source of truth `brink_analyzer::resolve::
+/// is_builtin_function` delegates to (issue #2863): before this, the two
+/// crates hand-kept independent copies of the same 22-name list, which is
+/// exactly the drift risk that let PR #2859's resolution-order bug reach
+/// production even though the two lists' *content* still agreed at review
+/// time. Content equality is necessary but not sufficient for these two
+/// call sites to behave the same — see `crates/brink-compiler/tests/
+/// issue_2856_builtin_shadow.rs` for the end-to-end regression that pins
+/// the *order* `lower_call` consults this in (resolution-map fallback,
+/// never unconditional-first) — but a single shared implementation at
+/// least removes the "two lists, one gets an edit and not the other" half
+/// of the failure mode.
+#[must_use]
+pub fn is_builtin_function(name: &str) -> bool {
+    recognize_builtin(name).is_some()
+}
+
 /// Recognize a built-in function by name (case-sensitive).
-fn recognize_builtin(name: &str) -> Option<lir::BuiltinFn> {
+pub(crate) fn recognize_builtin(name: &str) -> Option<lir::BuiltinFn> {
     match name {
         "TURNS_SINCE" => Some(lir::BuiltinFn::TurnsSince),
         "READ_COUNT" => Some(lir::BuiltinFn::ReadCount),

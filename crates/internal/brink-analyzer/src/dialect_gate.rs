@@ -217,11 +217,12 @@ impl GateVisitor<'_> {
 }
 
 /// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
-/// the TM-3-completion conversion intrinsics (issue #659). Kept in sync by
-/// hand with `resolve::is_t1b_stdlib_name` — same name, same list,
-/// different call site (that one gates resolution; this one gates
-/// `strict-ink`), not worth a shared constant across the two passes for ten
-/// literals.
+/// the TM-3-completion conversion intrinsics (issue #659) — used here to
+/// gate `strict-ink` rejection of an unresolved use, a different call site
+/// than `resolve::is_t1b_stdlib_name`'s own (resolution). Not a second
+/// hand-kept copy: this is a thin delegate to `resolve::is_t1b_stdlib_name`
+/// (itself now a delegate to `brink_ir::lir::is_t1b_stdlib_name`, issue
+/// #2863's canonical list) — one name, one list, three call sites.
 fn is_t1b_stdlib_call_name(name: &str) -> bool {
     crate::resolve::is_t1b_stdlib_name(name)
 }
