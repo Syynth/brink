@@ -19,9 +19,13 @@ still open.
 > · A3 (protocol registry, PR #1124) · A6 (rng-as-cell, PR #1125)**;
 > A4/A5/A7/A8 and all of Track B are **not yet built**. §13's old
 > "≈93 shipped" counted the *ruled* surface — the actually-dispatched
-> intrinsic set on main is **29 call names** (verified against both
-> `is_t1b_stdlib_name` copies, `brink-analyzer/src/resolve.rs` +
-> `brink-ir/src/lir/lower/expr.rs`, and `infer_intrinsic`'s arms):
+> intrinsic set on main is **29 call names** (verified as of this count
+> against both `is_t1b_stdlib_name` copies, `brink-analyzer/src/resolve.rs` +
+> `brink-ir/src/lir/lower/expr.rs`, and `infer_intrinsic`'s arms —
+> issue #2863 later unified the first pair into a single canonical
+> `brink_ir::lir::is_t1b_stdlib_name` that `brink-analyzer` delegates
+> to, so this is no longer two copies to cross-check, just the one
+> delegate plus `infer_intrinsic`'s independent arms):
 > `len keys values contains push insert remove int float string call
 > bind char_at find index_of min max first last pop get contains_value
 > clear some chance pick shuffle shuffled seed`, plus variable-position

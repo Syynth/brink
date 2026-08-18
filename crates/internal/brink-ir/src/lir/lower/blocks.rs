@@ -1054,7 +1054,7 @@ type LvalueContainerChain = (
 
 /// A collection mutator recognized from a call expression
 /// (`docs/t1b-surface-spec.md` §5).
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MutatorKind {
     /// `push(a, v)` — 2 args; desugars to `insert(a, len(a), v)`.
     Push,
@@ -1094,6 +1094,46 @@ enum MutatorKind {
 }
 
 impl MutatorKind {
+    /// Every `MutatorKind` variant, for exhaustive iteration (issue #2863
+    /// review: a test that iterates a hand-copied name list instead of
+    /// this array can't catch a 10th mutator variant that was added to the
+    /// enum but never wired into this list — the array itself is built
+    /// from an exhaustive `match` in [`Self::name`], so a new variant is a
+    /// compile error here, not a silent gap). Test-only: no production
+    /// caller needs the full variant set today.
+    #[cfg(test)]
+    const ALL: [Self; 9] = [
+        Self::Push,
+        Self::Insert,
+        Self::Remove,
+        Self::RemoveAt,
+        Self::Clear,
+        Self::Shuffle,
+        Self::Sort,
+        Self::SortBy,
+        Self::HeapPush,
+    ];
+
+    /// The mutator's stdlib name, as `from_name` recognizes it — the
+    /// inverse of `from_name`, kept as its own exhaustive `match` (rather
+    /// than a lookup table) so adding a variant without adding it here is
+    /// a compile error. Test-only: no production caller needs the name
+    /// back from a `MutatorKind` today.
+    #[cfg(test)]
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::Insert => "insert",
+            Self::Remove => "remove",
+            Self::RemoveAt => "remove_at",
+            Self::Clear => "clear",
+            Self::Shuffle => "shuffle",
+            Self::Sort => "sort",
+            Self::SortBy => "sort_by",
+            Self::HeapPush => "heap_push",
+        }
+    }
+
     /// The mutator names are a subset of `super::expr::is_t1b_stdlib_name`
     /// (which also covers the pure functions) — kept as an explicit
     /// `matches!` here rather than depending on that function so this
@@ -2106,4 +2146,44 @@ fn writeback_lvalue_container_chain(
         op: AssignOp::Set,
         value: lir::Expr::GetTemp(root_slot, root_name),
     });
+}
+
+#[cfg(test)]
+mod mutator_kind_tests {
+    use super::MutatorKind;
+
+    /// Issue #2863 review: iterates [`MutatorKind::ALL`] — an exhaustively
+    /// built array (a 10th variant that isn't added to `ALL`/`name` is a
+    /// compile error, not a silent gap) — rather than a hardcoded name
+    /// list written inside the test itself, which a prior version of this
+    /// test did and which a new `MutatorKind` variant could silently
+    /// escape.
+    ///
+    /// Checks both `from_name` is a true inverse of `name` (round-trips
+    /// back to the same variant) and [`MutatorKind::from_name`]'s own doc
+    /// claim that its names are "a subset of
+    /// `super::expr::is_t1b_stdlib_name`" — mechanically checked here
+    /// rather than trusted. A name recognized as a mutator but *not* a
+    /// real T1b stdlib name would mean a statement-position call to it
+    /// silently takes the mutator RMW path instead of falling through to
+    /// ordinary call lowering (or an E025 for a genuinely unresolved
+    /// name) — the exact "one copy edited, the other forgotten" drift
+    /// shape this issue is about, just with a subset relationship instead
+    /// of an equality one.
+    #[test]
+    fn every_mutator_name_is_a_real_t1b_stdlib_name() {
+        for kind in MutatorKind::ALL {
+            let name = kind.name();
+            assert_eq!(
+                MutatorKind::from_name(name),
+                Some(kind),
+                "`{name}` (MutatorKind::{kind:?}) should round-trip through from_name"
+            );
+            assert!(
+                super::super::expr::is_t1b_stdlib_name(name),
+                "`{name}` is recognized as a mutator but is_t1b_stdlib_name doesn't know it \
+                 — MutatorKind::from_name has drifted out of the subset its own doc claims"
+            );
+        }
+    }
 }

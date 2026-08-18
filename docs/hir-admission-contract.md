@@ -446,9 +446,13 @@ hand-walk site — an un-obvious, un-enforced obligation.
 
 ### D8. Builtin resolution is a hand-synced hardcoded list in two places
 
-`resolve.rs` and LIR lowering each keep their own copy of the stdlib-name list,
-kept in sync "by hand" per the code's own doc (F-I#9). A frontend must leave these
-names unresolved and trust both copies agree. A duplication the contract inherits.
+**Amended (issue #2863):** `resolve.rs` and LIR lowering no longer keep independent
+copies of the stdlib-name list. `resolve.rs`'s `is_builtin_function`/
+`is_t1b_stdlib_name` are now thin delegates to the single canonical `matches!` list
+in `brink_ir::lir` (F-I#9), the home the 2026-03-06 ruling `docs/decision-log.md`
+already called for. A frontend must still leave these names unresolved and trust
+the resolver's answer — that half of the contract is unchanged — but the
+duplication this section named, and the drift risk it inherited, is gone.
 
 ### D9. The `@[effects]` grammar has already drifted from its ruling
 
