@@ -257,8 +257,8 @@ of exactly the kind `Option<T> ≠ T` exists to ban: it blurs "the world had
 one" into "the value was truthy," and it reintroduces the silent-absence
 bug class one condition at a time. So Option has *no* truthiness, anywhere,
 and the condition-position error tells you the honest spelling. This fails
-with `E116`, "an `Option<T>` has no truthiness (F27, docs/stdlib-spec.md
-§1.6) — test `== none` / `== some(x)` explicitly":
+with `E116`, "an `Option[T]` has no truthiness — test `== none` /
+`== some(x)` in the condition (F27, docs/stdlib-spec.md §1.6)":
 
 ```ink,error(E116)
 -> register

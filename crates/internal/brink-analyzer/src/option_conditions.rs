@@ -679,10 +679,15 @@ fn check_condition(
     out.push(Diagnostic {
         file,
         range: expr_anchor(cond).unwrap_or(fallback_range),
+        // `DiagnosticCode::E116.title()` already carries the full boilerplate
+        // ("an `Option[T]` has no truthiness — test `== none` / `==
+        // some(x)`") — this format! supplies only the diagnostic-specific
+        // detail beyond that (the F27/spec citation), not a repeat of the
+        // same sentence (issue #2774: it used to repeat verbatim right after
+        // the title, doubling the whole message).
         message: format!(
-            "{}: an `Option[T]` has no truthiness (F27, docs/stdlib-spec.md §1.6) — test \
-             `== none` / `== some(x)` explicitly",
-            DiagnosticCode::E116.title(),
+            "{} (F27, docs/stdlib-spec.md §1.6)",
+            DiagnosticCode::E116.title()
         ),
         code: DiagnosticCode::E116,
     });
@@ -777,6 +782,32 @@ mod tests {
             check_all("=== main ===\n~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> END\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Issue #2774: `DiagnosticCode::E116.title()` already carries "an
+    /// `Option[T]` has no truthiness ... test `== none` / `== some(x)`", and
+    /// `check_condition`'s own `format!` used to repeat that exact phrase
+    /// verbatim right after it, doubling the whole message. Reproduces on
+    /// this same top-level positive-control fixture as
+    /// [`option_temp_in_inline_conditional_guard_is_e116`] above — pinned
+    /// separately here so a regression that reintroduces the duplicate
+    /// phrase fails on message content, not just on `.code`.
+    #[test]
+    fn e116_message_is_not_doubled() {
+        let diags =
+            check_all("=== main ===\n~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> END\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let message = &diags[0].message;
+        assert_eq!(
+            message.matches("has no truthiness").count(),
+            1,
+            "E116 message repeats its core sentence: {message:?}"
+        );
+        assert_eq!(
+            message.matches("== none").count(),
+            1,
+            "E116 message repeats the `== none` idiom: {message:?}"
+        );
     }
 
     #[test]
