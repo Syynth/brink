@@ -111,6 +111,24 @@ fn let_stmt_with_type_annotation_and_no_initializer() {
     );
 }
 
+/// `let`'s annotation slot (#2792): `let_stmt` shares `decl::binding_annotation`
+/// with `var`/`const`, so before this fix it already failed loudly on
+/// `Option[int]` — but only incidentally, via its own `expect(SEMICOLON)`
+/// ("expected SEMICOLON, found `L_BRACKET`"), a generic message unrelated to
+/// the real mistake. The unified message now comes first; `expect(SEMICOLON)`
+/// (and whatever cascades from that) still fires too — recovery is
+/// unchanged by #2792.
+#[test]
+fn let_stmt_square_bracket_after_type_name_gets_the_unified_message_first() {
+    let p = parse("fn f() { let x: Option[int] = none; }\n");
+    assert_eq!(
+        p.errors().first().map(|e| e.message.as_str()),
+        Some("expected `<` or end of type name, found L_BRACKET"),
+        "errors: {:?}",
+        p.errors()
+    );
+}
+
 // ── C. ASSIGN_STMT (including RMW field paths) ──────────────────────
 
 #[test]
