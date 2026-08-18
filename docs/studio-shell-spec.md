@@ -237,6 +237,17 @@ editor-groups store clears `maximizedGroupId` inside `openDocument`'s
 behavior (#280, §4 Player row) obeys the same rule as `splitGroup` without
 each caller having to remember it.
 
+**Revealing an already-open tab also restores first, when needed (#2797).**
+`openDocument`'s default `"focused"` target (a plain reveal — the Binder's
+open-file click among others) focuses an existing tab wherever it lives,
+which can be a group other than the one currently maximized. Because
+`EditorArea` renders only the maximized group, a reveal landing in a
+different, hidden group would move focus internally but paint nothing — the
+click would appear to do nothing. `openDocument`'s `"focused"` branch clears
+`maximizedGroupId` whenever the revealed tab's group differs from the
+maximized one, leaving it untouched when the reveal targets the maximized
+group itself (already the only thing rendered, nothing to restore).
+
 ## 6. Command system
 
 A `CommandRegistry` in the shell package:
@@ -1094,7 +1105,19 @@ enrolment family's gap, not this PR's":
   landed in `applyRename`'s `catch` and surfaced as an ordinary error
   notification — but containment is not a fix, and the hazard is generic to
   every call this class defers via `scheduleIdleWork`, present or future, not
-  specific to `renameFile`. The fix: `ProjectSession.deferGatedCall` (the
+  specific to `renameFile`.
+
+  ⚠ **Scoped to the idle-yield window only — corrected by #2802, see the
+  bullet below.** This claim, and the "one guard, applied once" framing two
+  paragraphs down, are about the `scheduleIdleWork` yield specifically: they
+  say nothing about — and do not fix — the much larger window that opens
+  right after it, when a method goes on to `await` the host provider itself
+  (Tauri IPC, unbounded, not a handle `deferGatedCall`'s tracking can cancel).
+  A reader auditing this family for "is `ProjectSession` destroy()-safe" must
+  not stop here; see #2802's bullet below for the guard that actually covers
+  post-host-IO-await continuations.
+
+  The fix: `ProjectSession.deferGatedCall` (the
   yield every deferring method now goes through, replacing a bare
   `scheduleIdleWork` await) tracks its idle handle and rejects the caller's
   await — instead of resolving into a freed session — if `destroy()` runs
@@ -1144,6 +1167,37 @@ enrolment family's gap, not this PR's":
   correctness gaps above were the fix this PR scoped to; moving the field to
   a more neutral home (and updating every reference here) is a follow-up, not
   bundled with a race-condition fix.
+
+**A second, larger window closed (#2802).** #2798's fix (above) covers the
+`scheduleIdleWork` yield only — `deferGatedCall` tracks that one idle handle
+and rejects it on `destroy()`. It has nothing to say about what happens
+right after: `renameFile`, `deleteFile`, `requestFile`, `resolveIncludes`,
+`addFile`, and the initial `initialize()` load all `await` the host provider itself
+(Tauri IPC — unbounded, and often far longer than the idle window's ≤300ms
+ceiling) and then resume touching `this.session`/`this.changes` with no
+re-check. `destroy()` cannot reject those awaits — they are not idle handles
+it tracks — so a teardown landing during any of them reached a freed wasm
+handle one `await` later, the same use-after-free #2794 set out to close.
+Both adversarial reviewers on #2798 found this independently and disagreed
+on whether it blocked that PR; the fix that shipped there applied the
+non-blocking read, so this gap shipped unowned until #2802.
+
+The fix generalizes past the idle-yield-specific guard rather than adding a
+per-site `if (this.destroyed)` check at each of the six call sites above:
+`ProjectSession.assertLive()` (private) is one seam every post-host-IO-await
+continuation calls the instant it resumes, before touching session state
+again — throwing the same error family `deferGatedCall` rejects with, so a
+caller catching a destroy()-during-await race sees one shape regardless of
+which await it landed in. Pinned by
+`packages/ink-editor/src/__tests__/project-session-destroy.test.ts`'s
+"destroy() during the post-host-IO-await window (#2802)" cases, using a stub
+provider whose `renameFile` resolves *after* `destroy()` runs — the #2794
+suite only ever exercised the idle-yield window above.
+
+With this closed, "is `ProjectSession` destroy()-safe" now has one real
+answer covering both windows — the `scheduleIdleWork` yield (#2794/#2798)
+and every host-IO await (#2802) — rather than the idle-window-only claim
+above.
 
 ### 7.8 Editor groups & the document-type API
 

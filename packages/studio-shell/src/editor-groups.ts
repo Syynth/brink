@@ -174,7 +174,18 @@ export function createEditorGroupsStore(): EditorGroupsStore {
                   }
                 : g,
             );
-            return { groups, focusedGroupId: existing.group.id };
+            // Revealing into a group hidden behind a maximized sibling must
+            // un-maximize (§5.4; mirrors the split-right fix, #2787) — a
+            // reveal that lands behind the maximized group would focus the
+            // tab internally but paint nothing (EditorArea renders only the
+            // maximized group), making the click appear to do nothing
+            // (#2797). Revealing within the already-maximized group itself
+            // needs no change — it is already the only thing rendered.
+            const maximizedGroupId =
+              s.maximizedGroupId !== null && s.maximizedGroupId !== existing.group.id
+                ? null
+                : s.maximizedGroupId;
+            return { groups, focusedGroupId: existing.group.id, maximizedGroupId };
           }
         }
 
