@@ -150,6 +150,39 @@ describe("toggleMaximizeGroup", () => {
     expect(store.getState().groups).toHaveLength(3);
     expect(store.getState().maximizedGroupId).toBeNull();
   });
+
+  // #2797: a Binder click (openDocument's default "focused" target) reveals
+  // an already-open tab wherever it lives. If that tab's group is hidden
+  // behind a maximized sibling, EditorArea renders only the maximized group
+  // (§5.4) — the reveal moved focus internally but nothing painted, so the
+  // click appeared to do nothing. Mirrors the "split-right" fix from #2787.
+  it("revealing a tab hidden behind a maximized sibling restores first", () => {
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    const second = store.getState().groups[1].id;
+    // b.ink lives in `second`; maximize `first` so `second` is unrendered.
+    store.getState().toggleMaximizeGroup(first);
+    expect(store.getState().maximizedGroupId).toBe(first);
+
+    store.getState().openDocument(ref("b.ink"));
+
+    expect(store.getState().maximizedGroupId).toBeNull();
+    expect(store.getState().focusedGroupId).toBe(second);
+    expect(store.getState().groups).toHaveLength(2);
+  });
+
+  // Revealing a tab that already lives in the maximized group itself needs
+  // no un-maximize — it is already the only thing rendered.
+  it("revealing a tab already in the maximized group leaves it maximized", () => {
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    store.getState().toggleMaximizeGroup(first);
+
+    store.getState().openDocument(ref("a.ink"));
+
+    expect(store.getState().maximizedGroupId).toBe(first);
+    expect(store.getState().focusedGroupId).toBe(first);
+  });
 });
 
 describe("registerMaximizeCommands interplay", () => {
