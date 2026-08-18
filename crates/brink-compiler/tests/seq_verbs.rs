@@ -655,3 +655,25 @@ fn strict_ink_never_reaches_the_fn_value_verbs() {
         "expected a dialect-gate diagnostic naming the `map` call, got {diags:?}"
     );
 }
+
+// ── call-site vs `#fn`-literal: a declared list item never shadows a
+//    stdlib verb *call* (PR #2836 review finding 1/2, issue #2830) ────
+
+/// Issue #2830's fix added a bare list-item lookup to `resolve_function`
+/// ahead of the T1b stdlib fallback, gated to `uref.arg_count.is_none()` —
+/// the same call-site-vs-`#fn`-literal discriminator the UFCS branch below
+/// it already uses. Before that gate, this program compiled with zero
+/// diagnostics and then faulted at runtime with
+/// `UnresolvedDefinition(ListItem(...))`: `push(arr, 5)` is a real call
+/// site (`arg_count: Some(2)`), so it must keep resolving to the stdlib
+/// `push` verb even though `LIST Verbs = push, pull` also declares a list
+/// item literally named `push` — the list item only wins at a `#fn(push)`
+/// literal site, never at a call site. End-to-end through the compiler and
+/// VM (not just the analyzer's resolution map) to prove the fix holds all
+/// the way to runtime behavior.
+#[test]
+fn call_site_bare_list_item_collides_with_stdlib_verb_name() {
+    let source =
+        "VAR arr = #[]\nLIST Verbs = push, pull\n~ push(arr, 5)\nlen is {len(arr)}\n-> END\n";
+    assert_eq!(run(source), "len is 1\n");
+}

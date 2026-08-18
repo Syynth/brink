@@ -940,20 +940,32 @@ fn resolve_function(
     // name first (it has no way to know a real symbol exists) and the ref
     // is dropped with neither a resolution nor a diagnostic — the
     // `completeness` proptest counterexample this fixes.
-    match lookup_list_item_bare(index, path) {
-        BareItemResult::Unique(id) => {
-            map.push(ResolvedRef {
-                file: file_id,
-                range: uref.range,
-                target: id,
-            });
-            return;
+    //
+    // `arg_count.is_none()` restricts this to a `#fn(target)` literal site
+    // (project_manifest's documented distinction — `#fn` binds a *prefix*
+    // of the param row, so it never carries a call arity), the same
+    // discriminator the UFCS branch below already uses. A real **call
+    // site** (`arg_count.is_some()`, e.g. `push(arr, 5)`) must keep falling
+    // through to `is_t1b_stdlib_name` and the t1b stdlib call lowering —
+    // resolving it to the list item here would make a stdlib call compile
+    // clean and then fault at runtime with `UnresolvedDefinition` when LIR
+    // lowering looks it up as a stdlib verb instead of a list item.
+    if uref.arg_count.is_none() {
+        match lookup_list_item_bare(index, path) {
+            BareItemResult::Unique(id) => {
+                map.push(ResolvedRef {
+                    file: file_id,
+                    range: uref.range,
+                    target: id,
+                });
+                return;
+            }
+            BareItemResult::Ambiguous => {
+                diagnostics.push(ambiguous_diag(file_id, uref.range, path));
+                return;
+            }
+            BareItemResult::NotFound => {}
         }
-        BareItemResult::Ambiguous => {
-            diagnostics.push(ambiguous_diag(file_id, uref.range, path));
-            return;
-        }
-        BareItemResult::NotFound => {}
     }
 
     // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
