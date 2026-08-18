@@ -52,6 +52,7 @@ pub fn word_range_at_offset(source: &str, offset: TextSize) -> Option<TextRange>
 pub fn builtin_hover_text(name: &str) -> Option<String> {
     let (signature, description) = match name {
         "CHOICE_COUNT" => ("CHOICE_COUNT()", "Number of currently available choices"),
+        "TURNS" => ("TURNS()", "Number of turns since the story started"),
         "TURNS_SINCE" => (
             "TURNS_SINCE(-> knot)",
             "Turns since a knot was last visited (-1 if never)",
@@ -116,6 +117,75 @@ pub fn stdlib_hover_text(name: &str) -> Option<String> {
         f.signature_label(),
         f.doc,
     ))
+}
+
+/// Issue #2863 review (missed-copy finding on `builtin_hover_text`): the
+/// classic uppercase ink intrinsics are a closed set — `brink_ir::lir::
+/// recognize_builtin`'s match arms, mirrored in [`lir::BuiltinFn`]'s own
+/// variant list — so, unlike the ever-growing T1b stdlib name list, a
+/// hand-kept enumeration here is defensible in both directions: every
+/// canonical name must have hover docs (this caught `"TURNS"` silently
+/// missing, `is_builtin_function("TURNS")` true but no hover text), and
+/// every documented name must still be a real canonical builtin (catches a
+/// stale/typo'd entry left behind after a rename).
+#[cfg(test)]
+const CLASSIC_BUILTIN_NAMES: &[&str] = &[
+    "CHOICE_COUNT",
+    "TURNS",
+    "TURNS_SINCE",
+    "READ_COUNT",
+    "RANDOM",
+    "SEED_RANDOM",
+    "INT",
+    "FLOAT",
+    "FLOOR",
+    "CEILING",
+    "POW",
+    "MIN",
+    "MAX",
+    "LIST_COUNT",
+    "LIST_MIN",
+    "LIST_MAX",
+    "LIST_ALL",
+    "LIST_INVERT",
+    "LIST_RANGE",
+    "LIST_RANDOM",
+    "LIST_VALUE",
+    "LIST_FROM_INT",
+];
+
+#[cfg(test)]
+mod builtin_hover_text_tests {
+    use super::{CLASSIC_BUILTIN_NAMES, builtin_hover_text};
+
+    #[test]
+    fn every_canonical_builtin_name_has_hover_text() {
+        for name in CLASSIC_BUILTIN_NAMES {
+            assert!(
+                brink_ir::lir::is_builtin_function(name),
+                "CLASSIC_BUILTIN_NAMES lists `{name}`, which brink_ir::lir::is_builtin_function \
+                 (the canonical classic-builtin set) no longer recognizes",
+            );
+            assert!(
+                builtin_hover_text(name).is_some(),
+                "`{name}` is a real builtin (brink_ir::lir::is_builtin_function) but \
+                 builtin_hover_text has no arm for it — hovering it yields no docs",
+            );
+        }
+    }
+
+    #[test]
+    fn every_hover_documented_name_is_a_real_builtin() {
+        for name in CLASSIC_BUILTIN_NAMES {
+            if builtin_hover_text(name).is_some() {
+                assert!(
+                    brink_ir::lir::is_builtin_function(name),
+                    "builtin_hover_text documents `{name}` but it is not a real \
+                     brink_ir::lir::is_builtin_function name — stale/typo'd entry",
+                );
+            }
+        }
+    }
 }
 
 /// Find the function call context at the given byte offset.

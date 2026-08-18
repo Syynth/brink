@@ -1079,10 +1079,14 @@ fn push_non_callable_refusal(
 /// crate's own tests/benches), and [`lower_ufcs_prelude_desugar`], when a
 /// verdict *was* recorded as `PreludeDesugar` but neither this crate's
 /// `recognize_builtin` nor its `is_t1b_stdlib_name`/`lower_t1b_stdlib_call`
-/// copy recognizes the name — meaning it drifted out of sync with
-/// `brink-analyzer`'s own `is_t1b_stdlib_name`/`is_builtin_function` copies
-/// (both pairs' own docs say they're hand-synced across the crate boundary
-/// with no shared source of truth).
+/// copy recognizes the name — meaning it drifted out of sync with this
+/// same crate's own `is_t1b_stdlib_name`/`is_builtin_function` (issue
+/// #2863: `brink-analyzer` now delegates to those two functions rather
+/// than hand-keeping its own copy, so a `PreludeDesugar` verdict is proof
+/// the analyzer already called into *this* crate's canonical predicates —
+/// the drift this refusal guards against can now only be an intra-crate
+/// mismatch between that canonical answer and `recognize_builtin`/
+/// `lower_t1b_stdlib_call`'s own separate matches, not a cross-crate one).
 fn push_ufcs_lowering_refusal(
     name: &str,
     range: rowan::TextRange,
@@ -1273,10 +1277,15 @@ fn lower_ufcs_prelude_desugar(
     desugared_args.extend(args.iter().cloned());
     // `lower_t1b_stdlib_call` returning `None` here means `name` passed the
     // analyzer's `is_t1b_stdlib_name`/`is_builtin_function` check (that's
-    // the only way a `PreludeDesugar` verdict is recorded) but missed both
-    // of this crate's own hand-synced copies — a drift bug, not a normal
-    // compile outcome. Refuse loudly (E144) instead of silently dropping
-    // the call to `Null`.
+    // the only way a `PreludeDesugar` verdict is recorded) but missed
+    // `recognize_builtin`/`lower_t1b_stdlib_call`'s own separate match
+    // arms in this same crate. Issue #2863 made the cross-crate half of
+    // this drift structurally impossible (`brink-analyzer` now delegates
+    // to this crate's `is_t1b_stdlib_name`/`is_builtin_function` instead
+    // of hand-keeping a copy); what's left is a same-crate mismatch
+    // between those two functions and the separate matches below — still
+    // a drift bug, not a normal compile outcome. Refuse loudly (E144)
+    // instead of silently dropping the call to `Null`.
     lower_t1b_stdlib_call(name, &desugared_args, path.range, ctx)
         .unwrap_or_else(|| push_ufcs_lowering_refusal(name, path.range, ctx))
 }

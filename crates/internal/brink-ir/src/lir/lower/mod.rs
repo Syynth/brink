@@ -30,9 +30,9 @@ pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_str
 /// this name a classic uppercase ink intrinsic / a T1b stdlib name",
 /// re-exported so `brink-analyzer` (and any other downstream crate) can
 /// delegate to a single implementation instead of hand-keeping its own
-/// copy. See [`expr::is_builtin_function`]/[`expr::is_t1b_stdlib_name`]'s
-/// own docs for why this crate — not `brink-analyzer` — is where the list
-/// lives: the dependency edge only runs one way.
+/// copy. See [`is_builtin_function`]/[`is_t1b_stdlib_name`]'s own docs for
+/// why this crate — not `brink-analyzer` — is where the list lives: the
+/// dependency edge only runs one way.
 pub use expr::{is_builtin_function, is_t1b_stdlib_name};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).

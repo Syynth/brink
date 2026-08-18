@@ -7,14 +7,19 @@
 //! `E035` "name shadows a built-in function" warning's own documented
 //! intent — shadowing is legal, not silent). This file pins the deeper,
 //! separate codegen-layer half of the same bug: `brink_ir::lir::lower::expr
-//! ::lower_call` checked `recognize_builtin` (the LIR-lowering copy of
-//! `is_builtin_function`, hand-synced across the crate boundary) BEFORE
-//! consulting the analyzer's resolution map at all — so even a *correctly
-//! resolved* knot named `FLOOR` was silently discarded in favor of the real
-//! `FLOOR()` builtin at the call site. Confirmed via `brink-cli compile` +
-//! `play` before this fix: `Result: {FLOOR(5)}` against a knot
-//! `=== function FLOOR(x) === ~ return x - 1000` printed `Result: 5` (the
-//! real builtin's answer) instead of `Result: -995` (the author's).
+//! ::lower_call` checked `recognize_builtin` BEFORE consulting the
+//! analyzer's resolution map at all — so even a *correctly resolved* knot
+//! named `FLOOR` was silently discarded in favor of the real `FLOOR()`
+//! builtin at the call site. (Issue #2863 made `brink_ir::lir::
+//! is_builtin_function`/`recognize_builtin` the single canonical
+//! definition — `brink-analyzer` now delegates to it instead of
+//! hand-keeping its own copy — but that unification is orthogonal to this
+//! test: it closes the *content*-drift risk, not the resolution-*order*
+//! bug this file pins, which is why this regression stays.) Confirmed via
+//! `brink-cli compile` + `play` before the original fix: `Result:
+//! {FLOOR(5)}` against a knot `=== function FLOOR(x) === ~ return x -
+//! 1000` printed `Result: 5` (the real builtin's answer) instead of
+//! `Result: -995` (the author's).
 //!
 //! Mirrors `is_t1b_stdlib_name`'s already-correct ordering in this same
 //! function (`lower_t1b_stdlib_call` is only consulted once
