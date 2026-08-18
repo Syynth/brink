@@ -101,6 +101,8 @@ mod logicblock_inside_unlifted_inline_conditional_sequence;
 mod nested_choice_inside_unlifted_inline_conditional;
 #[path = "lir_lowering/nested_choices.rs"]
 mod nested_choices;
+#[path = "lir_lowering/non_callable_call_target.rs"]
+mod non_callable_call_target;
 #[path = "lir_lowering/pattern_recognizer_tests.rs"]
 mod pattern_recognizer_tests;
 #[path = "lir_lowering/rand_verb_surface.rs"]
