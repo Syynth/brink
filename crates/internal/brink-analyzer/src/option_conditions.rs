@@ -45,7 +45,7 @@
 //! Reaching it is not the same as *classifying* it, though: the same
 //! **statically classifiable** gate above still applies, now sourced from
 //! the enclosing def's locals with the lambda's own bindings pruned out
-//! ([`pruned_locals_for_lambda`]) — a name the lambda itself binds (its own
+//! ([`structs::pruned_locals_for_lambda`]) — a name the lambda itself binds (its own
 //! param, or a name its block introduces) cannot be classified from that
 //! lookup and stays silently unchecked, exactly like any other
 //! unclassifiable shape; only a *captured* outer local/global/intrinsic
@@ -69,7 +69,7 @@
 //! (`crates/internal/brink-ir/src/hir/types.rs`) — there is nothing left in
 //! `HirFile` for this walk to reach.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -459,20 +459,30 @@ fn walk_expr_for_lambdas(
     match expr {
         Expr::Lambda(l) => match &l.body {
             LambdaBody::Block { stmts, tail } => {
-                // Issue #2764 review finding: a lambda-own binding (a param,
-                // or a name the block itself introduces via `TempDecl`/`for`/
-                // an `if`/`while` `as` binding) that shadows a same-named
-                // outer local must not be typed as the *outer* binding while
-                // this block's own statements are checked —
-                // `structs::resolved_symbol_ty` resolves a Param/Temp by
-                // bare name out of `ctx.locals`, with no shadowing frame of
-                // its own, so an unpruned `ctx` here would misclassify the
-                // inner name as whatever the enclosing def's finalized
-                // `BodyTypes::locals` says the outer name is. Pruning those
-                // names out of the ctx handed to this block's own checks
-                // makes them fall back to "Unknown never disagrees" instead,
-                // same as any other unclassifiable shape.
-                let pruned_locals = pruned_locals_for_lambda(l, stmts, ctx);
+                // Issue #2764 review finding, generalized by issue #2773: a
+                // lambda-own binding (a param, or a name the block itself
+                // introduces via `TempDecl`/`for`/an `if`/`while` `as`
+                // binding) that shadows a same-named outer local must not be
+                // typed as the *outer* binding while this block's own
+                // statements are checked — `structs::resolved_symbol_ty`
+                // resolves a Param/Temp by bare name out of `ctx.locals`,
+                // with no shadowing frame of its own, so an unpruned `ctx`
+                // here would misclassify the inner name as whatever the
+                // enclosing def's finalized `BodyTypes::locals` says the
+                // outer name is. Pruning those names out of the ctx handed
+                // to this block's own checks makes them fall back to
+                // "Unknown never disagrees" instead, same as any other
+                // unclassifiable shape. Composes with `structs`'s shared
+                // lambda-frame helper (issue #2773) rather than keeping a
+                // private copy of this same pruning logic — every other
+                // `MistypeCtx`/`BodyTypes::locals` consumer in this hazard
+                // class now pushes the identical pruned frame from
+                // `HirVisitor::enter_lambda`; this module's own walk is
+                // hand-rolled (not `HirVisitor`-driven, since it must
+                // distinguish "this is a condition position" — see the
+                // module doc), so it calls the shared function directly
+                // instead.
+                let pruned_locals = structs::pruned_locals_for_lambda(l, ctx.index, ctx.locals);
                 let pruned_ctx = MistypeCtx {
                     index: ctx.index,
                     globals: ctx.globals,
@@ -559,79 +569,6 @@ fn walk_expr_for_lambdas(
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_) => {}
     }
-}
-
-/// Issue #2764 review finding: the name set to prune from `ctx.locals`
-/// before checking a lambda's own block body — its own param names, plus
-/// every name the block itself binds (`TempDecl`, a `for` loop's var/val, an
-/// `if`/`while` `as` binding), recursed through nested `if`/`while`/`for` the
-/// same way [`crate::infer::lambda_own_bindings`] already does for
-/// `infer_lambda`'s own shadow set.
-///
-/// Issue #2782: also seeds the lambda's own explicitly `: T`-annotated
-/// param types directly into the returned map — mirrors
-/// `infer::body::InferPass::infer_lambda`'s own `self.annotated` seed
-/// (issue #1941), just written into the bare-name-keyed locals map this
-/// check's classification (`resolved_symbol_ty`'s `ctx.locals?.get(…)`)
-/// actually reads, instead of the parallel `self.annotated` map that seed
-/// feeds. Without it, a lambda param's written annotation never reached
-/// E116's truthiness check: only a body-inferred type did (the
-/// ordinary-`fn`-param half of the same gap is fixed at its source, in
-/// `infer::body::infer_def_body`, since a lambda has no `BodyTypes` entry
-/// of its own for this check to read in the first place). A param name the
-/// lambda's own block *re-binds* (a fresh `TempDecl`/`if`/`while`/`for`
-/// binding of the same spelling) is excluded from the seed — `body_names`
-/// is collected before the param loop below adds param names to `own_names`,
-/// so it reflects only the block's own re-binds, exactly like
-/// `infer_lambda`'s identical `body_bound_names.contains` guard.
-///
-/// No longer bottoms out to nothing for a file-scope lambda (`ctx.locals`
-/// itself `None`, e.g. a `var f = |x: Option<int>| { … }` initializer): an
-/// annotated param must still be classifiable there, so this always
-/// returns a real map, falling back to an empty pruned base when there was
-/// no enclosing `locals` to prune from — the caller's `ctx.locals?` (via
-/// `Some(&map)`) treats an empty map and `None` identically for any name
-/// absent from it, so this is not a behavior change for the pre-existing
-/// pruning path. Plain `BTreeMap` return (not `Option`-wrapped): every path
-/// now produces a real map, so wrapping it would just be
-/// `clippy::unnecessary_wraps`.
-fn pruned_locals_for_lambda(
-    l: &brink_ir::LambdaExpr,
-    stmts: &[BlockStmt],
-    ctx: &MistypeCtx<'_>,
-) -> BTreeMap<String, Ty> {
-    let mut body_names: BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)> = BTreeMap::new();
-    crate::infer::lambda_own_bindings(stmts, &mut body_names);
-    let body_bound_names: BTreeSet<String> = body_names.keys().cloned().collect();
-
-    let mut own_names = body_names;
-    for p in &l.params {
-        own_names
-            .entry(p.name.text.clone())
-            .or_insert((p.name.range, None));
-    }
-
-    let mut pruned: BTreeMap<String, Ty> = ctx.locals.map_or_else(BTreeMap::new, |locals| {
-        locals
-            .iter()
-            .filter(|(name, _)| !own_names.contains_key(*name))
-            .map(|(name, ty)| (name.clone(), ty.clone()))
-            .collect()
-    });
-
-    let type_names = annotations::TypeNames::new(ctx.index, None);
-    for p in &l.params {
-        if body_bound_names.contains(&p.name.text) {
-            continue;
-        }
-        if let Some(te) = &p.annotation
-            && let Some(ty) = annotations::resolve(te, &type_names)
-        {
-            pruned.insert(p.name.text.clone(), ty);
-        }
-    }
-
-    pruned
 }
 
 fn check_if(i: &IfStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
@@ -742,10 +679,15 @@ fn check_condition(
     out.push(Diagnostic {
         file,
         range: expr_anchor(cond).unwrap_or(fallback_range),
+        // `DiagnosticCode::E116.title()` already carries the full boilerplate
+        // ("an `Option[T]` has no truthiness — test `== none` / `==
+        // some(x)`") — this format! supplies only the diagnostic-specific
+        // detail beyond that (the F27/spec citation), not a repeat of the
+        // same sentence (issue #2774: it used to repeat verbatim right after
+        // the title, doubling the whole message).
         message: format!(
-            "{}: an `Option[T]` has no truthiness (F27, docs/stdlib-spec.md §1.6) — test \
-             `== none` / `== some(x)` explicitly",
-            DiagnosticCode::E116.title(),
+            "{} (F27, docs/stdlib-spec.md §1.6)",
+            DiagnosticCode::E116.title()
         ),
         code: DiagnosticCode::E116,
     });
@@ -840,6 +782,32 @@ mod tests {
             check_all("=== main ===\n~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> END\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E116);
+    }
+
+    /// Issue #2774: `DiagnosticCode::E116.title()` already carries "an
+    /// `Option[T]` has no truthiness ... test `== none` / `== some(x)`", and
+    /// `check_condition`'s own `format!` used to repeat that exact phrase
+    /// verbatim right after it, doubling the whole message. Reproduces on
+    /// this same top-level positive-control fixture as
+    /// [`option_temp_in_inline_conditional_guard_is_e116`] above — pinned
+    /// separately here so a regression that reintroduces the duplicate
+    /// phrase fails on message content, not just on `.code`.
+    #[test]
+    fn e116_message_is_not_doubled() {
+        let diags =
+            check_all("=== main ===\n~ temp r = find(\"ab\", \"b\")\n{r: found.}\n-> END\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let message = &diags[0].message;
+        assert_eq!(
+            message.matches("has no truthiness").count(),
+            1,
+            "E116 message repeats its core sentence: {message:?}"
+        );
+        assert_eq!(
+            message.matches("== none").count(),
+            1,
+            "E116 message repeats the `== none` idiom: {message:?}"
+        );
     }
 
     #[test]

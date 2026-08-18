@@ -255,6 +255,7 @@ pub fn resolve(
             fallback: TextRange::new(0.into(), 0.into()),
             spine: BTreeSet::new(),
             table: &mut table,
+            lambda_locals: Vec::new(),
             diagnostics: &mut out,
         };
         // Issue #2098: `CoalesceVisitor::enter_var_decl`/`enter_const_decl`
@@ -319,22 +320,19 @@ struct CoalesceVisitor<'a> {
     spine: BTreeSet<usize>,
     /// The chain-root verdicts recorded so far.
     table: &'a mut CoalesceTable,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field/hook pair exactly —
+    /// see that field's own doc.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
-impl<'a> CoalesceVisitor<'a> {
-    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
-    }
-
-    fn ctx(&self) -> MistypeCtx<'a> {
-        MistypeCtx {
-            index: self.index,
-            globals: self.globals,
-            signatures: self.signatures,
-            resolution_by_range: self.resolution_by_range,
-            locals: self.current_locals(),
-        }
+impl CoalesceVisitor<'_> {
+    fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
+        self.lambda_locals
+            .last()
+            .or_else(|| self.stitch_locals.or(self.knot_locals))
     }
 
     /// The `DefinitionId` a knot/stitch's own name resolves to — mirrors
@@ -428,7 +426,21 @@ impl HirVisitor for CoalesceVisitor<'_> {
         for node in chain_spine(expr).iter().skip(1) {
             self.spine.insert(std::ptr::from_ref(*node).addr());
         }
-        let ctx = self.ctx();
+        // Built from direct field projections (not `self.ctx()`) so the
+        // borrow checker sees this only borrows the locals-shaped fields,
+        // disjoint from the `self.table`/`self.diagnostics` reborrows below
+        // — see `structs::ConstructionVisitor::enter_expr`'s identical
+        // comment.
+        let ctx = MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self
+                .lambda_locals
+                .last()
+                .or_else(|| self.stitch_locals.or(self.knot_locals)),
+        };
         analyze_chain(
             expr,
             self.fallback,
@@ -437,6 +449,15 @@ impl HirVisitor for CoalesceVisitor<'_> {
             self.table,
             self.diagnostics,
         );
+    }
+
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let pruned = structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
     }
 }
 
@@ -1088,5 +1109,62 @@ mod tests {
             "a bare-literal chain's fallback anchor must be the VAR's own \
              range when nothing narrower is available"
         );
+    }
+
+    // ─── issue #2773: the pruned lambda frame changes the RECORDED SHAPE,
+    // not just which diagnostics fire ─────────────────────────────────
+
+    /// Review finding on issue #2773: of the six consumers the lambda-frame
+    /// fix touches, this one is **not** diagnostics-only. `analyze_chain`
+    /// writes `CoalesceStep::shape` into the `CoalesceTable`, which
+    /// `brink_analyzer::coalesce_lir_lookup` hands to `brink-db`'s
+    /// `coalesce_types_query` and from there to
+    /// `lir::lower::expr::lower_coalesce_chain` — so a flipped shape is
+    /// **different emitted bytecode**, not a different squiggle.
+    ///
+    /// This is the control half. The lambda's own `x` carries a resolvable
+    /// `: Option<int>` annotation, so `pruned_locals_for_lambda` seeds it
+    /// back after pruning: the left-hand operand stays pinned and the step
+    /// still records `PreserveOption`. Unchanged by the fix — it is here so
+    /// the flip below is demonstrably caused by the *missing annotation*
+    /// and not by the pruning eating every lambda param unconditionally.
+    #[test]
+    fn an_annotated_shadowing_lambda_param_keeps_its_preserve_option_shape() {
+        let chain = only_chain(
+            "fn build() {\n  let x = some(1);\n  let f = |x: Option<int>| x or none;\n}\n",
+        );
+        assert_eq!(chain.steps.len(), 1, "{chain:?}");
+        let step = &chain.steps[0];
+        assert_eq!(step.lhs, opt(Ty::Int));
+        assert_eq!(step.shape, CoalesceShape::PreserveOption);
+    }
+
+    /// The flip itself. `build`'s own `x` is `Option<int>`; the lambda's
+    /// own `x` param shadows it and carries **no** annotation, so the
+    /// pruned frame removes it and re-seeds nothing.
+    ///
+    /// Pre-fix, `classify_coalesce_operand` read the *outer* `x` by bare
+    /// name and pinned the left-hand side to `Option<int>` — recording
+    /// `PreserveOption` from a binding that is not the one in scope, which
+    /// is a real miscompile, not merely a wrong diagnostic. Post-fix the
+    /// operand is genuinely unclassifiable, `analyze_chain`'s
+    /// `.unwrap_or(Ty::Unknown)` records `Ty::Unknown`, and `step_shape`
+    /// short-circuits to `RuntimeCheck` — the honest posture for a value
+    /// whose Option-ness is not knowable here.
+    ///
+    /// If a future edit dropped the frame push, this regresses to
+    /// `PreserveOption` and silently changes generated code again.
+    #[test]
+    fn an_unannotated_shadowing_lambda_param_flips_the_step_to_runtime_check() {
+        let chain = only_chain("fn build() {\n  let x = some(1);\n  let f = |x| x or none;\n}\n");
+        assert_eq!(chain.steps.len(), 1, "{chain:?}");
+        let step = &chain.steps[0];
+        assert_eq!(
+            step.lhs,
+            Ty::Unknown,
+            "the lambda's own unannotated `x` must not inherit the outer \
+             `Option<int>`: {step:?}"
+        );
+        assert_eq!(step.shape, CoalesceShape::RuntimeCheck);
     }
 }

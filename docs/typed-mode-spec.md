@@ -227,6 +227,38 @@ An unannotated param/return is entirely unaffected by this ruling — #1910's
 own fix stands exactly as it was: the body-derived type still wins over
 nothing, because there is no written annotation to govern with.
 
+**RULED (issue #2773): this is the CHECK-side counterpart to the
+inference-side frame boundary ruled above — inside a lambda's own body,
+strict-mode CHECK classification reads the lambda's own written `: T`
+param annotations, and treats every other lambda-own binding as
+unclassifiable there, never the enclosing def's same-named binding.**
+The frame-boundary rulings above (#1763/#1770/#1912/#1941/#1994) all
+concern *inference* (`infer::body::InferPass`, `BodyTypes::locals`
+itself); this rule concerns the *CHECK* passes that read the already-
+finalized `BodyTypes::locals` back out by bare name after inference is
+done. `hir::visit::walk_expr`'s `Expr::Lambda` descent (issue #1685) has
+always walked into a lambda's own body as part of the ordinary expression
+tree, so any `HirVisitor`-driven CHECK that classifies an expression from
+`ctx.locals`/`current_locals()` while visiting inside a lambda body
+inherits the same bare-name shadowing hazard the inference frame boundary
+exists to avoid — a lambda-own binding (an annotated or unannotated
+param, or a name the block's own statements introduce) that shares a name
+with a *different-typed* outer local must not be silently classified as
+the outer binding's type. The checks this governs: mistyped-field
+construction (`E071`, `structs.rs`), conversion domain (`E078`,
+`conversions.rs`), or-coalescing (`coalesce.rs`), refined-range
+membership (`E117`, `range_refinement.rs`), `contains`-domain (`E152`,
+`contains_domain.rs`), and UFCS receiver typing (`ufcs.rs`) — each pushes
+a pruned locals frame (`structs::pruned_locals_for_lambda`) on
+`enter_lambda`/pops it on `exit_lambda`, keeping only the lambda's own
+explicitly `: T`-annotated params (seeded back in under their own names)
+and falling back to "unclassifiable" ("Unknown never disagrees") for
+every other lambda-own binding, rather than reading through to a
+same-named outer binding's type. `option_conditions.rs`'s condition-
+position walk (`E116`) shipped this same rule first, unspecced
+(#2764/#2768/#2782); this ruling generalizes it to the other six
+consumers of the identical hazard class and gives it a normative home.
+
 ## 3. Annotation syntax — RULED
 
 **Inline types, brink-dialect-gated.** This revises the #473 ruling: the

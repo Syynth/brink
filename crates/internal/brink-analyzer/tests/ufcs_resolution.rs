@@ -576,6 +576,71 @@ fn main(guest) {
     );
 }
 
+// ─── issue #2773: a lambda-own receiver must not inherit an outer
+// same-named binding's type ──────────────────────────────────────────
+
+/// Review finding on issue #2773: everywhere else in that fix,
+/// "unclassifiable" means *silence* — but here it means a **new hard
+/// error on source that previously compiled**, so it must be pinned
+/// deliberately rather than left to fall out.
+///
+/// `pruned_locals_for_lambda` prunes every lambda param name from the
+/// inherited frame and re-seeds only the ones carrying a resolvable `: T`
+/// annotation. The inner `s` has none, so `head_ty` finds nothing,
+/// `receiver_ty` returns `None`, and `resolve_call` pushes `E142`.
+///
+/// Pre-fix this fixture resolved the inner `s` to the *enclosing* `f`'s
+/// same-named param by bare name — a binding that is not the one in scope.
+/// The new error is the correct direction (it makes the shadowing case
+/// agree with `an_unknown_receiver_type_demands_an_annotation` above, where
+/// a plain unannotated param already earned `E142`), but it is a behavior
+/// change for existing sources and is recorded as such in the changeset.
+#[test]
+fn an_unannotated_shadowing_lambda_param_receiver_demands_an_annotation() {
+    let (hir, manifest) = lower(
+        "\
+fn shout(s: string, times: int) {
+  return times;
+}
+
+fn f(s: string) {
+  let g = |s| s.shout(2);
+}
+",
+    );
+    let diags = diagnostics(&hir, &manifest);
+    let e142 = only(&diags, DiagnosticCode::E142);
+    assert!(
+        e142.message.contains("annotate"),
+        "E142 must demand an annotation: {}",
+        e142.message
+    );
+}
+
+/// The control half: the same shadowing shape, but the lambda's own param
+/// carries its own `: string` annotation, so `pruned_locals_for_lambda`
+/// seeds it back and the receiver resolves — from the lambda's own written
+/// type, never the enclosing `f`'s same-named binding. No `E142`.
+#[test]
+fn an_annotated_shadowing_lambda_param_receiver_resolves_from_its_own_annotation() {
+    let (hir, manifest) = lower(
+        "\
+fn shout(s: string, times: int) {
+  return times;
+}
+
+fn f(s: int) {
+  let g = |s: string| s.shout(2);
+}
+",
+    );
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E142),
+        "the lambda's own `: string` annotation must resolve the receiver: {diags:?}"
+    );
+}
+
 // ─── D5: auto-ref (issue #1462) ──────────────────────────────────────
 
 /// A `ref` first parameter turns the desugar into the auto-ref shape — never

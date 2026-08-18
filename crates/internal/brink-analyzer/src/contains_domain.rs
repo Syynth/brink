@@ -164,6 +164,7 @@ pub fn check(
             current_knot_name: None,
             knot_locals: None,
             stitch_locals: None,
+            lambda_locals: Vec::new(),
             diagnostics: &mut out,
         };
         // Issue #2098: `ContainsVisitor::enter_expr` has no state that needs
@@ -195,22 +196,19 @@ struct ContainsVisitor<'a> {
     /// The currently-open stitch's own finalized locals, if any — takes
     /// priority over `knot_locals` while set.
     stitch_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field/hook pair exactly —
+    /// see that field's own doc.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
-impl<'a> ContainsVisitor<'a> {
-    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
-    }
-
-    fn ctx(&self) -> MistypeCtx<'a> {
-        MistypeCtx {
-            index: self.index,
-            globals: self.globals,
-            signatures: self.signatures,
-            resolution_by_range: self.resolution_by_range,
-            locals: self.current_locals(),
-        }
+impl ContainsVisitor<'_> {
+    fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
+        self.lambda_locals
+            .last()
+            .or_else(|| self.stitch_locals.or(self.knot_locals))
     }
 
     /// The `DefinitionId` a knot/stitch's own name resolves to — mirrors
@@ -255,8 +253,30 @@ impl HirVisitor for ContainsVisitor<'_> {
     }
 
     fn enter_expr(&mut self, expr: &Expr) {
-        let ctx = self.ctx();
+        // Built from direct field projections (not `self.ctx()`) so the
+        // borrow checker sees this only borrows the locals-shaped fields,
+        // disjoint from the `self.diagnostics` reborrow below — see
+        // `structs::ConstructionVisitor::enter_expr`'s identical comment.
+        let ctx = MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self
+                .lambda_locals
+                .last()
+                .or_else(|| self.stitch_locals.or(self.knot_locals)),
+        };
         check_call(expr, self.file, &ctx, self.diagnostics);
+    }
+
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let pruned = structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
     }
 }
 
@@ -738,5 +758,42 @@ mod tests {
         // `crates/brink-compiler/tests/e0xx_diagnostics.rs`.
         let diags = check_all("=== main ===\n~ x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
+    }
+
+    // ─── issue #2773: a lambda-own binding must not inherit an outer
+    // same-named local's type ─────────────────────────────────────────
+
+    /// Review finding on issue #2773: E152 was one of the two consumers the
+    /// issue never named, so nothing in the corpus covered it — this file's
+    /// `enter_lambda`/`exit_lambda` frame shipped with no fixture at all.
+    ///
+    /// `build`'s own temp `k` is `array`-typed (`[1, 2, 3]`), which
+    /// `non_key_domain_kind_for_ty` maps to `"array"` — outside a
+    /// `Map<int, _>`'s key domain. The lambda's own `k: int` param shadows
+    /// it, and `int` is squarely *inside* that key domain. Pre-fix,
+    /// `classify_expr_ty` read the outer `array` by bare name and raised a
+    /// false-positive `E152`; post-fix the pruned frame seeds `k` from its
+    /// own annotation and the fixture is clean.
+    #[test]
+    fn lambda_param_shadowing_outer_array_local_is_not_misclassified_as_out_of_domain() {
+        let diags = check_all_native(
+            "fn build() {\n  let k = [1, 2, 3];\n  let f = |k: int| {\n    contains(Map { 1: \"a\" }, k)\n  };\n}\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// The positive control: pruning must not *silence* a genuine
+    /// out-of-domain needle inside the lambda's own body. The lambda's own
+    /// `k: Map<int, int>` param really is outside a `Map<int, _>`'s key
+    /// domain, so `E152` must still fire — sourced from the lambda's own
+    /// annotation, not from the outer `k`.
+    #[test]
+    fn lambda_param_own_annotation_still_flags_a_genuine_out_of_domain_needle() {
+        let diags = check_all_native(
+            "fn build() {\n  let k = [1, 2, 3];\n  let f = |k: Map<int, int>| {\n    contains(Map { 1: \"a\" }, k)\n  };\n}\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E152);
+        assert!(diags[0].message.contains("map"), "{:?}", diags[0].message);
     }
 }
