@@ -35,12 +35,18 @@
 //!    dialect/policy combination, `Strict` included. See
 //!    `root_flow_e063_never_fires_regardless_of_policy` below.
 //!
-//! Both tests below compile through the same public `brink_compiler::
+//! All three tests below compile through the same public `brink_compiler::
 //! compile_with_options` entry point real callers use (`brink-cli compile`,
-//! `brink_environment::compile`), and the second additionally links and
-//! runs the compiled `.inkb` through `brink_runtime::Story` to confirm the
-//! real user-visible outcome (a `RuntimeError::NotCallable` fault, not a
-//! silent no-op) for every cell that compiles clean.
+//! `brink_environment::compile`), and the two that have clean-compile cells
+//! additionally link and run the compiled `.inkb` through `brink_runtime::
+//! Story` to confirm the real user-visible outcome (a
+//! `RuntimeError::NotCallable` fault, not a silent no-op) for every such
+//! cell. A third test, `named_knot_param_e065_fires_only_under_effective_
+//! strict_policy`, audits the same mistake shaped as a **function param**
+//! instead of a `~ temp` local — a param can only ever sit inside a named
+//! knot (never the default/entry flow), and under the effective `Strict`
+//! policy it fails to compile too, but with three `E065` escape
+//! diagnostics rather than `E063`.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
@@ -58,6 +64,17 @@ enum Outcome {
     /// Fails to compile with `E064` (`types = strict` requires
     /// `dialect = brink` — `strict::check` never even runs).
     E064,
+    /// Fails to compile with exactly three `E063`-sibling `E065` escape
+    /// diagnostics: the param's own type, the enclosing knot's return
+    /// type, and the call-through-value type all escape strict inference
+    /// as `Unknown`. This is the function-param shape's counterpart to
+    /// `E063` — a param can only ever sit inside a named knot (never the
+    /// root/entry flow, see `root_flow_e063_never_fires_regardless_of_policy`),
+    /// so its inference body is always in `check_value_calls`'s scan, and
+    /// under the effective `Strict` policy every one of those three sites
+    /// independently escapes as `Unknown` rather than resolving to a
+    /// concrete `fn(T…): R`.
+    ParamE065Triple,
 }
 
 const COMBOS: [(&str, Dialect, Option<TypePolicy>); 6] = [
@@ -113,6 +130,12 @@ fn assert_table(source: &str, expected: [Outcome; 6]) {
                     Outcome::E063
                 } else if codes == [brink_compiler::DiagnosticCode::E064] {
                     Outcome::E064
+                } else if codes.len() == 3
+                    && codes
+                        .iter()
+                        .all(|c| *c == brink_compiler::DiagnosticCode::E065)
+                {
+                    Outcome::ParamE065Triple
                 } else {
                     panic!("dialect={label} types={types:?}: unexpected diagnostics {codes:?}");
                 }
@@ -150,6 +173,80 @@ value: {count(1, 2)}
             Outcome::E063,                         // Brink, Strict
         ],
     );
+}
+
+/// Companion to `named_knot_e063_fires_only_under_effective_strict_policy`:
+/// the exact same mistake, but through a **function param** rather than a
+/// `~ temp` local (`docs/diagnostics/E035.md`'s call-site table, "local
+/// (`temp`/param) called" row). A param can only ever live inside a named
+/// knot's own parameter list — never the root/entry flow — so unlike the
+/// `temp` shape there is no root-flow variant of this test. Under the
+/// effective `Strict` policy this shape does **not** produce `E063` the
+/// way the `temp` shape does: it produces three independent `E065` escape
+/// diagnostics instead (param type, return type, and call-through-value
+/// type all escape as `Unknown`), because a param's type is inferred from
+/// call-site usage inside the same body `check_value_calls` inspects, so
+/// the escape check trips before the value-call check can classify the
+/// callee as a concrete non-`fn` type.
+#[test]
+fn named_knot_param_e065_fires_only_under_effective_strict_policy() {
+    let source = "\
+-> main
+=== main ===
+value: {f(5)}
+-> DONE
+
+=== function f(count) ===
+~ return count(1, 2)
+";
+    assert_table(
+        source,
+        [
+            Outcome::CompilesCleanFaultsAtRuntime, // StrictInk, None -> Gradual
+            Outcome::CompilesCleanFaultsAtRuntime, // StrictInk, Gradual
+            Outcome::E064,                         // StrictInk, Strict (config error)
+            Outcome::ParamE065Triple,              // Brink, None -> Strict (default!)
+            Outcome::CompilesCleanFaultsAtRuntime, // Brink, Gradual
+            Outcome::ParamE065Triple,              // Brink, Strict
+        ],
+    );
+
+    // Confirm the "compiles clean" cells are not a silent no-op either:
+    // they fault at runtime with the same `NotCallable` a `temp` local
+    // hits, exactly as `docs/diagnostics/E035.md` claims.
+    for (label, dialect, types) in [
+        ("StrictInk", Dialect::StrictInk, None),
+        ("StrictInk", Dialect::StrictInk, Some(TypePolicy::Gradual)),
+        ("Brink", Dialect::Brink, Some(TypePolicy::Gradual)),
+    ] {
+        let compiled = compile_with(source, dialect, types).unwrap_or_else(|e| {
+            panic!("dialect={label} types={types:?}: expected clean compile, got {e:?}")
+        });
+        let (program, line_tables) = brink_runtime::link(&compiled.data).expect("link");
+        let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+            std::sync::Arc::new(program),
+            line_tables,
+        );
+        let mut fault = None;
+        for _ in 0..8 {
+            match story.continue_single() {
+                Ok(brink_runtime::Step::Line(_) | brink_runtime::Step::Done) => {}
+                Ok(
+                    brink_runtime::Step::Choices(_)
+                    | brink_runtime::Step::Suspended
+                    | brink_runtime::Step::End,
+                ) => break,
+                Err(err) => {
+                    fault = Some(err);
+                    break;
+                }
+            }
+        }
+        assert!(
+            matches!(fault, Some(brink_runtime::RuntimeError::NotCallable(_))),
+            "dialect={label} types={types:?}: expected a NotCallable runtime fault, got {fault:?}"
+        );
+    }
 }
 
 /// Finding (2): the exact same mistake, in the file's default/entry flow
