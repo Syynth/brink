@@ -11,6 +11,7 @@ import {
   createShellLayoutStore,
   documentKey,
   groupCommandsForMenu,
+  registerEditorGroupCommands,
   registerMaximizeCommands,
   type Command,
   type DocumentRef,
@@ -182,6 +183,193 @@ describe("toggleMaximizeGroup", () => {
 
     expect(store.getState().maximizedGroupId).toBe(first);
     expect(store.getState().focusedGroupId).toBe(first);
+  });
+
+  // #2826 hole 2: openDocument's NEW-TAB fall-through (a doc that is not
+  // open anywhere yet) used to skip the un-maximize clear entirely — it
+  // shared no code path with the "focused"-reveal fix from #2797/PR #2817,
+  // so a Binder click on a not-yet-open file appeared dead the same way a
+  // reveal used to. `focusGroup` reproduces the desync directly (the
+  // store-level shape of whatever editor.focusNextGroup's `when: groups.length
+  // > 1` lets happen while maximized — issue #2826 hole 1, left for a
+  // maintainer ruling) so this test does not depend on that command's fix.
+  it("opening a never-before-opened doc into a maximized-hidden focused group reveals it (#2826 hole 2)", () => {
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    const second = store.getState().groups[1].id;
+    store.getState().toggleMaximizeGroup(first);
+    store.getState().focusGroup(second);
+    expect(store.getState().maximizedGroupId).toBe(first);
+    expect(store.getState().focusedGroupId).toBe(second);
+
+    store.getState().openDocument(ref("c.ink"));
+
+    expect(store.getState().maximizedGroupId).toBeNull();
+    expect(store.getState().focusedGroupId).toBe(second);
+    expect(
+      store
+        .getState()
+        .groups.find((g) => g.id === second)!
+        .tabs.map((t) => t.ref.docId),
+    ).toContain("c.ink");
+  });
+
+  // The issue calls this branch out by name: an explicit `{ group }` target
+  // has no in-tree caller today, but would inherit the same hole the moment
+  // one appears. The single-final-return refactor covers it uniformly with
+  // every other target, so it is worth its own pin.
+  it("an explicit group target reveals it too, even with no in-tree caller today", () => {
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    const second = store.getState().groups[1].id;
+    store.getState().toggleMaximizeGroup(first);
+
+    store.getState().openDocument(ref("c.ink"), { group: second });
+
+    expect(store.getState().maximizedGroupId).toBeNull();
+    expect(store.getState().focusedGroupId).toBe(second);
+  });
+
+  it("an explicit group target for the maximized group itself needs no un-maximize", () => {
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    store.getState().toggleMaximizeGroup(first);
+
+    store.getState().openDocument(ref("c.ink"), { group: first });
+
+    expect(store.getState().maximizedGroupId).toBe(first);
+  });
+});
+
+// ── moveTabToGroup, same invariant (#2826 "Related, same invariant") ──
+//
+// Reachable today via `editor.moveTabRight` / `editor.moveTabLeft`
+// (editor-commands.ts) — their `when` clauses check only group index and
+// tab count, not maximize state — as well as by tab drag-and-drop. Exercised
+// directly at the store level first, then pinned through the command path
+// below so a regression in either `when` clause is caught.
+
+describe("moveTabToGroup while a sibling is maximized", () => {
+  it("reveals the target group when the source group does not collapse", () => {
+    const store = createEditorGroupsStore();
+    store.getState().openDocument(ref("a.ink"));
+    store.getState().openDocument(ref("d.ink"));
+    const first = store.getState().focusedGroupId;
+    store.getState().openDocument(ref("b.ink"), { group: "split-right" });
+    const second = store.getState().focusedGroupId;
+
+    store.getState().toggleMaximizeGroup(first);
+    store.getState().focusGroup(second);
+    expect(store.getState().maximizedGroupId).toBe(first);
+
+    store.getState().moveTabToGroup(documentKey(ref("d.ink")), first, second);
+
+    const s = store.getState();
+    expect(s.maximizedGroupId).toBeNull();
+    expect(s.focusedGroupId).toBe(second);
+    expect(s.groups).toHaveLength(2);
+    expect(s.groups.find((g) => g.id === first)!.tabs.map((t) => t.ref.docId)).toEqual([
+      "a.ink",
+    ]);
+  });
+
+  it("still un-maximizes when the move collapses the (maximized) source group", () => {
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    const second = store.getState().groups[1].id;
+    store.getState().toggleMaximizeGroup(first);
+    expect(store.getState().maximizedGroupId).toBe(first);
+
+    // `first` holds only a.ink — moving it away collapses `first`.
+    store.getState().moveTabToGroup(documentKey(ref("a.ink")), first, second);
+
+    const s = store.getState();
+    expect(s.groups).toHaveLength(1);
+    expect(s.maximizedGroupId).toBeNull();
+  });
+
+  it("landing back in the still-maximized group needs no change", () => {
+    const store = createEditorGroupsStore();
+    store.getState().openDocument(ref("a.ink"));
+    store.getState().openDocument(ref("d.ink"));
+    const first = store.getState().focusedGroupId;
+    store.getState().openDocument(ref("b.ink"), { group: "split-right" });
+    const second = store.getState().focusedGroupId;
+
+    store.getState().toggleMaximizeGroup(first);
+    store.getState().moveTabToGroup(documentKey(ref("b.ink")), second, first);
+
+    expect(store.getState().maximizedGroupId).toBe(first);
+  });
+});
+
+// Pins the command-path reachability of moveTabToGroup-while-maximized: the
+// palette dispatch, not just the store primitive. `editor.moveTabRight`'s
+// `when` clause has no maximize check, so it runs while a sibling group is
+// maximized-hidden and must un-maximize via the same store logic exercised
+// directly above.
+describe("editor.moveTabRight/moveTabLeft while a sibling is maximized", () => {
+  it("editor.moveTabRight un-maximizes when it reveals the hidden target group (source survives)", () => {
+    const commands = new CommandRegistry();
+    const store = createEditorGroupsStore();
+    store.getState().openDocument(ref("a.ink"));
+    store.getState().openDocument(ref("d.ink")); // second tab, active, in the same (focused) group
+    const first = store.getState().focusedGroupId;
+    store.getState().openDocument(ref("b.ink"), { group: "split-right" });
+    const second = store.getState().focusedGroupId;
+
+    // Maximize `first` (still holding both a.ink and d.ink) and refocus it —
+    // the `when` clause has no maximize check, so the command is offered.
+    store.getState().toggleMaximizeGroup(first);
+    expect(store.getState().maximizedGroupId).toBe(first);
+    expect(store.getState().focusedGroupId).toBe(first);
+
+    const dispose = registerEditorGroupCommands(commands, store);
+    try {
+      expect(commands.dispatch("editor.moveTabRight")).toBe(true);
+    } finally {
+      dispose();
+    }
+
+    const s = store.getState();
+    expect(s.maximizedGroupId).toBeNull();
+    expect(s.focusedGroupId).toBe(second);
+    expect(s.groups).toHaveLength(2);
+    expect(s.groups.find((g) => g.id === first)!.tabs.map((t) => t.ref.docId)).toEqual([
+      "a.ink",
+    ]);
+    expect(s.groups.find((g) => g.id === second)!.tabs.map((t) => t.ref.docId)).toEqual([
+      "b.ink",
+      "d.ink",
+    ]);
+  });
+
+  it("editor.moveTabLeft un-maximizes when the move collapses the (maximized) source group", () => {
+    const commands = new CommandRegistry();
+    const store = twoGroups();
+    const first = store.getState().groups[0].id;
+    const second = store.getState().groups[1].id;
+    expect(store.getState().focusedGroupId).toBe(second);
+
+    // `second` holds only b.ink — moving it left will collapse `second`.
+    store.getState().toggleMaximizeGroup(second);
+    expect(store.getState().maximizedGroupId).toBe(second);
+
+    const dispose = registerEditorGroupCommands(commands, store);
+    try {
+      expect(commands.dispatch("editor.moveTabLeft")).toBe(true);
+    } finally {
+      dispose();
+    }
+
+    const s = store.getState();
+    expect(s.maximizedGroupId).toBeNull();
+    expect(s.focusedGroupId).toBe(first);
+    expect(s.groups).toHaveLength(1);
+    expect(s.groups.find((g) => g.id === first)!.tabs.map((t) => t.ref.docId)).toEqual([
+      "a.ink",
+      "b.ink",
+    ]);
   });
 });
 

@@ -156,82 +156,78 @@ export function createEditorGroupsStore(): EditorGroupsStore {
       const key = documentKey(ref);
 
       set((s) => {
-        // Plain opens reveal an existing tab wherever it lives (§7.8).
-        if (target === "focused") {
-          const existing = findTab(s.groups, key);
-          if (existing) {
-            const groups = s.groups.map((g) =>
-              g.id === existing.group.id
-                ? {
-                    ...g,
-                    activeKey: key,
-                    tabs: g.tabs.map((t) =>
-                      // A pinned open of an existing preview tab pins it.
-                      documentKey(t.ref) === key && pinned && !t.pinned
-                        ? { ...t, pinned: true }
-                        : t,
-                    ),
-                  }
-                : g,
-            );
-            // Revealing into a group hidden behind a maximized sibling must
-            // un-maximize (§5.4; mirrors the split-right fix, #2787) — a
-            // reveal that lands behind the maximized group would focus the
-            // tab internally but paint nothing (EditorArea renders only the
-            // maximized group), making the click appear to do nothing
-            // (#2797). Revealing within the already-maximized group itself
-            // needs no change — it is already the only thing rendered.
-            const maximizedGroupId =
-              s.maximizedGroupId !== null && s.maximizedGroupId !== existing.group.id
-                ? null
-                : s.maximizedGroupId;
-            return { groups, focusedGroupId: existing.group.id, maximizedGroupId };
-          }
-        }
-
-        // Resolve the target group, creating one for "split-right".
         let groups = s.groups;
         let groupId: string;
-        // Splitting while maximized restores first (§5.4): a newly created
-        // split would land behind the maximized group and never render
-        // (EditorArea shows only the maximized group), so every split-right
-        // caller — not just splitGroup — must clear it here.
-        let maximizedGroupId = s.maximizedGroupId;
-        if (target === "split-right") {
-          const created = newGroup();
-          const at = groups.findIndex((g) => g.id === s.focusedGroupId);
-          groups = [...groups.slice(0, at + 1), created, ...groups.slice(at + 1)];
-          groupId = created.id;
-          maximizedGroupId = null;
-        } else if (target === "focused") {
-          groupId = s.focusedGroupId;
-        } else {
-          groupId = groups.some((g) => g.id === target) ? target : s.focusedGroupId;
-        }
 
-        groups = groups.map((g) => {
-          if (g.id !== groupId) return g;
-          const existing = g.tabs.find((t) => documentKey(t.ref) === key);
-          if (existing) {
-            const tabs = g.tabs.map((t) =>
-              documentKey(t.ref) === key && pinned && !t.pinned
-                ? { ...t, pinned: true }
-                : t,
-            );
-            return { ...g, tabs, activeKey: key };
+        // Plain opens reveal an existing tab wherever it lives (§7.8).
+        const revealed = target === "focused" ? findTab(s.groups, key) : null;
+        if (revealed) {
+          groupId = revealed.group.id;
+          groups = s.groups.map((g) =>
+            g.id === revealed.group.id
+              ? {
+                  ...g,
+                  activeKey: key,
+                  tabs: g.tabs.map((t) =>
+                    // A pinned open of an existing preview tab pins it.
+                    documentKey(t.ref) === key && pinned && !t.pinned
+                      ? { ...t, pinned: true }
+                      : t,
+                  ),
+                }
+              : g,
+          );
+        } else {
+          // Resolve the target group, creating one for "split-right".
+          if (target === "split-right") {
+            const created = newGroup();
+            const at = groups.findIndex((g) => g.id === s.focusedGroupId);
+            groups = [...groups.slice(0, at + 1), created, ...groups.slice(at + 1)];
+            groupId = created.id;
+          } else if (target === "focused") {
+            groupId = s.focusedGroupId;
+          } else {
+            groupId = groups.some((g) => g.id === target) ? target : s.focusedGroupId;
           }
-          const tab: EditorTab = { ref, pinned };
-          if (!pinned) {
-            // Preview opens replace the group's preview tab in place.
-            const previewIdx = g.tabs.findIndex((t) => !t.pinned);
-            if (previewIdx >= 0) {
-              const tabs = [...g.tabs];
-              tabs[previewIdx] = tab;
+
+          groups = groups.map((g) => {
+            if (g.id !== groupId) return g;
+            const existing = g.tabs.find((t) => documentKey(t.ref) === key);
+            if (existing) {
+              const tabs = g.tabs.map((t) =>
+                documentKey(t.ref) === key && pinned && !t.pinned
+                  ? { ...t, pinned: true }
+                  : t,
+              );
               return { ...g, tabs, activeKey: key };
             }
-          }
-          return { ...g, tabs: [...g.tabs, tab], activeKey: key };
-        });
+            const tab: EditorTab = { ref, pinned };
+            if (!pinned) {
+              // Preview opens replace the group's preview tab in place.
+              const previewIdx = g.tabs.findIndex((t) => !t.pinned);
+              if (previewIdx >= 0) {
+                const tabs = [...g.tabs];
+                tabs[previewIdx] = tab;
+                return { ...g, tabs, activeKey: key };
+              }
+            }
+            return { ...g, tabs: [...g.tabs, tab], activeKey: key };
+          });
+        }
+
+        // Every openDocument target upholds "focus never lands in a group
+        // EditorArea is not rendering" (§5.4; #2787, #2797, #2826): a single
+        // final clear, based on the resolved groupId, whether that group was
+        // revealed, split-right'd, explicitly targeted, or fell through to
+        // the focused group unchanged. Landing in the already-maximized
+        // group itself needs no change — it is already the only thing
+        // rendered. (#2826 hole 2: the new-tab fall-through into the focused
+        // group used to skip this clear entirely, because it shared the
+        // final return with split-right/explicit targets but not this one.)
+        const maximizedGroupId =
+          s.maximizedGroupId !== null && s.maximizedGroupId !== groupId
+            ? null
+            : s.maximizedGroupId;
 
         return { groups, focusedGroupId: groupId, maximizedGroupId };
       });
@@ -330,14 +326,23 @@ export function createEditorGroupsStore(): EditorGroupsStore {
           return g;
         });
 
-        let focusedGroupId = toGroupId;
+        const focusedGroupId = toGroupId;
         const groupSizes = { ...s.groupSizes };
-        let maximizedGroupId = s.maximizedGroupId;
         if (fromTabs.length === 0 && groups.length > 1) {
           groups = groups.filter((g) => g.id !== fromGroupId);
           delete groupSizes[fromGroupId];
-          if (maximizedGroupId === fromGroupId) maximizedGroupId = null;
         }
+        // Same invariant as openDocument (§5.4; #2826, "Related, same
+        // invariant"): a move that lands the focused group behind a
+        // maximized sibling must reveal it. This also covers the source
+        // group's own collapse when it was the maximized one — fromGroupId
+        // (now gone) can never equal toGroupId, so the general comparison
+        // clears it exactly when the old `maximizedGroupId === fromGroupId`
+        // special case did, without needing that case spelled out.
+        const maximizedGroupId =
+          s.maximizedGroupId !== null && s.maximizedGroupId !== focusedGroupId
+            ? null
+            : s.maximizedGroupId;
         return { groups, focusedGroupId, groupSizes, maximizedGroupId };
       });
     },
