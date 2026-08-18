@@ -35,7 +35,13 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets):
    changeset. A change to `packages/{brink-studio,studio-ui,studio-shell,
    ink-operations,studio-store}/src` (excluding test-only files) DOES
    need one, naming `@brink-lang/studio`; `scripts/check-studio-changeset.mjs`
-   (CI's `studio-changeset-guard` job) enforces this.
+   (CI's `studio-changeset-guard` job) enforces this. The same guard also
+   covers a named allowlist of non-`src` bundle-shaping files (bundler
+   configs, the embed HTML shell, and the two `package.json` manifests,
+   each with its own version/devDependencies carve-out — see the script's
+   header for the exact rules) and is satisfied equally by editing an
+   EXISTING changeset to add the `@brink-lang/studio` key, not only by
+   adding a new one (#2834).
 2. **Version PR** — on push to main, `.github/workflows/npm-release.yml`
    sees pending changesets and opens/updates a "Version Packages" PR that
    applies the bumps and writes `CHANGELOG.md`s.
