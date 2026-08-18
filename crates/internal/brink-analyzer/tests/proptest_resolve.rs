@@ -26,7 +26,8 @@
 use std::collections::HashSet;
 
 use brink_ir::{
-    DeclaredSymbol, DiagnosticCode, FileId, RefKind, Scope, SymbolManifest, UnresolvedRef,
+    DeclaredSymbol, DiagnosticCode, FileId, RefKind, Scope, SymbolKind, SymbolManifest,
+    UnresolvedRef,
 };
 use proptest::prelude::*;
 use rowan::{TextRange, TextSize};
@@ -762,6 +763,110 @@ LIST Colors = red, green, blue
         .filter(|d| d.code == DiagnosticCode::E025)
         .collect();
     assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
+}
+
+/// Issue #2830: a bare list-item name that collides with a stdlib list verb
+/// (`pop`), referenced from inside a knot whose name also collides with the
+/// declaring list's name (`a`), must still resolve to the list item rather
+/// than being silently swallowed by the `is_t1b_stdlib_name` fallback in
+/// `resolve_function` — the exact shape the `completeness` proptest's pinned
+/// regression seed (`proptest_resolve.proptest-regressions`) shrunk down to.
+/// `#fn(target)` is a real-syntax `RefKind::Function` site with
+/// `arg_count: None` (`brink_ir::symbols::project::Projector::walk_expr`'s
+/// `Expr::FnLiteral` arm), matching the counterexample's shape exactly.
+///
+/// `#fn(…)` is a brink extension (docs/t1b-surface-spec.md §1), so this
+/// analyzes with `Dialect::Brink` rather than `analyze_ink`'s default
+/// `StrictInk` — under `StrictInk` the fixture would also carry a
+/// `dialect_gate` `E051` ("brink extension") at the `#fn` site, and this
+/// test's `E025`-only diagnostics filter would silently hide that unrelated
+/// diagnostic rather than prove the fixture is clean. `brink_syntax::parse`
+/// (the ink-compat parser) still does the parsing — it accepts the full
+/// superset grammar unconditionally and only the dialect gate is
+/// StrictInk-vs-Brink sensitive — so the source stays ink surface by
+/// design, matching every other fixture in this file.
+#[test]
+fn integration_bare_list_item_collides_with_stdlib_verb_name() {
+    let parsed = brink_syntax::parse(
+        "\
+LIST a = pop, other
+
+== a ==
+~ temp f = #fn(pop)
+-> END
+",
+    );
+    let (hir, manifest, _lowering_diags) = brink_ir::lower(FileId(0), &parsed.tree());
+    let files = vec![(FileId(0), &hir, &manifest)];
+    let opts = brink_analyzer::AnalysisOptions {
+        dialect: brink_analyzer::Dialect::Brink,
+        // Pin `Gradual` explicitly rather than taking `Dialect::Brink`'s
+        // own default (`Strict`, per `resolve_type_policy`) — this
+        // fixture's `~ temp f = #fn(pop)` never reads `f`, and TM-3 strict
+        // inference's Unknown-escape check (`E065`) would fire on that,
+        // which is noise unrelated to what this test is about.
+        types: Some(brink_analyzer::TypePolicy::Gradual),
+        ..brink_analyzer::AnalysisOptions::default()
+    };
+    let result = brink_analyzer::analyze_with_options(&files, &opts);
+
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
+    // The completeness guarantee this issue is about: no diagnostic here
+    // would mean the ref could have been silently dropped instead of
+    // resolved — a *silent drop* also produces no `E025`, so the assertion
+    // above alone would pass even while dropping the ref. Assert the
+    // reference was actually resolved, and to the specific `a.pop` list
+    // item — not just "resolved to something".
+    assert_eq!(
+        result.resolutions.len(),
+        1,
+        "expected the `#fn(pop)` target to resolve to the `a.pop` list item; \
+         resolutions: {:?}",
+        result.resolutions
+    );
+    let target = result.resolutions[0].target;
+    assert!(
+        result.index.symbols.contains_key(&target),
+        "resolution target {target:?} missing from symbol index"
+    );
+    let info = result
+        .index
+        .symbols
+        .get(&target)
+        .expect("just asserted above");
+    assert_eq!(
+        info.kind,
+        SymbolKind::ListItem,
+        "expected `#fn(pop)` to resolve to a ListItem, got {:?} ({:?})",
+        info.kind,
+        info.name,
+    );
+    assert_eq!(
+        info.name, "a.pop",
+        "expected `#fn(pop)` to resolve to the `a.pop` list item specifically",
+    );
+    // PR #2836 review finding 3 (SPEC DRIFT): resolving to a ListItem here
+    // does not create a new silent-shadowing rule — `fn_values::check`'s
+    // `E079` ("target does not resolve to a statically-named function
+    // definition") still refuses a `#fn` target that resolves to anything
+    // other than a function (docs/t1c-spec.md §2), so the list item wins
+    // *resolution* but is still diagnosed as an invalid `#fn` target. This
+    // is the resolved-and-diagnosed outcome the `completeness` invariant
+    // wants, not a bare "no diagnostic" pass.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E079),
+        "expected `#fn(pop)` (resolved to a ListItem) to be refused as an \
+         invalid function-value target by E079; diagnostics: {:?}",
+        result.diagnostics
+    );
 }
 
 #[test]
