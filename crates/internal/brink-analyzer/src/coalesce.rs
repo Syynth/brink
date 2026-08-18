@@ -804,6 +804,110 @@ mod tests {
         assert_eq!(chain.steps[0].rhs, Ty::Int);
     }
 
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix — an UNWANTED
+    // result flagged, not a new true positive ──────────────────────────
+
+    /// #2793 audit finding, corrected per review: unlike every other of the
+    /// six consumers (and unlike this same file's own lambda-param half,
+    /// pinned by
+    /// `an_annotated_shadowing_lambda_param_keeps_its_preserve_option_shape`
+    /// below), an *ordinary* `fn`/knot param's own written annotation is
+    /// **not visible to this file's own E066 check** when that param is
+    /// used directly as an `or` chain's own left-hand operand — #2786's fix
+    /// cannot reach this position at all, regardless of the param's
+    /// annotation. That much still holds. But the annotation is **not
+    /// silently defeated project-wide**: this test only asserts
+    /// `coalesce::resolve`'s own output, which was too narrow a claim.
+    ///
+    /// Root cause: `infer::body::InferPass::infer_infix`'s `InfixOp::Coalesce`
+    /// arm unconditionally back-propagates an *assumed* `Option[T]` shape
+    /// onto a bare-Path left-hand operand mid-walk (`self.observe(lhs,
+    /// &expected_lhs)`, always `Option`-shaped, "a coalescing `lhs` is
+    /// never optional-vs-leniency, it is *required* to be `Option[T]`" —
+    /// see that arm's own doc). That `observe` call runs *during*
+    /// `pass.infer_block`, writing `pass.locals["x"] = Option(Int)` (`x`'s
+    /// prior entry is `Unknown`, so `unify` accepts the assumption outright)
+    /// **before** `infer_def_body`'s own post-walk annotation overlay ever
+    /// runs. The overlay is correctly keyed on `contains_key`, not
+    /// `is_unknown()` (the #1912 firewall, guarding the *re-bound-temp*
+    /// case) — but that same guard, doing exactly its job, now also
+    /// protects this wrong, walk-assumed entry from ever being corrected by
+    /// `x`'s real `int` annotation: the overlay sees `"x"` already present
+    /// and skips it. The lambda-param path is immune to this because
+    /// `structs::pruned_locals_for_lambda` re-seeds a lambda's own
+    /// annotated param straight from its `TypeExpr` (`annotations::resolve`)
+    /// rather than reading back through this same mutated `pass.locals`
+    /// map — an asymmetry between the two param-visibility paths #2786's
+    /// own fix left in place.
+    ///
+    /// This is exactly the case `docs/typed-mode-spec.md` §2's **RULED
+    /// (issue #1912)** paragraph already carves out: "*evidence-producing*
+    /// positions — `infer_infix`'s comparison and arithmetic operands, an
+    /// intrinsic's sibling-argument `observe`… deliberately never consult
+    /// the [annotation] fallback." The `Coalesce` arm's `lhs` operand is
+    /// exactly one of those `infer_infix` evidence-producing positions —
+    /// this test does not reopen or contradict that ruling, and the
+    /// production fix this file's module doc defers to a "design
+    /// discussion" (out of this audit's scope) is *not* a proposal to
+    /// revise it. What's new here, and not something #1912 already
+    /// covered: #1912's own firewall description assumes a genuinely
+    /// unconstrained param stays `Unknown` and is then safely left alone;
+    /// it does not anticipate an evidence-producing site writing an
+    /// *assumed*, non-`Unknown` shape that later gets exported as the
+    /// param's own final signature type and then contradicts the written
+    /// annotation at a downstream CHECK *consumer* (`annotations::mismatches`
+    /// / E063) rather than staying silent. That's the gap this test and its
+    /// E063 assertion below pin.
+    ///
+    /// This same `pass.locals["x"] = Option(Int)` entry is also what
+    /// `infer_def_body`'s `param_types` overlay reads (`crates/internal/
+    /// brink-analyzer/src/infer/body.rs`): since it is non-`Unknown` by the
+    /// time that overlay runs, `x`'s real `int` annotation is never applied
+    /// there either, so the def's *exported signature* records `x:
+    /// Option<int>`. `strict::check` feeds that signature through
+    /// `annotations::mismatches` (E063), which compares it against the
+    /// written annotation and — because `assignable(Int, Option(Int))` is
+    /// false — reports a disagreement. So the annotation is not silently
+    /// defeated: it surfaces as E063 at the annotation site, a materially
+    /// different (and worse — the wrong code, wrong message, wrong span)
+    /// diagnostic than a correct E066 at the `or` site would be. Both
+    /// halves are pinned below: `coalesce::resolve`'s own local silence,
+    /// and the real `annotations::mismatches` diagnostic that actually
+    /// fires project-wide.
+    #[test]
+    fn annotated_fn_param_non_option_lhs_of_or_is_not_visible_to_e066() {
+        let src = "fn build(x: int) {\n  let y = x or 5;\n}\n";
+        let (hir, index, resolutions, inference) = build_native(src);
+        let (table, diags) = resolve(&[(HirFileId(0), &hir)], &index, &inference, &resolutions);
+        assert!(
+            diags.is_empty(),
+            "documents the gap: no E066 fires despite `x: int` disagreeing \
+             with `or`'s Option requirement: {diags:?}"
+        );
+        let (_key, chain) = table.iter().next().expect("one recorded chain");
+        assert_eq!(
+            chain.steps[0].lhs,
+            Ty::Option(Box::new(Ty::Int)),
+            "the coalesce arm's own forced back-propagation, not `x`'s real \
+             `int` annotation, is what the recorded shape reflects: {chain:?}"
+        );
+
+        // Pin what actually fires project-wide instead of stopping at
+        // `coalesce::resolve`'s silence: the same forced `Option<int>`
+        // shape exported as `x`'s signature type trips E063 at the
+        // annotation site.
+        let mismatch_diags =
+            annotations::mismatches(&[(HirFileId(0), &hir)], &index, &inference, None);
+        assert_eq!(mismatch_diags.len(), 1, "{mismatch_diags:?}");
+        assert_eq!(mismatch_diags[0].code, DiagnosticCode::E063);
+        assert_eq!(
+            mismatch_diags[0].message,
+            "annotated type `int` disagrees with the type inferred from usage (`Option<int>`)",
+            "{mismatch_diags:?}"
+        );
+    }
+
     #[test]
     fn non_option_left_hand_side_is_e066() {
         let diags = check_all("flow main() {\n  {5 or 9}\n  -> END\n}\n");
