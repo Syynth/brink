@@ -678,10 +678,6 @@ fn resolve_variable(
 ) {
     let path = &uref.path;
 
-    if is_builtin_function(path) {
-        return;
-    }
-
     match lookup_variable(index, scope, locals, uref) {
         VarResult::Found(id) => {
             map.push(ResolvedRef {
@@ -704,6 +700,24 @@ fn resolve_variable(
             // job, and the bare-`none`-needs-context declaration rule is
             // E107 (`option_rules`).
             if path == "none" {
+                return;
+            }
+
+            // Issue #2856 point 3: `is_builtin_function` is checked here —
+            // as a post-lookup fallback — not before `lookup_variable`
+            // runs, so a declared `VAR`/list item/knot/… of the same name
+            // (`manifest.rs`'s `E035` "name shadows a built-in function"
+            // warning already documents this as legal, shadowing behavior)
+            // wins resolution first. Only a genuinely unresolved reference
+            // to one of these classic uppercase ink intrinsics
+            // (`TURNS_SINCE`/`RANDOM`/…) falls through to this silent skip
+            // — mirroring `is_t1b_stdlib_name`'s already-correct ordering
+            // below in `resolve_function`. Before this fix the check ran
+            // unconditionally first, so a declared symbol could never
+            // shadow it: `VAR RANDOM = 42` / `{RANDOM}` silently dropped
+            // the reference (no resolution, no diagnostic) instead of
+            // reading 42 — reproduced end-to-end via `brink-cli`.
+            if is_builtin_function(path) {
                 return;
             }
             diagnostics.push(unresolved_diag(
@@ -873,11 +887,6 @@ fn resolve_function(
 ) {
     let path = &uref.path;
 
-    // Built-in functions don't need resolution — they're handled at LIR lowering.
-    if is_builtin_function(path) {
-        return;
-    }
-
     // Try externals first
     if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::External]) {
         map.push(ResolvedRef {
@@ -900,8 +909,29 @@ fn resolve_function(
         return;
     }
 
+    // A real **call site** (`arg_count.is_some()`) naming a reserved builtin
+    // (`is_builtin_function`'s classic uppercase intrinsics or
+    // `is_t1b_stdlib_name`'s T1b verbs) must not let a `List`/`Variable`
+    // symbol of that same name claim the call below — issue #2856 review:
+    // `VAR MAX = 10` + `{MAX(1, 2)}` compiled clean and then died at
+    // runtime with `RuntimeError::NotCallable("int")`, because the
+    // unconditional `SymbolKind::Variable` lookup just below had no
+    // call-site guard, unlike the list-item bare-name gate a few lines down
+    // (`arg_count.is_none()`, issue #2830) that this mirrors. A `VAR`/`LIST`
+    // is not itself callable the way a knot or a variable holding a divert
+    // target is — routing a reserved-name call through to the real builtin
+    // fallback below (`recognize_builtin`/`lower_t1b_stdlib_call`) is a
+    // clean compile with well-defined behavior, exactly matching this same
+    // name's pre-#2856 behavior, instead of a `CallVariable`/`ListFromInt`
+    // emitted against a value that was never meant to be called. Read-site
+    // shadowing (`resolve_variable`'s bare `{MAX}`) is untouched — this
+    // guard only narrows the *callee* lookup at a call site.
+    let reserved_call_site =
+        uref.arg_count.is_some() && (is_builtin_function(path) || is_t1b_stdlib_name(path));
+
     // Try list names (ink allows `list(n)` as type conversion)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List]) {
+    if !reserved_call_site && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List])
+    {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -911,7 +941,9 @@ fn resolve_function(
     }
 
     // Try variables (ink allows calling a variable holding a function ref)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable]) {
+    if !reserved_call_site
+        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable])
+    {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -973,13 +1005,29 @@ fn resolve_function(
     // matching user symbol are the brink-dialect builtins, handled at LIR
     // lowering —
     // same "skip resolution, no diagnostic here" treatment as
-    // `is_builtin_function` above. Dialect-agnostic at this layer (an
+    // `is_builtin_function` below. Dialect-agnostic at this layer (an
     // author-defined symbol of the same name always wins regardless of
     // dialect, matched by the lookups above before this is reached);
     // `strict-ink` rejection of an unresolved use is a separate diagnostic
     // (`brink-analyzer::dialect_gate`, which — unlike this resolution pass —
     // does know the dialect).
-    if is_t1b_stdlib_name(path) {
+    //
+    // Issue #2856 point 3: `is_builtin_function` (the classic uppercase ink
+    // intrinsics — `TURNS_SINCE`/`RANDOM`/…) is checked here too, alongside
+    // `is_t1b_stdlib_name`, rather than unconditionally before every lookup
+    // above as it was before this fix. `manifest.rs`'s `E035` ("name
+    // shadows a built-in function") already documents both name sets as
+    // author-shadowable with a warning, worded identically for each — but
+    // only `is_t1b_stdlib_name` actually honored that here; the
+    // `is_builtin_function` check ran first and unconditionally, so a
+    // declared external/knot/list/variable/local of the same name was
+    // never consulted at a *call* site either. Confirmed end-to-end via
+    // `brink-cli`: without this fix a real silent drop occurred, not merely
+    // a proptest-generator gap (the generator only ever emits lowercase
+    // identifiers, so it could never reach `is_builtin_function`'s
+    // all-uppercase names to begin with — see `arb_ident` in
+    // `proptest_resolve.rs`).
+    if is_t1b_stdlib_name(path) || is_builtin_function(path) {
         return;
     }
 
@@ -1252,8 +1300,19 @@ fn lookup_local_in_scope(
     best.map(|local| local_definition_id(&local.scope, &local.name, local.kind))
 }
 
-/// Ink built-in functions that are resolved at LIR lowering, not by the symbol index.
-pub(crate) fn is_builtin_function(name: &str) -> bool {
+/// Ink built-in functions that are resolved at LIR lowering, not by the
+/// symbol index.
+///
+/// `pub` rather than `pub(crate)` (module `resolve` itself stays private) so
+/// `lib.rs`'s `#[doc(hidden)] pub mod test_support` can re-export it —
+/// issue #2856: the `completeness` proptest
+/// (`tests/proptest_resolve.rs`) needs the REAL name set this function
+/// checks, not a hand-duplicated copy that would drift the moment a name is
+/// added here (this list already drifts by hand against
+/// `brink-ir::lir::lower::expr::recognize_builtin`, its own doc says so —
+/// adding a third hand-copy in a test file was rejected for the same
+/// reason).
+pub fn is_builtin_function(name: &str) -> bool {
     matches!(
         name,
         "TURNS_SINCE"
@@ -1292,14 +1351,20 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
 /// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
 /// ink intrinsics above.
 ///
-/// Unlike `is_builtin_function`, a name in this list is *not* unconditionally
-/// treated as reserved: `resolve_function`'s lookup chain (externals, knots,
-/// lists, variables, locals) always runs first, so an author-defined symbol
-/// of the same name resolves normally — shadowing the builtin (§5's
-/// ruling) — and only a resolution *failure* additionally checks this list
-/// before falling back to the builtin (silently, no diagnostic) instead of
-/// emitting E025.
-pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
+/// A name in this list is *not* unconditionally treated as reserved:
+/// `resolve_function`'s lookup chain (externals, knots, lists, variables,
+/// locals) always runs first, so an author-defined symbol of the same name
+/// resolves normally — shadowing the builtin (§5's ruling) — and only a
+/// resolution *failure* additionally checks this list before falling back
+/// to the builtin (silently, no diagnostic) instead of emitting E025.
+/// `is_builtin_function` now honors the identical ordering (issue #2856
+/// point 3 — before that fix it was checked unconditionally, first, so a
+/// declared symbol could never shadow one of *those* names; see that
+/// function's own doc for the confirmed silent-drop this caused).
+///
+/// `pub` rather than `pub(crate)` for the same `test_support` re-export
+/// reason as `is_builtin_function` above.
+pub fn is_t1b_stdlib_name(name: &str) -> bool {
     matches!(
         name,
         "len"

@@ -33,6 +33,7 @@ use proptest::prelude::*;
 use rowan::{TextRange, TextSize};
 
 use brink_analyzer::analyze;
+use brink_analyzer::test_support::{is_builtin_function, is_t1b_stdlib_name};
 use brink_ir::HirFile;
 
 // ─── Strategies ─────────────────────────────────────────────────────
@@ -297,6 +298,162 @@ fn empty_hir() -> HirFile {
     }
 }
 
+/// Issue #2856 PR review: does `manifest` declare an author symbol whose
+/// **name** is exactly `path`? Consulted by
+/// [`is_generator_unreachable_reserved_name`] to tell a genuinely-undeclared
+/// reserved-name ref (safe to exclude from `completeness`'s count) apart
+/// from a ref that merely *shares spelling* with a reserved name while a
+/// real declared symbol backs it (which must resolve normally and stay
+/// counted — excluding it would hide exactly the #2830/#2836 silent-drop
+/// shape this property exists to catch, since the pre-fix filter matched on
+/// `path` alone, before `analyze` ever ran, with no way to tell the two
+/// apart).
+///
+/// Checked against every declared-symbol table `arb_manifest` populates:
+/// knots, variables, externals, structs, and list names compare directly;
+/// list *items* compare by their bare, unqualified name, because
+/// `manifest.list_items` stores the dot-qualified `list.item` spelling
+/// (`arb_manifest`'s own doc, "each unresolved ref gets a unique offset") but
+/// a ref's `path` may legitimately name the bare item (`arb_manifest`'s
+/// `all_names` — the ref-target pool a generated ref's `path` is drawn from —
+/// includes both the qualified list name and the bare item name for every
+/// list).
+fn manifest_declares_name(manifest: &SymbolManifest, path: &str) -> bool {
+    manifest.knots.iter().any(|s| s.name == path)
+        || manifest.variables.iter().any(|s| s.name == path)
+        || manifest.externals.iter().any(|s| s.name == path)
+        || manifest.structs.iter().any(|s| s.name == path)
+        || manifest.lists.iter().any(|s| s.name == path)
+        || manifest
+            .list_items
+            .iter()
+            .any(|s| s.name.rsplit('.').next() == Some(path))
+}
+
+/// Issue #2856: names the second category `completeness` below excludes,
+/// alongside `RefKind::Type` — an unresolved ref whose `path` names one of
+/// the analyzer's compiler-reserved, resolution-optional identifiers
+/// (`resolve::is_builtin_function`'s classic uppercase ink intrinsics —
+/// `TURNS_SINCE`, `RANDOM`, … — or `resolve::is_t1b_stdlib_name`'s
+/// lowercase T1b stdlib names — `len`, `push`, … — re-exported for this
+/// purpose via `brink_analyzer::test_support`, not hand-duplicated here:
+/// see `is_builtin_function`'s own doc for why a third hand-copy was
+/// rejected) **and that nothing in `manifest` declares under that name**
+/// ([`manifest_declares_name`] above). `resolve_variable`/`resolve_function`
+/// may skip resolving such a reference with NO diagnostic — but, as of
+/// issue #2856 point 3's fix, ONLY once every real lookup (locals, globals,
+/// list items, knots, externals, …) has already failed to find a matching
+/// **declared** symbol; a declared symbol of the same name always wins
+/// first and is fully counted by `completeness` as resolved, never silently
+/// skipped (`integration_var_shadows_uppercase_builtin_name` below pins
+/// this at the analyzer layer; `crates/brink-compiler/tests/
+/// issue_2856_builtin_shadow.rs` pins the same guarantee end-to-end through
+/// codegen + the VM).
+///
+/// **Why the exclusion is safe, not merely incidental:** the silent skip
+/// this predicate targets fires only when NOTHING in the whole project
+/// declares a symbol under that name — which is the intended "defer
+/// resolution to the VM-native builtin at LIR lowering, no false E025"
+/// behavior the 2026-03-06 "Built-in function recognition belongs in the
+/// analyzer" decision-log ruling establishes, not a drop of real reference
+/// data. Issue #2836 previously found the opposite failure mode — an
+/// author-declared `pop` list item losing to the stdlib verb — WAS a real
+/// bug; that shape is excluded from this predicate's reach precisely
+/// because the lookup-before-fallback ordering (fixed for `pop`/
+/// `is_t1b_stdlib_name` by #2830/#2836, and for `is_builtin_function` by
+/// #2856 itself) makes the declared symbol win resolution instead of ever
+/// reaching here — and this predicate's own `manifest_declares_name` check
+/// is what makes that guarantee hold for the property itself, not just for
+/// the production resolver: a ref whose path matches BOTH a declared
+/// symbol and a reserved name is never excluded, so `completeness` still
+/// requires it to resolve.
+///
+/// **This predicate is consulted for every ref, unconditionally** — it does
+/// not skip a ref merely because its `path` matches a declared symbol's
+/// name; `manifest_declares_name` is exactly how it tells that case apart
+/// from a genuinely reserved-and-undeclared one and returns `false` for it.
+/// `arb_manifest`'s generator can currently only ever produce a ref `path`
+/// that either exactly matches a declared symbol's name (for which this
+/// predicate now correctly returns `false`, so `completeness` still counts
+/// it) or is the fixed `"definitely_missing"` sentinel (not a reserved
+/// name, so this predicate returns `false` for that too) — `arb_ident`'s
+/// `[a-z][a-z_]{0,11}` charset additionally makes `is_builtin_function`'s
+/// all-uppercase set unreachable by construction, independent of the
+/// sentinel argument. If the generator is ever extended to emit a `path`
+/// that names a reserved identifier while nothing in the manifest declares
+/// a matching symbol, THIS predicate is what keeps `completeness` correctly
+/// excluding just that case, rather than reopening a #2830-shaped
+/// intermittent flake on an unrelated PR.
+fn is_generator_unreachable_reserved_name(manifest: &SymbolManifest, path: &str) -> bool {
+    // NS-A1 (`docs/stdlib-spec.md` §1.4): the bare `none` Option-absence
+    // literal gets the identical silent-skip treatment in `resolve_variable`
+    // (see that function's own doc) but lives outside `is_t1b_stdlib_name`
+    // — it is a value-position literal, not a call name.
+    (path == "none" || is_builtin_function(path) || is_t1b_stdlib_name(path))
+        && !manifest_declares_name(manifest, path)
+}
+
+/// PR review regression pin: before `is_generator_unreachable_reserved_name`
+/// became manifest-aware, it matched on NAME ALONE — so a manifest
+/// declaring list item `colors.pop` plus a `RefKind::Function` ref to `pop`
+/// (exactly the issue #2830/#2836 shape the `completeness` property exists
+/// to catch) went from 1 ref to 0 refs the moment `completeness`'s filter
+/// ran, because the filter runs over `manifest.unresolved` BEFORE `analyze`
+/// ever sees it. `is_generator_unreachable_reserved_name("pop")` was `true`
+/// unconditionally, and `arb_ident()`'s `[a-z][a-z_]{0,11}` charset reaches
+/// `pop`/`len`/`get`/`map`/`none` just as easily as any other identifier —
+/// so this was a live hole in the property's own filtering logic, not a
+/// generator-reachability question. Pinned directly against the manifest
+/// helpers rather than through the full `arb_manifest` strategy so this
+/// stays a deterministic regression test, not a proptest shrink target.
+#[test]
+fn is_generator_unreachable_reserved_name_respects_declared_list_item() {
+    let mut manifest = SymbolManifest::default();
+    manifest.lists.push(decl_sym(
+        "colors".to_string(),
+        range(0, "colors".len() as u32),
+    ));
+    manifest.list_items.push(decl_sym(
+        "colors.pop".to_string(),
+        range(20, "pop".len() as u32),
+    ));
+    manifest.unresolved.push(UnresolvedRef {
+        path: "pop".to_string(),
+        range: range(100, "pop".len() as u32),
+        kind: RefKind::Function,
+        scope: Scope::default(),
+        arg_count: None,
+        module_qualified: false,
+    });
+
+    assert!(
+        manifest_declares_name(&manifest, "pop"),
+        "`colors.pop` is declared, so `manifest_declares_name` must find it \
+         under its bare item name"
+    );
+    assert!(
+        !is_generator_unreachable_reserved_name(&manifest, "pop"),
+        "a `pop` ref backed by a declared `colors.pop` list item must not be \
+         excluded from `completeness`'s count, even though `pop` is also a \
+         reserved T1b stdlib name"
+    );
+
+    // The exact filter `completeness` applies — proves the ref survives it.
+    let surviving: Vec<_> = manifest
+        .unresolved
+        .iter()
+        .filter(|r| {
+            r.kind != RefKind::Type && !is_generator_unreachable_reserved_name(&manifest, &r.path)
+        })
+        .collect();
+    assert_eq!(
+        surviving.len(),
+        1,
+        "the declared-symbol-backed `pop` ref must survive completeness's \
+         filter (was previously dropped: 1 ref -> 0 refs)"
+    );
+}
+
 // ─── Property tests ─────────────────────────────────────────────────
 
 proptest! {
@@ -305,27 +462,51 @@ proptest! {
     /// Every unresolved ref either resolves to a valid ID or produces exactly
     /// one diagnostic. No ref is silently dropped.
     ///
-    /// **`RefKind::Type` is excluded from this count (issue #2249).** Every
-    /// other `RefKind` names something that must be declared to be valid —
-    /// an unresolved one is unconditionally an error. A TM-2 type
-    /// annotation is not: `int`, `float`, `List`, … are equally legal
-    /// `Named` leaves that were never meant to resolve as a struct at all
-    /// (`resolve::resolve_type_ref`'s own doc), so "no declared struct
-    /// named this" is the overwhelmingly common, entirely legal outcome —
-    /// diagnosing it would misfire on every scalar-typed annotation in
-    /// every corpus file. This property's "resolved xor diagnosed, never
-    /// neither" dichotomy genuinely does not hold for this one kind; a
-    /// third, legal "resolved to nothing, nothing wrong" state is included
-    /// in coverage (via `arb_ref_kind`/`resolved_ids_are_valid`) but
-    /// excluded from this specific count.
+    /// **Two categories are excluded from this count — both filtered out
+    /// deliberately below, not merely absent from what the generator
+    /// happens to emit:**
+    ///
+    /// 1. **`RefKind::Type` (issue #2249).** Every other `RefKind` names
+    ///    something that must be declared to be valid — an unresolved one
+    ///    is unconditionally an error. A TM-2 type annotation is not:
+    ///    `int`, `float`, `List`, … are equally legal `Named` leaves that
+    ///    were never meant to resolve as a struct at all
+    ///    (`resolve::resolve_type_ref`'s own doc), so "no declared struct
+    ///    named this" is the overwhelmingly common, entirely legal outcome
+    ///    — diagnosing it would misfire on every scalar-typed annotation in
+    ///    every corpus file. This property's "resolved xor diagnosed,
+    ///    never neither" dichotomy genuinely does not hold for this one
+    ///    kind; a third, legal "resolved to nothing, nothing wrong" state
+    ///    is included in coverage (via `arb_ref_kind`/`resolved_ids_are_valid`)
+    ///    but excluded from this specific count.
+    /// 2. **A reserved compiler name with nothing declared under it
+    ///    (issue #2856), per [`is_generator_unreachable_reserved_name`] —
+    ///    see that predicate's own doc for the full "why excluded" and "why
+    ///    presently unreachable, not vacuous" argument.** In short:
+    ///    `resolve_variable`/`resolve_function` may skip such a reference
+    ///    with no diagnostic, but only once a real declared symbol of the
+    ///    same name has already failed to be found — and a declared
+    ///    symbol always wins resolution first (issue #2856 point 3 made
+    ///    this true for `is_builtin_function`'s classic uppercase set too,
+    ///    matching `is_t1b_stdlib_name`'s pre-existing correct ordering).
+    ///    The predicate is manifest-aware ([`manifest_declares_name`]): it
+    ///    excludes a ref only when its `path` is BOTH a reserved name AND
+    ///    backed by no declared symbol in this same `manifest`, so a ref
+    ///    that happens to share spelling with a reserved name while a real
+    ///    declared symbol exists under it is never excluded — it still must
+    ///    resolve, and `completeness` still counts it.
     #[test]
     fn completeness(manifest in arb_manifest()) {
+        let filtered_unresolved: Vec<_> = manifest
+            .unresolved
+            .iter()
+            .filter(|r| {
+                r.kind != RefKind::Type && !is_generator_unreachable_reserved_name(&manifest, &r.path)
+            })
+            .cloned()
+            .collect();
         let manifest = SymbolManifest {
-            unresolved: manifest
-                .unresolved
-                .into_iter()
-                .filter(|r| r.kind != RefKind::Type)
-                .collect(),
+            unresolved: filtered_unresolved,
             ..manifest
         };
         let total_refs = manifest.unresolved.len();
@@ -865,6 +1046,86 @@ LIST a = pop, other
             .any(|d| d.code == DiagnosticCode::E079),
         "expected `#fn(pop)` (resolved to a ListItem) to be refused as an \
          invalid function-value target by E079; diagnostics: {:?}",
+        result.diagnostics
+    );
+}
+
+/// Issue #2856 point 3: a `VAR` declared with the same name as a classic
+/// uppercase ink built-in (`is_builtin_function`) must shadow the builtin at
+/// every *reference* site, exactly as the `E035` diagnostic fired at its
+/// declaration (`manifest.rs`) already promises — "an author-defined
+/// function with the same name shadows the builtin, with a warning
+/// diagnostic," worded identically for `is_builtin_function` and
+/// `is_t1b_stdlib_name`. Before this fix, `resolve_variable`/
+/// `resolve_function` checked `is_builtin_function` *before* any lookup
+/// (unlike `is_t1b_stdlib_name`, checked only as a post-lookup fallback), so
+/// the declared `VAR RANDOM` was never consulted at the reference site: the
+/// ref was silently skipped (no resolution, no diagnostic — a real
+/// `completeness`-violating silent drop, reproduced end-to-end via
+/// `brink-cli compile` + `play`: `{RANDOM}` rendered as empty text instead
+/// of `42`, with a clean exit 0 and no diagnostic at default log level).
+#[test]
+fn integration_var_shadows_uppercase_builtin_name() {
+    let result = analyze_ink(
+        "\
+VAR RANDOM = 42
+
+The value is {RANDOM}.
+-> DONE
+",
+    );
+
+    let unresolved: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E025)
+        .collect();
+    assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
+
+    // Two `RANDOM` refs exist in this source: the `VAR RANDOM = 42`
+    // initializer's own name isn't a reference, but the interpolation site
+    // is — assert it actually resolved to the declared `VAR`, not merely
+    // "produced no E025" (a silent drop also produces no E025).
+    let random_resolutions: Vec<_> = result
+        .resolutions
+        .iter()
+        .filter(|r| {
+            result
+                .index
+                .symbols
+                .get(&r.target)
+                .is_some_and(|info| info.name == "RANDOM")
+        })
+        .collect();
+    assert_eq!(
+        random_resolutions.len(),
+        1,
+        "expected the `{{RANDOM}}` interpolation to resolve to the declared \
+         `VAR RANDOM`; resolutions: {:?}",
+        result.resolutions
+    );
+    let target = random_resolutions[0].target;
+    let info = result
+        .index
+        .symbols
+        .get(&target)
+        .expect("just asserted above");
+    assert_eq!(
+        info.kind,
+        SymbolKind::Variable,
+        "expected `{{RANDOM}}` to resolve to the declared `VAR`, got {:?}",
+        info.kind,
+    );
+
+    // The declaration-site `E035` warning ("name shadows a built-in
+    // function") still fires — shadowing is legal but discouraged, not
+    // silent.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E035),
+        "expected E035 at the `VAR RANDOM` declaration; diagnostics: {:?}",
         result.diagnostics
     );
 }

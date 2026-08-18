@@ -821,15 +821,6 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let name = path_to_string(path);
 
-    // Check builtin table first
-    if let Some(builtin) = recognize_builtin(&name) {
-        let lir_args: Vec<lir::Expr> = args.iter().map(|a| lower_expr(a, ctx)).collect();
-        return lir::Expr::CallBuiltin {
-            builtin,
-            args: lir_args,
-        };
-    }
-
     // Check temp slot first — calling through a temp/param variable holding a divert target.
     if let Some(slot) = ctx.temp_slot(&name) {
         let call_args = lower_call_args(args, &[], ctx);
@@ -955,12 +946,37 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
             | SymbolKind::Temp
             | SymbolKind::Struct) => push_non_callable_refusal(&name, kind, path.range, ctx),
         }
+    } else if let Some(builtin) = recognize_builtin(&name) {
+        // Issue #2856 point 3: `recognize_builtin` (the classic uppercase
+        // ink intrinsics — `TURNS_SINCE`/`RANDOM`/…) is consulted here, as
+        // a fallback once `ctx.resolve_path` has already failed to find a
+        // real declared symbol — not unconditionally before it, as it was
+        // before this fix. `manifest.rs`'s `E035` ("name shadows a
+        // built-in function") diagnostic already documents both
+        // `is_builtin_function` and `is_t1b_stdlib_name` names as
+        // author-shadowable with a warning, worded identically for each,
+        // and `lower_t1b_stdlib_call` just below was already ordered
+        // correctly (analyzer-resolution-first) — this call table was the
+        // one place that still disagreed. Before this fix a real,
+        // *resolved* knot/external/variable/local of the same name (e.g. a
+        // knot declared `=== function FLOOR(x) ===`) was silently
+        // discarded at its own call site in favor of the real builtin:
+        // confirmed end-to-end via `brink-cli compile` + `play` —
+        // `Result: {FLOOR(5)}` printed the real `FLOOR()`'s answer (`5`)
+        // instead of the author's knot's (`-995`), with a clean compile
+        // and no diagnostic.
+        let lir_args: Vec<lir::Expr> = args.iter().map(|a| lower_expr(a, ctx)).collect();
+        lir::Expr::CallBuiltin {
+            builtin,
+            args: lir_args,
+        }
     } else if let Some(expr) = lower_t1b_stdlib_call(&name, args, path.range, ctx) {
         expr
     } else {
         tracing::error!(
             "ICE: unresolved call to `{name}` — analyzer marked as builtin but \
-             recognize_builtin() returned None and resolution map has no entry"
+             recognize_builtin()/lower_t1b_stdlib_call() both returned None and \
+             resolution map has no entry"
         );
         lir::Expr::Null
     }
