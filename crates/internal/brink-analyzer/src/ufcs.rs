@@ -393,6 +393,7 @@ pub fn resolve(
             current_knot_name: None,
             knot_body: None,
             stitch_body: None,
+            lambda_locals: Vec::new(),
             table: &mut table,
             diagnostics: &mut diagnostics,
         };
@@ -622,6 +623,15 @@ struct UfcsVisitor<'a> {
     /// projection every earlier call site still wants).
     knot_body: Option<&'a crate::infer::BodyTypes>,
     stitch_body: Option<&'a crate::infer::BodyTypes>,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field/hook pair exactly —
+    /// see that field's own doc. Composes with the same
+    /// `structs::pruned_locals_for_lambda` helper even though this visitor
+    /// has no `MistypeCtx` of its own — the helper takes the raw
+    /// `index`/`outer_locals` pair, not a `MistypeCtx`, for exactly this
+    /// reason.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     table: &'a mut UfcsTable,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
@@ -660,6 +670,15 @@ impl HirVisitor for UfcsVisitor<'_> {
             self.resolve_call(path, args.len());
         }
     }
+
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let pruned = crate::structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
+    }
 }
 
 /// The receiver half of one UFCS call site, resolved: everything the two
@@ -687,7 +706,9 @@ impl UfcsVisitor<'_> {
     }
 
     fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
-        self.current_body().map(|b| &b.locals)
+        self.lambda_locals
+            .last()
+            .or_else(|| self.current_body().map(|b| &b.locals))
     }
 
     /// The single call-site decision. Returns without touching the table or

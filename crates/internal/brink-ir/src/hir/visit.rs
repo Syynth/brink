@@ -49,8 +49,8 @@
 
 use super::types::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, ConstDecl, Content, ContentPart,
-    DivertTarget, ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LogicBlock,
-    Sequence, Stitch, Stmt, StringPart, VarDecl, WhileStmt,
+    DivertTarget, ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LambdaExpr,
+    LogicBlock, Sequence, Stitch, Stmt, StringPart, VarDecl, WhileStmt,
 };
 
 /// Where a visited [`Content`] sits in the tree.
@@ -127,6 +127,36 @@ pub trait HirVisitor {
     /// An expression node, in descent order — only called when
     /// [`HirVisitor::visit_exprs`] returns `true`.
     fn enter_expr(&mut self, _expr: &Expr) {}
+
+    /// A lambda literal's own body is about to be walked — fires
+    /// immediately after `enter_expr` sees the [`Expr::Lambda`] node itself
+    /// and before any of its params/body descend, for **both**
+    /// [`LambdaBody::Expr`] and [`LambdaBody::Block`] (a bare-expression
+    /// body's own params can shadow just as a block body's can). Paired
+    /// with [`HirVisitor::exit_lambda`], fired right after the body finishes
+    /// — nested lambdas nest correctly by construction, since both hooks
+    /// fire from the same recursive call frame around the body descent.
+    ///
+    /// Issue #2773: this is the walker's half of the shared lambda-frame
+    /// contract — a lambda's own param row (and, for a block body, whatever
+    /// `TempDecl`/`for`/`if`/`while` `as` binding its statements introduce)
+    /// is a fresh scope that can shadow a same-named outer local of a
+    /// *different* type. Before this pair of hooks existed, every
+    /// `HirVisitor` consumer that reads a bare-name-keyed locals map (e.g.
+    /// `BodyTypes::locals`) from `enter_expr` inherited that shadowing
+    /// hazard automatically the moment [`walk_expr`]'s existing `Expr::Lambda`
+    /// descent (issue #1685) reached an expression inside the lambda body —
+    /// with no signal from the walker that a new scope had opened. A
+    /// stateful visitor that needs to prune those names out of its own
+    /// locals map for the lambda body's duration implements both hooks and
+    /// composes with `brink-analyzer`'s shared
+    /// `structs::pruned_locals_for_lambda` helper; a visitor with no such
+    /// state (most of them) never needs to implement either.
+    fn enter_lambda(&mut self, _lambda: &LambdaExpr) {}
+
+    /// [`HirVisitor::enter_lambda`]'s pair — the lambda's body (and any
+    /// scope a stateful visitor pushed for it) has been fully walked.
+    fn exit_lambda(&mut self, _lambda: &LambdaExpr) {}
 
     /// A file-level `VAR` declaration's initializer is about to be walked —
     /// fires immediately before [`visit_with_decl_initializers`] hands its
@@ -494,17 +524,24 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
         // `coalesce_types_query` in production — the #1774 review's own
         // finding was that this table used to be hard-coded empty for that
         // one caller regardless).
-        Expr::Lambda(l) => match &l.body {
-            LambdaBody::Expr(e) => walk_expr(e, v),
-            LambdaBody::Block { stmts, tail } => {
-                for bs in stmts {
-                    walk_block_stmt(bs, v);
-                }
-                if let Some(t) = tail {
-                    walk_expr(t, v);
+        Expr::Lambda(l) => {
+            // Issue #2773: bracket the body descent with the shared
+            // lambda-frame hooks — see [`HirVisitor::enter_lambda`]'s own
+            // doc for why this pair exists and what it fixes.
+            v.enter_lambda(l);
+            match &l.body {
+                LambdaBody::Expr(e) => walk_expr(e, v),
+                LambdaBody::Block { stmts, tail } => {
+                    for bs in stmts {
+                        walk_block_stmt(bs, v);
+                    }
+                    if let Some(t) = tail {
+                        walk_expr(t, v);
+                    }
                 }
             }
-        },
+            v.exit_lambda(l);
+        }
         // NS-A5 `start..end` / `start..=end`: both bounds descend.
         Expr::Range(r) => {
             walk_expr(&r.start, v);
@@ -543,6 +580,8 @@ mod tests {
         content: usize,
         exprs: usize,
         sequences: usize,
+        enter_lambda: usize,
+        exit_lambda: usize,
         visit_exprs: bool,
     }
 
@@ -552,6 +591,12 @@ mod tests {
         }
         fn enter_stitch(&mut self, _: &Stitch) {
             self.stitches += 1;
+        }
+        fn enter_lambda(&mut self, _: &LambdaExpr) {
+            self.enter_lambda += 1;
+        }
+        fn exit_lambda(&mut self, _: &LambdaExpr) {
+            self.exit_lambda += 1;
         }
         fn enter_block(&mut self, _: &Block) {
             self.enter_block += 1;
@@ -762,5 +807,32 @@ mod tests {
             "the CONST initializer must not see the knot's leftover anchor"
         );
         assert_eq!(p.anchors_at_expr[1], hir.constants[0].ptr.text_range());
+    }
+
+    /// Issue #2773: [`HirVisitor::enter_lambda`]/[`HirVisitor::exit_lambda`]
+    /// fire around **both** lambda body shapes, and nest correctly for a
+    /// lambda literal inside another lambda's own body. Lambdas are a
+    /// native-surface-only construct (`brink-syntax`, the ink-compat
+    /// surface, has no lambda literal), hence `brink_syntax_native::parse` +
+    /// `lower_native::lower` rather than this module's own `lower_src`.
+    #[test]
+    fn enter_exit_lambda_fire_around_both_body_shapes_and_nest_correctly() {
+        let parsed = brink_syntax_native::parse(
+            "fn f() {\n  let a = |x: int| x + 1;\n  let b = |y: int| {\n    let g = |z: int| z;\n    g(y)\n  };\n}\n",
+        );
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, _manifest, _diag) = crate::hir::lower_native::lower(FileId(0), &parsed.tree());
+
+        let mut c = Counts {
+            visit_exprs: true,
+            ..Default::default()
+        };
+        visit(&hir, &mut c);
+
+        // Three lambda literals total: the expr-body `|x: int| x + 1`, the
+        // block-body `|y: int| { ... }`, and the block-body's own nested
+        // `|z: int| z`.
+        assert_eq!(c.enter_lambda, 3, "expr-body + block-body + nested");
+        assert_eq!(c.enter_lambda, c.exit_lambda, "enter/exit balanced");
     }
 }

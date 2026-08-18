@@ -83,6 +83,7 @@ pub fn check(
             current_knot_name: None,
             knot_locals: None,
             stitch_locals: None,
+            lambda_locals: Vec::new(),
             diagnostics: &mut out,
         };
         // Issue #2098: `RefinementVisitor::enter_expr` has no state that
@@ -114,22 +115,19 @@ struct RefinementVisitor<'a> {
     current_knot_name: Option<String>,
     knot_locals: Option<&'a BTreeMap<String, Ty>>,
     stitch_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// Issue #2773: a stack of pruned-locals frames, one per currently-open
+    /// lambda literal (innermost last). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field/hook pair exactly —
+    /// see that field's own doc.
+    lambda_locals: Vec<BTreeMap<String, Ty>>,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
 impl<'a> RefinementVisitor<'a> {
-    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
-    }
-
-    fn ctx(&self) -> MistypeCtx<'a> {
-        MistypeCtx {
-            index: self.index,
-            globals: self.globals,
-            signatures: self.signatures,
-            resolution_by_range: self.resolution_by_range,
-            locals: self.current_locals(),
-        }
+    fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
+        self.lambda_locals
+            .last()
+            .or_else(|| self.stitch_locals.or(self.knot_locals))
     }
 
     fn fold_ctx(&self) -> FoldCtx<'a> {
@@ -178,9 +176,55 @@ impl HirVisitor for RefinementVisitor<'_> {
     }
 
     fn enter_expr(&mut self, expr: &Expr) {
-        let ctx = self.ctx();
+        // Built from direct field projections (not `self.ctx()`) so the
+        // borrow checker sees this only borrows the locals-shaped fields,
+        // disjoint from the `self.diagnostics` reborrow below — see
+        // `structs::ConstructionVisitor::enter_expr`'s identical comment.
+        let ctx = MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self
+                .lambda_locals
+                .last()
+                .or_else(|| self.stitch_locals.or(self.knot_locals)),
+        };
         let fold = self.fold_ctx();
         check_call(expr, self.file, &ctx, &fold, self.diagnostics);
+    }
+
+    /// ⚠ VACUOUS TODAY, kept deliberately (issue #2773 review finding).
+    ///
+    /// Unlike this fix's sibling consumers, E117 has **no reachable
+    /// fixture**: a range literal (`a..b`) parses only on the ink/brink
+    /// surface (`brink-syntax`), while a lambda literal (`|x| …`) parses
+    /// only on the native surface (`brink-syntax-native`) — the two are
+    /// mutually exclusive, so no source can put a range inside a lambda
+    /// body. `brink-syntax-native` has no `..` grammar at all, and
+    /// `annotations::resolve` has no `Range` arm, so a lambda param cannot
+    /// be annotated into `Ty::Range` either. `check_call`'s other leg needs
+    /// `Ty::Range { non_empty: false }`, which is only ever minted from a
+    /// range literal or `non_empty(...)` — both `..`-dependent.
+    ///
+    /// The frame is therefore installed for **uniformity, not coverage**:
+    /// the moment the native surface grows range literals, this consumer
+    /// would otherwise inherit the shadowing hazard silently, exactly as
+    /// this file and `contains_domain.rs` did before #2773 — so the hooks
+    /// stay rather than being removed and re-derived later.
+    /// `crates/brink-compiler/tests/driver.rs`'s
+    /// `compile_ink_brink_range_refinement_direct_var_initializer_is_e117`
+    /// records the same surface-disjointness finding for issue #1774.
+    ///
+    /// Stated here rather than papered over with a "test" that would only
+    /// prove the two surfaces don't mix.
+    fn enter_lambda(&mut self, l: &brink_ir::LambdaExpr) {
+        let pruned = structs::pruned_locals_for_lambda(l, self.index, self.current_locals());
+        self.lambda_locals.push(pruned);
+    }
+
+    fn exit_lambda(&mut self, _l: &brink_ir::LambdaExpr) {
+        self.lambda_locals.pop();
     }
 }
 
