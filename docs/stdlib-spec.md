@@ -607,11 +607,36 @@ precedent, oracle byte-identical):
    (maps) · `contains count` (flags) · nothing from rand/
    collections. Name-collision policy: prelude names are
    **shadowable with the E035-lineage warning** (stdlib-slice-1
-   posture carries over). See [E035](diagnostics/E035.md) for the
-   full rule, including the call-site divergence between a
-   shadowing knot/external (always wins) and a shadowing `VAR`/
-   `CONST` (never wins a real call site — falls through to the real
-   builtin instead).
+   posture carries over). The warning's kind coverage is `VAR` /
+   `CONST` / `EXTERNAL` / knot only — `LIST` names and `LIST` items
+   sit outside it deliberately, not by oversight. For a
+   **call-position** builtin/stdlib verb the reasoning is
+   disjointness: a `LIST` item is read bare (`{push}`, no arg list)
+   while the verb is only ever reached at a call site
+   (`push(a, v)`), so the two never occupy the same syntactic
+   position and there is nothing for a shadow warning to report —
+   pinned by two tests in
+   `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs`:
+   `list_item_shadows_stdlib_verb_name_at_bare_reference_without_e035_warning`
+   and `list_item_named_push_does_not_break_the_real_push_call`.
+   `none` is the one reserved name that is itself bare-read, not
+   call-position — the Option absence literal (`manifest.rs`'s
+   NS-A1 comment) — so a `LIST` item literally named `none` DOES
+   collide with it at that shared bare-read position:
+   `resolve_variable`'s `lookup_variable` finds the list item first
+   and the reference never reaches the bare-`none`-literal fallback.
+   Pinned in the same file by
+   `list_item_named_none_shadows_option_literal_at_bare_reference_without_e035_warning`:
+   `LIST Answers = yes, none = 7, maybe` + `{LIST_VALUE(none)}`
+   prints `7`, the list item's ordinal, with zero diagnostics — the
+   Option literal never gets a look-in. Still no `E035` fires here
+   either, but for the blunter reason that `List`/`ListItem` are
+   outside the warned-kind set outright — not because this
+   particular collision had nothing to report. See
+   [E035](diagnostics/E035.md) for the full rule, including the
+   call-site divergence between a shadowing knot/external (always
+   wins) and a shadowing `VAR`/`CONST` (never wins a real call site
+   — falls through to the real builtin instead).
 4. **Docs display notation for intrinsic signatures**: the
    pseudo-generic letter form — `fn map(a: [T], f:
    fn(T): U): [U]` — with a standing banner: *display
@@ -646,7 +671,30 @@ precedent, oracle byte-identical):
      (2026-07-19)**: the registry method names (`display`,
      `compare`, `next`) are RESERVED — author shadowing is a hard
      compile error, not an E035 warning; a shadowed `display`
-     would make interpolation untrustworthy.
+     would make interpolation untrustworthy. **This reservation is
+     brink-dialect only, and it is NOT symmetric with `E035`** — the
+     two checks are scoped differently, not the same rule wearing
+     two codes. The protocol registry itself, and the `E113` check
+     that enforces it
+     (`brink-analyzer::protocols::check_reserved_names`), exist only
+     under `Dialect::Brink` (wired inside the brink-only gate in
+     `crates/internal/brink-analyzer/src/lib.rs`); under
+     `strict-ink` there is no registry at all, so a knot/function/
+     local declared `display` there raises no `E113`. `E035` is a
+     different mechanism: it fires dialect-agnostically
+     (`manifest.rs`'s own comment, "Fired dialect-agnostically here,
+     same as the existing uppercase check") and it never reserved
+     `display`/`compare`/`next` in *either* dialect to begin with —
+     the three names appear in neither `is_builtin_function`'s
+     uppercase intrinsics nor `is_t1b_stdlib_name`'s 39 lowercase
+     names, nor the special-cased `none`. So a knot named `display`
+     gets `E113` under brink and nothing at all under strict-ink —
+     never `E035`, in either dialect, because `E035` was never
+     watching these three names (confirmed by compiling `===
+     display === \n -> DONE`: `Dialect::Brink` raises `E113` alone;
+     `Dialect::StrictInk` compiles clean with zero diagnostics; no
+     run of either dialect ever produces an `E035` warning for
+     `display`).
    - `compare` — `fn(T, T): int`, row ⊆ pure·silent·total; user
      impls slot into the RULED ordering doctrine (§4b). Coherence RULED
      2026-07-19: `compare` is ORDERING ONLY — equality stays
