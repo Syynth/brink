@@ -41,6 +41,42 @@ env:
 # repointed at malicious code). The trailing comment tracks the version;
 # Dependabot bumps both together.
 jobs:
+  # CI-self-enforcing counterpart to `every_pnpm_install_lane_builds_wasm_first_
+  # in_the_same_job` (#2504), for a different recurring defect (#2820): a PR
+  # touching a private package BUNDLED into the published @brink-lang/studio
+  # (packages/brink-studio, studio-ui, studio-shell, ink-operations,
+  # studio-store — see docs/publishing.md) but carrying no @brink-lang/studio
+  # changeset. Three real instances (PR #2787, #2798, #2817) — see
+  # scripts/check-studio-changeset.mjs's header for the full history and why
+  # "not wasm-observable" is the wrong (but tempting) rule to reach for here.
+  #
+  # Needs no wasm build, no `pnpm install` — just the diff against the PR's
+  # base branch — so it runs as its own lightweight, fast-failing lane rather
+  # than inside the much heavier `frontend` job below. `pull_request`-only:
+  # a push to main has nothing left to diff against (already merged), and
+  # `merge_group` has no single PR-shaped base ref to compare to.
+  #
+  # `fetch-depth: 0` is required, not just convenient: a shallow HEAD (the
+  # default) has no parent commit objects at all, so no amount of fetching
+  # origin/<base> afterward lets `git merge-base`/`diff …origin/<base>...HEAD`
+  # resolve — see scripts/check-studio-changeset.mjs's `gatherDiff` doc.
+  studio-changeset-guard:
+    name: Studio changeset guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - run: node scripts/check-studio-changeset.mjs
+
   check:
     name: Check
     runs-on: ubuntu-latest
