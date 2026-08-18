@@ -692,6 +692,124 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
     }
 
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix — an UNWANTED
+    // result flagged, not a new true positive ──────────────────────────
+
+    /// #2793 audit: confirms — with an executable pin, not just prose — the
+    /// gap this file's own module doc already records ("A local `temp`/param
+    /// used as the *needle* … is structurally unreachable, discovered
+    /// empirically … `self.observe(needle, key_ty)` … flagged as scope
+    /// discovered beyond #582, not worked around here"). #2793 asks each of
+    /// the six `BodyTypes::locals` consumers to be re-audited for #2786's
+    /// annotated-param visibility specifically; for this file the answer is
+    /// that #2786 cannot help at all here, for the *same*, already-known
+    /// reason — an *ordinary* `fn`/knot param's own written annotation is
+    /// no more visible to E152 at this position than an unannotated one
+    /// ever was. Same shape as `coalesce.rs`'s own
+    /// `annotated_fn_param_non_option_lhs_of_or_is_not_visible_to_e066`
+    /// (independently rediscovered there before this pre-existing doc note
+    /// was found here) — the mid-walk `observe` write beats the post-walk
+    /// annotation overlay to `pass.locals`, and the overlay's `contains_key`
+    /// #1912 firewall (correctly guarding the *re-bound-temp* case) then has
+    /// no way to tell that entry apart from a legitimate one, so it never
+    /// overlays `k`'s real `float` annotation on top. The lambda-param path
+    /// is immune (see `lambda_param_own_annotation_still_flags_a_genuine_out_of_domain_needle`
+    /// alongside this test) because `structs::pruned_locals_for_lambda`
+    /// re-seeds a lambda's own annotated param straight from its
+    /// `TypeExpr`, never reading back through this same mutated
+    /// `pass.locals` map.
+    ///
+    /// Net effect, pinned here: `k: float` passed directly as
+    /// `contains(#{1: "a"}, k)`'s needle records `k`'s finalized local type
+    /// as `Int` — the container's own key type, in-domain — and raises no
+    /// `E152` at all, even though `float` is provably outside a
+    /// `Map<int, _>`'s key domain.
+    ///
+    /// Like `coalesce.rs`'s sibling finding, this is exactly the case
+    /// `docs/typed-mode-spec.md` §2's **RULED (issue #1912)** paragraph
+    /// already carves out — an intrinsic's sibling-argument `observe`
+    /// (named there verbatim) is an evidence-producing position that
+    /// deliberately never consults the annotation fallback, and this test
+    /// does not reopen or contradict that ruling. What's new, not already
+    /// covered by #1912: the walk-*assumed* container-key shape this arm
+    /// back-propagates onto the needle gets exported as the param's own
+    /// final signature type, which then contradicts the written annotation
+    /// at a downstream CHECK consumer (`annotations::mismatches` / E063)
+    /// for a non-exempt annotated type — see the `k: string` variant below.
+    ///
+    /// **Load-bearing caveat (review finding, #2819):** this fixture's
+    /// "no diagnostic at all" is not just E152's own silence — it also
+    /// depends on `k: float` being the *one* legal directional coercion
+    /// `annotations::mismatches`'s `report_if_mismatched` exempts
+    /// (`unify(Float, Int) == Float`, pinned independently by
+    /// `annotations::tests::mismatches_is_silent_for_the_legal_int_to_float_coercion`).
+    /// Swap the annotation to `k: string` and the identical mid-walk
+    /// pre-emption instead surfaces as `E063` at the annotation site — see
+    /// the sibling test immediately below. So "silent" here does not
+    /// generalize to every disagreeing annotation at this needle position;
+    /// it generalizes to E152 specifically staying silent, while whether
+    /// *any* diagnostic fires at all still depends on which annotated type
+    /// was written.
+    #[test]
+    fn annotated_fn_param_out_of_domain_needle_against_a_literal_container_is_not_visible_to_e152()
+    {
+        let src = "=== main(k: float) ===\n~ x = contains(#{1: \"a\"}, k)\n-> DONE\n";
+        let (hir, index, resolutions, inference) = build_with_inference(src);
+        let body = inference.bodies.values().next().expect("one inferable def");
+        assert_eq!(
+            body.locals.get("k"),
+            Some(&Ty::Int),
+            "documents the gap: the container's own key type, not `k`'s \
+             real `float` annotation, is what the finalized local reflects: \
+             {:?}",
+            body.locals
+        );
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &resolutions);
+        assert!(
+            diags.is_empty(),
+            "documents the gap: no E152 fires despite `k: float` disagreeing \
+             with `contains`'s int-keyed domain here: {diags:?}"
+        );
+        // And this specific silence is not "no diagnostic anywhere" — it
+        // is silent only because `float` is the one type `assignable`
+        // exempts. `annotations::mismatches` still stays silent too, for
+        // that exact reason (this fixture pins the load-bearing dependency
+        // named above).
+        let mismatch_diags =
+            annotations::mismatches(&[(FileId(0), &hir)], &index, &inference, None);
+        assert!(mismatch_diags.is_empty(), "{mismatch_diags:?}");
+    }
+
+    /// Same fixture, `k: string` instead of `k: float`: not exempted by
+    /// `assignable`'s legal-coercion carve-out, so the same mid-walk
+    /// pre-emption that silences E152 above surfaces here as `E063` at the
+    /// annotation site — a different (and worse) diagnostic than a correct
+    /// E152 at the `contains` call would be, not silence. Prevents the
+    /// `float` fixture's silence from being read as "an annotated needle
+    /// disagreement here is never visible to *any* check" — it depends on
+    /// which type was written.
+    #[test]
+    fn annotated_fn_param_out_of_domain_needle_against_a_literal_container_surfaces_as_e063_for_a_non_exempt_annotation()
+     {
+        let src = "=== main(k: string) ===\n~ x = contains(#{1: \"a\"}, k)\n-> DONE\n";
+        let (hir, index, resolutions, inference) = build_with_inference(src);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &resolutions);
+        assert!(
+            diags.is_empty(),
+            "E152 itself still never sees this position: {diags:?}"
+        );
+        let mismatch_diags =
+            annotations::mismatches(&[(FileId(0), &hir)], &index, &inference, None);
+        assert_eq!(mismatch_diags.len(), 1, "{mismatch_diags:?}");
+        assert_eq!(mismatch_diags[0].code, DiagnosticCode::E063);
+        assert_eq!(
+            mismatch_diags[0].message,
+            "annotated type `string` disagrees with the type inferred from usage (`int`)",
+            "{mismatch_diags:?}"
+        );
+    }
+
     #[test]
     fn unresolved_param_needle_stays_silent_when_unknown() {
         let diags = check_all("=== main(n) ===\n~ x = contains(#{1: \"a\"}, n)\n-> DONE\n");

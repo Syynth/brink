@@ -372,3 +372,72 @@ fn fold_literal_bound(expr: &Expr) -> Option<i64> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brink_ir::hir::lower;
+
+    /// Real resolutions + a whole-project [`InferenceResult`] — mirrors
+    /// `conversions::tests::build_with_inference`. This module had no unit
+    /// tests at all before issue #2793's audit (coverage previously lived
+    /// only in `crates/brink-compiler/tests/driver.rs`'s
+    /// `compile_ink_brink_range_refinement_direct_var_initializer_is_e117`)
+    /// — this harness is new, not a refactor of an existing one.
+    fn check_all(src: &str) -> Vec<Diagnostic> {
+        let parsed = brink_syntax::parse(src);
+        let (hir, manifest, _diag) = lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix — structurally
+    // vacuous here, same as the lambda half `enter_lambda`'s own doc
+    // records ────────────────────────────────────────────────────────
+
+    /// #2793 audit finding for this file specifically: unlike its five
+    /// sibling consumers, an *ordinary* `fn`/knot param's own written
+    /// annotation can **never** make a new `E117` positive reachable here,
+    /// for the identical reason [`RefinementVisitor::enter_lambda`]'s own
+    /// doc records for the *lambda* half — `annotations::resolve` has no
+    /// `Range` arm at all (only `Named`/`Generic`/`Fn` `TypeExpr` shapes
+    /// resolve, and none of those names `Range`), so a param can never be
+    /// *annotated* into `Ty::Range { non_empty: false }` — the one shape
+    /// [`check_call`]'s leg (b) treats as evidence-free and flags. `r`'s
+    /// declared `int` annotation therefore reaches `pass.locals` (via
+    /// #2786's own overlay, same as every other consumer) but is simply the
+    /// wrong *kind* of evidence for this check to act on — `int(r)` here is
+    /// TM-3's plain conversion leg (`conversions.rs`'s own E078 domain,
+    /// which `int` already permits), not the range-draw leg at all. Pinned
+    /// as a negative control rather than left undocumented, mirroring
+    /// `enter_lambda`'s own "stated here rather than papered over with a
+    /// 'test' that would only prove the two surfaces don't mix" posture.
+    #[test]
+    fn annotated_fn_param_non_range_type_never_reaches_e117() {
+        let diags = check_all("=== main(r: int) ===\n~ x = int(r)\n-> DONE\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Positive control alongside
+    /// [`annotated_fn_param_non_range_type_never_reaches_e117`]: `check`
+    /// still does its job on the one evidence-free shape it *can* see — a
+    /// provably-empty range *literal* directly in argument position (leg
+    /// (a), no annotation or locals involved at all) — so the test above is
+    /// pinning a real absence of reach, not a broken harness.
+    #[test]
+    fn empty_range_literal_argument_is_still_e117() {
+        let diags = check_all("=== main ===\n~ x = int(0..0)\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E117);
+    }
+}

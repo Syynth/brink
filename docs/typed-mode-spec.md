@@ -111,6 +111,22 @@ annotation. An unascribed temp merely copying an annotated parameter
 (`let v = t;`) likewise does **not** inherit the annotation transitively;
 the boundary is "annotated param / ascribed temp", read directly.
 
+**Known gap (issue #2793), not a revision of the ruling above:** two
+concrete `infer_infix`/`infer_intrinsic` evidence-producing positions —
+`InfixOp::Coalesce`'s LHS operand (`coalesce.rs`, feeding E066) and
+`"contains"`'s needle argument (`contains_domain.rs`, feeding E152) —
+don't just leave a genuinely-constrained param's slot alone as this
+ruling intends; they back-propagate an *assumed* shape onto a bare-Path
+param mid-walk, which then gets exported as that param's own final
+signature type and can contradict the param's real written annotation at
+a downstream CHECK consumer (`annotations::mismatches` / E063) rather
+than staying silent or reaching the expected check. See
+`docs/stdlib-spec.md` §1.6a for the coalesce case and
+`docs/diagnostics/E152.md` for the contains case. This is a defect in
+those two call sites' pre-#1912 back-propagation, not a case this ruling
+got wrong; a production fix needs its own design discussion (out of
+#2793's audit scope) before either site changes.
+
 **RULED (issue #1941): the same pure-read-site fallback extends to a
 lambda's own value position** — `infer::body::InferPass::infer_lambda`'s
 block-body tail (`LambdaBody::Block`) and sole expression
