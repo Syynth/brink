@@ -932,18 +932,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
             // E082 — not fall through to the generic E183 refusal below,
             // which would give the same mistake a different, worse code.
             SymbolKind::Temp if ctx.block_scoped_temp_names.contains(&name) => {
-                ctx.diagnostics.push(crate::Diagnostic {
-                    file: ctx.file,
-                    range: path.range,
-                    message: format!(
-                        "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
-                         closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
-                         visible for the rest of their own block",
-                        crate::DiagnosticCode::E082.title(),
-                    ),
-                    code: crate::DiagnosticCode::E082,
-                });
-                lir::Expr::Null
+                push_block_scoped_temp_call_refusal(&name, path.range, ctx)
             }
             // Every other resolved kind is not callable (issue #2837 — see
             // `DiagnosticCode::E183`'s own doc for the full reachability
@@ -975,6 +964,31 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         );
         lir::Expr::Null
     }
+}
+
+/// Mirrors `lower_path`'s own `SymbolKind::Temp if
+/// block_scoped_temp_names.contains(&name)` arm (#680/E082): a T1b
+/// block-scoped temp (`~ { … }`) called after its own block has closed is
+/// the identical author mistake as reading it by value or by `ref`
+/// argument, so it gets the same `E082` here too, rather than falling
+/// through to `lower_call`'s generic `E183` non-callable refusal.
+fn push_block_scoped_temp_call_refusal(
+    name: &str,
+    range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: `{name}` was declared in a `~ {{ … }}` block that has already \
+             closed — block-scoped temps (docs/t1b-surface-spec.md §2) are only \
+             visible for the rest of their own block",
+            crate::DiagnosticCode::E082.title(),
+        ),
+        code: crate::DiagnosticCode::E082,
+    });
+    lir::Expr::Null
 }
 
 /// Issue #2837: `lower_call`'s resolved-target match found a symbol kind
