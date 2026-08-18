@@ -9,6 +9,10 @@ keywords.workspace = true
 categories.workspace = true
 description = "Intermediate representations for inkle's ink narrative scripting language"
 
+# Per-worktree build stamp for scripts/check-target-freshness.mjs (#2759) —
+# see build.rs's own header for what it writes and why.
+build = "build.rs"
+
 [dependencies]
 brink-syntax = { workspace = true }
 brink-syntax-native = { workspace = true }

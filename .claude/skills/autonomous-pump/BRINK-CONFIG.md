@@ -281,10 +281,15 @@ the config above as follows:
   worktrees of the same package silently serves one worktree's stale, or
   currently-different, artifact to the other (issue #2054). Before trusting
   a corpus/bucket number measured locally, run `pnpm check:target-freshness`
-  (`scripts/check-target-freshness.mjs`, CLAUDE.md Rules) — it detects a
-  live sibling worktree plus an existing cached artifact and exits non-zero;
-  `corpus_report`/`full_corpus_sweep` print a pointer to it automatically
-  whenever `CARGO_TARGET_DIR` is set.
+  (`scripts/check-target-freshness.mjs`, CLAUDE.md Rules) — it now compares a
+  per-worktree build stamp each tracked package's `build.rs` writes on every
+  build (#2759) against `git worktree list`, and exits non-zero only when a
+  package's OWN stamp names a different, still-live worktree as its last
+  builder — not merely "a sibling is live and some artifact exists" (that
+  older precondition-only shape from #2753 was a near-constant false
+  positive in this pump's normal shared-cache mode); `corpus_report`/
+  `full_corpus_sweep` print a pointer to it automatically whenever
+  `CARGO_TARGET_DIR` is set.
 
 ### Gates
 - ⚠ **CORRECTED 2026-08-13.** The previous rule here said `wasm-pack

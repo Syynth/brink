@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+# Per-worktree build stamp for scripts/check-target-freshness.mjs (#2759) —
+# see build.rs's own header for what it writes and why.
+build = "build.rs"
+
 [dependencies]
 brink-runtime = { workspace = true, features = ["testing"] }
 brink-format = { workspace = true, features = ["inkt"] }
