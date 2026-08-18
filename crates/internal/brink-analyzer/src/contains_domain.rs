@@ -692,6 +692,61 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
     }
 
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix — an UNWANTED
+    // result flagged, not a new true positive ──────────────────────────
+
+    /// #2793 audit: confirms — with an executable pin, not just prose — the
+    /// gap this file's own module doc already records ("A local `temp`/param
+    /// used as the *needle* … is structurally unreachable, discovered
+    /// empirically … `self.observe(needle, key_ty)` … flagged as scope
+    /// discovered beyond #582, not worked around here"). #2793 asks each of
+    /// the six `BodyTypes::locals` consumers to be re-audited for #2786's
+    /// annotated-param visibility specifically; for this file the answer is
+    /// that #2786 cannot help at all here, for the *same*, already-known
+    /// reason — an *ordinary* `fn`/knot param's own written annotation is
+    /// no more visible to E152 at this position than an unannotated one
+    /// ever was. Same shape as `coalesce.rs`'s own
+    /// `annotated_fn_param_non_option_lhs_of_or_is_not_visible_to_e066`
+    /// (independently rediscovered there before this pre-existing doc note
+    /// was found here) — the mid-walk `observe` write beats the post-walk
+    /// annotation overlay to `pass.locals`, and the overlay's `contains_key`
+    /// #1912 firewall (correctly guarding the *re-bound-temp* case) then has
+    /// no way to tell that entry apart from a legitimate one, so it never
+    /// overlays `k`'s real `float` annotation on top. The lambda-param path
+    /// is immune (see `lambda_param_own_annotation_still_flags_a_genuine_out_of_domain_needle`
+    /// alongside this test) because `structs::pruned_locals_for_lambda`
+    /// re-seeds a lambda's own annotated param straight from its
+    /// `TypeExpr`, never reading back through this same mutated
+    /// `pass.locals` map.
+    ///
+    /// Net effect, pinned here: `k: float` passed directly as
+    /// `contains(#{1: "a"}, k)`'s needle records `k`'s finalized local type
+    /// as `Int` — the container's own key type, in-domain — and raises no
+    /// `E152` at all, even though `float` is provably outside a
+    /// `Map<int, _>`'s key domain.
+    #[test]
+    fn annotated_fn_param_out_of_domain_needle_against_a_literal_container_is_not_visible_to_e152()
+    {
+        let src = "=== main(k: float) ===\n~ x = contains(#{1: \"a\"}, k)\n-> DONE\n";
+        let (hir, index, resolutions, inference) = build_with_inference(src);
+        let body = inference.bodies.values().next().expect("one inferable def");
+        assert_eq!(
+            body.locals.get("k"),
+            Some(&Ty::Int),
+            "documents the gap: the container's own key type, not `k`'s \
+             real `float` annotation, is what the finalized local reflects: \
+             {:?}",
+            body.locals
+        );
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &resolutions);
+        assert!(
+            diags.is_empty(),
+            "documents the gap: no E152 fires despite `k: float` disagreeing \
+             with `contains`'s int-keyed domain here: {diags:?}"
+        );
+    }
+
     #[test]
     fn unresolved_param_needle_stays_silent_when_unknown() {
         let diags = check_all("=== main(n) ===\n~ x = contains(#{1: \"a\"}, n)\n-> DONE\n");

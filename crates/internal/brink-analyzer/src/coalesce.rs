@@ -804,6 +804,70 @@ mod tests {
         assert_eq!(chain.steps[0].rhs, Ty::Int);
     }
 
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix — an UNWANTED
+    // result flagged, not a new true positive ──────────────────────────
+
+    /// #2793 audit finding: unlike every other of the six consumers (and
+    /// unlike this same file's own lambda-param half, pinned by
+    /// `an_annotated_shadowing_lambda_param_keeps_its_preserve_option_shape`
+    /// below), an *ordinary* `fn`/knot param's own written annotation is
+    /// **not visible** to this file's E066 check when that param is used
+    /// directly as an `or` chain's own left-hand operand — #2786's fix
+    /// cannot reach this position at all, regardless of the param's
+    /// annotation.
+    ///
+    /// Root cause: `infer::body::InferPass::infer_infix`'s `InfixOp::Coalesce`
+    /// arm unconditionally back-propagates an *assumed* `Option[T]` shape
+    /// onto a bare-Path left-hand operand mid-walk (`self.observe(lhs,
+    /// &expected_lhs)`, always `Option`-shaped, "a coalescing `lhs` is
+    /// never optional-vs-leniency, it is *required* to be `Option[T]`" —
+    /// see that arm's own doc). That `observe` call runs *during*
+    /// `pass.infer_block`, writing `pass.locals["x"] = Option(Int)` (`x`'s
+    /// prior entry is `Unknown`, so `unify` accepts the assumption outright)
+    /// **before** `infer_def_body`'s own post-walk annotation overlay ever
+    /// runs. The overlay is correctly keyed on `contains_key`, not
+    /// `is_unknown()` (the #1912 firewall, guarding the *re-bound-temp*
+    /// case) — but that same guard, doing exactly its job, now also
+    /// protects this wrong, walk-assumed entry from ever being corrected by
+    /// `x`'s real `int` annotation: the overlay sees `"x"` already present
+    /// and skips it. The lambda-param path is immune to this because
+    /// `structs::pruned_locals_for_lambda` re-seeds a lambda's own
+    /// annotated param straight from its `TypeExpr` (`annotations::resolve`)
+    /// rather than reading back through this same mutated `pass.locals`
+    /// map — an asymmetry between the two param-visibility paths #2786's
+    /// own fix left in place.
+    ///
+    /// Net effect, pinned here: `x: int` used directly as `x or 5` records
+    /// `CoalesceShape::Collapse` with `lhs: Option(Int)` — the LIR shape a
+    /// genuinely-`Option`-typed `x` would get — and raises no `E066` at
+    /// all, even though `int` is provably not `Option[T]`. This is a
+    /// pre-existing gap in the coalesce LHS position, not something #2786
+    /// introduced (the forced `observe` predates it), but #2786's fix
+    /// cannot close it either: reported per #2793's "flag any consumer
+    /// where the newly-visible annotation produces an unwanted result"
+    /// ask, not fixed here (a production fix to `infer_infix`'s own
+    /// back-propagation is out of this audit's scope and needs its own
+    /// design discussion).
+    #[test]
+    fn annotated_fn_param_non_option_lhs_of_or_is_not_visible_to_e066() {
+        let src = "fn build(x: int) {\n  let y = x or 5;\n}\n";
+        let (hir, index, resolutions, inference) = build_native(src);
+        let (table, diags) = resolve(&[(HirFileId(0), &hir)], &index, &inference, &resolutions);
+        assert!(
+            diags.is_empty(),
+            "documents the gap: no E066 fires despite `x: int` disagreeing \
+             with `or`'s Option requirement: {diags:?}"
+        );
+        let (_key, chain) = table.iter().next().expect("one recorded chain");
+        assert_eq!(
+            chain.steps[0].lhs,
+            Ty::Option(Box::new(Ty::Int)),
+            "the coalesce arm's own forced back-propagation, not `x`'s real \
+             `int` annotation, is what the recorded shape reflects: {chain:?}"
+        );
+    }
+
     #[test]
     fn non_option_left_hand_side_is_e066() {
         let diags = check_all("flow main() {\n  {5 or 9}\n  -> END\n}\n");
