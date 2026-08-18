@@ -12,6 +12,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 import {
   CHANGESET_README,
@@ -19,6 +21,7 @@ import {
   GUARDED_BUNDLE_FILES,
   GUARDED_PREFIXES,
   PACKAGE_JSON_BUNDLE_FILES,
+  REPO_ROOT,
   STUDIO_PACKAGE,
   changesetNamesStudio,
   checkStudioChangeset,
@@ -28,6 +31,8 @@ import {
   packageJsonChangeIsIgnorable,
   parseNameStatus,
   resolveBaseRef,
+  selectPackageJsonEntries,
+  selectRelevantChangesets,
 } from "./check-studio-changeset.mjs";
 
 describe("isGuardedPath", () => {
@@ -370,8 +375,12 @@ describe("checkStudioChangeset", () => {
     assert.equal(result.ok, true);
   });
 
-  // #2834 item 1: the package.json devDependencies/version carve-out.
-  it("does not require a changeset for a package.json edit that only touches devDependencies", () => {
+  // #2834 review finding (BLOCKER): PACKAGE_JSON_IGNORABLE_KEYS_BY_PATH is
+  // PER FILE, not one blanket set — packages/brink-studio/package.json puts
+  // every bundled dep (all four @brink/* privates, plus codemirror/zustand)
+  // in devDependencies, so a devDependencies-only edit there DOES shape the
+  // bundle and must NOT be carved out.
+  it("DOES require a changeset for packages/brink-studio/package.json touching only devDependencies", () => {
     const oldText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0", devDependencies: { a: "1.0.0" } });
     const newText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0", devDependencies: { a: "1.1.0" } });
     const result = checkStudioChangeset({
@@ -379,7 +388,36 @@ describe("checkStudioChangeset", () => {
       relevantChangesets: [],
       packageJsonDiffs: [{ path: "packages/brink-studio/package.json", oldText, newText }],
     });
-    assert.equal(result.ok, true, "a devDependencies-only edit alters nothing published");
+    assert.equal(
+      result.ok,
+      false,
+      "brink-studio's devDependencies IS its bundle manifest (all four @brink/* privates plus codemirror/zustand) — a bump there is bundle-shaping",
+    );
+  });
+
+  it("still does not require a changeset for packages/brink-studio/package.json touching only version", () => {
+    const oldText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.0" });
+    const newText = JSON.stringify({ name: "@brink-lang/studio", version: "1.0.1" });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/brink-studio/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/brink-studio/package.json", oldText, newText }],
+    });
+    assert.equal(result.ok, true, "a version-only bump alters nothing published");
+  });
+
+  it("does not require a changeset for packages/studio-shell/package.json touching only devDependencies", () => {
+    // Unlike brink-studio, studio-shell has no devDependencies at all in
+    // the real file — its real deps live in "dependencies" (never carved
+    // out) — so devDependencies is safely ignorable specifically here.
+    const oldText = JSON.stringify({ name: "@brink/studio-shell", version: "0.0.1", devDependencies: { a: "1.0.0" } });
+    const newText = JSON.stringify({ name: "@brink/studio-shell", version: "0.0.1", devDependencies: { a: "1.1.0" } });
+    const result = checkStudioChangeset({
+      changedFiles: ["packages/studio-shell/package.json"],
+      relevantChangesets: [],
+      packageJsonDiffs: [{ path: "packages/studio-shell/package.json", oldText, newText }],
+    });
+    assert.equal(result.ok, true, "studio-shell keeps its real deps in dependencies, never devDependencies");
   });
 
   it("does not require a changeset for a package.json edit that only bumps version", () => {
@@ -481,5 +519,79 @@ describe("GUARDED_BUNDLE_FILES / PACKAGE_JSON_BUNDLE_FILES", () => {
         "packages/studio-shell/package.json",
       ].sort(),
     );
+  });
+
+  // #2834 review finding: the previous test above is a tautology — it
+  // restates the same literal and keeps passing after someone renames
+  // vite.config.embed.ts or drops alias-map.ts from the repo, silently
+  // reopening exactly the gap #2834 item 4 is about (a stale enumeration
+  // going authoritative-looking and wrong). This asserts every entry still
+  // exists on disk.
+  for (const file of GUARDED_BUNDLE_FILES) {
+    it(`${file} still exists in the repo (GUARDED_BUNDLE_FILES rot guard)`, () => {
+      assert.ok(existsSync(resolve(REPO_ROOT, file)), `${file} is named in GUARDED_BUNDLE_FILES but missing on disk`);
+    });
+  }
+});
+
+// #2834 review finding: the actual code change in gatherDiff (A-or-M
+// changeset selection, and the packageJsonDiffs selection) was previously
+// untested — no test called these functions with A/M/D/R100-shaped rows.
+// Extracted as pure helpers so they can be driven directly here.
+describe("selectRelevantChangesets", () => {
+  it("selects ADDED changeset files", () => {
+    const entries = [{ status: "A", path: ".changeset/foo.md" }];
+    assert.deepEqual(selectRelevantChangesets(entries), entries);
+  });
+
+  it("selects MODIFIED changeset files (#2834 item 2)", () => {
+    const entries = [{ status: "M", path: ".changeset/existing.md" }];
+    assert.deepEqual(selectRelevantChangesets(entries), entries);
+  });
+
+  it("does not select DELETED changeset files", () => {
+    assert.deepEqual(selectRelevantChangesets([{ status: "D", path: ".changeset/foo.md" }]), []);
+  });
+
+  it("does not select a RENAMED changeset file — parseNameStatus collapses R100 to 'R', which matches neither A nor M", () => {
+    const entries = parseNameStatus("R100\t.changeset/old.md\t.changeset/new.md\n");
+    assert.deepEqual(entries, [{ status: "R", path: ".changeset/new.md" }]);
+    assert.deepEqual(selectRelevantChangesets(entries), []);
+  });
+
+  it("does not select a non-changeset file regardless of status", () => {
+    assert.deepEqual(selectRelevantChangesets([{ status: "A", path: "packages/brink-studio/src/app.tsx" }]), []);
+  });
+});
+
+describe("selectPackageJsonEntries", () => {
+  it("selects an ADDED guarded package.json", () => {
+    const entries = [{ status: "A", path: "packages/brink-studio/package.json" }];
+    assert.deepEqual(selectPackageJsonEntries(entries), entries);
+  });
+
+  it("selects a MODIFIED guarded package.json", () => {
+    const entries = [{ status: "M", path: "packages/studio-shell/package.json" }];
+    assert.deepEqual(selectPackageJsonEntries(entries), entries);
+  });
+
+  it("does not select a DELETED guarded package.json", () => {
+    assert.deepEqual(selectPackageJsonEntries([{ status: "D", path: "packages/brink-studio/package.json" }]), []);
+  });
+
+  it("selects a RENAMED guarded package.json (fails closed downstream via an unresolvable old side)", () => {
+    const entries = parseNameStatus(
+      "R100\tpackages/brink-studio/old-name.json\tpackages/brink-studio/package.json\n",
+    );
+    assert.deepEqual(entries, [{ status: "R", path: "packages/brink-studio/package.json" }]);
+    assert.deepEqual(selectPackageJsonEntries(entries), entries);
+  });
+
+  it("does not select a guarded-prefix src file (not a package.json bundle file)", () => {
+    assert.deepEqual(selectPackageJsonEntries([{ status: "M", path: "packages/brink-studio/src/app.tsx" }]), []);
+  });
+
+  it("does not select an un-guarded package.json", () => {
+    assert.deepEqual(selectPackageJsonEntries([{ status: "M", path: "packages/studio-ui/package.json" }]), []);
   });
 });
