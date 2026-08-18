@@ -237,6 +237,17 @@ editor-groups store clears `maximizedGroupId` inside `openDocument`'s
 behavior (#280, §4 Player row) obeys the same rule as `splitGroup` without
 each caller having to remember it.
 
+**Revealing an already-open tab also restores first, when needed (#2797).**
+`openDocument`'s default `"focused"` target (a plain reveal — the Binder's
+open-file click among others) focuses an existing tab wherever it lives,
+which can be a group other than the one currently maximized. Because
+`EditorArea` renders only the maximized group, a reveal landing in a
+different, hidden group would move focus internally but paint nothing — the
+click would appear to do nothing. `openDocument`'s `"focused"` branch clears
+`maximizedGroupId` whenever the revealed tab's group differs from the
+maximized one, leaving it untouched when the reveal targets the maximized
+group itself (already the only thing rendered, nothing to restore).
+
 ## 6. Command system
 
 A `CommandRegistry` in the shell package:
