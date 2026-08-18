@@ -909,8 +909,29 @@ fn resolve_function(
         return;
     }
 
+    // A real **call site** (`arg_count.is_some()`) naming a reserved builtin
+    // (`is_builtin_function`'s classic uppercase intrinsics or
+    // `is_t1b_stdlib_name`'s T1b verbs) must not let a `List`/`Variable`
+    // symbol of that same name claim the call below — issue #2856 review:
+    // `VAR MAX = 10` + `{MAX(1, 2)}` compiled clean and then died at
+    // runtime with `RuntimeError::NotCallable("int")`, because the
+    // unconditional `SymbolKind::Variable` lookup just below had no
+    // call-site guard, unlike the list-item bare-name gate a few lines down
+    // (`arg_count.is_none()`, issue #2830) that this mirrors. A `VAR`/`LIST`
+    // is not itself callable the way a knot or a variable holding a divert
+    // target is — routing a reserved-name call through to the real builtin
+    // fallback below (`recognize_builtin`/`lower_t1b_stdlib_call`) is a
+    // clean compile with well-defined behavior, exactly matching this same
+    // name's pre-#2856 behavior, instead of a `CallVariable`/`ListFromInt`
+    // emitted against a value that was never meant to be called. Read-site
+    // shadowing (`resolve_variable`'s bare `{MAX}`) is untouched — this
+    // guard only narrows the *callee* lookup at a call site.
+    let reserved_call_site =
+        uref.arg_count.is_some() && (is_builtin_function(path) || is_t1b_stdlib_name(path));
+
     // Try list names (ink allows `list(n)` as type conversion)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List]) {
+    if !reserved_call_site && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::List])
+    {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -920,7 +941,9 @@ fn resolve_function(
     }
 
     // Try variables (ink allows calling a variable holding a function ref)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable]) {
+    if !reserved_call_site
+        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable])
+    {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,

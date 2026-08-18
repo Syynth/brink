@@ -298,6 +298,38 @@ fn empty_hir() -> HirFile {
     }
 }
 
+/// Issue #2856 PR review: does `manifest` declare an author symbol whose
+/// **name** is exactly `path`? Consulted by
+/// [`is_generator_unreachable_reserved_name`] to tell a genuinely-undeclared
+/// reserved-name ref (safe to exclude from `completeness`'s count) apart
+/// from a ref that merely *shares spelling* with a reserved name while a
+/// real declared symbol backs it (which must resolve normally and stay
+/// counted — excluding it would hide exactly the #2830/#2836 silent-drop
+/// shape this property exists to catch, since the pre-fix filter matched on
+/// `path` alone, before `analyze` ever ran, with no way to tell the two
+/// apart).
+///
+/// Checked against every declared-symbol table `arb_manifest` populates:
+/// knots, variables, externals, structs, and list names compare directly;
+/// list *items* compare by their bare, unqualified name, because
+/// `manifest.list_items` stores the dot-qualified `list.item` spelling
+/// (`arb_manifest`'s own doc, "each unresolved ref gets a unique offset") but
+/// a ref's `path` may legitimately name the bare item (`arb_manifest`'s
+/// `all_names` — the ref-target pool a generated ref's `path` is drawn from —
+/// includes both the qualified list name and the bare item name for every
+/// list).
+fn manifest_declares_name(manifest: &SymbolManifest, path: &str) -> bool {
+    manifest.knots.iter().any(|s| s.name == path)
+        || manifest.variables.iter().any(|s| s.name == path)
+        || manifest.externals.iter().any(|s| s.name == path)
+        || manifest.structs.iter().any(|s| s.name == path)
+        || manifest.lists.iter().any(|s| s.name == path)
+        || manifest
+            .list_items
+            .iter()
+            .any(|s| s.name.rsplit('.').next() == Some(path))
+}
+
 /// Issue #2856: names the second category `completeness` below excludes,
 /// alongside `RefKind::Type` — an unresolved ref whose `path` names one of
 /// the analyzer's compiler-reserved, resolution-optional identifiers
@@ -306,14 +338,15 @@ fn empty_hir() -> HirFile {
 /// lowercase T1b stdlib names — `len`, `push`, … — re-exported for this
 /// purpose via `brink_analyzer::test_support`, not hand-duplicated here:
 /// see `is_builtin_function`'s own doc for why a third hand-copy was
-/// rejected). `resolve_variable`/`resolve_function` may skip resolving such
-/// a reference with NO diagnostic — but, as of issue #2856 point 3's fix,
-/// ONLY once every real lookup (locals, globals, list items, knots,
-/// externals, …) has already failed to find a matching **declared**
-/// symbol; a declared symbol of the same name always wins first and is
-/// fully counted by `completeness` as resolved, never silently skipped
-/// (`integration_var_shadows_uppercase_builtin_name` below pins this at the
-/// analyzer layer; `crates/brink-compiler/tests/
+/// rejected) **and that nothing in `manifest` declares under that name**
+/// ([`manifest_declares_name`] above). `resolve_variable`/`resolve_function`
+/// may skip resolving such a reference with NO diagnostic — but, as of
+/// issue #2856 point 3's fix, ONLY once every real lookup (locals, globals,
+/// list items, knots, externals, …) has already failed to find a matching
+/// **declared** symbol; a declared symbol of the same name always wins
+/// first and is fully counted by `completeness` as resolved, never silently
+/// skipped (`integration_var_shadows_uppercase_builtin_name` below pins
+/// this at the analyzer layer; `crates/brink-compiler/tests/
 /// issue_2856_builtin_shadow.rs` pins the same guarantee end-to-end through
 /// codegen + the VM).
 ///
@@ -329,29 +362,96 @@ fn empty_hir() -> HirFile {
 /// because the lookup-before-fallback ordering (fixed for `pop`/
 /// `is_t1b_stdlib_name` by #2830/#2836, and for `is_builtin_function` by
 /// #2856 itself) makes the declared symbol win resolution instead of ever
-/// reaching here.
+/// reaching here — and this predicate's own `manifest_declares_name` check
+/// is what makes that guarantee hold for the property itself, not just for
+/// the production resolver: a ref whose path matches BOTH a declared
+/// symbol and a reserved name is never excluded, so `completeness` still
+/// requires it to resolve.
 ///
-/// **Why this predicate is presently unreachable, not presently
-/// vacuous:** `arb_manifest`'s generator only ever produces a ref `path`
-/// that either exactly matches a declared symbol's name (which resolves
-/// normally, per the guarantee above — this predicate is never even
-/// consulted for it) or is the fixed `"definitely_missing"` sentinel
-/// (which is not a reserved name, so this predicate returns `false` for
-/// it too). No generated ref can currently be both "genuinely undeclared"
-/// and "a reserved name" at once — `arb_ident`'s `[a-z][a-z_]{0,11}`
-/// charset additionally makes `is_builtin_function`'s all-uppercase set
-/// unreachable by construction, independent of the sentinel argument. If
-/// the generator is ever extended to emit such a ref (a `path` that names
-/// a reserved identifier while nothing in the manifest declares a matching
-/// symbol), THIS predicate — not an accidental generator gap — is what
-/// keeps `completeness` correctly excluding it, rather than reopening a
-/// #2830-shaped intermittent flake on an unrelated PR.
-fn is_generator_unreachable_reserved_name(path: &str) -> bool {
+/// **This predicate is consulted for every ref, unconditionally** — it does
+/// not skip a ref merely because its `path` matches a declared symbol's
+/// name; `manifest_declares_name` is exactly how it tells that case apart
+/// from a genuinely reserved-and-undeclared one and returns `false` for it.
+/// `arb_manifest`'s generator can currently only ever produce a ref `path`
+/// that either exactly matches a declared symbol's name (for which this
+/// predicate now correctly returns `false`, so `completeness` still counts
+/// it) or is the fixed `"definitely_missing"` sentinel (not a reserved
+/// name, so this predicate returns `false` for that too) — `arb_ident`'s
+/// `[a-z][a-z_]{0,11}` charset additionally makes `is_builtin_function`'s
+/// all-uppercase set unreachable by construction, independent of the
+/// sentinel argument. If the generator is ever extended to emit a `path`
+/// that names a reserved identifier while nothing in the manifest declares
+/// a matching symbol, THIS predicate is what keeps `completeness` correctly
+/// excluding just that case, rather than reopening a #2830-shaped
+/// intermittent flake on an unrelated PR.
+fn is_generator_unreachable_reserved_name(manifest: &SymbolManifest, path: &str) -> bool {
     // NS-A1 (`docs/stdlib-spec.md` §1.4): the bare `none` Option-absence
     // literal gets the identical silent-skip treatment in `resolve_variable`
     // (see that function's own doc) but lives outside `is_t1b_stdlib_name`
     // — it is a value-position literal, not a call name.
-    path == "none" || is_builtin_function(path) || is_t1b_stdlib_name(path)
+    (path == "none" || is_builtin_function(path) || is_t1b_stdlib_name(path))
+        && !manifest_declares_name(manifest, path)
+}
+
+/// PR review regression pin: before `is_generator_unreachable_reserved_name`
+/// became manifest-aware, it matched on NAME ALONE — so a manifest
+/// declaring list item `colors.pop` plus a `RefKind::Function` ref to `pop`
+/// (exactly the issue #2830/#2836 shape the `completeness` property exists
+/// to catch) went from 1 ref to 0 refs the moment `completeness`'s filter
+/// ran, because the filter runs over `manifest.unresolved` BEFORE `analyze`
+/// ever sees it. `is_generator_unreachable_reserved_name("pop")` was `true`
+/// unconditionally, and `arb_ident()`'s `[a-z][a-z_]{0,11}` charset reaches
+/// `pop`/`len`/`get`/`map`/`none` just as easily as any other identifier —
+/// so this was a live hole in the property's own filtering logic, not a
+/// generator-reachability question. Pinned directly against the manifest
+/// helpers rather than through the full `arb_manifest` strategy so this
+/// stays a deterministic regression test, not a proptest shrink target.
+#[test]
+fn is_generator_unreachable_reserved_name_respects_declared_list_item() {
+    let mut manifest = SymbolManifest::default();
+    manifest.lists.push(decl_sym(
+        "colors".to_string(),
+        range(0, "colors".len() as u32),
+    ));
+    manifest.list_items.push(decl_sym(
+        "colors.pop".to_string(),
+        range(20, "pop".len() as u32),
+    ));
+    manifest.unresolved.push(UnresolvedRef {
+        path: "pop".to_string(),
+        range: range(100, "pop".len() as u32),
+        kind: RefKind::Function,
+        scope: Scope::default(),
+        arg_count: None,
+        module_qualified: false,
+    });
+
+    assert!(
+        manifest_declares_name(&manifest, "pop"),
+        "`colors.pop` is declared, so `manifest_declares_name` must find it \
+         under its bare item name"
+    );
+    assert!(
+        !is_generator_unreachable_reserved_name(&manifest, "pop"),
+        "a `pop` ref backed by a declared `colors.pop` list item must not be \
+         excluded from `completeness`'s count, even though `pop` is also a \
+         reserved T1b stdlib name"
+    );
+
+    // The exact filter `completeness` applies — proves the ref survives it.
+    let surviving: Vec<_> = manifest
+        .unresolved
+        .iter()
+        .filter(|r| {
+            r.kind != RefKind::Type && !is_generator_unreachable_reserved_name(&manifest, &r.path)
+        })
+        .collect();
+    assert_eq!(
+        surviving.len(),
+        1,
+        "the declared-symbol-backed `pop` ref must survive completeness's \
+         filter (was previously dropped: 1 ref -> 0 refs)"
+    );
 }
 
 // ─── Property tests ─────────────────────────────────────────────────
@@ -388,20 +488,25 @@ proptest! {
     ///    same name has already failed to be found — and a declared
     ///    symbol always wins resolution first (issue #2856 point 3 made
     ///    this true for `is_builtin_function`'s classic uppercase set too,
-    ///    matching `is_t1b_stdlib_name`'s pre-existing correct ordering),
-    ///    so this predicate's exclusion is currently a no-op against what
-    ///    `arb_manifest` can generate, not a live carve-out papering over a
-    ///    real gap.
+    ///    matching `is_t1b_stdlib_name`'s pre-existing correct ordering).
+    ///    The predicate is manifest-aware ([`manifest_declares_name`]): it
+    ///    excludes a ref only when its `path` is BOTH a reserved name AND
+    ///    backed by no declared symbol in this same `manifest`, so a ref
+    ///    that happens to share spelling with a reserved name while a real
+    ///    declared symbol exists under it is never excluded — it still must
+    ///    resolve, and `completeness` still counts it.
     #[test]
     fn completeness(manifest in arb_manifest()) {
+        let filtered_unresolved: Vec<_> = manifest
+            .unresolved
+            .iter()
+            .filter(|r| {
+                r.kind != RefKind::Type && !is_generator_unreachable_reserved_name(&manifest, &r.path)
+            })
+            .cloned()
+            .collect();
         let manifest = SymbolManifest {
-            unresolved: manifest
-                .unresolved
-                .into_iter()
-                .filter(|r| {
-                    r.kind != RefKind::Type && !is_generator_unreachable_reserved_name(&r.path)
-                })
-                .collect(),
+            unresolved: filtered_unresolved,
             ..manifest
         };
         let total_refs = manifest.unresolved.len();

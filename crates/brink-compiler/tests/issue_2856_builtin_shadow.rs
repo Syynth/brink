@@ -109,3 +109,29 @@ fn unshadowed_builtin_still_works() {
     let out = run("The sum: {FLOOR(3.7)}\n-> DONE\n");
     assert_eq!(out.trim(), "The sum: 3");
 }
+
+/// PR review regression guard: a `VAR` is not itself callable — unlike a
+/// knot (tunnel-as-function, `knot_shadows_builtin_at_call_site` above) or
+/// a variable holding a stored divert target — so `VAR MAX = 10` must not
+/// let `resolve_function`'s `SymbolKind::Variable` lookup claim
+/// `{MAX(1, 2)}`'s *call site* on the strength of this issue's own
+/// shadowing fix. Before the review fix, this compiled clean with no
+/// diagnostic and then died at runtime with
+/// `RuntimeError::NotCallable("int")` (`lower_call`'s `CallVariable`
+/// emitted against an int) — the exact "clean compile, runtime fault"
+/// shape issue #2830's list-item gate exists to prevent, and which this
+/// same PR's own `E183` refusal exists to turn into a compile diagnostic
+/// for other non-callable kinds. The call site must keep reaching the real
+/// `MAX()` built-in instead, exactly as it did before this whole issue's
+/// fix — `var_shadows_builtin_at_read_site` above still pins that the
+/// *bare read* `{RANDOM}` shadow keeps working.
+#[test]
+fn var_named_builtin_is_not_callable_at_call_site() {
+    let out = run("\
+VAR MAX = 10
+
+value: {MAX(1, 2)}
+-> DONE
+");
+    assert_eq!(out.trim(), "value: 2");
+}
