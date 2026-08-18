@@ -29,13 +29,39 @@
 //!
 //! ## What this guard does NOT catch
 //!
-//! A fixture that still compiles clean but has stopped exercising the code
-//! path its bench comment claims (e.g. an edit that accidentally makes
-//! `loop-append-10k` no longer hit the amortized-COW fast path) rots
-//! silently through this guard — "compiles" is not "still measures the
-//! right thing." That failure mode needs `--features bench-counters`'s
-//! `print_bench_counters` assertions (or a human re-reading the bench
-//! output), not a compile-only check, and is out of scope here.
+//! - A fixture that still compiles clean but has stopped exercising the
+//!   code path its bench comment claims (e.g. an edit that accidentally
+//!   makes `loop-append-10k` no longer hit the amortized-COW fast path)
+//!   rots silently through this guard — "compiles" is not "still measures
+//!   the right thing." That failure mode needs `--features
+//!   bench-counters`'s `print_bench_counters` assertions (or a human
+//!   re-reading the bench output), not a compile-only check, and is out of
+//!   scope here.
+//!
+//! - **Policy drift between this file and `runtime.rs`.** `FIXTURES`'s
+//!   `FixturePolicy` column is a hand-copy of the dialect/`TypePolicy`
+//!   combination baked into `runtime.rs`'s `compile_story`/
+//!   `compile_story_brink`/`compile_story_brink_typed` helpers — nothing
+//!   pins the copy to the original. If a helper's `TypePolicy` changes, or
+//!   a bench scenario moves from one helper to another, this guard keeps
+//!   compiling the fixture under the now-stale policy and stays green
+//!   while the bench itself breaks under the real one: the #2138 class
+//!   recurring one level up, through the guard built to stop it. This is
+//!   not hypothetical — `E063` is a `Warning` under `Gradual` and an
+//!   `Error` under `Strict`, which is exactly why the pre-#2770
+//!   `struct-field-access-10k` fixture compiled clean under gradual and
+//!   only the strict entry reproduced #2138.
+//!   `all_benchmarks_stories_fixtures_are_covered` (below) pins the
+//!   fixture *set*; nothing pins the *mapping*. A mechanical pin would be
+//!   strictly better — e.g. compiling `benches/runtime.rs` itself so the
+//!   two can be checked against each other — and that's not blocked by
+//!   `runtime.rs` going uncompiled: it *is* compiled on every PR via the
+//!   required Static-checks lane (`cargo clippy --workspace --all-targets
+//!   -- -D warnings` covers `--benches`). The real obstacle is that an
+//!   integration-test target can't import a bench target, so a real pin
+//!   needs the dialect/`TypePolicy` mapping extracted into a module both
+//!   targets share — a larger question than this doc note, left open —
+//!   see #2810 for the analysis; no tracking issue yet.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
