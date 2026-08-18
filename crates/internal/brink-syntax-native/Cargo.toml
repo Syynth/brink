@@ -9,6 +9,10 @@ keywords.workspace = true
 categories.workspace = true
 description = "Lexer and error-resilient CST for the .brink native surface (B0.5 grammar skeleton)"
 
+# Per-worktree build stamp for scripts/check-target-freshness.mjs (#2759) —
+# see build.rs's own header for what it writes and why.
+build = "build.rs"
+
 [dependencies]
 rowan.workspace = true
 

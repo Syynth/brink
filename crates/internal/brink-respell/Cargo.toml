@@ -14,6 +14,10 @@ description = "Dev/converter tool: mechanically respells ink corpus fixtures int
 # guard.
 publish = false
 
+# Per-worktree build stamp for scripts/check-target-freshness.mjs (#2759) —
+# see build.rs's own header for what it writes and why.
+build = "build.rs"
+
 [dependencies]
 brink-ir = { workspace = true }
 brink-syntax = { workspace = true }
