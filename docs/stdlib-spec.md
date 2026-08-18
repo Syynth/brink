@@ -55,6 +55,20 @@ dangles; charter fix owed.)
 6. **Absence & the display boundary (RULED 2026-07-18 — ships as
    one package with Option).** (a) `x or default` — the coalescing
    spelling, total by construction, the value-position 90% case.
+   **Known gap (issue #2793):** an ordinary (non-lambda) `fn`/knot
+   param used directly as `x`'s own left-hand operand is invisible
+   to E066's non-Option-LHS check no matter what the param is
+   annotated — `infer_infix`'s `Coalesce` arm back-propagates an
+   assumed `Option[T]` shape onto the bare-Path LHS mid-walk, an
+   `infer_infix` evidence-producing position under `docs/typed-mode-
+   spec.md` §2's RULED #1912 firewall, so the param's real
+   annotation is never consulted there. That assumed shape is then
+   exported as the param's own signature type, which can surface as
+   an E063 annotation/usage mismatch instead of the expected E066 —
+   see `coalesce.rs`'s
+   `annotated_fn_param_non_option_lhs_of_or_is_not_visible_to_e066`
+   test. Pre-existing (predates #2786); a production fix needs its
+   own design discussion, not scheduled as of this writing.
    (b) **Display-boundary forgiveness**: an interpolation whose
    FINAL value is None renders as nothing — absence renders as
    absence, the honest narrative meaning. Everywhere else (guards,

@@ -725,6 +725,32 @@ mod tests {
     /// as `Int` — the container's own key type, in-domain — and raises no
     /// `E152` at all, even though `float` is provably outside a
     /// `Map<int, _>`'s key domain.
+    ///
+    /// Like `coalesce.rs`'s sibling finding, this is exactly the case
+    /// `docs/typed-mode-spec.md` §2's **RULED (issue #1912)** paragraph
+    /// already carves out — an intrinsic's sibling-argument `observe`
+    /// (named there verbatim) is an evidence-producing position that
+    /// deliberately never consults the annotation fallback, and this test
+    /// does not reopen or contradict that ruling. What's new, not already
+    /// covered by #1912: the walk-*assumed* container-key shape this arm
+    /// back-propagates onto the needle gets exported as the param's own
+    /// final signature type, which then contradicts the written annotation
+    /// at a downstream CHECK consumer (`annotations::mismatches` / E063)
+    /// for a non-exempt annotated type — see the `k: string` variant below.
+    ///
+    /// **Load-bearing caveat (review finding, #2819):** this fixture's
+    /// "no diagnostic at all" is not just E152's own silence — it also
+    /// depends on `k: float` being the *one* legal directional coercion
+    /// `annotations::mismatches`'s `report_if_mismatched` exempts
+    /// (`unify(Float, Int) == Float`, pinned independently by
+    /// `annotations::tests::mismatches_is_silent_for_the_legal_int_to_float_coercion`).
+    /// Swap the annotation to `k: string` and the identical mid-walk
+    /// pre-emption instead surfaces as `E063` at the annotation site — see
+    /// the sibling test immediately below. So "silent" here does not
+    /// generalize to every disagreeing annotation at this needle position;
+    /// it generalizes to E152 specifically staying silent, while whether
+    /// *any* diagnostic fires at all still depends on which annotated type
+    /// was written.
     #[test]
     fn annotated_fn_param_out_of_domain_needle_against_a_literal_container_is_not_visible_to_e152()
     {
@@ -744,6 +770,43 @@ mod tests {
             diags.is_empty(),
             "documents the gap: no E152 fires despite `k: float` disagreeing \
              with `contains`'s int-keyed domain here: {diags:?}"
+        );
+        // And this specific silence is not "no diagnostic anywhere" — it
+        // is silent only because `float` is the one type `assignable`
+        // exempts. `annotations::mismatches` still stays silent too, for
+        // that exact reason (this fixture pins the load-bearing dependency
+        // named above).
+        let mismatch_diags =
+            annotations::mismatches(&[(FileId(0), &hir)], &index, &inference, None);
+        assert!(mismatch_diags.is_empty(), "{mismatch_diags:?}");
+    }
+
+    /// Same fixture, `k: string` instead of `k: float`: not exempted by
+    /// `assignable`'s legal-coercion carve-out, so the same mid-walk
+    /// pre-emption that silences E152 above surfaces here as `E063` at the
+    /// annotation site — a different (and worse) diagnostic than a correct
+    /// E152 at the `contains` call would be, not silence. Prevents the
+    /// `float` fixture's silence from being read as "an annotated needle
+    /// disagreement here is never visible to *any* check" — it depends on
+    /// which type was written.
+    #[test]
+    fn annotated_fn_param_out_of_domain_needle_against_a_literal_container_surfaces_as_e063_for_a_non_exempt_annotation()
+     {
+        let src = "=== main(k: string) ===\n~ x = contains(#{1: \"a\"}, k)\n-> DONE\n";
+        let (hir, index, resolutions, inference) = build_with_inference(src);
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &resolutions);
+        assert!(
+            diags.is_empty(),
+            "E152 itself still never sees this position: {diags:?}"
+        );
+        let mismatch_diags =
+            annotations::mismatches(&[(FileId(0), &hir)], &index, &inference, None);
+        assert_eq!(mismatch_diags.len(), 1, "{mismatch_diags:?}");
+        assert_eq!(mismatch_diags[0].code, DiagnosticCode::E063);
+        assert_eq!(
+            mismatch_diags[0].message,
+            "annotated type `string` disagrees with the type inferred from usage (`int`)",
+            "{mismatch_diags:?}"
         );
     }
 
