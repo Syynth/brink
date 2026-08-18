@@ -1093,6 +1093,55 @@ mod tests {
         assert_eq!(diags[0].code, DiagnosticCode::E071);
     }
 
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix ─────────────────
+
+    /// #2786 overlaid an *ordinary* `fn`/knot param's own written annotation
+    /// onto `pass.locals` whenever the body walk left it absent — the exact
+    /// same mechanism `option_conditions.rs`'s
+    /// `annotated_fn_param_option_condition_is_e116` pins for E116, here for
+    /// this file's E071 field-mismatch check instead. `n`'s only other
+    /// appearance is the `Point#{x: n}` field initializer itself — no other
+    /// statement observes it (mirrors
+    /// `unused_param_variable_valued_initializer_stays_silent_when_unknown`
+    /// just below, minus the annotation), so pre-#2786 this param stayed
+    /// `Unknown` in `pass.locals`. Unlike `coalesce.rs`'s `or` chains and
+    /// `contains_domain.rs`'s `contains` needle (both #2793 findings where a
+    /// sibling `infer_intrinsic`/`infer_infix` arm's own `observe` call
+    /// forces the param's locals entry to something else *before* the
+    /// annotation overlay runs), a struct literal's field values are never
+    /// `observe`d against their declared field type during the main walk
+    /// (`infer::body::InferPass::infer_expr`'s own `Expr::StructLiteral` arm
+    /// doc: "Field-type propagation through a struct's declared shape is
+    /// out of scope for this slice") — so this position has no such
+    /// pre-emption, and the annotation overlay is what finally supplies the
+    /// classification: `n: string` disagrees with `Point.x: float`, so this
+    /// must now fire — the new true positive #2793 asks each consumer to
+    /// confirm.
+    #[test]
+    fn annotated_fn_param_field_mismatch_is_e071() {
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === main(n: string) ===\n~ p = Point#{x: n}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    /// Negative control alongside
+    /// [`annotated_fn_param_field_mismatch_is_e071`]: an ordinary annotated
+    /// param whose declared type already agrees with the field's declared
+    /// type must stay clean.
+    #[test]
+    fn annotated_fn_param_field_agreement_stays_clean() {
+        let diags = check_all(
+            "STRUCT Point = #{x: float}\n\
+             === main(n: float) ===\n~ p = Point#{x: n}\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     #[test]
     fn unused_param_variable_valued_initializer_stays_silent_when_unknown() {
         // `n` is never used anywhere else in the body, so it stays `Unknown`

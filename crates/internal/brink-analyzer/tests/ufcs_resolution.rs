@@ -576,6 +576,59 @@ fn main(guest) {
     );
 }
 
+// ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param half
+// of #2786's `BodyTypes::locals` visibility fix ───────────────────────
+
+/// #2786 overlaid an *ordinary* `fn`/knot param's own written annotation
+/// onto `pass.locals` whenever the body walk left it absent — the same
+/// mechanism `option_conditions.rs`'s
+/// `annotated_fn_param_option_condition_is_e116` pins for E116. Here it is
+/// this file's own D3 check (`ufcs.rs::UfcsVisitor::head_ty`, which reads
+/// `current_locals()` — the same `BodyTypes::locals` — for a `Param`/`Temp`
+/// receiver) that benefits: `g`'s only appearance in `main`'s body is as
+/// the UFCS receiver itself, so no other statement observes it (mirrors
+/// `an_unknown_receiver_type_demands_an_annotation` just above, minus the
+/// annotation — that fixture's own `guest` param is genuinely unannotated).
+/// Pre-#2786, `g` stayed absent from `pass.locals`, `receiver_ty` returned
+/// `None`, and D3 demanded an annotation (`E142`) even though one was
+/// already written. Post-#2786 the annotation itself supplies the
+/// classification, so the receiver resolves and the call desugars — the new
+/// true positive #2793 asks each consumer to confirm (inverted from a
+/// typical "new diagnostic": here the fix's effect is a diagnostic that no
+/// longer fires on legal, already-annotated source).
+#[test]
+fn an_annotated_fn_param_receiver_resolves_from_its_own_annotation() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn main(g: Guest) {
+  let n = g.greet(3);
+}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::FreeFnDesugar { receiver, name, .. } = &verdicts[0] else {
+        panic!("expected a free-fn desugar verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "greet");
+    assert_eq!(*receiver, brink_analyzer::Ty::Struct("Guest".into()));
+
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E142),
+        "the ordinary fn param's own `: Guest` annotation must resolve the \
+         receiver without demanding a further one: {diags:?}"
+    );
+}
+
 // ─── issue #2773: a lambda-own receiver must not inherit an outer
 // same-named binding's type ──────────────────────────────────────────
 

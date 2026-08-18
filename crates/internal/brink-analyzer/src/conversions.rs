@@ -449,6 +449,49 @@ mod tests {
         assert!(diags.is_empty(), "{diags:?}");
     }
 
+    // ─── issue #2793: the ordinary (non-lambda) fn/knot annotated-param
+    // half of #2786's `BodyTypes::locals` visibility fix ─────────────────
+
+    /// #2786 overlaid an *ordinary* `fn`/knot param's own written annotation
+    /// onto `pass.locals` whenever the body walk left it absent
+    /// (`infer::body::infer_def_body`) — the exact same mechanism
+    /// `annotated_fn_param_option_condition_is_e116` pins for
+    /// `option_conditions.rs`'s E116, just for this file's E078 domain check
+    /// instead. `x`'s only other appearance is the `int(x)` call itself — no
+    /// other statement in `build`'s body ever *observes* `x`, so pre-#2786
+    /// this param stayed `Unknown` in `pass.locals` and
+    /// `classify_out_of_domain` fell through silently (mirrors
+    /// `unused_param_variable_valued_argument_stays_silent_when_unknown`
+    /// above, just annotated). Post-#2786 the annotation itself supplies the
+    /// classification: `x: Map<int, int>` is out of `int`'s domain, so this
+    /// must now fire — the new true positive #2793 asks each consumer to
+    /// confirm.
+    ///
+    /// The call sits inside a `let` (a `TempDecl`), not the bare tail
+    /// expression `int(x)`: an ordinary `fn`'s block tail is only wired
+    /// through an explicit `return`/binding statement, unlike a *lambda*'s
+    /// own `LambdaBody::Block` tail (the lambda fixtures above use exactly
+    /// that bare-tail shape) — unrelated to #2793's own fix, just the
+    /// well-formed way to place this call in an ordinary `fn` body.
+    #[test]
+    fn annotated_fn_param_out_of_domain_conversion_is_e078() {
+        let diags = check_all_native("fn build(x: Map<int, int>) {\n  let y = int(x);\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+        assert!(diags[0].message.contains("map"), "{:?}", diags[0].message);
+    }
+
+    /// Negative control alongside
+    /// [`annotated_fn_param_out_of_domain_conversion_is_e078`]: an ordinary
+    /// annotated param whose declared type is already in `int`'s permitted
+    /// domain must stay clean, exactly like every other in-domain fixture in
+    /// this file.
+    #[test]
+    fn annotated_fn_param_in_domain_conversion_stays_clean() {
+        let diags = check_all_native("fn build(x: float) {\n  let y = int(x);\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     #[test]
     fn int_of_a_divert_target_literal_is_e078() {
         let diags =
