@@ -280,3 +280,58 @@ value: {MAX(1, 2)}
         "expected a NotCallable runtime fault, got {fault:?}"
     );
 }
+
+/// Issue #2867: the param-shaped sibling of
+/// `local_named_builtin_faults_at_runtime_not_callable` above.
+/// `lookup_local_in_scope` (`resolve.rs`) can only ever return
+/// `SymbolKind::Param` or `SymbolKind::Temp` (the complete enumeration —
+/// see `push_local`'s call sites in `brink_ir::symbols::project`); the
+/// `temp` test above pins one, this pins the other, exactly as issue
+/// #2867 asks ("pin the param variant alongside the temp variant — #2865
+/// pinned only the strict-ink `temp` shape, deliberately, since it was
+/// documenting rather than fixing"). `=== function f(MAX) ===` shadows the
+/// classic uppercase built-in `MAX` as its own parameter name; calling
+/// `MAX(1, 2)` inside `f`'s body compiles clean under strict-ink (no
+/// `E035`, no `E183`) and then faults at runtime with
+/// `RuntimeError::NotCallable("int")` — identical shape to the `temp`
+/// case, confirmed live against the real compiler + VM. This test
+/// documents current (unfixed) behavior; it does not assert this is
+/// correct. See issue #2867 for the maintainer ruling this is pending on.
+#[test]
+fn param_named_builtin_faults_at_runtime_not_callable() {
+    let source = "\
+value: {f(0)}
+-> DONE
+
+=== function f(MAX) ===
+~ return MAX(1, 2)
+";
+    let compiled = compile_with(source, Dialect::StrictInk, Some(TypePolicy::Gradual))
+        .expect("compile should succeed with no E035/E183 diagnostic");
+    assert!(
+        !compiled
+            .warnings
+            .iter()
+            .any(|w| w.code == brink_compiler::DiagnosticCode::E035),
+        "a param is not in E035's warn set, expected no warning, got {:?}",
+        compiled.warnings
+    );
+    let (program, line_tables) = brink_runtime::link(&compiled.data).expect("link");
+    let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
+    let mut fault = None;
+    loop {
+        match story.continue_single() {
+            Ok(Step::Line(_)) => {}
+            Ok(Step::Choices(_)) => panic!("this program is choice-free"),
+            Ok(Step::Done | Step::End | Step::Suspended) => break,
+            Err(err) => {
+                fault = Some(err);
+                break;
+            }
+        }
+    }
+    assert!(
+        matches!(fault, Some(brink_runtime::RuntimeError::NotCallable(_))),
+        "expected a NotCallable runtime fault, got {fault:?}"
+    );
+}
