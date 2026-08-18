@@ -607,7 +607,11 @@ precedent, oracle byte-identical):
    (maps) · `contains count` (flags) · nothing from rand/
    collections. Name-collision policy: prelude names are
    **shadowable with the E035-lineage warning** (stdlib-slice-1
-   posture carries over).
+   posture carries over). See [E035](diagnostics/E035.md) for the
+   full rule, including the call-site divergence between a
+   shadowing knot/external (always wins) and a shadowing `VAR`/
+   `CONST` (never wins a real call site — falls through to the real
+   builtin instead).
 4. **Docs display notation for intrinsic signatures**: the
    pseudo-generic letter form — `fn map(a: [T], f:
    fn(T): U): [U]` — with a standing banner: *display
