@@ -942,7 +942,48 @@ carries one: its listener handles arrow/Enter/shortcut-key navigation only,
 not Escape dismissal, which its wrapping `Overlay` (already enrolled) owns.
 The guard does not unify the two registries — Escape still only dismisses
 surfaces within one package at a time — it only ensures every qualifying
-listener, in either package, is accounted for by one or the other.
+listener, in either package, is accounted for by one or the other. (Whether
+the two registries are worth unifying — one shared registry vs. a
+coordinator that fans out — is an open design question, not decided here;
+`studio-ui` surfaces enrol into `studio-shell`'s registry while `ink-editor`
+keeps its own, so a surface stack spanning both packages is only partially
+dismissed by a single Escape. Surfaced, not built, by #2846.)
+
+**Widened past `document`-only, and every exempt marker proven, not just
+asserted (#2846).** Three gaps review of PR #2838 found in the guard above,
+none a defect in it — #2766 asked for a `document`-level scan and that is
+what it built:
+
+1. **The LISTENER pattern matched `document` only.** `dismiss-registry.ts`
+   itself attaches its net listener on `window` (see "LISTENER ORDERING"
+   above), so "attach the way the registry does" was the single most
+   plausible next-surface shape, and it would have shipped unguarded and
+   unflagged. The pattern now matches `document`/`window`/`ownerDocument` ×
+   `keydown`/`keyup`/`pointerdown` — both axes #2846 named, widened
+   symmetrically, and deliberately no further: over-widening trades the
+   coverage hole for `DISMISS-NET-EXEMPT` marker-noise that erodes the
+   convention itself (the same boilerplate-nobody-reads failure mode #2766
+   already had to weigh). Widening surfaced exactly two real call sites —
+   both registries' own `window.addEventListener("keydown", ...)` net
+   installs — which now each carry a `DISMISS-NET-EXEMPT` marker of their
+   own: that call site *is* the net, not a surface enrolling into it.
+2. **Exempt markers asserted a claim nothing checked.** Modelled on the
+   `SAVE-PATH` precedent this guard was built from (§7.7.1 above, #2571:
+   "a marker's justification is proven, not just present"), every
+   `DISMISS-NET-EXEMPT` marker — the three drag/maximize ones, `ElementDropdown.tsx`,
+   and the two net-listener ones from point 1 — now has a dedicated
+   behavioural test asserting its specific claim against the real
+   production module: `dismiss-net-exempt-claims.test.ts` for the first
+   four, `dismiss-registry-net-listener.test.ts` (in both `ink-editor` and
+   `brink-studio`, one per registry) for the net-listener two.
+3. **A JSDoc example mentioning the pattern counted as a real call.**
+   `scanListenerSites` used to skip `//`-prefixed lines only; a block
+   comment quoting the listener shape in prose had no way to be marked
+   exempt (the walk-up only recognizes a `//` marker directly above a real
+   call). Fixed by blanking block-comment spans before scanning for calls,
+   while still using the raw source for the exempt-marker walk-up and the
+   reported call text — see `dismiss-registry-enrolment.test.ts`'s
+   `blankBlockComments`.
 
 #### 7.7.4 Off-paint-path analysis deferral (invariant)
 
