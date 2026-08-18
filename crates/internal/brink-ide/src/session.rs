@@ -597,12 +597,17 @@ impl IdeSession {
     /// this call) is analyzing under different options. This is an open
     /// question flagged, not resolved, by issue #2885 — see that issue's
     /// tracking comment for the investigation — rather than a documented
-    /// design choice; do not assume it is intentional. Existing production
-    /// callers (`brink-web`'s `EditorSession`) happen to always call a
-    /// setter (`apply_parsed_config` → `apply_analysis_options`) before
-    /// this method is ever reached, which is why the gap has not shown up
-    /// as a live divergence there — see `tests/live_typing_db_divergence.rs`
-    /// for a test suite that already had to work around it by construction.
+    /// design choice; do not assume it is intentional. An unconfigured
+    /// session's db-direct options simply equal `ProjectDb`'s own
+    /// construction-time default (nothing has ever written to the salsa
+    /// input), so a caller that never applies a config or calls `compile`
+    /// sees no divergence — not because a setter runs first. The real
+    /// divergence vector is [`Self::compile`], which — per
+    /// [`sync_db_options`](Self::sync_db_options)'s own doc comment — writes
+    /// its own possibly-overriding `AnalysisOptions` into the db
+    /// unconditionally, bypassing this method's gap entirely; see
+    /// `tests/live_typing_db_divergence.rs` for a test suite that already
+    /// had to work around the underlying gap by construction.
     pub fn update_and_analyze(&mut self, path: &str, source: String) -> FileId {
         let file_id = self.update_source(path, source);
         let snap = self.snapshot();

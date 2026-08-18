@@ -387,6 +387,21 @@ mod tests {
         );
         session.apply_analysis_options(&options);
 
+        // Assert the dialect this helper exists to establish (per review
+        // on #2885): if the config plumbing above or
+        // `apply_analysis_options`'s change guard regresses, every
+        // "native" hover test would silently fall back to
+        // `Dialect::StrictInk` with no test noticing — the exact
+        // silent-divergence class #2885 was filed about, reintroduced one
+        // layer up. Pin both roads: the session's own resolved dialect,
+        // and the db-direct road's copy that `apply_analysis_options`'s
+        // doc comment claims `sync_db_options` keeps in step "for free".
+        assert_eq!(session.language_dialect(), brink_analyzer::Dialect::Brink);
+        assert_eq!(
+            session.db().analysis_options().dialect,
+            brink_analyzer::Dialect::Brink
+        );
+
         (session, file_id)
     }
 
