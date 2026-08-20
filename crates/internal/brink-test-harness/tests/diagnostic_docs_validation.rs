@@ -109,7 +109,16 @@ fn diagnostic_codes_are_unique() {
     // no landed or queued owner. This allowlist entry stays until either a
     // future issue claims E177 for a real variant (delete the entry then)
     // or E177 is formally retired.
-    const RESERVED_CODES: &[&str] = &["E177"];
+    //
+    // E184 is reserved for issue #2262, in flight on a concurrent build
+    // agent's own branch at the time issue #1944's fix took E185 — the
+    // next code after E183 (the last one landed on `main` at that time)
+    // was E184, but #2262's branch had already claimed it independently,
+    // so #1944 skipped over it to avoid a collision once both branches
+    // merge. This entry stays until either #2262 lands E184 for a real
+    // variant (delete the entry then) or that reservation is formally
+    // retired.
+    const RESERVED_CODES: &[&str] = &["E177", "E184"];
 
     // Enumerate the exhaustive variant list and build the inverse map: code string ->
     // every variant whose `as_str()` produces it. Unlike probing `from_str_code` over

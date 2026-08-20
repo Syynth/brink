@@ -348,12 +348,25 @@ pub fn check_assignments(
 /// Walk one [`FieldAssignMismatch`]'s field chain from its already-resolved
 /// root type down to the specific field being assigned, comparing the
 /// result against the RHS's own type. Silently unclassifiable (no
-/// diagnostic) whenever the walk hits a non-`Struct` type, an unresolved
-/// shape name (`E068` already covers that separately), or a field name the
-/// shape doesn't declare (not this check's job — "Unknown never disagrees",
-/// the same posture every other shape-agreement check in this module and
-/// `ref_projection`'s E098 take) — matching [`check_literal`]'s own
-/// "unresolved -> silent" contract for the same reasons.
+/// diagnostic) whenever the walk hits a non-`Struct` type or an unresolved
+/// shape name (`E068` already covers that separately) — matching
+/// [`check_literal`]'s own "unresolved -> silent" contract for the same
+/// reason: with no resolved shape to check the name against, "Unknown never
+/// disagrees" still holds.
+///
+/// Issue #1944: a field name the *resolved* shape doesn't declare is a
+/// different case — the shape itself is known, so the name can actually be
+/// checked, and now is: `E185`, the plain-assignment-target mirror of
+/// [`check_literal`]'s own `E070` (construction-literal unknown field).
+/// Fired only from inside this already-`Some(shape)` branch — an Unknown/
+/// untyped root never reaches here at all (the loop returns above, on the
+/// first segment, the moment `current` isn't a resolved `Ty::Struct`), so
+/// the "Unknown never disagrees" posture for an *unresolved* receiver is
+/// untouched. A chained target (`o.i.a = v`, 3+ segments) never reaches this
+/// function in the first place — `check_declared_field_assign_target`'s own
+/// `segments.len() == 2` fence means no [`FieldAssignMismatch`] fact is ever
+/// recorded for one; LIR's `try_lower_field_assignment` already rejects it
+/// outright with `E074`.
 ///
 /// BLOCKING review finding (issue #1900): the `+=` string-numeric
 /// display-concat carve-out (issue #1911, `body::is_string_numeric_concat`)
@@ -382,6 +395,22 @@ fn check_field_assign_mismatch(
             return;
         };
         let Some(field_ty) = shape.field_ty(&segment.text) else {
+            // Issue #1944: the receiver's shape resolved, but it declares
+            // no field with this name — the E070 mirror for a plain
+            // assignment target. Stop the walk here (there is no further
+            // field type to compare the RHS against, and continuing would
+            // only risk a confusing second diagnostic on the same target).
+            out.push(Diagnostic {
+                file,
+                range: segment.range,
+                message: format!(
+                    "{}: `{}` has no field `{}`",
+                    DiagnosticCode::E185.title(),
+                    shape_name,
+                    segment.text
+                ),
+                code: DiagnosticCode::E185,
+            });
             return;
         };
         current = field_ty.clone();
@@ -1370,15 +1399,58 @@ mod tests {
     }
 
     #[test]
-    fn field_assignment_to_a_nonexistent_field_stays_silent() {
-        // A field name the shape doesn't declare isn't this check's job —
-        // an unresolvable classification, "Unknown never disagrees".
+    fn field_assignment_to_a_nonexistent_field_is_e185_issue_1944() {
+        // Issue #1944: before this fix, a field name the resolved shape
+        // doesn't declare was silently accepted here — this test itself
+        // used to pin that as `diags.is_empty()`, which was the exact hole
+        // the issue reports (a plain assignment to an unknown field
+        // compiled clean under strict, with no E070-equivalent for a
+        // non-literal target). The shape *is* resolved here (`p: Point`),
+        // so the name can actually be checked — unlike an Unknown/untyped
+        // receiver, where "Unknown never disagrees" still applies (see
+        // `field_assignment_to_a_nonexistent_field_on_unresolved_receiver_stays_silent`
+        // below).
         let diags = check_assignments_all(
             "STRUCT Point = #{x: float}\n\
              VAR p: Point = Point#{x: 0.0}\n\
              === main ===\n~ p.bogus = \"wrong\"\n-> DONE\n",
         );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E185);
+        assert!(diags[0].message.contains("bogus"), "{:?}", diags[0].message);
+    }
+
+    /// Sibling should-NOT-fire case (issue #1944 design constraint): an
+    /// unannotated `~ temp`'s root never resolves past `Ty::Unknown`, so
+    /// there is no shape to check the field name against — "Unknown never
+    /// disagrees" holds for the *receiver* exactly as it does for `E063`
+    /// (see `field_assignment_on_unannotated_temp_stays_silent_when_unknown`
+    /// above, E063's own sibling).
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_on_unresolved_receiver_stays_silent() {
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p.bogus = \"wrong\"\n-> DONE\n",
+        );
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Sibling enumeration (issue #1944): `BlockStmt::Assignment` — the T1b
+    /// `~ { … }` block form — reports E185 exactly like `Stmt::Assignment`
+    /// above. `infer_block_stmt`'s `BlockStmt::Assignment` arm calls the
+    /// identical `check_declared_field_assign_target`, recording the same
+    /// `FieldAssignMismatch` fact `check_field_assign_mismatch` walks
+    /// regardless of which statement form produced it — the two call sites
+    /// are structural mirrors, not independently-checked paths.
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_inside_a_block_stmt_is_e185_issue_1944() {
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             VAR p: Point = Point#{x: 0.0}\n\
+             === main ===\n~ {\n    p.bogus = \"wrong\"\n}\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E185);
     }
 
     #[test]

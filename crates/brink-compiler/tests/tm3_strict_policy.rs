@@ -1292,3 +1292,55 @@ fn strict_string_plus_bool_still_blocks_compilation_with_e066() {
         "{diags:?}"
     );
 }
+
+// ── Issue #1944: a plain dotted assignment target naming an unknown struct
+// field (`~ p.bogus = 1`, no field `bogus` on `Point`) must be rejected
+// under strict, mirroring `structs::check`'s E070 unknown-field check for
+// construction literals. Before the fix, this compiled clean with zero
+// diagnostics: `check_declared_field_assign_target` stays silent on an
+// unresolvable field by design ("Unknown never disagrees" — it only
+// compares a *resolved* field's declared type against the RHS), and
+// `ref_projection::check_strict`'s E098 only covers unknown segments in
+// `ref`-argument position, not a plain assignment target.
+#[test]
+fn strict_dotted_assign_unknown_field_is_rejected_issue_1944() {
+    let err = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.bogus = 1\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "assigning to an unknown struct field via a plain dotted target must be rejected \
+         under strict, mirroring the construction-literal E070 unknown-field check",
+    );
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E185),
+        "expected E185 (unknown field on a plain assignment target): {diags:?}"
+    );
+}
+
+// ── Sibling should-NOT-fire case (issue #1944 design constraint: "Unknown
+// never disagrees" must hold): an untyped/Unknown receiver must stay silent
+// even when the field name doesn't exist on any resolvable shape, since the
+// analyzer has no shape to check the name against. `p` here has no VAR
+// declaration at all (an undeclared name compiles under non-strict/relaxed
+// resolution elsewhere), so its type never resolves past `Ty::Unknown`.
+#[test]
+fn strict_dotted_assign_unknown_field_on_unresolved_receiver_stays_silent() {
+    let result = compile_mem(
+        "=== function f(p) ===\n~ p.bogus = 1\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    if let Err(err) = result {
+        let diags = diagnostics_of(err);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E185),
+            "an untyped/unresolved receiver must never report the new unknown-field \
+             diagnostic — Unknown never disagrees: {diags:?}"
+        );
+    }
+}

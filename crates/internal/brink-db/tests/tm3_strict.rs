@@ -172,3 +172,30 @@ fn strict_global_fn_value_mismatch_reaches_production_diagnostics() {
         "{diags:?}"
     );
 }
+
+/// Issue #1944, db-direct road: `whole_project_diagnostics_query` calls
+/// `brink_analyzer::strict_diagnostics` directly (the same function the
+/// off-db `analyze_with_modules` path calls via `whole_project_diagnostics`),
+/// so the E185 unknown-field-on-plain-assignment-target fix is reachable
+/// through the production `db.diagnostics(file)` seam — the same seam
+/// `strict_unknown_escape_reaches_production_diagnostics` above pins for
+/// E065. Proves this is not a fix that only the pure/off-db road sees.
+#[test]
+fn strict_dotted_assign_unknown_field_reaches_production_diagnostics_issue_1944() {
+    let mut db = ProjectDb::new();
+    let file = db.set_file(
+        "main.ink",
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.bogus = 1\n-> DONE\n"
+            .to_owned(),
+    );
+    db.set_entry("main.ink");
+    db.set_analysis_options(strict_opts());
+
+    let diags = db.diagnostics(file).expect("file diagnostics");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E185),
+        "{diags:?}"
+    );
+}
