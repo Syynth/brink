@@ -1321,36 +1321,43 @@ fn try_lower_seed_stmt(
     true
 }
 
-/// Issue #2894 — bare-variable postfix `x++`/`x--` inside a `~ { … }` block.
+/// Issue #2894 — bare-variable postfix `x++`/`x--` inside a `~ { … }` block,
+/// and (post-#2900 review) the shared postfix→`Assign` conversion for
+/// *both* surfaces: `stmts::lower_stmt`'s classic-line `ExprStmt` arm calls
+/// this directly rather than keeping its own copy, so the block form
+/// (`lower_block_stmt`'s `ExprStmt` arm, below) and the classic-line form
+/// can never re-diverge the way #2894 itself was caused by (a conversion
+/// written for one surface and never given to the other).
 ///
-/// Mirrors `stmts::lower_stmt`'s classic-line `ExprStmt` arm (the postfix →
-/// `Assign` conversion documented there) — that conversion was written for
-/// the classic-line statement dispatch (`stmts.rs`) but never given a
-/// block-statement counterpart when `lower_block_stmt`'s own `ExprStmt` arm
-/// was written. Without it, a bare-variable postfix inside a block reached
-/// only the generic `lower_expr` fallback below, which lowers
-/// `hir::Expr::Postfix` to a *pure* `lir::Expr::Postfix` — codegen computes
-/// `x + 1`/`x - 1` as a value and the enclosing `ExprStmt` immediately pops
-/// it (`brink-codegen-inkb/src/expr.rs`): the write never happens, with no
+/// Without this conversion, a bare-variable postfix reached only the
+/// generic `lower_expr` fallback, which lowers `hir::Expr::Postfix` to a
+/// *pure* `lir::Expr::Postfix` — codegen computes `x + 1`/`x - 1` as a value
+/// and the enclosing `ExprStmt` immediately pops it
+/// (`brink-codegen-inkb/src/expr.rs`): the write never happens, with no
 /// diagnostic at all (a `~ { x++ }` compiled clean and silently did
 /// nothing — reproduced against a real compile+run, not just unit
 /// lowering).
 ///
-/// Field-operand refusal comes first, exactly as the classic-line arm
-/// orders it: `~ { a.count++ }` is the identical field-projection misroute
-/// #2185/PR #2897 closed for the classic-line spelling (the write would
-/// otherwise land on the whole record root, not the field) — refused here
-/// with the same non-suppressible `E074` via
-/// `reject_field_projection_index_root`, so this fix cannot reintroduce
-/// that misroute for the block surface.
+/// Field-operand refusal comes first, on both surfaces: `a.count++` is the
+/// identical field-projection misroute #2185/PR #2897 closed for the
+/// classic-line spelling (the write would otherwise land on the whole
+/// record root, not the field) — refused here with the same
+/// non-suppressible `E074` via `reject_field_projection_index_root`, so
+/// this fix cannot reintroduce that misroute for either surface.
 ///
-/// Returns `true` (handled — either lowered to a real `Assign` or refused
-/// with a diagnostic) for any `hir::Expr::Postfix`; `false` for every other
-/// expression shape, so the caller falls through to ordinary lowering
-/// (including a postfix whose operand doesn't resolve to an assignable
-/// root at all — the analyzer's own `E025` covers that case, same as
-/// `stmts::lower_stmt`'s classic-line arm).
-fn try_lower_postfix_stmt(
+/// Returns `true` (handled — either lowered to a real `Assign` and pushed
+/// onto `out`, or refused with a diagnostic and nothing pushed) for any
+/// `hir::Expr::Postfix`; `false` for every other expression shape, so the
+/// caller falls through to ordinary lowering (including a postfix whose
+/// operand doesn't resolve to an assignable root at all — the analyzer's
+/// own `E025` covers that case). A caller that needs a *single*
+/// `Option<lir::Stmt>` (the classic-line arm) reads `out`'s at-most-one
+/// element back out; refusal intentionally yields zero elements — no
+/// `ExprStmt(Null)` placeholder — matching every other malformed-statement
+/// arm in this module (e.g. `lower_loop_control`'s E057 refusal, which is
+/// "skipped (not pushed to `out`)" by the same design), and matching how
+/// every call site treats `lower_stmt`'s `None` as "emit nothing" already.
+pub(super) fn try_lower_postfix_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
     out: &mut Vec<lir::Stmt>,
