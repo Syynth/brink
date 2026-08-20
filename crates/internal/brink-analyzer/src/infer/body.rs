@@ -1251,9 +1251,20 @@ impl InferPass<'_, '_> {
     /// *value* against the field there; that is a distinct gap, not this
     /// issue's.
     fn check_declared_field_assign_target(&mut self, target: &Expr, op: AssignOp, found: &Ty) {
-        if found.is_unresolved() {
-            return;
-        }
+        // BLOCKING review finding (issue #1944, PR #2901): this used to
+        // return here whenever `found` (the RHS type) was unresolved — e.g.
+        // an `EXTERNAL` call with no declared return type. That made E185
+        // (an unknown field *name*, which never depends on the RHS type at
+        // all) unreachable for any RHS the analyzer can't resolve, since no
+        // `FieldAssignMismatch` fact was ever recorded to walk. The fact is
+        // now always recorded when the target shape is otherwise walkable;
+        // `check_field_assign_mismatch` (structs.rs) still fires E185 from
+        // inside its field-name walk regardless of `found`, and separately
+        // guards `fact.found.is_unresolved()` immediately before its E063
+        // RHS-type comparison so an unresolved RHS still never triggers a
+        // false E063 (`assignable(T, Unknown)` is `true`, but
+        // `assignable(T, Conflicted)` is not, so the guard must be explicit
+        // rather than relying on `assignable` alone).
         let Expr::Path(p) = target else { return };
         if p.segments.len() != 2 {
             // Either a bare name (`check_declared_assign_target`'s job) or a
