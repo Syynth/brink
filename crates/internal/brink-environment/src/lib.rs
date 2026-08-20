@@ -1460,6 +1460,53 @@ mod tests {
         );
     }
 
+    // ── issue #2262: the same silent-drop class recurs for `EXTERNAL` ──
+
+    /// `E181`'s reachability fix (above) covers `STRUCT` only —
+    /// `lir::lower::decls::collect_externals`' own self-declaration lookup
+    /// (`lookup_global(index, file_id, &ext.name.text,
+    /// SymbolKind::External)`) has the textually identical no-`else`
+    /// pattern and is reached the exact same way: an ordinary ink project
+    /// (no `dialect` override needed — `EXTERNAL` is core ink, unlike
+    /// `STRUCT`) that declares its own `EXTERNAL scene_entered(...)`
+    /// collides with the std-mounted screenplay preset's own `extern
+    /// scene_entered` (`std/conventions/screenplay.brink`). Neither
+    /// declares a `#@module` and this project is not all-native, so M-2d
+    /// cross-declared-module coexistence never applies — `insert_symbol`
+    /// treats the pair as a true intra-module duplicate (`E023`) and drops
+    /// the later one. `"story.ink"` sorts after `"std/conventions/
+    /// screenplay.brink"` (same ordering argument as the `E181` test), so
+    /// it is the *project's* `scene_entered` that is dropped.
+    ///
+    /// Before issue #2262's fix: this compiles CLEAN (`compile(&env)` is
+    /// `Ok`) with the project's own `EXTERNAL scene_entered` silently
+    /// absent from `out.data.externals` — no diagnostic at all, unlike
+    /// `E181`'s struct case. That is the bug this test proves and pins the
+    /// fix against.
+    #[test]
+    fn external_self_declaration_silently_drops_when_colliding_with_a_std_preset_name() {
+        let t = tree(&[(
+            "story.ink",
+            "EXTERNAL scene_entered(title, slug)\nHello.\n-> END\n",
+        )]);
+        let env = Project::load(&t, "story.ink", &OptionOverrides::default()).expect("loads");
+
+        let err = compile(&env).expect_err(
+            "a project EXTERNAL colliding with a std-declared homonym must raise \
+             a diagnostic and fail compilation, not silently drop the external",
+        );
+        let CompileError::Diagnostics(diags) = err else {
+            unreachable!("expected a Diagnostics compile error, got: {err:?}");
+        };
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E184),
+            "expected E184 (the EXTERNAL/CONST/VAR twin of E181) among the \
+             blocking diagnostics: {diags:?}"
+        );
+    }
+
     // ── the pure compile over the input ──────────────────────────────
 
     #[test]
