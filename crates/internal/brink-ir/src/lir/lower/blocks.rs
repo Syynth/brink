@@ -138,7 +138,8 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             lower_loop_control(ptr, "continue", lir::Stmt::LogicContinue, ctx, out);
         }
         hir::BlockStmt::ExprStmt(expr) => {
-            if !try_lower_mutator_stmt(expr, ctx, out)
+            if !try_lower_postfix_stmt(expr, ctx, out)
+                && !try_lower_mutator_stmt(expr, ctx, out)
                 && !try_lower_frame_local_auto_ref_stmt(expr, ctx, out)
             {
                 out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
@@ -1317,6 +1318,61 @@ fn try_lower_seed_stmt(
         builtin: lir::BuiltinFn::SeedRandom,
         args: vec![arg],
     }));
+    true
+}
+
+/// Issue #2894 — bare-variable postfix `x++`/`x--` inside a `~ { … }` block.
+///
+/// Mirrors `stmts::lower_stmt`'s classic-line `ExprStmt` arm (the postfix →
+/// `Assign` conversion documented there) — that conversion was written for
+/// the classic-line statement dispatch (`stmts.rs`) but never given a
+/// block-statement counterpart when `lower_block_stmt`'s own `ExprStmt` arm
+/// was written. Without it, a bare-variable postfix inside a block reached
+/// only the generic `lower_expr` fallback below, which lowers
+/// `hir::Expr::Postfix` to a *pure* `lir::Expr::Postfix` — codegen computes
+/// `x + 1`/`x - 1` as a value and the enclosing `ExprStmt` immediately pops
+/// it (`brink-codegen-inkb/src/expr.rs`): the write never happens, with no
+/// diagnostic at all (a `~ { x++ }` compiled clean and silently did
+/// nothing — reproduced against a real compile+run, not just unit
+/// lowering).
+///
+/// Field-operand refusal comes first, exactly as the classic-line arm
+/// orders it: `~ { a.count++ }` is the identical field-projection misroute
+/// #2185/PR #2897 closed for the classic-line spelling (the write would
+/// otherwise land on the whole record root, not the field) — refused here
+/// with the same non-suppressible `E074` via
+/// `reject_field_projection_index_root`, so this fix cannot reintroduce
+/// that misroute for the block surface.
+///
+/// Returns `true` (handled — either lowered to a real `Assign` or refused
+/// with a diagnostic) for any `hir::Expr::Postfix`; `false` for every other
+/// expression shape, so the caller falls through to ordinary lowering
+/// (including a postfix whose operand doesn't resolve to an assignable
+/// root at all — the analyzer's own `E025` covers that case, same as
+/// `stmts::lower_stmt`'s classic-line arm).
+fn try_lower_postfix_stmt(
+    expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    let hir::Expr::Postfix(inner, op) = expr else {
+        return false;
+    };
+    if reject_field_projection_index_root(inner, ctx, Some(FIELD_PROJECTION_POSTFIX_TARGET)) {
+        return true;
+    }
+    let Some(target) = super::stmts::lower_assign_target(inner, ctx) else {
+        return false;
+    };
+    let assign_op = match op {
+        crate::PostfixOp::Increment => AssignOp::Add,
+        crate::PostfixOp::Decrement => AssignOp::Sub,
+    };
+    out.push(lir::Stmt::Assign {
+        target,
+        op: assign_op,
+        value: lir::Expr::Int(1),
+    });
     true
 }
 

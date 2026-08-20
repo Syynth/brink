@@ -340,6 +340,109 @@ fn postfix_increment_field_projection_emits_e074() {
 }
 
 #[test]
+fn postfix_increment_field_projection_in_block_emits_e074() {
+    // Issue #2894 — the block-statement (`~ { … }`) counterpart of
+    // `postfix_increment_field_projection_emits_e074` above. `BlockStmt::
+    // ExprStmt`'s postfix conversion routes a field-operand postfix
+    // (`a.count++`) through the exact same `reject_field_projection_index_
+    // root` guard as the classic-line arm — this pins that the block
+    // surface raises the identical non-suppressible E074 rather than
+    // reintroducing the #2185 whole-record misroute for blocks.
+    let src = "STRUCT Bag = #{count: int, tag: string}\n\
+        VAR a = Bag#{count: 5, tag: \"hello\"}\n~ {\n    a.count++\n}\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074)
+        .expect("expected E074 for `a.count++` inside a block — a field-projection postfix target");
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
+#[test]
+fn postfix_increment_bare_variable_in_block_lowers_to_real_assign() {
+    // Issue #2894 — before the fix, `BlockStmt::ExprStmt` had no
+    // postfix-to-`Assign` conversion at all, so `~ { x++ }` lowered to a
+    // discarded, pure `lir::Expr::Postfix` (`lir::Stmt::ExprStmt(Postfix(..))`)
+    // instead of a real `Assign`. This pins the correct LIR shape directly —
+    // the runtime end-to-end proof lives in `brink-runtime`'s
+    // `issue_2894_block_postfix.rs` (the issue's mandated real-pipeline RED
+    // test).
+    let src = "VAR x = 5\n~ {\n    x++\n}\n{x}\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "unexpected error diagnostics: {diags:?}"
+    );
+    let program = program.expect("bare-variable block postfix should lower to a real program");
+    let has_real_assign = program.root.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                op: brink_ir::AssignOp::Add,
+                value: lir::Expr::Int(1),
+                ..
+            }
+        )
+    });
+    assert!(
+        has_real_assign,
+        "expected a real `Assign {{ op: Add, value: Int(1), .. }}` for `x++` inside a block, \
+         got: {:?}",
+        program
+            .root
+            .body
+            .iter()
+            .map(std::mem::discriminant)
+            .collect::<Vec<_>>()
+    );
+    let has_discarded_postfix = program
+        .root
+        .body
+        .iter()
+        .any(|s| matches!(s, lir::Stmt::ExprStmt(lir::Expr::Postfix(..))));
+    assert!(
+        !has_discarded_postfix,
+        "`x++` inside a block must not lower to a discarded, pure `Postfix` expression \
+         statement — that is the #2894 non-mutation bug"
+    );
+}
+
+#[test]
+fn postfix_decrement_bare_variable_in_block_lowers_to_real_assign() {
+    // Issue #2894 — the `x--` sibling of the increment test above.
+    let src = "VAR x = 5\n~ {\n    x--\n}\n{x}\n";
+    let (program, diags) = lower_ink_with_warnings(src);
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code.severity() != brink_ir::Severity::Error),
+        "unexpected error diagnostics: {diags:?}"
+    );
+    let program = program.expect("bare-variable block postfix should lower to a real program");
+    let has_real_assign = program.root.body.iter().any(|s| {
+        matches!(
+            s,
+            lir::Stmt::Assign {
+                op: brink_ir::AssignOp::Sub,
+                value: lir::Expr::Int(1),
+                ..
+            }
+        )
+    });
+    assert!(
+        has_real_assign,
+        "expected a real `Assign {{ op: Sub, value: Int(1), .. }}` for `x--` inside a block, \
+         got: {:?}",
+        program
+            .root
+            .body
+            .iter()
+            .map(std::mem::discriminant)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn implicit_ref_call_arg_field_projection_emits_e074() {
     // Classic-ink implicit-by-ref calling convention: `modify`'s parameter
     // is declared `ref`, and the caller passes a bare field projection with
