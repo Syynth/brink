@@ -429,6 +429,44 @@ pub fn compile_and_explore_from_brink_native(
     src: &str,
     config: &ExploreConfig,
 ) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
+    compile_and_explore_from_brink_native_at(src, &std::collections::HashMap::new(), config)
+}
+
+/// [`compile_and_explore_from_brink_native`], but qualifying the single
+/// in-memory file's anonymous-container scope path with the caller-supplied
+/// `file_paths` (a real `#file:{path}`-style qualifier via
+/// [`hir::stamp_container_ids`](brink_ir::hir::stamp_container_ids)) instead
+/// of the pathless-harness empty qualifier the plain function above always
+/// used before this split existed.
+///
+/// **Why this exists (issue #2229 harness fix):** `ink_corpus_convert.rs`'s
+/// `assert_episode_identical` compares two compiles of "the same story" —
+/// `explore_from_ink` (a real, path-registered `compile_path` call) against
+/// this module's own `explore_from_brink_native` (an in-memory string with
+/// no path at all). Before #2229's per-knot qualifier, that asymmetry was
+/// invisible: an unqualified scope path and a qualified-but-uncollided one
+/// still hashed to the pre-existing single-file addresses, since qualifying
+/// by a real, non-colliding path never changed which container won an
+/// otherwise-empty scope. #2229's fix makes every knot-interior anonymous
+/// container's address depend on the qualifier, so the two legs' identical
+/// story now mints two *different* addresses for the exact same fallback
+/// choice — not a story-behavior regression, a pre-existing test-harness
+/// asymmetry #2229 was the first change to expose (confirmed by reverting/
+/// reapplying #2229's stamp.rs diff against this same fixture: passes
+/// unpatched, fails patched, entirely within this harness's own two
+/// compile legs). The fix is to give both legs the *same* qualifier, not to
+/// remove the qualifier from either — see
+/// [`crate::corpus::explore_from_ink`]'s own `compile_path`, which always
+/// registers a real path and always did.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal test-harness API, no need to generalize"
+)]
+pub fn compile_and_explore_from_brink_native_at(
+    src: &str,
+    file_paths: &std::collections::HashMap<brink_ir::FileId, String>,
+    config: &ExploreConfig,
+) -> Result<(brink_format::StoryData, Vec<Episode>), String> {
     let file_id = brink_ir::FileId(0);
 
     let parsed = brink_syntax_native::parse(src);
@@ -501,7 +539,7 @@ pub fn compile_and_explore_from_brink_native(
         &files_for_lir,
         &index,
         &resolutions,
-        &std::collections::HashMap::new(),
+        file_paths,
         brink_ir::lir::TypeMode::Gradual,
         analyzer_tables.as_tables(),
     );
@@ -526,6 +564,22 @@ pub fn explore_from_brink_native(
     config: &ExploreConfig,
 ) -> Result<Vec<Episode>, String> {
     compile_and_explore_from_brink_native(src, config).map(|(_, episodes)| episodes)
+}
+
+/// [`explore_from_brink_native`], threading a real `file_paths` qualifier —
+/// see [`compile_and_explore_from_brink_native_at`]'s doc for why a caller
+/// comparing this leg against a real, path-registered compile (like
+/// [`explore_from_ink`]) needs this instead of the pathless default.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal test-harness API, no need to generalize"
+)]
+pub fn explore_from_brink_native_at(
+    src: &str,
+    file_paths: &std::collections::HashMap<brink_ir::FileId, String>,
+    config: &ExploreConfig,
+) -> Result<Vec<Episode>, String> {
+    compile_and_explore_from_brink_native_at(src, file_paths, config).map(|(_, episodes)| episodes)
 }
 
 #[cfg(test)]

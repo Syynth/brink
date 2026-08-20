@@ -379,9 +379,11 @@ pub struct IdAllocator {
     /// shared between the plan phase and lowering phase to ensure
     /// unique container paths across all sub-scopes.
     seq_counter: usize,
-    /// Prefix every allocated path is qualified with (#1504). Empty for a
-    /// knot chunk, whose paths are already qualified by the knot name; set
-    /// per file while lowering root content, where they are not. See
+    /// Prefix every allocated path is qualified with (#1504). Set to the
+    /// owning file's `root_content_scope_path` for root-content chunks and
+    /// — since issue #2229 — for knot chunks too: a knot-name qualifier
+    /// alone stops being unique the moment two files legitimately declare a
+    /// same-named knot (M-2d, #790). See
     /// [`set_path_prefix`](Self::set_path_prefix).
     path_prefix: String,
 }
@@ -400,7 +402,10 @@ impl IdAllocator {
     /// `lower_root_content_chunks` shares one allocator across every file's
     /// root weave, and those paths (`s-0`, `#root-terminus`, …) restart per
     /// file — so without a per-file prefix two files' root content mints the
-    /// same `DefinitionId`. Callers set
+    /// same `DefinitionId`. `lower_knot_chunk` needs the identical
+    /// qualifier for the same reason one level down (#2229): its paths are
+    /// knot-name-qualified, and two files' same-named knots (M-2d, #790)
+    /// restart them per knot. Callers set
     /// [`hir::root_content_scope_path`](crate::hir::root_content_scope_path)
     /// here, the same qualifier the HIR stamping pass gives the anonymous
     /// choice/gather containers of the same file.
@@ -408,7 +413,7 @@ impl IdAllocator {
         self.path_prefix = prefix;
     }
 
-    /// Allocate an address id from a path string (e.g. `""`, `"knot.c0"`),
+    /// Allocate an address id from a path string (e.g. `""`, `"knot.c-0"`),
     /// qualified by the current [`set_path_prefix`](Self::set_path_prefix).
     pub fn alloc_address(&mut self, path: &str) -> DefinitionId {
         let qualified = qualify_path(&self.path_prefix, path);

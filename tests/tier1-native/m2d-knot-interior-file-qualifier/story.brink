@@ -1,0 +1,54 @@
+// Issue #2229 (4th M-2d collision site): the entry file. `shared` here and
+// `shared` in `other.brink` are two DIFFERENT knots that happen to share a
+// bare name — legitimate M-2d coexistence (`native_module_path` derives a
+// distinct module per file, so `insert_symbol` lets them coexist, #790),
+// not a duplicate-definition error. Both declare an unlabeled choice at the
+// identical structural position inside the knot body, which is exactly the
+// shape `stamp_container_ids`'s per-knot loop used to hash WITHOUT a
+// per-file qualifier (unlike `root_content_scope_path`'s `#file:{path}`
+// prefix for root-level containers, #1504) — producing the identical
+// synthetic `DefinitionId` for both files' choices and tripping the #1673
+// duplicate-id `E060` codegen guard the moment the whole project's
+// container trees were walked.
+//
+// `main`'s own playthrough never enters `shared` (this fixture's whole
+// point is a project-wide COMPILE-time collision, not a runtime one — see
+// `stamp_container_ids`, which walks every knot in every file
+// unconditionally regardless of reachability), so the golden transcript
+// below stays choice-free, satisfying this corpus's own straight-line-only
+// contract (`tier1_native.rs`'s module doc / `drive_native_transcript`).
+
+flow main() {
+  Hello from the entry.
+  -> END
+}
+
+// The `shared` knots also pin two sibling shapes of the same collision
+// class (found in review of the first fix, both files identical here):
+//
+// - The unlabeled choice's text carries an inline alternation
+//   (`{& …|…}`). Its wrapper container is NOT stamped by
+//   `stamp_container_ids` at all — it is minted at LIR time
+//   (`LowerCtx::alloc_sequence_id` via `content::lower_inline_sequence`)
+//   from `ctx.scope_path`, which starts at the bare knot name — so
+//   `lower_knot_chunk` needs the same per-file allocator prefix root
+//   content gets (`IdAllocator::set_path_prefix`), or both files mint
+//   `shared.c-0.s-0` and `E060` fires exactly like the stamped case.
+//
+// - The second choice is *labeled*, with the SAME label in both files:
+//   a label's scope stays bare (`shared.pick` — `SymbolIndex.by_name`'s
+//   module-qualified-id, bare-name keying, resolved per file by
+//   #2197/#2215's file-scoped lookup) while the sibling anonymous
+//   containers' hashing scope is file-qualified — this fixture pins that
+//   the two scopes coexist in one knot without either breaking the other.
+flow shared() {
+  {?
+    * see {& a cat|a dog} now -> shared_end
+    * (pick) labeled sibling -> shared_end
+  }
+}
+
+flow shared_end() {
+  Unreached.
+  -> END
+}
