@@ -14,7 +14,6 @@ use super::lir;
 /// `ChoiceSet`, `LabeledBlock`, `Conditional`, and `Sequence` are handled
 /// by the caller (`lower_block_with_children`) since they may produce child
 /// containers. This function handles all remaining statement types.
-#[expect(clippy::too_many_lines)]
 pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir::Stmt> {
     match stmt {
         hir::Stmt::Divert(divert) => {
@@ -81,40 +80,26 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
         }
 
         hir::Stmt::ExprStmt(expr) => {
-            // Convert x++ / x-- into Assign { target: x, op: Add/Sub, value: 1 }
-            //
-            // Issue #2185 sibling: `~ a.count++` on a struct field is the
-            // exact same field-projection misroute as `pop(a.items)` — a
-            // real, previously-uncovered repro (reproduced against a real
-            // compile+run: compiles clean, then faults at runtime with
-            // `TypeError("cannot apply Add to Record and Int")`, the same
-            // silent-misroute symptom, this time via the postfix `x++`/`x--`
-            // desugaring rather than a mutator call). `inner` here can be a
-            // multi-segment `hir::Expr::Path` just like `pop`/`heap_pop`'s
-            // receiver argument, so it needs the identical guard *before*
-            // `lower_assign_target` gets a chance to resolve it to the
-            // wrong root.
-            if let hir::Expr::Postfix(inner, _) = expr
-                && super::blocks::reject_field_projection_index_root(
-                    inner,
-                    ctx,
-                    Some(super::blocks::FIELD_PROJECTION_POSTFIX_TARGET),
-                )
-            {
-                return Some(lir::Stmt::ExprStmt(lir::Expr::Null));
-            }
-            if let hir::Expr::Postfix(inner, op) = expr
-                && let Some(target) = lower_assign_target(inner, ctx)
-            {
-                let assign_op = match op {
-                    crate::PostfixOp::Increment => crate::AssignOp::Add,
-                    crate::PostfixOp::Decrement => crate::AssignOp::Sub,
-                };
-                return Some(lir::Stmt::Assign {
-                    target,
-                    op: assign_op,
-                    value: lir::Expr::Int(1),
-                });
+            // x++ / x-- convert to Assign { target: x, op: Add/Sub, value: 1
+            // } — including the #2185-sibling field-operand refusal
+            // (`~ a.count++` on a struct field is the exact same
+            // field-projection misroute as `pop(a.items)`: compiles clean,
+            // then faults at runtime with `TypeError("cannot apply Add to
+            // Record and Int")`, the same silent-misroute symptom, this
+            // time via the postfix `x++`/`x--` desugaring rather than a
+            // mutator call). This is the identical conversion the `~ { … }`
+            // block surface needs (issue #2894) — delegated to
+            // `blocks::try_lower_postfix_stmt` rather than kept as a
+            // second, divergence-prone copy here (post-#2900 review: the
+            // two copies had already drifted once).
+            let mut postfix_out = Vec::new();
+            if super::blocks::try_lower_postfix_stmt(expr, ctx, &mut postfix_out) {
+                // `postfix_out` holds at most one element: the converted
+                // `Assign` on success, or nothing on the E074 field-operand
+                // refusal (diagnostic already recorded) — `None` here means
+                // "emit nothing", exactly like every other call site of
+                // this function already treats it.
+                return postfix_out.into_iter().next();
             }
             Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx)))
         }
