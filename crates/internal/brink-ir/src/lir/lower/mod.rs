@@ -1641,7 +1641,16 @@ fn lower_choice_with_child(
     // can include an explicit goto to the gather.
     let old_scope = ctx.scope_path.clone();
     let old_gather_target = ctx.choice_gather_target;
-    ctx.scope_path = format!("{}.c{}", old_scope, *choice_counter - 1);
+    // `c-{n}`, dash-separated — the same synthesized-segment spelling the
+    // stamping pass uses for `child_scope` (`hir::stamp::stamp_stmt`) and
+    // the display `child_name` below always used. Kept in lock-step with
+    // the stamping pass deliberately (#1727's parity ruling: stamped
+    // lambda ids derive from these exact scope strings), and the dash is
+    // load-bearing for the ids *this* scope mints too
+    // (`alloc_sequence_id`'s `{scope}.s-{n}` wrappers): a bare `c{n}` can
+    // equal an authored knot named `c0`, colliding under the shared
+    // `#file:` namespace (issue #2229 review).
+    ctx.scope_path = format!("{}.c-{}", old_scope, *choice_counter - 1);
     ctx.choice_gather_target = gather_target;
     let mut cc = 0;
     let mut gc = 0;

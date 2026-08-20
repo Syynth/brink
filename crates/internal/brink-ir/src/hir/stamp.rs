@@ -51,7 +51,13 @@ use crate::symbols::{SymbolIndex, SymbolInfo, SymbolKind};
 ///
 /// The `#` prefix is what makes the qualifier collision-proof against
 /// authored scope paths: `#` is not legal in a knot, stitch or label name,
-/// and the synthesized segments are all `c-N`/`g-N`/`b-N`/`s-N`.
+/// and the synthesized segments are all `c-N`/`g-N`/`b-N`/`s-N` — `-` not
+/// being legal in an authored identifier either. (Choice segments only
+/// actually spell `c-N` since #2229's review pass: `stamp_stmt` used to
+/// write bare `c{n}`, contra this very sentence, which an authored knot
+/// legally named `c0` could equal — colliding with a root anonymous
+/// choice's subtree the moment knot interiors joined this shared `#file:`
+/// namespace.)
 ///
 /// `None` (a file whose path the caller did not supply — only in-crate test
 /// harnesses do that) yields an empty qualifier, i.e. the pre-#1504 paths.
@@ -239,15 +245,25 @@ fn stamp_stmt(
             cs.continuation.container_id = Some(gather_id);
             *gather_counter += 1;
 
-            // Choice target container IDs.
+            // Choice target container IDs. The synthesized segment is
+            // `c-{n}` — dash-separated like `g-N`/`b-N`/`s-N`, exactly as
+            // [`root_content_scope_path`]'s doc always claimed — NOT the
+            // bare `c{n}` this used to spell. The dash is load-bearing
+            // (issue #2229 review): `c0` is a perfectly legal authored
+            // knot name, and once knot interiors share the root `#file:`
+            // namespace, an authored knot `c0` hashes the same scope as a
+            // root-level anonymous choice's subtree (`{root}.c0`),
+            // colliding every same-position descendant (`E060`). `-` is
+            // not legal in any authored identifier, so a dashed segment
+            // can never equal one.
             for choice in &mut cs.choices {
                 let choice_id = if let Some(ref label) = choice.label {
                     let label_path = qualify(label_scope, &label.text);
                     lookup_label_id(index, file, &label_path).unwrap_or_else(|| {
-                        alloc_address(&format!("{scope_path}.c{choice_counter}"))
+                        alloc_address(&format!("{scope_path}.c-{choice_counter}"))
                     })
                 } else {
-                    alloc_address(&format!("{scope_path}.c{choice_counter}"))
+                    alloc_address(&format!("{scope_path}.c-{choice_counter}"))
                 };
                 choice.container_id = Some(choice_id);
                 *choice_counter += 1;
@@ -257,7 +273,7 @@ fn stamp_stmt(
                 // choice's own scope (`lir::lower::mod.rs`'s
                 // `lower_choice`: the block scope opens, then
                 // condition/content lower, and only the *body* lowering
-                // below gets the narrowed `.c{n}` scope) — so these stamp
+                // below gets the narrowed `.c-{n}` scope) — so these stamp
                 // at the parent `scope_path`, not `child_scope`.
                 if let Some(cond) = &mut choice.condition {
                     stamp_lambdas_in_expr(cond, file, scope_path, label_scope, index);
@@ -279,7 +295,7 @@ fn stamp_stmt(
                 }
 
                 // Recurse into choice body with narrowed scope.
-                let child_scope = format!("{scope_path}.c{}", *choice_counter - 1);
+                let child_scope = format!("{scope_path}.c-{}", *choice_counter - 1);
                 let mut child_choice_counter = 0;
                 let mut child_gather_counter = 0;
                 for body_stmt in &mut choice.body.stmts {

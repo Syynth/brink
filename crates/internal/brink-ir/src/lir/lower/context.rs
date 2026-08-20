@@ -413,7 +413,7 @@ impl IdAllocator {
         self.path_prefix = prefix;
     }
 
-    /// Allocate an address id from a path string (e.g. `""`, `"knot.c0"`),
+    /// Allocate an address id from a path string (e.g. `""`, `"knot.c-0"`),
     /// qualified by the current [`set_path_prefix`](Self::set_path_prefix).
     pub fn alloc_address(&mut self, path: &str) -> DefinitionId {
         let qualified = qualify_path(&self.path_prefix, path);
