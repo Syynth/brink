@@ -286,6 +286,85 @@ fn mixed_index_then_field_write_emits_e074() {
     assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
 }
 
+// ─── Issue #2185: `pop`/`heap_pop`/`x++`/implicit-`ref` field-projection
+// misroute ───────────────────────────────────────────────────────────────
+//
+// `pop(a.items)` and friends reach the write-target machinery through call
+// sites that never went through `try_lower_field_assignment`/
+// `reject_field_projection_index_root` at all — they call
+// `super::stmts::lower_assign_target` (or, for the implicit-`ref` call-arg
+// site, `ctx.resolve_path`) directly on the raw argument, which resolves a
+// multi-segment `a.items` `Path` straight to the ROOT symbol `a` with no
+// diagnostic. Reproduced against a real compile+run before this fix: each
+// of the four shapes below compiled clean and then faulted at runtime
+// (`StdlibWrongType`/`TypeError`/`NotARecord`) instead of ever raising a
+// diagnostic — the write landed on the wrong variable, sometimes replacing
+// the whole record's *value* outright (the implicit-`ref` case). All four
+// now raise the identical non-suppressible `E074` `try_lower_field_assignment`
+// already raises for a chained field write.
+
+#[test]
+fn pop_field_projection_emits_e074() {
+    let src = "STRUCT Bag = #{items: Array<int>, tag: string}\n\
+        VAR a = Bag#{items: #[1, 2, 3], tag: \"hello\"}\n\
+        ~ temp x = pop(a.items)\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074)
+        .expect("expected E074 for `pop(a.items)` — a field-projection receiver");
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
+#[test]
+fn heap_pop_field_projection_emits_e074() {
+    let src = "STRUCT Bag = #{items: Array<int>, tag: string}\n\
+        VAR a = Bag#{items: #[1, 2, 3], tag: \"hello\"}\n\
+        ~ temp x = heap_pop(a.items)\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074)
+        .expect("expected E074 for `heap_pop(a.items)` — a field-projection receiver");
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
+#[test]
+fn postfix_increment_field_projection_emits_e074() {
+    // `~ a.count++` desugars to an `Assign` through the same
+    // `lower_assign_target` choke point as `pop`/`heap_pop` — a sibling the
+    // issue's two named call sites don't cover (`stmts.rs`'s `ExprStmt`
+    // arm, not `expr.rs`).
+    let src = "STRUCT Bag = #{count: int, tag: string}\n\
+        VAR a = Bag#{count: 5, tag: \"hello\"}\n~ a.count++\nHello.\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074)
+        .expect("expected E074 for `a.count++` — a field-projection postfix target");
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
+#[test]
+fn implicit_ref_call_arg_field_projection_emits_e074() {
+    // Classic-ink implicit-by-ref calling convention: `modify`'s parameter
+    // is declared `ref`, and the caller passes a bare field projection with
+    // no explicit `ref` keyword — a third sibling (`expr.rs`'s
+    // `lower_ref_path_call_arg`, reached from `lower_call_args`'s bare-`Path`
+    // arm, not from the mutator/assignment machinery at all). Only this
+    // *implicit* spelling is refused: the explicit T1e projection argument
+    // (`modify(ref a.items)`) lowers to a real `RefProjection` and writes
+    // through correctly — verified end-to-end by `brink-test-harness`'s
+    // `t2_ground_truth_effects.rs::ref_param_write_through_a_path_
+    // projection_ground_truth`.
+    let src = "STRUCT Bag = #{items: Array<int>, tag: string}\n\
+        VAR a = Bag#{items: #[1, 2, 3], tag: \"hello\"}\n\
+        ~ modify(a.items)\nHello.\n\
+        \n\
+        === function modify(ref x) ===\n\
+        ~ x = #[9, 9]\n~ return\n";
+    let (_program, diags) = lower_ink_with_warnings(src);
+    let e074 = find_diag(&diags, brink_ir::DiagnosticCode::E074).expect(
+        "expected E074 for `modify(a.items)` against a `ref` param — an implicit-ref \
+         field-projection argument",
+    );
+    assert_eq!(e074.code.severity(), brink_ir::Severity::Error);
+}
+
 #[test]
 fn single_level_field_write_lowers_via_take_make_mut_write_back() {
     // This test's concern is the RMW field-write desugaring, not the

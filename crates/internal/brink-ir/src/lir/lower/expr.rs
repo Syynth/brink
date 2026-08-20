@@ -3,6 +3,10 @@ use brink_format::DefinitionId;
 use crate::hir;
 use crate::symbols::SymbolKind;
 
+use super::blocks::{
+    FIELD_PROJECTION_IMPLICIT_REF_ARG, FIELD_PROJECTION_MUTATOR_ARG,
+    reject_field_projection_index_root, reject_field_projection_path,
+};
 use super::context::{self, LowerCtx};
 use super::decls::list_def_to_global_var;
 use super::lir;
@@ -1574,6 +1578,22 @@ fn lower_t1b_stdlib_call(
             if !arity_ok(ctx, 1) {
                 return Some(lir::Expr::Null);
             }
+            // Issue #2185: `pop(a.items)` — `a.items` is one `hir::Path`
+            // (never a `FieldAccess`, same TM-4b shape
+            // `try_lower_field_assignment`'s doc describes), and
+            // `lower_assign_target` below resolves a multi-segment `Path`
+            // straight to its ROOT symbol with no diagnostic — silently
+            // misrouting the pop onto the whole record `a` instead of the
+            // field `a.items`. Reproduced against a real compile+run: compiles
+            // clean, then faults at runtime (`StdlibWrongType { verb: "pop",
+            // expected: "an array", found: "record" }`) — the same
+            // silent-misroute class #1495/#2121 fixed one level down, here at
+            // the bare-Path level. Reject it with the same non-suppressible
+            // `E074` before ever calling `lower_assign_target`.
+            if reject_field_projection_index_root(&args[0], ctx, Some(FIELD_PROJECTION_MUTATOR_ARG))
+            {
+                return Some(lir::Expr::Null);
+            }
             // `lower_assign_target` accepts exactly the bare-`Path` shape
             // (temp slot or resolvable global) — `None` for everything else.
             if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
@@ -1690,6 +1710,13 @@ fn lower_t1b_stdlib_call(
         // fence) and the same E055 otherwise.
         "heap_pop" => {
             if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            // Issue #2185: same field-projection misroute as `pop` above —
+            // `heap_pop(a.items)` must not silently resolve to `a`'s root
+            // symbol.
+            if reject_field_projection_index_root(&args[0], ctx, Some(FIELD_PROJECTION_MUTATOR_ARG))
+            {
                 return Some(lir::Expr::Null);
             }
             if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
@@ -2121,6 +2148,30 @@ fn lower_ref_path_call_arg(
     original: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
 ) -> lir::CallArg {
+    // Issue #2185 sibling: the classic-ink *implicit*-by-ref calling
+    // convention (`~ modify(a.items)` where `modify`'s param is declared
+    // `ref` — no `ref` keyword at the call site) reaches this arm with a
+    // possibly multi-segment `hir::Path` too, same TM-4b shape as every
+    // other misroute site in this family. Left unguarded this resolves
+    // `a.items`'s whole range to the ROOT symbol `a` below (`resolve_path`)
+    // and hands the callee a `RefGlobal` pointing at the **whole record**
+    // instead of the field — reproduced against a real compile+run: an
+    // assignment inside the callee (`~ x = #[9, 9]`) silently replaced the
+    // entire `a` record with a bare array, faulting downstream at
+    // `NotARecord("array")` on the next field read. The dedicated T1e path
+    // (an *explicit* `ref a.items` — `lower_ref_projection_arg`, reached via
+    // the `hir::Expr::RefArg` arm in `lower_call_args`) already lowers a
+    // real field projection correctly (a durable `RefProjection` root +
+    // `Opcode::MakeProjection`, write-through verified end-to-end by
+    // `t2_ground_truth_effects.rs::ref_param_write_through_a_path_
+    // projection_ground_truth`); this implicit arm has never had a
+    // projection lowering at all — before this guard it emitted
+    // `RefGlobal(root)` for the same spelling and faulted at runtime — so
+    // it rejects the shape and the message points authors at the explicit
+    // `ref` spelling.
+    if reject_field_projection_path(path, ctx, Some(FIELD_PROJECTION_IMPLICIT_REF_ARG)) {
+        return lir::CallArg::Value(lir::Expr::Null);
+    }
     let name = path_to_string(path);
     if let Some(slot) = ctx.temp_slot(&name) {
         // B1b (issue #1475): `ref` must not bypass an `as` binding's

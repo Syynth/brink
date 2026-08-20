@@ -351,6 +351,24 @@ fn ref_param_write_ground_truth_matches_the_866_regression_shape() {
 /// A nested-path `ref` argument (T1e projections, `Opcode::MakeProjection`)
 /// — the same call-site-attribution rule as a bare `ref` global, this time
 /// through `Value::Projection` rather than `Value::VariablePointer`.
+///
+/// The call site spells the projection with an **explicit** `ref`
+/// (`heal(ref hero.hp)`) — the only spelling that actually reaches the T1e
+/// projection machinery (`hir::Expr::RefArg` →
+/// `expr::lower_ref_projection_arg` → `lir::CallArg::RefProjection` →
+/// `Opcode::MakeProjection`). As originally written (PR #2690) this test
+/// used the *implicit* spelling `heal(hero.hp)`, which has no projection
+/// lowering at all: `lower_ref_path_call_arg` resolved the whole path to
+/// its ROOT symbol (TM-4b fallback) and emitted `RefGlobal(hero)` — the
+/// whole record — so the program faulted at runtime (`type error: cannot
+/// apply Add to Record and Int`) on the very first step and the test
+/// passed **vacuously** (an `Error` episode with zero steps records
+/// nothing to ground-truth). Issue #2185's non-suppressible `E074` now
+/// refuses that implicit spelling at compile time (it is the same
+/// whole-record misroute the issue fixes for `pop(a.items)`/`a.count++`),
+/// which surfaced the vacuity as a compile failure here. With the explicit
+/// `ref`, the run is real: `{hero.hp}` prints 15 and the write-back lands
+/// in the record field through `Value::Projection`.
 #[test]
 fn ref_param_write_through_a_path_projection_ground_truth() {
     check_source(
@@ -359,7 +377,7 @@ fn ref_param_write_through_a_path_projection_ground_truth() {
          VAR hero = 0\n-> knot\n\n\
          === knot ===\n\
          ~ hero = Hero#{hp: 10}\n\
-         ~ heal(hero.hp)\n{hero.hp}\n-> END\n\n\
+         ~ heal(ref hero.hp)\n{hero.hp}\n-> END\n\n\
          === function heal(ref hp) ===\n~ hp = hp + 5\n",
     );
 }
