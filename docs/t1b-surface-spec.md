@@ -57,7 +57,13 @@ Grammar (superset; every construct below is brink-dialect-gated):
   `temp` declaration, `if` / `else if` / `else` (braced),
   `while cond { … }`, `for name in expr { … }`,
   `break` / `continue`, `return` / `return expr`, expression
-  statements (function and external calls).
+  statements (function and external calls), bare-variable postfix
+  `x++` / `x--` (mutating; desugars to `x = x + 1` / `x = x - 1` —
+  issue #2894). A postfix operand that resolves through a struct
+  field (`a.count++`) is refused with a non-suppressible `E074`
+  rather than mutating the field — the same field-projection
+  misroute guard `E074` already applies to indexed/chained field
+  writes (§4), see `docs/diagnostics/E074.md`.
 - **Excluded inside blocks** (compile error, not parse error): text
   output of any kind, choices, gathers, diverts (`->`), tunnels,
   threads. `return` is the only flow construct.
