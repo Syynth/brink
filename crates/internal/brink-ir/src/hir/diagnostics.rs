@@ -1851,6 +1851,47 @@ pub enum DiagnosticCode {
     /// same status `E181` itself carried before its own reachable case was
     /// found — not a reason to leave them undiagnosed.
     E184,
+
+    /// Issue #1944: a plain dotted assignment target (`~ p.bogus = 1`)
+    /// names a field its receiver's *resolved* struct shape doesn't
+    /// declare — the `E070` mirror for a construction-literal's own
+    /// unknown-field check (`structs::check`'s "Extra" case,
+    /// `docs/typed-mode-spec.md` §6), but for `Stmt::Assignment`/
+    /// `BlockStmt::Assignment` targets instead of a `#{...}` literal.
+    ///
+    /// PR #1939's `check_declared_field_assign_target` deliberately stays
+    /// silent on an unresolvable field — it only compares a *resolved*
+    /// field's declared type against the RHS ("Unknown never disagrees").
+    /// `ref_projection::check_strict`'s `E098` covers an unknown segment
+    /// only in `ref`-argument position (`ref npc.bogus`), not a plain
+    /// assignment target. Before this code existed, the issue's exact
+    /// repro —
+    ///
+    /// ```text
+    /// STRUCT Point = #{x: float, y: float}
+    /// VAR p: Point = Point#{x: 0.0, y: 0.0}
+    /// ~ p.bogus = 1
+    /// -> DONE
+    /// ```
+    ///
+    /// — compiled clean under `types = strict` with zero diagnostics.
+    ///
+    /// Reported from `structs::check_field_assign_mismatch`, the same
+    /// function `E063` (field-type mismatch on a *resolved* field) comes
+    /// from — fired only once the walk has resolved the receiver's shape
+    /// (`shapes.resolve` succeeded) and the shape itself declares no field
+    /// by this name. An Unknown/untyped root never reaches this arm at
+    /// all: the walk's own guard above (`let Ty::Struct(shape_name) =
+    /// &current else { return; }`) returns silently the moment `current`
+    /// isn't a resolved struct type, so "Unknown never disagrees" holds
+    /// for the receiver exactly as it does for `E063`. A chained target
+    /// (`o.i.a = v`, 3+ segments) never reaches this function at all —
+    /// `check_declared_field_assign_target`'s own `segments.len() == 2`
+    /// fence means no `FieldAssignMismatch` fact is ever recorded for one;
+    /// LIR's `try_lower_field_assignment` already rejects it outright with
+    /// the non-suppressible `E074`, regardless of whether the field name
+    /// exists.
+    E185,
 }
 
 impl DiagnosticCode {
@@ -2047,6 +2088,7 @@ impl DiagnosticCode {
         Self::E182,
         Self::E183,
         Self::E184,
+        Self::E185,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2240,6 +2282,7 @@ impl DiagnosticCode {
             Self::E182 => "E182",
             Self::E183 => "E183",
             Self::E184 => "E184",
+            Self::E185 => "E185",
         }
     }
 
@@ -2552,6 +2595,7 @@ impl DiagnosticCode {
             Self::E184 => {
                 "a declared CONST/VAR/EXTERNAL's own definition could not be resolved while lowering — every surviving same-name candidate is std-declared"
             }
+            Self::E185 => "plain assignment target names a field its struct shape does not declare",
         }
     }
 
@@ -2810,6 +2854,7 @@ impl DiagnosticCode {
             "E182" => Some(Self::E182),
             "E183" => Some(Self::E183),
             "E184" => Some(Self::E184),
+            "E185" => Some(Self::E185),
             _ => None,
         }
     }

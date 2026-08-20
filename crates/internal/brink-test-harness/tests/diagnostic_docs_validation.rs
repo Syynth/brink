@@ -109,6 +109,7 @@ fn diagnostic_codes_are_unique() {
     // no landed or queued owner. This allowlist entry stays until either a
     // future issue claims E177 for a real variant (delete the entry then)
     // or E177 is formally retired.
+    //
     const RESERVED_CODES: &[&str] = &["E177"];
 
     // Enumerate the exhaustive variant list and build the inverse map: code string ->
