@@ -1,4 +1,5 @@
 use brink_format::{DefinitionId, DefinitionTag};
+use rowan::TextRange;
 
 use crate::determinism::LookupMap;
 use crate::symbols::{SymbolIndex, SymbolKind, is_reserved_root_module};
@@ -60,40 +61,22 @@ pub fn collect_globals(
                 diagnostics,
             ) {
                 let name = names.intern(&cst.name.text);
-                // #692: a bare non-constant reference/call as the *whole*
-                // default (not nested inside a collection/struct/fn literal,
-                // which do their own E075/E076/E077 checks one level in) is
-                // a real compile error, never a silent `Null` fold.
-                if !is_const_foldable_decl_default(&cst.value, index, resolutions, file_id) {
-                    diagnostics.push(Diagnostic {
-                        file: file_id,
-                        range: cst.ptr.text_range(),
-                        message: DiagnosticCode::E083.title().to_string(),
-                        code: DiagnosticCode::E083,
-                    });
-                }
-                let default = if let hir::Expr::Lambda(l) = &cst.value {
-                    eval_const_lambda(
-                        l,
-                        file_id,
-                        hir_file.native,
-                        index,
-                        resolutions,
-                        names,
-                        lambda_ctx,
-                        diagnostics,
-                    )
-                } else {
-                    let env = ConstEvalEnv {
-                        index,
-                        resolutions,
-                        file: file_id,
-                        const_values: &const_values,
-                        shapes,
-                        native: hir_file.native,
-                    };
-                    eval_const_expr(&cst.value, env, diagnostics)
+                let env = ConstEvalEnv {
+                    index,
+                    resolutions,
+                    file: file_id,
+                    const_values: &const_values,
+                    shapes,
+                    native: hir_file.native,
                 };
+                let default = eval_decl_default(
+                    &cst.value,
+                    cst.ptr.text_range(),
+                    env,
+                    names,
+                    lambda_ctx,
+                    diagnostics,
+                );
                 const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
@@ -122,38 +105,22 @@ pub fn collect_globals(
                 diagnostics,
             ) {
                 let name = names.intern(&var.name.text);
-                // #692: same top-level constness check as the CONST pass
-                // above.
-                if !is_const_foldable_decl_default(&var.value, index, resolutions, file_id) {
-                    diagnostics.push(Diagnostic {
-                        file: file_id,
-                        range: var.ptr.text_range(),
-                        message: DiagnosticCode::E083.title().to_string(),
-                        code: DiagnosticCode::E083,
-                    });
-                }
-                let default = if let hir::Expr::Lambda(l) = &var.value {
-                    eval_const_lambda(
-                        l,
-                        file_id,
-                        hir_file.native,
-                        index,
-                        resolutions,
-                        names,
-                        lambda_ctx,
-                        diagnostics,
-                    )
-                } else {
-                    let env = ConstEvalEnv {
-                        index,
-                        resolutions,
-                        file: file_id,
-                        const_values: &const_values,
-                        shapes,
-                        native: hir_file.native,
-                    };
-                    eval_const_expr(&var.value, env, diagnostics)
+                let env = ConstEvalEnv {
+                    index,
+                    resolutions,
+                    file: file_id,
+                    const_values: &const_values,
+                    shapes,
+                    native: hir_file.native,
                 };
+                let default = eval_decl_default(
+                    &var.value,
+                    var.ptr.text_range(),
+                    env,
+                    names,
+                    lambda_ctx,
+                    diagnostics,
+                );
                 globals.push(lir::GlobalDef {
                     id,
                     name,
@@ -166,6 +133,47 @@ pub fn collect_globals(
     }
 
     globals
+}
+
+/// Fold one `CONST`/`VAR` declaration default — the body both of
+/// [`collect_globals`]' passes share.
+///
+/// #692: a bare non-constant reference/call as the *whole* default (not
+/// nested inside a collection/struct/fn literal, which do their own
+/// E075/E076/E077 checks one level in) is a real compile error (`E083`),
+/// never a silent `Null` fold. A lambda literal folds through
+/// [`eval_const_lambda`] (#1774); everything else through
+/// [`eval_const_expr`].
+fn eval_decl_default(
+    value: &hir::Expr,
+    decl_range: TextRange,
+    env: ConstEvalEnv<'_>,
+    names: &mut NameTable,
+    lambda_ctx: &mut GlobalLambdaCtx<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    if !is_const_foldable_decl_default(value, env.index, env.resolutions, env.file) {
+        diagnostics.push(Diagnostic {
+            file: env.file,
+            range: decl_range,
+            message: DiagnosticCode::E083.title().to_string(),
+            code: DiagnosticCode::E083,
+        });
+    }
+    if let hir::Expr::Lambda(l) = value {
+        eval_const_lambda(
+            l,
+            env.file,
+            env.native,
+            env.index,
+            env.resolutions,
+            names,
+            lambda_ctx,
+            diagnostics,
+        )
+    } else {
+        eval_const_expr(value, env, diagnostics)
+    }
 }
 
 /// Resources [`collect_globals`] needs only for a lambda-literal decl
