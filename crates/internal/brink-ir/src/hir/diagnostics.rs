@@ -1806,6 +1806,51 @@ pub enum DiagnosticCode {
     /// "compile error over runtime fault" posture as [`Self::E144`]'s UFCS
     /// refusal in the same module.
     E183,
+
+    // ── issue #2262: E181's own drop class, for every OTHER declaration
+    //    kind `lir::lower::decls::lookup_global` self-resolves ─────────
+    /// `lir::lower::decls`'s own `lookup_global(index, file_id, name,
+    /// kind)` self-declaration lookup — for a `CONST`
+    /// (`collect_globals`'s constants pass), a `VAR` (`collect_globals`'s
+    /// variables pass), or an `EXTERNAL` (`collect_externals`) — came back
+    /// `None`.
+    ///
+    /// The exact same non-suppressible defense-in-depth posture as
+    /// [`Self::E181`], for the exact same reason: this is [`Self::E181`]'s
+    /// own struct-shape drop class recurring at three more call sites in
+    /// the same file, all sharing `lookup_global`'s doc comment and none
+    /// fixed by #2240/#2258 (issue #2262, filed from that PR's own review —
+    /// "#2240 under-captured the class"). The exact-file arm always
+    /// matches a declaration against itself *unless* `brink-analyzer`
+    /// already dropped this HIR decl's own symbol entry as a true
+    /// intra-module duplicate (`E023`) — and even then, `lookup_global`'s
+    /// unscoped fallback normally rescues the surviving sibling's id. This
+    /// code fires only when that fallback also misses: **every** surviving
+    /// same-name/same-kind candidate is std-declared, so the fallback's
+    /// own std-visibility carve-out (issue #2197) excludes it too. Before
+    /// this code existed, that combination silently dropped the
+    /// `CONST`/`VAR`/`EXTERNAL` from `PreludeDecls` (no `lir::GlobalDef`
+    /// or `lir::ExternalDef` at all) with no diagnostic whatsoever
+    /// (CLAUDE.md: "silent drops are always bugs until proven otherwise").
+    ///
+    /// **Reachable today**, exactly as [`Self::E181`]'s own doc found for
+    /// `STRUCT` (review finding on #2240): an ordinary project — no
+    /// `#@module`, no `dialect` override even needed for `EXTERNAL` (core
+    /// ink syntax, unlike `STRUCT`) — that declares its own `EXTERNAL
+    /// scene_entered(…)` collides with the std-mounted screenplay
+    /// preset's own `extern scene_entered`
+    /// (`std/conventions/screenplay.brink`). Neither declares a module, so
+    /// M-2d cross-declared-module coexistence never applies and
+    /// `insert_symbol` treats the pair as a true intra-module duplicate,
+    /// dropping whichever one's `FileId` sorts after the other's in mint
+    /// order. See `brink-environment`'s
+    /// `external_self_declaration_silently_drops_when_colliding_with_a_std_preset_name`
+    /// for this compiled end to end through the real analyzer drop. `std`
+    /// declares no `CONST`/`VAR` today, so the `CONST`/`VAR` call sites
+    /// stay reachable only in principle (a future std module adding one),
+    /// same status `E181` itself carried before its own reachable case was
+    /// found — not a reason to leave them undiagnosed.
+    E184,
 }
 
 impl DiagnosticCode {
@@ -2001,6 +2046,7 @@ impl DiagnosticCode {
         Self::E181,
         Self::E182,
         Self::E183,
+        Self::E184,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2193,6 +2239,7 @@ impl DiagnosticCode {
             Self::E181 => "E181",
             Self::E182 => "E182",
             Self::E183 => "E183",
+            Self::E184 => "E184",
         }
     }
 
@@ -2502,6 +2549,9 @@ impl DiagnosticCode {
                 "a `@[convention]` handler's call closure reaches a world-reading (or unclassified) `EXTERNAL` — handlers may call pure functions and commands, but never read world state"
             }
             Self::E183 => "call target resolved to a symbol kind that is not callable",
+            Self::E184 => {
+                "a declared CONST/VAR/EXTERNAL's own definition could not be resolved while lowering — every surviving same-name candidate is std-declared"
+            }
         }
     }
 
@@ -2759,6 +2809,7 @@ impl DiagnosticCode {
             "E181" => Some(Self::E181),
             "E182" => Some(Self::E182),
             "E183" => Some(Self::E183),
+            "E184" => Some(Self::E184),
             _ => None,
         }
     }
