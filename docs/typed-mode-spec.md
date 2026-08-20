@@ -414,6 +414,19 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
   struct-field projection (`p.field[i] = v`, `push(p.field[i], v)`, issue
   #2121) is unsupported at any RHS type and is rejected outright with the
   non-suppressible `E074`, never a type-mismatch diagnostic.
+- **A post-construction dotted field write naming a field the receiver's
+  shape doesn't declare is a compile error under strict** (`E185`, issue
+  #1944) — the `E063` check above only ever compares a *resolved* field's
+  declared type against the RHS; it stays silent by design when the field
+  name itself doesn't resolve on the shape ("Unknown never disagrees").
+  `E185` closes that gap, mirroring the construction-literal unknown-field
+  check (`E070`, above) for a plain assignment target instead of a `#{...}`
+  literal. This only ever fires **once the receiver's own shape resolves**
+  (a `VAR`/`CONST`'s declared type, or an annotated `Param`/`Temp`) to a
+  known `STRUCT` — an untyped/unresolved receiver (e.g. an unannotated
+  function parameter) has no shape to check the name against and stays
+  silent, the same "Unknown never disagrees" posture every check on this
+  page takes for its own receiver. See `docs/diagnostics/E185.md`.
 
 ## 7. What strict mode checks in plain-ink content — RULED
 
@@ -433,7 +446,8 @@ ascriptions, and (issue #1877's own scope) an **unannotated** global's
 initializer-literal-inferred type, not only an explicit `: type`
 annotation — since #1877. A **dotted struct-field assignment target**
 (`~ p.x = expr`, single-level only — see §6) reaches this same checking
-since #1900.
+since #1900, plus an unknown-field-*name* check (`E185`, since #1944) once
+the receiver's own shape resolves.
 
 ## 8. Effects touchpoint — RULED direction (T2 owns the detail)
 

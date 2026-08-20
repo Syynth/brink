@@ -216,3 +216,43 @@ fn ink_files_agree_on_both_surfaces() {
 fn has(diags: &[Diagnostic], code: DiagnosticCode) -> bool {
     diags.iter().any(|d| d.code == code)
 }
+
+/// Review finding on PR #2901 (issue #1944, `E185`): the PR's own
+/// integration tests drove only the db-direct road (`brink-db`'s
+/// `db.diagnostics`, and `brink-compiler`'s `compile_with_options` ->
+/// `brink-driver` -> `ProjectDb`) while the PR body claimed "Both analysis
+/// roads ... Proved directly, not just structurally". Both call sites do
+/// converge on the same `brink_analyzer::strict_diagnostics` seam (verified
+/// by reading both), but this module's whole premise — since #1358 — is
+/// that convergence at one shared seam does not by itself guarantee the two
+/// *entry points* into it agree; CLAUDE.md's "exercise both roads" rule
+/// wants a direct proof through the off-db road too, the same way every
+/// other test in this file proves it through `IdeSession::analysis`
+/// (`IdeSnapshot::analyze`/`analyze_with_modules` under the hood) rather
+/// than only through `session.db()`.
+#[test]
+fn e185_reaches_both_surfaces_under_strict() {
+    let src = "STRUCT Point = #{x: float, y: float}\n\
+               VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+               === main ===\n~ p.bogus = 1\n-> DONE\n";
+    let mut session = IdeSession::new();
+    session.set_language_dialect(Dialect::Brink);
+    session.update_and_analyze("main.ink", src.to_owned());
+    session.set_type_policy(TypePolicy::Strict);
+
+    let live = session
+        .analysis()
+        .expect("session produced an analysis")
+        .diagnostics
+        .clone();
+    let db = session.db().analysis().diagnostics.clone();
+
+    assert!(
+        has(&live, DiagnosticCode::E185),
+        "the off-db road (IdeSession::analysis, IdeSnapshot::analyze/analyze_with_modules \
+         under the hood) must report E185 directly, not merely by structural argument about a \
+         shared seam; live saw {:?}",
+        codes(&live)
+    );
+    assert_surfaces_agree(&live, &db, "E185 under strict types, brink dialect");
+}

@@ -415,6 +415,19 @@ fn check_field_assign_mismatch(
         };
         current = field_ty.clone();
     }
+    // BLOCKING review finding (issue #1944, PR #2901): `found` can now reach
+    // here unresolved (an `EXTERNAL` call with no declared return type,
+    // e.g.) since `check_declared_field_assign_target` no longer bails out
+    // on an unresolved RHS before recording the fact — that early return was
+    // exactly what kept E185 (below) unreachable for such an RHS. Guarded
+    // explicitly rather than folded into the `assignable` check that
+    // follows: `assignable(T, Unknown)` is `true` (unify, infer/ty.rs:477),
+    // but `assignable(T, Conflicted)` is not, so relying on `assignable`
+    // alone would start false-firing E063 for an unresolved RHS instead of
+    // staying silent on it.
+    if fact.found.is_unresolved() {
+        return;
+    }
     if current.is_unresolved() || crate::infer::assignable(&current, &fact.found) {
         return;
     }
@@ -1420,17 +1433,26 @@ mod tests {
         assert!(diags[0].message.contains("bogus"), "{:?}", diags[0].message);
     }
 
-    /// Sibling should-NOT-fire case (issue #1944 design constraint): an
-    /// unannotated `~ temp`'s root never resolves past `Ty::Unknown`, so
-    /// there is no shape to check the field name against — "Unknown never
+    /// Sibling should-NOT-fire case (issue #1944 design constraint,
+    /// corrected per review finding): an unannotated function parameter's
+    /// root never resolves past `Ty::Unknown` — there is genuinely no shape
+    /// anywhere to check the field name against — so "Unknown never
     /// disagrees" holds for the *receiver* exactly as it does for `E063`
     /// (see `field_assignment_on_unannotated_temp_stays_silent_when_unknown`
-    /// above, E063's own sibling).
+    /// above, E063's own sibling). This deliberately does NOT use an
+    /// unannotated `~ temp` initialized from a struct literal
+    /// (`~ temp p = Point#{x: 0.0}`) — that case's shape actually *is*
+    /// statically knowable from the initializer; it stays silent only
+    /// because `check_declared_field_assign_target` reads the root's type
+    /// from `self.annotated`/`ctx.globals` and never an unannotated temp's
+    /// inferred type, a limitation of the recording site, not an absence of
+    /// a shape to check against (see `docs/diagnostics/E185.md`'s "What does
+    /// NOT fire").
     #[test]
     fn field_assignment_to_a_nonexistent_field_on_unresolved_receiver_stays_silent() {
         let diags = check_assignments_all(
             "STRUCT Point = #{x: float}\n\
-             === main ===\n~ temp p = Point#{x: 0.0}\n~ p.bogus = \"wrong\"\n-> DONE\n",
+             === function f(p) ===\n~ p.bogus = \"wrong\"\n-> DONE\n",
         );
         assert!(diags.is_empty(), "{diags:?}");
     }

@@ -1344,3 +1344,67 @@ fn strict_dotted_assign_unknown_field_on_unresolved_receiver_stays_silent() {
         );
     }
 }
+
+// ── BLOCKING review finding (issue #1944, PR #2901): `check_declared_field_
+// assign_target` used to `return` before ever recording a
+// `FieldAssignMismatch` fact whenever the RHS's own type was unresolved
+// (e.g. an unregistered `EXTERNAL` call, whose return type has no
+// in-language source) — silencing E185 entirely for exactly that RHS shape,
+// even though E185 (an unknown *field name*) never depends on the RHS's
+// type at all. Verified RED before the fix: both fixtures below compiled
+// with zero diagnostics — the receiver's shape (`Point`) is fully resolved
+// in both, only the RHS is Unknown.
+
+#[test]
+fn strict_dotted_assign_unknown_field_with_unresolved_external_rhs_is_e185() {
+    // Root source #1: a global `VAR` with a resolved declared shape.
+    let err = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         EXTERNAL fetch_amount()\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.bogus = fetch_amount()\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "an unknown field name must be rejected even when the RHS's own type never resolves",
+    );
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E185),
+        "expected E185 even with an unresolved (unregistered EXTERNAL) RHS: {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E063),
+        "an unresolved RHS must never also false-fire E063 (assignable(T, Unknown) is true, \
+         but the recording-site fix must not let a Conflicted-shaped RHS through either): \
+         {diags:?}"
+    );
+}
+
+#[test]
+fn strict_dotted_assign_unknown_field_on_annotated_param_with_unresolved_external_rhs_is_e185() {
+    // Root source #2: an annotated `Param`, the other source
+    // `check_declared_field_assign_target` reads from (`self.annotated`,
+    // not `ctx.globals`).
+    let err = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         EXTERNAL fetch_amount()\n\
+         === function f(q: Point) ===\n~ q.bogus = fetch_amount()\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "an unknown field name on an annotated-param receiver must be rejected even when the \
+         RHS's own type never resolves",
+    );
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E185),
+        "expected E185 even with an unresolved (unregistered EXTERNAL) RHS: {diags:?}"
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E063),
+        "an unresolved RHS must never also false-fire E063: {diags:?}"
+    );
+}
