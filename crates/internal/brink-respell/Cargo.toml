@@ -26,6 +26,7 @@ thiserror.workspace = true
 [dev-dependencies]
 brink-test-harness = { workspace = true }
 brink-syntax-native = { workspace = true }
+brink-driver = { workspace = true }
 
 [lints]
 workspace = true

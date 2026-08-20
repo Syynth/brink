@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use brink_respell::respell_ink_source;
 use brink_test_harness::ExploreConfig;
-use brink_test_harness::corpus::{explore_from_brink_native, explore_from_ink};
+use brink_test_harness::corpus::{explore_from_brink_native_at, explore_from_ink};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -53,6 +53,22 @@ fn explore_config() -> ExploreConfig {
 
 /// Respell `ink_rel` (repo-root-relative) into `.brink`, then assert it
 /// plays episode-identical to running the ink original directly.
+///
+/// **Issue #2229 harness fix:** both compare legs must register the *same*
+/// file-path qualifier for `hir::stamp_container_ids`'s per-file scoping
+/// (#1504, extended to knot interiors by #2229), or the exact same story
+/// mints two different `DefinitionId`s for its own anonymous containers —
+/// a harness asymmetry, not a story-behavior difference. `explore_from_ink`
+/// (below) always compiles through `compile_path`, which registers a real,
+/// root-relative key (`brink_driver::relative_key` against the
+/// single-file-project root `native_source_root_with_warnings` resolves to
+/// — here, `ink_path`'s own directory, since none of this corpus's fixture
+/// directories declare a `brink.toml`). The mechanically-respelled `.brink`
+/// text has no file of its own to derive that key from — it is compiled
+/// in-memory — so it must be handed the *identical* key explicitly via
+/// [`explore_from_brink_native_at`] rather than the pathless-default
+/// [`brink_test_harness::corpus::explore_from_brink_native`], which the ink
+/// leg's real compile never uses.
 fn assert_episode_identical(case: &str, ink_rel: &str) {
     let ink_path = repo_root().join(ink_rel);
     let ink_src = std::fs::read_to_string(&ink_path)
@@ -64,9 +80,20 @@ fn assert_episode_identical(case: &str, ink_rel: &str) {
     let config = explore_config();
     let ink_episodes = explore_from_ink(&ink_path, &config)
         .unwrap_or_else(|e| panic!("{case}: exploring the ink original failed: {e}"));
-    let brink_episodes = explore_from_brink_native(&emitted, &config).unwrap_or_else(|e| {
-        panic!("{case}: exploring the mechanically-respelled .brink failed: {e}\n--- emitted ---\n{emitted}")
-    });
+
+    // Mirror `prepare_driver`'s own root-resolution + relative-key steps
+    // (`crates/brink-compiler/src/driver.rs`) so the in-memory `.brink`
+    // compile is qualified by the exact same key the real `compile_path`
+    // call above registered for `ink_path`.
+    let (root, _warnings) = brink_driver::native_source_root_with_warnings(&ink_path);
+    let relative_key = brink_driver::relative_key(&root, &ink_path);
+    let file_paths: std::collections::HashMap<brink_ir::FileId, String> =
+        std::iter::once((brink_ir::FileId(0), relative_key)).collect();
+
+    let brink_episodes = explore_from_brink_native_at(&emitted, &file_paths, &config)
+        .unwrap_or_else(|e| {
+            panic!("{case}: exploring the mechanically-respelled .brink failed: {e}\n--- emitted ---\n{emitted}")
+        });
 
     assert_eq!(
         ink_episodes, brink_episodes,
