@@ -406,10 +406,43 @@ pub(super) fn try_lower_indexed_assignment(
 }
 
 fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerCtx<'_>) {
+    emit_field_projection_refusal(range, ctx, DiagnosticCode::E074.title());
+}
+
+/// Issue #2185 refusal message for a mutator whose receiver argument is a
+/// record-field projection (`pop(a.items)`, `heap_pop(a.items)`) — same
+/// non-suppressible `E074`, accurate shape name (these are not chained field
+/// *writes*, so `E074.title()`'s "(p.a.b = v)" wording would misdescribe
+/// them).
+pub(super) const FIELD_PROJECTION_MUTATOR_ARG: &str = "field-projection mutator argument (`pop(a.items)`) is not supported — copy the field into a \
+     temp, mutate it, and write it back";
+
+/// Issue #2185 refusal message for a postfix `++`/`--` whose target is a
+/// record-field projection (`~ a.count++`).
+pub(super) const FIELD_PROJECTION_POSTFIX_TARGET: &str = "field-projection increment/decrement target (`a.count++`) is not supported — copy the field \
+     into a temp, mutate it, and write it back";
+
+/// Issue #2185 refusal message for the classic-ink *implicit*-by-ref calling
+/// convention handing a record-field projection to a `ref` parameter
+/// (`f(a.items)` with no `ref` keyword at the call site). Unlike the other
+/// two shapes there is a fully supported spelling: the explicit T1e
+/// projection argument (`f(ref a.items)`), which lowers through
+/// `expr::lower_ref_projection_arg` to a real [`lir::CallArg::RefProjection`]
+/// — the message points there.
+pub(super) const FIELD_PROJECTION_IMPLICIT_REF_ARG: &str = "field-projection argument to a `ref` parameter (`f(a.items)`) is not supported without an \
+     explicit `ref` — write `f(ref a.items)` to pass a real projection";
+
+/// [`emit_chained_field_write_diagnostic`] with a caller-supplied message —
+/// the issue #2185 refusal sites (`pop`/`heap_pop` arguments, postfix
+/// `++`/`--` targets, implicit-`ref` call arguments) reject shapes that are
+/// *not* chained field writes, so `E074.title()`'s "(p.a.b = v)" wording
+/// would misdescribe them. Same non-suppressible `E074` code either way —
+/// only the message text names the actual refused shape.
+fn emit_field_projection_refusal(range: rowan::TextRange, ctx: &mut LowerCtx<'_>, message: &str) {
     ctx.diagnostics.push(Diagnostic {
         file: ctx.file,
         range,
-        message: DiagnosticCode::E074.title().to_string(),
+        message: message.to_string(),
         code: DiagnosticCode::E074,
     });
 }
@@ -461,25 +494,34 @@ fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerC
 /// that doesn't resolve to an assignable root at all — the analyzer's
 /// `E025` handles that case, same as every other call site in this module).
 ///
-/// `pub(super)` (issue #2185): `pop`/`heap_pop` (`expr.rs`) are the "one
-/// level up" sibling of the hole this guard already closes for the
-/// container-chain (`push`/`insert`/`remove`/…) and classic-line-Index
-/// mutators — they call `super::stmts::lower_assign_target` directly on the
-/// raw, possibly multi-segment `Path` argument instead of going through
+/// `pub(super)` (issue #2185): `pop`/`heap_pop` (`expr.rs`) and the postfix
+/// `++`/`--` desugar (`stmts.rs`) are the "one level up" siblings of the
+/// hole this guard already closes for the container-chain
+/// (`push`/`insert`/`remove`/…) and classic-line-Index mutators — they call
+/// `super::stmts::lower_assign_target` directly on the raw, possibly
+/// multi-segment `Path` argument instead of going through
 /// `lower_lvalue_container_chain`/`lower_indexed_assignment`, so this guard
 /// never ran for them at all. Reused here rather than duplicated, so every
-/// call site raises the identical non-suppressible `E074`.
+/// call site raises the identical non-suppressible `E074` — those sites pass
+/// their own `message` because their refused shape is a mutation *argument*/
+/// *target*, not the chained field *write* `E074.title()` describes; the
+/// pre-existing index-root sites pass `None` to keep the title verbatim.
 pub(super) fn reject_field_projection_index_root(
     root_expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
+    message: Option<&str>,
 ) -> bool {
     if let hir::Expr::Path(path) = root_expr
-        && reject_field_projection_path(path, ctx)
+        && reject_field_projection_path(path, ctx, message)
     {
         return true;
     }
     if let hir::Expr::FieldAccess(fa) = root_expr {
-        emit_chained_field_write_diagnostic(fa.ptr.text_range(), ctx);
+        emit_field_projection_refusal(
+            fa.ptr.text_range(),
+            ctx,
+            message.unwrap_or_else(|| DiagnosticCode::E074.title()),
+        );
         return true;
     }
     false
@@ -493,7 +535,11 @@ pub(super) fn reject_field_projection_index_root(
 /// `hir::Expr::Path` node to match against), so it cannot call the
 /// `&hir::Expr`-shaped function above without an avoidable clone. Same
 /// check, same diagnostic, no duplicated logic.
-pub(super) fn reject_field_projection_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> bool {
+pub(super) fn reject_field_projection_path(
+    path: &hir::Path,
+    ctx: &mut LowerCtx<'_>,
+    message: Option<&str>,
+) -> bool {
     if path.segments.len() > 1
         && let Some(info) = ctx.resolve_path(path.range)
         && matches!(
@@ -501,7 +547,11 @@ pub(super) fn reject_field_projection_path(path: &hir::Path, ctx: &mut LowerCtx<
             SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
         )
     {
-        emit_chained_field_write_diagnostic(path.range, ctx);
+        emit_field_projection_refusal(
+            path.range,
+            ctx,
+            message.unwrap_or_else(|| DiagnosticCode::E074.title()),
+        );
         return true;
     }
     false
@@ -713,7 +763,7 @@ fn lower_indexed_assignment(
     // bare variable. See `reject_field_projection_index_root`'s doc for why
     // this must be checked *before* `lower_assign_target` gets a chance to
     // silently misroute it onto the root `a`.
-    if reject_field_projection_index_root(root_expr, ctx) {
+    if reject_field_projection_index_root(root_expr, ctx, None) {
         return;
     }
     let Some(root_target) = super::stmts::lower_assign_target(root_expr, ctx) else {
@@ -2101,7 +2151,7 @@ fn lower_lvalue_container_chain(
     // branch, which is now reachable *for this one diagnosed reason* — it
     // returns without pushing anything, which is correct: the diagnostic
     // already emitted is the handling.
-    if reject_field_projection_index_root(root_expr, ctx) {
+    if reject_field_projection_index_root(root_expr, ctx, None) {
         return None;
     }
     let root_target = super::stmts::lower_assign_target(root_expr, ctx)?;

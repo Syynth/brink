@@ -345,7 +345,12 @@ fn implicit_ref_call_arg_field_projection_emits_e074() {
     // is declared `ref`, and the caller passes a bare field projection with
     // no explicit `ref` keyword — a third sibling (`expr.rs`'s
     // `lower_ref_path_call_arg`, reached from `lower_call_args`'s bare-`Path`
-    // arm, not from the mutator/assignment machinery at all).
+    // arm, not from the mutator/assignment machinery at all). Only this
+    // *implicit* spelling is refused: the explicit T1e projection argument
+    // (`modify(ref a.items)`) lowers to a real `RefProjection` and writes
+    // through correctly — verified end-to-end by `brink-test-harness`'s
+    // `t2_ground_truth_effects.rs::ref_param_write_through_a_path_
+    // projection_ground_truth`.
     let src = "STRUCT Bag = #{items: Array<int>, tag: string}\n\
         VAR a = Bag#{items: #[1, 2, 3], tag: \"hello\"}\n\
         ~ modify(a.items)\nHello.\n\

@@ -3,7 +3,10 @@ use brink_format::DefinitionId;
 use crate::hir;
 use crate::symbols::SymbolKind;
 
-use super::blocks::{reject_field_projection_index_root, reject_field_projection_path};
+use super::blocks::{
+    FIELD_PROJECTION_IMPLICIT_REF_ARG, FIELD_PROJECTION_MUTATOR_ARG,
+    reject_field_projection_index_root, reject_field_projection_path,
+};
 use super::context::{self, LowerCtx};
 use super::decls::list_def_to_global_var;
 use super::lir;
@@ -1587,7 +1590,8 @@ fn lower_t1b_stdlib_call(
             // silent-misroute class #1495/#2121 fixed one level down, here at
             // the bare-Path level. Reject it with the same non-suppressible
             // `E074` before ever calling `lower_assign_target`.
-            if reject_field_projection_index_root(&args[0], ctx) {
+            if reject_field_projection_index_root(&args[0], ctx, Some(FIELD_PROJECTION_MUTATOR_ARG))
+            {
                 return Some(lir::Expr::Null);
             }
             // `lower_assign_target` accepts exactly the bare-`Path` shape
@@ -1711,7 +1715,8 @@ fn lower_t1b_stdlib_call(
             // Issue #2185: same field-projection misroute as `pop` above —
             // `heap_pop(a.items)` must not silently resolve to `a`'s root
             // symbol.
-            if reject_field_projection_index_root(&args[0], ctx) {
+            if reject_field_projection_index_root(&args[0], ctx, Some(FIELD_PROJECTION_MUTATOR_ARG))
+            {
                 return Some(lir::Expr::Null);
             }
             if let Some(root) = super::stmts::lower_assign_target(&args[0], ctx) {
@@ -2156,9 +2161,15 @@ fn lower_ref_path_call_arg(
     // `NotARecord("array")` on the next field read. The dedicated T1e path
     // (an *explicit* `ref a.items` — `lower_ref_projection_arg`, reached via
     // the `hir::Expr::RefArg` arm in `lower_call_args`) already lowers a
-    // real field projection correctly; this implicit arm just never learned
-    // to reject the same shape instead of silently miscompiling it.
-    if reject_field_projection_path(path, ctx) {
+    // real field projection correctly (a durable `RefProjection` root +
+    // `Opcode::MakeProjection`, write-through verified end-to-end by
+    // `t2_ground_truth_effects.rs::ref_param_write_through_a_path_
+    // projection_ground_truth`); this implicit arm has never had a
+    // projection lowering at all — before this guard it emitted
+    // `RefGlobal(root)` for the same spelling and faulted at runtime — so
+    // it rejects the shape and the message points authors at the explicit
+    // `ref` spelling.
+    if reject_field_projection_path(path, ctx, Some(FIELD_PROJECTION_IMPLICIT_REF_ARG)) {
         return lir::CallArg::Value(lir::Expr::Null);
     }
     let name = path_to_string(path);

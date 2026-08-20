@@ -95,7 +95,11 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             // `lower_assign_target` gets a chance to resolve it to the
             // wrong root.
             if let hir::Expr::Postfix(inner, _) = expr
-                && super::blocks::reject_field_projection_index_root(inner, ctx)
+                && super::blocks::reject_field_projection_index_root(
+                    inner,
+                    ctx,
+                    Some(super::blocks::FIELD_PROJECTION_POSTFIX_TARGET),
+                )
             {
                 return Some(lir::Stmt::ExprStmt(lir::Expr::Null));
             }
