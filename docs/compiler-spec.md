@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E183`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E184`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -557,6 +557,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E181`](diagnostics/E181.md) | A declared `STRUCT`'s own definition could not be resolved while building the struct-shape table — every surviving same-name candidate is std-declared (non-suppressible backstop). |
 | [`E182`](diagnostics/E182.md) | A `@[convention]` handler's call closure reaches a world-reading (`Query`-kind) or unclassified (`Plain`-kind) `EXTERNAL`. |
 | [`E183`](diagnostics/E183.md) | A call site's resolved target is a symbol kind that cannot be called (`ListItem`, `Label`, `Stitch`, `Param`, `Temp`, `Struct`) — refused with a diagnostic instead of emitting a call against it. |
+| [`E184`](diagnostics/E184.md) | A declared `CONST`/`VAR`/`EXTERNAL`'s own definition could not be resolved while collecting global declarations — every surviving same-name candidate is std-declared (non-suppressible backstop, `E181`'s twin for these three declaration kinds). |
 
 ## Known limitations
 

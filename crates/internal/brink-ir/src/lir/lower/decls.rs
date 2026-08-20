@@ -1,4 +1,5 @@
 use brink_format::{DefinitionId, DefinitionTag};
+use rowan::TextRange;
 
 use crate::determinism::LookupMap;
 use crate::symbols::{SymbolIndex, SymbolKind, is_reserved_root_module};
@@ -51,42 +52,31 @@ pub fn collect_globals(
             lambda_ctx.file_paths.get(&file_id).map(String::as_str),
         ));
         for cst in &hir_file.constants {
-            if let Some(id) = lookup_global(index, file_id, &cst.name.text, SymbolKind::Constant) {
+            if let Some(id) = lookup_global_or_diagnose(
+                index,
+                file_id,
+                &cst.name.text,
+                SymbolKind::Constant,
+                cst.name.range,
+                diagnostics,
+            ) {
                 let name = names.intern(&cst.name.text);
-                // #692: a bare non-constant reference/call as the *whole*
-                // default (not nested inside a collection/struct/fn literal,
-                // which do their own E075/E076/E077 checks one level in) is
-                // a real compile error, never a silent `Null` fold.
-                if !is_const_foldable_decl_default(&cst.value, index, resolutions, file_id) {
-                    diagnostics.push(Diagnostic {
-                        file: file_id,
-                        range: cst.ptr.text_range(),
-                        message: DiagnosticCode::E083.title().to_string(),
-                        code: DiagnosticCode::E083,
-                    });
-                }
-                let default = if let hir::Expr::Lambda(l) = &cst.value {
-                    eval_const_lambda(
-                        l,
-                        file_id,
-                        hir_file.native,
-                        index,
-                        resolutions,
-                        names,
-                        lambda_ctx,
-                        diagnostics,
-                    )
-                } else {
-                    let env = ConstEvalEnv {
-                        index,
-                        resolutions,
-                        file: file_id,
-                        const_values: &const_values,
-                        shapes,
-                        native: hir_file.native,
-                    };
-                    eval_const_expr(&cst.value, env, diagnostics)
+                let env = ConstEvalEnv {
+                    index,
+                    resolutions,
+                    file: file_id,
+                    const_values: &const_values,
+                    shapes,
+                    native: hir_file.native,
                 };
+                let default = eval_decl_default(
+                    &cst.value,
+                    cst.ptr.text_range(),
+                    env,
+                    names,
+                    lambda_ctx,
+                    diagnostics,
+                );
                 const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
@@ -106,40 +96,31 @@ pub fn collect_globals(
             lambda_ctx.file_paths.get(&file_id).map(String::as_str),
         ));
         for var in &hir_file.variables {
-            if let Some(id) = lookup_global(index, file_id, &var.name.text, SymbolKind::Variable) {
+            if let Some(id) = lookup_global_or_diagnose(
+                index,
+                file_id,
+                &var.name.text,
+                SymbolKind::Variable,
+                var.name.range,
+                diagnostics,
+            ) {
                 let name = names.intern(&var.name.text);
-                // #692: same top-level constness check as the CONST pass
-                // above.
-                if !is_const_foldable_decl_default(&var.value, index, resolutions, file_id) {
-                    diagnostics.push(Diagnostic {
-                        file: file_id,
-                        range: var.ptr.text_range(),
-                        message: DiagnosticCode::E083.title().to_string(),
-                        code: DiagnosticCode::E083,
-                    });
-                }
-                let default = if let hir::Expr::Lambda(l) = &var.value {
-                    eval_const_lambda(
-                        l,
-                        file_id,
-                        hir_file.native,
-                        index,
-                        resolutions,
-                        names,
-                        lambda_ctx,
-                        diagnostics,
-                    )
-                } else {
-                    let env = ConstEvalEnv {
-                        index,
-                        resolutions,
-                        file: file_id,
-                        const_values: &const_values,
-                        shapes,
-                        native: hir_file.native,
-                    };
-                    eval_const_expr(&var.value, env, diagnostics)
+                let env = ConstEvalEnv {
+                    index,
+                    resolutions,
+                    file: file_id,
+                    const_values: &const_values,
+                    shapes,
+                    native: hir_file.native,
                 };
+                let default = eval_decl_default(
+                    &var.value,
+                    var.ptr.text_range(),
+                    env,
+                    names,
+                    lambda_ctx,
+                    diagnostics,
+                );
                 globals.push(lir::GlobalDef {
                     id,
                     name,
@@ -152,6 +133,47 @@ pub fn collect_globals(
     }
 
     globals
+}
+
+/// Fold one `CONST`/`VAR` declaration default — the body both of
+/// [`collect_globals`]' passes share.
+///
+/// #692: a bare non-constant reference/call as the *whole* default (not
+/// nested inside a collection/struct/fn literal, which do their own
+/// E075/E076/E077 checks one level in) is a real compile error (`E083`),
+/// never a silent `Null` fold. A lambda literal folds through
+/// [`eval_const_lambda`] (#1774); everything else through
+/// [`eval_const_expr`].
+fn eval_decl_default(
+    value: &hir::Expr,
+    decl_range: TextRange,
+    env: ConstEvalEnv<'_>,
+    names: &mut NameTable,
+    lambda_ctx: &mut GlobalLambdaCtx<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    if !is_const_foldable_decl_default(value, env.index, env.resolutions, env.file) {
+        diagnostics.push(Diagnostic {
+            file: env.file,
+            range: decl_range,
+            message: DiagnosticCode::E083.title().to_string(),
+            code: DiagnosticCode::E083,
+        });
+    }
+    if let hir::Expr::Lambda(l) = value {
+        eval_const_lambda(
+            l,
+            env.file,
+            env.native,
+            env.index,
+            env.resolutions,
+            names,
+            lambda_ctx,
+            diagnostics,
+        )
+    } else {
+        eval_const_expr(value, env, diagnostics)
+    }
 }
 
 /// Resources [`collect_globals`] needs only for a lambda-literal decl
@@ -396,16 +418,31 @@ pub fn list_def_to_global_var(list_id: DefinitionId) -> DefinitionId {
 }
 
 /// Collect external function declarations from HIR files.
+///
+/// `diagnostics` (issue #2262) is the same `decl_diagnostics` accumulator
+/// `build_prelude_decls` threads through `collect_globals`/`build_shape_table`
+/// — pushed to only when an `EXTERNAL`'s own self-declaration lookup below
+/// comes back `None` (the `E184` backstop; see that code's own doc for the
+/// exact, narrow drop condition, and issue #2240/`E181` for the identical
+/// class one declaration kind over).
 pub fn collect_externals(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     names: &mut NameTable,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<lir::ExternalDef> {
     let mut externals = Vec::new();
 
     for &(file_id, hir_file) in files {
         for ext in &hir_file.externals {
-            if let Some(id) = lookup_global(index, file_id, &ext.name.text, SymbolKind::External) {
+            if let Some(id) = lookup_global_or_diagnose(
+                index,
+                file_id,
+                &ext.name.text,
+                SymbolKind::External,
+                ext.name.range,
+                diagnostics,
+            ) {
                 let name = names.intern(&ext.name.text);
                 // Look for an ink-defined function with the same name to use
                 // as fallback — preferring one declared in this same file
@@ -527,6 +564,50 @@ pub(super) fn lookup_global(
             })
             .copied()
     })
+}
+
+/// [`lookup_global`], plus the `E184` non-suppressible backstop diagnostic
+/// (issue #2262) when it comes back `None`.
+///
+/// This is [`crate::DiagnosticCode::E181`]'s own drop class — `structs::
+/// build_shape_table`'s self-declaration lookup for `STRUCT` (issue #2240)
+/// — recurring at every *other* declaration kind that self-resolves through
+/// [`lookup_global`]: `CONST`/`VAR` (both in [`collect_globals`]) and
+/// `EXTERNAL` ([`collect_externals`]). Same narrow condition as `E181`'s own
+/// doc: the exact-file arm always matches a declaration against itself
+/// *unless* `brink-analyzer` already dropped this HIR decl's own symbol
+/// entry as a true intra-module duplicate, and even then the unscoped
+/// fallback normally rescues the surviving sibling's id — this only fires
+/// when *that* fallback also misses because every surviving same-name/
+/// same-kind candidate is std-declared. Before `E184` existed, that
+/// combination silently dropped the declaration from `PreludeDecls` with no
+/// diagnostic at all (CLAUDE.md: "silent drops are always bugs until proven
+/// otherwise") — see [`crate::DiagnosticCode::E184`]'s own doc for the full
+/// argument, including why it is reachable today for `EXTERNAL` specifically
+/// (a plain, no-`#@module` `EXTERNAL scene_entered(...)` colliding with the
+/// std-mounted screenplay preset's own `extern scene_entered`).
+///
+/// Callers still receive `None` and skip the declaration exactly as before
+/// — this makes the drop loud, it does not stop it from happening (the same
+/// posture `E181` itself takes; see that code's own doc).
+fn lookup_global_or_diagnose(
+    index: &SymbolIndex,
+    file: FileId,
+    name: &str,
+    kind: SymbolKind,
+    range: rowan::TextRange,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<DefinitionId> {
+    let id = lookup_global(index, file, name, kind);
+    if id.is_none() {
+        diagnostics.push(Diagnostic {
+            file,
+            range,
+            message: DiagnosticCode::E184.title().to_string(),
+            code: DiagnosticCode::E184,
+        });
+    }
+    id
 }
 
 /// The read-only environment a declaration-default constant fold resolves
@@ -1445,6 +1526,161 @@ mod tests {
             Some(sibling_fallback),
             "a non-std cross-file fallback pair must still resolve, unchanged \
              from pre-#2197 behavior"
+        );
+    }
+
+    // ── issue #2262: E181's own drop class, for CONST/VAR/EXTERNAL ─────
+
+    fn hir_for(src: &str) -> hir::HirFile {
+        let parsed = brink_syntax::parse(src);
+        let (hir, _manifest, _diag) = hir::lower(FileId(0), &parsed.tree());
+        hir
+    }
+
+    /// [`lookup_global_or_diagnose`] direct unit coverage for `CONST`/`VAR`
+    /// (issue #2262): `std` declares neither today, so — unlike
+    /// `EXTERNAL`'s own end-to-end test below — this stays a hand-built
+    /// `SymbolIndex`, same "reachable in principle, not in practice yet"
+    /// status `E181` itself carried before its own reachable `STRUCT` case
+    /// was found (see `E184`'s own doc). Modeling the drop condition
+    /// directly: `ghost_file` carries no own-file symbol at all — the
+    /// aftermath of `brink-analyzer` dropping it as a true intra-module
+    /// duplicate — and the only surviving same-name/same-kind candidate is
+    /// std-declared, so `lookup_global`'s fallback also misses.
+    #[test]
+    fn lookup_global_or_diagnose_pushes_e184_when_every_surviving_candidate_is_std_declared() {
+        for kind in [SymbolKind::Constant, SymbolKind::Variable] {
+            let mut index = SymbolIndex::default();
+            let ghost_file = FileId(7);
+            let std_file = FileId(9);
+            let std_def_id = DefinitionId::new(DefinitionTag::GlobalVar, 1);
+            insert(
+                &mut index,
+                std_def_id,
+                std_file,
+                "MAX_HP",
+                kind,
+                Some("std::x"),
+            );
+
+            let mut diagnostics = Vec::new();
+            let range = TextRange::new(3.into(), 9.into());
+            let id = lookup_global_or_diagnose(
+                &index,
+                ghost_file,
+                "MAX_HP",
+                kind,
+                range,
+                &mut diagnostics,
+            );
+
+            assert_eq!(
+                id, None,
+                "the declaration still can't resolve its own identity for kind {kind:?}"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "the unresolvable lookup must raise exactly one diagnostic for kind {kind:?}"
+            );
+            assert_eq!(diagnostics[0].code, DiagnosticCode::E184);
+            assert_eq!(diagnostics[0].file, ghost_file);
+            assert_eq!(diagnostics[0].range, range);
+        }
+    }
+
+    /// Sanity twin: an ordinary same-file self-declaration lookup that
+    /// succeeds must push no diagnostic at all — `E184` is a backstop for
+    /// the narrow drop case, not a diagnostic that fires on every call.
+    #[test]
+    fn lookup_global_or_diagnose_pushes_nothing_when_the_lookup_succeeds() {
+        let mut index = SymbolIndex::default();
+        let project_file = FileId(0);
+        let expected_id = DefinitionId::new(DefinitionTag::GlobalVar, 2);
+        insert(
+            &mut index,
+            expected_id,
+            project_file,
+            "score",
+            SymbolKind::Variable,
+            None,
+        );
+
+        let mut diagnostics = Vec::new();
+        let id = lookup_global_or_diagnose(
+            &index,
+            project_file,
+            "score",
+            SymbolKind::Variable,
+            TextRange::default(),
+            &mut diagnostics,
+        );
+
+        assert_eq!(id, Some(expected_id));
+        assert!(
+            diagnostics.is_empty(),
+            "an ordinary successful lookup must not raise E184: {diagnostics:?}"
+        );
+    }
+
+    /// [`collect_externals`]'s own end-to-end regression (issue #2262):
+    /// reachable **today**, unlike the `CONST`/`VAR` case above — `std`
+    /// declares `extern scene_entered(title, slug)`
+    /// (`std/conventions/screenplay.brink`), so a project's own
+    /// `EXTERNAL scene_entered` colliding with it and losing the
+    /// intra-module duplicate elimination is a real shape, not merely a
+    /// hypothetical one (see `brink-environment`'s own
+    /// `external_self_declaration_silently_drops_when_colliding_with_a_std_preset_name`
+    /// for that compiled end to end through the real analyzer drop, not a
+    /// hand-built `SymbolIndex`, matching `E181`'s own precedent). This
+    /// test pins the same condition at the `collect_externals` unit level.
+    ///
+    /// Rule 20a: verified this assertion fails (`diagnostics` stays empty,
+    /// `externals` silently empty with no signal at all) with the `E184`
+    /// push removed from `lookup_global_or_diagnose` — restored before
+    /// committing.
+    #[test]
+    fn collect_externals_reports_e184_when_every_surviving_candidate_is_std_declared() {
+        let ghost_file = FileId(7);
+        let ghost_hir = hir_for("EXTERNAL scene_entered(title, slug)\nHello.\n-> END\n");
+
+        let mut index = SymbolIndex::default();
+        let std_file = FileId(9);
+        let std_def_id = DefinitionId::new(DefinitionTag::ExternalFn, 1);
+        insert(
+            &mut index,
+            std_def_id,
+            std_file,
+            "scene_entered",
+            SymbolKind::External,
+            Some("std::conventions::screenplay"),
+        );
+
+        let mut names = NameTable::new();
+        let mut diagnostics = Vec::new();
+        let externals = collect_externals(
+            &[(ghost_file, &ghost_hir)],
+            &index,
+            &mut names,
+            &mut diagnostics,
+        );
+
+        assert!(
+            externals.is_empty(),
+            "the external still can't resolve its own identity, so it still \
+             contributes no ExternalDef — E184 makes the drop loud, not \
+             stops it from happening"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "the unresolvable self-declaration lookup must raise exactly one diagnostic"
+        );
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E184);
+        assert_eq!(diagnostics[0].file, ghost_file);
+        assert_eq!(
+            diagnostics[0].range, ghost_hir.externals[0].name.range,
+            "reported at the external's own name span"
         );
     }
 }

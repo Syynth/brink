@@ -420,7 +420,7 @@ pub fn build_prelude_decls(
     );
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
-    let externals = decls::collect_externals(files, index, &mut names);
+    let externals = decls::collect_externals(files, index, &mut names, &mut decl_diagnostics);
 
     let name_seed = names.into_entries();
 
