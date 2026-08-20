@@ -181,16 +181,46 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
 /// `lower_assign_target`, so an `Index` target silently dropped the whole
 /// statement (`?` short-circuits to `None`) with zero diagnostics whenever
 /// this inline path — not just `mod.rs`'s top-level classic-line dispatch —
-/// was the one to reach it. `try_lower_indexed_assignment` is tried first
-/// so it can also raise the non-suppressible `E074` for a struct-field-
-/// projected root, mirroring `reject_field_projection_index_root`.
+/// was the one to reach it. `try_lower_indexed_assignment` is tried before
+/// `try_lower_mutator_stmt` and the `stmts::lower_stmt` fallback (though,
+/// per the paragraph below, after `try_lower_field_assignment`) so it can
+/// also raise the non-suppressible `E074` for a struct-field-projected
+/// root, mirroring `reject_field_projection_index_root`.
+///
+/// Issue #2222 — the remaining two-thirds of `mod.rs`'s three-helper
+/// classic-line dispatch (`lower_block_with_children`, mirrored at
+/// mod.rs:1359-1394) that PR #2211/#2174 didn't bring here: a `Path`
+/// **field** assignment target (`try_lower_field_assignment`, tried
+/// *before* the `Index` arm, matching `mod.rs`'s ordering) and a
+/// **mutator** call statement (`try_lower_mutator_stmt`, over
+/// `hir::Stmt::ExprStmt`). Before this fix, `~ p.hp = 99` inside a choice's
+/// inline block (e.g. a bracket/inner-content conditional branch) never
+/// reached `try_lower_field_assignment` — it fell through to
+/// `stmts::lower_stmt`'s `lower_assign_target`, which resolves `p.hp` to
+/// the bare root `p` and **overwrites the whole record** with the RHS
+/// value instead of writing the field, faulting at runtime with
+/// `NotARecord` the next time `p` was read as a struct. A mutator call
+/// (`~ push(a, 9)`) in the same position was rejected outright with E056
+/// ("collection mutator used in expression position") instead of lowering,
+/// inconsistent with both the `~ { … }` block form and the top-level
+/// classic line, which both accept it. `mod.rs` also dispatches a fourth
+/// helper, `try_lower_frame_local_auto_ref_stmt` (issue #1531,
+/// `g.hp.heal(5)`-shaped auto-ref calls) — that arm is NOT mirrored here;
+/// it's a distinct, not-yet-confirmed parity gap, tracked separately (see
+/// PR body / issue comment) rather than folded into this fix.
 fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
     let mut stmts = Vec::new();
     for stmt in &block.stmts {
         if let hir::Stmt::LogicBlock(lb) = stmt {
             stmts.extend(super::blocks::lower_logic_block(lb, ctx));
         } else if let hir::Stmt::Assignment(a) = stmt
+            && super::blocks::try_lower_field_assignment(a, ctx, &mut stmts)
+        {
+        } else if let hir::Stmt::Assignment(a) = stmt
             && super::blocks::try_lower_indexed_assignment(a, ctx, &mut stmts)
+        {
+        } else if let hir::Stmt::ExprStmt(e) = stmt
+            && super::blocks::try_lower_mutator_stmt(e, ctx, &mut stmts)
         {
         } else if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
             stmts.push(s);
