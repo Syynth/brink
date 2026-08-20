@@ -181,9 +181,11 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
 /// `lower_assign_target`, so an `Index` target silently dropped the whole
 /// statement (`?` short-circuits to `None`) with zero diagnostics whenever
 /// this inline path — not just `mod.rs`'s top-level classic-line dispatch —
-/// was the one to reach it. `try_lower_indexed_assignment` is tried first
-/// so it can also raise the non-suppressible `E074` for a struct-field-
-/// projected root, mirroring `reject_field_projection_index_root`.
+/// was the one to reach it. `try_lower_indexed_assignment` is tried before
+/// `try_lower_mutator_stmt` and the `stmts::lower_stmt` fallback (though,
+/// per the paragraph below, after `try_lower_field_assignment`) so it can
+/// also raise the non-suppressible `E074` for a struct-field-projected
+/// root, mirroring `reject_field_projection_index_root`.
 ///
 /// Issue #2222 — the remaining two-thirds of `mod.rs`'s three-helper
 /// classic-line dispatch (`lower_block_with_children`, mirrored at
