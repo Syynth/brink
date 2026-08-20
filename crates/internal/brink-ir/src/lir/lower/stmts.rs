@@ -82,6 +82,23 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
 
         hir::Stmt::ExprStmt(expr) => {
             // Convert x++ / x-- into Assign { target: x, op: Add/Sub, value: 1 }
+            //
+            // Issue #2185 sibling: `~ a.count++` on a struct field is the
+            // exact same field-projection misroute as `pop(a.items)` — a
+            // real, previously-uncovered repro (reproduced against a real
+            // compile+run: compiles clean, then faults at runtime with
+            // `TypeError("cannot apply Add to Record and Int")`, the same
+            // silent-misroute symptom, this time via the postfix `x++`/`x--`
+            // desugaring rather than a mutator call). `inner` here can be a
+            // multi-segment `hir::Expr::Path` just like `pop`/`heap_pop`'s
+            // receiver argument, so it needs the identical guard *before*
+            // `lower_assign_target` gets a chance to resolve it to the
+            // wrong root.
+            if let hir::Expr::Postfix(inner, _) = expr
+                && super::blocks::reject_field_projection_index_root(inner, ctx)
+            {
+                return Some(lir::Stmt::ExprStmt(lir::Expr::Null));
+            }
             if let hir::Expr::Postfix(inner, op) = expr
                 && let Some(target) = lower_assign_target(inner, ctx)
             {

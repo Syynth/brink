@@ -460,9 +460,41 @@ fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerC
 /// a `FieldAccess`; `false` otherwise (a bare single-segment `Path`, or one
 /// that doesn't resolve to an assignable root at all — the analyzer's
 /// `E025` handles that case, same as every other call site in this module).
-fn reject_field_projection_index_root(root_expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> bool {
+///
+/// `pub(super)` (issue #2185): `pop`/`heap_pop` (`expr.rs`) are the "one
+/// level up" sibling of the hole this guard already closes for the
+/// container-chain (`push`/`insert`/`remove`/…) and classic-line-Index
+/// mutators — they call `super::stmts::lower_assign_target` directly on the
+/// raw, possibly multi-segment `Path` argument instead of going through
+/// `lower_lvalue_container_chain`/`lower_indexed_assignment`, so this guard
+/// never ran for them at all. Reused here rather than duplicated, so every
+/// call site raises the identical non-suppressible `E074`.
+pub(super) fn reject_field_projection_index_root(
+    root_expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+) -> bool {
     if let hir::Expr::Path(path) = root_expr
-        && path.segments.len() > 1
+        && reject_field_projection_path(path, ctx)
+    {
+        return true;
+    }
+    if let hir::Expr::FieldAccess(fa) = root_expr {
+        emit_chained_field_write_diagnostic(fa.ptr.text_range(), ctx);
+        return true;
+    }
+    false
+}
+
+/// The `hir::Path`-only half of [`reject_field_projection_index_root`],
+/// factored out for issue #2185's third call site
+/// (`expr::lower_ref_path_call_arg`, the classic-ink *implicit*-by-ref
+/// calling convention) — that site only ever holds a `&hir::Path` (the
+/// callee's argument list gives it the path's inner data, not an enclosing
+/// `hir::Expr::Path` node to match against), so it cannot call the
+/// `&hir::Expr`-shaped function above without an avoidable clone. Same
+/// check, same diagnostic, no duplicated logic.
+pub(super) fn reject_field_projection_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> bool {
+    if path.segments.len() > 1
         && let Some(info) = ctx.resolve_path(path.range)
         && matches!(
             info.kind,
@@ -470,10 +502,6 @@ fn reject_field_projection_index_root(root_expr: &hir::Expr, ctx: &mut LowerCtx<
         )
     {
         emit_chained_field_write_diagnostic(path.range, ctx);
-        return true;
-    }
-    if let hir::Expr::FieldAccess(fa) = root_expr {
-        emit_chained_field_write_diagnostic(fa.ptr.text_range(), ctx);
         return true;
     }
     false
