@@ -1,0 +1,18 @@
+// Issue #2229 — the second file. Deliberately not `story.brink`'s entry:
+// a `.brink` entry's universe is the WHOLE native source tree
+// (`Project::load`'s own doc), so this file joins the compile purely by
+// sitting alongside `story.brink`, with no `use`/INCLUDE of its own. Its
+// `shared` knot is a distinct, same-named M-2d sibling of `story.brink`'s
+// own `shared` — see that file's doc comment for the full collision this
+// fixture pins.
+
+flow shared() {
+  {?
+    * unlabeled choice -> shared_end
+  }
+}
+
+flow shared_end() {
+  Unreached.
+  -> END
+}

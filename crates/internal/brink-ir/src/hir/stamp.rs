@@ -21,15 +21,27 @@ use crate::symbols::{SymbolIndex, SymbolInfo, SymbolKind};
 /// The structural scope path every *anonymous* container in `file_path`'s
 /// root-level weave hangs off (#1504).
 ///
-/// A knot scopes its children under the knot name, so two files' knots can
-/// never mint the same anonymous path. Root content has no such prefix: with
-/// an empty root scope path, file A's first root choice and file B's first
-/// root choice both hash `c-0` and — because address allocation is a pure
-/// hash with no collision avoidance — receive the
-/// **same** `DefinitionId`. That id is the linker's address key
+/// A knot scopes its children under the knot name, so two files' *distinctly
+/// named* knots can never mint the same anonymous path. Root content has no
+/// such prefix at all: with an empty root scope path, file A's first root
+/// choice and file B's first root choice both hash `c-0` and — because
+/// address allocation is a pure hash with no collision avoidance — receive
+/// the **same** `DefinitionId`. That id is the linker's address key
 /// (last-write-wins) and the save key for visit counts, so the collision
 /// miscompiles: picking a choice from the included file runs the entry file's
 /// choice body.
+///
+/// ⚠ "Two files' knots can never mint the same anonymous path" stops being
+/// true the moment two files legitimately declare a **same-named** knot
+/// (M-2d, #790: `native_module_path` always differs per file, so
+/// `insert_symbol` lets the pair coexist rather than raising a
+/// duplicate-definition diagnostic) — `stamp_container_ids`'s per-knot loop
+/// used to qualify by the bare knot name alone and collided on every
+/// unlabeled descendant container exactly like this function's own root
+/// content used to (issue #2229, the 4th M-2d collision site; #2197/#2213/
+/// #2215/#2226 are the other three). That loop now qualifies its own scope
+/// path through this same function — the fix this doc's own false
+/// invariant should have named from the start.
 ///
 /// Qualifying by the *file* rather than by the owning module is deliberate.
 /// An `INCLUDE`d file with no `#@module` of its own inherits its includer's
@@ -56,11 +68,14 @@ pub fn root_content_scope_path(file_path: Option<&str>) -> String {
 /// Must be called after analysis (needs `SymbolIndex` for labeled containers)
 /// and before LIR lowering.
 ///
-/// `file_paths` supplies each file's registered project path, which qualifies
-/// its root-content scope path (see [`root_content_scope_path`]). Name-based
-/// lookups (`label_scope`) stay unqualified: an author's root-level label is
-/// addressed by its bare name from anywhere in the project, and the analyzer's
-/// `SymbolIndex` keys it that way.
+/// `file_paths` supplies each file's registered project path, which
+/// qualifies both the root-content scope path (see
+/// [`root_content_scope_path`]) and, since issue #2229, every knot's own
+/// interior scope path the same way (root-scope-prefixed via [`qualify`]).
+/// Name-based lookups (`label_scope`) stay unqualified throughout: an
+/// author's label — root-level or knot-scoped — is addressed by its bare
+/// (optionally knot/stitch-qualified) name from anywhere in the project,
+/// and the analyzer's `SymbolIndex` keys it that way.
 #[expect(
     clippy::implicit_hasher,
     reason = "internal API, no need to generalize"
@@ -102,12 +117,33 @@ pub fn stamp_container_ids(
         }
 
         for knot in &mut hir_file.knots {
+            // `knot_path` (the *label* scope) stays bare — it must match
+            // the unqualified `{knot}.{label}` naming
+            // `insert_symbol`/`lookup_label_id` key `SymbolIndex.by_name`
+            // by (`manifest.rs`'s `format!("{k}.{s}.", …)`), addressed by
+            // bare name from anywhere in the project. `knot_scope` (the
+            // *anonymous-container hashing* scope) gets the same per-file
+            // `#file:{path}` qualifier root content already carries
+            // ([`root_content_scope_path`], #1504) — this is the 4th M-2d
+            // collision site (#2229): two files legitimately declaring a
+            // same-named knot (their `native_module_path`s always differ,
+            // so `insert_symbol` lets them coexist, #790) previously
+            // stamped every *unlabeled* descendant container at the same
+            // structural position (`start.0.c-0`) to the identical
+            // `DefinitionId`, tripping the #1673 duplicate-id `E060`
+            // codegen guard the moment both files' container trees were
+            // walked. `root_scope` is already file-qualified and empty for
+            // a caller that supplied no file path (in-crate test
+            // harnesses), so `qualify` degrades to the pre-#2229 bare
+            // `knot_path` in that case — byte-identical single-file/no-path
+            // behavior.
             let knot_path = &knot.name.text;
+            let knot_scope = qualify(&root_scope, knot_path);
             let mut seq = 0;
             stamp_block(
                 &mut knot.body,
                 *file_id,
-                knot_path,
+                &knot_scope,
                 knot_path,
                 index,
                 &mut seq,
@@ -115,11 +151,12 @@ pub fn stamp_container_ids(
 
             for stitch in &mut knot.stitches {
                 let stitch_path = format!("{knot_path}.{}", stitch.name.text);
+                let stitch_scope = qualify(&root_scope, &stitch_path);
                 let mut seq = 0;
                 stamp_block(
                     &mut stitch.body,
                     *file_id,
-                    &stitch_path,
+                    &stitch_scope,
                     &stitch_path,
                     index,
                     &mut seq,

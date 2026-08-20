@@ -407,6 +407,50 @@ fn conventions_cross_file_claiming() {
     );
 }
 
+/// Issue #2229 (4th M-2d collision site): `stamp_container_ids`'s per-knot
+/// loop used to qualify a knot's *interior* anonymous (unlabeled)
+/// containers by the knot's own bare name alone, with no per-file
+/// qualifier — unlike root content's `root_content_scope_path`, which
+/// prefixes `#file:{path}` (#1504). Two files legitimately declaring a
+/// same-named knot (M-2d, #790: `native_module_path` always differs
+/// per file, so `insert_symbol` lets them coexist rather than raising a
+/// duplicate-definition diagnostic) then stamped every unlabeled
+/// descendant container at the same structural position to the
+/// **identical** `DefinitionId`, tripping the #1673 duplicate-id `E060`
+/// codegen guard the moment the project's whole container tree was
+/// walked — see this directory's `story.brink`/`other.brink` doc
+/// comments for the exact shape.
+///
+/// Routed through [`brink_test_harness::corpus::run_native_transcript_via_environment`],
+/// not this file's own [`assert_case`], for the same reason
+/// `conventions_cross_file_claiming` above is: `assert_case` compiles
+/// through `compile_path`, a single-file entry point that never sees
+/// `other.brink` at all (`Project::load`'s own doc: only a `.brink`
+/// entry's real multi-file discovery enumerates the whole native source
+/// tree) — the only road this fixture's second file is ever compiled on.
+///
+/// Per rule 20a: reverting `stamp_container_ids`'s file-qualified
+/// `knot_scope` (restoring the bare `knot_path` scope argument) makes
+/// this fixture fail to compile at all — `E060` at `shared.0.c-0` vs
+/// `shared.0.c-0` — confirmed live via `brink compile` against this exact
+/// fixture before writing the production fix.
+#[test]
+fn m2d_knot_interior_file_qualifier() {
+    let dir = corpus_dir().join("m2d-knot-interior-file-qualifier");
+    let expected = brink_test_harness::corpus::load_golden_transcript(
+        &dir.join("expected.txt"),
+        "m2d-knot-interior-file-qualifier",
+    )
+    .expect("golden transcript must be present and non-vacuous");
+    let actual =
+        brink_test_harness::corpus::run_native_transcript_via_environment(&dir.join("story.brink"))
+            .unwrap_or_else(|e| panic!("case m2d-knot-interior-file-qualifier: {e}"));
+    assert_eq!(
+        actual, expected,
+        "case m2d-knot-interior-file-qualifier: output mismatch\n--- expected ---\n{expected}\n--- actual ---\n{actual}"
+    );
+}
+
 /// Compile-level sibling to `annotations_element_block`, proving the ⚠
 /// requirement `docs/decision-log.md`'s 2026-08-01 ruling flags as owed and
 /// unverified: a block's interior lines must keep their **own** line-table
@@ -962,6 +1006,7 @@ fn every_case_directory_has_a_test() {
         "inline-tag-embedded-brace",
         "lambda-verbs",
         "logic-line-escape",
+        "m2d-knot-interior-file-qualifier",
         "or-coalescing",
         "prose-line-escape",
         "prose-line-escape-scope",
