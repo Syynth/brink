@@ -638,6 +638,23 @@ fn lower_knot_chunk(
     let mut local_names = NameTable::new();
     let mut ids = context::IdAllocator::new();
     let _ = ids.alloc_address("");
+    // #2229 (LIR half of the same M-2d collision the HIR stamping pass
+    // fixed): every path this allocator mints below is built from
+    // `ctx.scope_path`, which starts at the **bare** knot name — so two
+    // files' same-named knots (M-2d coexistence, #790) minted the same
+    // `{knot}.…` path for every LIR-time container at the same structural
+    // position. The stamping pass only covers containers HIR stamps;
+    // *inline* sequence wrappers (`LowerCtx::alloc_sequence_id`,
+    // `content::lower_inline_sequence` — e.g. an alternation inside choice
+    // text) are minted right here at LIR time and collided identically
+    // (`E060`). Qualify by the owning file exactly like
+    // `lower_root_content_chunks` does for root content (#1504) — same
+    // prefix, same degradation to the bare path when the caller supplied
+    // no file path. Set *after* the root-placeholder `alloc_address("")`
+    // above, mirroring the root-content ordering.
+    ids.set_path_prefix(hir::root_content_scope_path(
+        file_paths.get(&file_id).map(String::as_str),
+    ));
     let mut diagnostics = Vec::new();
     let mut lifted = Vec::new();
     let knot_container = lower_knot(

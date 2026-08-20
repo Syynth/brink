@@ -429,11 +429,25 @@ fn conventions_cross_file_claiming() {
 /// entry's real multi-file discovery enumerates the whole native source
 /// tree) — the only road this fixture's second file is ever compiled on.
 ///
+/// The fixture pins three shapes of the collision class in one compile
+/// (see the two `.brink` files' doc comments):
+/// - the HIR-stamped unlabeled containers (`stamp_container_ids`'s
+///   file-qualified `knot_scope` — the original fix);
+/// - the LIR-minted inline-sequence wrapper in choice text
+///   (`lower_knot_chunk`'s `IdAllocator::set_path_prefix`, the review's
+///   incomplete-fix finding: those wrappers are never stamped at HIR
+///   time, so the stamping fix alone left them colliding);
+/// - a *labeled* choice with the same label in both knots (label scope
+///   stays bare while the anonymous hashing scope is file-qualified).
+///
 /// Per rule 20a: reverting `stamp_container_ids`'s file-qualified
 /// `knot_scope` (restoring the bare `knot_path` scope argument) makes
 /// this fixture fail to compile at all — `E060` at `shared.0.c-0` vs
 /// `shared.0.c-0` — confirmed live via `brink compile` against this exact
-/// fixture before writing the production fix.
+/// fixture before writing the production fix. Likewise reverting
+/// `lower_knot_chunk`'s `set_path_prefix` call alone fails it with `E060`
+/// at `shared.0.c-0.0` vs `shared.0.c-0.0` (the wrapper inside the first
+/// choice), confirmed the same way.
 #[test]
 fn m2d_knot_interior_file_qualifier() {
     let dir = corpus_dir().join("m2d-knot-interior-file-qualifier");

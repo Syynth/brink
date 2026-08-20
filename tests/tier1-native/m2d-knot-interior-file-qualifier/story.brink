@@ -23,9 +23,28 @@ flow main() {
   -> END
 }
 
+// The `shared` knots also pin two sibling shapes of the same collision
+// class (found in review of the first fix, both files identical here):
+//
+// - The unlabeled choice's text carries an inline alternation
+//   (`{& …|…}`). Its wrapper container is NOT stamped by
+//   `stamp_container_ids` at all — it is minted at LIR time
+//   (`LowerCtx::alloc_sequence_id` via `content::lower_inline_sequence`)
+//   from `ctx.scope_path`, which starts at the bare knot name — so
+//   `lower_knot_chunk` needs the same per-file allocator prefix root
+//   content gets (`IdAllocator::set_path_prefix`), or both files mint
+//   `shared.c-0.s-0` and `E060` fires exactly like the stamped case.
+//
+// - The second choice is *labeled*, with the SAME label in both files:
+//   a label's scope stays bare (`shared.pick` — `SymbolIndex.by_name`'s
+//   module-qualified-id, bare-name keying, resolved per file by
+//   #2197/#2215's file-scoped lookup) while the sibling anonymous
+//   containers' hashing scope is file-qualified — this fixture pins that
+//   the two scopes coexist in one knot without either breaking the other.
 flow shared() {
   {?
-    * unlabeled choice -> shared_end
+    * see {& a cat|a dog} now -> shared_end
+    * (pick) labeled sibling -> shared_end
   }
 }
 
