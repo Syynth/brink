@@ -47,13 +47,15 @@
  * `openProject` — a timer armed on a real clock before fake timers are
  * installed would never be advanceable by `vi.advanceTimersByTime`.
  *
- * NOTE on the one legitimate `dispatch("file.saveAll")` call project A gets:
- * `closeProject` itself does a best-effort flush of anything dirty right
- * before `unmount()` (main.tsx's `closeProject` doc comment) — that is a
- * real, correct, ONE-TIME call unrelated to the ticker. The assertion below
- * tracks the call COUNT from immediately after the reopen, not "never
- * called at all", so it isolates "does the ticker fire again" from that
- * unrelated close-time flush.
+ * NOTE on the legitimate `dispatch("file.saveAll")` call(s) project A gets:
+ * `closeProject` itself awaits a guarded save of anything dirty right
+ * before `unmount()` (main.tsx's `closeProject` doc comment, #2444) — one
+ * unconditional dispatch, plus redispatches while the dirty set persists
+ * (this mock's `getDirtyFiles()` never clears, so the wait runs its full
+ * ~3s cap and redispatches repeatedly). Real, correct, and unrelated to the
+ * ticker. The assertions below snapshot the call count immediately after
+ * the reopen/close settles, not "never called at all", so they isolate
+ * "does the ticker fire again" from that unrelated close-time flush.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -145,7 +147,15 @@ describe("desktop autosave ticker is replaced, not duplicated, on project reopen
     // Project B opens WITHOUT an intervening explicit close — the exact
     // scenario #2486 has no test for: openProject("/projects/b") drives
     // closeProject() internally (main.tsx ~151) before arming a new ticker.
-    await openProject("/projects/b");
+    // closeProject now AWAITS the guarded save (#2444, `awaitSaveAllBeforeQuit`
+    // in quit.ts) before unmounting A — and this mock's getDirtyFiles()
+    // never clears, so that wait runs the full ~3s cap under fake timers,
+    // redispatching `file.saveAll` on the way. Start the promise, drive the
+    // fake clock through the cap, then await it — mirroring
+    // `autosave-quit.test.ts`'s handling of the same real, un-mocked wait.
+    const openBPromise = openProject("/projects/b");
+    await vi.advanceTimersByTimeAsync(3200);
+    await openBPromise;
     expect(mountedApis).toHaveLength(2);
     expect(setIntervalSpy).toHaveBeenCalledTimes(2);
     expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
@@ -154,11 +164,13 @@ describe("desktop autosave ticker is replaced, not duplicated, on project reopen
     expect(apiA).toBeDefined();
     expect(apiB).toBeDefined();
 
-    // closeProject's own best-effort dirty flush already dispatched
-    // file.saveAll on A once (see the file-level NOTE above) — snapshot that
-    // count so the assertion below is about NEW calls only.
+    // closeProject's guarded save-wait dispatched file.saveAll on A at
+    // least once (unconditionally — no longer gated on getDirtyFiles(),
+    // #2444) — and, since this mock's dirty set never clears, redispatched
+    // repeatedly until the cap. Snapshot the count so the assertion below
+    // is about NEW calls only.
     const apiACallsAtReopen = apiA?.dispatch.mock.calls.length ?? -1;
-    expect(apiACallsAtReopen).toBe(1);
+    expect(apiACallsAtReopen).toBeGreaterThanOrEqual(1);
 
     // Advance well past several autosave ticks.
     await vi.advanceTimersByTimeAsync(AUTOSAVE_MS * 3);
@@ -189,16 +201,24 @@ describe("desktop autosave ticker is replaced, not duplicated, on project reopen
     expect(mountedApis).toHaveLength(1);
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 
-    await closeProject();
+    // closeProject now awaits the guarded save (#2444) — same
+    // start-promise/advance-clock/await pattern as the reopen case above,
+    // since this mock's dirty set never clears and the wait runs the full
+    // ~3s cap under fake timers.
+    const closePromise = closeProject();
+    await vi.advanceTimersByTimeAsync(3200);
+    await closePromise;
     expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
     // Nothing is re-armed by a bare close — unlike the reopen path.
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 
     const [apiA] = mountedApis;
     expect(apiA).toBeDefined();
-    // Same one-time close-flush snapshot as above, for the same reason.
+    // Same close-flush snapshot as above, for the same reason — at least
+    // one dispatch (unconditional), possibly more (redispatched while
+    // dirty persists).
     const apiACallsAtClose = apiA?.dispatch.mock.calls.length ?? -1;
-    expect(apiACallsAtClose).toBe(1);
+    expect(apiACallsAtClose).toBeGreaterThanOrEqual(1);
 
     await vi.advanceTimersByTimeAsync(AUTOSAVE_MS * 3);
 
