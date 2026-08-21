@@ -133,8 +133,13 @@ async fn write_file(root: String, rel: String, content: String) -> Result<(), Sh
 
 /// A same-directory temp-file path derived from `path`, unique per call
 /// (issue #2445: concurrent writes to the same `path` must not race each
-/// other over the same temp file). Hidden (leading `.`) so it never
-/// satisfies `is_project_file`/`walk`'s listing, and disambiguated by
+/// other over the same temp file). Leading-`.` hidden by convention, but
+/// that dot is NOT what keeps it out of the project listing: `is_skipped_dir`'s
+/// dot-rule applies only to directory names, both in `walk` and in
+/// `watch_key`. What actually excludes the temp file is that
+/// `is_project_file` matches only `brink.toml` or a `.brink`/`.ink`
+/// extension, and this file's extension is the trailing disambiguator
+/// (`.tmp.<pid>.<nanos>.<counter>`), never one of those — disambiguated by
 /// process id, a monotonic in-process counter, and a nanosecond timestamp:
 /// the counter alone already guarantees uniqueness within one process, but
 /// the pid keeps two independently-launched instances (a dev rebuild racing
@@ -172,12 +177,33 @@ fn temp_path_for(path: &Path) -> PathBuf {
 /// mid-effect by the process being torn down, so there is no window where
 /// `path` is partially written.
 ///
+/// This does NOT come for free relative to the plain `std::fs::write` (open
+/// existing + truncate + write, preserving the original inode) it replaced.
+/// Rename-over swaps the inode instead, which changes three things:
+/// - **Permissions**: the temp file is created with the process's default
+///   mode (`0666 & ~umask` on POSIX), not `path`'s existing mode, so a
+///   read-only target (`0444`) comes back writable after being overwritten.
+///   This function closes that gap by copying `path`'s permissions onto the
+///   temp file before the rename, when `path` already exists — see below.
+/// - **Hard links**: any hard link to `path` still points at the old inode
+///   with its old content; it is not updated by the rename, whereas
+///   `std::fs::write`'s in-place truncate would have been visible through
+///   every link.
+/// - **Symlinks-in**: if `path` is itself a symlink (e.g. a shared file
+///   symlinked into a project folder, which `walk` lists like any other
+///   entry), the rename replaces the symlink itself with the new file
+///   rather than writing through it — the real target file is left stale
+///   and the symlink no longer points at it.
+///
 /// One caveat this does NOT paper over: on Windows, `rename` can fail if
 /// another process holds `path` open without `FILE_SHARE_DELETE` (e.g. a
-/// third-party indexer with an exclusive lock). That surfaces as an
-/// ordinary `Err` here, exactly as a plain `std::fs::write` failing
-/// outright would have — this function trades no correctness away for that
-/// edge case, it only moves where in the sequence the failure can happen.
+/// third-party indexer with an exclusive lock), and separately,
+/// `MOVEFILE_REPLACE_EXISTING` itself fails outright against a target with
+/// `FILE_ATTRIBUTE_READONLY` set — so Windows and POSIX disagree on a
+/// read-only target: POSIX only requires write permission on the
+/// *directory* to rename over it, while Windows refuses. Both surface as an
+/// ordinary `Err` here, exactly as a plain `std::fs::write` failing outright
+/// would have.
 ///
 /// **fsync judgment (deliberately NOT fsync'd before the rename):** the
 /// corruption this function exists to prevent — a half-written target left
@@ -187,16 +213,27 @@ fn temp_path_for(path: &Path) -> PathBuf {
 /// fsync would add on top is a different property — durability across an
 /// OS/power-loss crash between the write and the filesystem journal's next
 /// flush — which is not the failure mode #2445 is about (a controlled app
-/// quit, not a power cut), and is already mitigated for content this
-/// canonical write hasn't reached yet by the fsync'd backup ring (#154,
-/// `append_backups`). Desktop writes happen on every autosave tick and
-/// every `saveAll`/quit dispatch, so paying an fsync's latency on each one
-/// to harden a failure mode already covered elsewhere is the wrong
-/// durability/latency tradeoff here; revisit if the backup ring's
-/// protection window is ever narrowed.
+/// quit, not a power cut). No write in this shell — this one, the plain
+/// `std::fs::write` it replaced, or `append_backups`' own ring writes
+/// (`append_backups`, below) — calls `sync_all`/`sync_data` today, so this
+/// function is exactly as exposed to a power-loss crash as everything
+/// around it always has been; it neither adds that exposure nor closes it.
+/// Hardening power-loss durability is a separate decision from this PR's
+/// #2445 fix, and if taken up it would have to start with the backup ring,
+/// not here. Desktop writes happen on every autosave tick and every
+/// `saveAll`/quit dispatch, so paying an fsync's latency on each one is a
+/// tradeoff to make deliberately, not a byproduct of this fix.
 fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let tmp_path = temp_path_for(path);
     std::fs::write(&tmp_path, content)?;
+    // Best-effort: carry the existing target's permissions onto the temp
+    // file before the rename replaces it, so overwriting a read-only file
+    // does not silently make it writable again (see the doc comment above).
+    // A fresh target (no existing file) has nothing to carry — the process
+    // default mode applies, same as `std::fs::write` creating a new file.
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
+    }
     let renamed = std::fs::rename(&tmp_path, path);
     if renamed.is_err() {
         // Best-effort: don't leave the temp file behind when the rename
@@ -3566,7 +3603,23 @@ on:
                 .expect("temp path should have a file name");
             assert!(
                 name.starts_with('.'),
-                "temp file {name} should be hidden so it never shows up in the project listing"
+                "temp file {name} should be hidden by convention (leading dot)"
+            );
+            // The dot is cosmetic, not what excludes the temp file from the
+            // project listing or the watcher — `is_project_file` matches only
+            // `brink.toml`/`.brink`/`.ink`, and `is_skipped_dir`'s dot-rule
+            // applies only to directory names. What actually excludes this
+            // path is its extension (the trailing disambiguator), so assert
+            // that property directly rather than the incidental leading dot.
+            assert!(
+                !is_project_file(tmp),
+                "temp file {name} must not satisfy is_project_file, or `walk` would list it \
+                 as a project file"
+            );
+            assert!(
+                watch_key(&dir, tmp).is_none(),
+                "temp file {name} must not produce a watch_key, or a write to it would fire a \
+                 spurious fs:external-change into the #320 never-clobber machinery"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -3597,6 +3650,44 @@ on:
             "NEW"
         );
         assert_eq!(dir_entries(&dir), vec!["story.brink".to_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rename-over swaps the inode, so without deliberately carrying the
+    /// old permissions across, overwriting a read-only file would silently
+    /// make it writable again (temp files are created with the process's
+    /// default mode). POSIX-only: permission bits and rename-over-readonly
+    /// semantics are the exact place Windows and POSIX diverge (see
+    /// `atomic_write`'s doc comment).
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_the_target_permissions_on_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_atomic_write_dir("preserve-perms");
+        let target = dir.join("story.brink");
+        std::fs::write(&target, "OLD").expect("seeding the old file should succeed");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444))
+            .expect("setting read-only permissions should succeed");
+
+        atomic_write(&target, b"NEW").expect("atomic_write should replace a read-only file");
+
+        let mode = std::fs::metadata(&target)
+            .expect("target should be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o444,
+            "overwriting a read-only file must not silently make it writable"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target should be readable"),
+            "NEW"
+        );
+
+        // Restore write permission so the scratch dir can be cleaned up.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
