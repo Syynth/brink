@@ -366,6 +366,31 @@ pub fn to_lir_lookup(table: &UfcsTable) -> brink_ir::lir::UfcsLookup {
 /// Callers gate this on [`project_has_ufcs_call`] so a project without a
 /// single dotted-callee call never pays for whole-project inference on this
 /// pass's account.
+///
+/// **Issue #2096** (the `ufcs.rs` half of #1774's re-verification
+/// remainder — `comparator_contract.rs`'s own copy of the same gap was
+/// fixed by #2085): this used to drive [`UfcsVisitor`] with plain
+/// [`visit::visit`], which never reaches a file-level `VAR`/`CONST`
+/// initializer — so a UFCS-shaped call inside a decl-default lambda's own
+/// body (`const callGreet = |g| g.greet(3)`, legal since #1774's ruling)
+/// was never visited by this pass at all, and fell through to LIR
+/// lowering's defensive `E144` fallback (`brink_ir::lir::lower::expr`'s own
+/// doc). **The shared-visitor question (issue #1571/#2098), re-asked for
+/// this pass's own shape**: unlike `comparator_contract`'s hand-rolled
+/// `collect_sites`/`collect_expr` walk (which is not `HirVisitor`-driven at
+/// all, and so could not adopt the shared entry point without a larger
+/// refactor), [`UfcsVisitor`] already *is* a [`HirVisitor`] driven by
+/// `visit::visit` — the exact shape [`visit::visit_with_decl_initializers`]
+/// was built to extend. Switching costs one line and needs no new
+/// `enter_var_decl`/`enter_const_decl` hooks: `current_knot_name`/
+/// `knot_body`/`stitch_body` are already reset to `None` by every
+/// `exit_knot`/`exit_stitch`, and `lambda_locals` is empty once every lambda
+/// pushed during the block-tree walk has been popped — so by the time the
+/// walk reaches the file-level declarations (which
+/// `visit_with_decl_initializers` visits *after* the block tree), this
+/// visitor's state is already exactly what it was before any knot ran, the
+/// same "no state needs resetting" case `structs::check`'s own #2098 switch
+/// documents. See `structs::check`'s identical switch for the precedent.
 #[must_use]
 pub fn resolve(
     files: &[(FileId, &HirFile)],
@@ -397,7 +422,7 @@ pub fn resolve(
             table: &mut table,
             diagnostics: &mut diagnostics,
         };
-        visit::visit(hir, &mut v);
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
 
     (table, diagnostics)
@@ -560,6 +585,12 @@ fn ufcs_arg_mismatch_diagnostic(
 /// dotted-callee call never triggers whole-project inference on this pass's
 /// account, mirroring `whole_project_diagnostics`' own `needs_effects`
 /// gate.
+///
+/// Issue #2096: must see a decl-default lambda's own body too, or the
+/// laziness gate itself would skip [`resolve`] entirely for a project whose
+/// only UFCS-shaped call sits inside one — the exact fix [`resolve`]'s own
+/// walk just got would never run. `visit::visit_with_decl_initializers`
+/// (not plain `visit::visit`), same reasoning as that doc.
 #[must_use]
 pub fn project_has_ufcs_call(hir: &HirFile) -> bool {
     struct Scan {
@@ -578,7 +609,7 @@ pub fn project_has_ufcs_call(hir: &HirFile) -> bool {
         }
     }
     let mut scan = Scan { found: false };
-    visit::visit(hir, &mut scan);
+    visit::visit_with_decl_initializers(hir, &mut scan);
     scan.found
 }
 
