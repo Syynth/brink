@@ -470,26 +470,39 @@ interface Notification {
 - **Refused structural operations report here.** A rename/move/delete that the
   underlying op declines raises an `error`-severity notification tagged with the
   same `source` as its success toast, so both outcomes of one operation report
-  through one channel and a failure cannot be mistaken for a success.
+  through one channel and a failure cannot be mistaken for a success. All
+  producers on this surface — both rename call sites and the reorder/move/
+  promote/demote ops in `dispatchSymbolAction` — specialize the same
+  `notifyStructuralRefusal(state, description, error)` frame (`packages/
+  studio-ui/src/symbolMenuActions.ts`), so the wording cannot drift between them.
   ⚠ This states the TARGET, not the current state of every call site. Known
-  non-compliant path, pre-existing: the reorder/move/promote/demote ops in
-  `dispatchSymbolAction`, which do not report refusals at all (#2544). A second
-  known non-compliant path, also pre-existing: the code-actions/extract apply
+  non-compliant path, pre-existing: the code-actions/extract apply
   seam (`onApplyStructural` → `applyMoveResult`, `packages/brink-studio/src/
   mount.tsx:610`), which since #2564 returns early on `ok: false` so nothing
-  gets written, but — like `dispatchSymbolAction` — raises no notification, so
-  a refused code action or extract is silently dropped from the host's
-  perspective (#2544). A third gap, distinct from the two above: `delete_symbol`
-  (`crates/internal/brink-ide/src/structural_delete.rs`) is a real op with real
-  refusals, but as of #2636 no studio surface calls it at all — no context-menu
-  item, no dispatcher branch — so this clause has nothing to apply to yet. That
-  is a reachability gap, not a non-compliant call site. Established
+  gets written, but raises no notification, so a refused code action or extract
+  is silently dropped from the host's perspective (#2544). A second gap:
+  `delete_symbol` (`crates/internal/brink-ide/src/structural_delete.rs`) is a
+  real op with real refusals, but as of #2636 no studio surface calls it at
+  all — no context-menu item, no dispatcher branch — so this clause has
+  nothing to apply to yet. That is a reachability gap, not a non-compliant call
+  site. A third, narrower gap: `dispatchSymbolAction`'s own `!session` guard
+  (`const session = state._project?.getSession(); if (!session) return;`,
+  upstream of the reorder/move/promote/demote `switch`) still returns silently
+  with no notification — distinct from, and not fixed by, #2544's rename-side
+  `!session` fix in `performSymbolRename` below, since the two are separate
+  functions with separate guards. Established
   by the file rename (`applyRename`, studio-store's binder slice); extended to the
   knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
-  returned to `SymbolRenamePrompt` and discarded when the prompt closed; and to
+  returned to `SymbolRenamePrompt` and discarded when the prompt closed; to
   the editor's inline (F2) rename commit path in #2543, where
   `applyComputedRename` / `applyMoveResult` applied a refused rename as if it
-  had succeeded. The reason that path's guard is on `ok` and not `safe`:
+  had succeeded; and to the reorder/move/promote/demote ops in
+  `dispatchSymbolAction` in #2544, alongside `performSymbolRename`'s own
+  `!session` early return, which previously carried neither `applied` nor
+  `error` and so fell through `SymbolRenamePrompt.run()`'s terminal-outcome
+  check into a fabricated "would break 0 places" report with a Force-rename
+  button that retried the same empty outcome forever. The reason the F2 path's
+  guard is on `ok` and not `safe`:
   `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes a refusal
   with `safe: true` and no `introduced_diagnostics`, so `isSafeRename`
   (`packages/ink-editor/src/breakage.ts`) — which reads only those two fields —
@@ -497,8 +510,9 @@ interface Notification {
   the breakage of edits that were actually computed; `ok` is the field that
   says whether the operation happened, so `ok` is what both consumers guard on
   instead. Guarded by
-  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts` and
-  `packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts`.
+  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts`,
+  `packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts`, and
+  `packages/brink-studio/src/__tests__/symbol-structural-ops.test.ts`.
   PROVISIONAL: this records where a refused rename reports, which follows the
   existing pattern. Whether the rename prompt should additionally *stay open* on
   failure is an open UX question (#2528) and is not settled here.

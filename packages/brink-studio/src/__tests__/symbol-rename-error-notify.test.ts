@@ -1,6 +1,7 @@
 /**
- * Symbol-rename failure reporting (#2528): a knot/stitch rename that FAILS must
- * tell the user, not vanish.
+ * Symbol-rename failure reporting (#2528, extended by #2544): a knot/stitch
+ * rename that FAILS must tell the user, not vanish — and must not render a
+ * false "would break 0 places" report either.
  *
  * `performSymbolRename` returns `{ applied: false, error }` when the underlying
  * `rename_symbol` / `rename_symbol_at` op refuses — "symbol not found" after the
@@ -114,6 +115,42 @@ describe("symbol rename failure reporting (#2528)", () => {
     expect(raised).toHaveLength(1);
     expect(raised[0]!.severity).toBe("error");
     expect(raised[0]!.message).toContain("file not loaded");
+  });
+
+  it("reports and does not fake a breakage report when no project session is bound (#2544)", async () => {
+    // No `_project` bound at all — the shape `performSymbolRename` sees if a
+    // rename is confirmed with no session (e.g. the prompt outliving session
+    // teardown). Before #2544 this returned `{ applied: false,
+    // diagnostics: [] }` with NEITHER `applied` NOR `error` set —
+    // `SymbolRenamePrompt.run()`'s `if (outcome.applied || outcome.error)`
+    // check is false either way, so it fell through to the breakage-report
+    // branch with an EMPTY report: "would break 0 places" with a live
+    // **Force rename** button whose retry hits this exact same branch again.
+    const store = createStudioStore();
+    const raised: StoreNotification[] = [];
+    store.getState().setNotifier((n) => raised.push(n));
+    const state = store.getState();
+
+    const outcome = await performSymbolRename(
+      state,
+      state.applyMoveResult,
+      { path: "main.ink", knot: "hello", currentName: "hello" },
+      "greeting",
+      false,
+    );
+
+    expect(outcome.applied).toBe(false);
+    // The fix: `error` is now set, so `SymbolRenamePrompt.run()` takes the
+    // close-the-prompt branch instead of rendering a fabricated "breaks 0
+    // places" report — the same terminal-outcome check every other refusal
+    // on this surface already relies on.
+    expect(outcome.error).toBeDefined();
+    expect(outcome.diagnostics).toEqual([]);
+
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.severity).toBe("error");
+    expect(raised[0]!.source).toBe("binder");
+    expect(raised[0]!.message).toContain("hello");
   });
 
   it("still raises only its one informational toast when the rename succeeds", async () => {
