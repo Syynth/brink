@@ -98,6 +98,30 @@ describe("Binder file rename: a move that breaks a reference (#2918)", () => {
     );
   });
 
+  it("a result with safe:true but non-empty introducedDiagnostics still reports as a warning breakage (matches isSafeRename, packages/ink-editor/src/breakage.ts, not `safe` alone — §7.5's warning about a payload whose `safe` field is true but meaningless)", async () => {
+    const renameFile = vi.fn(async () => ({
+      referrers: ["main.ink"],
+      safe: true,
+      introducedDiagnostics: [BREAKING_DIAGNOSTIC],
+    }));
+    const notify = vi.fn();
+    const store = createStudioStore();
+    store.setState({
+      _project: stubProject({ renameFile }),
+      _documents: stubDocuments(),
+      _notify: notify,
+    });
+
+    await store.getState().renameFile("oldName.ink", "newName.ink");
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: "warning",
+        message: expect.stringContaining("breaks 1 reference"),
+      }),
+    );
+  });
+
   it("a safe move still reports the pre-existing info notification, unaffected by the fix", async () => {
     const renameFile = vi.fn(async () => ({
       referrers: [],

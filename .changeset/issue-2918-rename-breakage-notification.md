@@ -1,7 +1,13 @@
 ---
-"@brink-lang/editor": patch
-"@brink-lang/studio": patch
+"@brink-lang/editor": minor
+"@brink-lang/studio": minor
 ---
+
+**Breaking:** `ProjectSession.renameFile` now resolves `Promise<RenameFileResult>`
+instead of `Promise<string[]>` — a consumer doing `(await project.renameFile(a,
+b)).length` or iterating the resolved value directly will break at runtime.
+`packages/ink-editor/src/index.ts` also gains two new exported types,
+`RenameFileResult` and `RenameDirResult`.
 
 Surface the rename/move breakage gate at the Binder's rename call sites (issue #2918).
 

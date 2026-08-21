@@ -682,10 +682,17 @@ function notifyMoveResult(
   description: string,
   result: { safe: boolean; introducedDiagnostics: RenameDiagnostic[] },
 ): void {
+  // Mirror `isSafeRename` (packages/ink-editor/src/breakage.ts) rather than
+  // `result.safe` alone — §7.5 warns that a payload's `safe` field can be
+  // `true` but meaningless (e.g. a refusal's `error_json` reports `safe:
+  // true` with no `introduced_diagnostics`); deriving the unsafe branch from
+  // both fields keeps this call site consistent with that other breakage
+  // consumer and makes "breaks 0 references" unprintable.
   const n = result.introducedDiagnostics.length;
-  const breakageSuffix = result.safe ? "" : ` (breaks ${n} reference${n === 1 ? "" : "s"})`;
+  const unsafe = !result.safe || n > 0;
+  const breakageSuffix = unsafe ? ` (breaks ${n} reference${n === 1 ? "" : "s"})` : "";
   get()._notify?.({
-    severity: result.safe ? "info" : "warning",
+    severity: unsafe ? "warning" : "info",
     source: "binder",
     message: `${description}${breakageSuffix}`,
     actions: [{ label: "Undo", commandId: "binder.undo" }],
