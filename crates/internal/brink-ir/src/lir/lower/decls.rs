@@ -225,17 +225,21 @@ pub struct GlobalLambdaCtx<'a> {
     /// `visit::visit`'s block-tree walk, so a decl-default lambda's chains
     /// are recorded in the real table this field now carries.
     ///
-    /// The UFCS half is **not** yet complete: `ufcs::resolve` walks only
-    /// `visit::visit` (never `visit_with_decl_initializers`), so a method
-    /// call inside a decl-default lambda body is never visited by the UFCS
-    /// pass at all — no verdict is ever recorded for it, real table or not.
-    /// Such a call therefore still safely refuses with `E144` (a hard
-    /// compile error, not a silently wrong program) rather than resolving —
-    /// pinned by `brink-compiler`'s
-    /// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`.
-    /// Teaching `ufcs::resolve` to also walk decl initializers (mirroring
-    /// `coalesce::resolve`'s own precedent) is the follow-up that would
-    /// close this, not a change this field's plumbing can make on its own.
+    /// The UFCS half is now complete too (issue #2096): `ufcs::resolve`
+    /// drives its `HirVisitor`-shaped `UfcsVisitor` with
+    /// `visit_with_decl_initializers` (mirroring `coalesce::resolve`'s own
+    /// precedent, though by switching walkers rather than hand-recursing —
+    /// see `ufcs::resolve`'s own doc for why the two passes' shapes led to
+    /// different fixes), so a method call inside a decl-default lambda body
+    /// is visited and gets a real verdict recorded, same as everywhere
+    /// else. The old defensive `E144` refusal
+    /// (`compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`,
+    /// since renamed/replaced) is now reachable only for a caller that
+    /// genuinely never ran the UFCS pass at all — a receiver whose type
+    /// stays undecidable even after visiting (an unannotated lambda param
+    /// with no other constraint) still refuses, but with `E142` (D3:
+    /// "annotate the receiver"), the ordinary diagnostic this pass has
+    /// always used for that case — never a silent miscompile either way.
     pub tables: AnalyzerTables<'a>,
     /// The root container's `DefinitionId` — see
     /// [`super::context::root_definition_id`].

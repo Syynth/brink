@@ -1186,3 +1186,132 @@ fn noop() {}
          `greet: fn(int): int`: {field_ty:?}"
     );
 }
+
+// ─── issue #2096: a UFCS call inside a decl-default lambda's own body ────
+// ─── (a file-level `VAR`/`CONST` initializer) ─────────────────────────
+
+/// The laziness gate itself (`project_has_ufcs_call`) must see a
+/// dotted-callee call sitting inside a `CONST` initializer's own lambda
+/// body — not just the block tree — or `ufcs::resolve` (and
+/// `check_strict`, and `assemble_analyzer_tables`'s `needs_ufcs`) would
+/// never even be invoked for a project whose only UFCS-shaped call is one
+/// of these.
+#[test]
+fn project_has_ufcs_call_sees_a_call_inside_a_decl_default_lambda_body() {
+    let (hir, _manifest) = lower(
+        "\
+fn greet(g, loudness) {
+  return loudness;
+}
+
+const callGreet = |g: int| g.greet(3)
+
+fn main() {}
+",
+    );
+    assert!(
+        brink_analyzer::project_has_ufcs_call(&hir),
+        "a UFCS-shaped call inside a CONST decl-default's own lambda body must trip the \
+         laziness gate, or the whole pass never runs for this project"
+    );
+}
+
+/// The pass itself must now visit that call site and record a real verdict
+/// for it — before this fix, `ufcs::resolve` drove `UfcsVisitor` with plain
+/// `visit::visit`, which never reaches a `VAR`/`CONST` initializer at all,
+/// so this table was empty and the call fell through to LIR lowering's
+/// defensive `E144` refusal instead. `Guest` declares no `greet` field, so
+/// D1 loses and this resolves as an ordinary free-fn desugar — the same
+/// verdict `a_free_function_in_scope_resolves_and_is_recorded_as_a_desugar`
+/// pins for the non-lambda-decl-default shape.
+#[test]
+fn a_ufcs_call_inside_a_const_decl_default_lambda_body_resolves() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+const callGreet = |g: Guest| g.greet(3)
+
+fn main() {}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::FreeFnDesugar { receiver, name, .. } = &verdicts[0] else {
+        panic!("expected a free-fn desugar verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "greet");
+    assert_eq!(*receiver, brink_analyzer::Ty::Struct("Guest".into()));
+
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E144),
+        "must never fall through to the old defensive never-visited refusal: {diags:?}"
+    );
+}
+
+/// The `VAR` sibling of the test above — `ufcs::resolve` walks
+/// `hir.variables` too, not only `hir.constants`.
+#[test]
+fn a_ufcs_call_inside_a_var_decl_default_lambda_body_resolves() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+var callGreet = |g: Guest| g.greet(3)
+
+fn main() {}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    assert!(matches!(verdicts[0], UfcsVerdict::FreeFnDesugar { .. }));
+}
+
+/// Without a receiver-type annotation, this pass now correctly demands one
+/// (D3, `E142`) instead of silently never seeing the call — the visitor is
+/// reached (unlike before this fix), but the receiver's type is genuinely
+/// undecidable from `|g|` alone with nothing else constraining it, exactly
+/// like `an_unknown_receiver_type_demands_an_annotation` above (the
+/// non-lambda-decl-default sibling of this same D3 rule).
+#[test]
+fn an_unannotated_decl_default_lambda_receiver_demands_an_annotation() {
+    let (hir, manifest) = lower(
+        "\
+fn greet(g, loudness) {
+  return loudness;
+}
+
+const callGreet = |g| g.greet(3)
+
+fn main() {}
+",
+    );
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "an undecidable receiver must record no verdict"
+    );
+    let diags = diagnostics(&hir, &manifest);
+    let e142 = only(&diags, DiagnosticCode::E142);
+    assert!(
+        e142.message.contains("annotate"),
+        "E142 must demand an annotation: {}",
+        e142.message
+    );
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E144),
+        "must never fall through to the old defensive never-visited refusal: {diags:?}"
+    );
+}

@@ -676,20 +676,31 @@ fn compile_path_native_lambda_valued_var_default_compiles_with_map_keys_warning_
     );
 }
 
-/// Review finding on #1774: `GlobalLambdaCtx`'s `AnalyzerTables` used to be
-/// unconditionally empty regardless of what `brink-db` actually computed —
-/// this test pins the safe, current behavior now that
-/// `lir_prelude_decls_query` threads the real `ufcs_resolution_query`/
-/// `coalesce_types_query` tables through. A method call inside a
-/// decl-default lambda body is still refused with `E144`, not because the
-/// tables are fake, but because `brink_analyzer::ufcs::resolve` walks only
-/// `visit::visit`'s block-tree (never a `VAR`/`CONST` initializer) — see
-/// `decls::GlobalLambdaCtx::tables`'s doc for the follow-up that would close
-/// this gap. The important thing this test guards: refusing with a loud
-/// compile error, never silently lowering to a wrong `lir::Expr::Null`
-/// that then reaches `StoryData`.
+/// Issue #2096 (superseding this test's own former pin of a defensive
+/// `E144`): `brink_analyzer::ufcs::resolve` used to drive its
+/// `UfcsVisitor` with plain `visit::visit`, which never reaches a `VAR`/
+/// `CONST` initializer — so a UFCS-shaped call written directly inside a
+/// decl-default lambda's own body was never visited by the pass at all, and
+/// fell through to LIR lowering's own defensive `E144` refusal (the
+/// `push_ufcs_lowering_refusal` fallback — a caller-never-ran-analysis
+/// guard, not the real answer). `ufcs::resolve` now drives the same visitor
+/// with `visit::visit_with_decl_initializers`, so this call site is
+/// visited like any other.
+///
+/// **This exact fixture's receiver (`g`, no type annotation) still does not
+/// compile** — but for the *real*, D3-ruled reason (`ufcs.rs`'s own module
+/// doc): with no annotation and nothing else constraining `g`'s type, the
+/// receiver's type genuinely is not known at the resolution point, and D3
+/// says that demands an annotation (`E142`) rather than a guess between
+/// field-access and free-function. The important thing this test now
+/// guards: the call is genuinely *analyzed* (the diagnostic names the real
+/// cause, "annotate the receiver," not a structural "never visited"
+/// refusal) — see
+/// `compile_path_native_ufcs_call_in_lambda_decl_default_resolves_and_runs`
+/// below for the positive twin, where annotating the receiver lets the same
+/// shape resolve and run end-to-end.
 #[test]
-fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
+fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e142_unannotated_receiver() {
     let dir = std::env::temp_dir().join(format!(
         "brink-compiler-native-ufcs-lambda-decl-default-{}",
         std::process::id()
@@ -709,13 +720,52 @@ fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
     std::fs::remove_dir_all(&dir).ok();
 
     let err = result.expect_err(
-        "a method call in a decl-default lambda body must refuse to compile \
-         (the analyzer never visited it), not silently fold to Null",
+        "an unannotated UFCS receiver inside a decl-default lambda body must still \
+         refuse to compile (D3: the type is genuinely undecidable here) — but now with \
+         the real diagnostic naming that cause, not a structural never-visited refusal",
     );
     let codes = diagnostic_codes(&err);
     assert!(
-        codes.contains(&"E144"),
-        "expected E144 among diagnostics, got: {codes:?}"
+        codes.contains(&"E142"),
+        "expected E142 (D3: annotate the receiver) among diagnostics, got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"E144"),
+        "must not fall through to the old defensive never-visited refusal any more, \
+         got: {codes:?}"
+    );
+}
+
+/// The positive twin of the test above (issue #2096's own "option 1: the
+/// call resolves instead of hard-erroring" ask, proven by actually running
+/// the story — not just by inspecting the verdict table). Annotating the
+/// lambda param's own type (`|g: Guest|`, unlike `greet`'s own untyped
+/// params — this pass only needs the *receiver's* type, per D3) gives
+/// `ufcs::resolve` everything it needs: `Guest` declares no `greet` field
+/// (D1 loses), so it falls to D4 — `greet` is a free function in ordinary
+/// lexical scope, resolved and desugared to `greet(g, 3)`.
+///
+/// Composition with issue #2083 (fn-valued const call sites resolve;
+/// locals-first at call sites, landed just before this issue was picked
+/// up): `callGreet` is itself a fn-valued `CONST` called from `flow main`
+/// exactly the way `compile_path_native_lambda_valued_global_call_site_resolves`
+/// (above) already pins for a plain (non-UFCS) lambda body — this test is
+/// that same call shape, with a UFCS-shaped call now inside the lambda body
+/// too, proving the two fixes compose rather than only working in
+/// isolation.
+#[test]
+fn compile_path_native_ufcs_call_in_lambda_decl_default_resolves_and_runs() {
+    let output = compile_and_run_native(
+        "ufcs-lambda-decl-default-resolves",
+        "struct Guest {\n  hp: int\n}\n\n\
+         fn greet(g, loudness) {\n  return loudness;\n}\n\n\
+         const callGreet = |g: Guest| g.greet(3)\n\n\
+         flow main() {\n  Result: {callGreet(Guest { hp: 1 })} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 3"),
+        "the UFCS call inside the decl-default lambda body must actually run and \
+         produce `greet`'s own return value (loudness=3), not just compile, got: {output:?}"
     );
 }
 
