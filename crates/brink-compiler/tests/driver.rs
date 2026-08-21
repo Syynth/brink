@@ -539,6 +539,51 @@ fn compile_path_native_bare_name_fn_valued_const_global_call_site_resolves() {
     );
 }
 
+/// Call-vs-read parity (issue #2083's review follow-up, fixed by the
+/// locals-first reorder in `brink-analyzer::resolve::resolve_function`):
+/// with BOTH a fn-valued global `const twice` and a same-named local
+/// `let twice` in scope, the call site must invoke the LOCAL — exactly as a
+/// bare read of the name resolves the local (`lookup_variable` step 1).
+/// The runtime half already behaved (LIR `lower_call` consults `temp_slot`
+/// first), so this end-to-end run pins the aligned end state; the analyzer
+/// half of the divergence (resolution target + `infer_call` signature) is
+/// pinned red/green by `crates/internal/brink-analyzer/tests/
+/// issue_2083_call_site_local_shadows_global.rs`.
+#[test]
+fn compile_path_native_call_site_local_shadows_same_named_const_global() {
+    let output = compile_and_run_native(
+        "call-site-local-shadows-const",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\n\
+         fn triple(n: int): int {\n  return n * 3;\n}\n\n\
+         const twice = double\n\n\
+         flow main() {\n  ~ let twice = triple\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 63"),
+        "the local `let twice = triple` must shadow the global \
+         `const twice = double` at the call site (63, not 42), got: {output:?}"
+    );
+}
+
+/// The `var` sibling of the shadowing test above — the same call-site
+/// inversion existed for `Variable`-kind globals, deliberately also fixed
+/// by the locals-first reorder.
+#[test]
+fn compile_path_native_call_site_local_shadows_same_named_var_global() {
+    let output = compile_and_run_native(
+        "call-site-local-shadows-var",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\n\
+         fn triple(n: int): int {\n  return n * 3;\n}\n\n\
+         var twice = double\n\n\
+         flow main() {\n  ~ let twice = triple\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 63"),
+        "the local `let twice = triple` must shadow the global \
+         `var twice = double` at the call site (63, not 42), got: {output:?}"
+    );
+}
+
 /// Review finding on #1774: the PR body and the comment posted on issue
 /// #1774 both claimed this test existed (`compile_path_native_const_lambda_
 /// decl_default_self_recursion_works`, "#[ignore]d with a doc explaining the
