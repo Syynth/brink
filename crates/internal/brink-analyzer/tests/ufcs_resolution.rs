@@ -1451,15 +1451,22 @@ fn a_correctly_typed_field_call_reports_no_e063_under_strict() {
 /// (`g.greet("nope")` against `greet: fn(int): int`) is a T1c-style
 /// argument-type mismatch — `E063`, naming the field and the
 /// expected/found types, matching `strict::check_value_calls`'s own
-/// `ValueCallKind::ArgMismatch` phrasing.
+/// `ValueCallKind::ArgMismatch` phrasing ("call through", via
+/// `field_call_arg_mismatch_diagnostic`, not the desugared-call "call to"
+/// wording). The asserted "argument 1" also pins the index convention:
+/// `UfcsArgMismatch::index` is 0-based over the *written* arguments for a
+/// `FieldCall` (no receiver prepend — the Exception paragraph on that
+/// field), so the first written argument reports as argument 1, not 2.
 #[test]
 fn a_field_call_with_a_mistyped_argument_is_reported_under_strict() {
     let (hir, manifest) = field_call_fixture("g.greet(\"nope\")");
     let diags = strict_diagnostics(&hir, &manifest);
     let e063 = only(&diags, DiagnosticCode::E063);
     assert!(
-        e063.message.contains("greet") && e063.message.contains("string"),
-        "E063 must name the field and the mismatched type: {}",
+        e063.message
+            .contains("argument 1 of call through `greet` has type `string`"),
+        "E063 must use the T1c call-through phrasing, name the field, the mismatched type, and \
+         the written-args-only argument number: {}",
         e063.message
     );
 }

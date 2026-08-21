@@ -635,10 +635,39 @@ fn strict_verdict_diagnostics(key: NodeKey, verdict: &UfcsVerdict) -> Vec<Diagno
             out.extend(
                 arg_mismatches
                     .iter()
-                    .map(|mismatch| ufcs_arg_mismatch_diagnostic(key, field, mismatch)),
+                    .map(|mismatch| field_call_arg_mismatch_diagnostic(key, field, mismatch)),
             );
             out
         }
+    }
+}
+
+/// A [`UfcsVerdict::FieldCall`]'s own [`UfcsArgMismatch`] as a diagnostic
+/// — issue #1918. Like [`field_call_arity_diagnostic`] just below, the
+/// wording matches `strict::check_value_calls`'s own
+/// `ValueCallKind::ArgMismatch` phrasing exactly ("call **through**", the
+/// T1c domain this verdict structurally is) — deliberately NOT
+/// [`ufcs_arg_mismatch_diagnostic`]'s desugared-call "call to" phrasing,
+/// so both halves of a `FieldCall` verdict (arity and argument type) speak
+/// with one voice. `mismatch.index` here is 0-based over the *written*
+/// arguments (no receiver prepend — see [`UfcsArgMismatch::index`]'s
+/// Exception paragraph), so `+ 1` yields the same 1-based "argument N"
+/// numbering `check_value_calls` reports.
+fn field_call_arg_mismatch_diagnostic(
+    key: NodeKey,
+    field: &str,
+    mismatch: &UfcsArgMismatch,
+) -> Diagnostic {
+    Diagnostic {
+        file: key.file,
+        range: TextRange::new(key.range.0.into(), key.range.1.into()),
+        message: format!(
+            "argument {} of call through `{field}` has type `{}` but its known type expects `{}`",
+            mismatch.index + 1,
+            mismatch.found.display(),
+            mismatch.expected.display(),
+        ),
+        code: DiagnosticCode::E063,
     }
 }
 
