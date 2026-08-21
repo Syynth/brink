@@ -2659,6 +2659,12 @@ impl LanguageServer for Backend {
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(None);
             };
+            // #2360: `brink_fmt::format` is ink-only (it unconditionally
+            // ink-parses), so formatting a native document would rewrite it
+            // from a misparse. Decline until a native formatter path exists.
+            if db.is_native(file_id) {
+                return Ok(None);
+            }
             db.source(file_id).map(String::from)
         };
 
@@ -2691,6 +2697,10 @@ impl LanguageServer for Backend {
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(None);
             };
+            // #2360: same native gate as `formatting` above.
+            if db.is_native(file_id) {
+                return Ok(None);
+            }
             db.source(file_id).map(String::from)
         };
 

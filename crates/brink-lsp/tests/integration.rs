@@ -3382,12 +3382,6 @@ fn native_document_gets_non_empty_semantic_tokens() {
     );
 }
 
-/// #1350 item 3 (diagnostics): a `.brink` document with a real native parse
-/// error must surface it through `publishDiagnostics`, and a clean one must
-/// publish none — the per-file diagnostics path (`ProjectDb::file_diagnostics`
-/// → `lowered_query`) already dispatches on the file's own dialect, so this
-/// pins the "already works" half of #1350 as a regression rather than
-/// leaving it unverified.
 /// Bounded scan for the first `publishDiagnostics` naming `uri`, mirroring
 /// the pattern every other message-scanning test in this file already uses
 /// (e.g. the rename-suspicion scan) rather than an unbounded `loop { recv(..)
@@ -3629,5 +3623,55 @@ fn native_document_code_action_never_offers_ink_only_knot_actions() {
         !titles.iter().any(|t| t.contains("Sort knots")),
         "a .brink file must never be offered an ink-only 'Sort knots' quick-fix \
          (#2360), got: {titles:?}"
+    );
+}
+
+/// #2360 (formatting): `brink_fmt::format` is ink-only — it unconditionally
+/// ink-parses its input — so `textDocument/formatting` on a `.brink` document
+/// must decline (`null`) rather than return edits computed from a misparse.
+/// The fixture's indentation is deliberately shaped so the ink formatter
+/// WOULD rewrite it (verified red before the `is_native` gate in
+/// `Backend::formatting`: the pre-gate server answered with edits).
+#[test]
+fn native_document_formatting_declines_instead_of_ink_formatting() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-formatting");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let src = "\
+flow main() {
+      ~ let x = 1
+          ~ let y = 2
+}
+";
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+    let uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &uri, src);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, MAX_MESSAGES);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 2, "insertSpaces": true},
+            },
+        }),
+    );
+    let (resp, _) = recv_response(&mut stdout, 2);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        resp["result"].is_null(),
+        "formatting a .brink document must decline (null) until a native \
+         formatter path exists (#2360), got: {resp:?}"
     );
 }
