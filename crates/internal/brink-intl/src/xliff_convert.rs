@@ -24,6 +24,26 @@ const SPAN_MARKER_SUBTYPE: &str = "brink:x";
 /// `<pc>` inline code.
 const SPAN_PAIRED_SUBTYPE: &str = "brink:pc";
 
+/// `subType` marking a [`PartJson::Slot`] mapped to a standalone `<ph>`
+/// inline code (#1823). Before this, decode told a slot `<ph>` apart from a
+/// select/foreign one purely by `id` spelling (`id.starts_with('s')`) — a
+/// TMS-authored `<ph id="sep1">` (a separator marker, not a brink slot)
+/// took this branch and hard-failed the whole import trying to parse `ep1`
+/// as a slot number. `subType` is a brink-owned marker no foreign producer
+/// would coincidentally emit, the same discrimination `SPAN_MARKER_SUBTYPE`
+/// already uses for the point-marker `<ph>` shape — see
+/// [`looks_like_span_marker`]'s doc comment for why identity-based
+/// discrimination (element name, `id` spelling) is the wrong tool here.
+const SLOT_SUBTYPE: &str = "brink:slot";
+
+/// `dataRef`/`dataRefStart` id prefix brink's own exporter always uses for a
+/// [`PartJson::Select`]'s `<ph dataRef="dsel{n}">` (see `push_part_inline`).
+/// Decode gates the select branch on this prefix rather than "any `dataRef`
+/// at all" (#1823) — a TMS's own native `<ph dataRef="…">` pointing at its
+/// own `<data>` payload is a legitimate foreign shape, not a brink select
+/// that merely failed to look up its data.
+const SELECT_DATA_REF_PREFIX: &str = "dsel";
+
 /// Wire-only companion to [`SpanJson`] carried in XLIFF `originalData`:
 /// `name`/`attrs` only. `children` is never part of this payload — for a
 /// paired `<pc>` the children live structurally as the `<pc>`'s own
@@ -392,7 +412,7 @@ fn push_part_inline(
                 data_ref: None,
                 equiv: Some(format!("{{slot {slot}}}")),
                 disp,
-                sub_type: None,
+                sub_type: Some(SLOT_SUBTYPE.to_string()),
                 extensions: Extensions::default(),
             }));
         }
@@ -589,8 +609,9 @@ fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> boo
 /// |---|---|---|
 /// | `Text`, `CData` | **decoded** as [`PartJson::Literal`] | CDATA is plain character data spelled with a different XML quoting mechanism — no structural ambiguity, nothing to lose (#1799, and #765 on the sibling `xliff2` metadata path) |
 /// | `Cp` | **decoded** as [`PartJson::Literal`] | `<cp hex="…"/>` is XLIFF's escape hatch for a character its producer could not or would not write literally; decoding the code point restores exactly the character the translator meant, with no structure to reconstruct (#1811) |
-/// | `Ph` | **decoded** as a span point marker when `subType` is the brink marker; **decoded** (or explicitly errors) as [`PartJson::Select`] when it carries *any* `dataRef` — a non-brink `dataRef` is not ignored, it fails as [`IntlError::MissingSelectData`]/[`IntlError::InvalidSelectJson`]; **decoded** as [`PartJson::Slot`] when its `id` starts with `s`; **ignored** only otherwise — a bare `<ph>` with no `dataRef` and a non-slot `id` | that bare shape is the only one that is a genuinely empty standalone-code placeholder for the *host* format's native code with no character content; every `dataRef`-bearing `<ph>` is read as brink `originalData`, so a foreign `dataRef` (a real XLIFF 2.0 shape: a native code plus its `<data>` payload) is not silently dropped, it is a loud decode failure |
-/// | `Pc` | **decoded** as [`PartJson::Span`], recursing into its children | brink's own paired-span shape |
+/// | `Ph` | **decoded** as a span point marker when `subType` is [`SPAN_MARKER_SUBTYPE`]; **decoded** as [`PartJson::Select`] when `dataRef` starts with [`SELECT_DATA_REF_PREFIX`]; **decoded** as [`PartJson::Slot`] when `subType` is [`SLOT_SUBTYPE`]; **ignored** in every other case | `<ph>` is an empty element — it holds attributes only, never character data — so every disposition here that isn't a brink-owned marker is safe to ignore rather than fail loudly. Before #1823, the select/slot branches discriminated by element shape instead of a brink-owned marker (*any* `dataRef` at all; `id.starts_with('s')` + parse-as-number), so a foreign, TMS-legitimate `<ph>` that merely resembled one of brink's own shapes (a native code with its own `dataRef`/`<data>` payload; a separator id like `sep1`) hard-failed the whole import. `SPAN_MARKER_SUBTYPE`/`SLOT_SUBTYPE`/`SELECT_DATA_REF_PREFIX` are markers no foreign producer would coincidentally emit — the same discrimination [`looks_like_span_marker`] already used for `<sc>`/`<ec>`/`<mrk>` |
+/// | `Pc` *with* a brink marker ([`looks_like_span_marker`] on `subType`/`dataRefStart`) | **decoded** as [`PartJson::Span`], recursing into its children | brink's own paired-span shape |
+/// | `Pc` *without* a brink marker | **decoded** by splicing its children in place (#1823) | a foreign `<pc>` — same-namespace TMS markup, or a differently-namespaced element (e.g. `mq:pc`) that collides on local name because `xliff2::read::read_inline_content` dispatches on local name only — is not brink content, but unlike `<ph>`/`<sc>`/`<ec>` it has a real content model that can carry translator text. Before #1823 the `Pc` arm was unconditional and called [`decode_span_meta`] on every `<pc>`, so a foreign one without a brink `dataRefStart` hard-failed with [`IntlError::MissingSpanData`] instead of recovering the text it wraps. Splicing mirrors the foreign-`<mrk>` arm below — same taxonomy: a wrapper with a content model recovers its children when it isn't brink's own, the same way #1821 already treats `<mrk>` |
 /// | `Sc`, `Ec`, `Mrk` *with* a brink marker | **explicit [`IntlError::UnsupportedSpanSplit`]** | a brink `<pc>` that a tool re-expressed as a split pair or a wrapping mark: the structure cannot be reconstructed, so failing loudly beats decoding a span that quietly lost its content — the same failure class fixed on export by #1734 |
 /// | `Mrk` *without* a brink marker | **decoded** by splicing its children in place | a TMS `<mrk>` (terminology, comment, QA flag) wraps a *span of translated text*; the annotation's own `id`/`type`/`ref`/`value` are not brink content and are dropped, but the text it marks is translator work and must survive (#1812) |
 /// | `Sc`, `Ec` *without* a brink marker, `Sm`, `Em` | **ignored** | these are empty elements carrying attributes only — they never hold character data. The text a foreign `<sc>`/`<ec>` or `<sm>`/`<em>` pair *spans* is not nested inside them; the reader emits it as sibling `Text` elements that the `Text`/`CData` arm already recovers (proved by `foreign_sm_em_spanned_text_survives_export_import_roundtrip`) |
@@ -622,40 +643,71 @@ fn elements_to_parts(
                             children: Vec::new(),
                         },
                     });
-                } else if let Some(ref data_ref) = ph.data_ref {
-                    // Select: look up in originalData.
+                } else if let Some(data_ref) = ph
+                    .data_ref
+                    .as_deref()
+                    .filter(|r| r.starts_with(SELECT_DATA_REF_PREFIX))
+                {
+                    // Select: look up in originalData. Gated on brink's own
+                    // `dsel{n}` dataRef prefix (#1823) — a foreign `<ph>`
+                    // with some other `dataRef` (a real XLIFF 2.0 shape: a
+                    // native code plus its own `<data>` payload) is not a
+                    // brink select that lost its data, it's not brink's at
+                    // all, so it falls through to the ignore case below.
                     let json_str = data_map
-                        .get(data_ref.as_str())
-                        .ok_or_else(|| IntlError::MissingSelectData(data_ref.clone()))?;
+                        .get(data_ref)
+                        .ok_or_else(|| IntlError::MissingSelectData(data_ref.to_string()))?;
                     let select: SelectJson = serde_json::from_str(json_str)
                         .map_err(|e| IntlError::InvalidSelectJson(e.to_string()))?;
                     parts.push(PartJson::Select { select });
-                } else if ph.id.starts_with('s') {
-                    // Slot: parse slot number from id "s{n}".
-                    let slot_str = &ph.id[1..];
+                } else if ph.sub_type.as_deref() == Some(SLOT_SUBTYPE) {
+                    // Slot: parse slot number from id "s{n}". Gated on
+                    // brink's own `SLOT_SUBTYPE` marker (#1823), not on
+                    // `id` spelling — a TMS-authored `<ph id="sep1">` (a
+                    // separator, not a brink slot) no longer even attempts
+                    // the numeric parse.
+                    let slot_str = ph.id.strip_prefix('s').ok_or_else(|| {
+                        IntlError::InvalidUnitId(format!("bad slot ph id: {}", ph.id))
+                    })?;
                     let slot: u8 = slot_str.parse().map_err(|_| {
                         IntlError::InvalidUnitId(format!("bad slot ph id: {}", ph.id))
                     })?;
                     parts.push(PartJson::Slot { slot });
                 }
-                // No trailing `else`: a `<ph>` that is neither a span point
-                // marker nor a select nor a slot is a foreign standalone
-                // code placeholder. `<ph>` is an empty element — it holds
-                // attributes only, never character data — so ignoring it
-                // cannot lose translator work.
+                // No trailing `else`: a `<ph>` that carries none of brink's
+                // own markers — no `SPAN_MARKER_SUBTYPE`, no `dsel`-prefixed
+                // `dataRef`, no `SLOT_SUBTYPE` — is a foreign standalone
+                // code placeholder (whatever its `id` spelling or whatever
+                // *other* `dataRef` it carries, #1823). `<ph>` is an empty
+                // element — it holds attributes only, never character data —
+                // so ignoring it cannot lose translator work.
             }
             InlineElement::Pc(pc) => {
-                // Paired span: reconstruct name/attrs from originalData,
-                // children by recursing into the `<pc>`'s own content.
-                let meta = decode_span_meta(pc.data_ref_start.as_deref(), data_map)?;
-                let children = elements_to_parts(&pc.content, data_map)?;
-                parts.push(PartJson::Span {
-                    span: SpanJson {
-                        name: meta.name,
-                        attrs: meta.attrs,
-                        children,
-                    },
-                });
+                if looks_like_span_marker(pc.sub_type.as_deref(), pc.data_ref_start.as_deref()) {
+                    // Brink's own paired span: reconstruct name/attrs from
+                    // originalData, children by recursing into the `<pc>`'s
+                    // own content.
+                    let meta = decode_span_meta(pc.data_ref_start.as_deref(), data_map)?;
+                    let children = elements_to_parts(&pc.content, data_map)?;
+                    parts.push(PartJson::Span {
+                        span: SpanJson {
+                            name: meta.name,
+                            attrs: meta.attrs,
+                            children,
+                        },
+                    });
+                } else {
+                    // Foreign `<pc>` (#1823): same-namespace TMS markup, or
+                    // a differently-namespaced element that collides on
+                    // local name (`mq:pc`) because the reader dispatches on
+                    // local name only. Not brink content, but a genuine
+                    // wrapper with a content model that can hold translator
+                    // text — splice its children in place, mirroring the
+                    // foreign-`<mrk>` arm below (#1821): the wrapper's own
+                    // `id`/`subType` are discarded, the text it wraps is
+                    // not.
+                    parts.extend(elements_to_parts(&pc.content, data_map)?);
+                }
             }
             InlineElement::Sc(sc)
                 if looks_like_span_marker(sc.sub_type.as_deref(), sc.data_ref.as_deref()) =>

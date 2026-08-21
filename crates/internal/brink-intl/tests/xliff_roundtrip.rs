@@ -1634,57 +1634,106 @@ fn foreign_sm_em_spanned_text_survives_export_import_roundtrip() {
     );
 }
 
-/// Characterization test for the `<pc>` arm's foreign case, the one shape
-/// in this match that is neither decoded nor ignored: a `<pc>` with no
-/// brink `dataRefStart` cannot name a span, so it fails loudly with
-/// `MissingSpanData` instead of decoding as a span that lost its identity.
-/// Pinned here so a future change cannot quietly turn it into a drop.
+// ---------------------------------------------------------------------------
+// #1823: foreign, TMS-legitimate inline codes that merely resemble brink's
+// own markers must not hard-fail the whole import. Discriminate on a
+// brink-owned marker (`SPAN_MARKER_SUBTYPE`/`SLOT_SUBTYPE`/
+// `SELECT_DATA_REF_PREFIX`, mirroring `looks_like_span_marker`), not element
+// identity. Every test below goes through the real writer/reader round trip
+// (`xliff2::write::to_string` + `xliff2::read::read_xliff`), the actual
+// `compile-locale`/`export-xliff` consumer path, not just the in-memory
+// `Document` model — proving the fix is reached by a real re-import, not
+// merely by a unit that hands `elements_to_parts` a hand-built struct.
+//
+// Before this fix:
+//   - a `<pc>` (same namespace) with no brink `dataRefStart` hard-failed
+//     the whole import with `MissingSpanData`
+//     (`foreign_pc_without_span_data_errors_not_silently_dropped`, #1821).
+//   - a `<ph id="sep1">` (a TMS separator, id merely resembling brink's
+//     `s{n}` slot spelling) hard-failed with `InvalidUnitId` trying to
+//     parse `ep1` as a slot number.
+//   - a `<ph dataRef="d1">` naming a foreign `<data>` payload hard-failed
+//     with `InvalidSelectJson`/`MissingSelectData`
+//     (`foreign_ph_with_data_ref_errors_not_silently_dropped`, #1821).
+// The #1823 owner comment additionally widens this to a second reach path:
+// `xliff2::read::local_name` strips namespace prefixes before dispatch, so
+// a differently-namespaced element that collides on local name (`mq:pc`,
+// `mq:ph`) is decoded as if it were brink/XLIFF-native and hits the exact
+// same ungated arms. Since neither `xliff2::Pc` nor `xliff2::Ph` carries a
+// namespace field, a same-namespace foreign element and a namespace-blind
+// dispatch of a colliding-local-name element are structurally identical by
+// the time they reach `elements_to_parts` — one gate covers both reach
+// paths.
+// ---------------------------------------------------------------------------
+
+/// Same-namespace foreign `<pc>` (trigger path 1): a `<pc>` with no brink
+/// `dataRefStart`/`subType` is not brink content, but it has a real content
+/// model — unlike `<ph>`/`<sc>`/`<ec>` — so its children are spliced in
+/// place rather than dropped or hard-failing, mirroring the foreign-`<mrk>`
+/// arm (#1821's philosophy: a wrapper with a content model recovers its
+/// children when it isn't brink's own). Was
+/// `foreign_pc_without_span_data_errors_not_silently_dropped` pre-#1823,
+/// pinning the hard-fail this test now proves is fixed.
 #[test]
-fn foreign_pc_without_span_data_errors_not_silently_dropped() {
+fn foreign_pc_without_span_data_recovers_children() {
     let doc = tms_returned_doc(
-        vec![InlineElement::Pc(xliff2::Pc {
-            id: "pc0".to_string(),
-            data_ref_start: None,
-            data_ref_end: None,
-            sub_type: None,
-            content: vec![InlineElement::Text("le monde".to_string())],
-            extensions: Extensions::default(),
-        })],
+        vec![
+            InlineElement::Text("Bonjour ".to_string()),
+            InlineElement::Pc(xliff2::Pc {
+                id: "pc0".to_string(),
+                data_ref_start: None,
+                data_ref_end: None,
+                sub_type: None,
+                content: vec![InlineElement::Text("le monde".to_string())],
+                extensions: Extensions::default(),
+            }),
+        ],
         None,
     );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
 
-    let err = xliff_to_lines_json(&doc).unwrap_err();
-    assert!(
-        matches!(err, brink_intl::IntlError::MissingSpanData(_)),
-        "expected MissingSpanData for a foreign <pc>, got: {err:?}"
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a foreign <pc> without a brink dataRefStart must recover the text \
+         it wraps instead of hard-failing the whole import (#1823)"
     );
 }
 
-/// Characterization test for the `<ph>` arm's foreign, `dataRef`-bearing
-/// case. This is the *canonical* foreign `<ph>` shape — a native code plus
-/// its `<data>` payload, e.g. `<ph id="ph1" dataRef="d1"/>` with
-/// `<data id="d1">&lt;b&gt;</data>` — and it is **not** the empty,
-/// content-free placeholder the `Ph` arm's doc comment describes as
-/// "ignored". Every `dataRef`-bearing `<ph>` is read as brink
-/// `originalData`, so a foreign one fails loudly instead of decoding or
-/// being silently skipped: `InvalidSelectJson` when the referenced entry
-/// exists but is not brink's `SelectJson` shape, `MissingSelectData` when
-/// the `dataRef` names no entry at all. Pinned here, mirroring
-/// `foreign_pc_without_span_data_errors_not_silently_dropped`, so a future
-/// change cannot quietly turn either failure into a drop.
+/// Foreign, `dataRef`-bearing `<ph>` (trigger path 1): the *canonical*
+/// foreign `<ph>` shape — a native code plus its own `<data>` payload, e.g.
+/// `<ph id="ph1" dataRef="d1"/>` with `<data id="d1">&lt;b&gt;</data>` — is
+/// ignored (not decoded, not a hard-fail) because it lacks brink's own
+/// `dsel{n}` `dataRef` prefix. `<ph>` is an empty element, so ignoring it
+/// cannot lose translator work. Covers both the "entry exists but isn't
+/// brink `SelectJson`" and "dataRef names no entry at all" shapes — either
+/// way, no error. Was `foreign_ph_with_data_ref_errors_not_silently_dropped`
+/// pre-#1823, pinning the hard-fail this test now proves is fixed.
 #[test]
-fn foreign_ph_with_data_ref_errors_not_silently_dropped() {
+fn foreign_ph_with_foreign_data_ref_is_ignored_not_hard_failed() {
     // A `<data>` entry exists, but its content is a host format's native
-    // code payload, not brink `SelectJson`.
+    // code payload, not brink `SelectJson`, and `d1` isn't `dsel`-prefixed.
     let doc = tms_returned_doc(
-        vec![InlineElement::Ph(xliff2::Ph {
-            id: "ph1".to_string(),
-            data_ref: Some("d1".to_string()),
-            equiv: None,
-            disp: None,
-            sub_type: None,
-            extensions: Extensions::default(),
-        })],
+        vec![
+            InlineElement::Text("Bonjour ".to_string()),
+            InlineElement::Ph(xliff2::Ph {
+                id: "ph1".to_string(),
+                data_ref: Some("d1".to_string()),
+                equiv: None,
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }),
+            InlineElement::Text("le monde".to_string()),
+        ],
         Some(xliff2::OriginalData {
             entries: vec![xliff2::DataEntry {
                 id: "d1".to_string(),
@@ -1692,30 +1741,256 @@ fn foreign_ph_with_data_ref_errors_not_silently_dropped() {
             }],
         }),
     );
-    let err = xliff_to_lines_json(&doc).unwrap_err();
-    assert!(
-        matches!(err, brink_intl::IntlError::InvalidSelectJson(_)),
-        "expected InvalidSelectJson for a foreign <ph dataRef> whose entry \
-         is not SelectJson, got: {err:?}"
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a foreign <ph dataRef> whose entry is not SelectJson must be \
+         ignored, not hard-fail (#1823)"
     );
 
     // The `dataRef` names no entry at all.
     let doc = tms_returned_doc(
-        vec![InlineElement::Ph(xliff2::Ph {
-            id: "ph1".to_string(),
-            data_ref: Some("d1".to_string()),
-            equiv: None,
-            disp: None,
+        vec![
+            InlineElement::Text("Bonjour ".to_string()),
+            InlineElement::Ph(xliff2::Ph {
+                id: "ph1".to_string(),
+                data_ref: Some("d1".to_string()),
+                equiv: None,
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }),
+            InlineElement::Text("le monde".to_string()),
+        ],
+        None,
+    );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a foreign <ph dataRef> with no matching <data> entry must be \
+         ignored, not hard-fail (#1823)"
+    );
+}
+
+/// TMS-authored `<ph id="sep1">` (trigger path 1): before #1823 the slot
+/// branch discriminated by `id.starts_with('s')` + parse-remainder-as-`u8`,
+/// so this separator marker's id was mistaken for a slot spelling and
+/// hard-failed trying to parse `ep1` as a number. Gated on brink's own
+/// `SLOT_SUBTYPE` marker now, so a non-brink `<ph>` with an `s`-prefixed id
+/// is simply ignored.
+#[test]
+fn tms_separator_ph_with_slot_like_id_is_ignored_not_hard_failed() {
+    let doc = tms_returned_doc(
+        vec![
+            InlineElement::Text("Bonjour".to_string()),
+            InlineElement::Ph(xliff2::Ph {
+                id: "sep1".to_string(),
+                data_ref: None,
+                equiv: None,
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }),
+            InlineElement::Text("le monde".to_string()),
+        ],
+        None,
+    );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a foreign <ph id=\"sep1\"> must not be mistaken for a brink slot \
+         and must not hard-fail the import (#1823)"
+    );
+}
+
+/// Trigger path 2 (owner comment, 2026-08-21): a differently-namespaced
+/// `<mq:pc>` collides on local name with brink's own `<pc>` because
+/// `xliff2::read::local_name` strips namespace prefixes before dispatch.
+/// Hand-built raw XML (rather than `tms_returned_doc` + the writer) because
+/// the `Document`/`InlineElement` model has no namespace-prefix field to
+/// construct this shape from — the reach path only exists on the wire.
+/// Goes through `xliff2::read::read_xliff` directly, the real re-import
+/// entry point, so this proves the fix through the actual reach path rather
+/// than a hand-built in-memory struct.
+#[test]
+fn namespaced_mq_pc_colliding_local_name_recovers_children() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="fr" xmlns:brink="urn:brink:xliff:extensions:1.0" xmlns:mq="urn:x-memoq:xliff:extensions:1.0">
+  <file id="root" brink:scope-id="0x01">
+    <unit id="0x01:0" brink:hash="aaaa">
+      <segment state="translated">
+        <source>Hello world</source>
+        <target>Bonjour <mq:pc id="pc0">le monde</mq:pc></target>
+      </segment>
+    </unit>
+  </file>
+</xliff>"#;
+
+    let parsed = xliff2::read::read_xliff(xml).unwrap();
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a namespaced <mq:pc> colliding on local name with brink's own \
+         <pc> must recover the text it wraps, not hard-fail (#1823)"
+    );
+}
+
+/// Trigger path 2 (owner comment, 2026-08-21): `<mq:ph id="sep1"/>` — same
+/// namespace-blind-dispatch reach path as
+/// `namespaced_mq_pc_colliding_local_name_recovers_children`, but for the
+/// `<ph>`/slot-id-collision half of the bug.
+#[test]
+fn namespaced_mq_ph_colliding_local_name_is_ignored_not_hard_failed() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:2.0" version="2.0" srcLang="en" trgLang="fr" xmlns:brink="urn:brink:xliff:extensions:1.0" xmlns:mq="urn:x-memoq:xliff:extensions:1.0">
+  <file id="root" brink:scope-id="0x01">
+    <unit id="0x01:0" brink:hash="aaaa">
+      <segment state="translated">
+        <source>Hello world</source>
+        <target>Bonjour <mq:ph id="sep1"/> le monde</target>
+      </segment>
+    </unit>
+  </file>
+</xliff>"#;
+
+    let parsed = xliff2::read::read_xliff(xml).unwrap();
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal(" le monde".to_string()),
+            ],
+        }),
+        "a namespaced <mq:ph id=\"sep1\"/> colliding on local name with a \
+         brink slot ph must be ignored, not hard-fail (#1823)"
+    );
+}
+
+/// The #1821 review's noted widening: a foreign `<ph>` nested *inside* a
+/// foreign `<pc>` (both same-namespace here; trigger path 1). Before this
+/// fix, the outer `<pc>` alone hard-failed with `MissingSpanData` before
+/// the inner `<ph>` was ever reached. Now the outer `<pc>` splices its
+/// children (recursing into `elements_to_parts`), so the inner foreign
+/// `<ph>` gets the ordinary ignored disposition and the text around it
+/// survives.
+#[test]
+fn foreign_ph_nested_inside_foreign_pc_survives_import() {
+    let doc = tms_returned_doc(
+        vec![InlineElement::Pc(xliff2::Pc {
+            id: "pc0".to_string(),
+            data_ref_start: None,
+            data_ref_end: None,
             sub_type: None,
+            content: vec![
+                InlineElement::Text("Bonjour".to_string()),
+                InlineElement::Ph(xliff2::Ph {
+                    id: "sep1".to_string(),
+                    data_ref: None,
+                    equiv: None,
+                    disp: None,
+                    sub_type: None,
+                    extensions: Extensions::default(),
+                }),
+                InlineElement::Text("le monde".to_string()),
+            ],
             extensions: Extensions::default(),
         })],
         None,
     );
-    let err = xliff_to_lines_json(&doc).unwrap_err();
-    assert!(
-        matches!(err, brink_intl::IntlError::MissingSelectData(ref id) if id == "d1"),
-        "expected MissingSelectData(\"d1\") for a foreign <ph dataRef> with \
-         no matching <data> entry, got: {err:?}"
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a foreign <ph> nested inside a foreign <pc> must survive import — \
+         both the outer wrapper's splice and the inner ph's ignore must \
+         compose (#1823)"
+    );
+}
+
+/// Regression floor: a *brink-authored* paired span (`subType="brink:pc"`,
+/// `dataRefStart` pointing at real span metadata) must still decode exactly
+/// as before — the gate added by #1823 must not treat brink's own markers
+/// as foreign.
+#[test]
+fn brink_pc_still_decodes_exactly_as_before() {
+    let doc = tms_returned_doc(
+        vec![InlineElement::Pc(xliff2::Pc {
+            id: "pc0".to_string(),
+            data_ref_start: Some("dspan0".to_string()),
+            data_ref_end: None,
+            sub_type: Some("brink:pc".to_string()),
+            content: vec![InlineElement::Text("gras".to_string())],
+            extensions: Extensions::default(),
+        })],
+        Some(xliff2::OriginalData {
+            entries: vec![xliff2::DataEntry {
+                id: "dspan0".to_string(),
+                content: "{\"name\":\"b\"}".to_string(),
+            }],
+        }),
+    );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![PartJson::Span {
+                span: SpanJson {
+                    name: "b".to_string(),
+                    attrs: Vec::new(),
+                    children: vec![PartJson::Literal("gras".to_string())],
+                },
+            }],
+        }),
+        "a brink-authored <pc> must still decode as a span (#1823 regression floor)"
     );
 }
 

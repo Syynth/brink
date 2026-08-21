@@ -1,5 +1,6 @@
 ---
 source: crates/internal/brink-intl/tests/xliff_roundtrip.rs
+assertion_line: 938
 expression: xml
 ---
 <?xml version="1.0" encoding="UTF-8"?>
@@ -12,7 +13,7 @@ expression: xml
     </unit>
     <unit id="0x0100000000000001:1" name="root:1" brink:hash="bbbb5678" brink:audio="audio/count.wav">
       <segment state="initial">
-        <source>Count: <ph id="s0" equiv="{slot 0}"/></source>
+        <source>Count: <ph id="s0" equiv="{slot 0}" subType="brink:slot"/></source>
       </segment>
     </unit>
   </file>
