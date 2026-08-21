@@ -89,10 +89,15 @@ pub(crate) fn mixed_content(p: &mut Parser<'_, '_>) {
                 } else {
                     let before = p.pos();
                     text_content(p);
-                    // If text_content made no progress (e.g. raw pos is
-                    // a comment token), flush trivia and retry.
+                    // If text_content made no progress, the raw position
+                    // sits on a mid-line comment (the only trivia
+                    // `text_content` treats as a stop token -- see
+                    // `skip_comment_tokens`'s doc comment). Elide just the
+                    // comment token(s) and retry; any whitespace on either
+                    // side is real content and stays for `text_content` to
+                    // fold into the surrounding TEXT run on the next pass.
                     if p.pos() == before {
-                        p.skip_ws();
+                        p.skip_comment_tokens();
                     }
                 }
             }
@@ -102,7 +107,25 @@ pub(crate) fn mixed_content(p: &mut Parser<'_, '_>) {
                 let before = p.pos();
                 text_content(p);
                 if p.pos() == before {
-                    break;
+                    // Zero progress has two possible causes here:
+                    //
+                    //  1. The raw position sits on a mid-line comment
+                    //     (`BLOCK_COMMENT`/`LINE_COMMENT`) -- the only
+                    //     trivia kind `text_content` stops on. Eliding it
+                    //     (comment tokens only, not surrounding
+                    //     whitespace -- see `skip_comment_tokens`) always
+                    //     advances `p.pos()`, so retry via the outer loop
+                    //     on the next iteration.
+                    //  2. The raw position sits on a genuine non-trivia
+                    //     stop token with no other arm to claim it (a
+                    //     stray `}`, a stray `|`, or a `\` immediately
+                    //     before newline/EOF). `skip_comment_tokens` is a
+                    //     no-op here, so the position truly cannot move
+                    //     and we must break to avoid looping forever.
+                    p.skip_comment_tokens();
+                    if p.pos() == before {
+                        break;
+                    }
                 }
             }
         }

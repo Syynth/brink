@@ -1,6 +1,6 @@
 mod cst;
 
-use super::{check, check_lossless};
+use super::check;
 use crate::{SyntaxKind, parse};
 
 // ── Smoke tests (check = lossless + no errors) ─────────────────────
@@ -97,9 +97,12 @@ fn multiple_escapes() {
 
 #[test]
 fn content_with_block_comment() {
-    // Block comments are stop characters in text_content, so the parser
-    // produces an error here. Just verify lossless round-trip.
-    check_lossless("Hello /*comment*/ world\n");
+    // A mid-line block comment must not fragment the containing content
+    // line (#2366): `mixed_content`'s zero-progress recovery now elides
+    // just the comment tokens (not surrounding whitespace) and folds the
+    // TEXT runs on either side back together in one CONTENT_LINE, so this
+    // is lossless AND error-free.
+    check("Hello /*comment*/ world\n");
 }
 
 #[test]
@@ -292,6 +295,202 @@ fn logic_line_not_content_line() {
     assert!(
         !has_content_line,
         "tilde line should not produce CONTENT_LINE"
+    );
+}
+
+// ── #2366: mid-line comments must not fragment CONTENT_LINE ─────────
+
+/// A single line of `CONTENT_LINE` around a mid-line block comment used to
+/// fragment into two `CONTENT_LINE`s with the `BLOCK_COMMENT` hoisted to
+/// `SOURCE_FILE` level (#2366) because `mixed_content`'s catch-all arm broke
+/// on zero progress instead of retrying past the comment like its `L_BRACE`
+/// arm sibling already did. This must now produce exactly one `CONTENT_LINE`.
+#[test]
+fn block_comment_mid_line_stays_one_content_line() {
+    let p = parse("Hello /* note */ world\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let content_lines: Vec<_> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .collect();
+    assert_eq!(
+        content_lines.len(),
+        1,
+        "expected exactly one CONTENT_LINE, got {content_lines:?}"
+    );
+    // The comment must be nested inside that one CONTENT_LINE, not hoisted
+    // to SOURCE_FILE level as a sibling.
+    let comment_inside_content_line = content_lines[0]
+        .descendants_with_tokens()
+        .any(|c| c.kind() == SyntaxKind::BLOCK_COMMENT);
+    assert!(
+        comment_inside_content_line,
+        "BLOCK_COMMENT should be nested inside the CONTENT_LINE"
+    );
+}
+
+/// Byte-for-byte semantic check: only the comment span is elided, the
+/// whitespace on both sides of it survives untouched. Verified against real
+/// inklecate output — `tests/tests_github/astrochili__narrator/test/units/
+/// comments.ink` compiles (per its checked-in `comments.ink.json`) `Before
+/// comment ... /* A comment */ ... and after.` to `Before comment ...  ...
+/// and after.` (both surrounding spaces survive, producing a double space
+/// where the comment used to be — nothing about comment removal collapses
+/// or trims adjacent whitespace).
+#[test]
+fn block_comment_elision_preserves_surrounding_whitespace() {
+    let p = parse("Hello /* note */ world\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let text_nodes: String = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(
+        text_nodes, "Hello  world",
+        "comment span alone should be elided, both adjoining spaces kept \
+         (double space), matching inklecate's own semantics"
+    );
+}
+
+/// The exact corpus case from `astrochili__narrator`'s `comments.ink`, which
+/// documents (in its own comment) that a mid-line block comment was "known
+/// limitation" for that third-party tool. inklecate itself handles it fine
+/// (see `comments.ink.json`), and so must brink.
+#[test]
+fn block_comment_mid_line_matches_astrochili_corpus_case() {
+    let src = "Before comment ... /* A comment */ ... and after.\n";
+    let p = parse(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    let content_lines = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .count();
+    assert_eq!(content_lines, 1, "expected exactly one CONTENT_LINE");
+    let text_nodes: String = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(
+        text_nodes, "Before comment ...  ... and after.",
+        "must match inklecate's compiled output byte-for-byte (double \
+         space — both spaces surrounding the elided comment survive)"
+    );
+}
+
+/// A block comment sitting directly between two inline-logic interpolations
+/// hits the sibling `L_BRACE` arm's own zero-progress recovery, not the
+/// catch-all arm's. Whitespace on both sides of the comment must still
+/// survive (same root cause, same fix, both arms now share
+/// `skip_comment_tokens`).
+#[test]
+fn block_comment_between_interpolations_preserves_whitespace() {
+    let p = parse("Hello {a} /* c */ {b}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let content_lines = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .count();
+    assert_eq!(content_lines, 1, "expected exactly one CONTENT_LINE");
+    let text_nodes: String = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(
+        text_nodes, "Hello   ",
+        "both spaces around the elided comment must survive"
+    );
+}
+
+/// `LINE_COMMENT` (`//`) mid-line has different semantics from `BLOCK_COMMENT`:
+/// it runs to end of line, so the next non-trivia token after it is always
+/// `NEWLINE` — `mixed_content` breaks via its ordinary `NEWLINE => break` arm,
+/// never reaching the catch-all arm's zero-progress path at all. This case
+/// was never broken by #2366 and this fix must not change it.
+#[test]
+fn line_comment_mid_line_unaffected_by_fix() {
+    let src = "Hello // note\n";
+    let p = parse(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    let content_lines = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .count();
+    assert_eq!(content_lines, 1, "expected exactly one CONTENT_LINE");
+    let text_nodes: String = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TEXT)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(text_nodes, "Hello ", "text before the line comment only");
+}
+
+/// A comment at the very start of a line (before any content) is untouched
+/// line-leading trivia handling, unrelated to `mixed_content`'s in-line
+/// recovery arms — out of scope for #2366, and this fix must not disturb
+/// it. It stays hoisted at `SOURCE_FILE` level exactly as before.
+#[test]
+fn block_comment_at_line_start_unchanged() {
+    let src = "/* c */ Hello\n";
+    check(src);
+    let p = parse(src);
+    let content_lines: Vec<_> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+        .collect();
+    assert_eq!(content_lines.len(), 1, "expected exactly one CONTENT_LINE");
+    let comment_inside_content_line = content_lines[0]
+        .descendants_with_tokens()
+        .any(|c| c.kind() == SyntaxKind::BLOCK_COMMENT);
+    assert!(
+        !comment_inside_content_line,
+        "a line-leading comment stays hoisted above CONTENT_LINE, unchanged by this fix"
+    );
+}
+
+/// #2366's fix shape is a guarded retry: only retry past zero progress when
+/// `skip_comment_tokens` actually advanced the position. A stray `}` in
+/// plain content is a genuine non-trivia stop token with no comment to
+/// elide — `skip_comment_tokens` is a no-op there, so the catch-all arm
+/// must still `break` rather than spin. This is the regression test for
+/// that hang: if the retry guard were missing, this call would never
+/// return.
+#[test]
+fn stray_r_brace_in_content_does_not_hang() {
+    let src = "Hello } world\n";
+    let p = parse(src);
+    // Malformed input still round-trips losslessly and still diagnoses —
+    // only the *no-hang* guarantee is under test here, not error-freeness.
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "stray `{{}}` should still be diagnosed"
+    );
+}
+
+/// Same guard, `|` flavor: a stray `PIPE` in plain content (outside any
+/// `{ ... }` sequence) is also a non-trivia zero-progress stop token.
+#[test]
+fn stray_pipe_in_content_does_not_hang() {
+    let src = "Hello | world\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "stray `|` should still be diagnosed"
     );
 }
 

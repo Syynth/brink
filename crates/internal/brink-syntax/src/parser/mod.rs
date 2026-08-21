@@ -11,7 +11,9 @@ mod story;
 mod tag;
 mod types;
 
-use crate::SyntaxKind::{self, COLON, EOF, ERROR, IDENT, L_BRACE, NEWLINE, PIPE, R_BRACE};
+use crate::SyntaxKind::{
+    self, BLOCK_COMMENT, COLON, EOF, ERROR, IDENT, L_BRACE, LINE_COMMENT, NEWLINE, PIPE, R_BRACE,
+};
 // `IDENT` above is also used by `at_kw_text`/`nth_text` (soft-keyword lookup).
 use crate::lexer;
 use rowan::GreenNode;
@@ -426,6 +428,29 @@ impl<'t, 'c> Parser<'t, 'c> {
     /// Consume all trivia (`WHITESPACE`, `LINE_COMMENT`, `BLOCK_COMMENT`).
     fn skip_ws(&mut self) {
         while self.pos < self.tokens.len() && self.tokens[self.pos].0.is_trivia() {
+            self.bump();
+        }
+    }
+
+    /// Consume a run of comment tokens (`LINE_COMMENT`, `BLOCK_COMMENT`) at
+    /// the raw position, WITHOUT consuming adjacent `WHITESPACE`.
+    ///
+    /// Used by `content::mixed_content`'s zero-progress recovery: a mid-line
+    /// comment is elided from the output, but the whitespace touching it on
+    /// either side is real content that must survive so the surrounding
+    /// `TEXT` runs fold back together correctly. Unlike `skip_ws` (which
+    /// treats `WHITESPACE` and comments as one contiguous trivia blob and
+    /// would swallow that whitespace too), this stops the instant it sees
+    /// anything that isn't a comment token — including `WHITESPACE` — so a
+    /// caller can retry `text_content` and pick that whitespace back up as
+    /// ordinary text. Confirmed against inklecate's own output: the
+    /// `astrochili__narrator` corpus's `Before comment ... /* A comment */
+    /// ... and after.` compiles to `Before comment ...  ... and after.`
+    /// (the double space from both sides' whitespace surviving, only the
+    /// comment span itself removed) — see
+    /// `tests/tests_github/astrochili__narrator/test/units/comments.ink.json`.
+    fn skip_comment_tokens(&mut self) {
+        while matches!(self.nth_raw(0), LINE_COMMENT | BLOCK_COMMENT) {
             self.bump();
         }
     }
