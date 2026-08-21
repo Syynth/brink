@@ -1422,6 +1422,22 @@ fn lower_block_with_children(
                 pos += 1;
             }
 
+            // Issue #2903 — a classic (non-block) `~ a[i]++`/`~ a[i]--` logic
+            // line whose postfix operand is an `Index` target (`a[0]++`,
+            // `m["k"]++`). `try_lower_postfix_stmt` now routes an
+            // Index-operand postfix through `lower_indexed_assignment`,
+            // which can splice *several* `lir::Stmt`s (the RMW
+            // take/mutate/write-back sequence) — `stmts::lower_stmt`'s
+            // `Option<Stmt>` return truncates that to just its first element
+            // (harmless but non-mutating: the actual write-back never runs),
+            // the same shape of bug `try_lower_indexed_assignment` above was
+            // added to prevent for `~ a[i] = v`. Dispatched here, before the
+            // `_` fallback, for the same reason.
+            hir::Stmt::ExprStmt(expr) if blocks::try_lower_postfix_stmt(expr, ctx, &mut stmts) => {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
             // A classic (non-block) `~ push(a, v)` logic line — same
             // mutator recognition/RMW desugaring `~ { … }` block statements
             // use (docs/t1b-surface-spec.md §5), splicing possibly-multiple

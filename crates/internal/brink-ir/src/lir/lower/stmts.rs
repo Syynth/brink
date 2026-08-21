@@ -92,13 +92,33 @@ pub(super) fn lower_stmt(stmt: &hir::Stmt, ctx: &mut LowerCtx<'_>) -> Option<lir
             // `blocks::try_lower_postfix_stmt` rather than kept as a
             // second, divergence-prone copy here (post-#2900 review: the
             // two copies had already drifted once).
+            //
+            // Issue #2903: an Index-operand postfix (`a[0]++`, `m["k"]++`)
+            // now routes through `lower_indexed_assignment`, which can
+            // splice *several* `lir::Stmt`s (the RMW take/mutate/write-back
+            // sequence), not just one — this function's `Option<Stmt>`
+            // return can't express that, so `.next()` below would silently
+            // keep only the harmless first step and drop the actual
+            // write-back. Both real classic-line callers of `lower_stmt`
+            // (`mod.rs`'s top-level dispatch, `content.rs`'s
+            // `lower_inline_block`) now intercept an Index-operand postfix
+            // with their own dedicated multi-stmt-splicing arm *before*
+            // falling through to this function, mirroring
+            // `try_lower_indexed_assignment`'s existing precedent for `~
+            // a[i] = v` — so this arm only ever sees a bare-variable or
+            // field-projected operand in practice (both always produce 0 or
+            // 1 element, `postfix_out.into_iter().next()` is exact for
+            // those). The one caller that does NOT pre-intercept is
+            // `expr::lower_expr`'s `hir::Expr::Fragment` arm (native-surface
+            // block-capture, issue #1839) — an Index-operand postfix
+            // reaching *there* still silently drops its write-back today,
+            // the same pre-existing shape of gap this function's own doc
+            // above already accepts for `try_lower_frame_local_auto_ref_stmt`
+            // (issue #2222's "distinct, not-yet-confirmed parity gap");
+            // #2903 does not close it, only the two surfaces the issue
+            // scoped in.
             let mut postfix_out = Vec::new();
             if super::blocks::try_lower_postfix_stmt(expr, ctx, &mut postfix_out) {
-                // `postfix_out` holds at most one element: the converted
-                // `Assign` on success, or nothing on the E074 field-operand
-                // refusal (diagnostic already recorded) — `None` here means
-                // "emit nothing", exactly like every other call site of
-                // this function already treats it.
                 return postfix_out.into_iter().next();
             }
             Some(lir::Stmt::ExprStmt(lower_expr(expr, ctx)))

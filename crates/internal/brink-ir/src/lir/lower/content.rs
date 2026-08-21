@@ -220,6 +220,17 @@ fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::St
             && super::blocks::try_lower_indexed_assignment(a, ctx, &mut stmts)
         {
         } else if let hir::Stmt::ExprStmt(e) = stmt
+            && super::blocks::try_lower_postfix_stmt(e, ctx, &mut stmts)
+        {
+            // Issue #2903 — mirrors the same arm `mod.rs`'s top-level
+            // classic-line dispatch added: an Index-operand postfix
+            // (`a[0]++`) routes through `lower_indexed_assignment`, which
+            // can splice several `lir::Stmt`s — the `stmts::lower_stmt`
+            // fallback below returns only a single `Option<Stmt>` and would
+            // truncate that RMW sequence to its harmless-but-non-mutating
+            // first step, same shape of gap `try_lower_indexed_assignment`
+            // above prevents for `~ a[i] = v` in this same inline context.
+        } else if let hir::Stmt::ExprStmt(e) = stmt
             && super::blocks::try_lower_mutator_stmt(e, ctx, &mut stmts)
         {
         } else if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
