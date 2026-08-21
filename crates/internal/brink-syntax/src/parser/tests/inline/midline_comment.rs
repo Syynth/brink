@@ -6,8 +6,11 @@
 //! (`choice::choice_content_elements`/`choice_content_element`), this
 //! fixes `inline::branch_content` (the shared parser for
 //! `IMPLICIT_SEQUENCE`/`INLINE_BRANCHES_SEQ`/`INLINE_BRANCHES_COND`
-//! branches) and the two `multiline_branch_text` call sites
-//! (`branchless_cond_body`, `multiline_branch_body`).
+//! branches) and `branchless_cond_body`'s `multiline_branch_text` call
+//! site. A matching retry was also added to `multiline_branch_body`'s
+//! `multiline_branch_text` call site for symmetry, but that one is
+//! unreachable in practice -- see the "Comment in a multiline branch
+//! body" section below.
 //!
 //! `{ a /* c */ x | b }` used to produce 5 parse errors: the comment was
 //! hoisted out of `IMPLICIT_SEQUENCE`, the `|` became an `ERROR` node, and
@@ -191,15 +194,45 @@ fn line_comment_in_inline_branch_is_unterminated_block_not_fragmentation() {
     let src = "{ a // c\n| b }\n";
     let p = parse(src);
     // An inline `{...}` cannot span the LINE_COMMENT's forced newline and
-    // still close on the same construct -- expect a diagnosable outcome,
-    // but no hang and a lossless round-trip either way.
+    // still close on the same construct -- no hang and a lossless
+    // round-trip either way, but (unlike the sibling control test
+    // `line_comment_in_choice_text_unaffected_by_fix`) the pre-comment
+    // text does NOT survive: the `{` is left unterminated, so `a` is
+    // never captured into a `TEXT` node at all. Pin the actual diagnosed
+    // outcome, identical on `origin/main` before this fix and after it.
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    let messages: Vec<&str> = p.errors().iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "expected `}`",
+            "expected newline at end of content line",
+            "unexpected token",
+            "expected newline at end of content line",
+        ],
+        "expected outcome unchanged from origin/main: {:#?}",
+        p.errors()
+    );
+    assert_eq!(
+        text_nodes(&p.syntax()),
+        "b ",
+        "the pre-comment `a` does not survive as TEXT -- the `{{` is left \
+         unterminated by the LINE_COMMENT's forced newline, unlike the \
+         fragmentation bug this file otherwise fixes"
+    );
 }
 
 // ── Comment in a multiline branch body ───────────────────────────────
 //
-// Exercises the other two zero-progress sites: `multiline_branch_text`'s
-// call sites in `branchless_cond_body` and `multiline_branch_body`.
+// Exercises the `multiline_branch_text` call site in
+// `branchless_cond_body`, which is a genuine zero-progress retry (hit 3
+// times running the full suite). The sibling test below,
+// `block_comment_in_multiline_branch_body`, exercises the same-shaped
+// retry in `multiline_branch_body`, but that site is unreachable: the
+// loop's leading, unconditional `p.skip_ws()` already consumes comment
+// trivia before the catch-all's `multiline_branch_text` call ever runs
+// (confirmed by instrumentation: 0 hits), so that test pins pre-existing
+// behavior rather than proving the retry fires there.
 
 #[test]
 fn block_comment_in_multiline_branchless_cond_body() {
@@ -226,6 +259,12 @@ fn block_comment_in_multiline_branchless_cond_body() {
     );
 }
 
+/// Pins pre-existing behavior (green on `origin/main` before this fix,
+/// unmodified) rather than proving this fix's `multiline_branch_body`
+/// retry -- that retry is unreachable, see the section comment above.
+/// `multiline_branch_body`'s leading `p.skip_ws()` already elides the
+/// comment as trivia every time, so this path never hit the
+/// zero-progress bug this PR targets.
 #[test]
 fn block_comment_in_multiline_branch_body() {
     let src = "{\n- x > 5:\n  Big /* c */ number.\n- else:\n  Small.\n}\n";

@@ -161,10 +161,20 @@ fn block_comment_in_inline_conditional_branch_prints_intact() {
     assert_eq!(out, "yes indeed\n");
 }
 
-/// A comment inside a multiline conditional branch body (the other two
-/// fixed zero-progress sites, `branchless_cond_body` /
-/// `multiline_branch_body`'s `multiline_branch_text` call sites) must
-/// also survive intact through the real pipeline.
+/// A comment inside a multiline conditional branch body must also survive
+/// intact through the real pipeline. This exercises `multiline_branch_body`
+/// (the `- x > 5:` / `- else:` gathered form), whose bare
+/// `multiline_branch_text` catch-all is actually unreachable on this
+/// input -- the loop's leading `p.skip_ws()` already elides the mid-line
+/// comment as trivia before that call site would ever see zero progress
+/// (confirmed by instrumentation: 0 hits vs. `branchless_cond_body`'s 3).
+/// This test therefore pins pre-existing behavior (it passes unmodified
+/// against `origin/main`, before this fix's `inline.rs` changes), not
+/// proof this fix's `multiline_branch_body` retry runs. The sibling site
+/// that IS actually exercised by this fix, `branchless_cond_body`, is
+/// covered at the CST level by
+/// `crates/internal/brink-syntax/src/parser/tests/inline/midline_comment.rs`'s
+/// `block_comment_in_multiline_branchless_cond_body`.
 #[test]
 fn block_comment_in_multiline_branch_body_prints_intact() {
     let src = "VAR x = 10\n{\n- x > 5:\n  Big /* c */ number.\n- else:\n  Small.\n}\n";

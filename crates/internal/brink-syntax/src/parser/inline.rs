@@ -617,16 +617,23 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                 let before = p.pos();
                 multiline_branch_text(p);
                 if p.pos() == before {
-                    // Zero progress: the raw position sits on a mid-line
-                    // comment (`BLOCK_COMMENT`/`LINE_COMMENT`), the only
-                    // trivia kind `multiline_branch_text` stops on -- every
-                    // other stop-list token has its own arm above (`MINUS`
-                    // is structural here and already broken out of the
-                    // loop by the earlier `EOF | R_BRACE | MINUS => break`
-                    // arm). Mirrors `branch_content`'s catch-all
-                    // (#2366/#2958/#2960/#2974): elide the comment and
-                    // retry; if `skip_comment_tokens` is a no-op, the
-                    // position truly cannot move and we must break.
+                    // Unlike `branchless_cond_body`'s and `branch_content`'s
+                    // catch-alls, this retry is unreachable today: this
+                    // loop's very first statement on every iteration is the
+                    // unconditional `p.skip_ws()` above, and comment tokens
+                    // are trivia (`SyntaxKind::is_trivia` covers
+                    // `LINE_COMMENT`/`BLOCK_COMMENT`), so a mid-line comment
+                    // is already consumed by `skip_ws()` before control ever
+                    // reaches `multiline_branch_text` -- confirmed by
+                    // instrumenting this arm and `branchless_cond_body`'s
+                    // sibling retry: `branchless_cond_body` hit its retry 3
+                    // times running the full suite, this arm hit it 0 times.
+                    // No other non-trivia token can land here with zero
+                    // progress either (every other stop-list token, and
+                    // `MINUS`, already has its own arm above). Kept only as
+                    // a defensive guard against a future change to the
+                    // trivia-skipping order above; `skip_comment_tokens`
+                    // stays a safe no-op if that invariant ever breaks.
                     p.skip_comment_tokens();
                     if p.pos() == before {
                         break;
