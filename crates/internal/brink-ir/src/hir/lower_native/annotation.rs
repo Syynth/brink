@@ -986,6 +986,20 @@ fn parse_convention(
         }
     }
 
+    // Issue #2264: `block` and `attach = StructName` are mutually exclusive
+    // — `try_claim`'s dispatch (`element.rs`) is an `if is_block { .. } else
+    // if is_attach { .. }` with no combined semantics, so a declaration
+    // combining both had its `attach` clause parsed and stored but never
+    // consulted (`block` always won the `if`), with zero author signal.
+    // Rejected here, before either clause's own structural check runs,
+    // rather than defining what "wrap AND attach" would mean together —
+    // that is an open design question this code deliberately declines to
+    // settle (see `DiagnosticCode::E186`'s own doc).
+    if block && attach.is_some() {
+        diags.push(diag(file_id, range, DiagnosticCode::E186));
+        return None;
+    }
+
     if block && !has_block_content_param(params, &captures) {
         diags.push(diag(file_id, range, DiagnosticCode::E166));
         return None;
