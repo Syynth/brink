@@ -28,14 +28,13 @@
 //! workspace gate as a whole was not blind to it — only the runtime crate's
 //! own test suite was.
 //!
-//! Issue #1520's proposed yield-time classifier folded into the `Step`
-//! migration (#1684, the R1 half of this same ruling round) — that moves
-//! *where* the classification construction lives (the design doc's
-//! six-site inventory collapsing into `Step`'s own variants), not the
-//! fault's timing, which R2 above ruled permanent. Whatever shape #1684
-//! lands, these tests must still see the same observable sequence: a
-//! `Done` line, then `RanOutOfContent` exactly one `continue_single` call
-//! later.
+//! Issue #1520's classifier folded into the `Step` migration, which landed
+//! as PR #2102 (#1684, 2026-08-03) — that moved *where* the classification
+//! construction lives (the design doc's six-site inventory collapsing into
+//! `Step`'s own variants), not the fault's timing, which R2 above ruled
+//! permanent. These tests pin the post-migration sequence: the trailing
+//! text as its own `Step::Line`, a bare `Step::Done`, then
+//! `RanOutOfContent` on the next `continue_single`.
 
 use brink_format::Value;
 use brink_runtime::{
