@@ -785,7 +785,13 @@ const reviewed = results.map((r) => r.verdict).filter(Boolean);
 // stale entry is noise rather than a duplicate on the page — but it is still
 // noise, and this list is meant to be short and to shrink.
 const PENDING_HOUSE_RULES = [
-  "a schema constraint is enforcement only if a validator honours it; `description` text and typo'd keywords (`minItem`, `minlength`) parse fine and enforce nothing — probe the enforcer once and write down what it answered. (earned by #2665 / PR #2669; handed over by #2673)",
+  // EMPTY as of 2026-08-21: the #2673 schema-enforcement rule LANDED — it
+  // appears on BRINK-CONFIG.md seven times (lines ~136/150/160/167/409/418/438)
+  // and #2673 is closed with discharge evidence. Leaving it here caused five
+  // lessons agents to re-propose an extra copy (#2913, #2917, #2932, #2959,
+  // #2971 — the "ONE exception: already covered" clause was honored by some
+  // agents and missed by others). Add a rule here ONLY while it is genuinely
+  // absent from the page, and REMOVE it in the same PR that lands it.
 ];
 const pendingRulesBlock = PENDING_HOUSE_RULES.length
   ? `\n\n⚠ CARRIED-OVER RULES (#2673). These were earned by earlier waves whose fences forbade editing BRINK-CONFIG.md, so they have never landed on the page. Treat each as a lesson that ALREADY QUALIFIED — include it in your PR verbatim-or-sharper, and count it toward this wave's output even if the findings above yielded nothing. The ONE exception: if it is already covered by an existing rule, say which one and drop it.\n${PENDING_HOUSE_RULES.map((r) => "- " + r).join("\n")}`
