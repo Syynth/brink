@@ -669,6 +669,30 @@ impl Project {
     /// at that seam, instead of at every producer. This also collapses what
     /// was up to four full re-analyses (one per setter) into at most one.
     ///
+    /// `host_manifest`/`external_check`/`semantic_type_check` (issue #2757
+    /// Gap 1) are deliberately outside that seam —
+    /// `IdeSession::apply_analysis_options`'s own doc records why: they are
+    /// tooling-level concerns with no `brink.toml`/`[project]` key, sourced
+    /// independently, each with its own dedicated setter
+    /// (`set_host_manifest`/`set_external_check`/`set_semantic_type_check`)
+    /// — "a producer that owns one of those calls its own setter directly,
+    /// exactly as today". `brink ide` has no CLI flag that resolves a
+    /// non-default value for any of the three today (unlike `brink-web`'s
+    /// `EditorSession`, which exposes its own `set_host_manifest`/
+    /// `set_external_check`/`set_semantic_type_check` wasm methods driven
+    /// by explicit editor UI, not `brink.toml`), so this forwarding is
+    /// currently a no-op in practice for every shipped `brink ide`
+    /// invocation — but `db.analysis_options()` is `Driver::
+    /// set_analysis_options`'s general write surface, not a CLI-flag-only
+    /// one, so any future caller that lands a manifest/severity there
+    /// (directly, or once a flag exists) must have it actually reach the
+    /// constructed session rather than silently vanish here the way
+    /// `conventions` did three times before #1880/#2316/#2317. Forwarded
+    /// only when non-default (mirrors each field's own "no brink.toml
+    /// present" default), so a session that has nothing to forward doesn't
+    /// pay for the setters' own unconditional `reanalyze()` on top of
+    /// `apply_analysis_options`'s single guarded one below.
+    ///
     /// Called after every source is loaded — calling it first would
     /// reanalyze against an empty file set, then leave that stale (empty)
     /// result in place once sources are added via `update_source` (which
@@ -681,6 +705,32 @@ impl Project {
             if let (Some(path), Some(src)) = (db.file_path(id), db.source(id)) {
                 session.update_source(path, src.to_string());
             }
+        }
+        // Exhaustive destructure (mirrors `IdeSession::apply_analysis_
+        // options`'s own "not `..`" pattern) so a *new* `AnalysisOptions`
+        // field breaks compilation here too, not only at the seam —
+        // forcing an explicit forward-or-exclude decision at this producer,
+        // the exact gap issue #2757 Gap 1 closes for the three fields
+        // below. `dialect`/`types`/`lints`/`conventions` are discarded here
+        // (`_`) because `apply_analysis_options` forwards them itself,
+        // below.
+        let brink_analyzer::AnalysisOptions {
+            host_manifest,
+            external_check,
+            semantic_type_check,
+            dialect: _,
+            types: _,
+            lints: _,
+            conventions: _,
+        } = db.analysis_options().clone();
+        if let Some(manifest) = host_manifest {
+            session.set_host_manifest(manifest);
+        }
+        if external_check != brink_analyzer::ExternalCheckSeverity::default() {
+            session.set_external_check(external_check);
+        }
+        if semantic_type_check != brink_analyzer::SemanticTypeDiagnosticSeverity::default() {
+            session.set_semantic_type_check(semantic_type_check);
         }
         session.apply_analysis_options(db.analysis_options());
         session
@@ -1686,6 +1736,135 @@ mod ide_session_project_config_tests {
             session.conventions(),
             None,
             "no brink.toml must resolve conventions to None, not invent a pointer"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A [`brink_ir::HostManifest`] registering one external (`tint`) whose
+    /// sole parameter is closed to the enum `["#FF0000"]` — mirrors
+    /// `brink-ide`'s own `session.rs` test helper of the same name (the
+    /// `EXTERNAL tint(c)` / `tint("nope")` pairing below is the identical
+    /// fixture that helper's callers use to prove a registered manifest's
+    /// closed-domain check actually fires as `E042`).
+    fn color_manifest() -> brink_ir::HostManifest {
+        brink_ir::HostManifest {
+            markup: Vec::new(),
+            externals: vec![brink_ir::ManifestExternal {
+                name: "tint".into(),
+                params: vec![brink_ir::ManifestParam {
+                    name: "c".into(),
+                    ty: brink_ir::TypeRef("color".into()),
+                }],
+                returns: brink_ir::TypeRef::default(),
+                kind: brink_ir::ExternalKind::Presentation,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![brink_ir::SemanticTypeDef {
+                name: "color".into(),
+                base: brink_ir::BaseType::String,
+                constraint: Some(brink_ir::Constraint::Enum {
+                    values: vec!["#FF0000".into()],
+                }),
+                values: None,
+                widget: None,
+            }],
+        }
+    }
+
+    /// Issue #2757 (Gap 1): `db.analysis_options()`'s `host_manifest`/
+    /// `external_check`/`semantic_type_check` have no `brink.toml` key that
+    /// resolves them (`resolve_analysis_options` never touches any of the
+    /// three — same as `IdeSession::apply_analysis_options`'s own doc
+    /// records: "no `ProjectConfig` field maps to any of them"), but a
+    /// producer can still land a real value there directly, exactly as
+    /// `IdeSession::set_host_manifest`'s own callers do — `driver.
+    /// set_analysis_options` is the identical write `Project::load` itself
+    /// uses. Once one is registered, `Project::ide_session()` must forward
+    /// it (via `IdeSession::set_host_manifest`, mirroring what
+    /// `set_host_manifest`'s own doc calls "a producer that owns one of
+    /// those calls its own setter directly") rather than silently building
+    /// a session that never saw it — before this fix, `ide_session()` only
+    /// forwarded `dialect`/`types`/`lints`/`conventions` via
+    /// `apply_analysis_options`, so a registered manifest's closed-domain
+    /// check on `tint("nope")` never reached `rename_file`'s
+    /// `structural_result::gate*` safety checks or any other `ide_session()`
+    /// consumer.
+    #[test]
+    fn ide_session_forwards_a_registered_host_manifest() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-ide-session-host-manifest-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("story.ink"),
+            "EXTERNAL tint(c)\n~ tint(\"nope\")\n-> END\n",
+        )
+        .unwrap();
+
+        let entry = dir.join("story.ink");
+        let mut project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
+
+        let mut opts = project.driver.db().analysis_options().clone();
+        opts.host_manifest = Some(color_manifest());
+        project.driver.set_analysis_options(opts);
+
+        let session = project.ide_session();
+        let analysis = session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E042),
+            "ide_session() must forward the registered host manifest so the \
+             closed-domain (enum) violation on tint(\"nope\") is caught — the \
+             same E042 registering the identical manifest through \
+             IdeSession::set_host_manifest directly would catch: {:?}",
+            analysis.diagnostics
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #2757 (Gap 1), the severity-lever half: `external_check`/
+    /// `semantic_type_check` are tooling levers with no `brink.toml` key
+    /// either (same reasoning as `ide_session_forwards_a_registered_host_manifest`
+    /// above), but once a producer has resolved a non-default value onto
+    /// the db's `AnalysisOptions`, `ide_session()` must carry it onto the
+    /// constructed session — `IdeSession::analysis_options()` is the read
+    /// surface every consumer (including `structural_result::gate*`) checks.
+    #[test]
+    fn ide_session_forwards_check_severities() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-ide-session-check-severities-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
+
+        let entry = dir.join("story.ink");
+        let mut project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
+
+        let mut opts = project.driver.db().analysis_options().clone();
+        opts.external_check = brink_analyzer::ExternalCheckSeverity::Off;
+        opts.semantic_type_check = brink_analyzer::SemanticTypeDiagnosticSeverity::Error;
+        project.driver.set_analysis_options(opts);
+
+        let session = project.ide_session();
+        assert_eq!(
+            session.analysis_options().external_check,
+            brink_analyzer::ExternalCheckSeverity::Off,
+            "ide_session() must forward the resolved external_check severity"
+        );
+        assert_eq!(
+            session.analysis_options().semantic_type_check,
+            brink_analyzer::SemanticTypeDiagnosticSeverity::Error,
+            "ide_session() must forward the resolved semantic_type_check severity"
         );
 
         std::fs::remove_dir_all(&dir).ok();
