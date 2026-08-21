@@ -193,3 +193,22 @@ fn else_if_chain() {
 fn fn_prose_return() {
     round_trip_case("fn-prose-return");
 }
+
+// Issue #2200 (`pub` visibility round-tripping through `emit_native`) is
+// NOT added as a `round_trip_case` fixture here: `round_trip_case` runs the
+// full `brink-analyzer` pass (via `explore_from_brink_native`), and a
+// single-file harness with no `module { }` wrapper is always an
+// **undeclared** module (`declared_module`/`effective_visibility`,
+// `crates/internal/brink-analyzer/src/manifest.rs`) — whose default
+// visibility is already `Public`. Any top-level `pub` in that context is
+// therefore always a *redundant* override and always trips `E092`, on the
+// hand-written original source itself, before any emit/reparse — not a
+// regression from this fix, and not fixable by changing `emit_native`
+// (`ModuleDecl`/`module { }` emission is a separate, still-unsupported
+// channel, out of #2200's scope). See `crates/internal/brink-ir/src/hir/
+// emit_native.rs`'s own `tests::pub_*` round-trip tests instead, which use
+// this crate's established narrower discipline (`lower_native::lower` +
+// reparse, bypassing the full analyzer) for exactly this situation —
+// `tests::labeled_gather_continuation_round_trips` is the existing
+// precedent for a feature proven round-trip-safe there before/instead of a
+// full corpus fixture.
