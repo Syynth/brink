@@ -940,9 +940,24 @@ fn resolve_function(
         return;
     }
 
-    // Try variables (ink allows calling a variable holding a function ref)
+    // Try variables and constants (ink allows calling a variable holding a
+    // function ref; the native surface additionally allows a `const` to hold
+    // one — #1862's bare-name form and #1774's lambda-literal decl default,
+    // docs/t1c-spec.md §2a). `resolve_variable`'s own bare-read lookup
+    // (`lookup_variable` above) already searches `[Variable, Constant]`
+    // together for exactly this reason; this call-site lookup had been left
+    // `Variable`-only, so a CONST-bound fn value's call site could never
+    // resolve here — issue #2083's root cause. Root-caused to this one-line
+    // gap in `brink-analyzer` itself (confirmed to reproduce identically via
+    // a direct `brink_analyzer::resolve`/`analyze()` call, with no
+    // `brink-db` involved at all — the issue's own suspicion that this was
+    // an incremental-resolution bug in `brink-db`'s `resolve_query` was a
+    // misdiagnosis: the brink-ir test cited as clean-path evidence never
+    // actually asserted on `analyze()`'s resolution diagnostics, only on
+    // the declaring global's own lowered default shape).
     if !reserved_call_site
-        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable])
+        && let Some(id) =
+            lookup_by_name(index, scope, path, &[SymbolKind::Variable, SymbolKind::Constant])
     {
         map.push(ResolvedRef {
             file: file_id,

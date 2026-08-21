@@ -237,14 +237,24 @@ Pinned by `brink-ir`'s
   fallback a shadowed bare-name reference already gets. Not a soundness
   gap (gradual typing's fallback is sound by construction), just less
   precise than the bare-name case.
-- A **separate, pre-existing** gap (not introduced or fixed here):
-  calling a fn-valued global — bare-name (#1862) or lambda (#1774) —
-  from anywhere other than its own declaration does not resolve through
-  the production `compile_path` → `brink-db` incremental pipeline
-  (`E025`, "unresolved variable reference"), even though the identical
-  shape resolves cleanly through the simpler whole-project
-  `brink_analyzer::analyze` path `brink-ir`'s own tests use. See the
-  #1774 → #2083 (filed separately).
+- **Fixed** (#1774 → #2083, filed then resolved): calling a fn-valued
+  global — bare-name (#1862) or lambda (#1774) — from anywhere other
+  than its own declaration used to fail with `E025` ("unresolved
+  variable reference"). #2083's own report suspected a `brink-db`
+  incremental-resolution gap and pointed at the identical shape
+  resolving cleanly through the simpler whole-project
+  `brink_analyzer::analyze` path `brink-ir`'s own tests use as proof —
+  that proof did not hold up under RCA: the cited test never asserted
+  on `analyze()`'s own resolution diagnostics, only on the declaring
+  global's lowered default shape, so it never actually exercised the
+  call site. The real bug reproduced identically via a direct,
+  `brink-db`-free `brink_analyzer::resolve`/`analyze()` call: a `const`
+  fn value's call site was resolved by `resolve_function`'s "try
+  variables" lookup, which searched only `SymbolKind::Variable`, never
+  `SymbolKind::Constant` — a `var`-bound fn value's call site already
+  resolved. Fixed at the `brink-analyzer` layer by adding `Constant` to
+  that lookup, so both the db-direct and off-db `IdeSnapshot::analyze`
+  roads share the one fix by construction.
 - A narrower, **separate, pre-existing** gap, checked directly against
   this issue's own "does #1764/self-recursion become expressible" ask
   and found still no: a global `const`-bound lambda cannot call *itself*
