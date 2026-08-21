@@ -1611,7 +1611,7 @@ flow main() ~{
 // exercised below except `expr::lower_ref_projection_arg`'s: an *explicit*
 // `ref x.field` projection whose root is a `CONST` is already refused
 // upstream by the analyzer's own `E080` durable-root check
-// (`docs/t1e-spec.md` §2, "a `CONST` is not a mutable cell") before LIR
+// (`docs/diagnostics/E080.md`, "a `CONST` is not a mutable cell") before LIR
 // lowering ever runs, so no fixture reaches `lower_ref_projection_arg`'s
 // new check without *also* tripping `E080` first — the same "defense in
 // depth, not the expected path" posture that function's pre-existing
@@ -1722,6 +1722,30 @@ fn e187_does_not_fire_for_a_local_shadowing_a_const_name() {
                   ~ return SPEED\n=== main ===\n~ temp z = bump(1)\nValue is {z}.\n-> END\n";
     compile(source, brink_options())
         .expect("writing to a local that shadows a CONST's name must stay legal");
+}
+
+/// Native-surface regression: every fixture above compiles through
+/// `brink-syntax` (the ink/brink-extension frontend), but E187's own PR
+/// narration (RED/GREEN) ran the probe through the native `.brink` surface
+/// end to end — `const SPEED = 5; ~ { SPEED = 10; }` via a real
+/// `brink compile`. Nothing in this suite pinned that surface. Mirrors
+/// E148's own native coverage (`e148_write_to_a_choice_guard_as_binding_in_the_choice_body`
+/// and friends, all routed through `compile_native`): native's `const`
+/// keyword (lowercase, `brink-syntax-native`'s `KW_CONST`) resolves to the
+/// same `SymbolKind::Constant` as ink's `CONST` by the time LIR lowering
+/// runs, so the same `reject_const_write` call fires for either dialect.
+#[test]
+fn e187_const_write_native_surface() {
+    let source = "const SPEED = 5\n\nflow main() {\n  ~ { SPEED = 10; }\n  Speed is now \
+                  {SPEED}.\n  -> DONE\n}\n";
+    let err = compile_native("const-write-native", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("writing to a native `const` must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E187),
+        "expected E187 for `SPEED = 10` on the native surface, got: {diags:?}"
+    );
 }
 
 // ─── `remove`/`remove_at` migration tail (E149, issue #1532) ────────────

@@ -356,6 +356,13 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
 ///   desugars to an `Assign` whose target comes from calling this function.
 /// - The `pop`/`heap_pop` mutator intrinsics (`lir::lower::expr`) call this
 ///   for their single lvalue argument's root.
+/// - [`lower_bare_mutator`](super::blocks::lower_bare_mutator) — the bare-
+///   variable fast path for the entire `MutatorKind` family (`push`,
+///   `insert`, `remove`, `remove_at`, not just `pop`/`heap_pop` above) —
+///   calls this for its root.
+/// - [`lower_lvalue_container_chain`](super::blocks::lower_lvalue_container_chain)
+///   — the indexed-lvalue mutator path (`push(grid[y], v)`) — also calls
+///   this for the chain's root before reading any index level.
 ///
 /// It does **not** cover every write shape in the language: a single-level
 /// struct-field write/mutator (`p.field = v`, `push(p.field, v)`) resolves
