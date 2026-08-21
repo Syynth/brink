@@ -512,7 +512,7 @@ mod tests {
     }
 
     fn projection(decls: &[ClaimHandlerDecl]) -> ConventionsProjection {
-        ConventionsProjection::from_decls(decls, &no_structs())
+        ConventionsProjection::from_decls(decls, &[], &no_structs())
     }
 
     #[test]
@@ -635,7 +635,7 @@ mod tests {
                 ty: crate::SchemaTypeShape::Named("string".to_string()),
             }],
         );
-        let p = ConventionsProjection::from_decls(&[decl_with_attach], &structs);
+        let p = ConventionsProjection::from_decls(&[decl_with_attach], &[], &structs);
         let result = classify_line(&p, TextSize::from(0), "VENDOR");
         let matched = result.matched.expect("expected a match");
         assert_eq!(
@@ -658,7 +658,7 @@ mod tests {
     fn a_hit_carries_an_unresolved_attach_schema_through_too() {
         let mut decl_with_attach = decl("cue", 10, "^(?<who>[A-Z]+)$");
         decl_with_attach.attach = Some("NoSuchStruct".to_string());
-        let p = ConventionsProjection::from_decls(&[decl_with_attach], &no_structs());
+        let p = ConventionsProjection::from_decls(&[decl_with_attach], &[], &no_structs());
         let result = classify_line(&p, TextSize::from(0), "VENDOR");
         let matched = result.matched.expect("expected a match");
         assert_eq!(
@@ -797,12 +797,18 @@ flow main() {
         (hir, tree.syntax().clone())
     }
 
-    /// The projection a real file's own declared `@[convention]` handlers
-    /// give, exactly as `brink_db::queries::analysis::conventions_projection_query`
-    /// builds it from `HirFile::claim_handlers` — none of the fixture's
-    /// handlers declares `attach`, so an empty struct map is enough.
+    /// The projection a real file's own declared `@[convention]`/
+    /// `@[element]` handlers give, exactly as
+    /// `brink_db::queries::analysis::conventions_projection_query` builds it
+    /// from `HirFile::claim_handlers`/`HirFile::dispatch_handlers` — none of
+    /// the fixture's handlers declares `attach`, so an empty struct map is
+    /// enough.
     fn projection_from(hir: &crate::HirFile) -> ConventionsProjection {
-        ConventionsProjection::from_decls(&hir.claim_handlers, &BTreeMap::new())
+        ConventionsProjection::from_decls(
+            &hir.claim_handlers,
+            &hir.dispatch_handlers,
+            &BTreeMap::new(),
+        )
     }
 
     /// Find the node `try_claim` claimed for `elm` (via

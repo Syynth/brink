@@ -237,5 +237,8 @@ fn lower_source_file(
         // Same reason, extended to the declaration record (issue #1844):
         // ink has no claiming handlers to declare.
         claim_handlers: Vec::new(),
+        // Same reason, extended to the dispatch declaration record (issue
+        // #2352): ink has no `!name` sigil dispatch channel either.
+        dispatch_handlers: Vec::new(),
     }
 }

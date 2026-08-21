@@ -340,6 +340,7 @@ mod tests {
             cue_names: Vec::new(),
             native: false,
             claim_handlers: Vec::new(),
+            dispatch_handlers: Vec::new(),
         }
     }
 

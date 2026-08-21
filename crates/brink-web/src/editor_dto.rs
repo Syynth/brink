@@ -1096,6 +1096,7 @@ mod explain_match_to_js_tests {
         let attempted = vec![
             brink_ir::ConventionProjectionEntry {
                 name: name("interior", 0, 8),
+                dispatch_name: None,
                 pattern: "^INT\\. (?<place>.+)$".to_owned(),
                 order: 10,
                 mode: brink_ir::ConventionMode::Attach,
@@ -1106,6 +1107,7 @@ mod explain_match_to_js_tests {
             },
             brink_ir::ConventionProjectionEntry {
                 name: name("any_line", 20, 28),
+                dispatch_name: None,
                 pattern: "^.*$".to_owned(),
                 order: 20,
                 mode: brink_ir::ConventionMode::Wrap,

@@ -634,6 +634,73 @@ flow main() {
         );
     }
 
+    /// Fixture for issue #2352's own test: a real, DECLARED `!name`
+    /// dispatch handler (`radio`, `@[element(args = "…")]`) in the
+    /// configured conventions module — unlike [`BANG_DISPATCH_FIXTURE`]
+    /// above, whose `!shout` line names no declared handler at all (that
+    /// fixture is purely about node-selection, #2356's own concern).
+    const BANG_DISPATCH_WITH_DECLARED_HANDLER: &str = "\
+@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]
+fn radio(chan, text) {
+  return text;
+}
+
+flow main() {
+  !radio TAC-2: All units report in.
+}
+";
+
+    fn session_with_declared_bang_dispatch() -> EditorSession {
+        let mut s = EditorSession::new();
+        s.update_file("conventions.brink", BANG_DISPATCH_WITH_DECLARED_HANDLER);
+        s.apply_project_config("[project]\nconventions = \"conventions.brink\"\n")
+            .expect("valid conventions pointer");
+        assert!(s.set_active_file("conventions.brink"));
+        s
+    }
+
+    /// Issue #2352's own reachability proof, through the real
+    /// `EditorSession` → `IdeSession` → `ProjectDb` road (not a hand-built
+    /// `ConventionsProjection::from_decls` unit test — those live in
+    /// `brink-ir`, see `hir::types::conventions_projection_tests` and
+    /// `brink-db`'s `issue_2111_conventions_projection.rs`). Before this
+    /// issue's fix, `ConventionsProjection` had no `dispatch` field at all —
+    /// a `@[element(args = "…")]` handler was structurally invisible to
+    /// every editor surface reading `self.session.db().conventions_projection()`,
+    /// this crate's own read included. This is the row's existence,
+    /// reachable exactly the way `explain_match_impl` itself reaches the
+    /// projection.
+    ///
+    /// This does NOT assert `explain_match(...)` itself reports
+    /// `matched: true` for the `!radio` line — `classify_line`'s raw-text
+    /// walk does not yet consult `projection.dispatch` at all (a `!name`
+    /// line's pattern is written against the remainder AFTER the sigil is
+    /// stripped, never the whole line — see `DispatchHandlerDecl::pattern`'s
+    /// own doc), so wiring real dispatch matching into the interactive walk
+    /// is deliberately left as follow-up work, not invented here. What DOES
+    /// change, and is proven here, is that the row now exists at all: the
+    /// literal, complete scope issue #2352 asks for.
+    #[test]
+    fn the_projection_reaches_a_declared_bang_dispatch_handler_through_editor_session() {
+        let s = session_with_declared_bang_dispatch();
+        let projection = s.session.db().conventions_projection();
+        assert!(
+            projection.entries.is_empty(),
+            "no @[convention] handler was declared: {projection:?}"
+        );
+        assert_eq!(
+            projection.dispatch.len(),
+            1,
+            "the declared @[element] handler must get a row, reachable through the \
+             live EditorSession: {projection:?}"
+        );
+        assert_eq!(projection.dispatch[0].name.text, "radio");
+        assert_eq!(
+            projection.dispatch[0].pattern,
+            "^(?<chan>[A-Z0-9-]+): (?<text>.+)$"
+        );
+    }
+
     /// The miss sibling of the hit above, at the same live-db layer: a line
     /// that matches no declared handler must report a real (non-empty)
     /// `attempted` list, not the pre-#1880 "unconfigured" empty list.

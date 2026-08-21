@@ -1339,6 +1339,61 @@ validation, never sourcing or transporting the rows itself. `with_succession`
 is exercised only from `brink-ir`'s own test module today — this is a
 validation service with no wiring to a real producer yet, not a feature.
 
+### 5.3 Implementation status — `!name` dispatch rows in the projection (#2352, 2026-08-21)
+
+`ConventionsProjection` (§5.1/§5.2's carrier) only ever projected
+`@[convention]` claiming handlers, into `entries`. A handler declared via
+the `!name` sigil dispatch form (`@[element(args = "…")]`,
+`ElementKind::BangDispatch`) contributed no row at all, so an editor surface
+reading the projection had structurally nothing to match a `!name` line
+against. What shipped:
+
+- **A second, separate list.** `ConventionsProjection::dispatch:
+  Vec<ConventionProjectionEntry>`, populated by
+  `ConventionsProjection::from_decls`'s new `dispatch_decls` parameter — one
+  row per `HirFile::dispatch_handlers` entry. Deliberately **not** merged
+  into `entries`: a `!name` handler has no real precedence to compare
+  against a claim handler's authored `order` (`!name` dispatch is an O(1)
+  name-keyed `BTreeMap` lookup, never a ranked walk over competitors).
+- **`order` means something narrower here.** Each dispatch row's `order` is
+  the input slice's own array position (declaration order, read off
+  `Elements::dispatch`'s `BTreeMap` key order today), not authored
+  precedence — never comparable to an `entries` row's `order`.
+- **`attach` is always `None`.** `@[element]` has no `attach = StructName`
+  clause (issue #2178 is `@[convention]`-only) — never `Unresolved`, which
+  would wrongly imply a clause was declared but failed to resolve.
+- **`dispatch_name` is the row's actual key.** A dispatch row's own function
+  name (`name.text`) is the declaration-site anchor (what a hover jumps to),
+  but the literal spelling an author writes after `!` is the `name = "…"`
+  alias when one is declared. `ConventionProjectionEntry::dispatch_name`
+  carries that alias (or the fn's own name, when no alias is declared) —
+  matching a raw `!name` line against a projection row requires this field,
+  never `name`.
+- **Known limitation, left open pending a ruling.** `!name` dispatch is
+  file-local at the language level (§9's own "#2004's `!name` dispatch is
+  file-local," `docs/diagnostics/E169.md`'s "`!name`-dispatched handlers
+  stay legal anywhere") — a `!name` handler is reachable only from lines in
+  the file it's declared in, wherever that file is. But
+  `conventions_projection_query` reads `dispatch_handlers` off only the
+  ONE configured conventions-module file, the same scope `entries` uses. A
+  `!name` handler declared in an ordinary (non-conventions) story file — the
+  common case, since dispatch carries no confinement rule the way
+  `@[convention]` does — contributes **no row at all**. Issue #2352 asks
+  "where do file-local `!name` rows live" as an open design question; this
+  slice does not answer it.
+- **Not yet wired into interactive matching.** `classify_line`'s raw-text
+  matching walk (what `explainMatch` reports `matched: true`/`false` off of)
+  does not yet consult `dispatch` — `explain_match_declines_the_node_path_
+  for_a_bang_dispatch_remainder` still passes, unchanged. That needs a
+  name-keyed lookup against the sigil-stripped remainder (not the linear
+  "try every entry" walk `classify_line` uses for claim handlers) and
+  touches `ExplainMatchCache`'s caching invariants — left as explicit
+  follow-up.
+- **Not on the wire.** `ConventionsProjection::to_wire()` mirrors `entries`
+  only — `dispatch` never rides the `.inkb`-section-codec shape (see that
+  function's own doc); nothing serializes a `ConventionsProjection` at all
+  today, so this has no observable wasm-boundary consequence yet.
+
 ## 6. Display metrics & measurement (#362 becomes a consumer)
 
 - **The host declares metrics in the manifest** (host-authored,

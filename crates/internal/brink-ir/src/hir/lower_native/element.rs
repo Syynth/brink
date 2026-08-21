@@ -357,6 +357,31 @@ impl Elements {
             })
             .collect()
     }
+
+    /// Every `!name`-dispatched handler *declared* in this file (issue
+    /// #2004, issue #2352) — [`Elements::dispatch`]'s own `BTreeMap`, read
+    /// out in its key order (dispatch name, ascending). `!name` dispatch
+    /// has no cross-file injection at all (unlike [`handler_decls`]'s own
+    /// local/injected split — see [`Elements::dispatch`]'s own doc,
+    /// "Deliberately not here"), so every entry here is by construction a
+    /// local declaration; there is no `decl.is_some()` filter to apply the
+    /// way [`local_handlers`](Self::local_handlers) needs one.
+    ///
+    /// [`crate::ConventionsProjection::from_decls`]'s second row source
+    /// (issue #2352) — see that function's own doc.
+    pub(super) fn dispatch_handler_decls(&self) -> Vec<crate::DispatchHandlerDecl> {
+        self.dispatch
+            .iter()
+            .map(|(dispatch_name, h)| crate::DispatchHandlerDecl {
+                dispatch_name: dispatch_name.clone(),
+                name: h.name.clone(),
+                annotation: h.annotation,
+                params: h.params.clone(),
+                pattern: h.pattern.as_str().to_string(),
+                block: h.block,
+            })
+            .collect()
+    }
 }
 
 /// Collect every claiming handler declared in `root`.

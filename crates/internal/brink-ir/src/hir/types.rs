@@ -148,6 +148,15 @@ pub struct HirFile {
     /// frontend (`hir::lower_native::element::collect`); always empty for
     /// the ink frontend.
     pub claim_handlers: Vec<ClaimHandlerDecl>,
+    /// Every `!name`-dispatched (`@[element(args = "…")]`) handler
+    /// *declared* in this file (issue #2004, issue #2352), in the same
+    /// array-position-preserving discipline `claim_handlers` uses —
+    /// independent of whether it ever won a dispatch. Populated by the
+    /// native frontend (`hir::lower_native::element::collect`); always
+    /// empty for the ink frontend, whose grammar has no `!name` channel.
+    /// [`ConventionsProjection::from_decls`]'s second row source (issue
+    /// #2352) — see that function's own doc.
+    pub dispatch_handlers: Vec<DispatchHandlerDecl>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -592,6 +601,79 @@ pub struct ClaimHandlerDecl {
     pub attach: Option<String>,
 }
 
+/// One `!name`-dispatched handler *declared* in a file (issue #2004's
+/// `@[element(args = "…")]` sigil dispatch), recorded regardless of whether
+/// it ever won a dispatch — the dispatch-side counterpart to
+/// [`ClaimHandlerDecl`], and issue #2352's fix: without this type,
+/// [`ConventionsProjection::from_decls`] had no second row source at all
+/// for a `BangDispatch`-declared handler, so `classify_line`/`explainMatch`
+/// had no row to match a `!name` line against (a `!name` handler was
+/// structurally invisible to every editor surface reading the projection).
+///
+/// Deliberately a **separate** shape from [`ClaimHandlerDecl`], not a reuse
+/// with optional fields, because two of that struct's fields have no
+/// truthful value here:
+///
+/// - **No `order`.** `@[element(args = "…")]` has no `order` clause at all
+///   ([`crate::ElementAnnotation`] carries no such field) — unlike
+///   `@[convention]`'s pattern-precedence walk (issue #2164, total,
+///   project-wide, over potentially many competing handlers), a `!name`
+///   line is looked up by its own name **exactly once**
+///   (`hir::lower_native::element::Elements::dispatch` is a `BTreeMap`
+///   keyed by dispatch name — an O(1) key lookup, not a linear walk over
+///   ranked competitors). "Which precedence was this tried at" is not a
+///   question that has a real answer for a dispatch handler; inventing a
+///   number to paper over that would misrepresent a real precedence walk
+///   where none exists. See [`ConventionsProjection::dispatch`]'s own doc
+///   for where this shows up in the projection, and for what `order` DOES
+///   carry there instead (array position, not authored precedence).
+/// - **No `attach`.** `@[element]` has no `attach = StructName` clause
+///   either (issue #2178 is `@[convention]`-only) — every
+///   [`ConventionProjectionEntry`] this decl projects to therefore carries
+///   `attach: None`, always, honestly (not "unresolved", not a guess).
+///
+/// `params`/`pattern`/`block` mean exactly what they do on the internal
+/// `DispatchHandler` this is read from (`hir::lower_native::element`) —
+/// only what a projection consumer needs travels here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchHandlerDecl {
+    /// The `!`-sigil dispatch key this handler is registered under
+    /// (`hir::lower_native::element::Elements::dispatch`'s own `BTreeMap`
+    /// key) — the `name = "…"` alias if declared, else `name.text`. This is
+    /// the **only** spelling an author can write after `!` to reach this
+    /// handler (`!walkie`, not necessarily `!tally`), so it is what
+    /// [`ConventionsProjection::dispatch`]'s row carries as
+    /// [`ConventionProjectionEntry::dispatch_name`] — matching a `!name`
+    /// line against a projection row requires the map key, not the
+    /// declaration's own function name, whenever the two differ.
+    pub dispatch_name: String,
+    /// The handler's own name, carrying its declaration-site range — the
+    /// rewritten call's target and the projection row's jump-to-declaration
+    /// site. May differ from [`Self::dispatch_name`] when an explicit
+    /// `name = "…"` alias is declared — see that field's own doc.
+    pub name: Name,
+    /// Range of the `@[element(args = "…")]` annotation line itself.
+    pub annotation: TextRange,
+    /// Parameter names in declaration order — the argument order a
+    /// rewritten call uses. Unlike [`ClaimHandlerDecl::params`], not
+    /// guaranteed to be exactly the pattern's named-capture set (`args` has
+    /// no `E167` counterpart — a `!name` handler stays callable by hand
+    /// with ordinary arguments not covered by any capture).
+    pub params: Vec<String>,
+    /// The `args = "…"` pattern's regex source (uncompiled, same reason
+    /// [`ClaimHandlerDecl::pattern`] is), matched against the dispatched
+    /// line's remainder — the text *after* the `!name ` prefix is stripped
+    /// — never against the whole line the way a claiming pattern's
+    /// projection row is notionally described. See
+    /// `hir::lower_native::element::try_dispatch`'s own doc for the exact
+    /// stripping this pattern is written against.
+    pub pattern: String,
+    /// The bare `block` clause (issue #1839) — identical meaning to
+    /// [`ClaimHandlerDecl::block`], for a `!name`-dispatched handler instead
+    /// of a claiming one.
+    pub block: bool,
+}
+
 // ─── The serialized conventions projection (issue #2111) ────────────
 
 /// The attachment mode a `@[convention]` handler declares — issue #2164's
@@ -716,6 +798,18 @@ pub struct ConventionProjectionEntry {
     /// The handler's own name, carrying its declaration-site range — what a
     /// hover/explain-match consumer jumps to.
     pub name: Name,
+    /// The `!`-sigil dispatch key this row is reachable under — see
+    /// [`DispatchHandlerDecl::dispatch_name`]'s own doc. `None` for every
+    /// row in [`ConventionsProjection::entries`] (a claim handler is looked
+    /// up by pattern match, not by a written key — [`Self::name`] alone is
+    /// the only spelling that matters there). `Some(..)` for every row in
+    /// [`ConventionsProjection::dispatch`]: the actual text an author must
+    /// write after `!` to reach this handler, which is `name.text` only
+    /// when no `name = "…"` alias was declared — a consumer matching a raw
+    /// `!name` line against this projection MUST key off this field, never
+    /// off [`Self::name`], or an aliased handler becomes unfindable under
+    /// its only author-writable spelling (issue #2352 review).
+    pub dispatch_name: Option<String>,
     /// The claiming pattern's regex source, as declared.
     pub pattern: String,
     /// The claiming precedence — see [`ConventionAnnotation::order`]'s own
@@ -770,8 +864,9 @@ pub struct ConventionProjectionEntry {
 ///    `StructShapeDef`/`FrameShapeDef` rather than `serde` — this crate's
 ///    `.inkb` format is not serde-based anywhere), with a `to_wire()`
 ///    conversion (every field the wire shape carries round-trips exactly;
-///    see [`Self::to_wire`]'s own doc for the one field it deliberately
-///    does not carry) and round-trip tests. What does **not** yet
+///    see [`Self::to_wire`]'s own doc for the fields it deliberately does
+///    not carry — `transitions`/`templates`, and, as of issue #2352,
+///    `dispatch`) and round-trip tests. What does **not** yet
 ///    exist is a `StoryData` field / `SectionKind` tag / codegen population —
 ///    that requires threading a whole-project claim-handler join
 ///    (`brink_analyzer::conventions_registry`) through LIR lowering, which
@@ -810,6 +905,62 @@ pub struct ConventionProjectionEntry {
 pub struct ConventionsProjection {
     /// Every declared `@[convention]` handler, ascending by `order`.
     pub entries: Vec<ConventionProjectionEntry>,
+    /// Every declared `@[element(args = "…")]` (`!name` sigil dispatch)
+    /// handler (issue #2352) — [`ConventionsProjection::from_decls`]'s
+    /// second row source, added because `entries` above had none at all:
+    /// a `BangDispatch`-declared handler was structurally invisible to
+    /// `classify_line`/`explainMatch`, which can only match a row that
+    /// exists.
+    ///
+    /// **Deliberately a separate list, not merged into `entries`.** Both
+    /// [`ConventionProjectionEntry::order`]'s own doc and
+    /// [`DispatchHandlerDecl`]'s own doc explain why: a dispatch handler has
+    /// no real precedence value to compare against a claim handler's
+    /// authored `order` (`!name` dispatch is an O(1) name-keyed lookup —
+    /// `hir::lower_native::element::Elements::dispatch` is a `BTreeMap`,
+    /// never a ranked walk over competing handlers the way `entries`' own
+    /// linear-precedence semantics assume). Interleaving the two into one
+    /// `order`-sorted sequence would require inventing a numeric position
+    /// for that non-existent precedence — exactly the "paper over a field
+    /// with no truthful value" outcome issue #2352 was raised to avoid.
+    /// Each entry's own `order` field here is real, but narrower than its
+    /// `entries` counterpart: it is [`DispatchHandlerDecl`]'s own array
+    /// position (the input slice's declaration order — the *existing*
+    /// interim first-declared-wins rule
+    /// `hir::lower_native::element::Elements::dispatch`'s own doc already
+    /// names, now recorded as a number instead of only encoded via
+    /// `BTreeMap` iteration), **not** a value comparable to any `entries`
+    /// row's `order`.
+    ///
+    /// Every row here also carries `attach: None` unconditionally
+    /// (`@[element]` has no `attach` clause — [`DispatchHandlerDecl`]'s own
+    /// doc) and `mode` read off the same `block` clause `entries` reads
+    /// (the one field that genuinely means the same thing for both
+    /// annotation kinds).
+    ///
+    /// # Known limitation (issue #2352 review): only ONE file's declarations
+    ///
+    /// `!name` dispatch is file-local at the *language* level — a `!name`
+    /// line is only ever looked up against handlers declared in the SAME
+    /// file it appears in (`hir::lower_native::element`'s own module doc,
+    /// "Deliberately not here"; `docs/prose-dialect-spec.md` §9 "#2004's
+    /// `!name` dispatch is file-local"; `docs/diagnostics/E169.md`, "`!name`
+    /// -dispatched handlers stay legal anywhere"). But
+    /// `brink_db::queries::analysis::conventions_projection_query`, the only
+    /// query that builds one of these, reads `dispatch_handlers` off the
+    /// project's ONE configured conventions-module file — the same file
+    /// `entries` above is scoped to. A `!name` handler declared in an
+    /// ordinary (non-conventions) story file, which is the common case
+    /// (dispatch carries no confinement rule the way `@[convention]` does),
+    /// contributes **no row here at all** — this list is not "every `!name`
+    /// handler in the project," only "every one that happens to live in the
+    /// conventions file." An editor explaining a `!name` line in any other
+    /// file gets an always-empty `dispatch` to search, never the handler
+    /// that actually claims it. Left open pending a ruling on issue #2352
+    /// ("where do file-local `!name` rows live") rather than guessed at
+    /// here — see that query's own doc for the same limitation from the
+    /// query side.
+    pub dispatch: Vec<ConventionProjectionEntry>,
     /// Editor-overlay Tab/Enter/Shift-Tab succession rows (issue #2115) —
     /// `DialogueDialect` (#368)'s surviving `transitions` field, attached via
     /// [`Self::with_succession`] and re-keyed against THIS projection's own
@@ -853,13 +1004,22 @@ impl ConventionsProjection {
     /// breaking name collisions deterministically — is the caller's job
     /// (`brink_db::queries::analysis::conventions_projection_query`); this
     /// function only does the per-entry lookup, so it stays a pure function
-    /// of its two inputs with no salsa/project awareness of its own. An
+    /// of its three inputs with no salsa/project awareness of its own. An
     /// `attach` name absent from `structs` becomes
     /// [`ConventionAttachSchema::Unresolved`] — never silently dropped, and
     /// never a fabricated empty field list.
+    ///
+    /// `dispatch_decls` (issue #2352) is the second row source: every
+    /// `@[element(args = "…")]` (`!name` sigil dispatch) handler declared in
+    /// the same file, ordered the same array-position-preserving way
+    /// `decls` already is. See [`Self::dispatch`]'s own doc for why these
+    /// land in a **separate** field rather than merged into `entries`, and
+    /// for what `order` means on a row projected from here (array position,
+    /// not authored precedence — no dispatch handler has the latter).
     #[must_use]
     pub fn from_decls(
         decls: &[ClaimHandlerDecl],
+        dispatch_decls: &[DispatchHandlerDecl],
         structs: &BTreeMap<String, Vec<ConventionAttachField>>,
     ) -> Self {
         Self {
@@ -867,6 +1027,7 @@ impl ConventionsProjection {
                 .iter()
                 .map(|decl| ConventionProjectionEntry {
                     name: decl.name.clone(),
+                    dispatch_name: None,
                     pattern: decl.pattern.clone(),
                     order: decl.order,
                     mode: if decl.block {
@@ -882,6 +1043,29 @@ impl ConventionsProjection {
                         },
                         None => ConventionAttachSchema::Unresolved(name.clone()),
                     }),
+                })
+                .collect(),
+            dispatch: dispatch_decls
+                .iter()
+                .enumerate()
+                .map(|(index, decl)| ConventionProjectionEntry {
+                    name: decl.name.clone(),
+                    dispatch_name: Some(decl.dispatch_name.clone()),
+                    pattern: decl.pattern.clone(),
+                    // See `Self::dispatch`'s own doc: this is `decl`'s own
+                    // array position, never a value comparable to an
+                    // `entries` row's `order` — a `!name` handler has no
+                    // real precedence to record.
+                    order: i64::try_from(index).unwrap_or(i64::MAX),
+                    mode: if decl.block {
+                        ConventionMode::Wrap
+                    } else {
+                        ConventionMode::Attach
+                    },
+                    disposition: ElementDisposition::Call,
+                    // `@[element]` has no `attach` clause at all — see
+                    // `DispatchHandlerDecl`'s own doc.
+                    attach: None,
                 })
                 .collect(),
             transitions: Vec::new(),
@@ -956,6 +1140,17 @@ impl ConventionsProjection {
     /// and `.inkb` is beyond tooling — it is what a game host loads, and a
     /// runtime has no Tab key. [`Self::with_succession`]'s validator half
     /// survives intact; only the wire transport was undone.
+    ///
+    /// [`Self::dispatch`] (issue #2352) does **not** ride this wire shape
+    /// either — deliberately, not a silent drop: `to_wire`'s whole *point* is
+    /// the future `.inkb`/`StoryData` seam, and no consumer of that seam
+    /// exists yet for either list (finding 2's "not yet wired into
+    /// `StoryData`" caveat above applies equally to both). Nothing today
+    /// serializes a `ConventionsProjection` at all — `dispatch` is reachable
+    /// only through `EditorSession`'s live, in-process projection (issue
+    /// #2237) — so this omission has no observable wasm-boundary
+    /// consequence today, but is recorded here rather than left to be
+    /// re-discovered the next time someone extends this function.
     #[must_use]
     pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
         brink_format::ConventionsProjectionDef {
@@ -2976,6 +3171,29 @@ mod conventions_projection_tests {
         BTreeMap::new()
     }
 
+    fn dispatch_decl(name_text: &str, block: bool) -> DispatchHandlerDecl {
+        dispatch_decl_aliased(name_text, name_text, block)
+    }
+
+    /// Like [`dispatch_decl`], but with a `dispatch_name` (the `!`-sigil
+    /// map key — the `name = "…"` alias, when one is declared) that differs
+    /// from the declaration's own `name` — the shape a `name = "…"` alias
+    /// produces.
+    fn dispatch_decl_aliased(
+        dispatch_name_text: &str,
+        name_text: &str,
+        block: bool,
+    ) -> DispatchHandlerDecl {
+        DispatchHandlerDecl {
+            dispatch_name: dispatch_name_text.to_string(),
+            name: name(name_text),
+            annotation: TextRange::default(),
+            params: Vec::new(),
+            pattern: format!("^{name_text}$"),
+            block,
+        }
+    }
+
     fn field(name: &str, ty: SchemaTypeShape) -> ConventionAttachField {
         ConventionAttachField {
             name: name.to_string(),
@@ -2992,7 +3210,7 @@ mod conventions_projection_tests {
             decl("exterior", 20, false, None),
             decl("interior", 10, false, None),
         ];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         let names: Vec<&str> = projection
             .entries
             .iter()
@@ -3001,13 +3219,104 @@ mod conventions_projection_tests {
         assert_eq!(names, vec!["exterior", "interior"]);
     }
 
+    /// Issue #2352: `dispatch_decls` (the second row source) gets the same
+    /// order-preserving treatment `decls` already does — a new, standalone
+    /// test, not an extension of `from_decls_preserves_input_order` above
+    /// (an earlier version of this comment claimed the issue itself
+    /// instructed extending that test; #2352's body contains no such
+    /// instruction — corrected per review). `Elements::dispatch_handler_decls`
+    /// reads its `BTreeMap` in key order, which need not agree with any
+    /// authored `order` (dispatch has none) — this proves `from_decls`
+    /// trusts whatever array position it is handed, exactly like `decls`.
+    #[test]
+    fn from_decls_preserves_dispatch_input_order_too() {
+        let dispatch_decls = vec![dispatch_decl("walkie", false), dispatch_decl("radio", true)];
+        let projection = ConventionsProjection::from_decls(&[], &dispatch_decls, &no_structs());
+        let names: Vec<&str> = projection
+            .dispatch
+            .iter()
+            .map(|e| e.name.text.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["walkie", "radio"],
+            "dispatch rows must not be re-sorted behind the caller's back either"
+        );
+    }
+
+    /// A `!name` alias (`name = "…"`) makes the row's `dispatch_name` the
+    /// alias, not the declaration's own fn name — the exact loss a #2352
+    /// review finding caught: the projection must be matchable by the only
+    /// spelling an author can actually write after `!`.
+    #[test]
+    fn dispatch_row_carries_the_alias_as_dispatch_name() {
+        let dispatch_decls = vec![dispatch_decl_aliased("walkie", "tally", false)];
+        let projection = ConventionsProjection::from_decls(&[], &dispatch_decls, &no_structs());
+        assert_eq!(projection.dispatch[0].name.text, "tally");
+        assert_eq!(
+            projection.dispatch[0].dispatch_name.as_deref(),
+            Some("walkie")
+        );
+    }
+
+    /// Issue #2352's own fix: before it, `from_decls` had no second row
+    /// source at all — a project with only a `@[element(args = "…")]`
+    /// (`!name` sigil dispatch) handler and NO `@[convention]` handler
+    /// produced an empty projection in every field, so `classify_line`/
+    /// `explainMatch` had structurally nothing to match a `!name` line
+    /// against. This is the row's existence, proven directly (RED before
+    /// this issue's fix: `dispatch` did not exist on `ConventionsProjection`
+    /// at all; GREEN after: it carries exactly one entry).
+    #[test]
+    fn a_bang_dispatch_only_project_still_projects_a_row() {
+        let dispatch_decls = vec![dispatch_decl("radio", false)];
+        let projection = ConventionsProjection::from_decls(&[], &dispatch_decls, &no_structs());
+        assert!(
+            projection.entries.is_empty(),
+            "no @[convention] handler was declared"
+        );
+        assert_eq!(
+            projection.dispatch.len(),
+            1,
+            "the one @[element] handler must get a row"
+        );
+        assert_eq!(projection.dispatch[0].name.text, "radio");
+    }
+
+    /// Every dispatch row's fields are honest about what `@[element]` can
+    /// and cannot declare (issue #2352's own "no truthful value" finding):
+    /// `attach` is always `None` (no `attach` clause exists for `@[element]`
+    /// at all — never `Unresolved`, which would wrongly imply one was
+    /// declared but failed to resolve), and `mode` still reads the real
+    /// `block` clause, which DOES mean the same thing for both annotation
+    /// kinds.
+    #[test]
+    fn dispatch_rows_carry_no_attach_and_a_real_mode() {
+        let dispatch_decls = vec![dispatch_decl("radio", false), dispatch_decl("cue", true)];
+        let projection = ConventionsProjection::from_decls(&[], &dispatch_decls, &no_structs());
+        assert_eq!(projection.dispatch[0].attach, None);
+        assert_eq!(projection.dispatch[0].mode, ConventionMode::Attach);
+        assert_eq!(projection.dispatch[1].attach, None);
+        assert_eq!(projection.dispatch[1].mode, ConventionMode::Wrap);
+    }
+
+    /// A dispatch row's `disposition` is `Call` too — every dispatch match
+    /// rewrites to exactly one call, same as a claim match
+    /// (`hir::lower_native::element::try_dispatch`'s own doc).
+    #[test]
+    fn dispatch_rows_carry_call_disposition() {
+        let projection =
+            ConventionsProjection::from_decls(&[], &[dispatch_decl("radio", false)], &no_structs());
+        assert_eq!(projection.dispatch[0].disposition, ElementDisposition::Call);
+    }
+
     #[test]
     fn block_flag_becomes_wrap_mode_and_its_absence_becomes_attach_mode() {
         let decls = vec![
             decl("cue", 10, true, None),
             decl("interior", 20, false, None),
         ];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         assert_eq!(projection.entries[0].mode, ConventionMode::Wrap);
         assert_eq!(projection.entries[1].mode, ConventionMode::Attach);
     }
@@ -3026,7 +3335,7 @@ mod conventions_projection_tests {
                 field("offscreen", SchemaTypeShape::Named("bool".to_string())),
             ],
         );
-        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let projection = ConventionsProjection::from_decls(&decls, &[], &structs);
         assert_eq!(
             projection.entries[0].attach,
             Some(ConventionAttachSchema::Resolved {
@@ -3054,7 +3363,7 @@ mod conventions_projection_tests {
                 field("a_field", SchemaTypeShape::Named("string".to_string())),
             ],
         );
-        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let projection = ConventionsProjection::from_decls(&decls, &[], &structs);
         let Some(ConventionAttachSchema::Resolved { fields, .. }) = &projection.entries[0].attach
         else {
             unreachable!(
@@ -3077,7 +3386,7 @@ mod conventions_projection_tests {
     #[test]
     fn attach_schema_unresolved_struct_name_is_flagged_not_dropped() {
         let decls = vec![decl("cue", 10, false, Some("Ghost"))];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         assert_eq!(
             projection.entries[0].attach,
             Some(ConventionAttachSchema::Unresolved("Ghost".to_string()))
@@ -3087,7 +3396,7 @@ mod conventions_projection_tests {
     #[test]
     fn no_attach_clause_projects_to_none() {
         let decls = vec![decl("interior", 10, false, None)];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         assert_eq!(projection.entries[0].attach, None);
     }
 
@@ -3098,13 +3407,13 @@ mod conventions_projection_tests {
         // e.g. hardcoding a literal in a way that would silently stay
         // correct even if this field were dropped from the struct.
         let decls = vec![decl("interior", 10, false, None)];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         assert_eq!(projection.entries[0].disposition, ElementDisposition::Call);
     }
 
     #[test]
     fn an_empty_decl_set_projects_to_an_empty_projection() {
-        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let projection = ConventionsProjection::from_decls(&[], &[], &no_structs());
         assert!(projection.entries.is_empty());
         assert_eq!(projection, ConventionsProjection::default());
     }
@@ -3112,7 +3421,7 @@ mod conventions_projection_tests {
     #[test]
     fn order_and_pattern_are_carried_through_verbatim() {
         let decls = vec![decl("interior", 42, false, None)];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         assert_eq!(projection.entries[0].order, 42);
         assert_eq!(projection.entries[0].pattern, "^interior$");
     }
@@ -3133,7 +3442,7 @@ mod conventions_projection_tests {
                 SchemaTypeShape::Named("string".to_string()),
             )],
         );
-        let projection = ConventionsProjection::from_decls(&decls, &structs);
+        let projection = ConventionsProjection::from_decls(&decls, &[], &structs);
         let wire = projection.to_wire();
         assert_eq!(wire.entries.len(), 1);
         assert_eq!(wire.entries[0].name, "cue");
@@ -3153,7 +3462,7 @@ mod conventions_projection_tests {
     #[test]
     fn to_wire_carries_unresolved_attach_as_unresolved_not_none() {
         let decls = vec![decl("cue", 5, false, Some("Ghost"))];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         let wire = projection.to_wire();
         assert_eq!(
             wire.entries[0].attach,
@@ -3177,7 +3486,7 @@ mod conventions_projection_tests {
                 SchemaTypeShape::Named("string".to_string()),
             )],
         );
-        let wire = ConventionsProjection::from_decls(&decls, &structs).to_wire();
+        let wire = ConventionsProjection::from_decls(&decls, &[], &structs).to_wire();
         let mut buf = Vec::new();
         brink_format::write_conventions_projection(&wire, &mut buf);
         let mut offset = 0;
@@ -3211,7 +3520,7 @@ mod conventions_projection_tests {
             decl("character", 1, false, None),
             decl("dialogue", 2, false, None),
         ];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs());
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs());
         let templates = Templates {
             entries: vec![TemplateEntry {
                 kind: "character".to_string(),
@@ -3233,7 +3542,7 @@ mod conventions_projection_tests {
     /// applies to its own `chain`/`transitions`.
     #[test]
     fn with_succession_accepts_reserved_structural_kinds() {
-        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let projection = ConventionsProjection::from_decls(&[], &[], &no_structs());
         let row = TransitionRow {
             on: "narrative".to_string(),
             key: "Enter".to_string(),
@@ -3254,8 +3563,11 @@ mod conventions_projection_tests {
     /// `DialogueDialect`'s independent element list.
     #[test]
     fn with_succession_rejects_a_kind_this_projection_never_declared() {
-        let projection =
-            ConventionsProjection::from_decls(&[decl("character", 1, false, None)], &no_structs());
+        let projection = ConventionsProjection::from_decls(
+            &[decl("character", 1, false, None)],
+            &[],
+            &no_structs(),
+        );
         let row = TransitionRow {
             on: "parenthetical".to_string(),
             key: "Tab".to_string(),
@@ -3280,8 +3592,11 @@ mod conventions_projection_tests {
     /// `on` — both must resolve, and each unresolved kind is reported.
     #[test]
     fn with_succession_rejects_an_undeclared_convert_target() {
-        let projection =
-            ConventionsProjection::from_decls(&[decl("character", 1, false, None)], &no_structs());
+        let projection = ConventionsProjection::from_decls(
+            &[decl("character", 1, false, None)],
+            &[],
+            &no_structs(),
+        );
         let row = TransitionRow {
             on: "character".to_string(),
             key: "Tab".to_string(),
@@ -3308,7 +3623,7 @@ mod conventions_projection_tests {
     /// closes it for both callers at once).
     #[test]
     fn with_succession_rejects_a_template_entry_for_an_undeclared_kind() {
-        let projection = ConventionsProjection::from_decls(&[], &no_structs());
+        let projection = ConventionsProjection::from_decls(&[], &[], &no_structs());
         let templates = Templates {
             entries: vec![TemplateEntry {
                 kind: "character".to_string(),
@@ -3339,7 +3654,7 @@ mod conventions_projection_tests {
             decl("character", 1, false, None),
             decl("dialogue", 2, false, None),
         ];
-        let projection = ConventionsProjection::from_decls(&decls, &no_structs())
+        let projection = ConventionsProjection::from_decls(&decls, &[], &no_structs())
             .with_succession(
                 vec![character_row()],
                 Templates {

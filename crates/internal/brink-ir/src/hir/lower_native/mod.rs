@@ -247,6 +247,10 @@ pub fn lower_with_conventions(
     // `elements.matches` is moved out below, independent of whether any
     // handler actually claimed a line in this file.
     let claim_handlers = elements.handler_decls();
+    // The `!name`-dispatch counterpart (issue #2352) — same snapshot-before-
+    // move discipline, independent of whether any handler actually won a
+    // dispatch in this file.
+    let dispatch_handlers = elements.dispatch_handler_decls();
 
     // `var`/`const`/`flags` are hoisted flat regardless of nesting — a
     // whole-tree walk, same posture ink's D6 ruling requires of every
@@ -378,6 +382,7 @@ pub fn lower_with_conventions(
         // This module *is* the native frontend — see `HirFile::native`.
         native: true,
         claim_handlers,
+        dispatch_handlers,
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)

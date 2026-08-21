@@ -277,7 +277,14 @@ nodes:
   module share a value). It replaces the retired issue #1848 interim
   rule (top-level declaration order) as the claiming dispatch's
   precedence: the walk tries a module's claiming handlers in ascending
-  `order`, first-match-wins. `@[element]` carries no `order` at all.
+  `order`, first-match-wins. `@[element]` carries no `order` at all —
+  no such clause exists in its grammar. (Issue #2352: the *projection*
+  row `ConventionsProjection::dispatch` surfaces to editors still has an
+  `order: i64` field for consistency of shape with a claim handler's own
+  row, but it carries a different, synthetic meaning there — the input
+  slice's array position, not an authored precedence value read off any
+  clause. See `docs/prose-dialect-spec.md` §5.3 and
+  `ConventionsProjection::dispatch`'s own doc.)
 
   **`attach = StructName` is an optional clause on `@[convention]`**
   (issue #2178, split from #2164's 2026-08-03 design-backport comment,
