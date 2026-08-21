@@ -1265,7 +1265,11 @@ mod tests {
         let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E188);
-        assert!(diags[0].message.contains("content"), "{:?}", diags[0].message);
+        assert!(
+            diags[0].message.contains("content"),
+            "{:?}",
+            diags[0].message
+        );
     }
 
     /// The NS-A8 tower-kind sibling: `resolve`'s tower-kind arm runs before
@@ -1274,7 +1278,8 @@ mod tests {
     /// RED/GREEN pair, one test each.
     #[test]
     fn red_annotation_named_vec3_resolves_to_tower_kind_not_the_colliding_struct() {
-        let (hir, index) = build("STRUCT vec3 = #{x: float, y: float, z: float}\nVAR v: vec3 = 0\n");
+        let (hir, index) =
+            build("STRUCT vec3 = #{x: float, y: float, z: float}\nVAR v: vec3 = 0\n");
         let names = TypeNames::new(&index, None);
         let te = hir.variables[0].annotation.as_ref().expect("annotation");
         assert!(
@@ -1311,7 +1316,10 @@ mod tests {
     fn struct_named_void_is_not_shadowed_and_resolves_fine() {
         let (hir, index) = build("STRUCT void = #{x: int}\nVAR v: void = 0\n");
         let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
-        assert!(diags.is_empty(), "`void` has no collision to report: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "`void` has no collision to report: {diags:?}"
+        );
 
         let names = TypeNames::new(&index, None);
         let te = hir.variables[0].annotation.as_ref().expect("annotation");
@@ -1352,8 +1360,9 @@ mod tests {
     /// diagnostic, at their own declaration's range.
     #[test]
     fn multiple_colliding_structs_each_get_their_own_e188() {
-        let (hir, _index) =
-            build("STRUCT content = #{x: int}\nSTRUCT bool = #{y: int}\nSTRUCT Point = #{z: int}\n");
+        let (hir, _index) = build(
+            "STRUCT content = #{x: int}\nSTRUCT bool = #{y: int}\nSTRUCT Point = #{z: int}\n",
+        );
         let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E188));
@@ -1361,6 +1370,10 @@ mod tests {
             .iter()
             .map(|d| (d.range.start().into(), d.range.end().into()))
             .collect();
-        assert_eq!(ranges.len(), 2, "each collision must point at its own declaration");
+        assert_eq!(
+            ranges.len(),
+            2,
+            "each collision must point at its own declaration"
+        );
     }
 }
