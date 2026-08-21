@@ -283,3 +283,23 @@ fn stray_r_brace_in_choice_text_does_not_hang() {
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
 }
+
+/// A comment directly before the `[` bracket — a bonus consequence of the
+/// #2960 retry the review asked to pin: on the PRE-fix parser this shape
+/// left the comment unconsumed at the zero-progress break, and
+/// `choice_bracket_content`'s raw `p.bump()` then consumed the comment
+/// token in place of `[`. With the guarded retry, the comment is elided
+/// inside `CHOICE_START_CONTENT` and the bracket parses normally.
+#[test]
+fn block_comment_directly_before_bracket_stays_one_choice() {
+    let src = "* Hello /* c */ [middle] end\n";
+    let p = parse(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    let choices = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::CHOICE)
+        .count();
+    assert_eq!(choices, 1, "expected exactly one CHOICE");
+}

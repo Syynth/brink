@@ -31,9 +31,16 @@
 //! between the two surviving whitespace-bearing `TEXT` parts, so the two
 //! spaces this fix preserves in the CST collapse to one single space by
 //! the time a choice's displayed text (or a chosen choice's follow-on
-//! output) reaches the transcript. That collapse is pre-existing, correct
-//! ink behavior, unrelated to and unchanged by this fix — the runtime
-//! assertions below expect the single collapsed space accordingly.
+//! output) reaches the transcript. That collapse is pre-existing brink
+//! output-buffer behavior, unrelated to and unchanged by this fix — but
+//! note it DIVERGES from the C# reference for this exact shape: inklecate
+//! compiles the elided comment's surrounding whitespace verbatim (a double
+//! space — see `tests/tests_github/astrochili__narrator/test/units/`
+//! `comments.ink.json`) and the C# runtime prints it as-is. No oracle
+//! episode covers the shape today, so the ratchet doesn't see it; the
+//! divergence is tracked as its own issue rather than resolved (or
+//! declared correct) here. The runtime assertions below expect brink's
+//! current single collapsed space accordingly.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
