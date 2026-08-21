@@ -77,3 +77,60 @@ pub fn compute_semantic_tokens_range(
         })
         .collect()
 }
+
+/// Compute semantic tokens for the full document — the **native** (`.brink`)
+/// sibling of [`compute_semantic_tokens`] (issue #1350). Callers must feed
+/// this a root parsed by `ProjectDb::parse_native`/`db.is_native`-gated
+/// dispatch, never `ProjectDb::parse` (issue #2280's failure mode one layer
+/// up: that always runs the ink frontend regardless of extension).
+pub fn compute_semantic_tokens_native(
+    source: &str,
+    root: &brink_syntax_native::SyntaxNode,
+    analysis: &AnalysisResult,
+    file_id: FileId,
+) -> Vec<SemanticToken> {
+    let raw = brink_ide::semantic_tokens::semantic_tokens_native(source, root, analysis, file_id);
+    let deltas = brink_ide::semantic_tokens::delta_encode(&raw);
+    deltas
+        .into_iter()
+        .map(|d| SemanticToken {
+            delta_line: d.delta_line,
+            delta_start: d.delta_start,
+            length: d.length,
+            token_type: d.token_type,
+            token_modifiers_bitset: d.token_modifiers,
+        })
+        .collect()
+}
+
+/// Compute semantic tokens for a range of the document — the native sibling
+/// of [`compute_semantic_tokens_range`]; see [`compute_semantic_tokens_native`]'s
+/// doc for the root-provenance requirement.
+pub fn compute_semantic_tokens_range_native(
+    source: &str,
+    root: &brink_syntax_native::SyntaxNode,
+    analysis: &AnalysisResult,
+    file_id: FileId,
+    range_start_line: u32,
+    range_end_line: u32,
+) -> Vec<SemanticToken> {
+    let raw = brink_ide::semantic_tokens::semantic_tokens_range_native(
+        source,
+        root,
+        analysis,
+        file_id,
+        range_start_line,
+        range_end_line,
+    );
+    let deltas = brink_ide::semantic_tokens::delta_encode(&raw);
+    deltas
+        .into_iter()
+        .map(|d| SemanticToken {
+            delta_line: d.delta_line,
+            delta_start: d.delta_start,
+            length: d.length,
+            token_type: d.token_type,
+            token_modifiers_bitset: d.token_modifiers,
+        })
+        .collect()
+}

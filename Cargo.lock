@@ -2281,6 +2281,7 @@ dependencies = [
  "brink-project-config",
  "brink-source-tree",
  "brink-syntax",
+ "brink-syntax-native",
  "rowan",
  "serde",
  "serde_json",

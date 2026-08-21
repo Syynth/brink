@@ -26,7 +26,8 @@ pub use db::{ProjectDb, compute_relative_path, resolve_include_path};
 #[cfg(feature = "memory-introspection")]
 pub use memory::{IngredientKind, IngredientMemory};
 pub use queries::{
-    CompileProduct, FileDiagnostics, LirProduct, ResolvedProject, partition_diagnostics,
+    CompileProduct, FileDiagnostics, LirProduct, ResolvedProject, has_recognized_source_extension,
+    is_native_source_path, partition_diagnostics,
 };
 // Extracted to the `brink-source-tree` L0 leaf (decision-log 2026-07-23,
 // issue #1323 ruling on #1325) so `brink-project-config` can depend on the

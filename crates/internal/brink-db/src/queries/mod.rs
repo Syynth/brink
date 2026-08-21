@@ -773,8 +773,13 @@ pub(crate) fn is_source_file(path: &str) -> bool {
 }
 
 /// Whether `path` names a file with a recognized ink (`.ink`) or native
-/// (`.brink`) source extension, compared case-insensitively — used only by
-/// [`project_is_all_native`]'s nativity vote.
+/// (`.brink`) source extension, compared case-insensitively — used by
+/// [`project_is_all_native`]'s nativity vote, and now (issue #2368) also the
+/// **shared, public seam** `brink-lsp`'s own file-watcher/workspace-scan
+/// classification (`is_source_path` in `crates/brink-lsp/src/backend.rs`)
+/// routes through, rather than carrying its own ad-hoc, case-sensitive `ext
+/// == "ink" || ext == "brink"` copy — the same "shared seam, not N copies"
+/// fix #2329/PR #2357 applied inside this crate's own query surfaces.
 ///
 /// Deliberately narrower than [`is_source_file`]: that predicate's "no
 /// extension still counts as source" carve-out exists only to keep
@@ -785,10 +790,24 @@ pub(crate) fn is_source_file(path: &str) -> bool {
 /// nativity nor counting toward it, exactly as it was before #2329
 /// introduced [`is_source_file`]. The two predicates answer different
 /// questions for the same unrecognized-extension input.
-fn has_recognized_source_extension(path: &str) -> bool {
+pub fn has_recognized_source_extension(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("brink") || ext.eq_ignore_ascii_case("ink"))
+}
+
+/// Whether `path` names a native (`.brink`) source file, compared
+/// case-insensitively — [`file_language`] narrowed to a boolean, and public
+/// for the same reason [`has_recognized_source_extension`] is (issue
+/// #2368): `brink-lsp` carried two of its own ad-hoc, **case-sensitive**
+/// `ext == "brink"` copies (`crates/brink-lsp/src/backend.rs`'s
+/// `is_native_path` and `crates/brink-lsp/src/backend/projects.rs`'s
+/// function of the same name) for a classification this crate already
+/// performs correctly — a real `.BRINK` file on a case-insensitive
+/// filesystem must classify identically to `.brink`, not silently fall
+/// through to "not native" the way `ext == "brink"` alone would.
+pub fn is_native_source_path(path: &str) -> bool {
+    file_language(path) == Language::Native
 }
 
 /// Whether every *recognized source file* (ink or native) currently tracked
@@ -3267,5 +3286,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Issue #2368: [`has_recognized_source_extension`]/
+    /// [`is_native_source_path`] became `pub` so `brink-lsp` could route its
+    /// own file-watcher classification through them instead of carrying two
+    /// ad-hoc, case-sensitive copies — pin the case-insensitive contract
+    /// those callers now depend on directly.
+    #[test]
+    fn public_extension_predicates_are_case_insensitive() {
+        use super::{has_recognized_source_extension, is_native_source_path};
+
+        assert!(has_recognized_source_extension("story.ink"));
+        assert!(has_recognized_source_extension("story.INK"));
+        assert!(has_recognized_source_extension("main.brink"));
+        assert!(has_recognized_source_extension("main.BRINK"));
+        assert!(!has_recognized_source_extension("brink.toml"));
+        assert!(!has_recognized_source_extension("notes.txt"));
+
+        assert!(is_native_source_path("main.brink"));
+        assert!(is_native_source_path("main.BRINK"));
+        assert!(!is_native_source_path("story.ink"));
+        assert!(!is_native_source_path("story.INK"));
+        assert!(!is_native_source_path("no_extension"));
     }
 }
