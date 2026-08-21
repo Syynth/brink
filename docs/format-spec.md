@@ -99,7 +99,7 @@ Each variable definition has:
 - **Default value** — `Value` (same type as the VM stack)
 - **Mutable** — `bool` (`true` for `VAR`, `false` for `CONST`)
 
-`VAR` declarations are mutable globals. `CONST` declarations are immutable globals — they always exist in the format (visible, inspectable, debuggable). The compiler may inline CONST values as a build-time optimization controlled by a compiler flag, but the definition is always present. Attempting to `SetGlobal` on an immutable variable is a runtime error.
+`VAR` declarations are mutable globals. `CONST` declarations are immutable globals — they always exist in the format (visible, inspectable, debuggable). The compiler may inline CONST values as a build-time optimization controlled by a compiler flag, but the definition is always present. `CONST`-write enforcement is compile-time only: `lir::lower` refuses to lower any write to a `CONST` root (`E187`, issue #2201). The `Mutable` flag above is currently descriptive-only — it is serialized (`brink-format/src/inkb/write.rs`) and printed for inspection (`inkt/write.rs`), but the VM's `SetGlobal` opcode does not read it, so nothing at the runtime layer itself rejects a write to an immutable global's storage cell.
 
 Temporary variables (`temp`) have no format-level definition. They are call-frame-local — created by a `DeclareTemp` opcode during execution, stored in the current call frame's temp slot array, and discarded when the frame pops. Temp slot indices are assigned by the compiler across the entire knot/function scope (including all child containers reached by flow entry), not per-container.
 

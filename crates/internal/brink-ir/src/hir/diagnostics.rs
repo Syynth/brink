@@ -1923,6 +1923,47 @@ pub enum DiagnosticCode {
     /// function, so a compact-cue-claiming handler declaring both clauses
     /// hits this same check (confirmed on the issue by PR #2341's review).
     E186,
+
+    /// Issue #2201: a write to a `CONST` — plain/compound assignment, a
+    /// postfix `++`/`--`, an indexed-assignment root, a bare in-place
+    /// mutator (`pop`/`heap_pop`), a struct-field write/mutator whose root
+    /// is a `CONST`, or passing the `CONST` by `ref` (bare or as a
+    /// projection root). ink semantics (`ink/compiler/ParsedHierarchy/
+    /// VariableAssignment.cs`, "Can't re-assign to a constant") reject this
+    /// at compile time; before this code existed, `lir::lower::stmts::
+    /// lower_assign_target` treated `SymbolKind::Constant` identically to
+    /// `SymbolKind::Variable` — every one of the write channels above
+    /// silently mutated the constant's storage cell with zero diagnostics
+    /// anywhere in the pipeline.
+    ///
+    /// Raised via the shared `lir::lower::stmts::reject_const_write` check —
+    /// the `CONST` analog of [`Self::E148`]'s `reject_as_binding_write` —
+    /// called from every choke point that resolves a `Global` write root's
+    /// `SymbolInfo`: `lower_assign_target` itself (plain/compound
+    /// assignment, postfix's bare-target conversion, the
+    /// indexed-assignment root via `lower_indexed_assignment`, and a bare
+    /// mutator's root via `pop`/`heap_pop`, all of which call
+    /// `lower_assign_target` for their root); `lower_single_level_field_write`/
+    /// `lower_field_mutator` (their two-segment field-root
+    /// `SymbolKind::Constant` arm, which resolves the root independently of
+    /// `lower_assign_target` — the same reason `reject_as_binding_write`
+    /// needs a direct call there too, per #2122); and the `ref`-argument
+    /// choke points `lower_ref_path_call_arg`/`lower_ref_projection_arg`
+    /// (passing a `CONST` by `ref` hands the callee a raw pointer to the
+    /// cell, bypassing assignment lowering entirely).
+    ///
+    /// Deliberately a LIR-lowering refusal (this code's precedent is
+    /// [`Self::E074`]/[`Self::E148`], not an analyzer diagnostic like
+    /// [`Self::E185`]): the write-channel enumeration above already lives
+    /// entirely in `lir::lower` — duplicating it in `brink-analyzer` would
+    /// re-run the exact same channel-undercounting risk that made this
+    /// issue's own premise true (#2122 named only two of the seven channels
+    /// `CONST` reassignment turned out to have). Applies to both surfaces —
+    /// `.ink` and `.brink` — since this mirrors ink's own compile-time
+    /// rejection, not a native-only extension; `SymbolKind::Constant` is
+    /// resolved identically for both frontends by the time LIR lowering
+    /// sees it.
+    E187,
 }
 
 impl DiagnosticCode {
@@ -2121,6 +2162,7 @@ impl DiagnosticCode {
         Self::E184,
         Self::E185,
         Self::E186,
+        Self::E187,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2316,6 +2358,7 @@ impl DiagnosticCode {
             Self::E184 => "E184",
             Self::E185 => "E185",
             Self::E186 => "E186",
+            Self::E187 => "E187",
         }
     }
 
@@ -2632,6 +2675,9 @@ impl DiagnosticCode {
             Self::E186 => {
                 "`@[convention(…)]` declares both `block` and `attach = StructName` — mutually exclusive clauses"
             }
+            Self::E187 => {
+                "write to a CONST — CONST is immutable and can never be reassigned, mutated, or passed by `ref`"
+            }
         }
     }
 
@@ -2892,6 +2938,7 @@ impl DiagnosticCode {
             "E184" => Some(Self::E184),
             "E185" => Some(Self::E185),
             "E186" => Some(Self::E186),
+            "E187" => Some(Self::E187),
             _ => None,
         }
     }
