@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12](https://github.com/Syynth/brink/compare/bevy-brink-derive-v0.0.11...bevy-brink-derive-v0.0.12) - 2026-08-21
+
+### Other
+
+- promote 22 ignore'd doctests to no_run/text ([#1700](https://github.com/Syynth/brink/pull/1700))
+- sweep converter mentions after pipeline retirement ([#544](https://github.com/Syynth/brink/pull/544))
+
 ## [0.0.10](https://github.com/Syynth/brink/compare/bevy-brink-derive-v0.0.9...bevy-brink-derive-v0.0.10) - 2026-07-10
 
 ### Other
