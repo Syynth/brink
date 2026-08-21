@@ -11,7 +11,7 @@
 
 import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
-import type { StructuralResult } from "@brink/wasm-types";
+import type { StructuralResult, RenameDiagnostic } from "@brink/wasm-types";
 
 // ── Undo entry ──────────────────────────────────────────────────────
 
@@ -275,7 +275,15 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     if (paths.length === 0) return;
     // Batch several files to a destination folder ("" = project root) as one
     // undoable step. Files already at the destination are skipped; a per-file
-    // collision (applyRename → false) is dropped without aborting the rest.
+    // collision (applyRename → null) is dropped without aborting the rest.
+    //
+    // NOT covered by #2918: `applyRename` now also returns each successful
+    // move's `safe`/`introducedDiagnostics` (below), but this batch path
+    // doesn't aggregate them into the one summary notification the way
+    // `renameWithUndo`/`renameFolder` do for a single move — #2918 scoped its
+    // fix to `renameFile`/`renameDir` by name; a batch move breaking a
+    // reference still applies silently today. Flagged as a follow-up on that
+    // issue rather than folded into this fix.
     const renames: Array<{ from: string; to: string }> = [];
     for (const old of paths) {
       const base = old.split("/").pop() ?? old;
@@ -307,8 +315,8 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     // would just be a second, possibly-stale source of truth for the same
     // question the op already answers authoritatively.
     if (oldPrefix === newPrefix || paths.length === 0) return;
-    const moved = await applyDirRename(get, oldPrefix, newPrefix);
-    if (moved === null || moved.length === 0) return;
+    const result = await applyDirRename(get, oldPrefix, newPrefix);
+    if (result === null || result.moved.length === 0) return;
 
     const label = `Renamed ${oldPrefix.replace(/\/$/, "")}/ → ${newPrefix.replace(/\/$/, "")}/`;
     set({
@@ -317,12 +325,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
         { kind: "rename-dir", description: label, oldPrefix, newPrefix },
       ],
     });
-    get()._notify?.({
-      severity: "info",
-      source: "binder",
-      message: label,
-      actions: [{ label: "Undo", commandId: "binder.undo" }],
-    });
+    notifyMoveResult(get, label, result);
   },
 
   async undo() {
@@ -382,8 +385,8 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       // notification fires, leaving the entry exactly where it was
       // (issue #2916 review; mirrors `applyMoveResult`'s #2543 refuse-at-
       // the-seam rule for the forward direction).
-      const moved = await applyDirRename(get, entry.newPrefix, entry.oldPrefix);
-      if (moved === null) {
+      const result = await applyDirRename(get, entry.newPrefix, entry.oldPrefix);
+      if (result === null) {
         return;
       }
     }
@@ -517,22 +520,32 @@ async function deleteFilesWithUndo(
  * after this one started (or vice versa) must not erase the other's
  * still-live indicator — compare-and-clear only removes the description
  * THIS call set.
+ *
+ * Returns `null` (with an error notification already raised) on a refused
+ * rename, or the move's breakage-gate verdict (`safe`/`introducedDiagnostics`,
+ * issue #2918) on success — `project.renameFile` computes this correctly but
+ * used to have it discarded right here, the exact gap #2918 closes: a move
+ * that broke a reference applied with nothing telling the caller. This
+ * function still applies the move either way (the notification FLOOR, not a
+ * preflight gate — see #2918/#324); it is the caller's job to decide how to
+ * report an unsafe result, same as it already decides the undo entry and
+ * description.
  */
 async function applyRename(
   get: () => StudioState,
   oldPath: string,
   newPath: string,
-): Promise<boolean> {
+): Promise<{ safe: boolean; introducedDiagnostics: RenameDiagnostic[] } | null> {
   const state = get();
   const project = state._project;
   const documents = state._documents;
-  if (!project || !documents) return false;
+  if (!project || !documents) return null;
 
   const pendingDescription = `Renaming ${oldPath} → ${newPath}`;
   state.setStructuralOpPending(pendingDescription);
-  let referrers: string[];
+  let result: { referrers: string[]; safe: boolean; introducedDiagnostics: RenameDiagnostic[] };
   try {
-    referrers = await project.renameFile(oldPath, newPath);
+    result = await project.renameFile(oldPath, newPath);
   } catch (e) {
     // renameFile validates (and throws) before mutating the session, so a
     // failed rename — e.g. a name collision — must leave the open file and
@@ -549,7 +562,7 @@ async function applyRename(
       source: "binder",
       message: e instanceof Error ? e.message : `cannot rename ${oldPath}`,
     });
-    return false;
+    return null;
   } finally {
     state.clearStructuralOpPending(pendingDescription);
   }
@@ -557,11 +570,11 @@ async function applyRename(
   // Re-key any open tabs/views for the file in place (preserve pin/split/
   // selection) rather than closing and reopening.
   state.renameDocPath(oldPath, newPath);
-  for (const path of referrers) {
+  for (const path of result.referrers) {
     documents.invalidateFile(path);
   }
   documents.triggerCompile();
-  return true;
+  return { safe: result.safe, introducedDiagnostics: result.introducedDiagnostics };
 }
 
 /**
@@ -586,15 +599,23 @@ async function applyRename(
  * single error notification and nothing moves; the caller pushes no undo
  * entry.
  *
- * Returns the moved `{oldPath, newPath}` pairs on success (empty is a valid,
- * non-error result — see `renameDir`'s `oldPrefix === newPrefix` guard), or
- * `null` on refusal. Pushes no undo entry; callers manage the stack.
+ * Returns the moved `{oldPath, newPath}` pairs plus the move's breakage-gate
+ * verdict (`safe`/`introducedDiagnostics`, issue #2918 — same gap and same
+ * fix shape as `applyRename` above: `project.renameDir` computed this
+ * correctly all along but it used to be discarded right here) on success
+ * (an empty `moved` list is a valid, non-error result — see `renameDir`'s
+ * `oldPrefix === newPrefix` guard), or `null` on refusal. Pushes no undo
+ * entry; callers manage the stack.
  */
 async function applyDirRename(
   get: () => StudioState,
   oldPrefix: string,
   newPrefix: string,
-): Promise<Array<{ oldPath: string; newPath: string }> | null> {
+): Promise<{
+  moved: Array<{ oldPath: string; newPath: string }>;
+  safe: boolean;
+  introducedDiagnostics: RenameDiagnostic[];
+} | null> {
   const state = get();
   const project = state._project;
   const documents = state._documents;
@@ -602,7 +623,12 @@ async function applyDirRename(
 
   const pendingDescription = `Renaming ${oldPrefix} → ${newPrefix}`;
   state.setStructuralOpPending(pendingDescription);
-  let result: { moved: Array<{ oldPath: string; newPath: string }>; referrers: string[] };
+  let result: {
+    moved: Array<{ oldPath: string; newPath: string }>;
+    referrers: string[];
+    safe: boolean;
+    introducedDiagnostics: RenameDiagnostic[];
+  };
   try {
     result = await project.renameDir(oldPrefix, newPrefix);
   } catch (e) {
@@ -629,7 +655,41 @@ async function applyDirRename(
     documents.invalidateFile(path);
   }
   documents.triggerCompile();
-  return result.moved;
+  return {
+    moved: result.moved,
+    safe: result.safe,
+    introducedDiagnostics: result.introducedDiagnostics,
+  };
+}
+
+/**
+ * Report a completed rename/move (issue #2918): reuses the existing binder
+ * success-toast shape (severity/source/Undo action, §7.5) for both outcomes
+ * of an applied move — `safe: false` is NOT a refusal (the op already ran,
+ * same undo contract as a safe move; a refusal is reported at the `ok: false`
+ * catch site above instead, with no undo entry) so this stays `warning`, not
+ * `error` — matching the existing "skipped N read-only files" convention
+ * just above (severity carries the caveat, the move still happened). This is
+ * the notification FLOOR #2918 shipped: a post-move report, not a preflight
+ * the user could still cancel — see that issue for why the Binder's rename
+ * (no confirm dialog today, unlike delete's `pendingDelete`) doesn't get the
+ * "will break N references" preflight the editor's inline (#323/#324) rename
+ * has; that pattern lives on a dedicated widget this call site has no analog
+ * of, and adding one is out of this fix's scope.
+ */
+function notifyMoveResult(
+  get: () => StudioState,
+  description: string,
+  result: { safe: boolean; introducedDiagnostics: RenameDiagnostic[] },
+): void {
+  const n = result.introducedDiagnostics.length;
+  const breakageSuffix = result.safe ? "" : ` (breaks ${n} reference${n === 1 ? "" : "s"})`;
+  get()._notify?.({
+    severity: result.safe ? "info" : "warning",
+    source: "binder",
+    message: `${description}${breakageSuffix}`,
+    actions: [{ label: "Undo", commandId: "binder.undo" }],
+  });
 }
 
 /**
@@ -644,7 +704,8 @@ async function renameWithUndo(
   verb: string,
 ): Promise<void> {
   if (oldPath === newPath) return;
-  if (!(await applyRename(get, oldPath, newPath))) return;
+  const result = await applyRename(get, oldPath, newPath);
+  if (result === null) return;
 
   const description = `${verb} ${oldPath} → ${newPath}`;
   set({
@@ -653,10 +714,5 @@ async function renameWithUndo(
       { kind: "rename", description, renames: [{ from: newPath, to: oldPath }] },
     ],
   });
-  get()._notify?.({
-    severity: "info",
-    source: "binder",
-    message: description,
-    actions: [{ label: "Undo", commandId: "binder.undo" }],
-  });
+  notifyMoveResult(get, description, result);
 }

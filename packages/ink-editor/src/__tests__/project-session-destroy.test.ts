@@ -39,7 +39,15 @@ import { InMemoryFileProvider } from "../provider.js";
  *  across `initialize()`/`renameFile()`/`destroy()`. Cast past structural
  *  typing (`as unknown as EditorSessionHandle`) at the call site — the real
  *  class has many more members this suite has no need to fake. */
-function makeStubSession(renameFile = vi.fn(() => ({ ok: true, new_source: "renamed content", cross_file_edits: [] }))) {
+function makeStubSession(
+  renameFile = vi.fn(() => ({
+    ok: true,
+    new_source: "renamed content",
+    cross_file_edits: [],
+    safe: true,
+    introduced_diagnostics: [],
+  })),
+) {
   return {
     generation: 0,
     updateFile: vi.fn(),
@@ -136,7 +144,11 @@ describe("ProjectSession.destroy() during a deferred gated call (#2794)", () => 
 
     const pending = project.renameFile("lib.ink", "main2.ink");
     await vi.runAllTimersAsync();
-    await expect(pending).resolves.toEqual([]);
+    await expect(pending).resolves.toEqual({
+      referrers: [],
+      safe: true,
+      introducedDiagnostics: [],
+    });
     expect(session.renameFile).toHaveBeenCalledExactlyOnceWith("lib.ink", "main2.ink");
 
     // destroy() afterward is the ordinary teardown path — no pending work
