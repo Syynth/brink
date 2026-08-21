@@ -178,8 +178,9 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     // entry and raise this function's confirming toast, turning a refusal into
     // a reported success (#2543). Refuse it at the seam so no caller can make
     // that claim. The user-facing error belongs to the caller, which knows
-    // what was attempted (`applyComputedRename`, `performSymbolRename`);
-    // per-op reporting for the remaining structural ops is #2544.
+    // what was attempted (`applyComputedRename`, `performSymbolRename`,
+    // `dispatchSymbolAction`'s reorder/move/promote/demote branches, all via
+    // `notifyStructuralRefusal` — #2544).
     if (!result.ok) return;
 
     const session = project.getSession();

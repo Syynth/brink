@@ -21,8 +21,13 @@ import type { ContextMenuAction } from "./BinderContextMenu.js";
  * rejection lands. Shaped exactly like a genuine no-op refusal (`ok: false`,
  * `safe: true`, no diagnostics — see `StructuralResult.ok`'s doc comment on
  * why that pairing means "refused", not "succeeded vacuously"), so
- * `dispatchSymbolAction`'s `result.ok && result.path` check below skips
- * `applyMoveResult` the same way it does for any other refusal.
+ * `dispatchSymbolAction`'s `result.ok` check below skips `applyMoveResult`
+ * the same way it does for any other refusal. It is also identity-checked
+ * (`result === DESTROYED_DURING_DEFER_RESULT`) against `notifyStructuralRefusal`
+ * (#2544): this shape is a user-initiated cancel (the project was closed or
+ * switched out from under a pending op), not a refusal the op itself made, so
+ * it must not surface as an error notification either — only a genuine
+ * `ok: false` from `compute()` does.
  */
 const DESTROYED_DURING_DEFER_RESULT: StructuralResult = {
   ok: false,
@@ -236,8 +241,18 @@ export async function dispatchSymbolAction(
       return;
   }
 
-  if (result.ok && result.path) {
-    await applyMoveResult(result, description, [result.path]);
+  if (result.ok) {
+    if (result.path) {
+      await applyMoveResult(result, description, [result.path]);
+    }
+    return;
+  }
+  if (result === DESTROYED_DURING_DEFER_RESULT) {
+    // The session was torn down mid-defer (issue #2794 review) — the user
+    // cancelled by closing/switching the project, not by hitting a real
+    // refusal. Nothing was attempted, so nothing to report: nothing pending
+    // is left uncleared either (`runGatedStructuralOp`'s `finally` already
+    // cleared it before returning this sentinel).
     return;
   }
   // Refused (`ok: false`) — report it through the same channel every other

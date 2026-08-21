@@ -598,7 +598,7 @@ describe("structuralOpPending compare-and-clear (#2794)", () => {
     // (`useSymbolMenuActions.ts`, `Binder.tsx`), so an uncaught rejection
     // here would be an unhandled promise rejection with no catch, not
     // `applyRename`'s caught-and-notified one.
-    const { store, project } = await makeStore({ "main.ink": MAIN });
+    const { store, project, raised } = await makeStore({ "main.ink": MAIN });
     const state = store.getState();
     const session = project.getSession();
     const moveSpy = vi.spyOn(session, "moveStitch");
@@ -625,6 +625,14 @@ describe("structuralOpPending compare-and-clear (#2794)", () => {
     // The `finally` in `runGatedStructuralOp` still clears the pending
     // indicator even though the op itself never ran.
     expect(store.getState().structuralOpPending).toBeNull();
+    // #2544 review regression: this sentinel is a user-initiated cancel (the
+    // project was torn down mid-defer), NOT a genuine op refusal — it must
+    // NOT be reported through `notifyStructuralRefusal` as a failed "Move
+    // alpha to two". Before the identity check was added, the dispatcher's
+    // blanket `if (result.ok) {...} else notifyStructuralRefusal(...)` could
+    // not tell the two apart, since `DESTROYED_DURING_DEFER_RESULT` is shaped
+    // exactly like a real refusal (`ok: false`, `safe: true`).
+    expect(raised).toHaveLength(0);
   });
 
   it("applyRename (Binder rename/move) clears via clearStructuralOpPending with its own description", async () => {
