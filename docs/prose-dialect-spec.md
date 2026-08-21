@@ -1202,6 +1202,29 @@ without swallowing the enclosing flow's closer — both parse cleanly and
 are now covered by `corpus_roundtrip`/`coverage`, alongside the existing
 unit-test coverage.
 
+### 4.8 Trailing comments in prose (RULED, #1638, 2026-08-01)
+
+Same-line trailing comments in native prose — `Hello // aside` or
+`Hello /* aside */ world` on a content line — are **literal prose text, by
+design**. The ruling (#1638, closed 2026-08-01): "keep trailing comments
+literal in prose. Prose is prose — everything on a prose line is text,
+exactly as `text_run_until` already documents … The lint variant was
+offered and explicitly not chosen. Current behavior is correct." The
+comment characters fold into the enclosing `TEXT` node and ship as story
+output; only doc-comment tokens break a text run (see the §4.6 scanner
+table's `text_run_until` row). This is NOT an open question and must not
+be re-litigated from the test suite's pins
+(`line_comment_mid_text_run_is_literal_prose_per_text_run_untils_contract`
+and its block-comment sibling in `brink-syntax-native`'s parser tests,
+which cite this section).
+
+Do not conflate with the **ink-compat surface**, where mid-line comments
+ARE elided from prose (`//` and `/* … */` are comment syntax there —
+fragmentation bugs in that elision were fixed across content lines, choice
+text, and inline alternatives by #2366/#2960/#2976). The two surfaces
+deliberately differ: ink inherits ink's comment semantics; native prose
+has none.
+
 ## 5. Tooling: completions & succession (RULED doctrine)
 
 **Harvest by default, declaration upgrades** — the freeform/manifest

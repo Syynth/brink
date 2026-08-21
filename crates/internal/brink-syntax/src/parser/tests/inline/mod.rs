@@ -1,5 +1,6 @@
 mod conditional;
 mod inner_expr;
+mod midline_comment;
 mod multiline;
 mod nested_branch;
 mod sequence;

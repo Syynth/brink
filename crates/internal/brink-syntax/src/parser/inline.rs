@@ -505,7 +505,18 @@ fn branchless_cond_body(p: &mut Parser<'_, '_>) {
                 let before = p.pos();
                 multiline_branch_text(p);
                 if p.pos() == before {
-                    break;
+                    // Zero progress: the raw position sits on a mid-line
+                    // comment (`BLOCK_COMMENT`/`LINE_COMMENT`), the only
+                    // trivia kind `multiline_branch_text` stops on -- every
+                    // other stop-list token has its own arm above.
+                    // Mirrors `branch_content`'s catch-all
+                    // (#2366/#2958/#2960/#2974): elide the comment and
+                    // retry; if `skip_comment_tokens` is a no-op, the
+                    // position truly cannot move and we must break.
+                    p.skip_comment_tokens();
+                    if p.pos() == before {
+                        break;
+                    }
                 }
                 at_line_start = false;
             }
@@ -606,7 +617,27 @@ fn multiline_branch_body(p: &mut Parser<'_, '_>) {
                 let before = p.pos();
                 multiline_branch_text(p);
                 if p.pos() == before {
-                    break;
+                    // Unlike `branchless_cond_body`'s and `branch_content`'s
+                    // catch-alls, this retry is unreachable today: this
+                    // loop's very first statement on every iteration is the
+                    // unconditional `p.skip_ws()` above, and comment tokens
+                    // are trivia (`SyntaxKind::is_trivia` covers
+                    // `LINE_COMMENT`/`BLOCK_COMMENT`), so a mid-line comment
+                    // is already consumed by `skip_ws()` before control ever
+                    // reaches `multiline_branch_text` -- confirmed by
+                    // instrumenting this arm and `branchless_cond_body`'s
+                    // sibling retry: `branchless_cond_body` hit its retry 3
+                    // times running the full suite, this arm hit it 0 times.
+                    // No other non-trivia token can land here with zero
+                    // progress either (every other stop-list token, and
+                    // `MINUS`, already has its own arm above). Kept only as
+                    // a defensive guard against a future change to the
+                    // trivia-skipping order above; `skip_comment_tokens`
+                    // stays a safe no-op if that invariant ever breaks.
+                    p.skip_comment_tokens();
+                    if p.pos() == before {
+                        break;
+                    }
                 }
             }
         }
@@ -695,7 +726,31 @@ fn branch_content(p: &mut Parser<'_, '_>) {
                 let before = p.pos();
                 branch_text(p);
                 if p.pos() == before {
-                    break;
+                    // Zero progress has two possible causes here (mirrors
+                    // `content::mixed_content`'s and
+                    // `choice::choice_content_elements`'s catch-all arms,
+                    // #2366/#2958, #2960/#2974):
+                    //
+                    //  1. The raw position sits on a mid-line comment
+                    //     (`BLOCK_COMMENT`/`LINE_COMMENT`) -- the only
+                    //     trivia kind `branch_text` treats as a stop
+                    //     token. Eliding it (comment tokens only, not
+                    //     surrounding whitespace -- see
+                    //     `skip_comment_tokens`) always advances
+                    //     `p.pos()`, so retry via the outer loop on the
+                    //     next iteration.
+                    //  2. The raw position sits on a genuine non-trivia
+                    //     stop token with no other arm to claim it (e.g. a
+                    //     stray `#` at line start already claimed by the
+                    //     `HASH` arm above, so in practice this is a
+                    //     defensive break for any future stop-list
+                    //     addition). `skip_comment_tokens` is a no-op
+                    //     here, so the position truly cannot move and we
+                    //     must break to avoid looping forever.
+                    p.skip_comment_tokens();
+                    if p.pos() == before {
+                        break;
+                    }
                 }
             }
         }

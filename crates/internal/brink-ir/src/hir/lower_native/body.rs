@@ -978,9 +978,11 @@ fn lower_content_line_body(
 ///
 /// `line_prov` becomes the `ptr` of the (possibly only) `Content` statement
 /// this run's trailing flush produces; interior flushes (before an embedded
-/// divert/choice-point) always carry `ptr: None`, matching old ink's own
-/// accumulator convention (`content/accumulator.rs::flush` uses `ptr: None`
-/// for every flush except the line's own top-level one).
+/// divert/choice-point) always carry `ptr: None`. (The ink-compat
+/// accumulator's flushes used to carry `ptr: None` too; since #981,
+/// `content/accumulator.rs::flush` synthesizes a covering-range provenance
+/// for branch-body content instead — the interior-flush `None` here is
+/// this frontend's own convention, no longer a mirror of ink's.)
 ///
 /// `trailing_eol`: whether the run's *final* flush may append
 /// `Stmt::EndOfLine` (when the content doesn't end with glue). `true` for a
