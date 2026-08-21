@@ -1,12 +1,13 @@
 //! `LowerBlock` impl for `ast::MultilineBranchBody` + shared branch body logic.
 
 use brink_syntax::ast::{self, AstNode};
+use rowan::TextRange;
 
 use crate::Block;
 
 use super::super::backbone::{BranchChild, classify_branch_child};
 use super::super::choice::LowerChoice;
-use super::super::content::{ContentAccumulator, HandleResult};
+use super::super::content::{BodyBackend, ContentAccumulator, HandleResult};
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::LowerBlock;
 use super::weave::WeaveBackend;
@@ -40,8 +41,11 @@ fn lower_branch_body_from_syntax(
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Block {
-    let mut acc = ContentAccumulator::new(WeaveBackend::new());
-    let mut pending_ws: Option<String> = None;
+    let mut acc = ContentAccumulator::new(WeaveBackend::new(), scope.file_id);
+    // Deferred inter-token whitespace, carried alongside its own source
+    // range (issue #981) — flushed as a `push_text` just before whichever
+    // content token follows it, same as the text itself.
+    let mut pending_ws: Option<(String, TextRange)> = None;
     let mut seen_content = false;
     let mut after_content_block = false;
 
@@ -67,38 +71,36 @@ fn lower_branch_body_from_syntax(
                 pending_ws = None;
                 acc.handle(&dn, scope, sink);
             }
-            BranchChild::InlineLogic(il) => match acc.handle(&il, scope, sink) {
-                HandleResult::Block => {
-                    pending_ws = None;
-                    after_content_block = true;
-                }
-                HandleResult::Inline => {
-                    if let Some(ws) = pending_ws.take() {
-                        acc.push_text(ws);
+            BranchChild::InlineLogic(il) => {
+                let range = il.syntax().text_range();
+                match acc.handle(&il, scope, sink) {
+                    HandleResult::Block => {
+                        pending_ws = None;
+                        after_content_block = true;
                     }
-                    seen_content = true;
+                    HandleResult::Inline => {
+                        flush_pending_ws(&mut acc, &mut pending_ws);
+                        acc.note_range(range);
+                        seen_content = true;
+                    }
                 }
-            },
+            }
             BranchChild::Text(t) => {
-                if let Some(ws) = pending_ws.take() {
-                    acc.push_text(ws);
-                }
+                flush_pending_ws(&mut acc, &mut pending_ws);
                 seen_content = true;
-                acc.push_text(t);
+                let range = child.text_range();
+                acc.push_text(t, range);
             }
             BranchChild::Glue => {
-                if let Some(ws) = pending_ws.take() {
-                    acc.push_text(ws);
-                }
+                flush_pending_ws(&mut acc, &mut pending_ws);
                 seen_content = true;
-                acc.push_glue();
+                acc.push_glue(child.text_range());
             }
             BranchChild::Escape(t) => {
-                if let Some(ws) = pending_ws.take() {
-                    acc.push_text(ws);
-                }
+                flush_pending_ws(&mut acc, &mut pending_ws);
                 seen_content = true;
-                acc.push_escape(&t);
+                let range = child.text_range();
+                acc.push_escape(&t, range);
             }
             BranchChild::Choice(c) => {
                 pending_ws = None;
@@ -128,10 +130,12 @@ fn lower_branch_body_from_syntax(
 
             BranchChild::Whitespace(ws) => {
                 if seen_content {
-                    if let Some(ref mut existing) = pending_ws {
+                    let range = child.text_range();
+                    if let Some((ref mut existing, ref mut existing_range)) = pending_ws {
                         existing.push_str(&ws);
+                        *existing_range = existing_range.cover(range);
                     } else {
-                        pending_ws = Some(ws);
+                        pending_ws = Some((ws, range));
                     }
                 }
             }
@@ -147,4 +151,14 @@ fn lower_branch_body_from_syntax(
     }
 
     acc.finish()
+}
+
+/// Flush deferred whitespace (if any) into the accumulator as text.
+fn flush_pending_ws<B: BodyBackend>(
+    acc: &mut ContentAccumulator<B>,
+    pending_ws: &mut Option<(String, TextRange)>,
+) {
+    if let Some((ws, range)) = pending_ws.take() {
+        acc.push_text(ws, range);
+    }
 }

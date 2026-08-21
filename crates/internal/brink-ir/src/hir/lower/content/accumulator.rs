@@ -1,4 +1,6 @@
-use crate::{Block, Content, ContentPart, Stmt, Tag};
+use rowan::TextRange;
+
+use crate::{Block, Content, ContentPart, FileId, KindToken, NodeClass, Provenance, Stmt, Tag};
 
 use super::super::context::{LowerScope, LowerSink};
 use super::super::helpers::content_ends_with_glue;
@@ -14,34 +16,65 @@ use super::{BodyBackend, HandleResult, Integrate, LowerBody};
 /// Generic over [`BodyBackend`] — the backend determines where results go.
 pub struct ContentAccumulator<B: BodyBackend> {
     backend: B,
+    file_id: FileId,
     parts: Vec<ContentPart>,
+    /// Source range covering every part pushed since the last flush,
+    /// tracked only by callers that buffer raw tokens (branch bodies — see
+    /// [`Self::note_range`]'s doc). Top-level content lines never call the
+    /// range-tracking pushers: their whole-line `ptr` comes from
+    /// `ContentLineOutput::Content` instead, so this stays `None` for them
+    /// and `flush` produces `ptr: None` exactly as before.
+    pending_range: Option<TextRange>,
     last_pushed_was_content: bool,
 }
 
 impl<B: BodyBackend> ContentAccumulator<B> {
-    pub fn new(backend: B) -> Self {
+    pub fn new(backend: B, file_id: FileId) -> Self {
         Self {
             backend,
+            file_id,
             parts: Vec::new(),
+            pending_range: None,
             last_pushed_was_content: false,
         }
     }
 
     // ── Content part buffering ──────────────────────────────────
 
-    pub fn push_text(&mut self, text: String) {
+    /// Extend the pending source range for buffered raw-token parts (issue
+    /// #981). Branch bodies (`brink_syntax`'s multiline conditional/sequence
+    /// arms) have no per-line `CONTENT_LINE` wrapper node to hang a `ptr` off
+    /// of — their content is raw `TEXT`/`GLUE_NODE`/`ESCAPE`/`INLINE_LOGIC`
+    /// tokens accumulated directly here — so `flush` synthesizes one instead,
+    /// covering every token range noted since the last flush. The synthetic
+    /// provenance never resolves back to a live syntax node (no single node
+    /// spans exactly this union), the same posture
+    /// `conditional_with_expr::branchless_first_arm_span` already uses for
+    /// a branch's own span — but it carries a real byte range for
+    /// span-consuming tools (the HIR projection, folding, diagnostics).
+    pub fn note_range(&mut self, range: TextRange) {
+        self.pending_range = Some(match self.pending_range.take() {
+            Some(r) => r.cover(range),
+            None => range,
+        });
+    }
+
+    pub fn push_text(&mut self, text: String, range: TextRange) {
         if !text.is_empty() {
             self.parts.push(ContentPart::Text(text));
+            self.note_range(range);
         }
     }
 
-    pub fn push_glue(&mut self) {
+    pub fn push_glue(&mut self, range: TextRange) {
         self.parts.push(ContentPart::Glue);
+        self.note_range(range);
     }
 
-    pub fn push_escape(&mut self, text: &str) {
+    pub fn push_escape(&mut self, text: &str, range: TextRange) {
         if text.len() > 1 {
             self.parts.push(ContentPart::Text(text[1..].to_string()));
+            self.note_range(range);
         }
     }
 
@@ -57,9 +90,16 @@ impl<B: BodyBackend> ContentAccumulator<B> {
 
     /// Flush buffered content parts as a `Stmt::Content`.
     pub fn flush(&mut self) {
+        let ptr = self.pending_range.take().map(|range| {
+            Provenance::new(
+                self.file_id,
+                range,
+                KindToken::synthetic(NodeClass::Content),
+            )
+        });
         if !self.parts.is_empty() {
             self.backend.push_stmt(Stmt::Content(Content {
-                ptr: None,
+                ptr,
                 parts: std::mem::take(&mut self.parts),
                 tags: Vec::new(),
             }));
@@ -69,9 +109,16 @@ impl<B: BodyBackend> ContentAccumulator<B> {
 
     /// Flush with tags.
     pub fn flush_with_tags(&mut self, tags: Vec<Tag>) {
+        let ptr = self.pending_range.take().map(|range| {
+            Provenance::new(
+                self.file_id,
+                range,
+                KindToken::synthetic(NodeClass::Content),
+            )
+        });
         if !self.parts.is_empty() || !tags.is_empty() {
             self.backend.push_stmt(Stmt::Content(Content {
-                ptr: None,
+                ptr,
                 parts: std::mem::take(&mut self.parts),
                 tags,
             }));

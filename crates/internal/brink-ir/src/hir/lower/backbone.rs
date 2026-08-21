@@ -190,7 +190,7 @@ pub fn lower_simple_body(
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Block {
-    let mut acc = ContentAccumulator::new(DirectBackend::new());
+    let mut acc = ContentAccumulator::new(DirectBackend::new(), scope.file_id);
 
     for child in parent.children() {
         match classify_body_child(&child) {

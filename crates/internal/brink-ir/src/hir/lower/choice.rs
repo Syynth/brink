@@ -191,7 +191,7 @@ fn lower_choice_body(
         None
     };
 
-    let mut acc = ContentAccumulator::new(DirectBackend::new());
+    let mut acc = ContentAccumulator::new(DirectBackend::new(), scope.file_id);
 
     for child in choice.syntax().children() {
         // Skip the inline divert if it was already captured.

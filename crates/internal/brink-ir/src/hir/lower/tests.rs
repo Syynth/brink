@@ -1331,3 +1331,212 @@ fn weave_choice_body_ending_in_divert_has_diverge_tail() {
         choice_body.tail()
     );
 }
+
+// ─── Issue #981: conditional-arm prose carries a Content span ───────
+//
+// `hir_projection::project_hir`'s IDE-facing test covers the consumer side
+// (`brink-ide`); these cover the HIR-lowering root cause directly — both
+// `BranchlessCondBody` (the implicit first arm) and `MultilineBranchBody`
+// (an explicit `- cond:`/`- else:` arm) previously always lowered their
+// prose to `Content { ptr: None, .. }`, because neither has a per-line
+// `CONTENT_LINE` wrapper node to hang a real `ptr` off of — content there
+// is raw `TEXT`/`GLUE_NODE`/`ESCAPE` tokens accumulated directly by
+// `ContentAccumulator`, which always flushed with `ptr: None` regardless of
+// context.
+
+fn find_content_text<'a>(block: &'a Block, needle: &str) -> Option<&'a Content> {
+    for stmt in &block.stmts {
+        if let Stmt::Content(c) = stmt {
+            let text: String = c
+                .parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if text.contains(needle) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test fixture byte offsets are a few dozen bytes, far below u32::MAX"
+)]
+fn branchless_first_arm_content_carries_a_real_content_span() {
+    let src = "\
+=== start ===
+{ Flag:
+Some dialogue prose inside the arm.
+- else:
+Wait here.
+}
+-> DONE
+";
+    let (hir, diags) = lower_hir(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let Stmt::Conditional(cond) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Conditional, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    assert_eq!(cond.branches.len(), 2, "implicit first arm + else arm");
+
+    let first_arm_content = find_content_text(&cond.branches[0].body, "Some dialogue")
+        .expect("the first arm's prose is a Content stmt");
+    let ptr = first_arm_content
+        .ptr
+        .expect("the first (branchless) arm's Content must carry a ptr — issue #981");
+    let expected_start = src
+        .find("Some dialogue")
+        .expect("fixture contains the text");
+    let expected = "Some dialogue prose inside the arm.";
+    assert_eq!(
+        ptr.text_range(),
+        TextRange::new(
+            (expected_start as u32).into(),
+            ((expected_start + expected.len()) as u32).into()
+        ),
+        "the arm's Content span must be byte-exact over its own prose, not the whole construct"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test fixture byte offsets are a few dozen bytes, far below u32::MAX"
+)]
+fn else_arm_content_carries_a_real_content_span() {
+    let src = "\
+=== start ===
+{ Flag:
+Some dialogue prose inside the arm.
+- else:
+Wait here.
+}
+-> DONE
+";
+    let (hir, diags) = lower_hir(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let Stmt::Conditional(cond) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Conditional, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let else_arm_content = find_content_text(&cond.branches[1].body, "Wait here")
+        .expect("the else arm's prose is a Content stmt");
+    let ptr = else_arm_content
+        .ptr
+        .expect("the else arm's Content must carry a ptr — issue #981");
+    let expected_start = src.find("Wait here").expect("fixture contains the text");
+    let expected = "Wait here.";
+    assert_eq!(
+        ptr.text_range(),
+        TextRange::new(
+            (expected_start as u32).into(),
+            ((expected_start + expected.len()) as u32).into()
+        ),
+        "the else arm's Content span must be byte-exact over its own prose"
+    );
+}
+
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test fixture byte offsets are a few dozen bytes, far below u32::MAX"
+)]
+fn multiway_switch_branch_content_carries_a_real_content_span() {
+    // The explicit multi-arm `- val:` switch form (`MultilineBranchBody`
+    // for every branch, no implicit `BranchlessCondBody` first arm).
+    let src = "\
+=== start ===
+VAR mood = 1
+{ mood:
+- 1:
+Cheerful greeting here.
+- 2:
+Grumpy greeting here.
+- else:
+Neutral greeting here.
+}
+-> DONE
+";
+    let (hir, diags) = lower_hir(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+
+    let Stmt::Conditional(cond) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Conditional, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    assert_eq!(cond.branches.len(), 3, "two valued branches + else");
+
+    for (needle, text) in [
+        ("Cheerful greeting", "Cheerful greeting here."),
+        ("Grumpy greeting", "Grumpy greeting here."),
+        ("Neutral greeting", "Neutral greeting here."),
+    ] {
+        let branch = cond
+            .branches
+            .iter()
+            .find(|b| find_content_text(&b.body, needle).is_some())
+            .unwrap_or_else(|| panic!("no branch contains {needle:?}"));
+        let content = find_content_text(&branch.body, needle).expect("just found above");
+        let ptr = content
+            .ptr
+            .unwrap_or_else(|| panic!("switch branch Content for {needle:?} must carry a ptr"));
+        let expected_start = src
+            .find(text)
+            .unwrap_or_else(|| panic!("fixture contains {text:?}"));
+        assert_eq!(
+            ptr.text_range(),
+            TextRange::new(
+                (expected_start as u32).into(),
+                ((expected_start + text.len()) as u32).into()
+            ),
+            "branch {needle:?}'s Content span must be byte-exact"
+        );
+    }
+}
+
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test fixture byte offsets are a few dozen bytes, far below u32::MAX"
+)]
+fn top_level_content_span_is_unchanged_by_the_arm_content_fix() {
+    // Should-not-change pin: top-level prose (outside any conditional arm)
+    // already carried a real `ptr` via `ContentLineOutput::Content` before
+    // this fix, and must still resolve to a live syntax node — unlike the
+    // new synthetic arm spans, which never do (see `note_range`'s doc).
+    let src = "=== start ===\nA greeting line.\n-> DONE\n";
+    let (hir, diags) = lower_hir(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let content = find_content_text(&hir.knots[0].body, "A greeting")
+        .expect("top-level prose is a Content stmt");
+    let ptr = content
+        .ptr
+        .expect("top-level Content already carried a ptr");
+    let expected_start = src
+        .find("A greeting line.")
+        .expect("fixture contains the line") as u32;
+    // The real `CONTENT_LINE` node's own extent (unlike the arm case's
+    // synthesized union) may include trailing structure the raw text slice
+    // doesn't (e.g. the line's own terminator) — assert containment of the
+    // prose, not byte-for-byte equality with the bare text slice, so this
+    // pin doesn't overspecify a node boundary orthogonal to this fix.
+    assert!(
+        ptr.text_range().contains_range(TextRange::new(
+            expected_start.into(),
+            (expected_start + "A greeting line.".len() as u32).into()
+        )),
+        "top-level Content span must still cover its own prose: {:?}",
+        ptr.text_range()
+    );
+    assert_ne!(
+        ptr.kind,
+        crate::KindToken::synthetic(crate::NodeClass::Content),
+        "top-level Content still resolves to a real CONTENT_LINE node, not a synthetic union"
+    );
+}
