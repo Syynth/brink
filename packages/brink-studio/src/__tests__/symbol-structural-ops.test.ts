@@ -15,13 +15,14 @@
  * unit suite's `brink-web` alias), so what is exercised is the production
  * dispatcher and the production apply path, not a re-implementation.
  *
- * ⚠ The refusal cases below pin what the dispatcher does TODAY: `result.ok`
- * false → it returns silently, applying nothing and telling the user nothing
- * *distinct from a refusal*. That silence is #2544's production-side
- * reporting contract (the rename surfaces already notify; these seven do
- * not), which needs a maintainer ruling — so it is pinned here as observed
- * behavior, not asserted as correct. The value of pinning it is that #2544
- * now has a test to flip.
+ * The refusal cases below pin what the dispatcher does now that #2544 has
+ * landed: `result.ok` false → the dispatcher reports it through the same
+ * `_notify`/`binder`-sourced error channel every other refusal on this
+ * surface uses (`notifyStructuralRefusal`, #2544), and applies nothing.
+ * Before #2544, `result.ok` false returned silently — applying nothing but
+ * also telling the user nothing *distinct from a refusal*; these tests used
+ * to pin that silence as observed-not-endorsed behavior. They now pin the
+ * fix instead.
  *
  * #2767 adds a SEPARATE, non-#2544 signal around the three gated ops
  * (`moveStitch`/`promoteStitch`/`demoteKnot`): a synchronous
@@ -229,7 +230,7 @@ describe("dispatchSymbolAction: the structural ops the mock had no method for (#
   });
 });
 
-describe("a refused structural op applies nothing (#2577; reporting is #2544)", () => {
+describe("a refused structural op applies nothing and reports why (#2577; reporting is #2544)", () => {
   it("moveStitch onto an occupied name leaves every file untouched", async () => {
     // `two` already owns an `alpha`, so the destination-collision check — the
     // one the real op runs before it even resolves the source stitch — refuses.
@@ -262,14 +263,19 @@ describe("a refused structural op applies nothing (#2577; reporting is #2544)", 
     // The busy state clears once the (refused) op settles.
     expect(store.getState().structuralOpPending).toBeNull();
 
-    // ⚠ #2544: the dispatcher's `if (result.ok && result.path)` swallows the
-    // refusal itself — no DISTINCT refusal notification, nothing telling the
-    // user *why* nothing happened. The rename surfaces DO report
-    // (`notifyRenameRefusal`, #2528/#2543); these seven do not. Pinned, not
-    // endorsed — flipping it is #2544's ruling to make. #2767's pending
-    // busy-state affordance is not a notification (spec §7.5) and does not
-    // change this: `raised` stays empty.
-    expect(raised).toHaveLength(0);
+    // #2544: the dispatcher reports the refusal through the same error
+    // channel the rename surfaces already use (`notifyRenameRefusal`,
+    // #2528/#2543) — `notifyStructuralRefusal` here. #2767's pending
+    // busy-state affordance is a SEPARATE, non-notification signal (spec
+    // §7.5) that already cleared above; this is the DISTINCT report telling
+    // the user *why* nothing happened.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.severity).toBe("error");
+    expect(raised[0]!.source).toBe("binder");
+    expect(raised[0]!.message).toContain("Move alpha to two");
+    expect(raised[0]!.message).toContain("failed");
+    // No undo entry for a refusal — nothing was written, so nothing to undo.
+    expect(store.getState().undoStack).toHaveLength(0);
   });
 
   it("promoteStitch onto an existing knot name refuses without a partial write", async () => {
@@ -291,12 +297,41 @@ describe("a refused structural op applies nothing (#2577; reporting is #2544)", 
 
     expect(project.getSession().getFileSource("main.ink")).toBe(before);
     expect(store.getState().structuralOpPending).toBeNull();
-    // Same #2544 note as the moveStitch refusal test above.
-    expect(raised).toHaveLength(0);
+    // Same #2544 report as the moveStitch refusal test above.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.severity).toBe("error");
+    expect(raised[0]!.message).toContain("Promote two to knot");
+    expect(store.getState().undoStack).toHaveLength(0);
+  });
+
+  it("demoteKnot refuses a knot that still has sub-stitches", async () => {
+    const { store, project, raised } = await makeStore({ "main.ink": MAIN });
+    const state = store.getState();
+    const before = project.getSession().getFileSource("main.ink")!;
+
+    // `one` still owns `alpha`/`beta` — the real op's IllegalNesting check
+    // refuses regardless of the destination.
+    const pending = dispatchSymbolAction(state, state.applyMoveResult, {
+      type: "demoteKnot",
+      path: "main.ink",
+      knot: "one",
+      destKnot: "two",
+    });
+    await vi.runAllTimersAsync();
+    await pending;
+
+    expect(project.getSession().getFileSource("main.ink")).toBe(before);
+    // Same #2544 report, covering the demote family.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.severity).toBe("error");
+    expect(raised[0]!.source).toBe("binder");
+    expect(raised[0]!.message).toContain("Demote one into two");
+    expect(raised[0]!.message).toContain("sub-stitches");
+    expect(store.getState().undoStack).toHaveLength(0);
   });
 
   it("reorderStitches with a non-permutation refuses", async () => {
-    const { store, project } = await makeStore({ "main.ink": MAIN });
+    const { store, project, raised } = await makeStore({ "main.ink": MAIN });
     const state = store.getState();
     const before = project.getSession().getFileSource("main.ink")!;
 
@@ -308,6 +343,12 @@ describe("a refused structural op applies nothing (#2577; reporting is #2544)", 
     });
 
     expect(project.getSession().getFileSource("main.ink")).toBe(before);
+    // Same #2544 report, covering the reorder family.
+    expect(raised).toHaveLength(1);
+    expect(raised[0]!.severity).toBe("error");
+    expect(raised[0]!.source).toBe("binder");
+    expect(raised[0]!.message).toContain("Reorder stitches in one");
+    expect(store.getState().undoStack).toHaveLength(0);
   });
 });
 
@@ -557,7 +598,7 @@ describe("structuralOpPending compare-and-clear (#2794)", () => {
     // (`useSymbolMenuActions.ts`, `Binder.tsx`), so an uncaught rejection
     // here would be an unhandled promise rejection with no catch, not
     // `applyRename`'s caught-and-notified one.
-    const { store, project } = await makeStore({ "main.ink": MAIN });
+    const { store, project, raised } = await makeStore({ "main.ink": MAIN });
     const state = store.getState();
     const session = project.getSession();
     const moveSpy = vi.spyOn(session, "moveStitch");
@@ -584,6 +625,14 @@ describe("structuralOpPending compare-and-clear (#2794)", () => {
     // The `finally` in `runGatedStructuralOp` still clears the pending
     // indicator even though the op itself never ran.
     expect(store.getState().structuralOpPending).toBeNull();
+    // #2544 review regression: this sentinel is a user-initiated cancel (the
+    // project was torn down mid-defer), NOT a genuine op refusal — it must
+    // NOT be reported through `notifyStructuralRefusal` as a failed "Move
+    // alpha to two". Before the identity check was added, the dispatcher's
+    // blanket `if (result.ok) {...} else notifyStructuralRefusal(...)` could
+    // not tell the two apart, since `DESTROYED_DURING_DEFER_RESULT` is shaped
+    // exactly like a real refusal (`ok: false`, `safe: true`).
+    expect(raised).toHaveLength(0);
   });
 
   it("applyRename (Binder rename/move) clears via clearStructuralOpPending with its own description", async () => {
