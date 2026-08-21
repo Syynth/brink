@@ -338,6 +338,58 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
     }
 }
 
+/// The shared choke point for resolving an lvalue expression to a LIR
+/// [`lir::AssignTarget`] — but it only ever recognizes one shape: a bare
+/// (single- or multi-segment) `hir::Expr::Path`. It is the root-resolution
+/// step for far more write shapes than its own callers suggest, because
+/// every one of them ultimately calls back into this function for its own
+/// root:
+///
+/// - Plain/compound assignment (`hir::Stmt::Assignment`'s classic-line and
+///   T1b-block arms) call this directly for `assign.target`.
+/// - [`lower_indexed_assignment`](super::blocks::lower_indexed_assignment)
+///   (`a[i] = v`/`a[i] op= v`) calls this for the flattened index chain's
+///   *root* expression — so an indexed write's root is covered here too,
+///   not only a bare `a = v`.
+/// - A bare-variable postfix `x++`/`x--`
+///   ([`try_lower_postfix_stmt`](super::blocks::try_lower_postfix_stmt))
+///   desugars to an `Assign` whose target comes from calling this function.
+/// - The `pop`/`heap_pop` mutator intrinsics (`lir::lower::expr`) call this
+///   for their single lvalue argument's root.
+/// - [`lower_bare_mutator`](super::blocks::lower_bare_mutator) — the bare-
+///   variable fast path for the entire `MutatorKind` family (`push`,
+///   `insert`, `remove`, `remove_at`, not just `pop`/`heap_pop` above) —
+///   calls this for its root.
+/// - [`lower_lvalue_container_chain`](super::blocks::lower_lvalue_container_chain)
+///   — the indexed-lvalue mutator path (`push(grid[y], v)`) — also calls
+///   this for the chain's root before reading any index level.
+///
+/// It does **not** cover every write shape in the language: a single-level
+/// struct-field write/mutator (`p.field = v`, `push(p.field, v)`) resolves
+/// its root `SymbolInfo` independently, via
+/// [`lower_single_level_field_write`](super::blocks::lower_single_level_field_write)/
+/// [`lower_field_mutator`](super::blocks::lower_field_mutator) — those two
+/// functions need `head_info` before this function's `Path`-only shape
+/// match would give it to them (the caller has already split a two-segment
+/// path into head/field), so they never call back into this function at
+/// all. Nor does it cover a `ref`-argument call site (`ref x`, `ref p.field`,
+/// or the UFCS auto-ref desugar) — passing something by `ref` hands the
+/// callee a raw pointer to the storage cell without ever routing through
+/// assignment lowering; those live at
+/// [`lower_ref_path_call_arg`](super::expr::lower_ref_path_call_arg)/
+/// [`lower_ref_projection_arg`](super::expr::lower_ref_projection_arg)/
+/// [`try_lower_frame_local_auto_ref_stmt`](super::blocks::try_lower_frame_local_auto_ref_stmt)
+/// instead. This four-locations-plus-inline-comments spread (this doc,
+/// `context.rs`'s `as_binding_slots` field doc, and the two functions named
+/// above) has already drifted out of sync once — see issue #2201's own
+/// finding, filed from the #2122/#2191 review history.
+///
+/// Both immutability checks that apply to a resolved root — `as`-binding
+/// immutability ([`reject_as_binding_write`], issue #2122) and `CONST`
+/// immutability ([`reject_const_write`], issue #2201) — are threaded
+/// through every one of these choke points individually for exactly this
+/// reason: no single call site sees every write shape, so the check has to
+/// be repeated at each one that resolves a root on its own.
 pub(super) fn lower_assign_target(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -357,6 +409,11 @@ pub(super) fn lower_assign_target(
                 return Some(lir::AssignTarget::Temp(slot, name_id));
             }
             if let Some(info) = ctx.resolve_path(path.range) {
+                // Issue #2201: `CONST` is immutable — see
+                // `reject_const_write`'s doc for the full choke-point story.
+                if reject_const_write(info, path.range, ctx) {
+                    return None;
+                }
                 let id = if info.kind == SymbolKind::List {
                     super::decls::list_def_to_global_var(info.id)
                 } else {
@@ -403,6 +460,55 @@ pub(super) fn reject_as_binding_write(
                 crate::DiagnosticCode::E148.title(),
             ),
             code: crate::DiagnosticCode::E148,
+        });
+        return true;
+    }
+    false
+}
+
+/// Issue #2201: the `CONST`-immutability check, shared across every choke
+/// point that resolves a write root's `SymbolInfo` — the `CONST` analog of
+/// [`reject_as_binding_write`] just above (same rationale for why this
+/// needs its own call at each of `lower_assign_target`,
+/// `blocks::lower_single_level_field_write`, `blocks::lower_field_mutator`,
+/// `expr::lower_ref_path_call_arg`, and `expr::lower_ref_projection_arg`
+/// individually rather than being centralized in one function: no single
+/// one of those call sites sees every write shape — see
+/// [`lower_assign_target`]'s own doc for the full enumeration).
+///
+/// ink semantics reject a `CONST` reassignment at compile time
+/// (`ink/compiler/ParsedHierarchy/VariableAssignment.cs`, "Can't re-assign
+/// to a constant") — this applies identically on both surfaces (`.ink` and
+/// `.brink`), since `SymbolKind::Constant` is resolved the same way for
+/// both frontends by the time LIR lowering runs.
+///
+/// A local (`Param`/`Temp`) that merely shares a `CONST`'s name is
+/// unaffected: name resolution has already picked the innermost binding by
+/// the time `info` is resolved (issue #2947, locals-first shadowing), so
+/// `info.kind` is never `SymbolKind::Constant` for a shadowing local — this
+/// function only ever sees the info that name resolution actually settled
+/// on.
+///
+/// Returns `true` (diagnosed, caller must stop and lower nothing) when
+/// `info.kind` is `SymbolKind::Constant`; `false` otherwise (a plain `VAR`
+/// write stays legal, as does any read of a `CONST` — this is a write-path
+/// check only, never called from an expression-position read).
+pub(super) fn reject_const_write(
+    info: &crate::symbols::SymbolInfo,
+    range: TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> bool {
+    if info.kind == SymbolKind::Constant {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range,
+            message: format!(
+                "{}: `{}` is declared CONST — it cannot be reassigned, mutated, or passed by \
+                 `ref`",
+                crate::DiagnosticCode::E187.title(),
+                info.name,
+            ),
+            code: crate::DiagnosticCode::E187,
         });
         return true;
     }
