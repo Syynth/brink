@@ -7,7 +7,7 @@ use crate::{Block, ChoiceSet, ChoiceSetContext, Stmt};
 use super::super::backbone::BranchChild;
 use super::super::backbone::classify_branch_child;
 use super::super::choice::LowerChoice;
-use super::super::content::{ContentAccumulator, DirectBackend};
+use super::super::content::{ContentAccumulator, DirectBackend, HandleResult};
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::LowerBlock;
 
@@ -15,7 +15,7 @@ use super::LowerBlock;
 
 impl LowerBlock for ast::BranchlessCondBody {
     fn lower_block(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Block> {
-        let mut acc = ContentAccumulator::new(DirectBackend::new());
+        let mut acc = ContentAccumulator::new(DirectBackend::new(), scope.file_id);
         let mut is_multiline = false;
 
         for child in self.syntax().children_with_tokens() {
@@ -37,11 +37,20 @@ impl LowerBlock for ast::BranchlessCondBody {
                     acc.handle(&dn, scope, sink);
                 }
                 BranchChild::InlineLogic(il) => {
-                    acc.handle(&il, scope, sink);
+                    let range = il.syntax().text_range();
+                    if acc.handle(&il, scope, sink) == HandleResult::Inline {
+                        acc.note_range(range);
+                    }
                 }
-                BranchChild::Text(t) => acc.push_text(t),
-                BranchChild::Glue => acc.push_glue(),
-                BranchChild::Escape(t) => acc.push_escape(&t),
+                BranchChild::Text(t) => {
+                    let range = child.text_range();
+                    acc.push_text(t, range);
+                }
+                BranchChild::Glue => acc.push_glue(child.text_range()),
+                BranchChild::Escape(t) => {
+                    let range = child.text_range();
+                    acc.push_escape(&t, range);
+                }
                 BranchChild::Choice(c) => {
                     acc.flush();
                     if let Ok(choice) = c.lower_choice(scope, sink) {

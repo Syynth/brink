@@ -1191,6 +1191,85 @@ VAR gold = 0
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test fixture byte offsets are a few dozen bytes, far below u32::MAX"
+    )]
+    fn conditional_arm_prose_projects_content_spans() {
+        // Issue #981: prose inside a multi-line conditional arm (the ink
+        // `{ Flag: ... - else: ... }` switch/branch shape) got no `content`
+        // span at all — only the whole-construct `Conditional` span covered
+        // it. Top-level prose outside the conditional already projects
+        // `Content` spans; arm prose must too, with byte-exact ranges.
+        let src = "\
+=== start ===
+{ Flag:
+Some dialogue prose inside the arm.
+- else:
+Wait here.
+}
+-> DONE
+";
+        let p = project(src);
+
+        let arm_1_text = "Some dialogue prose inside the arm.";
+        let arm_1_start = src.find(arm_1_text).expect("fixture contains arm 1 text");
+        let arm_1_range = TextRange::new(
+            (arm_1_start as u32).into(),
+            ((arm_1_start + arm_1_text.len()) as u32).into(),
+        );
+
+        let arm_2_text = "Wait here.";
+        let arm_2_start = src.find(arm_2_text).expect("fixture contains arm 2 text");
+        let arm_2_range = TextRange::new(
+            (arm_2_start as u32).into(),
+            ((arm_2_start + arm_2_text.len()) as u32).into(),
+        );
+
+        let content_ranges: Vec<TextRange> = p
+            .spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::Content)
+            .map(|s| s.range)
+            .collect();
+
+        assert!(
+            content_ranges.contains(&arm_1_range),
+            "the first arm's prose must project its own Content span at {arm_1_range:?}; got {content_ranges:?}"
+        );
+        assert!(
+            content_ranges.contains(&arm_2_range),
+            "the else arm's prose must project its own Content span at {arm_2_range:?}; got {content_ranges:?}"
+        );
+
+        // Should-not-change: the construct-extent Conditional span itself,
+        // and the top-level prose outside it (the greeting line if any),
+        // stay exactly as before — this fix only adds arm-content spans, it
+        // does not touch the construct span's own range.
+        let cond_spans: Vec<_> = p
+            .spans
+            .iter()
+            .filter(|s| s.kind == SpanKind::Conditional)
+            .collect();
+        assert_eq!(cond_spans.len(), 1, "one construct-extent Conditional span");
+        let expected_cond_start = src
+            .find("{ Flag:")
+            .expect("fixture contains the conditional open");
+        let expected_cond_end = src
+            .find('}')
+            .expect("fixture contains the conditional close")
+            + 1;
+        assert_eq!(
+            cond_spans[0].range,
+            TextRange::new(
+                (expected_cond_start as u32).into(),
+                (expected_cond_end as u32).into()
+            ),
+            "the Conditional construct span's own range is unchanged by this fix"
+        );
+    }
+
+    #[test]
     fn construct_extent_spans_are_body_gated() {
         // A statement-level conditional and a body inline sequence project
         // construct-extent spans; an inline sequence in a choice's bracket

@@ -6,9 +6,9 @@ expression: "render_fixture(\"\\\n=== start ===\n* Choice\n  { lucky:\n  You win
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
   2 |  { lucky:| Logic w=0/TopLevel
-  3 |  You win.| Narrative w=0/ConditionalBranch
+  3 |  You win.| Narrative w=1/ConditionalBranch
   4 |  - else:| Logic w=0/TopLevel
-  5 |  You lose.| Narrative w=0/ConditionalBranch
+  5 |  You lose.| Narrative w=1/ConditionalBranch
   6 |  }| Logic w=0/TopLevel
   7 |- done| Gather w=1/GatherContinuation
   8 |-> END| Divert w=1/GatherContinuation
@@ -17,9 +17,9 @@ expression: "render_fixture(\"\\\n=== start ===\n* Choice\n  { lucky:\n  You win
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |* Choice| Choice w=1/ChoiceLine(sticky=false)
   2 |  { lucky:| Logic w=0/TopLevel
-  3 |  You win.| Narrative w=0/ConditionalBranch
+  3 |  You win.| Narrative w=1/ConditionalBranch
   4 |  - else:| Logic w=0/TopLevel
-  5 |  You lose.| Narrative w=0/ConditionalBranch
+  5 |  You lose.| Narrative w=1/ConditionalBranch
   6 |  }| Logic w=0/TopLevel
   7 |- done| Gather w=1/GatherContinuation
   8 |-> END| Divert w=1/GatherContinuation

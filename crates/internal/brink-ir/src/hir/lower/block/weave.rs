@@ -71,7 +71,7 @@ pub fn lower_weave_body(
     scope: &LowerScope,
     sink: &mut impl LowerSink,
 ) -> Block {
-    let mut acc = ContentAccumulator::new(WeaveBackend::new());
+    let mut acc = ContentAccumulator::new(WeaveBackend::new(), scope.file_id);
 
     for child in parent.children() {
         match classify_body_child(&child) {

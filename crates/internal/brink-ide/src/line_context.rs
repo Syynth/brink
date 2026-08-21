@@ -900,12 +900,15 @@ fn detect_gathers(source: &str, ctx: &mut [LineContext]) {
 /// Conditional/sequence scaffold + arm-descent post-pass (#413).
 ///
 /// `walk_stmt`'s `Stmt::Conditional`/`Stmt::Sequence`/inline-part handling
-/// walks each branch's body, but branch-body `Content` is accumulated via
-/// raw token buffering (`ContentAccumulator::flush`), which never stamps a
-/// `ptr` — so `set_content_lines` has no range to promote arm content with.
-/// The block's OWN range (`Conditional.ptr`/`Sequence.ptr`, collected during
-/// the walk as `cond_ranges`) is the only source-located anchor available,
-/// so this pass re-scans the block's line range from source text and:
+/// walks each branch's body. Since #981, branch-body `Content` carries a
+/// real covering-range provenance (`ContentAccumulator::flush` synthesizes
+/// one over its buffered tokens), so arm PROSE is promoted by
+/// `set_content_lines`/`derive_weave` like any other content — this pass's
+/// blank-fill promotion no longer fires for it. The pass still owns the
+/// lines no `Content` node covers: the opening `{`/`{cond:` line, a bare
+/// `}`, and `- else:`/branch-header scaffold lines. The block's OWN range
+/// (`Conditional.ptr`/`Sequence.ptr`, collected during the walk as
+/// `cond_ranges`) anchors that scaffold scan:
 ///
 /// - classifies scaffold lines (the opening `{`/`{cond:` line, a bare `}`
 ///   closing line, and `- cond:`/`- else:` branch headers) as `Logic` —
@@ -963,15 +966,15 @@ fn apply_conditional_scaffold(
             // Brace scaffold classification only ever fills a gap: a line
             // the main HIR walk (or an earlier pass) already classified —
             // e.g. a `Content` node whose own `ptr` range covers this exact
-            // physical line, including a single-line inline conditional
-            // used as ordinary narrative, `{visited: You were here
-            // before.}` — is never reconsidered here. Only a genuinely
-            // uncovered (`Blank`) line can be brace scaffold: that's
-            // precisely the gap this pass exists to fill (branch-body
-            // content is accumulated via raw token buffering with no
-            // per-line `ptr`, so the block's own opening/closing brace
-            // line has nothing else to claim it and is still `Blank` at
-            // this point).
+            // physical line, including (since #981) arm prose inside the
+            // block, or a single-line inline conditional used as ordinary
+            // narrative, `{visited: You were here before.}` — is never
+            // reconsidered here. Only a genuinely uncovered (`Blank`) line
+            // can be brace scaffold: the block's own opening/closing brace
+            // and `- else:`/branch-header lines carry no `Content` node of
+            // their own, so nothing else claims them and they are still
+            // `Blank` at this point — precisely the residue this pass
+            // exists to fill.
             if ctx[i].element != LineElement::Blank {
                 continue;
             }
