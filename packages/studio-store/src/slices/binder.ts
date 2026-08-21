@@ -16,7 +16,7 @@ import type { StructuralResult } from "@brink/wasm-types";
 // ── Undo entry ──────────────────────────────────────────────────────
 
 /**
- * An undoable binder operation. Two shapes:
+ * An undoable binder operation. Four shapes:
  *
  * - `edits` — content was rewritten in place (structural moves, search
  *   replace). Undo restores each snapshot through `applyEdit` (egresses as
@@ -27,6 +27,11 @@ import type { StructuralResult } from "@brink/wasm-types";
  * - `rename` — a file was renamed/moved. Undo is the inverse rename
  *   (`from`→`to`); the rename op is self-inverting (INCLUDE rewrites included),
  *   so no snapshot is needed.
+ * - `rename-dir` — a folder was renamed/moved. Undo is the inverse `rename_dir`
+ *   call (prefixes swapped) — see the variant's own doc below. Unlike the
+ *   other three shapes, undo can itself be refused (all-or-nothing, #2587):
+ *   `undo()` must leave this entry on the stack rather than popping it when
+ *   that happens (see `undo()`'s `rename-dir` branch).
  */
 export type UndoEntry =
   | {
@@ -43,9 +48,21 @@ export type UndoEntry =
       kind: "rename";
       description: string;
       /** Undo applies each inverse rename (`from`→`to`), in reverse order. A
-       *  single file rename has one entry; a folder rename batches all its
-       *  files into one undoable step. */
+       *  single file rename has one entry; a batch move (`moveFiles`) groups
+       *  several independent per-file renames into one undoable step. NOT
+       *  used for a folder rename — see `rename-dir` below. */
       renames: Array<{ from: string; to: string }>;
+    }
+  | {
+      kind: "rename-dir";
+      description: string;
+      /** Undo re-applies the atomic `rename_dir` op with the prefixes
+       *  swapped (`newPrefix` → `oldPrefix`) — the inverse of a whole-folder
+       *  move is itself a whole-folder move, so undo gets the SAME
+       *  single-snapshot consistency guarantee (#314) the forward move does,
+       *  rather than falling back to a per-file loop (issue #2587). */
+      oldPrefix: string;
+      newPrefix: string;
     };
 
 // ── Slice interface ─────────────────────────────────────────────────
@@ -282,17 +299,24 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
   },
 
   async renameFolder(oldPrefix, newPrefix, paths) {
+    // `paths` is the Binder's own pre-flight list (from `outline`) — kept
+    // only for this cheap early exit, matching the old per-file loop's quiet
+    // no-op for an empty selection. It is NOT threaded into `renameDir`: the
+    // atomic op discovers every file under `oldPrefix` itself, against its
+    // own single pre-move snapshot (#314) — passing a client-computed list
+    // would just be a second, possibly-stale source of truth for the same
+    // question the op already answers authoritatively.
     if (oldPrefix === newPrefix || paths.length === 0) return;
-    const renames: Array<{ from: string; to: string }> = [];
-    for (const old of paths) {
-      const moved = newPrefix + old.slice(oldPrefix.length);
-      if (await applyRename(get, old, moved)) {
-        renames.unshift({ from: moved, to: old }); // reverse order for undo
-      }
-    }
-    if (renames.length === 0) return;
+    const moved = await applyDirRename(get, oldPrefix, newPrefix);
+    if (moved === null || moved.length === 0) return;
+
     const label = `Renamed ${oldPrefix.replace(/\/$/, "")}/ → ${newPrefix.replace(/\/$/, "")}/`;
-    set({ undoStack: [...get().undoStack, { kind: "rename", description: label, renames }] });
+    set({
+      undoStack: [
+        ...get().undoStack,
+        { kind: "rename-dir", description: label, oldPrefix, newPrefix },
+      ],
+    });
     get()._notify?.({
       severity: "info",
       source: "binder",
@@ -336,11 +360,31 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       for (const { path } of entry.files) {
         get().openTarget({ kind: "file", path }, true);
       }
-    } else {
+    } else if (entry.kind === "rename") {
       // Inverse rename(s) — the op is self-inverting (INCLUDE rewrites
-      // included). Reverse order so a folder batch unwinds cleanly.
+      // included). Reverse order so a batch move unwinds cleanly.
       for (const { from, to } of [...entry.renames].reverse()) {
         await applyRename(get, from, to);
+      }
+    } else {
+      // Inverse directory rename — same atomic op, prefixes swapped
+      // (#2587): the forward move's single-snapshot consistency guarantee
+      // applies to undo too, not just a per-file loop's worth of it.
+      //
+      // All-or-nothing means the inverse move can itself be refused (a
+      // destination collision, or an empty folder) — `applyDirRename`
+      // already raised the error notification in that case. Popping the
+      // entry and then reporting "Undid: ..." below would claim a false
+      // success on top of that error toast, and — worse — the entry would
+      // be gone from the stack with nothing having actually moved, making
+      // the refused undo unrecoverable through the undo stack. Return
+      // before the stack is popped/persisted and before the "Undid:"
+      // notification fires, leaving the entry exactly where it was
+      // (issue #2916 review; mirrors `applyMoveResult`'s #2543 refuse-at-
+      // the-seam rule for the forward direction).
+      const moved = await applyDirRename(get, entry.newPrefix, entry.oldPrefix);
+      if (moved === null) {
+        return;
       }
     }
 
@@ -518,6 +562,74 @@ async function applyRename(
   }
   documents.triggerCompile();
   return true;
+}
+
+/**
+ * Apply a directory rename/move via the atomic `rename_dir` op (#314, wired
+ * in #2587) — the directory analog of {@link applyRename}, used for both the
+ * forward folder rename and its undo (the inverse of a whole-folder move is
+ * itself a whole-folder move, just with the prefixes swapped, so both call
+ * this one helper).
+ *
+ * Same off-paint-path shape as `applyRename`: `project.renameDir` runs the
+ * same `gate_with_source` breakage gate as `renameFile`, deferred internally
+ * via `deferGatedCall` (`ProjectSession.renameDir`'s own doc comment), so the
+ * synchronous busy-state commit happens here, before the first `await`.
+ *
+ * All-or-nothing (#2587, decided in the PR that added this): the old
+ * per-file loop silently skipped a colliding file and moved the rest, one
+ * undo entry covering only the survivors. `rename_dir` refuses the WHOLE
+ * move on any collision — no partial application — because a partial
+ * directory move can only be computed by falling back to per-file INCLUDE
+ * rewriting for the files that "succeed", which is exactly the
+ * inconsistency #314 exists to prevent. A refusal here is reported as a
+ * single error notification and nothing moves; the caller pushes no undo
+ * entry.
+ *
+ * Returns the moved `{oldPath, newPath}` pairs on success (empty is a valid,
+ * non-error result — see `renameDir`'s `oldPrefix === newPrefix` guard), or
+ * `null` on refusal. Pushes no undo entry; callers manage the stack.
+ */
+async function applyDirRename(
+  get: () => StudioState,
+  oldPrefix: string,
+  newPrefix: string,
+): Promise<Array<{ oldPath: string; newPath: string }> | null> {
+  const state = get();
+  const project = state._project;
+  const documents = state._documents;
+  if (!project || !documents) return null;
+
+  const pendingDescription = `Renaming ${oldPrefix} → ${newPrefix}`;
+  state.setStructuralOpPending(pendingDescription);
+  let result: { moved: Array<{ oldPath: string; newPath: string }>; referrers: string[] };
+  try {
+    result = await project.renameDir(oldPrefix, newPrefix);
+  } catch (e) {
+    // renameDir validates (and throws) before mutating the session, so a
+    // refused move — e.g. a destination collision, or an empty folder —
+    // leaves every file untouched. Same reporting pattern as `applyRename`
+    // (`docs/studio-shell-spec.md` §7.5).
+    get()._notify?.({
+      severity: "error",
+      source: "binder",
+      message: e instanceof Error ? e.message : `cannot rename ${oldPrefix}`,
+    });
+    return null;
+  } finally {
+    state.clearStructuralOpPending(pendingDescription);
+  }
+
+  // Re-key every moved file's open tabs/views in place, like `applyRename`
+  // does for a single file.
+  for (const { oldPath, newPath } of result.moved) {
+    state.renameDocPath(oldPath, newPath);
+  }
+  for (const path of result.referrers) {
+    documents.invalidateFile(path);
+  }
+  documents.triggerCompile();
+  return result.moved;
 }
 
 /**
