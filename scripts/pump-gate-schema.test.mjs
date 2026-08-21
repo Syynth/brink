@@ -1151,12 +1151,34 @@ describe("pending house rules are handed to the lessons phase mechanically (#267
     );
   });
 
-  it("carries #2669's proposed rule about probing the enforcer", () => {
-    assert.ok(
-      /a schema constraint is enforcement only if a validator honours it/.test(source),
-      "the #2669/#2673 rule must be seeded into PENDING_HOUSE_RULES verbatim enough to be recognisable",
-    );
-    assert.ok(source.includes("#2673"), "the pending rule must cite its tracking issue");
+  it("no pending rule duplicates a rule already landed on BRINK-CONFIG.md", () => {
+    // The inverse of the pin this test used to be. The #2669/#2673 rule
+    // landed on the page (seven copies by 2026-08-21) while this list still
+    // carried it, and five lessons agents re-proposed an extra copy before
+    // the stale entry was removed (#2913, #2917, #2932, #2959, #2971) — the
+    // escape clause below depended on each agent independently noticing.
+    // The durable invariant: an entry may sit in PENDING_HOUSE_RULES ONLY
+    // while genuinely absent from the page, and is removed in the same PR
+    // that lands it.
+    const CONFIG_MD = join(__dirname, "..", ".claude", "skills", "autonomous-pump", "BRINK-CONFIG.md");
+    const config = readFileSync(CONFIG_MD, "utf8");
+    const arr = source.match(/const PENDING_HOUSE_RULES = \[([\s\S]*?)\n\];/);
+    assert.ok(arr, "PENDING_HOUSE_RULES must still be declared as an array literal");
+    const entries = [...arr[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+    // Case-insensitive, markdown-insensitive comparison: the page's copies
+    // are bolded and sentence-cased ("**A schema constraint…**") while a
+    // list entry is plain and lowercase — a literal substring probe misses
+    // exactly the near-duplicate wording this test exists to catch (proved
+    // by running this test against the pre-fix pump.js: it stayed green).
+    const normalize = (s) => s.toLowerCase().replace(/[*`\\]/g, "");
+    const page = normalize(config);
+    for (const entry of entries) {
+      const probe = normalize(entry).slice(0, 48);
+      assert.ok(
+        !page.includes(probe),
+        `pending rule already landed on BRINK-CONFIG.md — remove it from PENDING_HOUSE_RULES: ${probe}…`,
+      );
+    }
   });
 
   it("tells the lessons agent to skip a pending rule already present in RULES", () => {
