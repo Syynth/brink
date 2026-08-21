@@ -430,18 +430,24 @@ fn emit_const_decl(out: &mut String, c: &ConstDecl) -> Result<(), EmitError> {
 /// spelling for the seven `pub`-eligible declaration kinds (issue #1582,
 /// RULED 2026-08-03, `docs/decision-log.md` "Native visibility marker: a
 /// `pub` keyword"; `crates/internal/brink-syntax-native/src/parser/decl.rs`'s
-/// `eat_pub`/eight `at_pub_*_decl` guards are the parser side this mirrors).
+/// `eat_pub`/seven `at_pub_*_decl` guards are the parser side this mirrors).
 ///
 /// `Some(VisibilityMark::Private)` has no native spelling to fall back to —
 /// unlike `pub`'s single keyword, native has no `priv`/`private` keyword and
 /// no `#@private` tag-directive channel (that's ink-dialect-only, via
-/// `hir::lower::directive`); native lowering (`lower_native::decl::pub_mark`)
-/// can only ever produce `None` or `Some(Public)`. A `Some(Private)` HIR
-/// value reaching this emitter can only have come from the *ink* dialect's
-/// own `#@private` directive (`brink-respell` converting an ink fixture that
-/// used it), so it stays refused — not because of the old blanket
-/// `visibility.is_some()` check, but because this one variant genuinely has
-/// nothing to round-trip to.
+/// `hir::lower::directive`); native lowering
+/// (`lower_native::decl::visibility_mark`, plus the knot/stitch sites in
+/// `lower_native::container`) can only ever produce `None` or
+/// `Some(Public)`. Nor can ink-sourced HIR deliver a `Some(Private)` here in
+/// practice: ink's `#@private`/`#@public` directives also populate
+/// `HirFile::visibility`, and `refuse_unsupported_file_channels` (above)
+/// refuses any non-empty file-level visibility list before per-decl emission
+/// runs. This arm is therefore defense-in-depth against hand-constructed
+/// HIR — kept refused because the variant genuinely has nothing to
+/// round-trip to, not because any current producer reaches it. (If the
+/// file-level refusal is ever lifted, note an ink `#@public` file without
+/// `#@module` would respell into a single-file `.brink` whose top-level
+/// `pub` immediately warns E092 — the redundant-override diagnostic.)
 fn pub_prefix(
     visibility: Option<crate::VisibilityMark>,
     channel: &'static str,
@@ -2960,15 +2966,17 @@ flow a() {
 
     #[test]
     fn private_visibility_mark_is_still_refused_with_a_named_reason() {
-        // `lower_native::decl::pub_mark` can only ever produce `None` or
-        // `Some(VisibilityMark::Public)` — native has no `priv`/`private`
-        // keyword and no `#@private` tag-directive channel (that's
-        // ink-dialect-only). `Some(Private)` is unreachable from a real
-        // `.brink` parse, but IS reachable from the *ink* dialect's own
-        // `#@private` directive (`brink-respell` converting an ink
-        // fixture that used it) — so this emitter must keep refusing it,
-        // with a reason naming the real cause, not silently drop it or
-        // mis-emit it as `pub`.
+        // `lower_native::decl::visibility_mark` can only ever produce
+        // `None` or `Some(VisibilityMark::Public)` — native has no
+        // `priv`/`private` keyword and no `#@private` tag-directive
+        // channel (that's ink-dialect-only). `Some(Private)` is
+        // unreachable from a real `.brink` parse, and ink-sourced HIR
+        // with any visibility directive is refused earlier at the file
+        // level (`refuse_unsupported_file_channels` on
+        // `HirFile::visibility`) — so this arm is defense-in-depth
+        // against hand-built HIR (exactly what this test constructs):
+        // keep refusing with a reason naming the real cause, never
+        // silently drop or mis-emit as `pub`.
         let src = "var hp = 10\n";
         let parse = brink_syntax_native::parse(src);
         let tree = parse.tree();
