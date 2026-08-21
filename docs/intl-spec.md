@@ -544,6 +544,21 @@ The table above is export-direction (brink → XLIFF). The import direction (`xl
 | `<mrk>` (foreign) | children spliced in place | a TMS annotation — terminology, reviewer comment, QA flag — wraps a *span of translated text*. Its `id`/`type`/`ref`/`value` are not brink content and are dropped, but the marked text is translator work and must survive (#1812) |
 | `<sc>`/`<ec>` (foreign), `<sm>`, `<em>` | ignored | empty elements carrying attributes only. The text such a pair *spans* is a sibling of the markers, not a child, so it is already recovered as ordinary text; ignoring the markers drops annotation metadata, never translator work |
 
+The table above assumes every element in a `<source>`/`<target>` reached `elements_to_parts` as an `xliff2::InlineElement` in the first place. That assumption depended on a second catch-all one layer down, at the XML-reading boundary itself (#1824).
+
+#### Reading direction: the XML-boundary catch-all (#1824)
+
+`elements_to_parts` (above) can only be as exhaustive as the `Vec<InlineElement>` `xliff2::read::read_inline_content` (`crates/internal/xliff2/src/read/inline.rs`) hands it. Before #1824, that function had its own, separate catch-alls: an unrecognized `Event::Start` routed to `skip_element`, which discarded every byte of text nested inside it, and an unrecognized `Event::Empty` hit a bare no-op. Text carried inside a TMS-authored extension element wrapping a `<target>` — the same shape a QA flag or reviewer comment uses — never became an `InlineElement` at all, so no amount of exhaustive matching in `elements_to_parts` could recover it: the drop happened before brink-intl's model existed in memory. This was "the one remaining defeat of #1821."
+
+`read_inline_content`'s `Event::Start`/`Event::Empty` matches are exhaustive over XLIFF 2.0's *closed* inline-markup vocabulary (Core §5.4-§5.6: `<ph>`, `<pc>`, `<sc>`/`<ec>`, `<mrk>`, `<sm>`/`<em>`, and the standalone `<cp>` escape) — XLIFF 2.0 has no extensibility point that adds a *new* inline element name to `<source>`/`<target>` content, and brink's own exporter never emits one outside this set. So an element name reaching either catch-all is, by construction, TMS extension markup (§10) — the same category #1821 already had to reason about for a foreign, non-brink-marked `<mrk>`.
+
+The two catch-alls resolved differently, because they face different XML shapes:
+
+- **`Event::Start`** (a name with a body) now recurses into the wrapper with `read_inline_content` itself and splices the resulting children directly into the parent's element list — the same "the wrapper is not brink content, but what it wraps is" reasoning #1821 applied to foreign `<mrk>`, just applied to an element name the reader has never heard of. This handles arbitrary nesting depth, CDATA, and known elements nested inside an unknown wrapper (a `<ph>` inside a memoQ `<mq:comment>` still decodes as `Ph`), because the recursive call still dispatches on every recognized name.
+- **`Event::Empty`** (a self-closing name) stays a no-op — deliberately, not by oversight. An empty element is, by XML's own grammar, incapable of carrying character data, so there is no text this arm could ever discard; it is the direct analog of the foreign `<sc>`/`<ec>`/`<sm>`/`<em>` "ignore" arms above, which rest on the identical premise.
+
+This is a knowing tradeoff, not a free lunch: a nested extension element can carry TMS *metadata* prose rather than translation — a memoQ `<mq:reason>` holding a QA note (`"Bonjour <mq:comment><mq:reason>QA flag text</mq:reason>le monde</mq:comment>"`) is indistinguishable, by name alone, from a nested element that genuinely wraps more translated text, and the reader cannot tell the two apart. #1824 accepts that over-recovery — occasionally splicing in TMS commentary as if it were content — in preference to the alternative, which is unrecoverable silent loss of real translator work whenever the guess goes the other way.
+
 ### XLIFF generation
 
 ```
