@@ -300,6 +300,9 @@ fn new_pass<'a, 'b>(
         direct_call_arg_mismatches: Vec::new(),
         typed_assign_mismatches: Vec::new(),
         field_assign_mismatches: Vec::new(),
+        temp_init_shapes: BTreeMap::new(),
+        reassigned_temps: BTreeSet::new(),
+        pending_inferred_field_assign_mismatches: Vec::new(),
         lambda_annotation_mismatches: Vec::new(),
         ufcs_call_args: Vec::new(),
         lambda_escapes: Vec::new(),
@@ -637,6 +640,72 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::field_assign_mismatches`] — accumulated the same
     /// way `typed_assign_mismatches` is, during the one body walk.
     field_assign_mismatches: Vec<FieldAssignMismatch>,
+    /// Issue #2906: an unannotated `~ temp name = expr` local's own
+    /// initializer-inferred shape, by name — recorded only when `expr`'s
+    /// own inferred type is a concrete `Ty::Struct(_)` (mirrors
+    /// [`Self::annotated`]'s "resolvable declared shape by name" role, but
+    /// derived from the initializer instead of a written ascription).
+    /// [`Self::check_declared_field_assign_target`]'s Temp arm consults
+    /// this only as a fallback, after `annotated` — an explicit ascription
+    /// always wins. Re-keyed (inserted) every time an unannotated `TempDecl`
+    /// for that name is walked, so a same-named redeclaration always
+    /// reflects its own, freshest initializer shape.
+    ///
+    /// BLOCKING review finding on issue #2906's own PR: this used to be
+    /// deliberately flat/cumulative, excluded from [`FrameSnapshot`] — the
+    /// doc here claimed a lambda-local shadow's imprecision was
+    /// under-detection-only, never a false positive. That claim was wrong: a
+    /// lambda-local `~ temp p = …` permanently clobbers an *outer* `p`'s
+    /// entry with nothing to undo it once the lambda's frame closes, so a
+    /// later outer `p.field = …` reads the lambda's stale shape — a false
+    /// positive/negative on a receiver the lambda never touches. Now part of
+    /// [`FrameSnapshot`], restored on lambda-frame close exactly like
+    /// `annotated` already is, for the identical reason.
+    temp_init_shapes: BTreeMap<String, Ty>,
+    /// Issue #2906: every Temp bare-name (`~ name = expr`, any `AssignOp`,
+    /// **or a `ref`-out call-site rebind** — see
+    /// [`Self::record_ref_param_writes`]) reassigned anywhere in this walk —
+    /// the conservative gate `resolve_pending_field_assign_mismatches`
+    /// withdraws a `temp_init_shapes`-sourced fact for once anything in
+    /// scope could have moved the local off its initializer's shape.
+    ///
+    /// This has to be tracked explicitly rather than read back from
+    /// `self.locals`' own final type: `Ty::unify`'s identity rule
+    /// (`unify(Struct(_), Unknown) == Struct(_)`, `infer/ty.rs`) means a
+    /// reassignment to something *unresolvable* (an unannotated call
+    /// result, say) never disturbs `self.locals[name]` at all — it would
+    /// stay the original `Struct` shape, silently masking exactly the
+    /// "reassigned to an unknown shape" case issue #2906 calls out as
+    /// unsafe to trust. A reassignment to a different *concrete* shape does
+    /// separately drive `self.locals[name]` to `Ty::Conflicted` (already
+    /// caught by the existing `root_ty.is_unresolved()` guard), but this
+    /// set catches both cases uniformly with one mechanism rather than
+    /// relying on two.
+    ///
+    /// Now part of [`FrameSnapshot`] (see `temp_init_shapes`'s own doc for
+    /// why), restored on lambda-frame close alongside it. Also no longer
+    /// cleared by a same-named `TempDecl` redeclaration (a second BLOCKING
+    /// review finding): `register_temp_init_shape` used to unconditionally
+    /// `.remove()` a name's entry here on every redeclaration, which could
+    /// erase reassignment history a still-*pending* fact staged between the
+    /// reassignment and the redeclaration depended on — dropped rather than
+    /// fixed with a resolve-at-redeclaration-point, per the finding's own
+    /// "over-conservative but sound" alternative: once a name has been
+    /// reassigned to something untrustworthy anywhere in this walk, every
+    /// `temp_init_shapes` fact for that bare name — past or future
+    /// redeclaration alike — stays conservatively withdrawn.
+    reassigned_temps: BTreeSet<String>,
+    /// Issue #2906: `field_assign_mismatches` facts whose root type came
+    /// from `temp_init_shapes` rather than an explicit annotation/global —
+    /// staged here instead of pushed straight into `field_assign_mismatches`
+    /// so `reassigned_temps` can gate them once the *whole* walk (not just
+    /// the point of the write) is known. Drained into
+    /// `field_assign_mismatches` by
+    /// [`Self::resolve_pending_field_assign_mismatches`], called once from
+    /// [`Self::finish_walk`] after the whole body (including every nested
+    /// lambda, since this pass shares one flat namespace across lambda
+    /// frames — see `temp_init_shapes`'s doc) has been walked.
+    pending_inferred_field_assign_mismatches: Vec<FieldAssignMismatch>,
     /// See [`BodyResult::lambda_annotation_mismatches`] — accumulated the
     /// same way `typed_assign_mismatches` is, pushed by [`Self::infer_lambda`]
     /// itself rather than snapshotted/restored per lambda frame: a mismatch
@@ -786,6 +855,23 @@ struct FrameSnapshot {
     locals: BTreeMap<String, Ty>,
     annotated: BTreeMap<String, Ty>,
     local_fn_origins: BTreeMap<String, LocalFnOrigins>,
+    /// BLOCKING review finding on issue #2906's own PR: these two used to be
+    /// deliberately excluded here as "cumulative/flat, like
+    /// `lambda_annotation_mismatches`" — but unlike that field, a lambda-local
+    /// shadow of an outer `~ temp` (`let p = Other {…}; let f = ||: int { let
+    /// p = Point {…}; 0 }; p.y = 1.0;`) permanently clobbers the outer `p`'s
+    /// entry with the lambda's own, with nothing to undo it once the lambda's
+    /// frame closes — a false positive (or false negative) on the *outer*
+    /// `p`, not the conservative-only "under-detection" the old doc claimed
+    /// was the only failure mode. `annotated` is frame-scoped for exactly
+    /// this same shadowing hazard; these now are too. See
+    /// `InferPass::infer_lambda`'s own call to
+    /// `resolve_lambda_pending_field_assign_mismatches` for the companion
+    /// half of this fix — the facts staged *during* a lambda's own frame
+    /// must be resolved against the lambda's own reassignment history before
+    /// that history is rolled back here.
+    temp_init_shapes: BTreeMap<String, Ty>,
+    reassigned_temps: BTreeSet<String>,
 }
 
 /// Fork A (issue #1726): what one Temp local can hold, summarized over every
@@ -1285,22 +1371,169 @@ impl InferPass<'_, '_> {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return;
         };
-        let root_ty = match info.kind {
-            SymbolKind::Variable | SymbolKind::Constant => self.ctx.globals.get(&def).cloned(),
-            SymbolKind::Param | SymbolKind::Temp => self.annotated.get(&info.name).cloned(),
-            _ => None,
+        // Issue #2906: a Temp root's shape now falls back to
+        // `temp_init_shapes` — the initializer-inferred shape of an
+        // *unannotated* `~ temp` — whenever there is no explicit ascription
+        // to consult. `annotated` still wins outright when present (an
+        // explicit ascription is authoritative, exactly as it already was);
+        // the fallback only ever fires for the case `annotated` has nothing
+        // for. A `Param` root is deliberately excluded from the fallback —
+        // it has no initializer of its own to infer a shape from, only ever
+        // an explicit annotation, so `annotated` is its only source, same
+        // as before.
+        let (root_ty, from_inferred_init) = match info.kind {
+            SymbolKind::Variable | SymbolKind::Constant => {
+                (self.ctx.globals.get(&def).cloned(), false)
+            }
+            SymbolKind::Param => (self.annotated.get(&info.name).cloned(), false),
+            SymbolKind::Temp => match self.annotated.get(&info.name).cloned() {
+                Some(ty) => (Some(ty), false),
+                None => (self.temp_init_shapes.get(&info.name).cloned(), true),
+            },
+            _ => (None, false),
         };
         let Some(root_ty) = root_ty else { return };
         if root_ty.is_unresolved() {
             return;
         }
-        self.field_assign_mismatches.push(FieldAssignMismatch {
+        let fact = FieldAssignMismatch {
             root: info.name.clone(),
             root_ty,
             path: p.segments[1..].to_vec(),
             op,
             found: found.clone(),
-        });
+        };
+        // Issue #2906: an initializer-inferred fact is staged, not recorded
+        // outright — `resolve_pending_field_assign_mismatches` (called once
+        // the whole body is walked) withdraws it if `reassigned_temps` says
+        // this root was ever reassigned to a possibly-different shape
+        // anywhere in scope. An annotation/global-sourced fact keeps its
+        // existing unconditional-record behavior unchanged.
+        if from_inferred_init {
+            self.pending_inferred_field_assign_mismatches.push(fact);
+        } else {
+            self.field_assign_mismatches.push(fact);
+        }
+    }
+
+    /// Issue #2906: seed [`Self::temp_init_shapes`]'s fallback for an
+    /// unannotated `~ temp name = expr` whose initializer resolved to a
+    /// concrete `Ty::Struct(name)` — the initializer-derived counterpart of
+    /// [`Self::register_ascription`], called from the identical two
+    /// `TempDecl` call sites right alongside it.
+    ///
+    /// A no-op (indeed, an explicit clear) whenever `t` carries its own
+    /// ascription: that temp's shape already flows through `self.annotated`,
+    /// checked first by `check_declared_field_assign_target`, so there is
+    /// nothing for this fallback to usefully hold. Also clears (rather than
+    /// leaving stale) whenever `ty` is not `Ty::Struct(_)` — every branch
+    /// re-keys `temp_init_shapes` for this exact name unconditionally, so a
+    /// same-named redeclaration (`~ temp p = …` appearing twice in the same
+    /// scope) always reflects only its own, freshest initializer shape.
+    ///
+    /// BLOCKING review finding on issue #2906's own PR: this used to also
+    /// unconditionally `self.reassigned_temps.remove(&t.name.text)` here —
+    /// but `pending_inferred_field_assign_mismatches` is resolved once,
+    /// post-walk, so a *later* redeclaration erasing the reassignment
+    /// history a fact staged *earlier* (between the reassignment and this
+    /// redeclaration) depended on retroactively un-withdraws that fact.
+    /// Dropped rather than patched with a resolve-at-redeclaration-point,
+    /// per the finding's own sound-but-conservative alternative: once a bare
+    /// name has been reassigned to something untrustworthy anywhere in this
+    /// walk, every `temp_init_shapes` fact for it — past or future
+    /// redeclaration alike — stays withdrawn. `reassigned_temps` is only
+    /// ever cleared now by a lambda-frame restore (see `FrameSnapshot`'s
+    /// doc), never by a same-scope redeclaration.
+    fn register_temp_init_shape(&mut self, t: &brink_ir::TempDecl, ty: &Ty) {
+        if t.annotation.is_some() {
+            self.temp_init_shapes.remove(&t.name.text);
+            return;
+        }
+        match ty {
+            Ty::Struct(_) => {
+                self.temp_init_shapes
+                    .insert(t.name.text.clone(), ty.clone());
+            }
+            _ => {
+                self.temp_init_shapes.remove(&t.name.text);
+            }
+        }
+    }
+
+    /// Issue #2906: fold one bare-name assignment target
+    /// (`~ name = expr`/`BlockStmt::Assignment`, any `AssignOp`) into
+    /// [`Self::reassigned_temps`] whenever it resolves to a Temp — the
+    /// conservative signal [`Self::resolve_pending_field_assign_mismatches`]
+    /// gates a `temp_init_shapes`-sourced fact on. Called alongside
+    /// [`Self::observe`] at both `Stmt::Assignment`/`BlockStmt::Assignment`
+    /// call sites, restricted the same way `observe` restricts itself to a
+    /// bare single-segment target — a dotted target (`p.x = …`) reassigns a
+    /// *field*, not the root binding itself, so it must not count here.
+    fn record_bare_reassignment(&mut self, target: &Expr) {
+        let Expr::Path(p) = target else { return };
+        if p.segments.len() != 1 {
+            return;
+        }
+        let Some(def) = self.resolve(p.range) else {
+            return;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return;
+        };
+        if info.kind == SymbolKind::Temp {
+            self.reassigned_temps.insert(info.name.clone());
+        }
+    }
+
+    /// Issue #2906: drain [`Self::pending_inferred_field_assign_mismatches`]
+    /// into [`Self::field_assign_mismatches`], withdrawing any fact whose
+    /// root was ever reassigned ([`Self::reassigned_temps`]) anywhere in
+    /// this walk — see `reassigned_temps`'s own doc for why that has to be
+    /// tracked explicitly rather than read back from `self.locals`'s final
+    /// type. Called once, after the whole body (every nested lambda
+    /// included — this pass shares one flat frame-independent namespace for
+    /// both maps, see `temp_init_shapes`'s doc) has been walked, mirroring
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]'s
+    /// identical "resolve once every write is known" shape for the sibling
+    /// `typed_assign_mismatches` fact.
+    fn resolve_pending_field_assign_mismatches(&mut self) {
+        self.resolve_pending_field_assign_mismatches_from(0);
+    }
+
+    /// The frame-scoped half of the fix for a BLOCKING review finding on
+    /// issue #2906's own PR: `temp_init_shapes`/`reassigned_temps` are now
+    /// part of [`FrameSnapshot`], restored (rolled back to the enclosing
+    /// frame's state) when a lambda's own body-block frame closes — but
+    /// `pending_inferred_field_assign_mismatches` is deliberately *not*
+    /// frame-scoped (facts a nested lambda stages must still survive into
+    /// the enclosing body's own result, same as `lambda_annotation_mismatches`).
+    /// That split means a fact staged *during* the lambda's own frame must be
+    /// resolved against the lambda's own `reassigned_temps` — which is about
+    /// to be rolled back — before [`InferPass::restore_frame`] runs, or the
+    /// lambda's own reassignment history is lost to it forever (silently
+    /// under-withdrawing, or worse, over-reporting, depending on what the
+    /// enclosing frame's `reassigned_temps` happened to hold instead).
+    ///
+    /// `mark` is the length of `pending_inferred_field_assign_mismatches`
+    /// captured right after [`InferPass::frame_snapshot`] was taken, i.e.
+    /// before this lambda's own body walk pushed anything — so only the
+    /// facts *this* frame staged are drained and resolved here, via
+    /// [`Vec::split_off`]; every fact staged before the lambda opened (by the
+    /// enclosing frame, or by an earlier sibling lambda) is left untouched,
+    /// to be resolved later — by an enclosing lambda's own call to this
+    /// method, or by [`Self::resolve_pending_field_assign_mismatches`] at
+    /// [`Self::finish_walk`] — against the *whole* walk's eventual
+    /// reassignment history, exactly as before this fix.
+    fn resolve_pending_field_assign_mismatches_from(&mut self, mark: usize) {
+        let facts = self
+            .pending_inferred_field_assign_mismatches
+            .split_off(mark.min(self.pending_inferred_field_assign_mismatches.len()));
+        for fact in facts {
+            if self.reassigned_temps.contains(&fact.root) {
+                continue;
+            }
+            self.field_assign_mismatches.push(fact);
+        }
     }
 
     /// Issue #1877 review finding: [`Self::check_declared_assign_target`]
@@ -1574,6 +1807,9 @@ impl InferPass<'_, '_> {
     fn finish_walk(&mut self) {
         self.resolve_pending_value_calls();
         self.drop_typed_assign_mismatches_conflicted_by_a_later_read();
+        // Issue #2906: see `resolve_pending_field_assign_mismatches`'s own
+        // doc for why this belongs here, alongside the drop above.
+        self.resolve_pending_field_assign_mismatches();
     }
 
     /// Resolve every value-call site recorded during the walk
@@ -1794,6 +2030,18 @@ impl InferPass<'_, '_> {
                 let root = ref_arg_root(arg);
                 self.record_write(root);
                 self.record_fn_write(root, None);
+                // Issue #2906 (BLOCKING review finding): a `ref`-out param
+                // rebind of the caller's local is just as much a
+                // reassignment as a bare `~ name = expr` is — the callee can
+                // rebind it to a value of any shape — but `reassigned_temps`
+                // only ever saw the latter, since this call site never
+                // walks `Stmt::Assignment`'s own `record_bare_reassignment`
+                // call. `record_bare_reassignment` already carries the
+                // right guard (Temp-only, single-segment path) for exactly
+                // this purpose; `root` here is that same shape (`ref_arg_root`
+                // unwraps down to a bare `Expr::Path`), so it is reused
+                // as-is rather than duplicated.
+                self.record_bare_reassignment(root);
             }
         }
     }
@@ -2520,6 +2768,17 @@ impl InferPass<'_, '_> {
             direct_call_arg_mismatches: _,
             typed_assign_mismatches: _,
             field_assign_mismatches: _,
+            // Issue #2906 (BLOCKING review finding): frame-scoped, restored
+            // on lambda-frame close — see the fields' own docs.
+            temp_init_shapes,
+            reassigned_temps,
+            // Drained (never snapshotted) once per whole-body walk by
+            // `resolve_pending_field_assign_mismatches` — see its own doc.
+            // A lambda's own *frame-local* slice is drained early instead,
+            // by `resolve_lambda_pending_field_assign_mismatches` — see
+            // `infer_lambda`'s call to it, right before this snapshot is
+            // restored.
+            pending_inferred_field_assign_mismatches: _,
             // Deliberately cumulative, not frame-scoped (issue #1994): a
             // mismatch a nested lambda's own annotation-precedence overlay
             // records must survive into the enclosing body's own result,
@@ -2556,6 +2815,8 @@ impl InferPass<'_, '_> {
             locals: locals.clone(),
             annotated: annotated.clone(),
             local_fn_origins: local_fn_origins.clone(),
+            temp_init_shapes: temp_init_shapes.clone(),
+            reassigned_temps: reassigned_temps.clone(),
         }
     }
 
@@ -2571,12 +2832,16 @@ impl InferPass<'_, '_> {
             locals,
             annotated,
             local_fn_origins,
+            temp_init_shapes,
+            reassigned_temps,
         } = snapshot;
         self.return_ty = return_ty;
         self.has_value_return = has_value_return;
         self.locals = locals;
         self.annotated = annotated;
         self.local_fn_origins = local_fn_origins;
+        self.temp_init_shapes = temp_init_shapes;
+        self.reassigned_temps = reassigned_temps;
     }
 
     /// `|x| …` — a lambda (issue #1685) is fn-colored always, so its type is
@@ -2841,6 +3106,10 @@ impl InferPass<'_, '_> {
                 // future field can silently fall off of — see
                 // `FrameSnapshot`'s doc.
                 let snapshot = self.frame_snapshot();
+                // Issue #2906 (BLOCKING review finding): the mark this
+                // lambda's own frame-local pending facts are drained from —
+                // see `resolve_pending_field_assign_mismatches_from`'s doc.
+                let pending_field_assign_mark = self.pending_inferred_field_assign_mismatches.len();
                 // #1910: reset `return_ty`/`has_value_return` to a fresh
                 // baseline for the lambda's own frame, mirroring `new_pass`'s
                 // fresh start for a top-level def — without this, an
@@ -2937,6 +3206,12 @@ impl InferPass<'_, '_> {
                         slot_label: format!("lambda temp `{name}`"),
                     });
                 }
+                // Issue #2906 (BLOCKING review finding): resolve this
+                // lambda's own staged facts against its own reassignment
+                // history *before* `restore_frame` rolls `reassigned_temps`
+                // back to the enclosing frame's — see
+                // `resolve_pending_field_assign_mismatches_from`'s doc.
+                self.resolve_pending_field_assign_mismatches_from(pending_field_assign_mark);
                 self.restore_frame(snapshot);
                 (ty, narrowed)
             }
@@ -4259,6 +4534,8 @@ impl InferPass<'_, '_> {
                 // Issue #1877: the initializer's own type checked against
                 // this `~ temp`'s explicit ascription, if any.
                 self.check_declared_temp_init(t, &ty);
+                // Issue #2906: see `register_temp_init_shape`'s own doc.
+                self.register_temp_init_shape(t, &ty);
                 self.bind_local(&t.name.text, &ty);
                 // T2 §8 (issue #872): track this write towards the local's
                 // whole-body write summary — see `bump_local_write`.
@@ -4301,6 +4578,8 @@ impl InferPass<'_, '_> {
                     // mismatch`.
                     self.check_declared_field_assign_target(&a.target, a.op, &ty);
                     self.observe(&a.target, &ty);
+                    // Issue #2906: see `record_bare_reassignment`'s own doc.
+                    self.record_bare_reassignment(&a.target);
                 }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `record_fn_write`.
@@ -4498,6 +4777,8 @@ impl InferPass<'_, '_> {
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 // Issue #1877: see `Stmt::TempDecl`'s twin above.
                 self.check_declared_temp_init(t, &ty);
+                // Issue #2906: see `Stmt::TempDecl`'s twin above.
+                self.register_temp_init_shape(t, &ty);
                 self.bind_local(&t.name.text, &ty);
                 // T2 §8 (issue #872): see `Stmt::TempDecl`'s twin above.
                 let origin = t
@@ -4520,6 +4801,8 @@ impl InferPass<'_, '_> {
                     // `a.op` included for the same reason.
                     self.check_declared_field_assign_target(&a.target, a.op, &ty);
                     self.observe(&a.target, &ty);
+                    // Issue #2906: see `Stmt::Assignment`'s twin above.
+                    self.record_bare_reassignment(&a.target);
                 }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
@@ -4706,6 +4989,9 @@ mod tests {
             direct_call_arg_mismatches: Vec::new(),
             typed_assign_mismatches: Vec::new(),
             field_assign_mismatches: Vec::new(),
+            temp_init_shapes: BTreeMap::new(),
+            reassigned_temps: BTreeSet::new(),
+            pending_inferred_field_assign_mismatches: Vec::new(),
             lambda_annotation_mismatches: Vec::new(),
             ufcs_call_args: Vec::new(),
             lambda_escapes: Vec::new(),
