@@ -3284,3 +3284,350 @@ fn hand_renaming_a_knot_under_strict_ink_dialect_surfaces_no_rename_suspicion() 
         "no rename-suspicion diagnostic may surface under the default Dialect::StrictInk"
     );
 }
+
+// ── Native `.brink` routing (#1350 / #2360 / #2368) ─────────────────
+//
+// `brink-lsp` routed every `.brink` document through the always-ink
+// `db.parse`/`brink_syntax::parse` regardless of extension: real semantic
+// tokens, inlay hints, and code-transform requests over a native project
+// (VS Code, Zed, any real LSP client) got ink-misclassified or ink-only
+// output instead of the native analysis that already existed
+// (`brink_ide::semantic_tokens_native`, `inlay_hints_native`, and the
+// dialect-generic HIR-based `folding`/diagnostics paths). These tests drive
+// the real LSP session over stdio, the way an editor does.
+
+/// #1350: opening a `.brink` document and requesting
+/// `textDocument/semanticTokens/full` (and `/range`) must classify tokens
+/// from the *native* CST, not silently ink-misclassify or come back empty.
+///
+/// Before the fix, `semantic_tokens_full`/`_range` called `db.parse`
+/// unconditionally (always the ink frontend) — `NATIVE_BARTER`'s content
+/// (`var gold = 10`, a `///` doc comment, `flow haggle() { … }`) has no
+/// meaning as ink source, so ink's `classify_token` recognized almost none
+/// of it, yielding empty or near-empty token data.
+#[test]
+fn native_document_gets_non_empty_semantic_tokens() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-semantic-tokens");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &uri, NATIVE_BARTER);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, MAX_MESSAGES);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/semanticTokens/full",
+            "params": {"textDocument": {"uri": uri}},
+        }),
+    );
+    let (full_resp, _) = recv_response(&mut stdout, 2);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/semanticTokens/range",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 5, "character": 0},
+                },
+            },
+        }),
+    );
+    let (range_resp, _) = recv_response(&mut stdout, 3);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    // Delta-encoded groups of 5 ints per token. Measured directly against
+    // this fixture: ink-misclassifying `NATIVE_BARTER` (the pre-fix bug)
+    // yields exactly 1 token (its `///` doc-comment slashes read as an ink
+    // comment; `var`/`flow`/the rest go unrecognized) — the properly routed
+    // native classifier yields 7. `> 5` (more than one token) sits strictly
+    // between the two, so this fails against the bug and passes against the
+    // fix without pinning an exact count that would make the assertion
+    // brittle to unrelated classifier changes.
+    let full_data = full_resp["result"]["data"]
+        .as_array()
+        .expect("semanticTokens/full must return a token data array");
+    assert!(
+        full_data.len() > 5,
+        "a .brink document with real native content (var/flow/doc comment) \
+         must yield real, non-ink-misclassified semantic tokens (#1350) — \
+         more than the single stray token an ink misparse of this content \
+         produces, got {} raw ints: {full_resp:?}",
+        full_data.len()
+    );
+
+    let range_data = range_resp["result"]["data"]
+        .as_array()
+        .expect("semanticTokens/range must return a token data array");
+    assert!(
+        range_data.len() > 5,
+        "semanticTokens/range over the same native content must also yield \
+         real, non-ink-misclassified tokens (#1350), got {} raw ints: {range_resp:?}",
+        range_data.len()
+    );
+}
+
+/// #1350 item 3 (diagnostics): a `.brink` document with a real native parse
+/// error must surface it through `publishDiagnostics`, and a clean one must
+/// publish none — the per-file diagnostics path (`ProjectDb::file_diagnostics`
+/// → `lowered_query`) already dispatches on the file's own dialect, so this
+/// pins the "already works" half of #1350 as a regression rather than
+/// leaving it unverified.
+/// Bounded scan for the first `publishDiagnostics` naming `uri`, mirroring
+/// the pattern every other message-scanning test in this file already uses
+/// (e.g. the rename-suspicion scan) rather than an unbounded `loop { recv(..)
+/// }` — CLAUDE.md's "guard against unbounded growth" applies to a test
+/// harness loop just as much as production code.
+fn diagnostics_for(
+    stdout: &mut BufReader<ChildStdout>,
+    uri: &str,
+    max_messages: u64,
+) -> Option<Vec<Value>> {
+    for _ in 0..max_messages {
+        let msg = recv(stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == uri {
+            return Some(
+                msg["params"]["diagnostics"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    None
+}
+
+/// #1350 item 3 (diagnostics): a `.brink` document with a real native parse
+/// error must surface it through `publishDiagnostics` — the per-file
+/// diagnostics path (`ProjectDb::file_diagnostics` → `lowered_query`)
+/// already dispatches on the file's own dialect, so this pins the "already
+/// works" half of #1350 as a regression rather than leaving it unverified.
+///
+/// A separate, single-file server session per case (rather than two
+/// documents in one session): the diagnostics contract under test —
+/// error-shows / clean-stays-empty — does not depend on any other document
+/// sharing the session, and keeping each case isolated avoids coupling this
+/// regression test to unrelated multi-file re-analysis timing.
+#[test]
+fn native_document_diagnostics_show_parse_error() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-diagnostics-broken");
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    // Unclosed `flow` body — a genuine native parse error.
+    let broken_uri = format!("file://{}", root.join("broken.brink").display());
+    let broken_src = "flow start() {\n  Hello\n";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": broken_uri, "languageId": "brink", "version": 1, "text": broken_src,
+            }},
+        }),
+    );
+    let broken_diags = diagnostics_for(&mut stdout, &broken_uri, MAX_MESSAGES);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        broken_diags.is_some(),
+        "no publishDiagnostics for {broken_uri} within {MAX_MESSAGES} messages"
+    );
+    let broken_diags = broken_diags.expect("just asserted above");
+    assert!(
+        !broken_diags.is_empty(),
+        "an unclosed native flow body must publish a diagnostic: {broken_diags:?}"
+    );
+}
+
+/// #1350 item 3 (diagnostics), the clean-file half — see
+/// [`native_document_diagnostics_show_parse_error`]'s doc for why each case
+/// gets its own isolated session.
+///
+/// Uses [`wait_for_next_analysis_pass`], not [`diagnostics_for`]: the
+/// `DiagnosticsPublisher` anti-downgrade rule (`publish_decision`, `None =>
+/// … send: nonempty`) deliberately never sends a `publishDiagnostics` at all
+/// for a file's first, clean set — "so a clean file never generates a
+/// spurious empty publish" — so waiting for an explicit empty-array publish
+/// would wait forever. `wait_for_next_analysis_pass` instead waits for the
+/// background pass to *complete* and reports whatever was last published for
+/// the uri (defaulting to empty when nothing ever was), which is exactly
+/// "no diagnostic surfaced."
+#[test]
+fn native_document_diagnostics_stay_clean_when_valid() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-diagnostics-clean");
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let clean_uri = format!("file://{}", root.join("clean.brink").display());
+    did_open_native(&mut stdin, &clean_uri, NATIVE_BARTER);
+    let clean_diags = wait_for_next_analysis_pass(&mut stdout, &clean_uri, MAX_MESSAGES);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        clean_diags.is_empty(),
+        "a clean native file must publish no diagnostics: {clean_diags:?}"
+    );
+}
+
+/// #2360: `textDocument/inlayHint` over a `.brink` document must route
+/// through `inlay_hints_native` off `db.parse_native`, not silently come
+/// back empty because `db.parse` (ink) cast-fails on every native node.
+///
+/// `damage`'s doc-tagged `@param weapon {int}` gives the parameter hint a
+/// type suffix, so the label is exact and unambiguous: `"weapon: int"`.
+#[test]
+fn native_document_inlay_hints_route_through_native_cst() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-inlay-hints");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let src = "\
+/// @param weapon {int}
+fn damage(weapon) {
+  return weapon;
+}
+flow main() {
+  ~ let x = damage(3)
+}
+";
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+    let uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &uri, src);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, MAX_MESSAGES);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 7, "character": 0},
+                },
+            },
+        }),
+    );
+    let (resp, _) = recv_response(&mut stdout, 2);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let hints = resp["result"].as_array().cloned().unwrap_or_default();
+    let labels: Vec<String> = hints
+        .iter()
+        .filter_map(|h| match &h["label"] {
+            Value::String(s) => Some(s.clone()),
+            Value::Array(parts) => Some(
+                parts
+                    .iter()
+                    .filter_map(|p| p["value"].as_str())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        labels.iter().any(|l| l.contains("weapon: int")),
+        "a .brink call site's inlay hints must route through \
+         inlay_hints_native (#2360), got: {resp:?}"
+    );
+}
+
+/// #2360: `textDocument/codeAction` over a `.brink` document must never
+/// offer an ink-only structural action (`Sort knots alphabetically`, …) —
+/// `brink_ide::code_actions::code_actions` unconditionally ink-parses the
+/// source, and this exact content (two `=== name ===`-shaped narrative
+/// lines, out of alphabetical order) is real ink `Knot` syntax when
+/// misparsed that way, so before the `is_native` gate this fixture reliably
+/// produced a bogus "Sort knots alphabetically" quick-fix on a native file
+/// that has no knots at all.
+#[test]
+fn native_document_code_action_never_offers_ink_only_knot_actions() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-code-action");
+    std::fs::create_dir_all(&root).unwrap();
+
+    // Parses cleanly (zero errors) under the *native* frontend regardless of
+    // extension — the LSP admits it purely by `.brink` extension either way.
+    // But it happens to be real, out-of-order ink `Knot` header syntax if
+    // (mis)parsed with the ink grammar instead (verified directly against
+    // `brink_ide::code_actions::code_actions`, which reliably offers "Sort
+    // knots alphabetically" for this exact text before the `is_native` gate).
+    let src = "=== zeta ===\n=== alpha ===\n";
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+    let uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &uri, src);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &uri, MAX_MESSAGES);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 0},
+                },
+                "context": {"diagnostics": []},
+            },
+        }),
+    );
+    let (resp, _) = recv_response(&mut stdout, 2);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let actions = resp["result"].as_array().cloned().unwrap_or_default();
+    let titles: Vec<String> = actions
+        .iter()
+        .filter_map(|a| a["title"].as_str().map(str::to_owned))
+        .collect();
+
+    assert!(
+        !titles.iter().any(|t| t.contains("Sort knots")),
+        "a .brink file must never be offered an ink-only 'Sort knots' quick-fix \
+         (#2360), got: {titles:?}"
+    );
+}

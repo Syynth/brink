@@ -895,23 +895,30 @@ fn collect_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 /// native (`.brink`). The same two extensions the `initialized` handler's
 /// file watchers register, and the same axis `brink-db`'s own frontend
 /// dispatch splits on (`.brink` → native parser, everything else → ink).
+///
+/// Delegates to [`brink_db::has_recognized_source_extension`] (issue #2368)
+/// rather than a local, case-sensitive `ext == "ink" || ext == "brink"`
+/// check — a real ink/native file spelled `story.INK`/`main.BRINK` (reachable
+/// on a case-insensitive filesystem, macOS/Windows default) must classify as
+/// source the same as its lowercase spelling.
 fn is_source_path(path: &std::path::Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext == "ink" || ext == "brink")
+    path.to_str()
+        .is_some_and(brink_db::has_recognized_source_extension)
 }
 
 /// Whether `path` names a native `.brink` file — the only frontend whose
 /// grammar has cue (`@NAME`) syntax at all
 /// (`cue_names_are_never_harvested_from_the_ink_frontend`, `brink-analyzer`).
-/// A deliberate, minimal duplicate of `brink-db`'s own `file_language`
-/// extension check (crate-private there), used by
-/// [`Backend::completion`]'s cue-completion gate (review finding on #2134,
-/// minor) to tell "an ink prose line that happens to start with `@`" apart
-/// from a real native cue position.
+/// Used by [`Backend::completion`]'s cue-completion gate (review finding on
+/// #2134, minor) to tell "an ink prose line that happens to start with `@`"
+/// apart from a real native cue position.
+///
+/// Delegates to [`brink_db::is_native_source_path`] (issue #2368) — the
+/// shared, case-insensitive seam `brink-db`'s own `file_language` already
+/// implements correctly, rather than a local, case-sensitive `ext ==
+/// "brink"` copy that silently misclassified `.BRINK` as non-native.
 fn is_native_path(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext == "brink")
+    brink_db::is_native_source_path(path)
 }
 
 fn lock_db(db: &Arc<Mutex<NativeProjects>>) -> std::sync::MutexGuard<'_, NativeProjects> {
@@ -2301,7 +2308,13 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let (analysis, source, root, file_id) = {
+        // #1350: a `.brink` document must be classified from the *native*
+        // CST (`db.parse_native`/`semantic_tokens_native`), not ink's —
+        // `db.parse` always runs the ink frontend regardless of extension
+        // (the dispatch on `db.is_native` lives only in `lowered_query`),
+        // so calling it unconditionally here reproduced #2280's bug one
+        // layer up, for every real editor talking to this server over LSP.
+        let data = {
             let projects = self.analysis_rx.borrow().clone();
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
@@ -2314,14 +2327,20 @@ impl LanguageServer for Backend {
             let Some(source) = db.source(file_id).map(str::to_owned) else {
                 return Ok(None);
             };
-            let Some(parse) = db.parse(file_id) else {
-                return Ok(None);
-            };
-            let root = parse.syntax();
-            (analysis, source, root, file_id)
+            if db.is_native(file_id) {
+                let Some(parse) = db.parse_native(file_id) else {
+                    return Ok(None);
+                };
+                let root = parse.syntax();
+                semantic_tokens::compute_semantic_tokens_native(&source, &root, &analysis, file_id)
+            } else {
+                let Some(parse) = db.parse(file_id) else {
+                    return Ok(None);
+                };
+                let root = parse.syntax();
+                semantic_tokens::compute_semantic_tokens(&source, &root, &analysis, file_id)
+            }
         };
-
-        let data = semantic_tokens::compute_semantic_tokens(&source, &root, &analysis, file_id);
 
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
@@ -2339,7 +2358,10 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        let (analysis, source, root, file_id) = {
+        let range = params.range;
+
+        // #1350: same native-CST routing as `semantic_tokens_full` above.
+        let data = {
             let projects = self.analysis_rx.borrow().clone();
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
@@ -2352,22 +2374,34 @@ impl LanguageServer for Backend {
             let Some(source) = db.source(file_id).map(str::to_owned) else {
                 return Ok(None);
             };
-            let Some(parse) = db.parse(file_id) else {
-                return Ok(None);
-            };
-            let root = parse.syntax();
-            (analysis, source, root, file_id)
+            if db.is_native(file_id) {
+                let Some(parse) = db.parse_native(file_id) else {
+                    return Ok(None);
+                };
+                let root = parse.syntax();
+                semantic_tokens::compute_semantic_tokens_range_native(
+                    &source,
+                    &root,
+                    &analysis,
+                    file_id,
+                    range.start.line,
+                    range.end.line,
+                )
+            } else {
+                let Some(parse) = db.parse(file_id) else {
+                    return Ok(None);
+                };
+                let root = parse.syntax();
+                semantic_tokens::compute_semantic_tokens_range(
+                    &source,
+                    &root,
+                    &analysis,
+                    file_id,
+                    range.start.line,
+                    range.end.line,
+                )
+            }
         };
-
-        let range = params.range;
-        let data = semantic_tokens::compute_semantic_tokens_range(
-            &source,
-            &root,
-            &analysis,
-            file_id,
-            range.start.line,
-            range.end.line,
-        );
 
         Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
             result_id: None,
@@ -2477,7 +2511,7 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let (source, import_actions, fn_value_actions, value_call_actions) = {
+        let (source, is_native, import_actions, fn_value_actions, value_call_actions) = {
             let projects = lock_db(&self.db);
             let Some(db) = projects.project_for_path(&path) else {
                 return Ok(Some(vec![]));
@@ -2502,7 +2536,13 @@ impl LanguageServer for Backend {
                 brink_ide::creation_site_fix::fn_value_actions(db, file_id, offset);
             let value_call_actions =
                 brink_ide::value_call_fix::value_call_actions(db, file_id, offset);
-            (source, import_actions, fn_value_actions, value_call_actions)
+            (
+                source,
+                db.is_native(file_id),
+                import_actions,
+                fn_value_actions,
+                value_call_actions,
+            )
         };
 
         let idx = LineIndex::new(&source);
@@ -2510,7 +2550,20 @@ impl LanguageServer for Backend {
             .offset(params.range.start.line, params.range.start.character)
             .into();
 
-        let mut domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
+        // #2360: `brink_ide::code_actions::code_actions` unconditionally
+        // parses `source` with `brink_syntax::parse` and offers actions over
+        // ink-only structure (`tree.knots()`/`tree.stitches()` — sort/format
+        // knot/stitch) that has no native analog at all: a `.brink` file has
+        // no `=== knot ===`/stitch headers for the ink parser to ever match,
+        // so this is a coincidental no-op today rather than a guaranteed
+        // one — the exact "gate explicitly, don't rely on the coincidence"
+        // lesson PRs #2286/#2358 already applied to `sort_knots_in_source`
+        // and `convert_element` in `crates/brink-web`'s `EditorSession`.
+        let mut domain_actions = if is_native {
+            Vec::new()
+        } else {
+            brink_ide::code_actions::code_actions(&source, cursor_offset)
+        };
         domain_actions.extend(import_actions);
         domain_actions.extend(fn_value_actions);
         domain_actions.extend(value_call_actions);
@@ -2732,23 +2785,43 @@ impl LanguageServer for Backend {
         let Some(file_id) = db.file_id(&path) else {
             return Ok(None);
         };
-        let Some(parse) = db.parse(file_id) else {
-            return Ok(None);
-        };
-        let root = parse.tree();
 
         // The LSP has no host-value push channel (#174) — static value labels
         // still resolve from the manifest; `host`-source labels need none.
         // TM-5 (#621): `db` stays locked through this call — inlay hints now
         // also read `db.infer_body` for unannotated `temp` decls.
-        let domain_hints = brink_ide::inlay_hints::inlay_hints(
-            root.syntax(),
-            &snap.analysis,
-            db,
-            file_id,
-            request_range,
-            None,
-        );
+        //
+        // #2360: route a `.brink` document through `inlay_hints_native` off
+        // `db.parse_native` — `db.parse` always runs the ink frontend
+        // regardless of extension, the same class of bug #1350 fixed for
+        // semantic tokens.
+        let domain_hints = if db.is_native(file_id) {
+            let Some(parse) = db.parse_native(file_id) else {
+                return Ok(None);
+            };
+            let root = parse.syntax();
+            brink_ide::inlay_hints::inlay_hints_native(
+                &root,
+                &snap.analysis,
+                db,
+                file_id,
+                request_range,
+                None,
+            )
+        } else {
+            let Some(parse) = db.parse(file_id) else {
+                return Ok(None);
+            };
+            let root = parse.tree();
+            brink_ide::inlay_hints::inlay_hints(
+                root.syntax(),
+                &snap.analysis,
+                db,
+                file_id,
+                request_range,
+                None,
+            )
+        };
         drop(projects);
 
         if domain_hints.is_empty() {
@@ -3460,8 +3533,8 @@ mod tests {
     use super::{
         ConfigLoadOutcome, ConfigOverrides, LanguageOptions, LineIndex, PublishDecision,
         PublishRecord, PublishTier, collect_source_files, config_error_diagnostic, is_native_path,
-        native_source_root, path_under_ignored_dir, publish_decision, rename_suspicion_diags,
-        resolve_language_options,
+        is_source_path, native_source_root, path_under_ignored_dir, publish_decision,
+        rename_suspicion_diags, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -3578,6 +3651,36 @@ mod tests {
         assert!(!is_native_path("main.ink"));
         assert!(!is_native_path("notes.brink.txt"));
         assert!(!is_native_path("no_extension"));
+    }
+
+    /// Issue #2368: `is_native_path`/`is_source_path` must now delegate to
+    /// `brink_db`'s shared, case-insensitive predicates instead of a local
+    /// `ext == "brink"`/`ext == "ink" || ext == "brink"` copy — a real
+    /// `.BRINK`/`.INK` file (reachable on a case-insensitive filesystem,
+    /// macOS/Windows default) must classify identically to its lowercase
+    /// spelling, not silently fall through as unrecognized.
+    #[test]
+    fn is_native_path_and_is_source_path_are_case_insensitive() {
+        assert!(
+            is_native_path("main.BRINK"),
+            "uppercase .BRINK must be native"
+        );
+        assert!(
+            is_native_path("Market/Vendor.Brink"),
+            "mixed-case .Brink must be native"
+        );
+        assert!(
+            is_source_path(std::path::Path::new("main.BRINK")),
+            "uppercase .BRINK must count as a tracked source file"
+        );
+        assert!(
+            is_source_path(std::path::Path::new("story.INK")),
+            "uppercase .INK must count as a tracked source file"
+        );
+        assert!(
+            !is_source_path(std::path::Path::new("readme.MD")),
+            "an unrecognized extension must still be rejected"
+        );
     }
 
     /// Issue #1424: a workspace legitimately *rooted* inside an
