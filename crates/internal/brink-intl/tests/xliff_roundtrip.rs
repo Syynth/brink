@@ -1718,3 +1718,59 @@ fn foreign_ph_with_data_ref_errors_not_silently_dropped() {
          no matching <data> entry, got: {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1824: the xliff2-layer catch-all that could still defeat #1821
+// ---------------------------------------------------------------------------
+
+/// #1821 made `elements_to_parts` exhaustive over `xliff2::InlineElement` —
+/// but that model is only ever populated by `xliff2::read::read_inline_content`
+/// in the first place. Before #1824, an XML element that reader did not
+/// recognize (a TMS extension wrapping translator text, e.g. a memoQ QA
+/// comment) never became an `InlineElement` at all: `read_inline_content`
+/// routed it to `skip_element`, which discarded the text inside before
+/// `elements_to_parts` ever ran. No amount of exhaustive matching one layer
+/// up could recover text that never arrived.
+///
+/// This test goes through the **real reading + import path** exactly as
+/// `brink compile-locale` and `brink regenerate-xliff` run it
+/// (`crates/brink-cli/src/main.rs`: `xliff2::read::read_xliff` then
+/// `brink_intl::compile_locale_xliff` / `regenerate_locale`, both of which
+/// call `xliff_to_lines_json` immediately after parsing) — a hand-written
+/// `.xlf` *string*, not a hand-built `Document`, because the bug this
+/// closes is in the XML-reading boundary itself.
+#[test]
+fn tms_extension_wrapped_text_survives_the_real_import_path() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="2.0" srcLang="en" trgLang="fr"
+       xmlns="urn:oasis:names:tc:xliff:document:2.0"
+       xmlns:brink="urn:brink:xliff:extensions:1.0"
+       xmlns:mq="urn:tms:memoq:extensions:1.0">
+  <file id="root" brink:scope-id="0x01">
+    <unit id="0x01:0" brink:hash="aaaa">
+      <segment state="translated">
+        <source>Hello world</source>
+        <target>Bonjour <mq:comment id="c1"><mq:reason><![CDATA[QA <flag>]]></mq:reason>le monde</mq:comment><mq:flag id="f1"/>!</target>
+      </segment>
+    </unit>
+  </file>
+</xliff>"#;
+
+    let doc = xliff2::read::read_xliff(xml).expect("well-formed XLIFF must parse");
+    let recovered = xliff_to_lines_json(&doc).expect("import must not fail");
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("QA <flag>".to_string()),
+                PartJson::Literal("le monde!".to_string()),
+            ],
+        }),
+        "text carried inside a TMS extension element — including a nested \
+         CDATA reason, and past an unrecognized empty-element sibling — \
+         must reach LinesJson through the real read_xliff -> \
+         xliff_to_lines_json path, not vanish at the XML-reading boundary"
+    );
+}

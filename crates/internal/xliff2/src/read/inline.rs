@@ -9,6 +9,43 @@ use crate::model::inline::{CanReorder, Ec, Em, InlineElement, Mrk, Pc, Ph, Sc, S
 use super::extensions;
 
 /// Read inline content until the given end tag is reached.
+///
+/// # Element vocabulary
+///
+/// The `Event::Start`/`Event::Empty` matches below are exhaustive over
+/// XLIFF 2.0's *closed* inline-markup vocabulary (Core, §5.4-§5.6):
+/// `<ph>`, `<pc>`, `<sc>`/`<ec>`, `<mrk>`, `<sm>`/`<em>`, and `<cp>` (the
+/// standalone code-point escape, `Event::Empty` only — `<cp>` has no
+/// content model to speak of, so a `<cp>…</cp>` form is not legal XLIFF and
+/// is not handled as a `Start`). Nothing else is a member of that
+/// vocabulary; XLIFF 2.0 has no extensibility point that adds a *new*
+/// inline element name to `<source>`/`<target>` content — mixing in
+/// anything else is only legal through the Extensions mechanism (§10), and
+/// brink's own exporter (`push_part_inline`) never emits an element name
+/// outside this set. So an element name reaching the catch-all below is,
+/// by construction, TMS-authored extension markup: a QA flag, a
+/// terminology annotation, a reviewer comment — the same category as the
+/// foreign, non-brink-marked `<mrk>` that #1821 taught `elements_to_parts`
+/// to splice through rather than drop or reject.
+///
+/// # Catch-all disposition (#1824)
+///
+/// - **`Event::Start`** (a name with a body): recurse into it with this
+///   same function, then splice its children directly into `elements`.
+///   This is [`skip_element`]'s replacement — `skip_element` discarded
+///   every byte of text nested inside an unrecognized element, which is
+///   translator work with no second copy. Splicing keeps that text (and
+///   any further-nested known/unknown elements, at any depth) while
+///   dropping only the wrapper's own name and attributes — exactly what
+///   #1821's foreign-`<mrk>` arm does one layer up in `brink-intl`, and
+///   for the same reason: the wrapper is not brink content, but what it
+///   wraps is.
+/// - **`Event::Empty`** (a self-closing name, attributes only): still
+///   ignored. This one is a deliberate no-op, not an oversight — an empty
+///   element is, by XML's own grammar, incapable of carrying character
+///   data, so there is no text this arm could ever discard. It is the
+///   direct analog of the foreign `<sc>`/`<ec>`/`<sm>`/`<em>` "ignore"
+///   arms in `elements_to_parts`, which rest on the identical premise.
 pub fn read_inline_content(
     reader: &mut Reader<&[u8]>,
     end_tag: &str,
@@ -60,7 +97,11 @@ pub fn read_inline_content(
                     "em" => {
                         elements.push(InlineElement::Em(read_em_start(&e.attributes(), reader)?));
                     }
-                    _ => super::skip_element(reader)?,
+                    // Not a known XLIFF 2.0 inline element — TMS extension
+                    // markup wrapping content brink still must not lose.
+                    // Recurse on the wrapper's own end tag and splice its
+                    // children in place (#1824); see the doc comment above.
+                    _ => elements.extend(read_inline_content(reader, &name)?),
                 }
             }
             Event::Empty(e) => {
@@ -72,6 +113,10 @@ pub fn read_inline_content(
                     "sm" => elements.push(InlineElement::Sm(read_sm_empty(&e.attributes())?)),
                     "em" => elements.push(InlineElement::Em(read_em_empty(&e.attributes())?)),
                     "cp" => elements.push(read_cp_empty(&e.attributes())?),
+                    // Not a known XLIFF 2.0 inline element, and self-closing:
+                    // an empty element cannot carry character data (XML's
+                    // own grammar forbids it), so there is no text to lose
+                    // by ignoring it (#1824).
                     _ => {}
                 }
             }
