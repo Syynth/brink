@@ -190,6 +190,40 @@ impl LanguageOptions {
             *guard = conventions;
         }
     }
+
+    /// Read the currently stored dialect/types/lints/conventions back into a
+    /// fresh [`AnalysisOptions`] — exactly the construction [`analysis_loop`]
+    /// runs on every pass. This is [`Self::store`]'s read-side counterpart:
+    /// `store` had a regression test from the moment issue #1880 added the
+    /// `conventions` field (`resolve_language_options_conventions_pointer_
+    /// survives_store`, landed by PR #2316), but this read site — the one
+    /// `analysis_loop` actually calls — had none (issue #2320's ask (d)):
+    /// a future field silently dropped here would regress exactly the way
+    /// `conventions` did three times on the write side before #1880/#2316,
+    /// with nothing to catch it. `host_manifest`/`external_check`/
+    /// `semantic_type_check` genuinely have no brink-lsp-side source today
+    /// (see [`Self::store`]'s own doc) — explicit defaults here too, not an
+    /// implicit `..`, for the same reason `store`'s exhaustive destructure
+    /// exists: the next field brink-lsp *does* need to forward breaks this
+    /// construction until it's given a real source, rather than silently
+    /// defaulting forever.
+    fn analysis_options(&self) -> AnalysisOptions {
+        AnalysisOptions {
+            host_manifest: None,
+            external_check: brink_analyzer::ExternalCheckSeverity::default(),
+            semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
+            dialect: self
+                .dialect
+                .lock()
+                .map_or_else(|_| Dialect::default(), |g| *g),
+            types: self.types.lock().map_or_else(|_| None, |g| *g),
+            lints: self
+                .lints
+                .lock()
+                .map_or_else(|_| LintPolicy::default(), |g| g.clone()),
+            conventions: self.conventions.lock().map_or_else(|_| None, |g| g.clone()),
+        }
+    }
 }
 
 /// Tier of a `publishDiagnostics` send. The notification handlers
@@ -2938,53 +2972,26 @@ pub async fn analysis_loop(
         // Coalesce rapid edits — yield so any queued notifications collapse
         tokio::task::yield_now().await;
 
-        // Re-read the declared dialect + types + lints policy each iteration
-        // (poisoned-lock-safe, mirrors `Backend::dialect()`) so a client that
-        // changes any of them mid-session is picked up on the next pass.
-        //
-        // Spelled out field-by-field rather than `..AnalysisOptions::
-        // default()` (issue #2334: the same "spelled-out, not `Default`"
-        // completeness guard `IdeSnapshot::analyze`/`IdeSession::
-        // apply_analysis_options` use) — a `..Default::default()` tail lets
-        // a *new* `AnalysisOptions` field silently default here forever,
-        // which is exactly how `conventions` almost stayed unreachable from
-        // this loop (issue #1880) before it was added by hand. `host_manifest`/
-        // `external_check`/`semantic_type_check` genuinely have no
-        // brink-lsp-side source today (no `initializationOptions` surface
-        // for them, mirroring `LanguageOptions`'s own field set above) —
-        // explicit defaults here, not an implicit `..`, so the next field
-        // brink-lsp *does* need to forward breaks this construction until
-        // it's added.
-        let opts = AnalysisOptions {
-            host_manifest: None,
-            external_check: brink_analyzer::ExternalCheckSeverity::default(),
-            semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
-            dialect: language
-                .dialect
-                .lock()
-                .map_or_else(|_| Dialect::default(), |g| *g),
-            types: language.types.lock().map_or_else(|_| None, |g| *g),
-            lints: language
-                .lints
-                .lock()
-                .map_or_else(|_| LintPolicy::default(), |g| g.clone()),
-            // `[project] conventions` (issue #1880): without this, every
-            // background analysis pass fed `snapshot_for_analysis` a
-            // hardcoded `None` regardless of what `brink.toml` configured.
-            // `analysis_inputs_for`'s `lowered_query` reads this through
-            // `external_claim_handlers_query` to inject cross-file claiming
-            // — with it hardcoded `None`, a configured conventions module's
-            // `@[convention]` handlers claimed nothing outside their own
-            // file, so unclaimed scene headings elsewhere fell to
-            // `lower_native`'s loud `E129` arm and dropped their scene
-            // bodies from the LSP's view. `analyze_with_modules` below also
-            // reads this field directly to run the confinement/unconfigured
-            // `E169` check itself now (issue #2335).
-            conventions: language
-                .conventions
-                .lock()
-                .map_or_else(|_| None, |g| g.clone()),
-        };
+        // Re-read the declared dialect + types + lints + conventions policy
+        // each iteration (poisoned-lock-safe, mirrors `Backend::dialect()`)
+        // so a client that changes any of them mid-session is picked up on
+        // the next pass. `LanguageOptions::analysis_options` is this loop's
+        // read-side counterpart to `LanguageOptions::store` — see that
+        // method's own doc for why a spelled-out, non-`Default` construction
+        // matters here (issue #2334/#1880/#2320's ask (d)). `[project]
+        // conventions` (issue #1880) is the field this loop's `opts` almost
+        // never carried: without it, every background analysis pass fed
+        // `snapshot_for_analysis` a hardcoded `None` regardless of what
+        // `brink.toml` configured. `analysis_inputs_for`'s `lowered_query`
+        // reads this through `external_claim_handlers_query` to inject
+        // cross-file claiming — with it hardcoded `None`, a configured
+        // conventions module's `@[convention]` handlers claimed nothing
+        // outside their own file, so unclaimed scene headings elsewhere fell
+        // to `lower_native`'s loud `E129` arm and dropped their scene bodies
+        // from the LSP's view. `analyze_with_modules` below also reads this
+        // field directly to run the confinement/unconfigured `E169` check
+        // itself now (issue #2335).
+        let opts = language.analysis_options();
 
         // Snapshot inputs under lock, reading the generation in the same locked
         // block so `(content, generation)` is a consistent pair: it reflects
@@ -3541,10 +3548,10 @@ mod tests {
     use rowan::{TextRange, TextSize};
 
     use super::{
-        ConfigLoadOutcome, ConfigOverrides, LanguageOptions, LineIndex, PublishDecision,
-        PublishRecord, PublishTier, collect_source_files, config_error_diagnostic, is_native_path,
-        is_source_path, native_source_root, path_under_ignored_dir, publish_decision,
-        rename_suspicion_diags, resolve_language_options,
+        AnalysisOptions, ConfigLoadOutcome, ConfigOverrides, LanguageOptions, LineIndex,
+        PublishDecision, PublishRecord, PublishTier, collect_source_files, config_error_diagnostic,
+        is_native_path, is_source_path, native_source_root, path_under_ignored_dir,
+        publish_decision, rename_suspicion_diags, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -3922,6 +3929,37 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Issue #2320's ask (d): `resolve_language_options_conventions_pointer_
+    /// survives_store` (above) proves the WRITE side — `LanguageOptions::
+    /// store` carries a resolved `conventions` pointer into shared session
+    /// state — but nothing proved the READ side: `analysis_loop`'s own
+    /// `opts` construction (now factored into `LanguageOptions::
+    /// analysis_options`, the exact method this loop calls every pass) at
+    /// `backend.rs:2852` before this fix. That read site could silently
+    /// regress exactly as the write side did before #1880/#2316 (three
+    /// times, per that test's own doc) — this closes the same gap on the
+    /// other end of the round trip: store a resolved pointer, then read it
+    /// back via the SAME construction `analysis_loop` runs, and confirm it
+    /// survives.
+    #[test]
+    fn language_options_analysis_options_reads_back_the_stored_conventions_pointer() {
+        let language = LanguageOptions::new();
+        language.store(AnalysisOptions {
+            conventions: Some("conventions.brink".to_owned()),
+            ..AnalysisOptions::default()
+        });
+
+        let opts = language.analysis_options();
+        assert_eq!(
+            opts.conventions.as_deref(),
+            Some("conventions.brink"),
+            "analysis_loop's own opts construction (LanguageOptions::\
+             analysis_options) must read back a stored [project] conventions \
+             pointer, not silently default it to None — got {:?}",
+            opts.conventions
+        );
     }
 
     /// #1572: `brink_project_config::find_config` only ever walks *up* from

@@ -529,6 +529,145 @@ export class ProjectSession {
   }
 
   /**
+   * Rename/move a directory (#314, wired in #2587), rewriting every affected
+   * `INCLUDE` against ONE atomic pre-move snapshot — moved files' outbound
+   * includes, inbound includes from files outside the folder, and
+   * intra-folder sibling includes are all rewritten together, unlike a
+   * per-file {@link renameFile} loop (which computes each file's cross-file
+   * edits independently against whatever has already moved, so a
+   * same-basename directory move — every moved file keeps its own basename,
+   * only the prefix changes — can leave an outside referrer's `INCLUDE`
+   * pointing at the old, now-nonexistent path; see issue #2587).
+   *
+   * The session op (pure) computes every moved file's content plus outside
+   * referrers' edits from that one snapshot; this applies them the same way
+   * {@link renameFile} applies a single-file result — a provider write is
+   * inherently per-file, so #314's atomicity guarantee lives in the EDIT
+   * COMPUTATION above, not in these writes. All-or-nothing: the op itself
+   * refuses (no partial move) on a destination collision or an empty
+   * folder, so either every file in `oldPrefix` moves consistently or none
+   * do — a caller wanting partial-move-with-skips would reintroduce exactly
+   * the inconsistency #314 exists to prevent.
+   *
+   * Returns the `{oldPath, newPath}` pairs actually moved (so the caller can
+   * re-key open tabs and build an undo entry) plus the outside referrer
+   * paths whose `INCLUDE`s were rewritten (so the caller can refresh their
+   * views). Throws if the op fails (empty folder, a destination collision,
+   * or — a TS-side fence neither the Rust op nor the wasm binding has, see
+   * below — any moved file resolving to a mounted stdlib copy) — same
+   * contract as {@link renameFile}.
+   *
+   * Off the paint path (#2587, same remedy as {@link renameFile} — #2776,
+   * spec §7.7.4): `rename_dir` runs the identical `gate_with_source`
+   * breakage gate as `rename_file`
+   * (`crates/internal/brink-ide/src/dir_rename.rs`), so the wasm call below
+   * is deferred to the next idle slot via {@link deferGatedCall} rather than
+   * run inline. This method stays async either way, so the synchronous
+   * busy-state commit a caller needs to paint BEFORE this yields lives one
+   * layer up, in the caller with store access (`renameFolder`,
+   * `packages/studio-store/src/slices/binder.ts`) — same split as
+   * `renameFile`/`applyRename`.
+   */
+  async renameDir(
+    oldPrefix: string,
+    newPrefix: string,
+  ): Promise<{ moved: Array<{ oldPath: string; newPath: string }>; referrers: string[] }> {
+    if (oldPrefix === newPrefix) return { moved: [], referrers: [] };
+    await this.deferGatedCall();
+    // PAINT-PATH-DEFERRED rename-dir: gated (structural_result::gate_with_source
+    // via crates/internal/brink-ide/src/dir_rename.rs) — deferred by the
+    // deferGatedCall yield immediately above (#2587, mirroring #2776's
+    // rename-file remedy; destroy()-safe since #2794 — see that method's
+    // doc comment).
+    const result = this.session.renameDir(oldPrefix, newPrefix);
+    if (!result.ok) {
+      throw new Error(result.error ?? `cannot rename directory ${oldPrefix}`);
+    }
+
+    // Read-only fence (issue #2306/#2343, #2916 review finding): `rename_dir`
+    // discovers its own file set from the db — every file under `oldPrefix`
+    // — rather than from a caller-filtered list, and (unlike `rename_file`)
+    // NEITHER the real Rust op nor the wasm binding checks whether any of
+    // them is a mounted stdlib copy. A project with its own `std/` folder
+    // could otherwise have a folder move sweep a mounted copy along with it
+    // — forking the read-only library into the project and making the host
+    // provider create/delete a file it never wrote, the exact hazard
+    // `renameFile`/`deleteFile`/`applyEdit` already fence elsewhere. Refuse
+    // the WHOLE move (same all-or-nothing contract as every other refusal
+    // this op can return) before any mutation, rather than silently
+    // skipping the mounted file mid-move.
+    if (result.moved_files.some((mf) => this.sessionIsReadOnly(mf.old_path))) {
+      throw new Error(
+        `cannot rename directory ${oldPrefix}: contains a read-only file`,
+      );
+    }
+
+    // Every path this move leaves occupied at the end — i.e. every entry's
+    // `new_path`. Used below to tell a genuinely stale `old_path` (nothing
+    // else needs it) apart from an `old_path` that is ALSO another entry's
+    // destination (issue #2916 review, "apply-order clobber when the
+    // destination nests inside the source"): moving folder `a` to
+    // `a/nested` with files `a/a.ink` + `a/nested/a.ink` moves the former to
+    // `a/nested/a.ink` and the latter to `a/nested/nested/a.ink` — so
+    // `a/nested/a.ink` is simultaneously the FIRST entry's destination and
+    // the SECOND entry's source. Writing+removing per entry in `old_path`
+    // order would have the second entry's removal of `a/nested/a.ink` wipe
+    // out the correct content the first entry had just written there.
+    const newPaths = new Set(result.moved_files.map((mf) => mf.new_path));
+    const staleOldPaths = result.moved_files.filter((mf) => !newPaths.has(mf.old_path));
+
+    // Session: write every moved file's new content FIRST — all
+    // destinations — before removing any old path, so a destination that is
+    // itself another entry's (about-to-be-removed) source is never wiped
+    // out by that entry's removal.
+    for (const mf of result.moved_files) {
+      this.session.updateFile(mf.new_path, mf.new_source);
+    }
+    for (const mf of staleOldPaths) {
+      this.session.removeFile(mf.old_path);
+    }
+
+    // Cross-file INCLUDE rewrites — outside referrers, through the shared
+    // apply-edits seam.
+    const referrers: string[] = [];
+    for (const edit of result.cross_file_edits) {
+      this.applyEdit(edit.path, edit.new_source);
+      referrers.push(edit.path);
+    }
+
+    // Provider: same write-everything-first, then-remove-only-what's-stale
+    // order as the session pass above. Deliberately `createFile`, not
+    // `provider.renameFile`: an atomic per-file rename COMBINES the write
+    // and the old-path removal into one call, which is exactly the unsafe
+    // shape this fix removes — a "stale" old path for one entry can be
+    // another entry's live destination that must survive the move.
+    for (const mf of result.moved_files) {
+      await this.provider.createFile(mf.new_path, mf.new_source);
+      this.assertLive();
+      this.changes.record(mf.new_path, "created");
+    }
+    for (const mf of staleOldPaths) {
+      await this.provider.deleteFile?.(mf.old_path);
+      this.assertLive();
+      this.changes.record(mf.old_path, "deleted");
+    }
+
+    // `brink.toml` moved into or out of the tree (issue #2324).
+    if (
+      result.moved_files.some(
+        (mf) => isProjectConfigPath(mf.old_path) || isProjectConfigPath(mf.new_path),
+      )
+    ) {
+      this.applyProjectConfig();
+    }
+
+    return {
+      moved: result.moved_files.map((mf) => ({ oldPath: mf.old_path, newPath: mf.new_path })),
+      referrers,
+    };
+  }
+
+  /**
    * Compile the project from its entry file. Cached against the session's
    * mutation generation: with several live views each compiling on their own
    * debounce, only the first compile after a change does real work.

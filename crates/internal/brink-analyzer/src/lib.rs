@@ -64,7 +64,8 @@ pub use comparator_contract::{
 };
 pub use conventions_confinement::{
     conventions_confinement_diagnostics, conventions_module_diagnostics,
-    conventions_unconfigured_diagnostics, is_path_shaped_conventions_pointer,
+    conventions_pointer_unresolvable_diagnostics, conventions_unconfigured_diagnostics,
+    is_path_shaped_conventions_pointer,
 };
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{

@@ -446,8 +446,14 @@ fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) 
     if !brink_analyzer::is_path_shaped_conventions_pointer(pointer) {
         return None;
     }
+    // `conventions_pointer_key`, NOT `root_relative_key` (issue #2320): a
+    // relative pointer is root-relative by definition — it is written in
+    // `brink.toml`, the file whose directory defines the root — so it must
+    // never be resolved against the process cwd the way a registered file
+    // key's relative spelling must be. See that helper's own doc for the
+    // `brink-lsp` launch-cwd failure this distinction fixes.
     Some(crate::modules::native_module_path(
-        &crate::modules::root_relative_key(project.native_root(db).as_deref(), pointer),
+        &crate::modules::conventions_pointer_key(project.native_root(db).as_deref(), pointer),
     ))
 }
 
@@ -469,21 +475,23 @@ fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) 
 ///
 /// Lazy in the same shape as [`await_purity_diagnostics_query`]/
 /// [`comparator_contract_diagnostics_query`]: a file with no declared claim
-/// handler never even reads [`module_map_query`]. Two more cases stay
+/// handler never even reads [`module_map_query`]. One case stays
 /// intentionally silent (not merely lazy) — see `brink_analyzer::
 /// conventions_module_diagnostics`'s own module doc for why: a bare preset
 /// name (`conventions = "screenplay"`, which names a `std::conventions::*`
 /// module rather than a project file — no path in the tree to compare
-/// against without a preset registry this slice doesn't build), and a
+/// against without a preset registry this slice doesn't build). A
 /// path-shaped pointer that resolves to no file that actually exists in
 /// `project.files(db)` (a typo, a moved/deleted target, an `.ink`-suffixed
-/// path) — that last case is checked HERE, against [`module_map_query`]'s
-/// real module set, before any file is compared against it; otherwise
-/// every claiming handler in the project would be flagged for not living
-/// in a file that was never there to begin with. Reported via
-/// `tracing::warn!` (the same "warn, never silently drop" channel
-/// `resolve_options` uses for `ConfigWarning`s) rather than silently
-/// dropped.
+/// path, or a pointer whose minted module doesn't line up with the file
+/// keys — e.g. a `brink.toml` discovered at a nested key) used to be a
+/// second such silent case, `tracing::warn!`-only; as of issue #2320 it
+/// reports a real `E169` per declared handler instead — checked HERE,
+/// against [`module_map_query`]'s real module set, before any file is
+/// compared against it, and worded to blame the *pointer* rather than the
+/// handlers' placement (see the arm's own comment below for why
+/// per-handler, and why the wording differs from the confinement
+/// message).
 ///
 /// An **entirely unset `conventions` key is NO LONGER one of those silent
 /// cases** (issue #2289, part 2 of the 2026-08-05 ruling): a declared claim
@@ -550,24 +558,45 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     };
     // The pointer must resolve against a REAL file in the project before it
     // can confine anything. A typo'd `conventions` value, a moved/deleted
-    // target, or an `.ink`-suffixed path all produce an `expected_module`
-    // no file actually has — without this check, every claiming handler in
-    // the project (including the one in the real intended conventions
-    // module) would be flagged at `E169`, telling the author to move it
-    // into a file that does not exist, with no signal that the config
-    // itself is at fault. `module_map`'s iteration order can't affect this
-    // check: `any` only asks whether *some* file matches, never which one.
+    // target, an `.ink`-suffixed path, or a `brink.toml` discovered at a
+    // nested key all produce an `expected_module` no file actually has —
+    // without this check, every claiming handler in the project (including
+    // the one in the real intended conventions module) would be flagged
+    // with the confinement message, telling the author to move it into a
+    // file that does not exist, with no signal that the config itself is
+    // at fault. That misleading-message storm is what this guard prevents;
+    // it does NOT mean the case goes unreported. As of issue #2320 the arm
+    // below emits a real `E169` per declared handler — deliberately still
+    // per-handler, not one per project: this query is per-file (a
+    // project-level singleton would need an arbitrary anchor file, which a
+    // per-file salsa query cannot pick without reading every other file's
+    // handlers), each handler's annotation gives the diagnostic a real
+    // range to attach to, and the per-handler shape matches
+    // `conventions_unconfigured_diagnostics`'s (issue #2289) treatment of
+    // the sibling "no module configured at all" misconfiguration. What
+    // makes it not-a-storm is the WORDING: it blames the pointer ("does
+    // not match any file… fix the `conventions` pointer"), never the
+    // handler's placement. `module_map`'s iteration order can't affect
+    // this check: `any` only asks whether *some* file matches, never
+    // which one.
     if !module_map.values().any(|m| m.name == expected_module) {
-        // Same "warn, never silently drop" channel `resolve_options` uses
-        // for `ConfigWarning`s (house rule) — the pointer problem is
-        // surfaced, just not as an `E169` storm against files that were
-        // never the ones at fault.
+        // The log line is kept alongside the diagnostic (server/CLI
+        // contexts still get it), but it is no longer the ONLY signal —
+        // `brink-web`'s wasm build has no `tracing` subscriber at all, so
+        // a warn-only report was invisible to every wasm consumer.
         tracing::warn!(
             "[project] conventions = \"{pointer}\" does not match any file in the project \
              (expected module `{expected_module}`) — conventions-module confinement (E169) \
              is skipped until this is fixed"
         );
-        return Arc::new(Vec::new());
+        // Issue #2320: mirrored in the off-db road's sibling
+        // (`brink_analyzer::conventions_confinement_diagnostics`, the one
+        // `IdeSnapshot::analyze`/`brink-web` actually call) so the two
+        // roads stay behaviorally aligned rather than diverging on which
+        // one got fixed.
+        return Arc::new(
+            brink_analyzer::conventions_pointer_unresolvable_diagnostics(file_id, hir, pointer),
+        );
     }
     let is_conventions_module = this_module == expected_module;
     Arc::new(brink_analyzer::conventions_module_diagnostics(

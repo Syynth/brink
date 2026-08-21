@@ -136,8 +136,12 @@ pub fn is_path_shaped_conventions_pointer(pointer: &str) -> bool {
 /// no-root branch (return the path unchanged) is exactly what skipping it
 /// here reproduces. `brink-lsp`'s `analysis_loop` is the one production
 /// caller of `analyze_with_modules` that *does* declare a native root
-/// (its files are keyed by absolute OS path) — this function's parity with
-/// the db road is unverified for that caller and is not this issue's scope.
+/// (its files are keyed by absolute OS path) — for a *relative* pointer,
+/// this function's parity with the db road on that shape is pinned by
+/// `brink-db`'s `off_db_road_agrees_with_native_root_and_a_nested_lsp_cwd`
+/// (issue #2320); for an *absolute* pointer the two roads still drift (the
+/// db road strips it root-relative, this road mints from the absolute
+/// path verbatim) — tracked on issue #2320.
 fn native_module_path(relative_path: &str) -> String {
     native_module_path_in(RESERVED_ROOTS, relative_path)
 }
@@ -255,6 +259,14 @@ pub fn conventions_confinement_diagnostics(
                  (expected module `{expected_module}`) — conventions-module confinement (E169) \
                  is skipped until this is fixed"
             );
+            // Issue #2320: also a real, wasm-reachable diagnostic — the
+            // `tracing::warn!` above is invisible to `brink-web` (no
+            // subscriber exists in the wasm build), so it was the ONLY
+            // signal a misconfigured pointer ever produced there. See
+            // `conventions_pointer_unresolvable_diagnostics`'s own doc.
+            out.extend(conventions_pointer_unresolvable_diagnostics(
+                file_id, hir, pointer,
+            ));
             continue;
         }
         let Some(this_module) = modules.get(&file_id).map(|m| m.name.as_str()) else {
@@ -300,6 +312,65 @@ pub fn conventions_module_diagnostics(
                  pattern-claiming handlers may only be declared in the project's configured \
                  conventions module (`brink.toml`'s `[project] conventions = \"{pointer}\"`) — move \
                  `{name}` there",
+                name = handler.name.text,
+            ),
+        })
+        .collect()
+}
+
+/// Diagnose every claiming handler declared in `hir` when the project's
+/// `[project] conventions` pointer is well-formed (path-shaped) but
+/// resolves to no real file in the project (issue #2320) — a typo'd,
+/// moved, or deleted target, or a pointer whose minted module does not
+/// match any file's real module because the `brink.toml` declaring it was
+/// discovered at a nested key (the issue's own `brink-web` case). The
+/// message blames the mismatch, not the author: either side of it may be
+/// the one that's wrong.
+///
+/// Before this existed, this exact case (`expected_module` names no file in
+/// `modules`) fell through to a bare `tracing::warn!` and returned **no
+/// diagnostics at all** — invisible everywhere no `tracing` subscriber is
+/// wired up, which for `brink-web`'s wasm target is EVERYWHERE (there is no
+/// `tracing` sink in the browser/wasm build at all). Both this function's
+/// caller ([`conventions_confinement_diagnostics`], below) and its db-direct
+/// sibling (`brink_db::queries::analysis::
+/// conventions_confinement_diagnostics_query`) call this now, so a
+/// misconfigured pointer is visible through EVERY consumer — `brink
+/// compile`, `brink-lsp`, and `brink-web`'s `EditorSession` alike — not just
+/// the ones that happen to have a `tracing` subscriber attached. The
+/// `tracing::warn!` itself is kept alongside (server/CLI contexts still get
+/// the log line too), but it is no longer the ONLY signal.
+///
+/// This is a deliberately DIFFERENT message from
+/// [`conventions_module_diagnostics`]'s "move `{name}` there": there is no
+/// correct "there" to name when the pointer doesn't resolve to any real
+/// file, so telling the author to move a handler into a nonexistent file
+/// would be actively misleading (the exact failure mode
+/// `an_unresolvable_conventions_pointer_never_fires_even_against_the_real_
+/// module`'s original, pre-#2320 assertion existed to prevent — see that
+/// test's own updated doc). This function instead names the pointer itself
+/// as the problem.
+#[must_use]
+pub fn conventions_pointer_unresolvable_diagnostics(
+    file_id: FileId,
+    hir: &HirFile,
+    pointer: &str,
+) -> Vec<Diagnostic> {
+    hir.claim_handlers
+        .iter()
+        .map(|handler| Diagnostic {
+            file: file_id,
+            range: handler.annotation,
+            code: DiagnosticCode::E169,
+            message: format!(
+                "`{name}` claims prose with `@[convention(claims = \"…\", order = …)]`, but \
+                 the project's configured conventions module — `brink.toml`'s `[project] \
+                 conventions = \"{pointer}\"` — does not match any file in the project, so \
+                 this handler's confinement cannot be checked yet. The pointer and the \
+                 project's files disagree: the target may have been typo'd, moved, or \
+                 deleted — or the `brink.toml` was discovered at a nested key, so the \
+                 module the pointer names does not match the file's real module. Fix the \
+                 `conventions` pointer or the project layout so the two agree",
                 name = handler.name.text,
             ),
         })
@@ -586,18 +657,39 @@ mod tests {
         );
     }
 
+    /// Issue #2320: superseded `unresolvable_pointer_stays_silent`, which
+    /// asserted the pre-#2320 silent-drop behavior this fix corrects. A
+    /// path-shaped pointer that resolves to no file in `modules` — a
+    /// typo'd/moved/deleted `[project] conventions` target — must still
+    /// never misfire the "move it there" message
+    /// [`conventions_module_diagnostics`] uses (there is no correct
+    /// "there" to name), but it must NOT stay silent either: before this
+    /// fix, the only signal was a bare `tracing::warn!` nothing in
+    /// `brink-web`'s wasm target could ever see. Now it reports E169 with
+    /// a message that blames the pointer, not the handler's placement.
     #[test]
-    fn unresolvable_pointer_stays_silent() {
-        // Path-shaped, but no file in `modules` resolves to that module —
-        // a typo'd/moved/deleted `[project] conventions` target must not
-        // misfire E169 against every claiming handler in the project.
+    fn unresolvable_pointer_is_e169_naming_the_pointer_not_a_destination() {
         let hir = build_native(CLAIMING_SRC);
         let files = [(FileId(0), &hir)];
         let mut modules = ModuleMap::new();
         modules.insert(FileId(0), resolved_module("story::somewhere_else"));
         let diags =
             conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"));
-        assert!(diags.is_empty(), "{diags:?}");
+        assert_eq!(
+            diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+            vec![DiagnosticCode::E169],
+            "{diags:?}"
+        );
+        assert!(
+            diags[0].message.contains("does not match any file"),
+            "{diags:?}"
+        );
+        assert!(
+            !diags[0].message.contains("may only be declared"),
+            "must not use `conventions_module_diagnostics`'s \"move it \
+             there\" message — there is no correct destination to name — \
+             got {diags:?}"
+        );
     }
 
     #[test]

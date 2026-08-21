@@ -611,10 +611,18 @@ describe("structuralOpPending compare-and-clear (#2794)", () => {
  * wrapper (`ProjectSession.getSession()`) rather than the mock class directly,
  * so the wrapper's own JSON parse + typing is in the loop.
  *
- * `renameDir` has no studio consumer yet — the Binder's folder rename does not
- * call it — so this is the op's first exercise from TypeScript at all; the
+ * At the time this block was written, `renameDir` had no studio consumer —
+ * the Binder's folder rename looped per-file `renameFile` calls instead — so
+ * this was the op's first exercise from TypeScript at all; the
  * `DirMoveResult` shape it answers is the one PR #2573 generated into the
- * refusal fixture with nothing to compare against.
+ * refusal fixture with nothing to compare against. #2587 gave it a real
+ * caller (`ProjectSession.renameDir`, called from the Binder's `renameFolder`
+ * action) — see `folder-rename.test.ts` for the store-level coverage of that
+ * wiring, including the inbound-INCLUDE-consistency case a per-file loop
+ * gets wrong. This block still stands on its own: it drives the raw wasm
+ * wrapper directly (bypassing `ProjectSession`/the store), which is the
+ * right level for pinning `DirMoveResult`'s shape and the op's own refusal
+ * wording.
  */
 describe("renameDir and resolveCodeAction through the wasm wrapper (#2577)", () => {
   it("renameDir relocates every file under the folder and re-points inbound INCLUDEs", async () => {
