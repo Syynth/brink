@@ -1908,9 +1908,10 @@ pub enum DiagnosticCode {
     ///
     /// This is deliberately a hard rejection, not an attempt to define what
     /// "wrap AND attach" would mean together — that is an open design
-    /// question (issue #2264's own body: "define what the combination is
-    /// supposed to mean … but that's a design question, not a good first
-    /// assumption") with no ruling and no test pinning any combined
+    /// question (issue #2264's own body: "Define what the combination is
+    /// supposed to mean and implement it — but that's a design question
+    /// (rule 7), not a good first assumption") with no ruling and no test
+    /// pinning any combined
     /// semantics, so nothing here invents one. `parse_convention` returns
     /// `None` (never a partial `ConventionAnnotation`) — the same "never a
     /// partial one" posture `E159`/`E166`/`E167`/`E178`/`E180` already take

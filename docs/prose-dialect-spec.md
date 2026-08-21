@@ -463,6 +463,9 @@ fn radio(chan: string, text: content) {
   param) —
   `crates/internal/brink-ir/src/hir/lower_native/annotation.rs`'s
   `has_block_content_param`.
+  **Mutually exclusive with `attach = StructName` (RULED, issue #2264,
+  `E186`)** — see the `attach` bullet below for the exclusivity's own
+  rationale.
   The dispatch mechanism itself (`hir::lower_native::element::
   capture_block`, both `try_claim` and `try_dispatch`) builds the internal
   `hir::Expr::Fragment`/`lir::Expr::Fragment` node the 2026-08-01

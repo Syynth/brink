@@ -150,6 +150,39 @@ fn attach_resolves_across_an_imported_struct_file() {
     );
 }
 
+/// Issue #2111 finding 1 (review follow-up on PR #2931): `attach =
+/// StructName` must also resolve when the struct is declared in the
+/// conventions module's OWN file, not only through an `IMPORT`. Every other
+/// `Resolved` case in this suite reaches its struct via `use story::…`,
+/// which only proves the import-closure path; this proves the same-file
+/// path — the plain entry-file walk inside `conventions_projection_query` —
+/// independently.
+#[test]
+fn attach_resolves_against_a_struct_declared_in_the_conventions_module_itself() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        "struct Cue {\n  speaker: string,\n}\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n"
+            .to_owned(),
+    );
+
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![ConventionAttachField {
+                name: "speaker".to_string(),
+                ty: SchemaTypeShape::Named("string".to_string()),
+            }],
+        }),
+        "{projection:?} — Cue is declared in conventions.brink itself, not imported"
+    );
+}
+
 /// Issue #2111 finding 3's review follow-up: the closure walk must be
 /// genuinely TRANSITIVE, not just one hop deep. `conventions.brink` imports
 /// `middle.brink`, which in turn imports `schema.brink` — `conventions.brink`
