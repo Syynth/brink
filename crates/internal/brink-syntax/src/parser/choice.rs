@@ -199,11 +199,26 @@ fn choice_content_elements(p: &mut Parser<'_, '_>) {
     while (at_choice_content(p) || p.nth_raw(0) == WHITESPACE) && p.nth_raw(0) != L_BRACKET {
         let before = p.pos();
         choice_content_element(p);
-        // Safety: if no progress was made, break to avoid infinite loop.
-        // This can happen when a token (e.g. `]`) is accepted by
-        // `at_choice_content` but not consumed by `choice_content_element`.
+        // Zero progress has two possible causes here (mirrors
+        // `content::mixed_content`'s catch-all arm, #2366/#2958):
+        //
+        //  1. The raw position sits on a mid-line comment
+        //     (`BLOCK_COMMENT`/`LINE_COMMENT`) -- the only trivia kind
+        //     `choice_text` treats as a stop token. Eliding it (comment
+        //     tokens only, not surrounding whitespace -- see
+        //     `skip_comment_tokens`) always advances `p.pos()`, so retry
+        //     via the outer loop on the next iteration.
+        //  2. The raw position sits on a genuine non-trivia stop token
+        //     with no arm to claim it (e.g. `]` accepted by
+        //     `at_choice_content` but not consumed by
+        //     `choice_content_element`). `skip_comment_tokens` is a no-op
+        //     here, so the position truly cannot move and we must break
+        //     to avoid looping forever.
         if p.pos() == before {
-            break;
+            p.skip_comment_tokens();
+            if p.pos() == before {
+                break;
+            }
         }
     }
 }
@@ -218,7 +233,20 @@ fn choice_content_element(p: &mut Parser<'_, '_>) {
     }
     match p.current() {
         L_BRACE => {
-            super::inline::inline_logic(p);
+            // If there's trivia (a mid-line comment, possibly with
+            // adjacent whitespace) between the previous element and this
+            // `{`, emit it as text first so it isn't silently dropped by
+            // `inline_logic`'s own trivia handling -- mirrors
+            // `content::mixed_content`'s identically-guarded `L_BRACE` arm
+            // (#2366/#2958). `choice_text` stops on `BLOCK_COMMENT`/
+            // `LINE_COMMENT`, so it may make zero progress here; the outer
+            // `choice_content_elements` loop's `skip_comment_tokens` retry
+            // picks up from there.
+            if p.nth_raw(0) == L_BRACE {
+                super::inline::inline_logic(p);
+            } else {
+                choice_text(p);
+            }
         }
         GLUE => {
             p.skip_ws();
