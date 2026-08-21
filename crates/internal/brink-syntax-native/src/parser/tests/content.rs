@@ -911,20 +911,21 @@ fn comment_only_line_before_content_is_excluded_from_the_content_line() {
 
 #[test]
 fn line_comment_mid_text_run_is_literal_prose_per_text_run_untils_contract() {
-    // Open design question, not a bug report: `text_run_until`'s own
-    // production doc comment (`content.rs`) states this is intentional —
-    // "including any interior whitespace/plain-comments — those are
-    // literal prose here, not trivia to discard" — and deliberately
-    // contrasts it with doc-comment tokens, which DO break the run. So a
-    // `//` comment appearing after prose on the same content line is
-    // folded into the enclosing `TEXT` node as literal characters, per
-    // that documented contract, not skipped as trivia the way it is
-    // everywhere else the grammar reads it (`skip_ws`/`eat`/`expect`).
-    // Whether same-line trailing comments *should* be an exception to
-    // that contract (lowering reads `TEXT` as visible story prose, so
-    // this text ships as output) is an open question for whoever owns
-    // that design decision — not resolved by this test-only issue.
-    // Asserting current, documented-as-intentional behavior.
+    // RULED by #1638 (2026-08-01), working as intended — NOT an open
+    // question: "keep trailing comments literal in prose. Prose is prose —
+    // everything on a prose line is text, exactly as `text_run_until`
+    // already documents … The lint variant was offered and explicitly not
+    // chosen. Current behavior is correct." So a `//` comment appearing
+    // after prose on the same content line is folded into the enclosing
+    // `TEXT` node as literal characters, per `text_run_until`'s documented
+    // contract ("including any interior whitespace/plain-comments — those
+    // are literal prose here, not trivia to discard"), deliberately
+    // contrasted with doc-comment tokens, which DO break the run. Note
+    // the surface split: the INK-compat parser ELIDES mid-line comments
+    // (#2366/#2960/#2976) — that is that surface's own semantics, not a
+    // model for this one. Spec home: docs/prose-dialect-spec.md
+    // ("Trailing comments in prose (RULED)"). This test pins the ruled
+    // behavior.
     let src = "flow f() {\n  Hello // not actually a comment here\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -942,7 +943,8 @@ fn line_comment_mid_text_run_is_literal_prose_per_text_run_untils_contract() {
 
 #[test]
 fn block_comment_mid_text_run_is_literal_prose_per_text_run_untils_contract() {
-    // Same documented contract as the line-comment case above, for `/* … */`.
+    // Same ruled behavior as the line-comment case above (#1638, WAI),
+    // for `/* … */`.
     let src = "flow f() {\n  Hello /* aside */ world\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
