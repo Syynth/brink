@@ -75,10 +75,11 @@ fn const_lambda_literal_fn_value_call_site_resolves_via_db_diagnostics() {
 /// Incrementality (CLAUDE.md "beware incrementality" — a fix that resolves
 /// on a full compile but breaks on an incremental re-analyze is half a fix):
 /// load a clean file first, force `resolve_query`/`resolutions_index_query`
-/// to memoize, edit the file's *unrelated* text (a trailing comment-free
-/// blank-line churn that leaves `twice`'s declaration and call site byte-
-/// identical), and re-read diagnostics — the second read must still be
-/// E025-free, not just the first cold one.
+/// to memoize, edit the file's *unrelated* text (appending a never-called
+/// `fn unrelated` that leaves `twice`'s declaration and call site byte-
+/// identical while still re-running the lowering/indexing queries), and
+/// re-read diagnostics — the second read must still be E025-free, not just
+/// the first cold one.
 #[test]
 fn const_fn_value_call_site_stays_resolved_across_an_incremental_edit() {
     let mut db = ProjectDb::new();
