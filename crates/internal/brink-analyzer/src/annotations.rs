@@ -21,6 +21,12 @@
 //! `infer_project`'s already-computed body-derived types — a pure consumer
 //! of both public seams, touching neither's internals (per the fence: "no
 //! changes to the FG query decomposition beyond consuming its public seam").
+//!
+//! [`check_reserved_type_names`] is the fourth job (issue #1865): a
+//! declaration-site diagnostic (`E188`) for a `STRUCT` whose own name
+//! collides with one of [`resolve`]'s builtin-leaf/tower-kind names — the
+//! reserved set [`resolve`] itself checks before ever consulting
+//! `names.structs`.
 
 use std::collections::BTreeSet;
 
@@ -212,6 +218,91 @@ pub fn resolve(te: &brink_ir::TypeExpr, names: &TypeNames) -> Option<Ty> {
             ))
         }
     }
+}
+
+/// The exact name set `resolve`'s `TypeExpr::Named` arm resolves *before* it
+/// ever consults `names.structs` (issue #1865) — every name here always wins
+/// a bare type-annotation resolution, no matter what `names.structs`
+/// declares. Kept as its own function (rather than inlined at
+/// [`check_reserved_type_names`]'s one call site) so its doc can carry the
+/// full "what's deliberately NOT included and why" accounting in one place.
+///
+/// Mirrors `resolve`'s own literal arms exactly — `int`/`float`/`bool`/
+/// `string`/`content`/`divert` — plus the NS-A8 tower-kind catch-all
+/// (`crate::infer::TowerTy::from_name`). Deliberately excludes:
+///
+/// - **`void`**: unlike the leaves above, `resolve`'s `Named` arm has no
+///   explicit `"void"` case at all — an unmatched name falls straight to
+///   the struct-lookup arm, so a `STRUCT` named `void` resolves to
+///   `Ty::Struct("void")` exactly like any other declared name (pinned by
+///   `struct_named_void_is_not_shadowed_and_resolves_fine`, this file's own
+///   test module) — there is no collision to warn about.
+/// - **The generic heads** (`List`/`Array`/`Map`/`Option`/`Weighted`/
+///   `Handle`): these are special-cased only inside
+///   `TypeExpr::Generic`'s own `name` dispatch (`Array<T>`) — a *bare*
+///   `Named` reference to a struct sharing one of those names (`f: Array`,
+///   no `<...>`) still falls through to the ordinary
+///   `names.structs.contains(name)` arm and resolves correctly (pinned by
+///   `struct_named_array_stays_reachable_and_is_not_flagged`) — again, no
+///   real collision.
+/// - **Declared `LIST` names / registered `Handle<K>` kinds**: `names.lists`/
+///   `names.handles` are only ever consulted inside `List<L>`/`Handle<K>`'s
+///   own generic-argument position, never against a bare `Named`
+///   annotation — a different namespace from `names.structs`, so a struct
+///   sharing a `LIST`/handle-kind name has nothing to collide with here.
+fn is_reserved_before_struct_lookup(name: &str) -> bool {
+    matches!(
+        name,
+        "int" | "float" | "bool" | "string" | "content" | "divert"
+    ) || crate::infer::TowerTy::from_name(name).is_some()
+}
+
+/// Issue #1865: `resolve`'s `TypeExpr::Named` arm checks the builtin-leaf/
+/// tower-kind name set BEFORE it ever consults `names.structs` (see that
+/// function's own doc — "the same ordering that keeps int/float
+/// unshadowable"). That ordering stays exactly as it is; this check does
+/// not re-order resolution. What it adds is the missing diagnostic: a
+/// declared `STRUCT` whose own name collides with one of those reserved
+/// names is silently unreachable through a bare type annotation — every
+/// `content`-typed annotation, say, resolves to the builtin `Ty::Content`,
+/// never to the struct — and before this check existed, nothing said so in
+/// either direction (no diagnostic at the struct declaration, none at any
+/// annotation site either).
+///
+/// Fires once per declared `STRUCT` whose name is in
+/// [`is_reserved_before_struct_lookup`]'s set — see that function's own doc
+/// for the full "what's deliberately not covered and why" accounting
+/// (generic heads, `void`, `LIST`/`Handle` names all stay clean, and are
+/// pinned as such by this file's own tests).
+///
+/// Warning-tier (`DiagnosticCode::E188`'s own doc): the declaration is not
+/// rejected — it still compiles, and a construction literal
+/// (`content#{...}`) still reaches the struct correctly, since
+/// `resolve::resolve_struct_ref`/`resolve_type_ref` never consult this
+/// same builtin/tower precedence at all. Only the annotation spelling is
+/// shadowed.
+#[must_use]
+pub fn check_reserved_type_names(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        for s in &hir.structs {
+            let name = s.name.text.as_str();
+            if is_reserved_before_struct_lookup(name) {
+                out.push(Diagnostic {
+                    file,
+                    range: s.name.range,
+                    message: format!(
+                        "STRUCT `{name}` has the same name as a reserved builtin/tower type — \
+                         a `{name}`-typed annotation will always resolve to the builtin, never \
+                         to this struct (construction literals, `{name}#{{...}}`, are \
+                         unaffected)"
+                    ),
+                    code: DiagnosticCode::E188,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Every declared `LIST` name in the project — `List<L>` is nominal per the
@@ -1139,5 +1230,137 @@ mod tests {
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E063);
+    }
+
+    // ── check_reserved_type_names() / E188 (issue #1865) ────────────────
+
+    /// RED characterization: a `STRUCT` declared `content` compiles clean
+    /// today (before this issue's fix, and unchanged after it — the fix
+    /// diagnoses this, it does not re-order resolution) with every
+    /// `content`-typed annotation silently meaning the builtin
+    /// `Ty::Content`, never the struct. This is the observable wrong
+    /// resolution issue #1865 reports.
+    #[test]
+    fn red_annotation_named_content_resolves_to_builtin_not_the_colliding_struct() {
+        let (hir, index) = build("STRUCT content = #{x: int}\nVAR v: content = 0\n");
+        let names = TypeNames::new(&index, None);
+        assert!(
+            names.structs.contains("content"),
+            "fixture sanity check: the struct must actually be declared"
+        );
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        assert_eq!(
+            resolve(te, &names),
+            Some(Ty::Content),
+            "the builtin leaf wins — the struct is unreachable through this annotation"
+        );
+    }
+
+    /// GREEN: the new declaration-site diagnostic fires for the fixture
+    /// above, naming both the struct and the reserved name it collides
+    /// with.
+    #[test]
+    fn struct_named_content_collides_with_builtin_leaf_is_e188() {
+        let (hir, _index) = build("STRUCT content = #{x: int}\n");
+        let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E188);
+        assert!(diags[0].message.contains("content"), "{:?}", diags[0].message);
+    }
+
+    /// The NS-A8 tower-kind sibling: `resolve`'s tower-kind arm runs before
+    /// the struct lookup too (this file's own doc on `resolve`), so a
+    /// `STRUCT vec3` is shadowed exactly like `content` is — same
+    /// RED/GREEN pair, one test each.
+    #[test]
+    fn red_annotation_named_vec3_resolves_to_tower_kind_not_the_colliding_struct() {
+        let (hir, index) = build("STRUCT vec3 = #{x: float, y: float, z: float}\nVAR v: vec3 = 0\n");
+        let names = TypeNames::new(&index, None);
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        assert!(
+            !matches!(resolve(te, &names), Some(Ty::Struct(_))),
+            "the tower kind must win over the colliding struct, got {:?}",
+            resolve(te, &names)
+        );
+    }
+
+    #[test]
+    fn struct_named_vec3_collides_with_tower_kind_is_e188() {
+        let (hir, _index) = build("STRUCT vec3 = #{x: float, y: float, z: float}\n");
+        let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E188);
+    }
+
+    /// Should-NOT-fire: an ordinary struct name that collides with nothing
+    /// stays clean.
+    #[test]
+    fn ordinary_struct_name_gets_no_e188() {
+        let (hir, _index) = build("STRUCT Point = #{x: float, y: float}\n");
+        let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Should-NOT-fire, truthfully verified rather than assumed: `void` has
+    /// no explicit arm in `resolve`'s `Named` match at all (unlike the
+    /// scalar leaves) — an unmatched name falls straight through to the
+    /// ordinary struct lookup, so a `STRUCT void` is never actually
+    /// shadowed. Confirms both halves: no `E188`, and `resolve` genuinely
+    /// does resolve the struct.
+    #[test]
+    fn struct_named_void_is_not_shadowed_and_resolves_fine() {
+        let (hir, index) = build("STRUCT void = #{x: int}\nVAR v: void = 0\n");
+        let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
+        assert!(diags.is_empty(), "`void` has no collision to report: {diags:?}");
+
+        let names = TypeNames::new(&index, None);
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        assert_eq!(
+            resolve(te, &names),
+            Some(Ty::Struct("void".to_string())),
+            "a STRUCT named `void` must resolve fine — `resolve`'s Named arm has no \
+             explicit void case, so it falls through to the struct lookup"
+        );
+    }
+
+    /// Should-NOT-fire, truthfully verified: the generic heads
+    /// (`List`/`Array`/`Map`/`Option`/`Weighted`/`Handle`) are only
+    /// special-cased inside `TypeExpr::Generic`'s own dispatch — a *bare*
+    /// `Named` reference to a struct sharing one of those names still
+    /// resolves through the ordinary struct-lookup arm. Confirms both
+    /// halves for `Array`, same shape as the `void` test above.
+    #[test]
+    fn struct_named_array_stays_reachable_and_is_not_flagged() {
+        let (hir, index) = build("STRUCT Array = #{x: int}\nVAR v: Array = 0\n");
+        let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
+        assert!(
+            diags.is_empty(),
+            "a bare `Array` annotation has no collision — Array is only special-cased \
+             inside TypeExpr::Generic, never TypeExpr::Named: {diags:?}"
+        );
+
+        let names = TypeNames::new(&index, None);
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        assert_eq!(
+            resolve(te, &names),
+            Some(Ty::Struct("Array".to_string())),
+            "a bare `Array` annotation must resolve to the struct, not silently fail"
+        );
+    }
+
+    /// Multiple colliding structs in one file each get their own
+    /// diagnostic, at their own declaration's range.
+    #[test]
+    fn multiple_colliding_structs_each_get_their_own_e188() {
+        let (hir, _index) =
+            build("STRUCT content = #{x: int}\nSTRUCT bool = #{y: int}\nSTRUCT Point = #{z: int}\n");
+        let diags = check_reserved_type_names(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E188));
+        let ranges: BTreeSet<(u32, u32)> = diags
+            .iter()
+            .map(|d| (d.range.start().into(), d.range.end().into()))
+            .collect();
+        assert_eq!(ranges.len(), 2, "each collision must point at its own declaration");
     }
 }

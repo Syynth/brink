@@ -350,3 +350,47 @@ fn issue_2083_const_lambda_literal_fn_value_call_site_reaches_both_surfaces() {
         "issue #2083's lambda-literal-valued CONST global call site",
     );
 }
+
+/// Issue #1865, off-db road: a `STRUCT` declared with the same name as a
+/// reserved builtin leaf (`content`, issue #1846's capture-contract leaf)
+/// must raise `E188` through `IdeSession::analysis`
+/// (`IdeSnapshot::analyze`/`analyze_with_modules` under the hood) — the
+/// analysis road `@brink-lang/web`'s live squiggles actually run — not
+/// merely through `brink-db`'s own direct test
+/// (`crates/internal/brink-db/tests/issue_1865_struct_shadows_builtin_type.rs`).
+/// Both fixes share the one seam: `annotations::check_reserved_type_names`,
+/// called from `per_file_diagnostics`, which both `ProjectDb`'s
+/// `diagnostics_query` and this off-db road reach identically — this
+/// test's job is proving the off-db entry point actually reaches it, the
+/// same "exercise both roads" posture `e185_reaches_both_surfaces_under_strict`
+/// above established for `E185`.
+#[test]
+fn issue_1865_struct_named_content_reaches_both_surfaces() {
+    let src = "STRUCT content = #{x: int}\nVAR v: content = 0\n-> DONE\n";
+    let (live, db) =
+        both_surfaces("main.ink", src, Dialect::Brink).expect("session produced an analysis");
+
+    assert!(
+        has(&live, DiagnosticCode::E188),
+        "the off-db road must report E188 for a STRUCT shadowing the `content` builtin \
+         leaf; live saw {:?}",
+        codes(&live)
+    );
+    assert_surfaces_agree(&live, &db, "E188 on a STRUCT named `content`");
+}
+
+/// Negative-case sibling on the same off-db road: an ordinary struct name
+/// must not raise `E188` on either surface.
+#[test]
+fn issue_1865_ordinary_struct_name_raises_no_e188_on_either_surface() {
+    let src = "STRUCT Point = #{x: float, y: float}\n-> DONE\n";
+    let (live, db) =
+        both_surfaces("main.ink", src, Dialect::Brink).expect("session produced an analysis");
+
+    assert!(
+        !has(&live, DiagnosticCode::E188),
+        "an ordinary struct name must not raise E188 on the off-db road; live saw {:?}",
+        codes(&live)
+    );
+    assert_surfaces_agree(&live, &db, "no E188 for an ordinary struct name");
+}

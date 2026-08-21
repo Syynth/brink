@@ -921,6 +921,19 @@ pub fn per_file_diagnostics(
         // from the literal alone, with no shape resolution or
         // whole-project inference needed.
         out.extend(structs::check_duplicates(&files));
+        // Declared-STRUCT-name-collides-with-a-reserved-type-name warning
+        // (E188, issue #1865) — same policy-independence argument as
+        // `check_duplicates` just above: a struct's own name colliding
+        // with a builtin/tower type name is a structural fact about the
+        // declaration itself, detectable with no shape resolution or
+        // whole-project inference, so it needs no `types` policy gate
+        // either. Wired at the same `dialect == Brink || is_native` gate
+        // as every other STRUCT-declaration-shaped check in this block —
+        // `STRUCT` is unreachable under `strict-ink` in the first place
+        // (already `E051`-rejected whole by `dialect_gate`), so a second
+        // diagnostic there would be the same "critiquing rejected syntax"
+        // noise the TM-2 annotation-content precedent already rules out.
+        out.extend(annotations::check_reserved_type_names(&files));
         // Map-literal key-domain warning (E106, issue #598,
         // docs/t1b-surface-spec.md §3) — same policy-independence
         // `structs::check_duplicates` documents: a statically-visible
