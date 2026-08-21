@@ -371,8 +371,9 @@ impl Elements {
     /// (issue #2352) — see that function's own doc.
     pub(super) fn dispatch_handler_decls(&self) -> Vec<crate::DispatchHandlerDecl> {
         self.dispatch
-            .values()
-            .map(|h| crate::DispatchHandlerDecl {
+            .iter()
+            .map(|(dispatch_name, h)| crate::DispatchHandlerDecl {
+                dispatch_name: dispatch_name.clone(),
                 name: h.name.clone(),
                 annotation: h.annotation,
                 params: h.params.clone(),

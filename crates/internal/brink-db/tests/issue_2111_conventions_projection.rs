@@ -141,6 +141,11 @@ fn a_bang_dispatch_handler_in_the_configured_module_is_projected() {
     );
     let row = &projection.dispatch[0];
     assert_eq!(row.name.text, "radio");
+    assert_eq!(
+        row.dispatch_name.as_deref(),
+        Some("radio"),
+        "no `name = \"…\"` alias was declared, so the dispatch key is the fn's own name"
+    );
     assert_eq!(row.pattern, "^(?<chan>[A-Z0-9-]+): (?<text>.+)$");
     assert_eq!(row.mode, ConventionMode::Attach);
     assert_eq!(
@@ -149,11 +154,53 @@ fn a_bang_dispatch_handler_in_the_configured_module_is_projected() {
     );
 }
 
+/// Issue #2352 review, "known limitation" finding: `!name` dispatch is
+/// file-local at the LANGUAGE level (`hir::lower_native::element`'s own
+/// module doc, "Deliberately not here"; `docs/prose-dialect-spec.md` §9;
+/// `docs/diagnostics/E169.md`) — a `!name` handler declared in an ORDINARY
+/// story file (not the configured conventions module) is a perfectly legal,
+/// live handler there. But `conventions_projection_query` only ever reads
+/// `dispatch_handlers` off the ONE configured conventions-module file, so
+/// this handler contributes NO row to the projection at all — pinning that
+/// gap rather than letting it silently regress or silently get "fixed" by
+/// an incomplete patch that only widens `entries`' own cross-file
+/// machinery (which doesn't apply here; dispatch has none).
+#[test]
+fn a_bang_dispatch_handler_declared_outside_the_conventions_module_projects_no_row() {
+    const DISPATCH_HANDLER: &str = "@[element(args = \"^ready$\")]\n\
+        fn tally() {\n  return \"ready\";\n}\n";
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    // The configured conventions module exists, but declares nothing.
+    db.set_file("conventions.brink", String::new());
+    // The `!name` handler — and the line that dispatches to it — live in an
+    // ordinary story file instead. This is legal: dispatch carries no
+    // confinement rule.
+    db.set_file(
+        "story.brink",
+        format!("{DISPATCH_HANDLER}flow main() {{\n  !tally ready\n}}\n"),
+    );
+    let projection = db.conventions_projection();
+    assert!(
+        projection.dispatch.is_empty(),
+        "known limitation (issue #2352, open ruling): the projection only \
+         reads the conventions module's own file, so a handler declared \
+         elsewhere — however legal — contributes no row: {projection:?}"
+    );
+}
+
 /// A project's `@[convention]` and `@[element]` handlers coexist in the same
 /// projection, in their own separate lists — issue #2352 adds `dispatch`
 /// alongside `entries`, never merges the two (see
 /// `ConventionsProjection::dispatch`'s own doc for why: a dispatch handler
 /// has no `order` comparable to a claim handler's authored precedence).
+///
+/// The dispatch handler here is declared under an aliased name (`fn tally`
+/// with `name = "walkie"`): `row.name.text` stays the declaration's own
+/// function name (the jump-to-declaration anchor), but the only spelling an
+/// author can write after `!` is the alias, `row.dispatch_name` — a review
+/// finding on #2352 caught an earlier version of this test enshrining the
+/// alias's loss by asserting only `name.text`.
 #[test]
 fn claim_and_dispatch_handlers_coexist_in_their_own_lists() {
     const DISPATCH_HANDLER: &str = "@[element(args = \"^ready$\", name = \"walkie\")]\n\
@@ -177,6 +224,12 @@ fn claim_and_dispatch_handlers_coexist_in_their_own_lists() {
         "the one @[element] handler: {projection:?}"
     );
     assert_eq!(projection.dispatch[0].name.text, "tally");
+    assert_eq!(
+        projection.dispatch[0].dispatch_name.as_deref(),
+        Some("walkie"),
+        "the row must be findable under the author-writable `!walkie` spelling, \
+         not just the fn's own name: {projection:?}"
+    );
 }
 
 /// Issue #2111 finding 1 + finding 3: `attach = StructName` may legally name

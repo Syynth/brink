@@ -637,9 +637,20 @@ pub struct ClaimHandlerDecl {
 /// only what a projection consumer needs travels here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchHandlerDecl {
+    /// The `!`-sigil dispatch key this handler is registered under
+    /// (`hir::lower_native::element::Elements::dispatch`'s own `BTreeMap`
+    /// key) — the `name = "…"` alias if declared, else `name.text`. This is
+    /// the **only** spelling an author can write after `!` to reach this
+    /// handler (`!walkie`, not necessarily `!tally`), so it is what
+    /// [`ConventionsProjection::dispatch`]'s row carries as
+    /// [`ConventionProjectionEntry::dispatch_name`] — matching a `!name`
+    /// line against a projection row requires the map key, not the
+    /// declaration's own function name, whenever the two differ.
+    pub dispatch_name: String,
     /// The handler's own name, carrying its declaration-site range — the
     /// rewritten call's target and the projection row's jump-to-declaration
-    /// site.
+    /// site. May differ from [`Self::dispatch_name`] when an explicit
+    /// `name = "…"` alias is declared — see that field's own doc.
     pub name: Name,
     /// Range of the `@[element(args = "…")]` annotation line itself.
     pub annotation: TextRange,
@@ -787,6 +798,18 @@ pub struct ConventionProjectionEntry {
     /// The handler's own name, carrying its declaration-site range — what a
     /// hover/explain-match consumer jumps to.
     pub name: Name,
+    /// The `!`-sigil dispatch key this row is reachable under — see
+    /// [`DispatchHandlerDecl::dispatch_name`]'s own doc. `None` for every
+    /// row in [`ConventionsProjection::entries`] (a claim handler is looked
+    /// up by pattern match, not by a written key — [`Self::name`] alone is
+    /// the only spelling that matters there). `Some(..)` for every row in
+    /// [`ConventionsProjection::dispatch`]: the actual text an author must
+    /// write after `!` to reach this handler, which is `name.text` only
+    /// when no `name = "…"` alias was declared — a consumer matching a raw
+    /// `!name` line against this projection MUST key off this field, never
+    /// off [`Self::name`], or an aliased handler becomes unfindable under
+    /// its only author-writable spelling (issue #2352 review).
+    pub dispatch_name: Option<String>,
     /// The claiming pattern's regex source, as declared.
     pub pattern: String,
     /// The claiming precedence — see [`ConventionAnnotation::order`]'s own
@@ -841,8 +864,9 @@ pub struct ConventionProjectionEntry {
 ///    `StructShapeDef`/`FrameShapeDef` rather than `serde` — this crate's
 ///    `.inkb` format is not serde-based anywhere), with a `to_wire()`
 ///    conversion (every field the wire shape carries round-trips exactly;
-///    see [`Self::to_wire`]'s own doc for the one field it deliberately
-///    does not carry) and round-trip tests. What does **not** yet
+///    see [`Self::to_wire`]'s own doc for the fields it deliberately does
+///    not carry — `transitions`/`templates`, and, as of issue #2352,
+///    `dispatch`) and round-trip tests. What does **not** yet
 ///    exist is a `StoryData` field / `SectionKind` tag / codegen population —
 ///    that requires threading a whole-project claim-handler join
 ///    (`brink_analyzer::conventions_registry`) through LIR lowering, which
@@ -913,6 +937,29 @@ pub struct ConventionsProjection {
     /// doc) and `mode` read off the same `block` clause `entries` reads
     /// (the one field that genuinely means the same thing for both
     /// annotation kinds).
+    ///
+    /// # Known limitation (issue #2352 review): only ONE file's declarations
+    ///
+    /// `!name` dispatch is file-local at the *language* level — a `!name`
+    /// line is only ever looked up against handlers declared in the SAME
+    /// file it appears in (`hir::lower_native::element`'s own module doc,
+    /// "Deliberately not here"; `docs/prose-dialect-spec.md` §9 "#2004's
+    /// `!name` dispatch is file-local"; `docs/diagnostics/E169.md`, "`!name`
+    /// -dispatched handlers stay legal anywhere"). But
+    /// `brink_db::queries::analysis::conventions_projection_query`, the only
+    /// query that builds one of these, reads `dispatch_handlers` off the
+    /// project's ONE configured conventions-module file — the same file
+    /// `entries` above is scoped to. A `!name` handler declared in an
+    /// ordinary (non-conventions) story file, which is the common case
+    /// (dispatch carries no confinement rule the way `@[convention]` does),
+    /// contributes **no row here at all** — this list is not "every `!name`
+    /// handler in the project," only "every one that happens to live in the
+    /// conventions file." An editor explaining a `!name` line in any other
+    /// file gets an always-empty `dispatch` to search, never the handler
+    /// that actually claims it. Left open pending a ruling on issue #2352
+    /// ("where do file-local `!name` rows live") rather than guessed at
+    /// here — see that query's own doc for the same limitation from the
+    /// query side.
     pub dispatch: Vec<ConventionProjectionEntry>,
     /// Editor-overlay Tab/Enter/Shift-Tab succession rows (issue #2115) —
     /// `DialogueDialect` (#368)'s surviving `transitions` field, attached via
@@ -980,6 +1027,7 @@ impl ConventionsProjection {
                 .iter()
                 .map(|decl| ConventionProjectionEntry {
                     name: decl.name.clone(),
+                    dispatch_name: None,
                     pattern: decl.pattern.clone(),
                     order: decl.order,
                     mode: if decl.block {
@@ -1002,6 +1050,7 @@ impl ConventionsProjection {
                 .enumerate()
                 .map(|(index, decl)| ConventionProjectionEntry {
                     name: decl.name.clone(),
+                    dispatch_name: Some(decl.dispatch_name.clone()),
                     pattern: decl.pattern.clone(),
                     // See `Self::dispatch`'s own doc: this is `decl`'s own
                     // array position, never a value comparable to an
@@ -1091,6 +1140,17 @@ impl ConventionsProjection {
     /// and `.inkb` is beyond tooling — it is what a game host loads, and a
     /// runtime has no Tab key. [`Self::with_succession`]'s validator half
     /// survives intact; only the wire transport was undone.
+    ///
+    /// [`Self::dispatch`] (issue #2352) does **not** ride this wire shape
+    /// either — deliberately, not a silent drop: `to_wire`'s whole *point* is
+    /// the future `.inkb`/`StoryData` seam, and no consumer of that seam
+    /// exists yet for either list (finding 2's "not yet wired into
+    /// `StoryData`" caveat above applies equally to both). Nothing today
+    /// serializes a `ConventionsProjection` at all — `dispatch` is reachable
+    /// only through `EditorSession`'s live, in-process projection (issue
+    /// #2237) — so this omission has no observable wasm-boundary
+    /// consequence today, but is recorded here rather than left to be
+    /// re-discovered the next time someone extends this function.
     #[must_use]
     pub fn to_wire(&self) -> brink_format::ConventionsProjectionDef {
         brink_format::ConventionsProjectionDef {
@@ -3112,7 +3172,20 @@ mod conventions_projection_tests {
     }
 
     fn dispatch_decl(name_text: &str, block: bool) -> DispatchHandlerDecl {
+        dispatch_decl_aliased(name_text, name_text, block)
+    }
+
+    /// Like [`dispatch_decl`], but with a `dispatch_name` (the `!`-sigil
+    /// map key — the `name = "…"` alias, when one is declared) that differs
+    /// from the declaration's own `name` — the shape a `name = "…"` alias
+    /// produces.
+    fn dispatch_decl_aliased(
+        dispatch_name_text: &str,
+        name_text: &str,
+        block: bool,
+    ) -> DispatchHandlerDecl {
         DispatchHandlerDecl {
+            dispatch_name: dispatch_name_text.to_string(),
             name: name(name_text),
             annotation: TextRange::default(),
             params: Vec::new(),
@@ -3147,9 +3220,11 @@ mod conventions_projection_tests {
     }
 
     /// Issue #2352: `dispatch_decls` (the second row source) gets the same
-    /// order-preserving treatment `decls` already does — extends
-    /// `from_decls_preserves_input_order` above rather than duplicating it,
-    /// per the issue's own instruction. `Elements::dispatch_handler_decls`
+    /// order-preserving treatment `decls` already does — a new, standalone
+    /// test, not an extension of `from_decls_preserves_input_order` above
+    /// (an earlier version of this comment claimed the issue itself
+    /// instructed extending that test; #2352's body contains no such
+    /// instruction — corrected per review). `Elements::dispatch_handler_decls`
     /// reads its `BTreeMap` in key order, which need not agree with any
     /// authored `order` (dispatch has none) — this proves `from_decls`
     /// trusts whatever array position it is handed, exactly like `decls`.
@@ -3166,6 +3241,21 @@ mod conventions_projection_tests {
             names,
             vec!["walkie", "radio"],
             "dispatch rows must not be re-sorted behind the caller's back either"
+        );
+    }
+
+    /// A `!name` alias (`name = "…"`) makes the row's `dispatch_name` the
+    /// alias, not the declaration's own fn name — the exact loss a #2352
+    /// review finding caught: the projection must be matchable by the only
+    /// spelling an author can actually write after `!`.
+    #[test]
+    fn dispatch_row_carries_the_alias_as_dispatch_name() {
+        let dispatch_decls = vec![dispatch_decl_aliased("walkie", "tally", false)];
+        let projection = ConventionsProjection::from_decls(&[], &dispatch_decls, &no_structs());
+        assert_eq!(projection.dispatch[0].name.text, "tally");
+        assert_eq!(
+            projection.dispatch[0].dispatch_name.as_deref(),
+            Some("walkie")
         );
     }
 

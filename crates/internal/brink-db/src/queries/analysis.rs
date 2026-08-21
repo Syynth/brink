@@ -893,11 +893,23 @@ pub(crate) fn conventions_projection_query(
     let hir = &lowered_query(db, project, *conventions_file).hir;
     // Issue #2352: `dispatch_handlers` (every `@[element(args = "…")]`
     // `!name`-sigil handler declared in this same file) is the second row
-    // source `ConventionsProjection::from_decls` needs — `!name` dispatch
-    // has no cross-file injection (`hir::lower_native::element`'s own
-    // module doc, "Deliberately not here"), so unlike `claim_handlers`
-    // there is no `external`-style widening to do here: the conventions
-    // file's own declarations are the whole story.
+    // source `ConventionsProjection::from_decls` needs. Reading only THIS
+    // file's own `hir.dispatch_handlers` is a real, documented LIMITATION,
+    // not a design choice that makes this query honestly complete: `!name`
+    // dispatch is itself file-local at the LANGUAGE level
+    // (`hir::lower_native::element`'s own module doc, "Deliberately not
+    // here" — a `!name` handler is reachable only from lines in the SAME
+    // file it's declared in, wherever that file is), so this projection —
+    // which only ever reads the ONE configured conventions module's file —
+    // surfaces a dispatch row if and only if the handler happens to be
+    // declared in that particular file. A `!name` handler declared in an
+    // ordinary story file (the common case — dispatch has no confinement
+    // rule the way `@[convention]` does) contributes NO row here at all,
+    // even though it is a perfectly legal, live handler in its own file.
+    // See `brink_ir::ConventionsProjection::dispatch`'s own doc for the
+    // same limitation stated from the type's side, and issue #2352 for the
+    // open design question this leaves ("where do file-local `!name` rows
+    // live") that this query does not attempt to answer.
     let projection = brink_ir::ConventionsProjection::from_decls(
         &hir.claim_handlers,
         &hir.dispatch_handlers,
