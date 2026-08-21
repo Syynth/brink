@@ -70,28 +70,48 @@ pub(crate) fn file_stem(path: &str) -> &str {
 /// stays absolute (and collision-free across workspace roots) while identity
 /// stays root-relative.
 ///
-/// Both `root` and `path` are absolutized first, via [`std::path::absolute`]
-/// (lexical `.`/`..` resolution against the process cwd — no filesystem
-/// access, so it stays wasm-safe: it either succeeds with no I/O or fails
-/// cleanly, it never touches disk), before the strip. A bare `Path::
-/// strip_prefix` without this is unsound whenever `root` and `path` are
-/// spelled with different qualifiers for the same file — e.g. `root` came
-/// back absolute from `native_source_root`'s #1413 retry (a `brink.toml`
-/// found only by walking up from an *absolutized* entry dir, because the
-/// entry was relatively spelled and its cwd-relative walk alone came up
-/// empty) while `path` is still `entry`'s raw relative spelling
-/// (`prepare_driver` registers the ink entry key verbatim): `main.ink`,
-/// `./main.ink`, and an absolute spelling of the same file would then strip
-/// to three *different* keys (`main.ink`, `./main.ink`, and the
-/// root-relative form) instead of agreeing — reopening the exact
-/// CLI-vs-`brink-lsp` divergence #1696 exists to close (review finding on
-/// #1706). Absolutizing both sides first means every spelling resolves to
-/// the same real path before the strip ever runs.
+/// Both `root` and `path` are absolutized first — `root` via
+/// [`std::path::absolute`] (lexical `.`/`..` resolution against the process
+/// cwd — no filesystem access, so it stays wasm-safe: it either succeeds
+/// with no I/O or fails cleanly, it never touches disk); an already-absolute
+/// `path` the same way. A bare `Path::strip_prefix` without this is unsound
+/// whenever `root` and `path` are spelled with different qualifiers for the
+/// same file — e.g. `root` came back absolute from `native_source_root`'s
+/// #1413 retry (a `brink.toml` found only by walking up from an
+/// *absolutized* entry dir, because the entry was relatively spelled and
+/// its cwd-relative walk alone came up empty) while `path` is still
+/// `entry`'s raw relative spelling (`prepare_driver` registers the ink
+/// entry key verbatim): `main.ink`, `./main.ink`, and an absolute spelling
+/// of the same file would then strip to three *different* keys (`main.ink`,
+/// `./main.ink`, and the root-relative form) instead of agreeing —
+/// reopening the exact CLI-vs-`brink-lsp` divergence #1696 exists to close
+/// (review finding on #1706). Absolutizing both sides first means every
+/// spelling resolves to the same real path before the strip ever runs.
 ///
-/// When [`std::path::absolute`] errors on either side (only possible if the
+/// A **relative** `path`, once `root` is known, is resolved against `root`
+/// directly — `root_abs.join(path)`, then lexically normalized via
+/// [`std::path::absolute`] on that already-absolute join. It is NOT handed
+/// to `std::path::absolute` on its own: that call resolves a relative path
+/// against the *process's* cwd (its own doc says so), which is almost never
+/// what a caller passing an explicit `root` means (issue #2320). This bit
+/// concretely: `brink-lsp`'s persistent `analysis_loop` (PR #2316) declares
+/// `native_root` once at session start and keeps it for the process's whole
+/// life, but never calls `std::env::set_current_dir` — so its cwd is
+/// whatever the editor happened to launch the server from, not guaranteed
+/// to equal `native_root`. A relative `[project] conventions` pointer
+/// (`conventions = "conventions.brink"`) used to resolve against that
+/// launch-cwd instead of the project root, silently confining to (or
+/// missing) the wrong module for the server's whole life, even though the
+/// identical project compiles correctly via the CLI (whose cwd is usually
+/// the project root, which is exactly what masked this for one-shot
+/// `brink compile`/`brink check`).
+///
+/// When [`std::path::absolute`] errors on `root` (only possible if the
 /// process has no queryable cwd, e.g. wasm — see its doc), this falls back
-/// to the raw, unabsolutized strip so wasm callers keep exactly their prior
-/// (already root-relative-spelled) behavior instead of hard-erroring.
+/// to the raw, unabsolutized root so wasm callers keep exactly their prior
+/// (already root-relative-spelled) behavior instead of hard-erroring; the
+/// same fallback applies to the final absolutize-the-join step for a
+/// relative `path`.
 ///
 /// A `path` that does not live under `root` — even after absolutizing — is
 /// returned unchanged (the original, non-absolutized string) rather than
@@ -102,7 +122,17 @@ pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a
         return Cow::Borrowed(path);
     };
     let root_abs = std::path::absolute(Path::new(root)).unwrap_or_else(|_| PathBuf::from(root));
-    let path_abs = std::path::absolute(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
+    let path_ref = Path::new(path);
+    let path_abs = if path_ref.is_absolute() {
+        std::path::absolute(path_ref).unwrap_or_else(|_| PathBuf::from(path))
+    } else {
+        // Resolve against `root_abs` directly rather than the process cwd
+        // (issue #2320) — `root_abs` is already absolute, so this join is
+        // too, and `std::path::absolute`'s lexical `.`/`..` normalization
+        // never needs to consult cwd for an already-absolute input.
+        let joined = root_abs.join(path_ref);
+        std::path::absolute(&joined).unwrap_or(joined)
+    };
     match path_abs.strip_prefix(&root_abs) {
         Ok(rel) => Cow::Owned(rel.to_string_lossy().into_owned()),
         Err(_) => Cow::Borrowed(path),
@@ -296,6 +326,18 @@ pub(crate) fn resolve_modules(
 mod tests {
     use super::*;
 
+    /// Restores the process cwd to the wrapped path on drop — used by
+    /// [`root_relative_key_resolves_a_relative_pointer_against_root_not_cwd`]
+    /// so a mid-assertion panic during its `std::env::set_current_dir` probe
+    /// still restores the real cwd instead of leaving it pointed at a
+    /// directory that test deletes.
+    struct RestoreCwd(PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
     #[test]
     fn native_module_path_derives_purely_from_relative_path() {
         // Charter §13.2: path on disk = path in language; `story::` is the
@@ -454,6 +496,76 @@ mod tests {
             root_relative_key(Some(&root), "sub/main.ink"),
             "sub/main.ink"
         );
+    }
+
+    /// Issue #2320 — RED-FIRST regression, reproducing the issue's own
+    /// scenario: `native_root=/project` with the process launched from cwd
+    /// `/project/scenes` (a subdirectory of the root — exactly the shape
+    /// `brink-lsp`'s persistent `analysis_loop`, PR #2316, hits when the
+    /// editor happens to launch the server from a nested directory). Both
+    /// the `root_relative_key_absolutizes_a_relative_path_against_an_
+    /// absolute_root` test above and a plain "root != cwd, unrelated
+    /// directories" test would NOT have caught this: when `root` and cwd
+    /// share no common ancestor, the buggy cwd-relative resolution fails
+    /// `strip_prefix` entirely and falls through to "return `path`
+    /// unchanged" — which, for an already-bare-relative pointer like
+    /// `"conventions.brink"`, is indistinguishable from the correct answer.
+    /// Nesting cwd *under* root is what makes the old bug actually mangle
+    /// the result (a spurious `scenes/` prefix) instead of accidentally
+    /// looking right. `std::env::set_current_dir` is process-global;
+    /// `cargo nextest` (the gate's test runner, per `CLAUDE.md`) executes
+    /// each test in its own process, so this chdir cannot pollute a
+    /// sibling test — but the `Drop` guard restores the original cwd on
+    /// every exit path (including a mid-assertion panic) regardless, since
+    /// nothing here depends on that isolation to be correct.
+    #[test]
+    fn root_relative_key_resolves_a_relative_pointer_against_root_not_cwd() {
+        let original_cwd = std::env::current_dir().expect("process must have a cwd");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        // native_root = /tmp/.../brink-issue-2320-<unique>
+        // cwd (decoy)  = /tmp/.../brink-issue-2320-<unique>/scenes
+        let tmp_root = std::env::temp_dir().join(format!("brink-issue-2320-{unique}"));
+        let tmp_cwd = tmp_root.join("scenes");
+        std::fs::create_dir_all(&tmp_cwd).expect("create the nested decoy cwd dir");
+
+        // Guard so a mid-assertion panic still restores the real cwd
+        // instead of leaving it pointed at a directory this test deletes.
+        let restore = RestoreCwd(original_cwd);
+
+        std::env::set_current_dir(&tmp_cwd).expect("chdir into the nested decoy cwd");
+
+        // A relative `[project] conventions`-shaped pointer, resolved with
+        // `root` declared as `tmp_root` while the process cwd is
+        // `tmp_root/scenes`. The pre-fix behavior absolutized the pointer
+        // against cwd first (`tmp_root/scenes/conventions.brink`), which
+        // DOES live under `tmp_root`, so `strip_prefix` succeeds and hands
+        // back the wrong, `scenes`-prefixed key — the exact confinement
+        // failure the issue describes. Resolving against `root` directly
+        // strips to the correct, bare relative form.
+        let root = tmp_root.to_string_lossy().into_owned();
+        let resolved = root_relative_key(Some(&root), "conventions.brink");
+        assert_eq!(
+            resolved, "conventions.brink",
+            "a relative pointer must resolve against the declared root \
+             ({tmp_root:?}), not the process cwd ({tmp_cwd:?}) — got {resolved:?} \
+             (the pre-fix bug produces \"scenes/conventions.brink\" here)"
+        );
+
+        // Same story for a nested relative pointer.
+        let resolved_nested = root_relative_key(Some(&root), "std/conventions.brink");
+        assert_eq!(resolved_nested, "std/conventions.brink");
+
+        // Restored explicitly too (in addition to the `Drop` guard) so a
+        // later assertion in this same test body still sees the real cwd.
+        std::env::set_current_dir(&restore.0).expect("restore real cwd");
+        let _ = std::fs::remove_dir_all(&tmp_root);
     }
 
     /// A path outside the declared root keeps whatever key it was registered

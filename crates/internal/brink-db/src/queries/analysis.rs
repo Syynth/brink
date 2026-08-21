@@ -567,7 +567,18 @@ pub(crate) fn conventions_confinement_diagnostics_query(
              (expected module `{expected_module}`) — conventions-module confinement (E169) \
              is skipped until this is fixed"
         );
-        return Arc::new(Vec::new());
+        // Issue #2320: the `tracing::warn!` above is the only signal a
+        // misconfigured pointer produced for the off-db road's own
+        // sibling of this check (`brink_analyzer::conventions_confinement_
+        // diagnostics`, the one `IdeSnapshot::analyze`/`brink-web` actually
+        // call) before this — a bare `tracing::warn!` nothing in wasm ever
+        // sees. Mirror that fix here too, on this db-direct road, so the
+        // two stay behaviorally aligned (both roads must agree, per this
+        // repo's own house rule) rather than diverging on which one got
+        // fixed.
+        return Arc::new(
+            brink_analyzer::conventions_pointer_unresolvable_diagnostics(file_id, hir, pointer),
+        );
     }
     let is_conventions_module = this_module == expected_module;
     Arc::new(brink_analyzer::conventions_module_diagnostics(
