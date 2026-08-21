@@ -891,7 +891,18 @@ pub(crate) fn conventions_projection_query(
     }
 
     let hir = &lowered_query(db, project, *conventions_file).hir;
-    let projection = brink_ir::ConventionsProjection::from_decls(&hir.claim_handlers, &structs);
+    // Issue #2352: `dispatch_handlers` (every `@[element(args = "…")]`
+    // `!name`-sigil handler declared in this same file) is the second row
+    // source `ConventionsProjection::from_decls` needs — `!name` dispatch
+    // has no cross-file injection (`hir::lower_native::element`'s own
+    // module doc, "Deliberately not here"), so unlike `claim_handlers`
+    // there is no `external`-style widening to do here: the conventions
+    // file's own declarations are the whole story.
+    let projection = brink_ir::ConventionsProjection::from_decls(
+        &hir.claim_handlers,
+        &hir.dispatch_handlers,
+        &structs,
+    );
     for entry in &projection.entries {
         if let Some(brink_ir::ConventionAttachSchema::Unresolved(name)) = &entry.attach {
             tracing::warn!(

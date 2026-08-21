@@ -492,7 +492,7 @@ mod tests {
     }
 
     fn projection(decls: &[ClaimHandlerDecl]) -> ConventionsProjection {
-        ConventionsProjection::from_decls(decls, &no_structs())
+        ConventionsProjection::from_decls(decls, &[], &no_structs())
     }
 
     #[test]
@@ -710,7 +710,11 @@ mod tests {
     }
 
     fn projection_from(hir: &crate::HirFile) -> ConventionsProjection {
-        ConventionsProjection::from_decls(&hir.claim_handlers, &no_structs())
+        ConventionsProjection::from_decls(
+            &hir.claim_handlers,
+            &hir.dispatch_handlers,
+            &no_structs(),
+        )
     }
 
     /// Find the exact node `try_claim` claimed for `elm`, via

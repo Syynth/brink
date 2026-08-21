@@ -352,6 +352,9 @@ fn garble_file(hir: &mut HirFile) {
         // Likewise: a declaration record (name + annotation range), no
         // `Provenance` (issue #1844).
         claim_handlers: _,
+        // Likewise: a `!name`-dispatch declaration record, no `Provenance`
+        // (issue #2352).
+        dispatch_handlers: _,
     } = hir;
     garble_block(root_content);
     for knot in knots {

@@ -622,6 +622,20 @@ fn hir_file_heap(hir: &HirFile) -> usize {
                     + h.params.iter().map(String::capacity).sum::<usize>()
             })
             .sum::<usize>()
+        // Declared `!name`-dispatch handlers (issue #2352): same shape as
+        // `claim_handlers` above, minus the `order`/`attach` fields that
+        // decl doesn't carry.
+        + vec_heap(&hir.dispatch_handlers)
+        + hir
+            .dispatch_handlers
+            .iter()
+            .map(|h| {
+                h.name.text.capacity()
+                    + h.pattern.capacity()
+                    + vec_heap(&h.params)
+                    + h.params.iter().map(String::capacity).sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 /// `value`'s type follows `raw_lowered_query`/`lowered_query`'s own Output

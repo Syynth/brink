@@ -110,6 +110,75 @@ fn the_configured_modules_own_handlers_are_projected_in_order() {
     assert_eq!(projection.entries[1].attach, None);
 }
 
+/// Issue #2352: `!name` sigil dispatch (`@[element(args = "…")]`) handlers
+/// get a projection row too, through the real `ProjectDb` salsa query — not
+/// just a hand-built `ConventionsProjection::from_decls` unit test. Before
+/// this issue's fix, `conventions_projection_query` read only
+/// `hir.claim_handlers`; a project with nothing BUT a `!name` handler
+/// projected to a totally empty `ConventionsProjection` (RED: `dispatch`
+/// didn't exist on the type at all). GREEN: the row is here, reachable
+/// through the exact query the editor's `explain_match`/`classify_line`
+/// consumers read.
+#[test]
+fn a_bang_dispatch_handler_in_the_configured_module_is_projected() {
+    const DISPATCH_HANDLER: &str = "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\n\
+        fn radio(chan, text) {\n  return text;\n}\n";
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        format!("{DISPATCH_HANDLER}flow main() {{\n  !radio TAC-2: All units report in.\n}}\n"),
+    );
+    let projection = db.conventions_projection();
+    assert!(
+        projection.entries.is_empty(),
+        "no @[convention] handler was declared: {projection:?}"
+    );
+    assert_eq!(
+        projection.dispatch.len(),
+        1,
+        "the one @[element] handler must get a row: {projection:?}"
+    );
+    let row = &projection.dispatch[0];
+    assert_eq!(row.name.text, "radio");
+    assert_eq!(row.pattern, "^(?<chan>[A-Z0-9-]+): (?<text>.+)$");
+    assert_eq!(row.mode, ConventionMode::Attach);
+    assert_eq!(
+        row.attach, None,
+        "`@[element]` has no `attach` clause — must never be Unresolved either"
+    );
+}
+
+/// A project's `@[convention]` and `@[element]` handlers coexist in the same
+/// projection, in their own separate lists — issue #2352 adds `dispatch`
+/// alongside `entries`, never merges the two (see
+/// `ConventionsProjection::dispatch`'s own doc for why: a dispatch handler
+/// has no `order` comparable to a claim handler's authored precedence).
+#[test]
+fn claim_and_dispatch_handlers_coexist_in_their_own_lists() {
+    const DISPATCH_HANDLER: &str = "@[element(args = \"^ready$\", name = \"walkie\")]\n\
+        fn tally() {\n  return \"ready\";\n}\n";
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        format!("{CLAIMING_HANDLER}{DISPATCH_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n  !walkie ready\n}}\n"),
+    );
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries.len(),
+        1,
+        "the one @[convention] handler: {projection:?}"
+    );
+    assert_eq!(projection.entries[0].name.text, "interior");
+    assert_eq!(
+        projection.dispatch.len(),
+        1,
+        "the one @[element] handler: {projection:?}"
+    );
+    assert_eq!(projection.dispatch[0].name.text, "tally");
+}
+
 /// Issue #2111 finding 1 + finding 3: `attach = StructName` may legally name
 /// a struct declared in an IMPORTED module, not only the conventions
 /// module's own file — the schema still resolves, via the transitive

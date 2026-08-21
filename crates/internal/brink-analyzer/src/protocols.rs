@@ -1359,6 +1359,7 @@ mod tests {
             cue_names: _,
             native: _,
             claim_handlers: _,
+            dispatch_handlers: _,
         } = hir;
     }
 }
