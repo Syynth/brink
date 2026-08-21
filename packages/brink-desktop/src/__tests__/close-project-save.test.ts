@@ -37,8 +37,11 @@ interface FakeApi {
   getDirtyFiles: ReturnType<typeof vi.fn>;
 }
 const mountedApis: FakeApi[] = [];
+/** Each mounted handle's `unmount` mock, parallel to `mountedApis` — kept
+ * reachable by the test (rather than buried inside the resolved handle) so
+ * the second test below can push into `callOrder` from it. */
+const mountedUnmounts: Array<ReturnType<typeof vi.fn>> = [];
 const mountStudio = vi.fn((..._args: unknown[]) => {
-  const index = mountedApis.length;
   // Deliberately ALWAYS clean — the old, gated `closeProject` would never
   // dispatch at all in this scenario, which is exactly the regression this
   // file pins against.
@@ -47,10 +50,12 @@ const mountStudio = vi.fn((..._args: unknown[]) => {
     getDirtyFiles: vi.fn(() => []),
   };
   mountedApis.push(api);
+  const unmount = vi.fn();
+  mountedUnmounts.push(unmount);
   return Promise.resolve({
     api: { ...api, notify: vi.fn(), select: vi.fn(), getStoryBytes: vi.fn(() => null) },
     entryFile: "main.ink",
-    unmount: vi.fn(),
+    unmount,
   });
 });
 vi.mock("@brink-lang/studio", () => ({ mountStudio: (...args: unknown[]) => mountStudio(...args) }));
@@ -81,6 +86,7 @@ describe("closeProject dispatches file.saveAll unconditionally and awaits it (#2
   beforeEach(() => {
     document.body.innerHTML = '<div id="app"></div>';
     mountedApis.length = 0;
+    mountedUnmounts.length = 0;
     vi.resetModules();
   });
 
@@ -111,19 +117,29 @@ describe("closeProject dispatches file.saveAll unconditionally and awaits it (#2
 
     await openProject("/projects/a");
     const [apiA] = mountedApis;
+    const [unmountA] = mountedUnmounts;
     expect(apiA).toBeDefined();
+    expect(unmountA).toBeDefined();
 
     const callOrder: string[] = [];
     apiA?.dispatch.mockImplementation((commandId: string) => {
       callOrder.push(`dispatch:${commandId}`);
       return true;
     });
+    unmountA?.mockImplementation(() => {
+      callOrder.push("unmount");
+    });
 
     await openProject("/projects/b");
 
-    // `dispatch("file.saveAll")` must be observed to have happened — proving
-    // closeProject's save-await actually ran as part of the reopen, not
-    // merely that a promise resolved.
+    // Both must be observed to have happened, AND in that order — proving
+    // closeProject actually AWAITS the save before tearing down the handle,
+    // not merely that both eventually happened somewhere in the reopen.
+    // Before the fix this pins, an unchanged callOrder assertion here would
+    // pass just as well against a closeProject that unmounted first and
+    // saved after.
     expect(callOrder).toContain("dispatch:file.saveAll");
+    expect(callOrder).toContain("unmount");
+    expect(callOrder.indexOf("dispatch:file.saveAll")).toBeLessThan(callOrder.indexOf("unmount"));
   });
 });

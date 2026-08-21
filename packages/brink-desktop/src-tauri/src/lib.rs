@@ -1009,30 +1009,41 @@ pub fn run() -> tauri::Result<()> {
             if let tauri::RunEvent::Opened { urls } = &event {
                 handle_opened(app_handle, urls);
             }
-            // macOS Dock "Quit" (right-click the running app's Dock icon, or
-            // Dock-icon Cmd-Q) — and any other OS-level termination request —
-            // reaches here as `RunEvent::ExitRequested`, a THIRD quit surface
-            // distinct from both `on_menu_event`'s "quit" arm (app-menu ⌘Q)
-            // and `WindowEvent::CloseRequested` (red-button close). Neither
-            // of those two guarded paths sees this one (#2400): left
-            // unhandled, Dock Quit would terminate the process immediately,
-            // bypassing the awaited final `saveAll` entirely.
+            // NOTE (2026-08-21 review, #2927): this arm previously called
+            // `api.prevent_exit()` unconditionally on every
+            // `RunEvent::ExitRequested`, intending to funnel macOS Dock
+            // Quit through the same guarded `menu:quit` webview path as
+            // app-menu ⌘Q. It was removed for two independent reasons —
+            // either one alone would be enough:
             //
-            // `prevent_exit()` halts THIS termination attempt; emitting the
-            // identical `menu:quit` event the app-menu Quit item already
-            // forwards (see `on_menu_event` above) funnels Dock Quit through
-            // the exact same webview-side guard (`handleQuitRequested` in
-            // `main.tsx`) rather than standing up a second copy of that
-            // logic here. Once the guard resolves, `handleQuitRequested`
-            // itself calls `getCurrentWindow().destroy()` — the same call
-            // the already-shipped menu-Quit and window-close paths make —
-            // which is what actually ends the process; that destroy does
-            // not re-enter this arm, since the original OS-level exit
-            // request already got its answer via `prevent_exit()`.
-            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                api.prevent_exit();
-                let _ = app_handle.emit("menu:quit", ());
-            }
+            // 1. It did not actually fix Dock Quit (#2400 stays open).
+            //    `tauri-runtime-wry` only emits `ExitRequested{code: None}`
+            //    when the LAST WINDOW IS DESTROYED (tao's
+            //    `WindowEvent::Destroyed` -> empty window list ->
+            //    `callback(RunEvent::ExitRequested{code:None,tx})`); Dock
+            //    Quit reaches macOS as `applicationShouldTerminate:` /
+            //    `LoopDestroyed` -> `RunEvent::Exit`, a path this arm never
+            //    saw. Nothing in this crate's dependency tree implements
+            //    `applicationShouldTerminate:` to redirect it.
+            //
+            // 2. On every path this arm DOES see (⌘Q via `menu:quit`, and
+            //    red-button close via the webview's `onCloseRequested`),
+            //    `ExitRequested` fires only as a SIDE EFFECT of
+            //    `handleQuitRequested`'s own `getCurrentWindow().destroy()`
+            //    call — i.e. strictly after the guarded save had already
+            //    run. Calling `prevent_exit()` there halted an exit the app
+            //    itself had just finished asking for, leaving a windowless
+            //    zombie process (Force Quit only) while re-emitting
+            //    `menu:quit` to an already-destroyed webview.
+            //
+            // A correct Dock Quit fix needs a mechanism Dock Quit actually
+            // reaches (e.g. overriding `applicationShouldTerminate:` /
+            // `NSTerminateLater`) — a maintainer design call, tracked on
+            // #2400 — not a guard on this event. Until then, letting
+            // `ExitRequested` fall through to its default (`ControlFlow::
+            // Exit`) is correct: the two funnels that matter (⌘Q,
+            // red-button close) both already await the guarded save via
+            // `handleQuitRequested` before they ever destroy the window.
             let _ = (app_handle, &event);
         });
     Ok(())

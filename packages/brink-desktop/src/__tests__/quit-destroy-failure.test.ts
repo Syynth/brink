@@ -3,8 +3,8 @@
  * Pins #2401's narrower, concrete case: `handleQuitRequested`
  * (`main.tsx`) calls `getCurrentWindow().destroy()` AFTER the native side
  * has already committed to not closing on its own (`onCloseRequested`'s
- * `event.preventDefault()`, or — for Dock Quit / `menu:quit` — the Rust
- * side's `ExitRequestApi::prevent_exit()`). An unhandled `destroy()`
+ * `event.preventDefault()` for red-button close, or simply having reached
+ * this function via the `menu:quit` event for ⌘Q). An unhandled `destroy()`
  * rejection there previously propagated out of `handleQuitRequested`
  * uncaught, leaving the app in whatever state `autosaveTimer`'s clear (a
  * few lines above the `await`) put it in — permanently disarmed, since
