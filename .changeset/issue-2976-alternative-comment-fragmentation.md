@@ -1,0 +1,19 @@
+---
+"@brink-lang/web": patch
+---
+
+Fixed #2976: a mid-line comment (`/* ... */`) inside an inline-alternative
+branch (`{a|b}`, `{cond: a|b}`, sequences, and multiline conditional
+branch bodies) no longer fragments the alternative into a destroyed parse
+(the `|` becoming an `ERROR` node and the closing `}` becoming
+`STRAY_CLOSING_BRACE`). `inline::branch_content`'s catch-all arm and
+`branchless_cond_body`'s `multiline_branch_text` call site now retry past
+an elided comment the same way `content::mixed_content` (#2366/#2958) and
+`choice::choice_content_elements` (#2960/#2974) already do, reusing the
+same `Parser::skip_comment_tokens` helper. (A matching retry was also
+added to `multiline_branch_body`'s `multiline_branch_text` call site for
+symmetry, but that site is unreachable today -- its loop's leading
+`skip_ws()` already elides comment trivia before that call site can see
+zero progress.) Observable through `@brink-lang/web` as fewer/different
+parse diagnostics and CST shape for `.ink` sources with a mid-line comment
+inside an alternative.
