@@ -201,15 +201,25 @@ fn a_nested_conventions_module_path_resolves_correctly() {
 }
 
 /// A typo'd `conventions` pointer (`"typo.brink"`, no such file in the
-/// project) must never flag the real `conventions.brink`'s own claiming
-/// handler — nor anyone else's. Before the fix, `expected_module` was
+/// project) must never tell the author to move the real `conventions.
+/// brink`'s own claiming handler — or anyone else's — into a file that
+/// does not exist. Originally (pre-#1844-fix) `expected_module` was
 /// compared against every file's module WITHOUT ever checking that some
 /// file in the project actually resolves to it, so a typo'd/moved/deleted
-/// pointer flagged every claiming handler in the project — including the
-/// one in the real conventions module — telling the author to move it into
-/// a file that does not exist.
+/// pointer misused `conventions_module_diagnostics`'s "move it there"
+/// message against every claiming handler in the project.
+///
+/// Superseded `an_unresolvable_conventions_pointer_never_fires_even_
+/// against_the_real_module`, which asserted this scenario produced NO
+/// diagnostics at all — issue #2320 corrects that: a `tracing::warn!` was
+/// the only signal an unresolvable pointer ever produced, invisible to
+/// every wasm consumer (`brink-web`'s `EditorSession`) since no `tracing`
+/// subscriber exists there. Confinement is still correctly skipped (no
+/// file exists to check against), but the misconfiguration itself is now
+/// a real, visible `E169` — with a message that blames the pointer, not a
+/// nonexistent destination.
 #[test]
-fn an_unresolvable_conventions_pointer_never_fires_even_against_the_real_module() {
+fn an_unresolvable_conventions_pointer_is_e169_naming_the_pointer_not_a_destination() {
     let mut db = ProjectDb::new();
     db.set_analysis_options(opts_with_conventions("typo.brink"));
     db.set_file(
@@ -217,8 +227,14 @@ fn an_unresolvable_conventions_pointer_never_fires_even_against_the_real_module(
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
     );
     let diags = db.analysis().diagnostics.clone();
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E169], "{diags:?}");
     assert!(
-        diags.iter().all(|d| d.code != DiagnosticCode::E169),
+        diags[0].message.contains("does not match any file"),
         "{diags:?}"
+    );
+    assert!(
+        !diags[0].message.contains("may only be declared"),
+        "must not use the \"move it there\" message — there is no correct \
+         destination to name — got {diags:?}"
     );
 }

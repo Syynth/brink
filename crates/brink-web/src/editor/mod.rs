@@ -4671,6 +4671,59 @@ mod tests {
         );
     }
 
+    /// Issue #2320's `brink-web` half. `EditorSession` never declares a
+    /// `native_root` — its files are keyed by already tree-relative virtual
+    /// paths with no OS-filesystem anchor — so the cwd-resolution half of
+    /// the issue cannot bite here, and threading a real root through (the
+    /// LSP's shape) is not the fix for this surface. What CAN bite is the
+    /// silent-swallow half: a well-formed, path-shaped
+    /// `[project] conventions` pointer that names no real file in the
+    /// project (a typo'd/moved/deleted target) must reach the wasm caller
+    /// as a real `E169` diagnostic — not silently vanish. Before this fix,
+    /// `brink_analyzer::conventions_confinement_diagnostics`'s "does not
+    /// match any file" arm was a bare `tracing::warn!` and returned zero
+    /// diagnostics; `brink-web`'s wasm build has no `tracing` subscriber
+    /// at all, so that warning reached NOTHING an embedder could observe —
+    /// `compile_project`'s returned warnings stayed empty, indistinguishable
+    /// from "everything is fine."
+    #[test]
+    fn compile_project_surfaces_an_unresolvable_conventions_pointer_as_e169() {
+        const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", \
+             order = 10)]\nfn interior(place: content) {\n  return place;\n}\n";
+        let mut s = EditorSession::new();
+        s.update_file(
+            "conventions.brink",
+            &format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+        );
+        // Typo'd: no file in this session is named `typo.brink`.
+        s.apply_project_config("[project]\nconventions = \"typo.brink\"\n")
+            .expect("a path-shaped conventions value is valid, even if unresolvable");
+
+        let result = s.compile_project("conventions.brink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let warnings = v["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            warnings.iter().any(|w| w["code"] == "E169"),
+            "an unresolvable [project] conventions pointer must surface as a \
+             real E169 diagnostic reachable through compile_project — a bare \
+             tracing::warn! is invisible in wasm — got {result}"
+        );
+        let message = warnings
+            .iter()
+            .find(|w| w["code"] == "E169")
+            .and_then(|w| w["message"].as_str())
+            .unwrap_or_default();
+        assert!(
+            message.contains("does not match any file"),
+            "got message: {message}"
+        );
+        assert!(
+            !message.contains("may only be declared"),
+            "must not use conventions_module_diagnostics's \"move it there\" \
+             message — there is no correct destination to name — got: {message}"
+        );
+    }
+
     // ── Issue #1414: `discover_project_config` (SourceTree seam, no ────────
     // external host filesystem read) ────────────────────────────────────
 
