@@ -518,9 +518,17 @@ impl EditorSession {
     /// actually sets (like `set_language_dialect`/`set_type_policy`
     /// themselves).
     ///
-    /// Returns the list of warning strings for unrecognized keys — as JSON
-    /// (a `string[]`) — never an error (forward compat). Errors only on
-    /// malformed TOML or a recognized key with an invalid value.
+    /// Returns the *newly surfaced* warning strings for unrecognized keys —
+    /// as JSON (a `string[]`) — never an error (forward compat). Errors only
+    /// on malformed TOML or a recognized key with an invalid value. As of
+    /// issue #2333, this is a **delta against the immediately preceding**
+    /// `apply_project_config`/`discover_project_config` call on this
+    /// session, not the full current warning set: a warning already
+    /// returned by the previous call is omitted here, while a genuinely new
+    /// warning, or one that cleared and later reappeared, still appends —
+    /// see [`Self::dedupe_config_warnings`]. A host that wants to know the
+    /// full current set on every call (rather than only what changed) must
+    /// track it itself across calls.
     ///
     /// Also **replaces** the session's resolved lint policy from the file's
     /// `[lints]` table / `deny-warnings` flag (issue #1160; fixed to
@@ -578,7 +586,11 @@ impl EditorSession {
     /// `set_type_policy` calls still win over the file, `[lints]` is still
     /// fully replaced from the file on every call (see
     /// [`Self::apply_parsed_config`]; #1397), and the returned JSON carries
-    /// the same unrecognized-key/lint-code warnings.
+    /// the same unrecognized-key/lint-code warnings — subject to the same
+    /// issue #2333 delta-against-the-previous-call dedupe documented on
+    /// [`Self::apply_project_config`]'s Returns paragraph: a warning already
+    /// returned by the immediately preceding call on this session is
+    /// omitted here, not the full current set.
     pub fn discover_project_config(&mut self, entry: &str) -> Result<String, JsError> {
         let db = self.session.db();
         let files: BTreeMap<String, String> = db
@@ -4901,10 +4913,11 @@ mod tests {
     /// stays provable): with no dedupe, three settles of an unfixed
     /// `brink.toml` typo return the identical warning three times — which is
     /// exactly what used to flood the host's Output log. This asserts the
-    /// PRE-fix shape would have produced 3 identical entries; the very next
-    /// test (`discover_project_config_repeated_settle_of_an_unchanged_warning_does_not_reappend`)
-    /// proves the actual (deduped) behavior. Keeping both side by side make
-    /// the regression this issue fixes legible without re-reading history.
+    /// PRE-fix shape would have produced 3 identical entries; the second
+    /// half of this same test, below, then drives the real `EditorSession`
+    /// and proves the actual (deduped) behavior. Keeping both halves side
+    /// by side in one test makes the regression this issue fixes legible
+    /// without re-reading history.
     #[test]
     fn discover_project_config_repeated_identical_warning_text_would_flood_without_dedupe() {
         let mut s = EditorSession::new();
