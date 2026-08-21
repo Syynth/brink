@@ -128,7 +128,83 @@ async fn write_file(root: String, rel: String, content: String) -> Result<(), Sh
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
     }
-    std::fs::write(&path, content).map_err(|e| io_err(&path, e))
+    atomic_write(&path, content.as_bytes()).map_err(|e| io_err(&path, e))
+}
+
+/// A same-directory temp-file path derived from `path`, unique per call
+/// (issue #2445: concurrent writes to the same `path` must not race each
+/// other over the same temp file). Hidden (leading `.`) so it never
+/// satisfies `is_project_file`/`walk`'s listing, and disambiguated by
+/// process id, a monotonic in-process counter, and a nanosecond timestamp:
+/// the counter alone already guarantees uniqueness within one process, but
+/// the pid keeps two independently-launched instances (a dev rebuild racing
+/// a still-running app, say) from ever colliding on a leftover temp name.
+fn temp_path_for(path: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    path.with_file_name(format!(".{file_name}.tmp.{pid}.{nanos}.{counter}"))
+}
+
+/// Write `content` to `path` so an interruption — most concretely, desktop
+/// quit racing an in-flight `requestSave` (#2445: `destroy()` can run while
+/// another queued write is still inside what used to be a plain
+/// `std::fs::write`) — can never leave `path` holding a half-written file.
+///
+/// The technique is temp-write-then-rename: `content` lands first at a
+/// fresh, uniquely-named temp file in `path`'s OWN directory (see
+/// `temp_path_for`), then `path` is atomically replaced by renaming
+/// the temp file over it. Same-directory is what makes the rename
+/// same-filesystem, which is what makes it atomic on every OS Tauri
+/// targets: POSIX `rename(2)` on Linux/macOS, and on Windows the
+/// `MoveFileExW` call `std::fs::rename` issues there with
+/// `MOVEFILE_REPLACE_EXISTING` — Windows rename-over-existing is handled by
+/// that flag, not left to a bare POSIX-only assumption; it overwrites an
+/// existing destination rather than erroring on it. At every instant,
+/// `path` refers either to its old, complete content or to its new,
+/// complete content — an interruption can only ever land before the rename
+/// (old content stays; the temp file is simply orphaned) or after it
+/// completes (new content); the rename syscall itself is not interruptible
+/// mid-effect by the process being torn down, so there is no window where
+/// `path` is partially written.
+///
+/// One caveat this does NOT paper over: on Windows, `rename` can fail if
+/// another process holds `path` open without `FILE_SHARE_DELETE` (e.g. a
+/// third-party indexer with an exclusive lock). That surfaces as an
+/// ordinary `Err` here, exactly as a plain `std::fs::write` failing
+/// outright would have — this function trades no correctness away for that
+/// edge case, it only moves where in the sequence the failure can happen.
+///
+/// **fsync judgment (deliberately NOT fsync'd before the rename):** the
+/// corruption this function exists to prevent — a half-written target left
+/// by a killed *process* — is fully closed by the temp+rename swap alone,
+/// with no dependency on fsync: until the rename lands, `path` is
+/// untouched; the moment it lands, it holds the complete new content. What
+/// fsync would add on top is a different property — durability across an
+/// OS/power-loss crash between the write and the filesystem journal's next
+/// flush — which is not the failure mode #2445 is about (a controlled app
+/// quit, not a power cut), and is already mitigated for content this
+/// canonical write hasn't reached yet by the fsync'd backup ring (#154,
+/// `append_backups`). Desktop writes happen on every autosave tick and
+/// every `saveAll`/quit dispatch, so paying an fsync's latency on each one
+/// to harden a failure mode already covered elsewhere is the wrong
+/// durability/latency tradeoff here; revisit if the backup ring's
+/// protection window is ever narrowed.
+fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let tmp_path = temp_path_for(path);
+    std::fs::write(&tmp_path, content)?;
+    let renamed = std::fs::rename(&tmp_path, path);
+    if renamed.is_err() {
+        // Best-effort: don't leave the temp file behind when the rename
+        // itself failed. The rename's error is what the caller needs to
+        // see, so this cleanup's own outcome is deliberately ignored.
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    renamed
 }
 
 #[tauri::command]
@@ -3438,5 +3514,189 @@ on:
         let loaded = load_recents(&path).expect("corrupt json self-heals rather than erroring");
         let _ = std::fs::remove_file(&path);
         assert_eq!(loaded, Vec::<String>::new());
+    }
+
+    // ── atomic_write (#2445) ─────────────────────────────────────────
+
+    /// A fresh, uniquely-named scratch DIRECTORY under the OS temp dir for
+    /// `atomic_write` tests — same precedent as `scratch_recents_file`, but
+    /// a directory rather than a single file path, since `atomic_write`'s
+    /// temp file lives NEXT TO its target and these tests need to inspect
+    /// that directory's full contents (to prove no temp file survives).
+    fn scratch_atomic_write_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-desktop-atomic-write-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir should be creatable");
+        dir
+    }
+
+    /// Every entry directly inside `dir`, as file names (not full paths),
+    /// sorted for a stable comparison — used to assert no stray temp file
+    /// survives a completed (or failed) `atomic_write`.
+    fn dir_entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("scratch dir should be readable")
+            .filter_map(std::result::Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn temp_path_for_is_hidden_same_dir_and_unique_per_call() {
+        let dir = scratch_atomic_write_dir("temp-path-unique");
+        let target = dir.join("story.brink");
+        let a = temp_path_for(&target);
+        let b = temp_path_for(&target);
+        assert_ne!(a, b, "two calls must never collide on the same temp path");
+        for tmp in [&a, &b] {
+            assert_eq!(
+                tmp.parent(),
+                Some(dir.as_path()),
+                "temp file must live in the target's own directory, or the rename \
+                 that follows would cross filesystems and lose atomicity"
+            );
+            let name = tmp
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("temp path should have a file name");
+            assert!(
+                name.starts_with('.'),
+                "temp file {name} should be hidden so it never shows up in the project listing"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_creates_a_new_file() {
+        let dir = scratch_atomic_write_dir("new-file");
+        let target = dir.join("story.brink");
+        atomic_write(&target, b"=== knot ===\n").expect("atomic_write should create a new file");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target should be readable"),
+            "=== knot ===\n"
+        );
+        // No temp file left behind after a successful write.
+        assert_eq!(dir_entries(&dir), vec!["story.brink".to_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_replaces_an_existing_file() {
+        let dir = scratch_atomic_write_dir("replace");
+        let target = dir.join("story.brink");
+        std::fs::write(&target, "OLD").expect("seeding the old file should succeed");
+        atomic_write(&target, b"NEW").expect("atomic_write should replace the existing file");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target should be readable"),
+            "NEW"
+        );
+        assert_eq!(dir_entries(&dir), vec!["story.brink".to_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The interruption-safety property #2445 asks for, proven directly
+    /// rather than by actually killing a process mid-write (not
+    /// reproducible in a unit test): replicate `atomic_write`'s own two
+    /// steps by hand — write the temp file, THEN rename — and assert the
+    /// target holds its old, COMPLETE content right up until the rename,
+    /// and its new, COMPLETE content immediately after. There is no step
+    /// in between where the target is anything else (partial/mixed), which
+    /// is exactly the guarantee an interruption (quit killing the write)
+    /// relies on: caught before the rename, the target is untouched;
+    /// caught after, the rename (an atomic same-filesystem syscall) has
+    /// already fully applied.
+    #[test]
+    fn atomic_write_protocol_never_exposes_a_partial_target() {
+        let dir = scratch_atomic_write_dir("protocol");
+        let target = dir.join("story.brink");
+        std::fs::write(&target, "OLD-COMPLETE").expect("seeding the old file should succeed");
+
+        let tmp = temp_path_for(&target);
+        std::fs::write(&tmp, "NEW-COMPLETE").expect("temp write should succeed");
+        // An interruption caught here (before the rename) leaves the
+        // target exactly as it was — old, complete content, untouched.
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target should still be readable"),
+            "OLD-COMPLETE",
+            "target must be untouched while the temp write is still in flight"
+        );
+
+        std::fs::rename(&tmp, &target).expect("rename should succeed on the same filesystem");
+        // An interruption caught here (after the rename) sees the target
+        // fully replaced — new, complete content, nothing partial.
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target should be readable after rename"),
+            "NEW-COMPLETE",
+            "target must hold the complete new content once the rename lands"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_its_temp_file_on_a_failed_rename() {
+        // Make the RENAME step fail (not the temp write): the target is a
+        // pre-existing directory, so a file can never rename over it
+        // (EISDIR) — but the temp file, a sibling regular file in the same
+        // scratch dir, writes successfully first. Proves the cleanup path
+        // removes the orphaned temp file rather than leaking it.
+        let dir = scratch_atomic_write_dir("rename-failure");
+        let target = dir.join("story.brink");
+        std::fs::create_dir(&target).expect("target directory should be creatable");
+        let result = atomic_write(&target, b"content");
+        assert!(
+            result.is_err(),
+            "renaming a file over an existing directory should fail"
+        );
+        assert_eq!(
+            dir_entries(&dir),
+            vec!["story.brink".to_owned()],
+            "a failed rename must not leave its temp file behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_concurrent_writes_to_the_same_path_never_interleave() {
+        let dir = scratch_atomic_write_dir("concurrent");
+        let target = dir.join("story.brink");
+        std::fs::write(&target, "SEED").expect("seeding should succeed");
+
+        // Each writer's payload is large and made of one repeated byte, so
+        // any byte-level interleaving between two writers (or a torn read)
+        // would produce content matching NEITHER candidate exactly.
+        let candidates: Vec<Vec<u8>> = (0u8..8).map(|i| vec![b'A' + i; 200_000]).collect();
+        let target = std::sync::Arc::new(target);
+        let handles: Vec<_> = candidates
+            .iter()
+            .cloned()
+            .map(|payload| {
+                let target = std::sync::Arc::clone(&target);
+                std::thread::spawn(move || {
+                    atomic_write(&target, &payload)
+                        .expect("concurrent atomic_write should succeed");
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("writer thread should not panic");
+        }
+
+        let final_content = std::fs::read(&*target).expect("target should be readable");
+        assert!(
+            candidates.iter().any(|c| c == &final_content),
+            "final content must be exactly one writer's complete payload, never a mix"
+        );
+        assert_eq!(
+            dir_entries(&dir),
+            vec!["story.brink".to_owned()],
+            "no writer's temp file should survive all the concurrent writes"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
