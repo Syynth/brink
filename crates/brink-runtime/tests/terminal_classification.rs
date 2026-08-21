@@ -1,22 +1,41 @@
 //! Characterization tests for the runtime's **terminal classification**
-//! seam — the behavior a future yield-time classifier (issue #1520,
-//! `docs/design/yield-time-terminal-classifier.md`) is proposed to move.
+//! seam: the deferred `RanOutOfContent` fault (`story/flow_instance.rs`,
+//! the `StoryStatus::Done` reset arm) that delivers the final line as its
+//! own `Done`-terminal step and only faults on the *next* `continue_single`
+//! call, rather than raising on the same call that discovers the end (C#'s
+//! `Story.cs` `!canContinue` branch, which raises inside the same
+//! `Continue()` and suppresses the trailing text).
 //!
-//! No *runtime* test pinned this contract before: the deferred
-//! `RanOutOfContent` fault (`story/flow_instance.rs`, the `StoryStatus::Done`
-//! reset arm) had no direct test, so a refactor could have silently changed
-//! *which* `continue_single` call faults — the exact axis the design turns
-//! on — without a single runtime test going red. The oracle corpus does
-//! pin this end-to-end (`tests/tier1/choices/knot-body-choice-with-stitches-following`
-//! and `.../nested-choice-loose-end-in-knot`, authored for #1522 around this
+//! **RULED 2026-08-01, issue #1574 (maintainer comment 5154454373):** this
+//! divergence is INTENTIONAL and PERMANENT. "Brink continues to deliver
+//! the `Done` line and fault on the *next* call; it does not adopt C#'s
+//! raise-on-discovery + suppress-trailing-text behavior." `Story::
+//! did_safe_exit()` remains how a caller distinguishes a real `-> DONE`
+//! from running out of content. These tests pin that **ruled** behavior,
+//! not a provisional one held open pending a future decision — see
+//! `docs/runtime-spec.md`'s "`RanOutOfContent` divergence from C# (RULED)"
+//! subsection for the durable spec home, and
+//! `docs/design/yield-time-terminal-classifier.md` for the full R1/R2
+//! writeup this ruling closed.
+//!
+//! No *runtime* test pinned this contract before #1574: the deferred fault
+//! had no direct test, so a refactor could have silently changed *which*
+//! `continue_single` call faults without a single runtime test going red.
+//! The oracle corpus does pin this end-to-end
+//! (`tests/tier1/choices/knot-body-choice-with-stitches-following` and
+//! `.../nested-choice-loose-end-in-knot`, authored for #1522 around this
 //! exact fault and its trailing extra step) via insta snapshots, so the
 //! workspace gate as a whole was not blind to it — only the runtime crate's
 //! own test suite was.
 //!
-//! These tests assert **today's** behavior, not a desired one. If the
-//! classifier lands and moves the fault to the yield, these tests must be
-//! updated deliberately, with the oracle re-run; that is the point of
-//! writing them down.
+//! Issue #1520's proposed yield-time classifier folded into the `Step`
+//! migration (#1684, the R1 half of this same ruling round) — that moves
+//! *where* the classification construction lives (the design doc's
+//! six-site inventory collapsing into `Step`'s own variants), not the
+//! fault's timing, which R2 above ruled permanent. Whatever shape #1684
+//! lands, these tests must still see the same observable sequence: a
+//! `Done` line, then `RanOutOfContent` exactly one `continue_single` call
+//! later.
 
 use brink_format::Value;
 use brink_runtime::{
@@ -58,7 +77,8 @@ fn drive_to_terminal(story: &mut Story<DotNetRng>) -> (Step, String) {
 /// but the runtime only acts on it one call later. C# ink raises its
 /// equivalent error inside the *same* `Continue()` (`Story.cs`'s
 /// `ContinueInternal`, in the `!canContinue` branch) and never delivers
-/// the line.
+/// the line. This divergence is RULED PERMANENT (#1574, 2026-08-01) — see
+/// the module docs above.
 #[test]
 fn ran_out_of_content_faults_on_the_call_after_the_done_line() {
     // The *root* weave gets an implicit final gather + `-> DONE`

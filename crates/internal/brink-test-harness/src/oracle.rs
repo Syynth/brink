@@ -224,10 +224,20 @@ pub fn diff_oracle(oracle: &OracleEpisode, brink: &Episode) -> OracleDiff {
         all_match = false;
     }
 
-    // When both oracle and brink end in Error, a single trailing extra
-    // step in brink is acceptable. C#'s lookahead/rewind suppresses the
-    // content after an empty choice set, but brink delivers one more
-    // line before discovering the error. All shared steps must match.
+    // RULED 2026-08-01, issue #1574 (maintainer comment 5154454373): this
+    // allowance is INTENTIONAL and PERMANENT, not a tolerated gap awaiting
+    // retirement. Brink deliberately keeps the deferred `RanOutOfContent`
+    // fault — it delivers the final line as its own step and only faults
+    // on the *next* call — rather than adopting C#'s raise-on-discovery +
+    // suppress-trailing-text behavior (`Story.cs`'s `!canContinue` branch,
+    // which raises inside the same `Continue()` and never returns the
+    // trailing text). So when both oracle and brink end in Error, brink's
+    // one extra trailing step relative to the oracle is the *expected*
+    // shape of that divergence, not noise: all shared steps must still
+    // match exactly. See `docs/runtime-spec.md`'s "RanOutOfContent
+    // divergence from C# (RULED)" subsection for the durable spec home,
+    // and `crates/brink-runtime/tests/terminal_classification.rs` for the
+    // runtime-level characterization tests pinning the same ruling.
     if !all_match
         && outcome_matches
         && matches!(&oracle.outcome, OracleOutcome::Error { .. })

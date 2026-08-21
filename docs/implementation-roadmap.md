@@ -168,9 +168,14 @@ SourceTree module identity.
 **Flows-as-actors design round (#1210)** — owes re-entrancy/deadlock policy,
 scoped-sub-eval confirmation, emitting-callback semantics. Gates the FS epic.
 FS epic (#889): #928 compiler slice → #980 runtime slice → #1293 engine clock.
-**#1520** yield-time terminal classifier (design landed) → **#1574** R2
-(same-call `RanOutOfContent`, retire both extra-step allowances).
-**#1573** `did_safe_exit` has no production-reachable equivalent.
+~~**#1520** yield-time terminal classifier (design landed) → **#1574** R2
+(same-call `RanOutOfContent`, retire both extra-step allowances)~~ **RULED
+2026-08-01: NO.** R1 (#1520) folded into #1684's `Step` migration; R2
+(#1574) keeps the deferred fault permanently — both extra-step allowances
+stay, they are not retirement candidates. See `docs/runtime-spec.md`'s
+"RanOutOfContent divergence from C# (RULED)" subsection.
+~~**#1573** `did_safe_exit` has no production-reachable equivalent~~
+**CLOSED** — PR #1577 promoted it to a production `pub fn`.
 Design horizon: #1211 effect-system core calculus · #1212 post-landing runtime
 restructuring · #1213 minimal-core north star.
 

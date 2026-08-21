@@ -213,6 +213,52 @@ cannot leave a stale stash behind and need no clear of their own.
 flow's execution position (the evaluation runs isolated, output hidden,
 transcript untouched), so they don't interact with this invariant either.
 
+### RanOutOfContent divergence from C# (RULED)
+
+**RULED 2026-08-01, issue #1574 (maintainer comment 5154454373):** brink
+deliberately diverges from the C# reference's raise-on-discovery behavior
+for running out of content, and that divergence is intentional and
+permanent — not a gap awaiting a future fix. This subsection is the spec
+home the ruling asked for, so the question is not re-litigated.
+
+- **What C# does.** `ink-engine-runtime/Story.cs` raises its
+  "ran out of content" error inside the `!canContinue` branch of the
+  *same* `ContinueInternal` call that discovers the story has nothing
+  left to run, and the accumulated trailing text is never returned — the
+  error path throws out of `Continue()` before the caller sees it
+  (raise-on-discovery + suppress-trailing-text).
+- **What brink does instead.** Brink delivers the final line as its own
+  `Step::Line`, then hands out a bare `Step::Done` terminal (terminals
+  carry no text of their own — §7 of `docs/prose-dialect-spec.md`), and
+  only faults with `RuntimeError::RanOutOfContent` on the **next**
+  `continue_single`/`advance` call. `Story::did_safe_exit()` (and
+  `FlowInstance::did_safe_exit()`) is how a caller distinguishes this case
+  from a real `-> DONE` at the yield itself, without waiting for the
+  deferred fault: `false` right after a `Done` step means the next call
+  will raise `RanOutOfContent` instead of returning more content. See
+  CLAUDE.md's "Runtime public API" section and the "Pending-terminal
+  invalidation invariant" above for the general stash-and-redeliver
+  mechanism this fault rides on.
+- **Why this is permanent, not provisional.** Matching C#'s fault timing
+  would retire two test allowances that exist because of it — the
+  `crates/internal/brink-test-harness/src/oracle.rs` extra-step allowance
+  (scores an episode as a match when both oracle and brink end in `Error`
+  and brink has exactly one trailing extra step, all shared steps
+  matching) and #1522's companion insurance fixtures — but the ruling
+  decided the deferred fault plus `did_safe_exit` already gives callers
+  the distinction they need, and making the divergence permanent and
+  documented is worth more than making it match. Both allowances are
+  ruled **PERMANENT**, and the ratchet does not move on this axis. The
+  full R1/R2 analysis this ruling closed lives in
+  `docs/design/yield-time-terminal-classifier.md`; the runtime-level
+  characterization tests pinning this exact contract live in
+  `crates/brink-runtime/tests/terminal_classification.rs`.
+- **What is independent of this ruling.** The ran-out-of-content
+  *message* still splits into four C#-matched variants
+  (`RanOutOfContentCause`, issue #1993) by call-stack state — that is a
+  message-granularity axis, ruled separately and orthogonally to fault
+  *timing*.
+
 ### Flows and instancing
 
 Every flow in the Story is a named **(Flow, Context) pair**. Multi-flow and instanced flows are the same primitive — the difference is usage pattern, not mechanism.
