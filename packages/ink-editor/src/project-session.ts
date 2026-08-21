@@ -552,8 +552,10 @@ export class ProjectSession {
    * Returns the `{oldPath, newPath}` pairs actually moved (so the caller can
    * re-key open tabs and build an undo entry) plus the outside referrer
    * paths whose `INCLUDE`s were rewritten (so the caller can refresh their
-   * views). Throws if the op fails (empty folder, or a destination
-   * collision) — same contract as {@link renameFile}.
+   * views). Throws if the op fails (empty folder, a destination collision,
+   * or — a TS-side fence neither the Rust op nor the wasm binding has, see
+   * below — any moved file resolving to a mounted stdlib copy) — same
+   * contract as {@link renameFile}.
    *
    * Off the paint path (#2587, same remedy as {@link renameFile} — #2776,
    * spec §7.7.4): `rename_dir` runs the identical `gate_with_source`
@@ -582,9 +584,46 @@ export class ProjectSession {
       throw new Error(result.error ?? `cannot rename directory ${oldPrefix}`);
     }
 
-    // Session: add each moved file at its new key, drop the old one.
+    // Read-only fence (issue #2306/#2343, #2916 review finding): `rename_dir`
+    // discovers its own file set from the db — every file under `oldPrefix`
+    // — rather than from a caller-filtered list, and (unlike `rename_file`)
+    // NEITHER the real Rust op nor the wasm binding checks whether any of
+    // them is a mounted stdlib copy. A project with its own `std/` folder
+    // could otherwise have a folder move sweep a mounted copy along with it
+    // — forking the read-only library into the project and making the host
+    // provider create/delete a file it never wrote, the exact hazard
+    // `renameFile`/`deleteFile`/`applyEdit` already fence elsewhere. Refuse
+    // the WHOLE move (same all-or-nothing contract as every other refusal
+    // this op can return) before any mutation, rather than silently
+    // skipping the mounted file mid-move.
+    if (result.moved_files.some((mf) => this.sessionIsReadOnly(mf.old_path))) {
+      throw new Error(
+        `cannot rename directory ${oldPrefix}: contains a read-only file`,
+      );
+    }
+
+    // Every path this move leaves occupied at the end — i.e. every entry's
+    // `new_path`. Used below to tell a genuinely stale `old_path` (nothing
+    // else needs it) apart from an `old_path` that is ALSO another entry's
+    // destination (issue #2916 review, "apply-order clobber when the
+    // destination nests inside the source"): moving folder `a` to
+    // `a/nested` with files `a/a.ink` + `a/nested/a.ink` moves the former to
+    // `a/nested/a.ink` and the latter to `a/nested/nested/a.ink` — so
+    // `a/nested/a.ink` is simultaneously the FIRST entry's destination and
+    // the SECOND entry's source. Writing+removing per entry in `old_path`
+    // order would have the second entry's removal of `a/nested/a.ink` wipe
+    // out the correct content the first entry had just written there.
+    const newPaths = new Set(result.moved_files.map((mf) => mf.new_path));
+    const staleOldPaths = result.moved_files.filter((mf) => !newPaths.has(mf.old_path));
+
+    // Session: write every moved file's new content FIRST — all
+    // destinations — before removing any old path, so a destination that is
+    // itself another entry's (about-to-be-removed) source is never wiped
+    // out by that entry's removal.
     for (const mf of result.moved_files) {
       this.session.updateFile(mf.new_path, mf.new_source);
+    }
+    for (const mf of staleOldPaths) {
       this.session.removeFile(mf.old_path);
     }
 
@@ -596,18 +635,20 @@ export class ProjectSession {
       referrers.push(edit.path);
     }
 
-    // Provider: per-file atomic rename, or create-new + delete-old fallback
-    // — the same choice `renameFile` makes, since a provider only ever
-    // writes one file at a time.
+    // Provider: same write-everything-first, then-remove-only-what's-stale
+    // order as the session pass above. Deliberately `createFile`, not
+    // `provider.renameFile`: an atomic per-file rename COMBINES the write
+    // and the old-path removal into one call, which is exactly the unsafe
+    // shape this fix removes — a "stale" old path for one entry can be
+    // another entry's live destination that must survive the move.
     for (const mf of result.moved_files) {
-      if (this.provider.renameFile) {
-        await this.provider.renameFile(mf.old_path, mf.new_path, mf.new_source);
-      } else {
-        await this.provider.createFile(mf.new_path, mf.new_source);
-        await this.provider.deleteFile?.(mf.old_path);
-      }
+      await this.provider.createFile(mf.new_path, mf.new_source);
       this.assertLive();
       this.changes.record(mf.new_path, "created");
+    }
+    for (const mf of staleOldPaths) {
+      await this.provider.deleteFile?.(mf.old_path);
+      this.assertLive();
       this.changes.record(mf.old_path, "deleted");
     }
 

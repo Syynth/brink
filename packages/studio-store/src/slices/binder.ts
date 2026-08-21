@@ -16,7 +16,7 @@ import type { StructuralResult } from "@brink/wasm-types";
 // ── Undo entry ──────────────────────────────────────────────────────
 
 /**
- * An undoable binder operation. Two shapes:
+ * An undoable binder operation. Four shapes:
  *
  * - `edits` — content was rewritten in place (structural moves, search
  *   replace). Undo restores each snapshot through `applyEdit` (egresses as
@@ -27,6 +27,11 @@ import type { StructuralResult } from "@brink/wasm-types";
  * - `rename` — a file was renamed/moved. Undo is the inverse rename
  *   (`from`→`to`); the rename op is self-inverting (INCLUDE rewrites included),
  *   so no snapshot is needed.
+ * - `rename-dir` — a folder was renamed/moved. Undo is the inverse `rename_dir`
+ *   call (prefixes swapped) — see the variant's own doc below. Unlike the
+ *   other three shapes, undo can itself be refused (all-or-nothing, #2587):
+ *   `undo()` must leave this entry on the stack rather than popping it when
+ *   that happens (see `undo()`'s `rename-dir` branch).
  */
 export type UndoEntry =
   | {
@@ -365,7 +370,22 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       // Inverse directory rename — same atomic op, prefixes swapped
       // (#2587): the forward move's single-snapshot consistency guarantee
       // applies to undo too, not just a per-file loop's worth of it.
-      await applyDirRename(get, entry.newPrefix, entry.oldPrefix);
+      //
+      // All-or-nothing means the inverse move can itself be refused (a
+      // destination collision, or an empty folder) — `applyDirRename`
+      // already raised the error notification in that case. Popping the
+      // entry and then reporting "Undid: ..." below would claim a false
+      // success on top of that error toast, and — worse — the entry would
+      // be gone from the stack with nothing having actually moved, making
+      // the refused undo unrecoverable through the undo stack. Return
+      // before the stack is popped/persisted and before the "Undid:"
+      // notification fires, leaving the entry exactly where it was
+      // (issue #2916 review; mirrors `applyMoveResult`'s #2543 refuse-at-
+      // the-seam rule for the forward direction).
+      const moved = await applyDirRename(get, entry.newPrefix, entry.oldPrefix);
+      if (moved === null) {
+        return;
+      }
     }
 
     // Trigger recompile
