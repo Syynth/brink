@@ -534,6 +534,13 @@ fn radio(chan: string, text: content) {
   declaration-surface-only posture `E166`/`E171` already take for
   `block`/captured-parameter checks — real name resolution (does a
   struct of that name actually exist) is deliberately out of scope here.
+  **Mutually exclusive with `block` (RULED, issue #2264, `E186`):** a
+  declaration combining both had no dispatch rule of its own —
+  `try_claim`'s `if is_block { .. } else if is_attach { .. }` always took
+  the `block` arm, leaving `attach` parsed and stored but never consulted,
+  with zero author signal. `parse_convention` now rejects the combination
+  outright rather than defining what "wrap AND attach" would mean
+  together; that combined semantics question stays open and unruled.
   `ClaimHandlerDecl::attach` carries the schema name onward — the field
   the NS-T projection (#2111, landed 2026-08-04 via PR #2212, as
   `ConventionProjectionEntry::attach: Option<ConventionAttachSchema>`)

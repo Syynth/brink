@@ -1020,16 +1020,14 @@ pub(super) fn try_claim(
     // the captured run and double every diagnostic/`ElementMatch` it
     // produces.
     let mut attach_run_stmts: Vec<Stmt> = Vec::new();
-    // `is_block` (wrap mode, #1839) is checked first: `annotation::
-    // convention_annotation` does NOT currently reject a declaration that
-    // combines `block` with `attach = StructName` (verified — no such
-    // check exists there), so this `if`/`else if` is the one place that
-    // ordering decision is made today: a handler declaring both takes the
-    // `block` (wrap) path and its `attach` clause is silently inert. That
-    // combination has no test and no ruled semantics of its own — flagged
-    // here rather than either fabricating an exclusivity guarantee or
-    // inventing "what should happen when a handler wraps AND attaches"
-    // unilaterally.
+    // `is_block` (wrap mode, #1839) is checked first, so this `if`/`else
+    // if` is the one place the ordering decision would still matter — but
+    // issue #2264 (`annotation::parse_convention`, `E186`) now rejects a
+    // declaration combining `block` with `attach = StructName` outright, at
+    // the declaration, before it can ever reach here: `is_block` and
+    // `is_attach` are never both true for any registered handler.
+    // `block`+`attach` together had no ruled semantics of its own — E186's
+    // own doc records that as a deliberate non-decision, not an oversight.
     if is_block {
         let (fragment_stmts, n, range) = capture(following, elements, diags);
         consumed = n;
