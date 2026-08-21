@@ -2218,6 +2218,15 @@ fn lower_ref_path_call_arg(
             });
             return lir::CallArg::Value(lir::Expr::Null);
         }
+        // Issue #2201: `ref`-argument passing hands the callee a raw
+        // pointer to the storage cell, bypassing `lower_assign_target`
+        // entirely — `CONST c; ~ bump(c)` (`bump(ref x)`) must be refused
+        // here too, the same reasoning as the `as`-binding guard just
+        // above. See `stmts::reject_const_write`'s doc for the full
+        // choke-point enumeration.
+        if super::stmts::reject_const_write(info, path.range, ctx) {
+            return lir::CallArg::Value(lir::Expr::Null);
+        }
         let id = if info.kind == SymbolKind::List {
             list_def_to_global_var(info.id)
         } else {
@@ -2375,6 +2384,14 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
             ),
             code: crate::DiagnosticCode::E143,
         });
+        return lir::CallArg::Value(lir::Expr::Null);
+    }
+    // Issue #2201: `ref n.field` where `n`'s root is a `CONST` struct —
+    // the projection's write-through would mutate the constant's storage
+    // cell exactly like a bare `ref n` would (the guard just above this
+    // one). See `stmts::reject_const_write`'s doc for the full choke-point
+    // enumeration.
+    if super::stmts::reject_const_write(info, root.range, ctx) {
         return lir::CallArg::Value(lir::Expr::Null);
     }
     let root_id = if info.kind == SymbolKind::List {

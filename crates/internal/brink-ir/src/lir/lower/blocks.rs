@@ -589,10 +589,22 @@ fn lower_single_level_field_write(
     let head_name = path.segments[0].text.clone();
 
     let (root_target, root_shape) = match head_info.kind {
-        SymbolKind::Variable | SymbolKind::Constant => (
-            lir::AssignTarget::Global(head_info.id),
-            ctx.global_shape(head_info.id),
-        ),
+        SymbolKind::Variable | SymbolKind::Constant => {
+            // Issue #2201: `CONST c = ...; ~ { c.field = v }` — `c`'s root
+            // is a `CONST`. This root-cell resolution never goes through
+            // `stmts::lower_assign_target` (see that function's own header
+            // doc), so the E187 refusal that guards every *other* write
+            // path doesn't apply here without its own call; see
+            // `stmts::reject_const_write`'s doc for why that shared helper
+            // is the right fix, mirroring `reject_as_binding_write` below.
+            if super::stmts::reject_const_write(head_info, path.range, ctx) {
+                return;
+            }
+            (
+                lir::AssignTarget::Global(head_info.id),
+                ctx.global_shape(head_info.id),
+            )
+        }
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return;
@@ -2024,10 +2036,19 @@ fn lower_field_mutator(
     let head_name = path.segments[0].text.clone();
 
     let (root_target, root_shape) = match head_info.kind {
-        SymbolKind::Variable | SymbolKind::Constant => (
-            lir::AssignTarget::Global(head_info.id),
-            ctx.global_shape(head_info.id),
-        ),
+        SymbolKind::Variable | SymbolKind::Constant => {
+            // Issue #2201: `CONST c = ...; ~ { push(c.items, 1) }` — same
+            // hole and same fix as `lower_single_level_field_write`'s
+            // identical arm; see that function's comment and
+            // `stmts::reject_const_write`'s doc.
+            if super::stmts::reject_const_write(head_info, path.range, ctx) {
+                return;
+            }
+            (
+                lir::AssignTarget::Global(head_info.id),
+                ctx.global_shape(head_info.id),
+            )
+        }
         SymbolKind::Param | SymbolKind::Temp => {
             let Some(slot) = ctx.temp_slot(&head_name) else {
                 return;

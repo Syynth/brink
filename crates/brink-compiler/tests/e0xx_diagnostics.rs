@@ -1596,6 +1596,134 @@ flow main() ~{
         .expect("an ordinary let-rooted Temp field write/mutator must still compile");
 }
 
+// ─── Issue #2201: E187 — CONST reassignment across every write channel ──
+//
+// `lir::lower::stmts::lower_assign_target` treated `SymbolKind::Constant`
+// identically to `SymbolKind::Variable`, with no distinction at all: a
+// story reassigning a declared `CONST` compiled clean and the mutated value
+// was observable in the story's own output. Confirmed end-to-end with the
+// fix reverted (`git diff` backed out, `brink compile`/`brink play` run
+// directly): `CONST SPEED = 5\n~ SPEED = 10\n-> END` compiled with zero
+// diagnostics and printed `10`.
+//
+// `reject_const_write` (the `CONST` analog of `reject_as_binding_write`,
+// E148's own helper) is called from five choke points — every one of them
+// exercised below except `expr::lower_ref_projection_arg`'s: an *explicit*
+// `ref x.field` projection whose root is a `CONST` is already refused
+// upstream by the analyzer's own `E080` durable-root check
+// (`docs/t1e-spec.md` §2, "a `CONST` is not a mutable cell") before LIR
+// lowering ever runs, so no fixture reaches `lower_ref_projection_arg`'s
+// new check without *also* tripping `E080` first — the same "defense in
+// depth, not the expected path" posture that function's pre-existing
+// `Param`/`Temp` (`E143`) guard already documents for the identical
+// upstream-already-caught situation. The other four choke points below
+// each have a fixture that reaches ONLY `E187`, proving the new check
+// itself (not some other diagnostic) is what fires.
+
+#[test]
+fn e187_const_write_every_shape() {
+    for (shape, source) in [
+        ("plain-assign", "CONST SPEED = 5\n~ SPEED = 10\n-> END\n"),
+        ("compound-assign", "CONST SPEED = 5\n~ SPEED += 1\n-> END\n"),
+        (
+            "postfix-increment",
+            "CONST SPEED = 5\n~ {\n  SPEED++\n}\n-> END\n",
+        ),
+        (
+            "postfix-decrement",
+            "CONST SPEED = 5\n~ {\n  SPEED--\n}\n-> END\n",
+        ),
+        (
+            "indexed-assignment-root",
+            "CONST NUMS = #[1, 2, 3]\n~ {\n  NUMS[0] = 9\n}\n-> END\n",
+        ),
+        (
+            "bare-mutator",
+            "CONST NUMS = #[1, 2, 3]\n~ {\n  pop(NUMS)\n}\n-> END\n",
+        ),
+        (
+            "ref-argument-bare",
+            "CONST SPEED = 5\n=== function bump(ref x) ===\n~ x = x + 1\n~ return 0\n\
+             === main ===\n~ bump(SPEED)\n-> END\n",
+        ),
+    ] {
+        let err = compile(source, brink_options()).map(|_| ()).unwrap_err();
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E187),
+            "expected E187 for shape `{shape}`, got: {diags:?}"
+        );
+    }
+}
+
+/// `lower_single_level_field_write`'s two-segment field-root
+/// `SymbolKind::Constant` arm — a struct-field write whose root is a
+/// `CONST` (`c.field = v`). This root resolution never goes through
+/// `lower_assign_target` (the caller has already split a two-segment path
+/// into head/field), so it needs its own call to `reject_const_write`,
+/// mirroring E148's `e148_write_to_as_binding_struct_field_via_field_write`.
+#[test]
+fn e187_const_struct_field_write_is_rejected() {
+    let source = "STRUCT Bag = #{items: Array<int>}\nCONST BAG = Bag#{items: #[1, 2]}\n~ {\n  \
+                  BAG.items = #[9]\n}\n-> END\n";
+    let err = compile(source, brink_options())
+        .map(|_| ())
+        .expect_err("writing to a CONST's struct field must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E187),
+        "expected E187 for `BAG.items = #[9]`, got: {diags:?}"
+    );
+}
+
+/// `lower_field_mutator`'s identical arm — a struct-field mutator whose
+/// root is a `CONST` (`push(c.field, v)`), mirroring E148's
+/// `e148_write_to_as_binding_struct_field_via_mutator`.
+#[test]
+fn e187_const_struct_field_mutator_is_rejected() {
+    let source = "STRUCT Bag = #{items: Array<int>}\nCONST BAG = Bag#{items: #[1, 2]}\n~ {\n  \
+                  push(BAG.items, 9)\n}\n-> END\n";
+    let err = compile(source, brink_options())
+        .map(|_| ())
+        .expect_err("mutating a CONST's struct field must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E187),
+        "expected E187 for `push(BAG.items, 9)`, got: {diags:?}"
+    );
+}
+
+/// Should-NOT-fire: a `VAR` reassignment stays legal — `SymbolKind::
+/// Variable` takes the same `AssignTarget::Global` arm it always has,
+/// `reject_const_write` only ever matches `SymbolKind::Constant`.
+#[test]
+fn e187_does_not_fire_for_var_reassignment() {
+    let source = "VAR speed = 5\n~ speed = 10\n-> END\n";
+    compile(source, brink_options()).expect("VAR reassignment must stay legal");
+}
+
+/// Should-NOT-fire: reading a `CONST` stays legal — `reject_const_write` is
+/// called only from write-path choke points, never from expression-position
+/// lowering.
+#[test]
+fn e187_does_not_fire_for_const_read() {
+    let source = "CONST SPEED = 5\n~ temp y = SPEED + 1\nValue is {y}.\n-> END\n";
+    compile(source, brink_options()).expect("reading a CONST must stay legal");
+}
+
+/// Should-NOT-fire: a local that merely shares a `CONST`'s name stays
+/// legal to write to — issue #2947's locals-first shadowing means name
+/// resolution has already picked the innermost `Param` binding by the
+/// time `reject_const_write` runs, so `info.kind` is `SymbolKind::Param`,
+/// never `SymbolKind::Constant`, for the write inside `bump`.
+#[test]
+fn e187_does_not_fire_for_a_local_shadowing_a_const_name() {
+    let source = "CONST SPEED = 5\n=== function bump(SPEED) ===\n~ SPEED = SPEED + 1\n\
+                  ~ return SPEED\n=== main ===\n~ temp z = bump(1)\nValue is {z}.\n-> END\n";
+    compile(source, brink_options())
+        .expect("writing to a local that shadows a CONST's name must stay legal");
+}
+
 // ─── `remove`/`remove_at` migration tail (E149, issue #1532) ────────────
 //
 // The #1501 review's follow-up on #1484's `remove`/`remove_at` split:
