@@ -96,8 +96,14 @@ describe("ProjectSession over TauriFileProvider: self-rename suppression (#2416)
     // `ProjectSession.renameFile`'s real call sequence: session re-key,
     // provider write-through (the real `TauriFileProvider.renameFile`,
     // exercised end to end here — no mock of it), then host-egress record.
-    const referrers = await project.renameFile("scene.ink", "renamed.ink");
-    expect(referrers).toEqual([]);
+    const renameResult = await project.renameFile("scene.ink", "renamed.ink");
+    // #2918: renameFile now surfaces the breakage-gate verdict alongside the
+    // referrer list; this rename touches no referrers and breaks nothing.
+    expect(renameResult).toEqual({
+      referrers: [],
+      safe: true,
+      introducedDiagnostics: [],
+    });
 
     // The shell's fs watcher observes the native `rename_file` call and —
     // after its debounce — echoes it back as a deletion of the old path plus
@@ -180,8 +186,11 @@ describe("ProjectSession over TauriFileProvider: atomic rename persists the rewr
     const project = new ProjectSession({ provider, entryFile: "main.ink" });
     await project.initialize();
 
-    const referrers = await project.renameFile("a/scene.ink", "b/deep/scene.ink");
-    expect(referrers).toEqual(["main.ink"]);
+    const renameResult = await project.renameFile("a/scene.ink", "b/deep/scene.ink");
+    // #2918: the result carries the breakage-gate verdict too; this move
+    // rewrites main.ink's INCLUDE and stays safe.
+    expect(renameResult.referrers).toEqual(["main.ink"]);
+    expect(renameResult.safe).toBe(true);
 
     // THE assertion this issue exists for: what is on DISK at the new path,
     // with no edit having dirtied the file since the rename.
