@@ -240,9 +240,19 @@ the same rule as `editor.split` without each caller having to remember it.
 not rendering (#2787, #2797, #2826).** Because `EditorArea` renders only the
 maximized group while one is active, any operation that can move
 `focusedGroupId` to a different group must also restore — otherwise the
-operation moves focus internally but paints nothing, and the trigger (a
-Binder click, a tab drag) appears to do nothing. Two store actions carry this
-responsibility, each computing its resolved target group first and then
+operation moves focus internally but paints nothing. While a group is
+maximized, every open dock is collapsed (`regions.tsx` gates
+`showLeftDock`/`showRightDock`/`showBottomDock` on `!groupMaximized`), so a
+Binder click or a tab drag has no drop target to begin with — those are the
+non-maximized case, where a hidden (not maximized-hidden, just off-tier)
+sibling group can still receive focus with nothing painting. The trigger that
+*is* reachable while a group is maximized is Quick Open / `editor.reveal`
+(`EDITOR_REVEAL_COMMAND_ID`, `location.ts`) — an App-level overlay mounted
+outside the dock tree (`packages/studio-ui/src/App.tsx`), still wired through
+`openDocument` below. See
+`packages/brink-studio/e2e/maximize-reveal.spec.ts` for the real-browser
+proof. Two store actions carry the invariant's restore responsibility, each
+computing its resolved target group first and then
 clearing `maximizedGroupId` iff it is set and differs from that target,
 leaving it untouched when the target is the maximized group itself (already
 the only thing rendered, nothing to restore):

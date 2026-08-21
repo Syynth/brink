@@ -16,6 +16,17 @@
  * (docs/studio-shell-spec.md §5.4, "Not yet covered: `editor.focusNextGroup`").
  * This spec instead pins what IS already fixed and reachable today.
  *
+ * This spec's own setup deliberately RIDES hole (1)'s unfixed bug — the
+ * `Editor: Focus Next Group` step below only produces the desynced,
+ * nothing-painted state this spec needs because that `when` guard is not
+ * yet fixed. Whichever way the pending ruling above goes (clear
+ * `maximizedGroupId` on move, or make `when: false` while maximized), this
+ * setup step stops producing that state and this spec will go red. Its
+ * setup will need to be rewritten to reach the same "hidden, desynced
+ * group" precondition some other way (or the precondition itself may no
+ * longer be reachable, in which case this spec's premise should be
+ * revisited).
+ *
  * The trigger has to be Quick Open, not a Binder click: maximizing a group
  * collapses every open dock (§5.4 — `regions.tsx`'s `showLeftDock` etc. all
  * gate on `!groupMaximized`), so the Binder is not actually reachable while
@@ -53,12 +64,21 @@ async function runPaletteCommand(page: Page, title: string): Promise<void> {
  * Quick Open (real input: Mod-E — the alternate binding; Mod-P is
  * browser-interceptable per QuickOpen.tsx's own registration comment) a
  * file by exact name and pick the top (only unambiguous) match.
+ *
+ * Quick Open's items come from the async compile outline
+ * (`buildQuickOpenItems(useStudioStore((s) => s.outline))`), so a query
+ * typed before that outline is ready — or that never matches anything —
+ * would otherwise make the Enter press below a silent no-op: `pick` never
+ * fires, and the only symptom is a timeout on a much later assertion. Wait
+ * for the ranked match to actually appear (and be the one selected) before
+ * committing to it.
  */
 async function quickOpenFile(page: Page, fileName: string): Promise<void> {
   await page.keyboard.press("ControlOrMeta+E");
   const input = page.locator(".shell-palette-input");
   await expect(input).toBeVisible();
   await input.fill(fileName);
+  await expect(page.locator(".shell-palette-item.selected .title")).toHaveText(fileName);
   await page.keyboard.press("Enter");
 }
 
@@ -111,6 +131,15 @@ test.describe("maximize reveal (#2825)", () => {
     await expect(page.locator(".shell-editor-group")).toHaveAttribute(
       "data-editor-group",
       maximizedGroupId!,
+    );
+    // The desync itself, DOM-observable: `EditorGroupView` recomputes
+    // `focused={maximizedGroup.id === focusedGroupId}` as false once focus
+    // has moved off the maximized group, so the still-rendered (maximized)
+    // group drops its `data-focused` attribute. Without this assertion the
+    // count/id checks above stay true even if `focusNextGroup` never ran.
+    await expect(page.locator(".shell-editor-group")).not.toHaveAttribute(
+      "data-focused",
+      "true",
     );
 
     // Quick Open a file that has never been opened anywhere: the picked
