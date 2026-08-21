@@ -377,9 +377,9 @@ fn compile_path_native_lambda_self_reference_is_e158() {
 /// production `compile_path` entry point.
 ///
 /// Deliberately asserts *compilation*, not invocation from `flow main()` —
-/// see `compile_path_native_lambda_valued_global_call_site_is_unresolved`
-/// below for why a call site is a separate, pre-existing gap this issue
-/// does not reach.
+/// see `compile_path_native_lambda_valued_global_call_site_resolves` below,
+/// which does invoke the fn value from `flow main()` and pins the separate
+/// call-site-resolution fix from issue #2083.
 #[test]
 fn compile_path_native_const_lambda_literal_decl_default_compiles() {
     let dir = std::env::temp_dir().join(format!(
@@ -482,34 +482,123 @@ fn compile_path_native_var_lambda_literal_decl_default_compiles() {
     ));
 }
 
-/// A DISTINCT, PRE-EXISTING gap this issue's own scope does not reach —
-/// filed separately as #2083: calling a fn-valued global `const`/`var`
-/// from *anywhere other than its own declaration* does not resolve through
-/// the production `compile_path` →
-/// `brink-db` incremental pipeline, reporting `E025` ("unresolved variable
-/// reference"). Reproduced with **#1862's already-shipped bare-name fn
-/// reference** — `twice = double` (no lambda involved at all) — to prove
-/// this is not new in this PR: verified to already reproduce on `origin/main`
-/// before this PR's changes, and to NOT reproduce through the simpler
-/// whole-project `brink_analyzer::analyze` + `lower_to_program_with_type_mode`
-/// path `brink-ir`'s own test suite uses (this crate's sibling
+/// **Issue #2083, RESOLVED.** The issue's own report speculated the gap was
+/// in `brink-db`'s FG-3 incremental `resolve_query`/`resolutions_index_query`
+/// machinery, and pointed at this crate's sibling
 /// `lambda_literal_decl_default_reads_other_globals_without_capturing_them`
-/// compiles the identical shape cleanly through that path). The divergence
-/// points at `brink-db`'s FG-3 incremental `resolve_query`/
-/// `resolutions_index_query` machinery specifically, not at anything this
-/// PR's `decls::collect_globals` lambda path touches. Left failing here
-/// (ignored) as the honest record of the gap rather than silently absent.
+/// (`brink-ir`) as proof the identical shape "compiles and resolves cleanly"
+/// through the simpler whole-project `brink_analyzer::analyze` +
+/// `lower_to_program_with_type_mode` path. Re-investigation (RCA) found that
+/// claim does not hold: that sibling test never asserts on
+/// `brink_analyzer::analyze`'s own resolution diagnostics at all — it only
+/// checks the shape of the *declaring* global's lowered default value
+/// (`ConstValue::FnRef`), never whether the flow body's *call site* actually
+/// resolved. A direct, `brink-db`-free call to `brink_analyzer::resolve`/
+/// `analyze()` on the identical source reproduces the same `E025` — proving
+/// the bug was never in `brink-db`'s incremental layer at all, but in
+/// `brink-analyzer::resolve::resolve_function` itself: its call-site
+/// "try variables" lookup searched only `SymbolKind::Variable`, never
+/// `SymbolKind::Constant` — so a `var`-bound fn value's call site always
+/// resolved (confirmed: `var twice = double` + `{twice(21)}` was already
+/// clean before this fix) while the identically-shaped `const` form never
+/// could. `resolve_variable`'s own bare-*read* lookup (`{twice}`, no call)
+/// already searched `[Variable, Constant]` together — this was a one-sided
+/// omission in the call-site arm alone. Fixed by adding `SymbolKind::Constant`
+/// to that lookup's kind list, at the `brink-analyzer` layer (not `brink-db`
+/// — the bug never depended on the db's incremental machinery, so both the
+/// db-direct and whole-project roads share this one fix by construction).
 #[test]
-#[ignore = "pre-existing brink-db incremental-resolution gap for ANY fn-valued global call site — not introduced or fixed by #1774, filed separately as #2083"]
-fn compile_path_native_lambda_valued_global_call_site_is_unresolved() {
+fn compile_path_native_lambda_valued_global_call_site_resolves() {
     let output = compile_and_run_native(
         "lambda-decl-default-call-site",
         "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n",
     );
     assert!(
         output.contains("Result: 42"),
-        "calling a fn-valued global from flow main should work once the \
-         separately-filed incremental-resolution gap is fixed, got: {output:?}"
+        "calling a fn-valued CONST global from flow main should work now that \
+         issue #2083 is fixed, got: {output:?}"
+    );
+}
+
+/// The bare-name sibling of the test above (#1862's shipped feature, no
+/// lambda literal involved) — issue #2083's own repro used this exact shape.
+/// Pinned separately since the bare-name and lambda-literal forms lower
+/// through different HIR/LIR construction paths even though both share the
+/// one resolver fix.
+#[test]
+fn compile_path_native_bare_name_fn_valued_const_global_call_site_resolves() {
+    let output = compile_and_run_native(
+        "bare-name-const-call-site",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\nconst twice = double\n\n\
+         flow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a bare-name fn-valued CONST global from flow main should \
+         work now that issue #2083 is fixed, got: {output:?}"
+    );
+}
+
+/// The `var` sibling of the test above: `var twice = double` + `{twice(21)}`
+/// already resolved before #2083's fix (the call-site arm searched
+/// `SymbolKind::Variable`) — pinned end-to-end here so that "var already
+/// worked" stays a tested claim rather than a remembered one.
+#[test]
+fn compile_path_native_bare_name_fn_valued_var_global_call_site_resolves() {
+    let output = compile_and_run_native(
+        "bare-name-var-call-site",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\nvar twice = double\n\n\
+         flow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a bare-name fn-valued VAR global from flow main should \
+         keep working, got: {output:?}"
+    );
+}
+
+/// Call-vs-read parity (issue #2083's review follow-up, fixed by the
+/// locals-first reorder in `brink-analyzer::resolve::resolve_function`):
+/// with BOTH a fn-valued global `const twice` and a same-named local
+/// `let twice` in scope, the call site must invoke the LOCAL — exactly as a
+/// bare read of the name resolves the local (`lookup_variable` step 1).
+/// The runtime half already behaved (LIR `lower_call` consults `temp_slot`
+/// first), so this end-to-end run pins the aligned end state; the analyzer
+/// half of the divergence (resolution target + `infer_call` signature) is
+/// pinned red/green by `crates/internal/brink-analyzer/tests/
+/// issue_2083_call_site_local_shadows_global.rs`.
+#[test]
+fn compile_path_native_call_site_local_shadows_same_named_const_global() {
+    let output = compile_and_run_native(
+        "call-site-local-shadows-const",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\n\
+         fn triple(n: int): int {\n  return n * 3;\n}\n\n\
+         const twice = double\n\n\
+         flow main() {\n  ~ let twice = triple\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 63"),
+        "the local `let twice = triple` must shadow the global \
+         `const twice = double` at the call site (63, not 42), got: {output:?}"
+    );
+}
+
+/// The `var` sibling of the shadowing test above — the same call-site
+/// inversion existed for `Variable`-kind globals, deliberately also fixed
+/// by the locals-first reorder.
+#[test]
+fn compile_path_native_call_site_local_shadows_same_named_var_global() {
+    let output = compile_and_run_native(
+        "call-site-local-shadows-var",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\n\
+         fn triple(n: int): int {\n  return n * 3;\n}\n\n\
+         var twice = double\n\n\
+         flow main() {\n  ~ let twice = triple\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 63"),
+        "the local `let twice = triple` must shadow the global \
+         `var twice = double` at the call site (63, not 42), got: {output:?}"
     );
 }
 
