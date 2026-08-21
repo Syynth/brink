@@ -313,8 +313,8 @@ fn e185_on_unannotated_temp_initializer_reaches_both_surfaces_under_strict_issue
 fn issue_2083_const_bare_name_fn_value_call_site_reaches_both_surfaces() {
     let src = "fn double(n: int): int {\n  return n * 2;\n}\n\nconst twice = double\n\n\
                flow main() {\n  Result: {twice(21)} -> END\n}\n";
-    let (live, db) = both_surfaces("main.brink", src, Dialect::StrictInk)
-        .expect("session produced an analysis");
+    let (live, db) =
+        both_surfaces("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
 
     assert!(
         !has(&live, DiagnosticCode::E025),
@@ -335,8 +335,8 @@ fn issue_2083_const_bare_name_fn_value_call_site_reaches_both_surfaces() {
 #[test]
 fn issue_2083_const_lambda_literal_fn_value_call_site_reaches_both_surfaces() {
     let src = "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n";
-    let (live, db) = both_surfaces("main.brink", src, Dialect::StrictInk)
-        .expect("session produced an analysis");
+    let (live, db) =
+        both_surfaces("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
 
     assert!(
         !has(&live, DiagnosticCode::E025),

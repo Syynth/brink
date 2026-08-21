@@ -61,8 +61,7 @@ fn const_lambda_literal_fn_value_call_site_resolves_via_db_diagnostics() {
     let mut db = ProjectDb::new();
     let file = db.set_file(
         "main.brink",
-        "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n"
-            .to_owned(),
+        "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n".to_owned(),
     );
     db.set_entry("main.brink");
 

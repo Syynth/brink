@@ -956,8 +956,12 @@ fn resolve_function(
     // actually asserted on `analyze()`'s resolution diagnostics, only on
     // the declaring global's own lowered default shape).
     if !reserved_call_site
-        && let Some(id) =
-            lookup_by_name(index, scope, path, &[SymbolKind::Variable, SymbolKind::Constant])
+        && let Some(id) = lookup_by_name(
+            index,
+            scope,
+            path,
+            &[SymbolKind::Variable, SymbolKind::Constant],
+        )
     {
         map.push(ResolvedRef {
             file: file_id,
