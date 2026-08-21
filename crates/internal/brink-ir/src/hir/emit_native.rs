@@ -405,23 +405,59 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
 // ─── Top-level declarations ─────────────────────────────────────────
 
 fn emit_var_decl(out: &mut String, v: &VarDecl) -> Result<(), EmitError> {
-    if v.is_local || v.doc.is_some() || v.visibility.is_some() || v.was.is_some() {
+    if v.is_local || v.doc.is_some() || v.was.is_some() {
         return Err(unsupported("var directive channel", &v.name.text));
     }
+    let pub_kw = pub_prefix(v.visibility, "var directive channel", &v.name.text)?;
     let ty = emit_annotation_suffix(v.annotation.as_ref());
     let value = emit_expr(&v.value, &v.name.text)?;
-    let _ = writeln!(out, "var {}{ty} = {value}", v.name.text);
+    let _ = writeln!(out, "{pub_kw}var {}{ty} = {value}", v.name.text);
     Ok(())
 }
 
 fn emit_const_decl(out: &mut String, c: &ConstDecl) -> Result<(), EmitError> {
-    if c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
+    if c.doc.is_some() || c.was.is_some() {
         return Err(unsupported("const directive channel", &c.name.text));
     }
+    let pub_kw = pub_prefix(c.visibility, "const directive channel", &c.name.text)?;
     let ty = emit_annotation_suffix(c.annotation.as_ref());
     let value = emit_expr(&c.value, &c.name.text)?;
-    let _ = writeln!(out, "const {}{ty} = {value}", c.name.text);
+    let _ = writeln!(out, "{pub_kw}const {}{ty} = {value}", c.name.text);
     Ok(())
+}
+
+/// `"pub "` for `Some(VisibilityMark::Public)`, `""` for `None` — the native
+/// spelling for the seven `pub`-eligible declaration kinds (issue #1582,
+/// RULED 2026-08-03, `docs/decision-log.md` "Native visibility marker: a
+/// `pub` keyword"; `crates/internal/brink-syntax-native/src/parser/decl.rs`'s
+/// `eat_pub`/seven `at_pub_*_decl` guards are the parser side this mirrors).
+///
+/// `Some(VisibilityMark::Private)` has no native spelling to fall back to —
+/// unlike `pub`'s single keyword, native has no `priv`/`private` keyword and
+/// no `#@private` tag-directive channel (that's ink-dialect-only, via
+/// `hir::lower::directive`); native lowering
+/// (`lower_native::decl::visibility_mark`, plus the knot/stitch sites in
+/// `lower_native::container`) can only ever produce `None` or
+/// `Some(Public)`. Nor can ink-sourced HIR deliver a `Some(Private)` here in
+/// practice: ink's `#@private`/`#@public` directives also populate
+/// `HirFile::visibility`, and `refuse_unsupported_file_channels` (above)
+/// refuses any non-empty file-level visibility list before per-decl emission
+/// runs. This arm is therefore defense-in-depth against hand-constructed
+/// HIR — kept refused because the variant genuinely has nothing to
+/// round-trip to, not because any current producer reaches it. (If the
+/// file-level refusal is ever lifted, note an ink `#@public` file without
+/// `#@module` would respell into a single-file `.brink` whose top-level
+/// `pub` immediately warns E092 — the redundant-override diagnostic.)
+fn pub_prefix(
+    visibility: Option<crate::VisibilityMark>,
+    channel: &'static str,
+    name: &str,
+) -> Result<&'static str, EmitError> {
+    match visibility {
+        None => Ok(""),
+        Some(crate::VisibilityMark::Public) => Ok("pub "),
+        Some(crate::VisibilityMark::Private) => Err(unsupported(channel, name)),
+    }
 }
 
 /// `": T"` for an annotated binding or return clause, `""` when absent.
@@ -434,9 +470,10 @@ fn emit_annotation_suffix(annotation: Option<&TypeExpr>) -> String {
 }
 
 fn emit_flags_decl(out: &mut String, l: &ListDecl) -> Result<(), EmitError> {
-    if l.doc.is_some() || l.visibility.is_some() || l.was.is_some() {
+    if l.doc.is_some() || l.was.is_some() {
         return Err(unsupported("flags directive channel", &l.name.text));
     }
+    let pub_kw = pub_prefix(l.visibility, "flags directive channel", &l.name.text)?;
     let members: Vec<String> = l
         .members
         .iter()
@@ -448,15 +485,21 @@ fn emit_flags_decl(out: &mut String, l: &ListDecl) -> Result<(), EmitError> {
             if m.is_active { format!("({s})") } else { s }
         })
         .collect();
-    let _ = writeln!(out, "flags {} = {}", l.name.text, members.join(", "));
+    let _ = writeln!(
+        out,
+        "{pub_kw}flags {} = {}",
+        l.name.text,
+        members.join(", ")
+    );
     Ok(())
 }
 
 fn emit_struct_decl(out: &mut String, s: &StructDecl) -> Result<(), EmitError> {
-    if s.doc.is_some() || s.visibility.is_some() {
+    if s.doc.is_some() {
         return Err(unsupported("struct directive channel", &s.name.text));
     }
-    let _ = writeln!(out, "struct {} {{", s.name.text);
+    let pub_kw = pub_prefix(s.visibility, "struct directive channel", &s.name.text)?;
+    let _ = writeln!(out, "{pub_kw}struct {} {{", s.name.text);
     for f in &s.fields {
         let ty = emit_type(&f.ty);
         let _ = writeln!(out, "  {}: {ty}", f.name.text);
@@ -466,11 +509,12 @@ fn emit_struct_decl(out: &mut String, s: &StructDecl) -> Result<(), EmitError> {
 }
 
 fn emit_external_decl(out: &mut String, e: &ExternalDecl) -> Result<(), EmitError> {
-    if e.doc.is_some() || e.visibility.is_some() || e.was.is_some() {
+    if e.doc.is_some() || e.was.is_some() {
         return Err(unsupported("extern directive channel", &e.name.text));
     }
+    let pub_kw = pub_prefix(e.visibility, "extern directive channel", &e.name.text)?;
     let params: Vec<&str> = e.params.iter().map(|p| p.name.as_str()).collect();
-    let _ = writeln!(out, "extern {}({})", e.name.text, params.join(", "));
+    let _ = writeln!(out, "{pub_kw}extern {}({})", e.name.text, params.join(", "));
     Ok(())
 }
 
@@ -559,11 +603,11 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
         || k.convention_annotation.is_some()
         || k.style_annotation.is_some()
         || k.doc.is_some()
-        || k.visibility.is_some()
         || k.was.is_some()
     {
         return Err(unsupported("knot directive/doc channel", &k.name.text));
     }
+    let pub_kw = pub_prefix(k.visibility, "knot directive/doc channel", &k.name.text)?;
     let keyword = if k.is_function { "fn" } else { "flow" };
     let params = emit_params(&k.params, &k.name.text)?;
     // The ruled `: type` return clause goes after the parameter list
@@ -582,7 +626,11 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     // always needs the explicit `>{ }` prose override to reparse into the
     // same shape this printer just wrote.
     let selector = if k.is_function { ">" } else { "" };
-    let _ = writeln!(out, "{keyword} {}({params}){ret} {selector}{{", k.name.text);
+    let _ = writeln!(
+        out,
+        "{pub_kw}{keyword} {}({params}){ret} {selector}{{",
+        k.name.text
+    );
     emit_block_stmts(out, &k.body, 1, &k.name.text)?;
     for s in &k.stitches {
         emit_stitch(out, s, 1)?;
@@ -598,18 +646,22 @@ fn emit_stitch(out: &mut String, s: &Stitch, depth: usize) -> Result<(), EmitErr
         || s.convention_annotation.is_some()
         || s.style_annotation.is_some()
         || s.doc.is_some()
-        || s.visibility.is_some()
         || s.was.is_some()
     {
         return Err(unsupported("stitch directive/doc channel", &s.name.text));
     }
+    let pub_kw = pub_prefix(s.visibility, "stitch directive/doc channel", &s.name.text)?;
     let indent = "  ".repeat(depth);
     let params = emit_params(&s.params, &s.name.text)?;
     // The ruled `: type` return clause (NG-C, issue #1489, widened to
     // stitches by #1509) — same position as a top-level `flow`/`fn`'s, see
     // `emit_knot`.
     let ret = emit_annotation_suffix(s.return_type.as_ref());
-    let _ = writeln!(out, "{indent}flow {}({params}){ret} {{", s.name.text);
+    let _ = writeln!(
+        out,
+        "{indent}{pub_kw}flow {}({params}){ret} {{",
+        s.name.text
+    );
     emit_block_stmts(out, &s.body, depth + 1, &s.name.text)?;
     let _ = writeln!(out, "{indent}}}");
     Ok(())
@@ -2782,6 +2834,162 @@ mod tests {
         assert!(
             emitted.contains("flow a() {\n"),
             "flow header must stay a bare `{{`, no selector:\n{emitted}"
+        );
+    }
+
+    // ── `pub` visibility round-trip (issue #2200) ──────────────────────
+    //
+    // Before this fix, every one of these seven declaration kinds hit the
+    // old blanket `visibility.is_some()` refusal the moment `pub` (issue
+    // #1582/#2194) made `Some(VisibilityMark::Public)` reachable from a
+    // real native parse. These tests don't go through
+    // `crates/internal/brink-respell/tests/round_trip.rs`'s
+    // `round_trip_case` (full `brink-analyzer` pass via
+    // `explore_from_brink_native`) — deliberately: a single-file harness
+    // with no `module { }` wrapper is always an *undeclared* module
+    // (`brink-analyzer::manifest::effective_visibility`), whose default
+    // visibility is already `Public`, so any top-level `pub` there is a
+    // *redundant* override and trips `E092` on the hand-written original
+    // itself, before any emit/reparse — orthogonal to this fix. This
+    // module's own `lower_and_emit`/`reparse_and_lower` pair (the same
+    // narrower discipline `labeled_gather_continuation_round_trips` above
+    // already established) proves the emitter/parser agree without that
+    // detour.
+
+    #[test]
+    fn pub_var_const_flags_struct_extern_round_trip() {
+        let src = "\
+pub var hp: int = 10
+pub const cap = 100
+pub flags mood = calm, wary
+pub struct npc {
+  hp: int
+}
+pub extern log_msg(msg)
+
+flow a() {
+  Hi.
+}
+";
+        let emitted = lower_and_emit(src).expect("pub var/const/flags/struct/extern must now emit");
+        assert!(
+            emitted.contains("pub var hp"),
+            "var must keep its pub prefix:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("pub const cap"),
+            "const must keep its pub prefix:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("pub flags mood"),
+            "flags must keep its pub prefix:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("pub struct npc"),
+            "struct must keep its pub prefix:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("pub extern log_msg"),
+            "extern must keep its pub prefix:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert_eq!(
+            hir.variables[0].visibility,
+            Some(crate::VisibilityMark::Public)
+        );
+        assert_eq!(
+            hir.constants[0].visibility,
+            Some(crate::VisibilityMark::Public)
+        );
+        assert_eq!(hir.lists[0].visibility, Some(crate::VisibilityMark::Public));
+        assert_eq!(
+            hir.structs[0].visibility,
+            Some(crate::VisibilityMark::Public)
+        );
+        assert_eq!(
+            hir.externals[0].visibility,
+            Some(crate::VisibilityMark::Public)
+        );
+    }
+
+    #[test]
+    fn pub_flow_knot_and_nested_stitch_round_trip() {
+        let src = "pub flow a() {\n  Hi.\n\n  pub flow b() {\n    Inner.\n  }\n}\n";
+        let emitted = lower_and_emit(src)
+            .expect("pub flow (knot) and nested pub flow (stitch) must now emit");
+        assert!(
+            emitted.starts_with("pub flow a("),
+            "top-level flow must keep its pub prefix:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("pub flow b("),
+            "nested flow (stitch) must keep its pub prefix:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert_eq!(hir.knots[0].visibility, Some(crate::VisibilityMark::Public));
+        assert_eq!(
+            hir.knots[0].stitches[0].visibility,
+            Some(crate::VisibilityMark::Public)
+        );
+    }
+
+    #[test]
+    fn pub_fn_round_trips() {
+        let src = "pub fn heal() {\n  return 1;\n}\n";
+        let emitted = lower_and_emit(src).expect("pub fn must now emit");
+        assert!(
+            emitted.starts_with("pub fn heal("),
+            "fn must keep its pub prefix:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert_eq!(hir.knots[0].visibility, Some(crate::VisibilityMark::Public));
+    }
+
+    #[test]
+    fn absent_visibility_still_emits_with_no_pub_prefix() {
+        // Regression guard: `None` (no `pub`, the pre-#2194 default) must
+        // stay exactly as before — no prefix, no behavior change.
+        let src = "var hp = 1\nflow a() {\n  Hi.\n}\n";
+        let emitted = lower_and_emit(src).expect("undecorated declarations must still emit");
+        assert!(
+            emitted.starts_with("var hp"),
+            "var with no visibility mark must not gain a pub prefix:\n{emitted}"
+        );
+        assert!(
+            emitted.contains("\nflow a("),
+            "flow with no visibility mark must not gain a pub prefix:\n{emitted}"
+        );
+    }
+
+    #[test]
+    fn private_visibility_mark_is_still_refused_with_a_named_reason() {
+        // `lower_native::decl::visibility_mark` can only ever produce
+        // `None` or `Some(VisibilityMark::Public)` — native has no
+        // `priv`/`private` keyword and no `#@private` tag-directive
+        // channel (that's ink-dialect-only). `Some(Private)` is
+        // unreachable from a real `.brink` parse, and ink-sourced HIR
+        // with any visibility directive is refused earlier at the file
+        // level (`refuse_unsupported_file_channels` on
+        // `HirFile::visibility`) — so this arm is defense-in-depth
+        // against hand-built HIR (exactly what this test constructs):
+        // keep refusing with a reason naming the real cause, never
+        // silently drop or mis-emit as `pub`.
+        let src = "var hp = 10\n";
+        let parse = brink_syntax_native::parse(src);
+        let tree = parse.tree();
+        let (mut hir, _manifest, diags) = crate::hir::lower_native::lower(crate::FileId(0), &tree);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        hir.variables[0].visibility = Some(crate::VisibilityMark::Private);
+
+        let err = emit_file(&hir)
+            .expect_err("Some(Private) has no native spelling and must stay refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("var directive channel"),
+            "refusal message should name the var-directive channel, got: {msg}"
         );
     }
 }
