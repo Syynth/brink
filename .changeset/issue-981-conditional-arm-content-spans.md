@@ -26,3 +26,19 @@ construct-extent spans themselves are unchanged.
 This also changes compiled output: `LineEntry.source_location` (part of
 `StoryData`'s line table, reachable through `EditorSession`/`@brink-lang/web`)
 is now populated for arm content lines that previously had none.
+
+Two further editor-observable consequences (surfaced by review):
+
+- Prose-only arms now also project their `ConditionalBranch`/
+  `SequenceBranch` CONTAINER spans: `hir_projection`'s `stmt_extent`
+  derives a branch's extent from its statements' ptrs, so a body whose
+  only statements were ptr-less `Content` previously projected no branch
+  container at all.
+- Line-context weave classification follows: arm prose lines inside a
+  choice body report `w=1/ConditionalBranch` (depth inherited from the
+  enclosing weave per `derive_weave`'s documented branch convention)
+  instead of the scaffold fallback's `w=0`, and lines inside a
+  `{ stopping: … }` block classify as `SequenceBranch` (weave depth 0 at
+  top level) instead of being pattern-matched as `GatherContinuation` —
+  the latter was a misclassification: those lines are sequence branches,
+  not weave gathers.

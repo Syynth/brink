@@ -90,6 +90,13 @@ impl<B: BodyBackend> ContentAccumulator<B> {
 
     /// Flush buffered content parts as a `Stmt::Content`.
     pub fn flush(&mut self) {
+        // Deliberately `Provenance::new` with the REAL file id + a
+        // synthetic kind token, not `Provenance::synthetic()` (which
+        // stamps `FileId(u32::MAX)`): the range is genuine source text, so
+        // range-only consumers (admission's E124 range check, diagnostic
+        // anchors, projection spans) must attribute it to the right file;
+        // only kind-based CST resolution is meant to decline (the
+        // `branchless_first_arm_span` posture, #981).
         let ptr = self.pending_range.take().map(|range| {
             Provenance::new(
                 self.file_id,

@@ -5,18 +5,18 @@ expression: "render_fixture(\"\\\n=== start ===\n{ stopping:\n- First visit text
 == LINES (base) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |{ stopping:| Logic w=0/TopLevel
-  2 |- First visit text.| Gather w=1/GatherContinuation
-  3 |- Second visit text.| Gather w=1/GatherContinuation
-  4 |- Every other time.| Gather w=1/GatherContinuation
+  2 |- First visit text.| Gather w=0/SequenceBranch
+  3 |- Second visit text.| Gather w=0/SequenceBranch
+  4 |- Every other time.| Gather w=0/SequenceBranch
   5 |}| Logic w=0/TopLevel
   6 |-> END| Divert w=0/TopLevel
   7 || Blank w=0/TopLevel
 == LINES (at-cue dialect) ==
   0 |=== start ===| KnotHeader w=0/TopLevel
   1 |{ stopping:| Logic w=0/TopLevel
-  2 |- First visit text.| Gather w=1/GatherContinuation
-  3 |- Second visit text.| Gather w=1/GatherContinuation
-  4 |- Every other time.| Gather w=1/GatherContinuation
+  2 |- First visit text.| Gather w=0/SequenceBranch
+  3 |- Second visit text.| Gather w=0/SequenceBranch
+  4 |- Every other time.| Gather w=0/SequenceBranch
   5 |}| Logic w=0/TopLevel
   6 |-> END| Divert w=0/TopLevel
   7 || Blank w=0/TopLevel
