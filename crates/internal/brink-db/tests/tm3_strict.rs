@@ -199,3 +199,31 @@ fn strict_dotted_assign_unknown_field_reaches_production_diagnostics_issue_1944(
         "{diags:?}"
     );
 }
+
+/// Issue #2906, db-direct road: the same `db.diagnostics(file)` production
+/// seam as `strict_dotted_assign_unknown_field_reaches_production_
+/// diagnostics_issue_1944` above, but with `p` an *unannotated* `~ temp`
+/// initialized from a construction literal rather than an annotated `VAR` —
+/// the exact recording-site gap #2906 closes (the E185 check's own
+/// `check_declared_field_assign_target` used to resolve a Temp root's shape
+/// only from `self.annotated`/`ctx.globals`, never an unannotated temp's own
+/// initializer-inferred shape).
+#[test]
+fn strict_dotted_assign_unknown_field_on_unannotated_temp_initializer_reaches_production_diagnostics_issue_2906()
+ {
+    let mut db = ProjectDb::new();
+    let file = db.set_file(
+        "main.ink",
+        "STRUCT Point = #{x: float, y: float}\n\
+         === main ===\n~ temp p = Point#{x: 0.0, y: 0.0}\n~ p.bogus = 1\n-> DONE\n"
+            .to_owned(),
+    );
+    db.set_entry("main.ink");
+    db.set_analysis_options(strict_opts());
+
+    let diags = db.diagnostics(file).expect("file diagnostics");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E185),
+        "{diags:?}"
+    );
+}

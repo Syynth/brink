@@ -1400,13 +1400,39 @@ mod tests {
     }
 
     #[test]
-    fn field_assignment_on_unannotated_temp_stays_silent_when_unknown() {
-        // An unannotated `~ temp` has no declared shape to check against —
-        // "Unknown never disagrees", same posture every other shape-
-        // agreement check in this module takes.
+    fn field_assignment_mismatch_on_unannotated_temp_with_construction_literal_initializer_is_e063_issue_2906()
+     {
+        // Issue #2906: before this fix, `check_declared_field_assign_target`
+        // only ever resolved a Temp root's shape from `self.annotated` (an
+        // explicit `~ temp p: Point = …` ascription) — an *unannotated* `~
+        // temp p = Point#{…}` has no ascription, so this test used to pin
+        // silence here even though the shape is plainly knowable from the
+        // construction-literal initializer itself. That was the recording-
+        // site gap the issue reports, not a genuine "no shape to check
+        // against" case — `check_declared_field_assign_target` now also
+        // consults the initializer's own inferred `Ty::Struct` shape when
+        // there is no explicit ascription, so this fires `E063` exactly like
+        // the annotated spelling does (see
+        // `field_assignment_mismatch_on_annotated_temp_is_e063` above).
         let diags = check_assignments_all(
             "STRUCT Point = #{x: float}\n\
              === main ===\n~ temp p = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+    }
+
+    #[test]
+    fn field_assignment_on_genuinely_unresolved_temp_stays_silent() {
+        // The genuine "Unknown never disagrees" case, distinct from the one
+        // above (issue #2906): a `~ temp` whose value is never statically
+        // knowable at all — here, an unannotated `EXTERNAL` call with no
+        // declared return type — never resolves past `Ty::Unknown`, so
+        // there is truly no shape to check the field name or value against.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             EXTERNAL make_point()\n\
+             === main ===\n~ temp p = make_point()\n~ p.x = \"wrong\"\n-> DONE\n",
         );
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -1438,21 +1464,83 @@ mod tests {
     /// root never resolves past `Ty::Unknown` — there is genuinely no shape
     /// anywhere to check the field name against — so "Unknown never
     /// disagrees" holds for the *receiver* exactly as it does for `E063`
-    /// (see `field_assignment_on_unannotated_temp_stays_silent_when_unknown`
-    /// above, E063's own sibling). This deliberately does NOT use an
-    /// unannotated `~ temp` initialized from a struct literal
-    /// (`~ temp p = Point#{x: 0.0}`) — that case's shape actually *is*
-    /// statically knowable from the initializer; it stays silent only
-    /// because `check_declared_field_assign_target` reads the root's type
-    /// from `self.annotated`/`ctx.globals` and never an unannotated temp's
-    /// inferred type, a limitation of the recording site, not an absence of
-    /// a shape to check against (see `docs/diagnostics/E185.md`'s "What does
-    /// NOT fire").
+    /// (see `field_assignment_on_genuinely_unresolved_temp_stays_silent`
+    /// above, E063's own sibling). Issue #2906 closed the *other* silent
+    /// case this test used to also cover — an unannotated `~ temp p =
+    /// Point#{x: 0.0}` — by widening the recording site's fallback to the
+    /// initializer's own inferred shape (see
+    /// `field_assignment_to_a_nonexistent_field_on_unannotated_temp_with_construction_literal_initializer_is_e185_issue_2906`
+    /// below); a function param has no initializer at all to fall back to,
+    /// so it stays the genuine "no shape anywhere" case.
     #[test]
     fn field_assignment_to_a_nonexistent_field_on_unresolved_receiver_stays_silent() {
         let diags = check_assignments_all(
             "STRUCT Point = #{x: float}\n\
              === function f(p) ===\n~ p.bogus = \"wrong\"\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_on_unannotated_temp_with_construction_literal_initializer_is_e185_issue_2906()
+     {
+        // Issue #2906: the `E185` twin of
+        // `field_assignment_mismatch_on_unannotated_temp_with_construction_literal_initializer_is_e063_issue_2906`
+        // above — same recording-site widening, same seam
+        // (`check_field_assign_mismatch`), the unknown-field-name arm
+        // instead of the type-mismatch arm.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p.bogus = 1\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E185);
+        assert!(diags[0].message.contains("bogus"), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_on_unannotated_temp_reassigned_to_a_different_struct_stays_silent()
+     {
+        // Issue #2906's own conservative-reassignment carve-out: `p`'s
+        // initializer resolves to `Point`, but `p` is reassigned to a
+        // different, incompatible-shaped struct before the field write. The
+        // initializer-inferred shape lives in a declaration-time-only map
+        // (mirroring `self.annotated`'s own "recorded once, consulted as a
+        // fallback" shape) that a later plain reassignment never touches —
+        // so this is NOT caught by `Ty::unify` driving `self.locals["p"]` to
+        // `Ty::Conflicted` the way a bare `check_declared_assign_target`
+        // fact would be. It is the explicit `reassigned_temps` bookkeeping
+        // this fix adds (every bare `~ p = expr` reassignment anywhere in
+        // the body, recorded during the walk) that withdraws the pending
+        // fact post-walk instead.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             STRUCT Other = #{y: float}\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p = Other#{y: 1.0}\n\
+             ~ p.bogus = 1\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_on_unannotated_temp_reassigned_to_an_unknown_shape_stays_silent()
+     {
+        // Issue #2906's harder conservative case, called out explicitly by
+        // the issue: `p` is reassigned to an *unresolvable* value (an
+        // unannotated `EXTERNAL` call's return) rather than a different
+        // concrete struct. `Ty::unify(Ty::Struct(_), Ty::Unknown)` is the
+        // identity rule — it stays `Ty::Struct("Point")`, NOT `Conflicted`
+        // — so `self.locals` alone can never distinguish "p was never
+        // reassigned" from "p was reassigned to something unresolvable".
+        // Without the explicit `reassigned_temps` tracking this fix adds,
+        // the widened fallback would still trust the stale `Point` shape
+        // here and false-fire `E185` on a receiver that might legitimately
+        // be any shape at this point.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             EXTERNAL make_thing()\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p = make_thing()\n\
+             ~ p.bogus = 1\n-> DONE\n",
         );
         assert!(diags.is_empty(), "{diags:?}");
     }
