@@ -1892,6 +1892,37 @@ pub enum DiagnosticCode {
     /// the non-suppressible `E074`, regardless of whether the field name
     /// exists.
     E185,
+
+    /// Issue #2264: a `@[convention(…)]` handler declares BOTH `block` and
+    /// `attach = StructName` on the same declaration — `parse_convention`
+    /// (`annotation.rs`) now rejects the combination outright rather than
+    /// silently accepting it. Before this code existed, nothing diagnosed
+    /// the co-occurrence at all: `try_claim`'s dispatch (`element.rs`) is
+    /// an `if is_block { .. } else if is_attach { .. }` with no exclusivity
+    /// check anywhere upstream — `block` always won the `if`, `attach` was
+    /// parsed and stored on `ConventionAnnotation` but never consulted, and
+    /// the author got zero signal that half of what they wrote did
+    /// nothing (verified: `red_probe_block_and_attach_together_compile_clean_with_attach_inert_today`
+    /// in `lower_native::tests`, run BEFORE this code existed, proves the
+    /// silent-drop shape end to end).
+    ///
+    /// This is deliberately a hard rejection, not an attempt to define what
+    /// "wrap AND attach" would mean together — that is an open design
+    /// question (issue #2264's own body: "Define what the combination is
+    /// supposed to mean and implement it — but that's a design question
+    /// (rule 7), not a good first assumption") with no ruling and no test
+    /// pinning any combined
+    /// semantics, so nothing here invents one. `parse_convention` returns
+    /// `None` (never a partial `ConventionAnnotation`) — the same "never a
+    /// partial one" posture `E159`/`E166`/`E167`/`E178`/`E180` already take
+    /// — so a handler declaring both is never registered as a claiming
+    /// handler at all, not merely warned about.
+    ///
+    /// Also reachable through the compact-cue desugar (`@NAME: text`,
+    /// issue #2079) — it dispatches through the exact same `try_claim`
+    /// function, so a compact-cue-claiming handler declaring both clauses
+    /// hits this same check (confirmed on the issue by PR #2341's review).
+    E186,
 }
 
 impl DiagnosticCode {
@@ -2089,6 +2120,7 @@ impl DiagnosticCode {
         Self::E183,
         Self::E184,
         Self::E185,
+        Self::E186,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2283,6 +2315,7 @@ impl DiagnosticCode {
             Self::E183 => "E183",
             Self::E184 => "E184",
             Self::E185 => "E185",
+            Self::E186 => "E186",
         }
     }
 
@@ -2596,6 +2629,9 @@ impl DiagnosticCode {
                 "a declared CONST/VAR/EXTERNAL's own definition could not be resolved while lowering — every surviving same-name candidate is std-declared"
             }
             Self::E185 => "plain assignment target names a field its struct shape does not declare",
+            Self::E186 => {
+                "`@[convention(…)]` declares both `block` and `attach = StructName` — mutually exclusive clauses"
+            }
         }
     }
 
@@ -2855,6 +2891,7 @@ impl DiagnosticCode {
             "E183" => Some(Self::E183),
             "E184" => Some(Self::E184),
             "E185" => Some(Self::E185),
+            "E186" => Some(Self::E186),
             _ => None,
         }
     }

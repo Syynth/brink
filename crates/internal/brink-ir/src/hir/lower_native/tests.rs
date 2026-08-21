@@ -3716,6 +3716,78 @@ fn no_attach_clause_at_all_never_diagnoses_e180() {
     );
 }
 
+// ─── `block` + `attach` exclusivity (issue #2264) ──────────────────────
+
+// This is the GREEN half of the issue #2264 fix. Before the fix landed, an
+// RCA probe run against this exact source (`lower_src`, same shape as
+// below) proved the silent-drop: ZERO diagnostics, `convention_annotation`
+// recording `block: true` AND `attach: Some("Cue")` simultaneously, and no
+// `Stmt::AttachElement` anywhere in the lowered body — `attach` parsed and
+// stored but never consulted, exactly the shape the issue reports. That RED
+// state is no longer reachable: `parse_convention` now rejects the
+// combination before a `ConventionAnnotation` is ever produced.
+#[test]
+fn block_and_attach_together_diagnoses_e186_and_registers_no_handler() {
+    let src = "struct Cue {\n  speaker: string,\n}\n\n@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, block, attach = Cue)]\nfn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n\nflow main() {\n  VENDOR\n  Line one.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E186),
+        "block + attach together on one handler must raise E186: {diags:?}"
+    );
+    // "Never a partial one" — same posture E159/E166/E167/E178/E180 already
+    // take: a malformed declaration registers no `ConventionAnnotation` at
+    // all, not a half-populated one.
+    assert!(
+        hir.knots[0].convention_annotation.is_none(),
+        "a block+attach declaration must never register as a claiming handler"
+    );
+    // Unclaimed, `VENDOR` now falls through to `try_claim`'s own documented
+    // default — "nothing claimed this", so the line lowers as ordinary
+    // prose content, the same as any line no handler's pattern matches —
+    // rather than being silently rewritten to a call whose `attach` clause
+    // does nothing.
+    let main = hir.knots.iter().find(|k| k.name.text == "main").unwrap();
+    assert!(
+        only_claimed_call(&main.body).is_none(),
+        "VENDOR must not be rewritten to a call — no handler is registered: {:?}",
+        main.body
+    );
+}
+
+#[test]
+fn block_and_attach_together_diagnoses_e186_even_when_attach_precedes_block() {
+    // Clause order in the annotation's argument list must not matter —
+    // `parse_convention_clauses` collects both flags before this check
+    // runs, so `attach = Cue, block` must diagnose identically to
+    // `block, attach = Cue`.
+    let src = "struct Cue {\n  speaker: string,\n}\n\n@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, attach = Cue, block)]\nfn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n";
+    let (_hir, _m, diags) = lower_src(src);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E186),
+        "clause order must not matter for E186: {diags:?}"
+    );
+}
+
+#[test]
+fn block_alone_never_diagnoses_e186() {
+    let src = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n";
+    let (_hir, _m, diags) = lower_src(src);
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E186),
+        "block with no attach clause must never raise E186: {diags:?}"
+    );
+}
+
+#[test]
+fn attach_alone_never_diagnoses_e186() {
+    let src = "struct Cue {\n  speaker: string,\n}\n\n@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, attach = Cue)]\nfn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n";
+    let (_hir, _m, diags) = lower_src(src);
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E186),
+        "attach with no block clause must never raise E186: {diags:?}"
+    );
+}
+
 #[test]
 fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
     // Issue #1848: a duplicate claiming pattern is provably unreachable

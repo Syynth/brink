@@ -1061,20 +1061,19 @@ fn push_non_callable_refusal(
 /// established that. Every such site the analyzer's `ufcs` pass *visited*
 /// carries a verdict (it is, by construction, UFCS-shaped); a project
 /// compiled through `brink-db` reaches the `None` arm below only when a call
-/// site exists that the `ufcs` pass never visited in the first place. Before
-/// issue #1774 that was true of every production caller (`ufcs::resolve`
-/// walks `visit::visit`'s block-tree only), so the arm was dead in
-/// production. #1774 changed that: a `VAR`/`CONST` decl default may now be a
-/// lambda literal, and its body is walked by `visit::visit` too — a decl
-/// default's own initializer is not (`ufcs::resolve` has no hand-recursion
-/// over `hir.variables`/`hir.constants` the way `coalesce::resolve` does),
-/// so a method call there is genuinely unvisited and reaches this refusal in
-/// production now. Still a safe hard refusal (`E144`), never a silent
-/// miscompile — see [`super::decls::GlobalLambdaCtx::tables`]'s doc for the
-/// follow-up that would close this. The other production route to this arm
-/// stays the callers that lower HIR directly without running analysis first
-/// (this crate's own tests/benches, `golden_i078.rs`) — see #1482's PR
-/// description for the miscompile this guards against.
+/// site exists that the `ufcs` pass never visited in the first place.
+/// Between issue #1774 (a `VAR`/`CONST` decl default may be a lambda
+/// literal) and #2096 (`ufcs::resolve` switched to
+/// `visit::visit_with_decl_initializers`, so it now visits a decl default's
+/// own initializer, not just its lambda body), that gap was real in
+/// production: a method call written directly inside a decl-default lambda
+/// body reached this refusal. #2096 closed it — every call `ufcs::resolve`
+/// walks now gets a verdict, the same as the block tree always did. The
+/// production route to this arm today stays the callers that lower HIR
+/// directly without running analysis first (this crate's own tests/benches,
+/// `golden_i078.rs`) — see #1482's PR description for the miscompile this
+/// guards against — never a project compiled through `brink-db`'s real
+/// analysis path.
 /// The shared E144 refusal: `name` resolves as method-call syntax that this
 /// UFCS lowering cannot turn into a real call, so refuse loudly rather than
 /// silently folding to `Null`. Two call sites reach this — [`lower_ufcs_call`]

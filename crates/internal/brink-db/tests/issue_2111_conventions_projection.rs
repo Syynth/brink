@@ -27,9 +27,15 @@ use brink_ir::{ConventionAttachField, ConventionAttachSchema, ConventionMode, Sc
 const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
     fn interior(place: content) {\n  return place;\n}\n";
 
-const BLOCK_CLAIMING_HANDLER: &str = "struct Cue {\n  speaker: string,\n}\n\
-    @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
-    fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n";
+// Issue #2264/`E186`: `block` and `attach = StructName` are now mutually
+// exclusive on one handler — this fixture previously combined them (the
+// exact silent-drop shape #2264 closed), which the new diagnostic now
+// rejects outright. Kept as a pure `block` (Wrap-mode) handler with no
+// `attach` clause; attach-mode + schema resolution is covered separately
+// by `attach_resolves_across_an_imported_struct_file` and its neighbors
+// below, none of which needed `block` for what they actually test.
+const BLOCK_CLAIMING_HANDLER: &str = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block)]\n\
+    fn cue(name: string, body: content) {\n  return name;\n}\n";
 
 fn opts_with_conventions(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
@@ -93,19 +99,13 @@ fn the_configured_modules_own_handlers_are_projected_in_order() {
     // declaration position (`cue` is declared second in the source above).
     assert_eq!(names, vec!["cue", "interior"], "{projection:?}");
     assert_eq!(projection.entries[0].mode, ConventionMode::Wrap);
-    // Issue #2111 finding 1: `Cue` is declared in this SAME file
-    // (`BLOCK_CLAIMING_HANDLER`), so it resolves to its full field list, not
-    // merely its name.
-    assert_eq!(
-        projection.entries[0].attach,
-        Some(ConventionAttachSchema::Resolved {
-            name: "Cue".to_string(),
-            fields: vec![ConventionAttachField {
-                name: "speaker".to_string(),
-                ty: SchemaTypeShape::Named("string".to_string()),
-            }],
-        })
-    );
+    // Issue #2264/`E186`: `block` (Wrap mode, what `cue` declares here) and
+    // `attach = StructName` are mutually exclusive on one handler now, so a
+    // Wrap-mode entry's own `attach` is always `None` — schema resolution
+    // for an `attach`-declaring handler is covered by
+    // `attach_resolves_across_an_imported_struct_file` and its neighbors
+    // below, none of which are Wrap mode.
+    assert_eq!(projection.entries[0].attach, None);
     assert_eq!(projection.entries[1].mode, ConventionMode::Attach);
     assert_eq!(projection.entries[1].attach, None);
 }
@@ -125,8 +125,8 @@ fn attach_resolves_across_an_imported_struct_file() {
     db.set_file(
         "conventions.brink",
         "use story::schema::Cue;\n\
-         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
-         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name, voiceover: false };\n}\n"
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name, voiceover: false };\n}\n"
             .to_owned(),
     );
 
@@ -147,6 +147,39 @@ fn attach_resolves_across_an_imported_struct_file() {
             ],
         }),
         "{projection:?}"
+    );
+}
+
+/// Issue #2111 finding 1 (review follow-up on PR #2931): `attach =
+/// StructName` must also resolve when the struct is declared in the
+/// conventions module's OWN file, not only through an `IMPORT`. Every other
+/// `Resolved` case in this suite reaches its struct via `use story::…`,
+/// which only proves the import-closure path; this proves the same-file
+/// path — the plain entry-file walk inside `conventions_projection_query` —
+/// independently.
+#[test]
+fn attach_resolves_against_a_struct_declared_in_the_conventions_module_itself() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_conventions("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        "struct Cue {\n  speaker: string,\n}\n\
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n"
+            .to_owned(),
+    );
+
+    let projection = db.conventions_projection();
+    assert_eq!(
+        projection.entries[0].attach,
+        Some(ConventionAttachSchema::Resolved {
+            name: "Cue".to_string(),
+            fields: vec![ConventionAttachField {
+                name: "speaker".to_string(),
+                ty: SchemaTypeShape::Named("string".to_string()),
+            }],
+        }),
+        "{projection:?} — Cue is declared in conventions.brink itself, not imported"
     );
 }
 
@@ -172,8 +205,8 @@ fn attach_resolves_transitively_through_a_two_hop_import_chain() {
     db.set_file(
         "conventions.brink",
         "use story::middle::Cue;\n\
-         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
-         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name, voiceover: false };\n}\n"
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name, voiceover: false };\n}\n"
             .to_owned(),
     );
 
@@ -215,8 +248,8 @@ fn a_cyclic_import_graph_terminates_and_still_resolves_attach() {
     db.set_file(
         "conventions.brink",
         "use story::schema::Cue;\n\
-         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
-         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n"
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n"
             .to_owned(),
     );
 
@@ -246,8 +279,8 @@ fn attach_naming_a_nonexistent_struct_is_unresolved_not_dropped() {
     db.set_analysis_options(opts_with_conventions("conventions.brink"));
     db.set_file(
         "conventions.brink",
-        "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Ghost)]\n\
-         fn cue(name: string, body: content): Ghost {\n  return Ghost { speaker: name };\n}\n"
+        "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Ghost)]\n\
+         fn cue(name: string): Ghost {\n  return Ghost { speaker: name };\n}\n"
             .to_owned(),
     );
 
@@ -273,8 +306,8 @@ fn editing_an_imported_struct_file_updates_the_projection() {
     db.set_file(
         "conventions.brink",
         "use story::schema::Cue;\n\
-         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
-         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n"
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n"
             .to_owned(),
     );
 
@@ -337,8 +370,8 @@ fn editing_a_file_outside_the_import_closure_never_reexecutes_the_projection() {
     db.set_file(
         "conventions.brink",
         "use story::schema::Cue;\n\
-         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, block, attach = Cue)]\n\
-         fn cue(name: string, body: content): Cue {\n  return Cue { speaker: name };\n}\n"
+         @[convention(claims = \"^(?<name>[A-Z]+)$\", order = 5, attach = Cue)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n"
             .to_owned(),
     );
     db.set_file(

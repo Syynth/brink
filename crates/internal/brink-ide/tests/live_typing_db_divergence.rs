@@ -290,3 +290,63 @@ fn e185_on_unannotated_temp_initializer_reaches_both_surfaces_under_strict_issue
         "E185 on an unannotated temp initializer under strict types, brink dialect",
     );
 }
+
+/// Issue #2083, off-db road: calling a fn-valued global `const` from a call
+/// site other than its own declaration must resolve cleanly through
+/// `IdeSession::analysis` (`IdeSnapshot::analyze`/`analyze_with_modules`
+/// under the hood) — the analysis road `@brink-lang/web`'s live squiggles
+/// actually run.
+///
+/// RCA (see `crates/internal/brink-analyzer/src/resolve.rs`,
+/// `resolve_function`'s "try variables" arm): the bug was never a `brink-db`
+/// incremental-resolution gap, despite the issue's own report pointing
+/// there — the same `E025` reproduces from a direct, `brink-db`-free call to
+/// `brink_analyzer::resolve`/`analyze()`. The call-site lookup searched only
+/// `SymbolKind::Variable`, never `SymbolKind::Constant`, so `var twice =
+/// double` already resolved before this fix while the identically-shaped
+/// `const` form never could. Fixed at the shared `brink-analyzer` layer, so
+/// this off-db road and `brink-db`'s own direct test
+/// (`crates/internal/brink-db/tests/issue_2083_fn_valued_const_global_call_site.rs`)
+/// share the one fix by construction — this test's job is to prove the
+/// off-db seam actually reaches it, not merely argue it does by shared code.
+#[test]
+fn issue_2083_const_bare_name_fn_value_call_site_reaches_both_surfaces() {
+    let src = "fn double(n: int): int {\n  return n * 2;\n}\n\nconst twice = double\n\n\
+               flow main() {\n  Result: {twice(21)} -> END\n}\n";
+    let (live, db) =
+        both_surfaces("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
+
+    assert!(
+        !has(&live, DiagnosticCode::E025),
+        "the off-db road (IdeSnapshot::analyze) must resolve a fn-valued \
+         CONST global's call site; live saw {:?}",
+        codes(&live)
+    );
+    assert!(
+        !has(&db, DiagnosticCode::E025),
+        "the db-direct road must resolve it too; db saw {:?}",
+        codes(&db)
+    );
+    assert_surfaces_agree(&live, &db, "issue #2083's fn-valued CONST global call site");
+}
+
+/// The lambda-literal sibling (#1774's decl-default form) — issue #2083
+/// named both spellings as reproducing identically.
+#[test]
+fn issue_2083_const_lambda_literal_fn_value_call_site_reaches_both_surfaces() {
+    let src = "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n";
+    let (live, db) =
+        both_surfaces("main.brink", src, Dialect::StrictInk).expect("session produced an analysis");
+
+    assert!(
+        !has(&live, DiagnosticCode::E025),
+        "the off-db road must resolve a lambda-literal-valued CONST global's \
+         call site; live saw {:?}",
+        codes(&live)
+    );
+    assert_surfaces_agree(
+        &live,
+        &db,
+        "issue #2083's lambda-literal-valued CONST global call site",
+    );
+}
