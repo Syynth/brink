@@ -32,7 +32,7 @@ use super::extensions;
 ///
 /// - **`Event::Start`** (a name with a body): recurse into it with this
 ///   same function, then splice its children directly into `elements`.
-///   This is [`skip_element`]'s replacement — `skip_element` discarded
+///   This is `skip_element`'s replacement — `skip_element` discarded
 ///   every byte of text nested inside an unrecognized element, which is
 ///   translator work with no second copy. Splicing keeps that text (and
 ///   any further-nested known/unknown elements, at any depth) while
@@ -101,7 +101,20 @@ pub fn read_inline_content(
                     // markup wrapping content brink still must not lose.
                     // Recurse on the wrapper's own end tag and splice its
                     // children in place (#1824); see the doc comment above.
-                    _ => elements.extend(read_inline_content(reader, &name)?),
+                    // Route recursed `Text` children through `push_text` so
+                    // adjacent text coalesces across the splice boundary
+                    // exactly as it does elsewhere in this function —
+                    // otherwise a wrapper sitting between two runs of text
+                    // yields two `Text` elements where the rest of this
+                    // function would have merged them into one.
+                    _ => {
+                        for child in read_inline_content(reader, &name)? {
+                            match child {
+                                InlineElement::Text(text) => push_text(&mut elements, &text),
+                                other => elements.push(other),
+                            }
+                        }
+                    }
                 }
             }
             Event::Empty(e) => {

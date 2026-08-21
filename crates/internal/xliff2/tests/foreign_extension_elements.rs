@@ -79,11 +79,11 @@ fn text_inside_a_single_unknown_wrapper_survives() {
 /// `Event::Empty` catch-all) and then more plain text.
 ///
 /// Every one of translator's text fragments — "Bonjour ", the CDATA
-/// reason, "le monde", and "!" — must reach `elements`. Adjacent `Text`
-/// nodes across a splice boundary are not expected to merge (matching
-/// `elements_to_parts`'s foreign-`<mrk>` precedent in #1821, which also
-/// leaves spliced-in text as separate `Literal` parts) — only nodes that
-/// were already adjacent *before* a wrapper started coalesce.
+/// reason, "le monde", and "!" — must reach `elements`. Adjacent
+/// character data coalesces across a splice boundary exactly as it does
+/// elsewhere in this function (#1824) — "Bonjour " stays its own node
+/// here only because a `CData` node never merges with a neighboring
+/// `Text` node, not because the wrapper boundary itself blocks merging.
 #[test]
 fn nested_depth_cdata_and_mixed_known_unknown_siblings_all_survive() {
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -176,6 +176,40 @@ fn unknown_empty_element_alone_is_ignored_without_error() {
         vec![InlineElement::Text("Bonjour le monde".to_owned())],
         "an unrecognized empty element must be ignored without error, and \
          must not split or drop the surrounding text"
+    );
+}
+
+/// Text immediately preceding a wrapper must coalesce with the wrapper's
+/// own leading text, exactly as if the wrapper were not there at all —
+/// pinning the fix that routes recursed `Text` children through
+/// `push_text` instead of splicing them in with a bare `extend` (#1824
+/// follow-up). Before that fix this produced two adjacent `Text` nodes
+/// (`"Bonjour "`, `"le monde"`), which flips
+/// `brink_intl::xliff_convert::inline_to_content`'s
+/// `ContentJson::Plain`-vs-`ContentJson::Template` decision downstream —
+/// see `tms_extension_wrapped_text_survives_the_real_import_path` in
+/// `brink-intl`'s `xliff_roundtrip.rs` for the end-to-end assertion.
+#[test]
+fn leading_text_coalesces_with_wrapper_first_child() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="2.0" srcLang="en" trgLang="fr"
+       xmlns="urn:oasis:names:tc:xliff:document:2.0"
+       xmlns:mq="urn:tms:memoq:extensions:1.0">
+  <file id="root">
+    <unit id="u1">
+      <segment state="translated">
+        <source>Hello world</source>
+        <target>Bonjour <mq:c id="c1">le monde</mq:c></target>
+      </segment>
+    </unit>
+  </file>
+</xliff>"#;
+
+    assert_eq!(
+        target_elements(xml).unwrap(),
+        vec![InlineElement::Text("Bonjour le monde".to_owned())],
+        "text immediately before an unknown wrapper must merge with the \
+         wrapper's own leading text into a single Text node"
     );
 }
 

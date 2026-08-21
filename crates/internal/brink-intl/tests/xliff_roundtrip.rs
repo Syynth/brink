@@ -1774,3 +1774,45 @@ fn tms_extension_wrapped_text_survives_the_real_import_path() {
          xliff_to_lines_json path, not vanish at the XML-reading boundary"
     );
 }
+
+/// The byte-identical translated string from the PR's own RED/GREEN diff:
+/// text immediately preceding an unknown TMS wrapper must coalesce with the
+/// wrapper's leading text into a *single* `InlineElement::Text`, so it
+/// imports as `ContentJson::Plain` — matching what the same string imports
+/// as when no TMS wrapper is present at all. Before the fix that routes
+/// recursed `Text` children through `push_text` (rather than splicing them
+/// in with a bare `extend`), this string produced two adjacent `Text`
+/// elements and `inline_to_content` — which only collapses to
+/// `ContentJson::Plain` when `elements.len() == 1` — imported it as
+/// `ContentJson::Template` instead, flipping `LineContent::Plain` to
+/// `LineContent::Template` in the compiled locale and, per
+/// `is_empty_content` (`xliff_convert.rs:189`), flipping whether the line
+/// registers as non-empty content.
+#[test]
+fn tms_wrapper_with_no_intervening_structure_imports_as_plain_content() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="2.0" srcLang="en" trgLang="fr"
+       xmlns="urn:oasis:names:tc:xliff:document:2.0"
+       xmlns:brink="urn:brink:xliff:extensions:1.0"
+       xmlns:mq="urn:tms:memoq:extensions:1.0">
+  <file id="root" brink:scope-id="0x01">
+    <unit id="0x01:0" brink:hash="aaaa">
+      <segment state="translated">
+        <source>Hello world</source>
+        <target>Bonjour <mq:c id="c1">le monde</mq:c></target>
+      </segment>
+    </unit>
+  </file>
+</xliff>"#;
+
+    let doc = xliff2::read::read_xliff(xml).expect("well-formed XLIFF must parse");
+    let recovered = xliff_to_lines_json(&doc).expect("import must not fail");
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Plain("Bonjour le monde".to_string())),
+        "text split only by an unknown wrapper's tag boundary — no CDATA, \
+         no other sibling — must still coalesce into one Text element and \
+         import as ContentJson::Plain, not ContentJson::Template"
+    );
+}

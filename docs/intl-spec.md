@@ -557,6 +557,8 @@ The two catch-alls resolved differently, because they face different XML shapes:
 - **`Event::Start`** (a name with a body) now recurses into the wrapper with `read_inline_content` itself and splices the resulting children directly into the parent's element list — the same "the wrapper is not brink content, but what it wraps is" reasoning #1821 applied to foreign `<mrk>`, just applied to an element name the reader has never heard of. This handles arbitrary nesting depth, CDATA, and known elements nested inside an unknown wrapper (a `<ph>` inside a memoQ `<mq:comment>` still decodes as `Ph`), because the recursive call still dispatches on every recognized name.
 - **`Event::Empty`** (a self-closing name) stays a no-op — deliberately, not by oversight. An empty element is, by XML's own grammar, incapable of carrying character data, so there is no text this arm could ever discard; it is the direct analog of the foreign `<sc>`/`<ec>`/`<sm>`/`<em>` "ignore" arms above, which rest on the identical premise.
 
+This is a knowing tradeoff, not a free lunch: a nested extension element can carry TMS *metadata* prose rather than translation — a memoQ `<mq:reason>` holding a QA note (`"Bonjour <mq:comment><mq:reason>QA flag text</mq:reason>le monde</mq:comment>"`) is indistinguishable, by name alone, from a nested element that genuinely wraps more translated text, and the reader cannot tell the two apart. #1824 accepts that over-recovery — occasionally splicing in TMS commentary as if it were content — in preference to the alternative, which is unrecoverable silent loss of real translator work whenever the guess goes the other way.
+
 ### XLIFF generation
 
 ```
