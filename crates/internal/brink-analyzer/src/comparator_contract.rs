@@ -371,10 +371,13 @@ struct ComparatorSite {
 /// `hir::visit::visit_with_decl_initializers` (the shared entry point
 /// `hir::visit.rs` built for exactly this class of gap, issue #1571)
 /// because `comparator_contract`'s own accumulator/signature don't fit that
-/// trait shape without a larger refactor out of scope for this bug-fix PR;
-/// #2096 (`ufcs::resolve`'s own copy of the same gap) raises the identical
-/// shared-visitor question for its own hand-rolled walker and is the
-/// nearest tracked follow-up.
+/// trait shape without a larger refactor out of scope for this bug-fix PR.
+/// Issue #2096 (`ufcs::resolve`'s own copy of the same gap) re-asked the
+/// shared-visitor question for its own shape and answered differently:
+/// `ufcs::resolve`'s `UfcsVisitor` was already `HirVisitor`-driven (unlike
+/// this pass's own hand-rolled `collect_*` walk), so it switched straight to
+/// `visit_with_decl_initializers` with no accumulator refactor needed — see
+/// that pass's own `resolve` doc.
 fn collect_sites(hir: &HirFile, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>) {
     collect_block(&hir.root_content, ctx, out);
     for knot in &hir.knots {
