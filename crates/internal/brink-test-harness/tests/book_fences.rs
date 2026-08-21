@@ -49,15 +49,27 @@
 //! example can never hang CI. A census assertion at the bottom keeps the
 //! extractor honest — if a refactor made the walker silently find nothing,
 //! the count trips.
+//!
+//! # Shared extraction machinery (issue #2021)
+//!
+//! The markdown-walk/fence-split/marker-parse machinery below (`collect_markdown`,
+//! `extract_fences`, `parse_markers`, `Fence`, `Markers`) now lives in
+//! `brink_test_harness::fence` — this file imports it rather than defining
+//! its own copy, so `tests/diagnostic_docs_fences.rs` (DD-1, the
+//! `docs/diagnostics/*.md` compile-check sibling this issue added) can reuse
+//! the identical extractor instead of a second hand-rolled one. This file's
+//! own `Kind`/`classify` fence-tag taxonomy stays local — it means something
+//! different here (BW-5's book taxonomy) than DD-1's diagnostics-doc
+//! taxonomy does for the same info string.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use brink_compiler::{AnalysisOptions, Dialect};
 use brink_runtime::{DotNetRng, Step, Story};
-use brink_source_tree::Walk;
+use brink_test_harness::fence::{Markers, collect_markdown, extract_fences};
 
 fn book_src_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -67,128 +79,6 @@ fn book_src_dir() -> PathBuf {
         .join("docs")
         .join("book")
         .join("src")
-}
-
-/// Recursively collect every `.md` file under `dir`, sorted by path for
-/// deterministic report order.
-///
-/// Routed through the shared [`Walk`] (issue #1433) — `brink-test-harness`
-/// already depends on `brink-source-tree` for corpus/bench case discovery,
-/// so there is no new dependency to justify here, unlike the crate-local
-/// parser-corpus walkers this issue left unconverted.
-fn collect_markdown(dir: &Path) -> Vec<PathBuf> {
-    Walk::new(dir)
-        .map(|entry| entry.unwrap_or_else(|e| panic!("walk {}: {e}", dir.display())))
-        .filter(|entry| entry.is_file() && entry.path().extension().is_some_and(|ext| ext == "md"))
-        .map(brink_source_tree::WalkEntry::into_path)
-        .collect()
-}
-
-/// Execution markers parsed from a `<!-- fence: … -->` comment.
-#[derive(Default)]
-struct Markers {
-    seed: Option<i32>,
-    /// 1-based choice picks, in order.
-    choices: Vec<usize>,
-    compile_only: bool,
-}
-
-/// One fenced code block: info string, body, source line, and any markers.
-struct Fence {
-    /// 1-based line number of the opening fence, for failure reports.
-    line: usize,
-    /// The info string (`ink`, `ink,error(E063)`, `text`, …), trimmed.
-    info: String,
-    body: String,
-    markers: Markers,
-}
-
-fn parse_markers(comment: &str, errors: &mut Vec<String>, at: &str) -> Markers {
-    let mut m = Markers::default();
-    let inner = comment
-        .trim()
-        .strip_prefix("<!-- fence:")
-        .and_then(|s| s.strip_suffix("-->"))
-        .unwrap_or_default();
-    for token in inner.split_whitespace() {
-        if token == "compile-only" {
-            m.compile_only = true;
-        } else if let Some(v) = token.strip_prefix("seed=") {
-            match v.parse::<i32>() {
-                Ok(n) => m.seed = Some(n),
-                Err(_) => errors.push(format!("{at}: bad seed marker `{token}`")),
-            }
-        } else if let Some(v) = token.strip_prefix("choices=") {
-            for pick in v.split(',') {
-                match pick.parse::<usize>() {
-                    Ok(n) if n >= 1 => m.choices.push(n),
-                    _ => errors.push(format!(
-                        "{at}: bad choices marker `{token}` (picks are 1-based integers)"
-                    )),
-                }
-            }
-        } else {
-            errors.push(format!("{at}: unknown fence marker `{token}`"));
-        }
-    }
-    m
-}
-
-/// Extract every fenced code block in document order. Handles fences opened
-/// at an indent (list-item fences): the opening line's leading whitespace is
-/// stripped from each body line, and the closing fence is a bare
-/// triple-backtick at any indent. A `<!-- fence: … -->` comment directly
-/// above the opening fence (one blank line allowed) attaches markers.
-fn extract_fences(markdown: &str, errors: &mut Vec<String>, file: &str) -> Vec<Fence> {
-    let lines: Vec<&str> = markdown.lines().collect();
-    let mut fences = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let trimmed = lines[i].trim_start();
-        let Some(info) = trimmed.strip_prefix("```") else {
-            i += 1;
-            continue;
-        };
-        let open_line = i + 1;
-        let indent = lines[i].len() - trimmed.len();
-        let mut body = String::new();
-        i += 1;
-        while i < lines.len() {
-            if lines[i].trim() == "```" {
-                i += 1;
-                break;
-            }
-            let stripped = if lines[i].len() >= indent && lines[i][..indent].trim().is_empty() {
-                &lines[i][indent..]
-            } else {
-                lines[i].trim_start()
-            };
-            body.push_str(stripped);
-            body.push('\n');
-            i += 1;
-        }
-        // Look upward for a marker comment: the line above the fence, or one
-        // above a single blank line.
-        let mut markers = Markers::default();
-        let mut probe = open_line.checked_sub(2);
-        if let Some(p) = probe
-            && lines[p].trim().is_empty()
-        {
-            probe = p.checked_sub(1);
-        }
-        if let Some(p) = probe
-            && lines[p].trim().starts_with("<!-- fence:")
-        {
-            markers = parse_markers(lines[p], errors, &format!("{file}:{}", p + 1));
-        }
-        fences.push(Fence {
-            line: open_line,
-            info: info.trim().to_owned(),
-            body,
-            markers,
-        });
-    }
-    fences
 }
 
 fn brink_opts() -> AnalysisOptions {
@@ -316,7 +206,7 @@ fn classify(info: &str) -> Kind {
 
 #[test]
 fn every_ink_fence_in_the_book_checks_out() {
-    let files = collect_markdown(&book_src_dir());
+    let files = collect_markdown(&book_src_dir()).expect("walk docs/book/src");
     assert!(!files.is_empty(), "no markdown files under docs/book/src");
 
     let mut errors: Vec<String> = Vec::new();
