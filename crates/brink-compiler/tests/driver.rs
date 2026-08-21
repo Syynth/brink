@@ -539,6 +539,24 @@ fn compile_path_native_bare_name_fn_valued_const_global_call_site_resolves() {
     );
 }
 
+/// The `var` sibling of the test above: `var twice = double` + `{twice(21)}`
+/// already resolved before #2083's fix (the call-site arm searched
+/// `SymbolKind::Variable`) — pinned end-to-end here so that "var already
+/// worked" stays a tested claim rather than a remembered one.
+#[test]
+fn compile_path_native_bare_name_fn_valued_var_global_call_site_resolves() {
+    let output = compile_and_run_native(
+        "bare-name-var-call-site",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\nvar twice = double\n\n\
+         flow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a bare-name fn-valued VAR global from flow main should \
+         keep working, got: {output:?}"
+    );
+}
+
 /// Call-vs-read parity (issue #2083's review follow-up, fixed by the
 /// locals-first reorder in `brink-analyzer::resolve::resolve_function`):
 /// with BOTH a fn-valued global `const twice` and a same-named local
