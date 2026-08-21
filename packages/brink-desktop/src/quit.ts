@@ -1,12 +1,17 @@
 /**
- * The await-the-final-save seam for app quit (#2370).
+ * The await-the-final-save seam for app quit (#2370) — and, since #2444,
+ * for Close Project's teardown too. `main.tsx`'s `closeProject` awaits this
+ * same function before `unmount()`, rather than standing up a second copy
+ * of the dispatch/redispatch discipline below: the two paths are
+ * structurally identical (tear down the open `StudioHandle`, guaranteeing
+ * the canonical write landed first), so one guarded seam serves both.
  *
  * Ruled 2026-08-07 (docs/decision-log.md, "Desktop close: no dirty prompt;
  * quit awaits the final save"): no dirty-close confirmation — autosave +
  * save-on-close make it dead UI. The one real safety piece is that quitting
- * the app must not race the in-flight canonical write: the window's
- * `onCloseRequested` handler (main.tsx) awaits this before the window is
- * actually destroyed.
+ * the app (or closing the project) must not race the in-flight canonical
+ * write: the window's `onCloseRequested` handler and `closeProject`
+ * (main.tsx) both await this before tearing down.
  *
  * `StudioApi.dispatch` (docs/studio-shell-spec.md §8.2) is fire-and-forget —
  * it reports whether a command was found, not a promise of its completion —
