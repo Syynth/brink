@@ -1044,6 +1044,16 @@ mod tests {
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
     }
 
+    /// [`check_assignments_all`]'s native-surface twin — [`build_native`]'s
+    /// output run through [`check_assignments`] rather than [`check`]. Only
+    /// the native surface has lambdas, so the lambda-frame regression test
+    /// below (issue #2906 BLOCKING review finding) needs this rather than
+    /// `check_assignments_all`.
+    fn check_assignments_all_native(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, _resolutions, inference) = build_native(src);
+        check_assignments(&[(FileId(0), &hir)], &index, &inference)
+    }
+
     #[test]
     fn clean_construction_produces_no_diagnostics() {
         let diags = check_all(
@@ -1541,6 +1551,77 @@ mod tests {
              EXTERNAL make_thing()\n\
              === main ===\n~ temp p = Point#{x: 0.0}\n~ p = make_thing()\n\
              ~ p.bogus = 1\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// BLOCKING review finding on issue #2906's own PR: `temp_init_shapes`
+    /// used to be excluded from [`FrameSnapshot`] on the claim that a
+    /// lambda-local shadow's imprecision here was under-detection-only,
+    /// never a false positive. It was a false positive — a lambda-local `~
+    /// temp p = …` of a *different* struct permanently clobbered the
+    /// *outer* `p`'s entry, surviving past the lambda's own frame, so the
+    /// outer `p.y = 1.0` (legal — `p` is an `Other`, which does declare
+    /// `y`) read the lambda's stale `Point` shape instead and false-fired
+    /// `E185` (`Point` has no field `y`). Reproduced against PR head
+    /// 98d2ad24 verbatim from the review finding. Native surface only —
+    /// lambdas don't exist on the ink-compat surface.
+    #[test]
+    fn dotted_assign_target_outer_temp_survives_a_lambda_local_shadow_of_the_same_name() {
+        let diags = check_assignments_all_native(
+            "struct Point { x: float }\n\
+             struct Other { y: float }\n\
+             fn main() {\n\
+             \x20 let p = Other { y: 0.0 };\n\
+             \x20 let f = ||: int { let p = Point { x: 0.0 }; 0 };\n\
+             \x20 p.y = 1.0;\n\
+             }\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// BLOCKING review finding on issue #2906's own PR: `record_ref_param_writes`
+    /// only ever folded a `ref`-out call-site rebind into `record_write`/
+    /// `record_fn_write` (the effect-row summary), never into
+    /// `reassigned_temps` — so `resolve_pending_field_assign_mismatches`
+    /// stayed blind to a `ref`-out param rebinding the caller's local to an
+    /// entirely different, unresolvable-shaped value. `ref`-out params are
+    /// idiomatic ink, not an exotic shape; a callee that always rebinds its
+    /// `ref` param is common (`reset`, `swap`, …). Reproduced against PR
+    /// head 98d2ad24 verbatim from the review finding: `p` is a `Point` at
+    /// its own declaration, but `reset(ref p)` rebinds it to an `Other`
+    /// before the dotted write, so `p.bogus = 1` must stay silent exactly
+    /// like the bare-reassignment carve-out above already does.
+    #[test]
+    fn dotted_assign_target_stays_silent_after_a_ref_out_param_rebind() {
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             STRUCT Other = #{y: float}\n\
+             === function reset(ref q) ===\n~ q = Other#{y: 1.0}\n~ return\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ reset(ref p)\n\
+             ~ p.bogus = 1\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// BLOCKING review finding (smaller) on issue #2906's own PR:
+    /// `register_temp_init_shape` used to unconditionally clear
+    /// `reassigned_temps` on every same-named `TempDecl` redeclaration —
+    /// erasing reassignment history a fact staged *earlier* (between the
+    /// reassignment and the redeclaration) depended on, since
+    /// `pending_inferred_field_assign_mismatches` is resolved once, post-walk.
+    /// Reproduced against PR head 98d2ad24 verbatim from the review finding:
+    /// `p` is reassigned to an unresolvable `make_thing()` result before the
+    /// dotted write (already covered by the "reassigned to an unknown
+    /// shape" carve-out above), then redeclared again afterward — the
+    /// redeclaration must not retroactively un-withdraw the staged fact.
+    #[test]
+    fn dotted_assign_target_reassignment_history_survives_a_later_redeclaration_of_the_same_name() {
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             EXTERNAL make_thing()\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p = make_thing()\n\
+             ~ p.bogus = 1\n~ temp p = Point#{x: 0.0}\n-> DONE\n",
         );
         assert!(diags.is_empty(), "{diags:?}");
     }

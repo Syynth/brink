@@ -647,27 +647,27 @@ struct InferPass<'a, 'b> {
     /// derived from the initializer instead of a written ascription).
     /// [`Self::check_declared_field_assign_target`]'s Temp arm consults
     /// this only as a fallback, after `annotated` — an explicit ascription
-    /// always wins. Re-keyed (inserted or removed) every time a `TempDecl`
+    /// always wins. Re-keyed (inserted) every time an unannotated `TempDecl`
     /// for that name is walked, so a same-named redeclaration always
-    /// reflects only its own initializer, never a stale prior declaration's.
+    /// reflects its own, freshest initializer shape.
     ///
-    /// Deliberately flat/cumulative (by bare name), not part of
-    /// [`FrameSnapshot`] — unlike `annotated`, a lambda-local shadow of an
-    /// enclosing temp's name can transiently clobber or clear this map's
-    /// entry for the outer name while its own frame is active. The only
-    /// failure mode that creates is under-detection (a legitimate outer
-    /// fact silently not recorded), never a false positive — "Unknown never
-    /// disagrees" is this module's load-bearing conservative-silence
-    /// posture throughout, so trading precision for simplicity here matches
-    /// it rather than fighting it. See `reassigned_temps` and
-    /// `pending_inferred_field_assign_mismatches` below, which share this
-    /// same posture for the identical reason.
+    /// BLOCKING review finding on issue #2906's own PR: this used to be
+    /// deliberately flat/cumulative, excluded from [`FrameSnapshot`] — the
+    /// doc here claimed a lambda-local shadow's imprecision was
+    /// under-detection-only, never a false positive. That claim was wrong: a
+    /// lambda-local `~ temp p = …` permanently clobbers an *outer* `p`'s
+    /// entry with nothing to undo it once the lambda's frame closes, so a
+    /// later outer `p.field = …` reads the lambda's stale shape — a false
+    /// positive/negative on a receiver the lambda never touches. Now part of
+    /// [`FrameSnapshot`], restored on lambda-frame close exactly like
+    /// `annotated` already is, for the identical reason.
     temp_init_shapes: BTreeMap<String, Ty>,
-    /// Issue #2906: every Temp bare-name (`~ name = expr`, any `AssignOp`)
-    /// reassigned anywhere in this walk — the conservative gate
-    /// `resolve_pending_field_assign_mismatches` withdraws a
-    /// `temp_init_shapes`-sourced fact for once anything in scope could
-    /// have moved the local off its initializer's shape.
+    /// Issue #2906: every Temp bare-name (`~ name = expr`, any `AssignOp`,
+    /// **or a `ref`-out call-site rebind** — see
+    /// [`Self::record_ref_param_writes`]) reassigned anywhere in this walk —
+    /// the conservative gate `resolve_pending_field_assign_mismatches`
+    /// withdraws a `temp_init_shapes`-sourced fact for once anything in
+    /// scope could have moved the local off its initializer's shape.
     ///
     /// This has to be tracked explicitly rather than read back from
     /// `self.locals`' own final type: `Ty::unify`'s identity rule
@@ -682,9 +682,18 @@ struct InferPass<'a, 'b> {
     /// set catches both cases uniformly with one mechanism rather than
     /// relying on two.
     ///
-    /// Deliberately flat/cumulative for the same reason `temp_init_shapes`
-    /// is (see its own doc) — a false member only ever *withdraws* a fact
-    /// that would otherwise have fired, never fabricates one.
+    /// Now part of [`FrameSnapshot`] (see `temp_init_shapes`'s own doc for
+    /// why), restored on lambda-frame close alongside it. Also no longer
+    /// cleared by a same-named `TempDecl` redeclaration (a second BLOCKING
+    /// review finding): `register_temp_init_shape` used to unconditionally
+    /// `.remove()` a name's entry here on every redeclaration, which could
+    /// erase reassignment history a still-*pending* fact staged between the
+    /// reassignment and the redeclaration depended on — dropped rather than
+    /// fixed with a resolve-at-redeclaration-point, per the finding's own
+    /// "over-conservative but sound" alternative: once a name has been
+    /// reassigned to something untrustworthy anywhere in this walk, every
+    /// `temp_init_shapes` fact for that bare name — past or future
+    /// redeclaration alike — stays conservatively withdrawn.
     reassigned_temps: BTreeSet<String>,
     /// Issue #2906: `field_assign_mismatches` facts whose root type came
     /// from `temp_init_shapes` rather than an explicit annotation/global —
@@ -846,6 +855,23 @@ struct FrameSnapshot {
     locals: BTreeMap<String, Ty>,
     annotated: BTreeMap<String, Ty>,
     local_fn_origins: BTreeMap<String, LocalFnOrigins>,
+    /// BLOCKING review finding on issue #2906's own PR: these two used to be
+    /// deliberately excluded here as "cumulative/flat, like
+    /// `lambda_annotation_mismatches`" — but unlike that field, a lambda-local
+    /// shadow of an outer `~ temp` (`let p = Other {…}; let f = ||: int { let
+    /// p = Point {…}; 0 }; p.y = 1.0;`) permanently clobbers the outer `p`'s
+    /// entry with the lambda's own, with nothing to undo it once the lambda's
+    /// frame closes — a false positive (or false negative) on the *outer*
+    /// `p`, not the conservative-only "under-detection" the old doc claimed
+    /// was the only failure mode. `annotated` is frame-scoped for exactly
+    /// this same shadowing hazard; these now are too. See
+    /// `InferPass::infer_lambda`'s own call to
+    /// `resolve_lambda_pending_field_assign_mismatches` for the companion
+    /// half of this fix — the facts staged *during* a lambda's own frame
+    /// must be resolved against the lambda's own reassignment history before
+    /// that history is rolled back here.
+    temp_init_shapes: BTreeMap<String, Ty>,
+    reassigned_temps: BTreeSet<String>,
 }
 
 /// Fork A (issue #1726): what one Temp local can hold, summarized over every
@@ -1401,13 +1427,24 @@ impl InferPass<'_, '_> {
     /// checked first by `check_declared_field_assign_target`, so there is
     /// nothing for this fallback to usefully hold. Also clears (rather than
     /// leaving stale) whenever `ty` is not `Ty::Struct(_)` — every branch
-    /// re-keys both `temp_init_shapes` and `reassigned_temps` for this exact
-    /// name unconditionally, so a same-named redeclaration (`~ temp p = …`
-    /// appearing twice in the same scope) always reflects only its own,
-    /// freshest initializer and never inherits an earlier declaration's
-    /// shape or reassignment history.
+    /// re-keys `temp_init_shapes` for this exact name unconditionally, so a
+    /// same-named redeclaration (`~ temp p = …` appearing twice in the same
+    /// scope) always reflects only its own, freshest initializer shape.
+    ///
+    /// BLOCKING review finding on issue #2906's own PR: this used to also
+    /// unconditionally `self.reassigned_temps.remove(&t.name.text)` here —
+    /// but `pending_inferred_field_assign_mismatches` is resolved once,
+    /// post-walk, so a *later* redeclaration erasing the reassignment
+    /// history a fact staged *earlier* (between the reassignment and this
+    /// redeclaration) depended on retroactively un-withdraws that fact.
+    /// Dropped rather than patched with a resolve-at-redeclaration-point,
+    /// per the finding's own sound-but-conservative alternative: once a bare
+    /// name has been reassigned to something untrustworthy anywhere in this
+    /// walk, every `temp_init_shapes` fact for it — past or future
+    /// redeclaration alike — stays withdrawn. `reassigned_temps` is only
+    /// ever cleared now by a lambda-frame restore (see `FrameSnapshot`'s
+    /// doc), never by a same-scope redeclaration.
     fn register_temp_init_shape(&mut self, t: &brink_ir::TempDecl, ty: &Ty) {
-        self.reassigned_temps.remove(&t.name.text);
         if t.annotation.is_some() {
             self.temp_init_shapes.remove(&t.name.text);
             return;
@@ -1460,7 +1497,38 @@ impl InferPass<'_, '_> {
     /// identical "resolve once every write is known" shape for the sibling
     /// `typed_assign_mismatches` fact.
     fn resolve_pending_field_assign_mismatches(&mut self) {
-        for fact in std::mem::take(&mut self.pending_inferred_field_assign_mismatches) {
+        self.resolve_pending_field_assign_mismatches_from(0);
+    }
+
+    /// The frame-scoped half of the fix for a BLOCKING review finding on
+    /// issue #2906's own PR: `temp_init_shapes`/`reassigned_temps` are now
+    /// part of [`FrameSnapshot`], restored (rolled back to the enclosing
+    /// frame's state) when a lambda's own body-block frame closes — but
+    /// `pending_inferred_field_assign_mismatches` is deliberately *not*
+    /// frame-scoped (facts a nested lambda stages must still survive into
+    /// the enclosing body's own result, same as `lambda_annotation_mismatches`).
+    /// That split means a fact staged *during* the lambda's own frame must be
+    /// resolved against the lambda's own `reassigned_temps` — which is about
+    /// to be rolled back — before [`InferPass::restore_frame`] runs, or the
+    /// lambda's own reassignment history is lost to it forever (silently
+    /// under-withdrawing, or worse, over-reporting, depending on what the
+    /// enclosing frame's `reassigned_temps` happened to hold instead).
+    ///
+    /// `mark` is the length of `pending_inferred_field_assign_mismatches`
+    /// captured right after [`InferPass::frame_snapshot`] was taken, i.e.
+    /// before this lambda's own body walk pushed anything — so only the
+    /// facts *this* frame staged are drained and resolved here, via
+    /// [`Vec::split_off`]; every fact staged before the lambda opened (by the
+    /// enclosing frame, or by an earlier sibling lambda) is left untouched,
+    /// to be resolved later — by an enclosing lambda's own call to this
+    /// method, or by [`Self::resolve_pending_field_assign_mismatches`] at
+    /// [`Self::finish_walk`] — against the *whole* walk's eventual
+    /// reassignment history, exactly as before this fix.
+    fn resolve_pending_field_assign_mismatches_from(&mut self, mark: usize) {
+        let facts = self
+            .pending_inferred_field_assign_mismatches
+            .split_off(mark.min(self.pending_inferred_field_assign_mismatches.len()));
+        for fact in facts {
             if self.reassigned_temps.contains(&fact.root) {
                 continue;
             }
@@ -1962,6 +2030,18 @@ impl InferPass<'_, '_> {
                 let root = ref_arg_root(arg);
                 self.record_write(root);
                 self.record_fn_write(root, None);
+                // Issue #2906 (BLOCKING review finding): a `ref`-out param
+                // rebind of the caller's local is just as much a
+                // reassignment as a bare `~ name = expr` is — the callee can
+                // rebind it to a value of any shape — but `reassigned_temps`
+                // only ever saw the latter, since this call site never
+                // walks `Stmt::Assignment`'s own `record_bare_reassignment`
+                // call. `record_bare_reassignment` already carries the
+                // right guard (Temp-only, single-segment path) for exactly
+                // this purpose; `root` here is that same shape (`ref_arg_root`
+                // unwraps down to a bare `Expr::Path`), so it is reused
+                // as-is rather than duplicated.
+                self.record_bare_reassignment(root);
             }
         }
     }
@@ -2688,14 +2768,16 @@ impl InferPass<'_, '_> {
             direct_call_arg_mismatches: _,
             typed_assign_mismatches: _,
             field_assign_mismatches: _,
-            // Issue #2906: deliberately cumulative/flat (by bare name), not
-            // frame-scoped — see the field's own doc for why a lambda-local
-            // shadow's imprecision here is an acceptable, conservative-only
-            // failure mode.
-            temp_init_shapes: _,
-            reassigned_temps: _,
+            // Issue #2906 (BLOCKING review finding): frame-scoped, restored
+            // on lambda-frame close — see the fields' own docs.
+            temp_init_shapes,
+            reassigned_temps,
             // Drained (never snapshotted) once per whole-body walk by
             // `resolve_pending_field_assign_mismatches` — see its own doc.
+            // A lambda's own *frame-local* slice is drained early instead,
+            // by `resolve_lambda_pending_field_assign_mismatches` — see
+            // `infer_lambda`'s call to it, right before this snapshot is
+            // restored.
             pending_inferred_field_assign_mismatches: _,
             // Deliberately cumulative, not frame-scoped (issue #1994): a
             // mismatch a nested lambda's own annotation-precedence overlay
@@ -2733,6 +2815,8 @@ impl InferPass<'_, '_> {
             locals: locals.clone(),
             annotated: annotated.clone(),
             local_fn_origins: local_fn_origins.clone(),
+            temp_init_shapes: temp_init_shapes.clone(),
+            reassigned_temps: reassigned_temps.clone(),
         }
     }
 
@@ -2748,12 +2832,16 @@ impl InferPass<'_, '_> {
             locals,
             annotated,
             local_fn_origins,
+            temp_init_shapes,
+            reassigned_temps,
         } = snapshot;
         self.return_ty = return_ty;
         self.has_value_return = has_value_return;
         self.locals = locals;
         self.annotated = annotated;
         self.local_fn_origins = local_fn_origins;
+        self.temp_init_shapes = temp_init_shapes;
+        self.reassigned_temps = reassigned_temps;
     }
 
     /// `|x| …` — a lambda (issue #1685) is fn-colored always, so its type is
@@ -3018,6 +3106,10 @@ impl InferPass<'_, '_> {
                 // future field can silently fall off of — see
                 // `FrameSnapshot`'s doc.
                 let snapshot = self.frame_snapshot();
+                // Issue #2906 (BLOCKING review finding): the mark this
+                // lambda's own frame-local pending facts are drained from —
+                // see `resolve_pending_field_assign_mismatches_from`'s doc.
+                let pending_field_assign_mark = self.pending_inferred_field_assign_mismatches.len();
                 // #1910: reset `return_ty`/`has_value_return` to a fresh
                 // baseline for the lambda's own frame, mirroring `new_pass`'s
                 // fresh start for a top-level def — without this, an
@@ -3114,6 +3206,12 @@ impl InferPass<'_, '_> {
                         slot_label: format!("lambda temp `{name}`"),
                     });
                 }
+                // Issue #2906 (BLOCKING review finding): resolve this
+                // lambda's own staged facts against its own reassignment
+                // history *before* `restore_frame` rolls `reassigned_temps`
+                // back to the enclosing frame's — see
+                // `resolve_pending_field_assign_mismatches_from`'s doc.
+                self.resolve_pending_field_assign_mismatches_from(pending_field_assign_mark);
                 self.restore_frame(snapshot);
                 (ty, narrowed)
             }
