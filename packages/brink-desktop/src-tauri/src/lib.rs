@@ -1009,6 +1009,30 @@ pub fn run() -> tauri::Result<()> {
             if let tauri::RunEvent::Opened { urls } = &event {
                 handle_opened(app_handle, urls);
             }
+            // macOS Dock "Quit" (right-click the running app's Dock icon, or
+            // Dock-icon Cmd-Q) — and any other OS-level termination request —
+            // reaches here as `RunEvent::ExitRequested`, a THIRD quit surface
+            // distinct from both `on_menu_event`'s "quit" arm (app-menu ⌘Q)
+            // and `WindowEvent::CloseRequested` (red-button close). Neither
+            // of those two guarded paths sees this one (#2400): left
+            // unhandled, Dock Quit would terminate the process immediately,
+            // bypassing the awaited final `saveAll` entirely.
+            //
+            // `prevent_exit()` halts THIS termination attempt; emitting the
+            // identical `menu:quit` event the app-menu Quit item already
+            // forwards (see `on_menu_event` above) funnels Dock Quit through
+            // the exact same webview-side guard (`handleQuitRequested` in
+            // `main.tsx`) rather than standing up a second copy of that
+            // logic here. Once the guard resolves, `handleQuitRequested`
+            // itself calls `getCurrentWindow().destroy()` — the same call
+            // the already-shipped menu-Quit and window-close paths make —
+            // which is what actually ends the process; that destroy does
+            // not re-enter this arm, since the original OS-level exit
+            // request already got its answer via `prevent_exit()`.
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                api.prevent_exit();
+                let _ = app_handle.emit("menu:quit", ());
+            }
             let _ = (app_handle, &event);
         });
     Ok(())

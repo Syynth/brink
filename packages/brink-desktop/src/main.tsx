@@ -13,13 +13,17 @@
  * `StudioHandle`.
  *
  * App quit (#2370) is separate from Close Project: the window's
- * `onCloseRequested` hook and the app-menu Quit item (`menu:quit`, routed
+ * `onCloseRequested` hook, the app-menu Quit item (`menu:quit`, routed
  * the same way as open/close-project rather than through
- * `PredefinedMenuItem::quit`) both funnel into `handleQuitRequested`, which
- * clears the autosave ticker then awaits the final `saveAll` (capped)
- * before the window is destroyed — the third teardown path alongside
- * `closeProject`'s explicit-close and reopen-via-`openProject` clears
- * (#2517; see `autosaveTimer`'s doc comment).
+ * `PredefinedMenuItem::quit`), AND macOS Dock Quit / Dock-icon Cmd-Q — the
+ * latter reaching src-tauri as `RunEvent::ExitRequested`, which has its own
+ * `api.prevent_exit()` + re-emit-as-`menu:quit` handler in `run()` (#2400)
+ * so it funnels through this exact same guarded path rather than
+ * bypassing it — all three funnel into `handleQuitRequested`, which clears
+ * the autosave ticker then awaits the final `saveAll` (capped) before the
+ * window is destroyed — the third teardown path alongside `closeProject`'s
+ * explicit-close and reopen-via-`openProject` clears (#2517; see
+ * `autosaveTimer`'s doc comment).
  *
  * File associations (D3, #2393) are a third way a project opens, bundled
  * `.app` only: double-clicking a `.ink`/`.brink` file reaches `handleFileOpen`
@@ -171,8 +175,10 @@ export async function openProject(root: string): Promise<void> {
   }
 
   // Tear down any previous project only after the new one's files loaded,
-  // so a cancelled or failed open never leaves a blank window.
-  closeProject();
+  // so a cancelled or failed open never leaves a blank window. Awaited
+  // (#2444) — closeProject's guarded save must land before the new
+  // project's files are mounted over it.
+  await closeProject();
   currentRoot = root;
 
   const el = appRoot();
@@ -290,14 +296,28 @@ async function openRecent(path: string): Promise<void> {
 
 /**
  * Unmount the current project and restore the landing screen. Before the
- * unmount, a best-effort canonical save of anything dirty (the unmount's
- * own egress flush only feeds the RING under the overlay contract — the
- * ring protects the work, but close should leave canonical files current
- * too). Ruled 2026-08-07 (docs/decision-log.md, "Desktop close: no dirty
- * prompt; quit awaits the final save"): no dirty-state close confirmation
- * prompt — dead UI, not implemented.
+ * unmount, awaits a canonical save of anything dirty (the unmount's own
+ * egress flush only feeds the RING under the overlay contract — the ring
+ * protects the work, but close should leave canonical files current too).
+ * Ruled 2026-08-07 (docs/decision-log.md, "Desktop close: no dirty prompt;
+ * quit awaits the final save"): no dirty-state close confirmation prompt —
+ * dead UI, not implemented.
  *
- * Clearing `autosaveTimer` here — and `openProject` always calling this
+ * The save itself reuses `awaitSaveAllBeforeQuit` (quit.ts) — the exact
+ * same guarded, unconditional-dispatch, redispatch-until-drained-or-capped
+ * seam `handleQuitRequested` awaits below — rather than a second copy of
+ * that logic (#2444). Before this fix, Close Project's flush was a single
+ * `dispatch("file.saveAll")`, fire-and-forget (never awaited) and gated on
+ * `getDirtyFiles().length > 0`: structurally the same gap #2434/#2437 fixed
+ * for quit, on this sibling teardown path. The gate was wrong for the same
+ * reason it was wrong there — `getDirtyFiles()` only reflects the 500ms
+ * debounce-recorded dirty set, so a keystroke made just before Close
+ * Project could see an empty dirty set and skip the save entirely,
+ * dropping the edit — and never awaiting meant `current.unmount()` could
+ * run (and the studio tear down) before that single dispatch's write ever
+ * landed.
+ *
+ * Clearing `autosaveTimer` here — and `openProject` always awaiting this
  * before arming a fresh one — is the entire reason a reopened project never
  * ends up with two autosave tickers running at once. That "no-duplicate-
  * interval" property is pinned by `__tests__/autosave-reopen.test.ts`
@@ -306,15 +326,13 @@ async function openRecent(path: string): Promise<void> {
  * Exported (only) so that test can call it directly — see `openProject`'s
  * export comment.
  */
-export function closeProject(): void {
+export async function closeProject(): Promise<void> {
   if (current === null) return;
   if (autosaveTimer !== null) {
     clearInterval(autosaveTimer);
     autosaveTimer = null;
   }
-  if (current.api.getDirtyFiles().length > 0) {
-    current.api.dispatch("file.saveAll");
-  }
+  await awaitSaveAllBeforeQuit(current.api);
   current.unmount();
   current = null;
   currentRoot = null;
@@ -377,6 +395,25 @@ async function handleExportInkb(): Promise<void> {
  * enough in practice. Exported (only) so
  * `__tests__/autosave-quit.test.ts` can drive it directly, same as
  * `openProject`/`closeProject` for `__tests__/autosave-reopen.test.ts`.
+ *
+ * `getCurrentWindow().destroy()` is wrapped in a `try`/`catch` (#2401): this
+ * runs AFTER `onCloseRequested` has already called `event.preventDefault()`
+ * (or, for Dock Quit / `menu:quit`, after the Rust side has already told
+ * the OS "don't exit yet" via `ExitRequestApi::prevent_exit()`), so an
+ * unhandled rejection here — an IPC failure, a permission denial — would
+ * leave the window closable only via Force Quit: the app already told the
+ * OS not to close it, the promise that was supposed to actually close it
+ * failed silently, and nothing else in this file ever retries. A caught
+ * failure re-arms `autosaveTimer` (cleared above, and otherwise never
+ * re-armed — the narrower case #2401's own tracking comment records) so
+ * autosave does not stay silently dead for the rest of the session, and
+ * surfaces the failure through the studio's notification surface so the
+ * author sees the app didn't quit rather than assuming it's about to. This
+ * does not make `destroy()` itself succeed — only a Force Quit (or a later,
+ * successful quit attempt) can end the process once it's rejected — but it
+ * keeps the app in a working, save-capable state instead of a silently
+ * degraded one, and a subsequent ⌘Q / red-button close / Dock Quit calls
+ * this same function again rather than the app being permanently wedged.
  */
 export async function handleQuitRequested(): Promise<void> {
   if (current !== null) {
@@ -386,7 +423,24 @@ export async function handleQuitRequested(): Promise<void> {
     }
     await awaitSaveAllBeforeQuit(current.api);
   }
-  await getCurrentWindow().destroy();
+  try {
+    await getCurrentWindow().destroy();
+  } catch (e: unknown) {
+    console.error("[brink-desktop] quit failed: window destroy() rejected", e);
+    if (current !== null) {
+      if (autosaveTimer === null) {
+        const api = current.api;
+        autosaveTimer = setInterval(() => {
+          if (api.getDirtyFiles().length > 0) api.dispatch("file.saveAll");
+        }, AUTOSAVE_MS);
+      }
+      current.api.notify({
+        severity: "error",
+        source: "quit",
+        message: `Quit failed to close the window (${e instanceof Error ? e.message : String(e)}). Your work has been saved — try quitting again.`,
+      });
+    }
+  }
 }
 
 /**
@@ -479,7 +533,7 @@ void listen<string[]>("shell:file-open", (event) => {
   });
 
 void listen("menu:open-project", () => void chooseAndOpen());
-void listen("menu:close-project", () => closeProject());
+void listen("menu:close-project", () => void closeProject());
 void listen("menu:export-inkb", () => void handleExportInkb());
 void listen("menu:export-xliff", () => void handleExportXliff());
 // File → Open Recent (#2394): src-tauri emits the chosen path as the event

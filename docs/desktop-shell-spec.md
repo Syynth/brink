@@ -1082,6 +1082,38 @@ the same overall ~3s cap (#2434, `docs/decision-log.md`) — a path left
 dirty by a mid-write edit (#2426/#2431) is retried rather than left to
 burn the whole cap unsaved.
 
+**macOS Dock Quit funnels through the identical path (#2400).** Right-
+clicking the running app's Dock icon and choosing Quit — or Dock-icon
+Cmd-Q — is a distinct OS-level quit surface from both the app-menu Quit
+item above and the window's `CloseRequested`: it reaches `src-tauri` as
+`RunEvent::ExitRequested`, which neither of those two arms sees. `run()`'s
+event closure handles it directly: `ExitRequestApi::prevent_exit()` halts
+the OS-initiated termination, and the same `menu:quit` event the app-menu
+item forwards is re-emitted to the webview — funneling Dock Quit through
+`handleQuitRequested` rather than a second, parallel guard. Left
+unhandled, Dock Quit terminated the process immediately, bypassing the
+awaited final `saveAll` entirely (unrecoverable loss of unsaved work).
+
+**Close Project carries the same redispatch discipline as quit (#2444).**
+`closeProject` (`main.tsx`) tears down the open project on an explicit
+Close, on reopen (`openProject` always calls it first), and on the D3
+file-association "open a new project while one is already open" path. It
+now awaits `awaitSaveAllBeforeQuit` — the identical seam `handleQuitRequested`
+uses, unconditional dispatch plus redispatch-until-drained-or-capped — in
+place of the single, gated, fire-and-forget `dispatch("file.saveAll")` it
+used before: that single dispatch could be skipped entirely if the 500ms
+debounce hadn't yet recorded a just-made edit as dirty, and even when it
+fired, `current.unmount()` ran immediately after without ever awaiting the
+write landing.
+
+`handleQuitRequested`'s own `getCurrentWindow().destroy()` call is wrapped
+in a `try`/`catch` (#2401): it runs after the close/exit request has
+already been prevented on the native side, so an unhandled rejection there
+previously left the window closable only via Force Quit. A caught failure
+re-arms the autosave ticker (otherwise left permanently disarmed) and
+notifies the author that quit failed, rather than leaving the app silently
+wedged.
+
 **Decision: rebuild-on-change menu, not a dynamic submenu (#2394).** The
 File → Open Recent submenu is regenerated in full — the whole native `Menu`
 is rebuilt from the just-persisted `recents.json` list and installed with
