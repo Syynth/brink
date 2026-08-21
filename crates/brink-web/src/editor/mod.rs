@@ -4671,8 +4671,12 @@ mod tests {
         );
     }
 
-    /// Issue #2320 (option (c) — see the PR body for why this route over
-    /// threading a real `native_root` through): a well-formed, path-shaped
+    /// Issue #2320's `brink-web` half. `EditorSession` never declares a
+    /// `native_root` — its files are keyed by already tree-relative virtual
+    /// paths with no OS-filesystem anchor — so the cwd-resolution half of
+    /// the issue cannot bite here, and threading a real root through (the
+    /// LSP's shape) is not the fix for this surface. What CAN bite is the
+    /// silent-swallow half: a well-formed, path-shaped
     /// `[project] conventions` pointer that names no real file in the
     /// project (a typo'd/moved/deleted target) must reach the wasm caller
     /// as a real `E169` diagnostic — not silently vanish. Before this fix,

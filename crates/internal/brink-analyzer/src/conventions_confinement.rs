@@ -136,8 +136,12 @@ pub fn is_path_shaped_conventions_pointer(pointer: &str) -> bool {
 /// no-root branch (return the path unchanged) is exactly what skipping it
 /// here reproduces. `brink-lsp`'s `analysis_loop` is the one production
 /// caller of `analyze_with_modules` that *does* declare a native root
-/// (its files are keyed by absolute OS path) — this function's parity with
-/// the db road is unverified for that caller and is not this issue's scope.
+/// (its files are keyed by absolute OS path) — for a *relative* pointer,
+/// this function's parity with the db road on that shape is pinned by
+/// `brink-db`'s `off_db_road_agrees_with_native_root_and_a_nested_lsp_cwd`
+/// (issue #2320); for an *absolute* pointer the two roads still drift (the
+/// db road strips it root-relative, this road mints from the absolute
+/// path verbatim) — tracked on issue #2320.
 fn native_module_path(relative_path: &str) -> String {
     native_module_path_in(RESERVED_ROOTS, relative_path)
 }
@@ -316,8 +320,12 @@ pub fn conventions_module_diagnostics(
 
 /// Diagnose every claiming handler declared in `hir` when the project's
 /// `[project] conventions` pointer is well-formed (path-shaped) but
-/// resolves to no real file in the project — a typo'd, moved, or deleted
-/// target (issue #2320).
+/// resolves to no real file in the project (issue #2320) — a typo'd,
+/// moved, or deleted target, or a pointer whose minted module does not
+/// match any file's real module because the `brink.toml` declaring it was
+/// discovered at a nested key (the issue's own `brink-web` case). The
+/// message blames the mismatch, not the author: either side of it may be
+/// the one that's wrong.
 ///
 /// Before this existed, this exact case (`expected_module` names no file in
 /// `modules`) fell through to a bare `tracing::warn!` and returned **no
@@ -358,8 +366,11 @@ pub fn conventions_pointer_unresolvable_diagnostics(
                 "`{name}` claims prose with `@[convention(claims = \"…\", order = …)]`, but \
                  the project's configured conventions module — `brink.toml`'s `[project] \
                  conventions = \"{pointer}\"` — does not match any file in the project, so \
-                 this handler's confinement cannot be checked yet; fix the `conventions` \
-                 pointer (a typo'd, moved, or deleted target)",
+                 this handler's confinement cannot be checked yet. The pointer and the \
+                 project's files disagree: the target may have been typo'd, moved, or \
+                 deleted — or the `brink.toml` was discovered at a nested key, so the \
+                 module the pointer names does not match the file's real module. Fix the \
+                 `conventions` pointer or the project layout so the two agree",
                 name = handler.name.text,
             ),
         })
