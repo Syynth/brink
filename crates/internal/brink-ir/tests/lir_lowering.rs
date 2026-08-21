@@ -87,6 +87,8 @@ mod glue_in_choice_body_before_gather;
 mod glue_stripping_recognition_tests;
 #[path = "lir_lowering/inline_content_elements.rs"]
 mod inline_content_elements;
+#[path = "lir_lowering/issue_2903_index_postfix_inline_block.rs"]
+mod issue_2903_index_postfix_inline_block;
 #[path = "lir_lowering/knot_parameters.rs"]
 mod knot_parameters;
 #[path = "lir_lowering/knots.rs"]

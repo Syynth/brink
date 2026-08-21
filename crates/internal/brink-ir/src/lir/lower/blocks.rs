@@ -1345,18 +1345,40 @@ fn try_lower_seed_stmt(
 /// non-suppressible `E074` via `reject_field_projection_index_root`, so
 /// this fix cannot reintroduce that misroute for either surface.
 ///
-/// Returns `true` (handled — either lowered to a real `Assign` and pushed
-/// onto `out`, or refused with a diagnostic and nothing pushed) for any
-/// `hir::Expr::Postfix`; `false` for every other expression shape, so the
-/// caller falls through to ordinary lowering (including a postfix whose
-/// operand doesn't resolve to an assignable root at all — the analyzer's
-/// own `E025` covers that case). A caller that needs a *single*
-/// `Option<lir::Stmt>` (the classic-line arm) reads `out`'s at-most-one
-/// element back out; refusal intentionally yields zero elements — no
-/// `ExprStmt(Null)` placeholder — matching every other malformed-statement
-/// arm in this module (e.g. `lower_loop_control`'s E057 refusal, which is
-/// "skipped (not pushed to `out`)" by the same design), and matching how
-/// every call site treats `lower_stmt`'s `None` as "emit nothing" already.
+/// Issue #2903 — the sibling gap PR #2900's review found: an **index**
+/// operand (`a[0]++`, `m["k"]++`) is neither `Path` nor `FieldAccess`, so
+/// `reject_field_projection_index_root` never matched it and
+/// `lower_assign_target` below (which only recognizes a bare `Path`) fell
+/// through its `_ => None` arm — the exact same silent-drop #2894 fixed for
+/// a bare variable, just on an `Index` target instead. An `Index` operand is
+/// now routed through [`lower_indexed_assignment`] (the same take/mutate/
+/// write-back RMW discipline `a[0] += 1` already uses, proven correct for
+/// both a list index and a map key — `crates/brink-test-harness`'s
+/// `take_rmw.rs` proptests and `brink-runtime/tests/issue_2903_index_postfix.rs`'s
+/// `map_key_compound_{add,sub}_assign_matches_manual_rmw_end_to_end`) rather
+/// than a second, divergent refusal path: `lower_indexed_assignment`
+/// re-flattens the index chain and re-applies
+/// `reject_field_projection_index_root` on the *flattened root* itself, so a
+/// field-projected index root (`p.items[0]++`) still refuses with the
+/// identical E074 #2121 already established for `p.items[0] = v` — it is
+/// caught one level down from where the plain `FieldAccess` arm above
+/// catches `a.count++`, not skipped.
+///
+/// Returns `true` (handled — either lowered to a real `Assign`/RMW sequence
+/// and pushed onto `out`, or refused with a diagnostic and nothing pushed)
+/// for any `hir::Expr::Postfix`; `false` for every other expression shape,
+/// so the caller falls through to ordinary lowering (including a postfix
+/// whose operand doesn't resolve to an assignable root at all — the
+/// analyzer's own `E025` covers that case). `out` holds zero elements on
+/// refusal (no `ExprStmt(Null)` placeholder — matching every other
+/// malformed-statement arm in this module, e.g. `lower_loop_control`'s E057
+/// refusal), exactly one for a bare-variable/temp target, or several (issue
+/// #2903) for an `Index` target's RMW take/mutate/write-back sequence — a
+/// caller that can only take a *single* `Option<lir::Stmt>` back out (the
+/// `stmts::lower_stmt` fallback callers still reach for a non-`Index`
+/// postfix) must not call this function for an `Index`-operand postfix; see
+/// this function's own #2903 paragraph above for which callers already
+/// guard against that by intercepting `Index` first.
 pub(super) fn try_lower_postfix_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -1365,15 +1387,27 @@ pub(super) fn try_lower_postfix_stmt(
     let hir::Expr::Postfix(inner, op) = expr else {
         return false;
     };
+    let assign_op = match op {
+        crate::PostfixOp::Increment => AssignOp::Add,
+        crate::PostfixOp::Decrement => AssignOp::Sub,
+    };
+    // Issue #2903: an Index-operand postfix (`a[0]++`, `m["k"]++`) is
+    // handled before the field-operand check below — `reject_field_projection_index_root`
+    // never matches a bare `hir::Expr::Index` (it only matches `Path`/
+    // `FieldAccess`), so leaving this arm out would still fall through to
+    // `lower_assign_target`'s `_ => None` and silently drop the statement.
+    // `lower_indexed_assignment` performs its own field-projection-root
+    // check internally (see doc above), so a field-projected root still
+    // refuses correctly from inside this call.
+    if let hir::Expr::Index(idx) = inner.as_ref() {
+        lower_indexed_assignment(idx, assign_op, &hir::Expr::Int(1), ctx, out);
+        return true;
+    }
     if reject_field_projection_index_root(inner, ctx, Some(FIELD_PROJECTION_POSTFIX_TARGET)) {
         return true;
     }
     let Some(target) = super::stmts::lower_assign_target(inner, ctx) else {
         return false;
-    };
-    let assign_op = match op {
-        crate::PostfixOp::Increment => AssignOp::Add,
-        crate::PostfixOp::Decrement => AssignOp::Sub,
     };
     out.push(lir::Stmt::Assign {
         target,

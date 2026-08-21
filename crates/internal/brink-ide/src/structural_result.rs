@@ -36,7 +36,16 @@ pub struct IntroducedDiagnostic {
 /// `new_source` is the rewritten content of the primary file (the file the op
 /// acted on); `cross_file_edits` are the reference rewrites that land in *other*
 /// files. `introduced.is_empty()` ⇒ `safe` ⇒ the edits apply directly;
-/// otherwise the caller shows a breakage report and applies only on force.
+/// otherwise the caller shows a breakage report and applies only on force —
+/// for the ops that honour that contract, namely the editor's inline (F2)
+/// symbol rename and its dedicated widget (decision-log "Studio symbol Rename
+/// is safe-by-default with an in-place breakage report", #305). The Binder's
+/// file/folder rename (`applyRename`/`applyDirRename`, #2918) is a floor
+/// exception: it applies an unsafe result directly (no force gate) and
+/// reports the breakage only after the fact, via a `warning`-severity
+/// notification (`docs/studio-shell-spec.md` §7.5) — there is no
+/// confirm/force affordance on the Binder's inline tree rename to hang a
+/// preflight off of.
 pub struct StructuralResult {
     /// The new full source text for the primary file (`None` for ops, like a
     /// pure delete with no rewritten remainder, that produce no primary source —

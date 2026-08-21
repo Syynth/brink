@@ -71,9 +71,11 @@ pub(crate) fn file_stem(path: &str) -> &str {
 /// stays root-relative.
 ///
 /// Both `root` and `path` are absolutized first, via [`std::path::absolute`]
-/// (lexical `.`/`..` resolution against the process cwd — no filesystem
-/// access, so it stays wasm-safe: it either succeeds with no I/O or fails
-/// cleanly, it never touches disk), before the strip. A bare `Path::
+/// (a purely lexical prepend of the process cwd to a relative path — no
+/// filesystem access, so it stays wasm-safe: it either succeeds with no I/O
+/// or fails cleanly, it never touches disk; note it does NOT lexically
+/// resolve `..` components on POSIX — its own doc says so — only `.`
+/// components normalize away), before the strip. A bare `Path::
 /// strip_prefix` without this is unsound whenever `root` and `path` are
 /// spelled with different qualifiers for the same file — e.g. `root` came
 /// back absolute from `native_source_root`'s #1413 retry (a `brink.toml`
@@ -87,6 +89,19 @@ pub(crate) fn file_stem(path: &str) -> &str {
 /// CLI-vs-`brink-lsp` divergence #1696 exists to close (review finding on
 /// #1706). Absolutizing both sides first means every spelling resolves to
 /// the same real path before the strip ever runs.
+///
+/// The cwd-relative resolution of a relative `path` is LOAD-BEARING for
+/// registered file keys and must not be "fixed" to resolve against `root`
+/// instead (issue #2320's first attempt did exactly that, and it broke
+/// `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`'s
+/// `root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir`):
+/// the ink CLI registers the entry key in its cwd-relative spelling — a bare
+/// `main.ink` compiled from `cwd = root/sub` names `root/sub/main.ink`, so
+/// its root-relative key is `sub/main.ink`, which only cwd-relative
+/// absolutization produces. A `[project] conventions` pointer has the
+/// opposite contract — relative means root-relative by definition — which is
+/// why it gets its own resolver, [`conventions_pointer_key`], instead of a
+/// semantics change here.
 ///
 /// When [`std::path::absolute`] errors on either side (only possible if the
 /// process has no queryable cwd, e.g. wasm — see its doc), this falls back
@@ -106,6 +121,43 @@ pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a
     match path_abs.strip_prefix(&root_abs) {
         Ok(rel) => Cow::Owned(rel.to_string_lossy().into_owned()),
         Err(_) => Cow::Borrowed(path),
+    }
+}
+
+/// The root-relative key a `[project] conventions` **pointer** resolves to
+/// (issue #2320) — the pointer's own resolver, deliberately distinct from
+/// [`root_relative_key`] because the two inputs carry opposite contracts
+/// for a relative spelling:
+///
+/// - A **registered file key** is spelled relative to the *process cwd*
+///   (the ink CLI registers the entry verbatim — `prepare_driver` — so a
+///   bare `main.ink` compiled from `cwd = root/sub` means
+///   `root/sub/main.ink`). [`root_relative_key`] therefore cwd-absolutizes
+///   before stripping, and must keep doing so (see its doc's
+///   "LOAD-BEARING" paragraph).
+/// - A **`conventions` pointer** is written in `brink.toml` — the file
+///   whose own directory *defines* the project root — so a relative
+///   pointer is root-relative **by definition** and already IS the key
+///   [`native_module_path`] wants. It must never be resolved against the
+///   process cwd: `brink-lsp`'s persistent `analysis_loop` (PR #2316)
+///   declares `native_root` once at session start but never calls
+///   `std::env::set_current_dir`, so its cwd is whatever directory the
+///   editor happened to launch the server from. Routing the pointer
+///   through [`root_relative_key`] cwd-absolutized it — a server launched
+///   from `root/scenes` resolved `conventions = "conventions.brink"` to
+///   the key `scenes/conventions.brink`, silently confining against the
+///   wrong module for the server's whole life (the CLI masked this: a
+///   one-shot `brink compile` usually runs with cwd == project root).
+///
+/// So: a relative pointer passes through untouched; an absolute pointer
+/// (unusual, but expressible) still strips via [`root_relative_key`],
+/// keeping the LSP's absolute-keyed world consistent. With no declared
+/// root both arms are the identity, exactly as before.
+pub(crate) fn conventions_pointer_key<'a>(root: Option<&str>, pointer: &'a str) -> Cow<'a, str> {
+    if Path::new(pointer).is_absolute() {
+        root_relative_key(root, pointer)
+    } else {
+        Cow::Borrowed(pointer)
     }
 }
 
@@ -296,6 +348,35 @@ pub(crate) fn resolve_modules(
 mod tests {
     use super::*;
 
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serializes the cwd-sensitive tests in this module (mirroring
+    /// `issue_1504_root_content_identity.rs`'s `cwd_lock`): `std::env::
+    /// set_current_dir` is process-global, and while `cargo nextest` (the
+    /// gate's runner) executes each test in its own process, a plain
+    /// threaded `cargo test` does not — so the one test here that `chdir`s
+    /// (`conventions_pointer_key_ignores_the_process_cwd`) and every test
+    /// that *reads* cwd (via [`std::path::absolute`] on a relative path,
+    /// or `current_dir` directly) take this same lock for their duration.
+    fn cwd_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Restores the process cwd to the wrapped path on drop — used by
+    /// [`conventions_pointer_key_ignores_the_process_cwd`] so a
+    /// mid-assertion panic during its `std::env::set_current_dir` probe
+    /// still restores the real cwd instead of leaving it pointed at a
+    /// directory that test deletes.
+    struct RestoreCwd(PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
     #[test]
     fn native_module_path_derives_purely_from_relative_path() {
         // Charter §13.2: path on disk = path in language; `story::` is the
@@ -445,6 +526,7 @@ mod tests {
     /// `root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir`.
     #[test]
     fn root_relative_key_absolutizes_a_relative_path_against_an_absolute_root() {
+        let _cwd_guard = cwd_lock();
         let cwd = std::env::current_dir().expect("process must have a cwd");
         let root = cwd.to_string_lossy().into_owned();
 
@@ -454,6 +536,106 @@ mod tests {
             root_relative_key(Some(&root), "sub/main.ink"),
             "sub/main.ink"
         );
+    }
+
+    /// Issue #2320 — the pointer's own resolver: a relative `[project]
+    /// conventions` pointer is root-relative by definition and passes
+    /// through untouched; an absolute pointer strips against the declared
+    /// root exactly like a registered file key; no declared root is the
+    /// identity in both arms. Deterministic — no cwd, no filesystem.
+    #[test]
+    fn conventions_pointer_key_passes_a_relative_pointer_through_and_strips_an_absolute_one() {
+        // Relative pointer: already the root-relative key, untouched —
+        // regardless of whether a root is declared.
+        assert_eq!(
+            conventions_pointer_key(Some("/home/dev/game"), "conventions.brink"),
+            "conventions.brink"
+        );
+        assert_eq!(
+            conventions_pointer_key(Some("/home/dev/game"), "std/conventions.brink"),
+            "std/conventions.brink"
+        );
+        assert_eq!(
+            conventions_pointer_key(None, "conventions.brink"),
+            "conventions.brink"
+        );
+        // Absolute pointer: same strip as a registered file key.
+        assert_eq!(
+            conventions_pointer_key(Some("/home/dev/game"), "/home/dev/game/conventions.brink"),
+            "conventions.brink"
+        );
+        // Absolute pointer outside the root: unchanged, never mangled.
+        assert_eq!(
+            conventions_pointer_key(Some("/home/dev/game"), "/elsewhere/conventions.brink"),
+            "/elsewhere/conventions.brink"
+        );
+    }
+
+    /// Issue #2320 — RED-FIRST regression, reproducing the issue's own
+    /// scenario: `native_root=/project` with the process launched from cwd
+    /// `/project/scenes` (a subdirectory of the root — exactly the shape
+    /// `brink-lsp`'s persistent `analysis_loop`, PR #2316, hits when the
+    /// editor happens to launch the server from a nested directory). The
+    /// pass-through test above cannot catch a cwd-dependent implementation
+    /// by itself: with `root` and cwd sharing no common ancestor, the buggy
+    /// cwd-relative resolution fails `strip_prefix` entirely and falls
+    /// through to "return the pointer unchanged" — indistinguishable from
+    /// the correct answer. Nesting cwd *under* root is what makes the old
+    /// bug (routing the pointer through [`root_relative_key`]'s
+    /// cwd-absolutization) actually mangle the result — a spurious
+    /// `scenes/` prefix — instead of accidentally looking right.
+    /// `std::env::set_current_dir` is process-global, so this takes
+    /// [`cwd_lock`] like every cwd-sensitive test in this module, and the
+    /// `Drop` guard restores the original cwd on every exit path.
+    #[test]
+    fn conventions_pointer_key_ignores_the_process_cwd() {
+        let _cwd_guard = cwd_lock();
+        let original_cwd = std::env::current_dir().expect("process must have a cwd");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        // native_root = /tmp/.../brink-issue-2320-<unique>
+        // cwd (decoy)  = /tmp/.../brink-issue-2320-<unique>/scenes
+        let tmp_root = std::env::temp_dir().join(format!("brink-issue-2320-{unique}"));
+        let tmp_cwd = tmp_root.join("scenes");
+        std::fs::create_dir_all(&tmp_cwd).expect("create the nested decoy cwd dir");
+
+        // Guard so a mid-assertion panic still restores the real cwd
+        // instead of leaving it pointed at a directory this test deletes.
+        let restore = RestoreCwd(original_cwd);
+
+        std::env::set_current_dir(&tmp_cwd).expect("chdir into the nested decoy cwd");
+
+        // A relative `[project] conventions` pointer, resolved with `root`
+        // declared as `tmp_root` while the process cwd is
+        // `tmp_root/scenes`. Routing the pointer through
+        // `root_relative_key` (the pre-fix wiring) absolutizes it against
+        // cwd first (`tmp_root/scenes/conventions.brink`), which DOES live
+        // under `tmp_root`, so `strip_prefix` succeeds and hands back the
+        // wrong, `scenes`-prefixed key — the exact confinement failure the
+        // issue describes. The pointer resolver never consults cwd at all.
+        let root = tmp_root.to_string_lossy().into_owned();
+        let resolved = conventions_pointer_key(Some(&root), "conventions.brink");
+        assert_eq!(
+            resolved, "conventions.brink",
+            "a relative pointer must resolve against the declared root \
+             ({tmp_root:?}), not the process cwd ({tmp_cwd:?}) — got {resolved:?} \
+             (the pre-fix bug produces \"scenes/conventions.brink\" here)"
+        );
+
+        // Same story for a nested relative pointer.
+        let resolved_nested = conventions_pointer_key(Some(&root), "std/conventions.brink");
+        assert_eq!(resolved_nested, "std/conventions.brink");
+
+        // Restored explicitly too (in addition to the `Drop` guard) so a
+        // later assertion in this same test body still sees the real cwd.
+        std::env::set_current_dir(&restore.0).expect("restore real cwd");
+        let _ = std::fs::remove_dir_all(&tmp_root);
     }
 
     /// A path outside the declared root keeps whatever key it was registered

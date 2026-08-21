@@ -220,22 +220,28 @@ pub struct GlobalLambdaCtx<'a> {
     /// `E144` refusal).
     ///
     /// The `or`-coalescing half is genuinely complete now: `coalesce::
-    /// resolve` already hand-recurses over `hir.variables`/`hir.constants`
-    /// (issue #1764) specifically because their initializers sit outside
+    /// resolve` already drives `visit::visit_with_decl_initializers`
+    /// (issue #1764 — its own doc stresses it is *not* a hand-rolled
+    /// second walk) specifically because decl initializers sit outside
     /// `visit::visit`'s block-tree walk, so a decl-default lambda's chains
     /// are recorded in the real table this field now carries.
     ///
-    /// The UFCS half is **not** yet complete: `ufcs::resolve` walks only
-    /// `visit::visit` (never `visit_with_decl_initializers`), so a method
-    /// call inside a decl-default lambda body is never visited by the UFCS
-    /// pass at all — no verdict is ever recorded for it, real table or not.
-    /// Such a call therefore still safely refuses with `E144` (a hard
-    /// compile error, not a silently wrong program) rather than resolving —
-    /// pinned by `brink-compiler`'s
-    /// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`.
-    /// Teaching `ufcs::resolve` to also walk decl initializers (mirroring
-    /// `coalesce::resolve`'s own precedent) is the follow-up that would
-    /// close this, not a change this field's plumbing can make on its own.
+    /// The UFCS half is now complete too (issue #2096): `ufcs::resolve`
+    /// drives its `HirVisitor`-shaped `UfcsVisitor` with the same
+    /// `visit_with_decl_initializers` entry point — the identical shape of
+    /// fix as coalesce's; the pass whose accumulator could NOT adopt the
+    /// shared walker and hand-recurses instead is `comparator_contract`
+    /// (#2085, per its own doc) — so a method call inside a decl-default
+    /// lambda body
+    /// is visited and gets a real verdict recorded, same as everywhere
+    /// else. The old defensive `E144` refusal
+    /// (`compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`,
+    /// since renamed/replaced) is now reachable only for a caller that
+    /// genuinely never ran the UFCS pass at all — a receiver whose type
+    /// stays undecidable even after visiting (an unannotated lambda param
+    /// with no other constraint) still refuses, but with `E142` (D3:
+    /// "annotate the receiver"), the ordinary diagnostic this pass has
+    /// always used for that case — never a silent miscompile either way.
     pub tables: AnalyzerTables<'a>,
     /// The root container's `DefinitionId` — see
     /// [`super::context::root_definition_id`].

@@ -940,22 +940,20 @@ fn resolve_function(
         return;
     }
 
-    // Try variables (ink allows calling a variable holding a function ref)
-    if !reserved_call_site
-        && let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable])
-    {
-        map.push(ResolvedRef {
-            file: file_id,
-            range: uref.range,
-            target: id,
-        });
-        return;
-    }
-
     // Try locals (temps/params used as function names, e.g. `{storyletFunction(args)}`)
+    // — checked BEFORE the global variable/constant lookup below, so a local
+    // (param/temp/`let`) shadows a same-named global at a call site exactly
+    // as it does at a bare-read site (`lookup_variable`'s step 1) and at a
+    // dotted callee's head (the B3a arm below:
+    // `lookup_local_in_scope(..).or_else(|| lookup_by_name(.., [Variable,
+    // Constant]))`). Before #2083's fix this arm ran *after* the global
+    // lookup, so a global could shadow a local at a call site while a bare
+    // read of the same name resolved the local — one name calling one symbol
+    // and reading another.
     //
-    // ⚠ issue #2867 (open, unruled): unlike the `List`/`Variable` arms just
-    // above, this lookup is NOT covered by `reserved_call_site`. Per
+    // ⚠ issue #2867 (open, unruled): unlike the `List` arm above and the
+    // `Variable`/`Constant` arm below, this lookup is NOT covered by
+    // `reserved_call_site`. Per
     // `push_local`'s own call sites (`brink_ir::symbols::project`),
     // `lookup_local_in_scope` can only ever return a `LocalSymbol` of kind
     // `SymbolKind::Param` (knot/stitch/function params) or
@@ -975,6 +973,39 @@ fn resolve_function(
     // refuse with a compile diagnostic naming the local and its type —
     // deliberately not decided here.
     if let Some(id) = lookup_local_in_scope(locals, path, &uref.scope) {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
+    // Try variables and constants (ink allows calling a variable holding a
+    // function ref; the native surface additionally allows a `const` to hold
+    // one — #1862's bare-name form and #1774's lambda-literal decl default,
+    // docs/t1c-spec.md §2a). `resolve_variable`'s own bare-read lookup
+    // (`lookup_variable` above) searches `[Variable, Constant]` together,
+    // with locals shadowing both (its step 1) — this call-site lookup now
+    // mirrors both halves of that shape: the same kind list, in the same
+    // locals-first order (see the arm above). It had been left
+    // `Variable`-only, so a CONST-bound fn value's call site could never
+    // resolve here — issue #2083's root cause. Root-caused to this one-line
+    // gap in `brink-analyzer` itself (confirmed to reproduce identically via
+    // a direct `brink_analyzer::resolve`/`analyze()` call, with no
+    // `brink-db` involved at all — the issue's own suspicion that this was
+    // an incremental-resolution bug in `brink-db`'s `resolve_query` was a
+    // misdiagnosis: the brink-ir test cited as clean-path evidence never
+    // actually asserted on `analyze()`'s resolution diagnostics, only on
+    // the declaring global's own lowered default shape).
+    if !reserved_call_site
+        && let Some(id) = lookup_by_name(
+            index,
+            scope,
+            path,
+            &[SymbolKind::Variable, SymbolKind::Constant],
+        )
+    {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,

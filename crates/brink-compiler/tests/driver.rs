@@ -377,9 +377,9 @@ fn compile_path_native_lambda_self_reference_is_e158() {
 /// production `compile_path` entry point.
 ///
 /// Deliberately asserts *compilation*, not invocation from `flow main()` —
-/// see `compile_path_native_lambda_valued_global_call_site_is_unresolved`
-/// below for why a call site is a separate, pre-existing gap this issue
-/// does not reach.
+/// see `compile_path_native_lambda_valued_global_call_site_resolves` below,
+/// which does invoke the fn value from `flow main()` and pins the separate
+/// call-site-resolution fix from issue #2083.
 #[test]
 fn compile_path_native_const_lambda_literal_decl_default_compiles() {
     let dir = std::env::temp_dir().join(format!(
@@ -482,34 +482,123 @@ fn compile_path_native_var_lambda_literal_decl_default_compiles() {
     ));
 }
 
-/// A DISTINCT, PRE-EXISTING gap this issue's own scope does not reach —
-/// filed separately as #2083: calling a fn-valued global `const`/`var`
-/// from *anywhere other than its own declaration* does not resolve through
-/// the production `compile_path` →
-/// `brink-db` incremental pipeline, reporting `E025` ("unresolved variable
-/// reference"). Reproduced with **#1862's already-shipped bare-name fn
-/// reference** — `twice = double` (no lambda involved at all) — to prove
-/// this is not new in this PR: verified to already reproduce on `origin/main`
-/// before this PR's changes, and to NOT reproduce through the simpler
-/// whole-project `brink_analyzer::analyze` + `lower_to_program_with_type_mode`
-/// path `brink-ir`'s own test suite uses (this crate's sibling
+/// **Issue #2083, RESOLVED.** The issue's own report speculated the gap was
+/// in `brink-db`'s FG-3 incremental `resolve_query`/`resolutions_index_query`
+/// machinery, and pointed at this crate's sibling
 /// `lambda_literal_decl_default_reads_other_globals_without_capturing_them`
-/// compiles the identical shape cleanly through that path). The divergence
-/// points at `brink-db`'s FG-3 incremental `resolve_query`/
-/// `resolutions_index_query` machinery specifically, not at anything this
-/// PR's `decls::collect_globals` lambda path touches. Left failing here
-/// (ignored) as the honest record of the gap rather than silently absent.
+/// (`brink-ir`) as proof the identical shape "compiles and resolves cleanly"
+/// through the simpler whole-project `brink_analyzer::analyze` +
+/// `lower_to_program_with_type_mode` path. Re-investigation (RCA) found that
+/// claim does not hold: that sibling test never asserts on
+/// `brink_analyzer::analyze`'s own resolution diagnostics at all — it only
+/// checks the shape of the *declaring* global's lowered default value
+/// (`ConstValue::FnRef`), never whether the flow body's *call site* actually
+/// resolved. A direct, `brink-db`-free call to `brink_analyzer::resolve`/
+/// `analyze()` on the identical source reproduces the same `E025` — proving
+/// the bug was never in `brink-db`'s incremental layer at all, but in
+/// `brink-analyzer::resolve::resolve_function` itself: its call-site
+/// "try variables" lookup searched only `SymbolKind::Variable`, never
+/// `SymbolKind::Constant` — so a `var`-bound fn value's call site always
+/// resolved (confirmed: `var twice = double` + `{twice(21)}` was already
+/// clean before this fix) while the identically-shaped `const` form never
+/// could. `resolve_variable`'s own bare-*read* lookup (`{twice}`, no call)
+/// already searched `[Variable, Constant]` together — this was a one-sided
+/// omission in the call-site arm alone. Fixed by adding `SymbolKind::Constant`
+/// to that lookup's kind list, at the `brink-analyzer` layer (not `brink-db`
+/// — the bug never depended on the db's incremental machinery, so both the
+/// db-direct and whole-project roads share this one fix by construction).
 #[test]
-#[ignore = "pre-existing brink-db incremental-resolution gap for ANY fn-valued global call site — not introduced or fixed by #1774, filed separately as #2083"]
-fn compile_path_native_lambda_valued_global_call_site_is_unresolved() {
+fn compile_path_native_lambda_valued_global_call_site_resolves() {
     let output = compile_and_run_native(
         "lambda-decl-default-call-site",
         "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n",
     );
     assert!(
         output.contains("Result: 42"),
-        "calling a fn-valued global from flow main should work once the \
-         separately-filed incremental-resolution gap is fixed, got: {output:?}"
+        "calling a fn-valued CONST global from flow main should work now that \
+         issue #2083 is fixed, got: {output:?}"
+    );
+}
+
+/// The bare-name sibling of the test above (#1862's shipped feature, no
+/// lambda literal involved) — issue #2083's own repro used this exact shape.
+/// Pinned separately since the bare-name and lambda-literal forms lower
+/// through different HIR/LIR construction paths even though both share the
+/// one resolver fix.
+#[test]
+fn compile_path_native_bare_name_fn_valued_const_global_call_site_resolves() {
+    let output = compile_and_run_native(
+        "bare-name-const-call-site",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\nconst twice = double\n\n\
+         flow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a bare-name fn-valued CONST global from flow main should \
+         work now that issue #2083 is fixed, got: {output:?}"
+    );
+}
+
+/// The `var` sibling of the test above: `var twice = double` + `{twice(21)}`
+/// already resolved before #2083's fix (the call-site arm searched
+/// `SymbolKind::Variable`) — pinned end-to-end here so that "var already
+/// worked" stays a tested claim rather than a remembered one.
+#[test]
+fn compile_path_native_bare_name_fn_valued_var_global_call_site_resolves() {
+    let output = compile_and_run_native(
+        "bare-name-var-call-site",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\nvar twice = double\n\n\
+         flow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a bare-name fn-valued VAR global from flow main should \
+         keep working, got: {output:?}"
+    );
+}
+
+/// Call-vs-read parity (issue #2083's review follow-up, fixed by the
+/// locals-first reorder in `brink-analyzer::resolve::resolve_function`):
+/// with BOTH a fn-valued global `const twice` and a same-named local
+/// `let twice` in scope, the call site must invoke the LOCAL — exactly as a
+/// bare read of the name resolves the local (`lookup_variable` step 1).
+/// The runtime half already behaved (LIR `lower_call` consults `temp_slot`
+/// first), so this end-to-end run pins the aligned end state; the analyzer
+/// half of the divergence (resolution target + `infer_call` signature) is
+/// pinned red/green by `crates/internal/brink-analyzer/tests/
+/// issue_2083_call_site_local_shadows_global.rs`.
+#[test]
+fn compile_path_native_call_site_local_shadows_same_named_const_global() {
+    let output = compile_and_run_native(
+        "call-site-local-shadows-const",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\n\
+         fn triple(n: int): int {\n  return n * 3;\n}\n\n\
+         const twice = double\n\n\
+         flow main() {\n  ~ let twice = triple\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 63"),
+        "the local `let twice = triple` must shadow the global \
+         `const twice = double` at the call site (63, not 42), got: {output:?}"
+    );
+}
+
+/// The `var` sibling of the shadowing test above — the same call-site
+/// inversion existed for `Variable`-kind globals, deliberately also fixed
+/// by the locals-first reorder.
+#[test]
+fn compile_path_native_call_site_local_shadows_same_named_var_global() {
+    let output = compile_and_run_native(
+        "call-site-local-shadows-var",
+        "fn double(n: int): int {\n  return n * 2;\n}\n\n\
+         fn triple(n: int): int {\n  return n * 3;\n}\n\n\
+         var twice = double\n\n\
+         flow main() {\n  ~ let twice = triple\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 63"),
+        "the local `let twice = triple` must shadow the global \
+         `var twice = double` at the call site (63, not 42), got: {output:?}"
     );
 }
 
@@ -587,20 +676,31 @@ fn compile_path_native_lambda_valued_var_default_compiles_with_map_keys_warning_
     );
 }
 
-/// Review finding on #1774: `GlobalLambdaCtx`'s `AnalyzerTables` used to be
-/// unconditionally empty regardless of what `brink-db` actually computed —
-/// this test pins the safe, current behavior now that
-/// `lir_prelude_decls_query` threads the real `ufcs_resolution_query`/
-/// `coalesce_types_query` tables through. A method call inside a
-/// decl-default lambda body is still refused with `E144`, not because the
-/// tables are fake, but because `brink_analyzer::ufcs::resolve` walks only
-/// `visit::visit`'s block-tree (never a `VAR`/`CONST` initializer) — see
-/// `decls::GlobalLambdaCtx::tables`'s doc for the follow-up that would close
-/// this gap. The important thing this test guards: refusing with a loud
-/// compile error, never silently lowering to a wrong `lir::Expr::Null`
-/// that then reaches `StoryData`.
+/// Issue #2096 (superseding this test's own former pin of a defensive
+/// `E144`): `brink_analyzer::ufcs::resolve` used to drive its
+/// `UfcsVisitor` with plain `visit::visit`, which never reaches a `VAR`/
+/// `CONST` initializer — so a UFCS-shaped call written directly inside a
+/// decl-default lambda's own body was never visited by the pass at all, and
+/// fell through to LIR lowering's own defensive `E144` refusal (the
+/// `push_ufcs_lowering_refusal` fallback — a caller-never-ran-analysis
+/// guard, not the real answer). `ufcs::resolve` now drives the same visitor
+/// with `visit::visit_with_decl_initializers`, so this call site is
+/// visited like any other.
+///
+/// **This exact fixture's receiver (`g`, no type annotation) still does not
+/// compile** — but for the *real*, D3-ruled reason (`ufcs.rs`'s own module
+/// doc): with no annotation and nothing else constraining `g`'s type, the
+/// receiver's type genuinely is not known at the resolution point, and D3
+/// says that demands an annotation (`E142`) rather than a guess between
+/// field-access and free-function. The important thing this test now
+/// guards: the call is genuinely *analyzed* (the diagnostic names the real
+/// cause, "annotate the receiver," not a structural "never visited"
+/// refusal) — see
+/// `compile_path_native_ufcs_call_in_lambda_decl_default_resolves_and_runs`
+/// below for the positive twin, where annotating the receiver lets the same
+/// shape resolve and run end-to-end.
 #[test]
-fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
+fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e142_unannotated_receiver() {
     let dir = std::env::temp_dir().join(format!(
         "brink-compiler-native-ufcs-lambda-decl-default-{}",
         std::process::id()
@@ -620,13 +720,52 @@ fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
     std::fs::remove_dir_all(&dir).ok();
 
     let err = result.expect_err(
-        "a method call in a decl-default lambda body must refuse to compile \
-         (the analyzer never visited it), not silently fold to Null",
+        "an unannotated UFCS receiver inside a decl-default lambda body must still \
+         refuse to compile (D3: the type is genuinely undecidable here) — but now with \
+         the real diagnostic naming that cause, not a structural never-visited refusal",
     );
     let codes = diagnostic_codes(&err);
     assert!(
-        codes.contains(&"E144"),
-        "expected E144 among diagnostics, got: {codes:?}"
+        codes.contains(&"E142"),
+        "expected E142 (D3: annotate the receiver) among diagnostics, got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"E144"),
+        "must not fall through to the old defensive never-visited refusal any more, \
+         got: {codes:?}"
+    );
+}
+
+/// The positive twin of the test above (issue #2096's own "option 1: the
+/// call resolves instead of hard-erroring" ask, proven by actually running
+/// the story — not just by inspecting the verdict table). Annotating the
+/// lambda param's own type (`|g: Guest|`, unlike `greet`'s own untyped
+/// params — this pass only needs the *receiver's* type, per D3) gives
+/// `ufcs::resolve` everything it needs: `Guest` declares no `greet` field
+/// (D1 loses), so it falls to D4 — `greet` is a free function in ordinary
+/// lexical scope, resolved and desugared to `greet(g, 3)`.
+///
+/// Composition with issue #2083 (fn-valued const call sites resolve;
+/// locals-first at call sites, landed just before this issue was picked
+/// up): `callGreet` is itself a fn-valued `CONST` called from `flow main`
+/// exactly the way `compile_path_native_lambda_valued_global_call_site_resolves`
+/// (above) already pins for a plain (non-UFCS) lambda body — this test is
+/// that same call shape, with a UFCS-shaped call now inside the lambda body
+/// too, proving the two fixes compose rather than only working in
+/// isolation.
+#[test]
+fn compile_path_native_ufcs_call_in_lambda_decl_default_resolves_and_runs() {
+    let output = compile_and_run_native(
+        "ufcs-lambda-decl-default-resolves",
+        "struct Guest {\n  hp: int\n}\n\n\
+         fn greet(g, loudness) {\n  return loudness;\n}\n\n\
+         const callGreet = |g: Guest| g.greet(3)\n\n\
+         flow main() {\n  Result: {callGreet(Guest { hp: 1 })} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 3"),
+        "the UFCS call inside the decl-default lambda body must actually run and \
+         produce `greet`'s own return value (loudness=3), not just compile, got: {output:?}"
     );
 }
 

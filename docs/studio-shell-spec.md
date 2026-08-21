@@ -240,9 +240,19 @@ the same rule as `editor.split` without each caller having to remember it.
 not rendering (#2787, #2797, #2826).** Because `EditorArea` renders only the
 maximized group while one is active, any operation that can move
 `focusedGroupId` to a different group must also restore — otherwise the
-operation moves focus internally but paints nothing, and the trigger (a
-Binder click, a tab drag) appears to do nothing. Two store actions carry this
-responsibility, each computing its resolved target group first and then
+operation moves focus internally but paints nothing. While a group is
+maximized, every open dock is collapsed (`regions.tsx` gates
+`showLeftDock`/`showRightDock`/`showBottomDock` on `!groupMaximized`), so a
+Binder click or a tab drag has no drop target to begin with — those are the
+non-maximized case, where a hidden (not maximized-hidden, just off-tier)
+sibling group can still receive focus with nothing painting. The trigger that
+*is* reachable while a group is maximized is Quick Open / `editor.reveal`
+(`EDITOR_REVEAL_COMMAND_ID`, `location.ts`) — an App-level overlay mounted
+outside the dock tree (`packages/studio-ui/src/App.tsx`), still wired through
+`openDocument` below. See
+`packages/brink-studio/e2e/maximize-reveal.spec.ts` for the real-browser
+proof. Two store actions carry the invariant's restore responsibility, each
+computing its resolved target group first and then
 clearing `maximizedGroupId` iff it is set and differs from that target,
 leaving it untouched when the target is the maximized group itself (already
 the only thing rendered, nothing to restore):
@@ -470,26 +480,39 @@ interface Notification {
 - **Refused structural operations report here.** A rename/move/delete that the
   underlying op declines raises an `error`-severity notification tagged with the
   same `source` as its success toast, so both outcomes of one operation report
-  through one channel and a failure cannot be mistaken for a success.
+  through one channel and a failure cannot be mistaken for a success. All
+  producers on this surface — both rename call sites and the reorder/move/
+  promote/demote ops in `dispatchSymbolAction` — specialize the same
+  `notifyStructuralRefusal(state, description, error)` frame (`packages/
+  studio-ui/src/symbolMenuActions.ts`), so the wording cannot drift between them.
   ⚠ This states the TARGET, not the current state of every call site. Known
-  non-compliant path, pre-existing: the reorder/move/promote/demote ops in
-  `dispatchSymbolAction`, which do not report refusals at all (#2544). A second
-  known non-compliant path, also pre-existing: the code-actions/extract apply
+  non-compliant path, pre-existing: the code-actions/extract apply
   seam (`onApplyStructural` → `applyMoveResult`, `packages/brink-studio/src/
   mount.tsx:610`), which since #2564 returns early on `ok: false` so nothing
-  gets written, but — like `dispatchSymbolAction` — raises no notification, so
-  a refused code action or extract is silently dropped from the host's
-  perspective (#2544). A third gap, distinct from the two above: `delete_symbol`
-  (`crates/internal/brink-ide/src/structural_delete.rs`) is a real op with real
-  refusals, but as of #2636 no studio surface calls it at all — no context-menu
-  item, no dispatcher branch — so this clause has nothing to apply to yet. That
-  is a reachability gap, not a non-compliant call site. Established
+  gets written, but raises no notification, so a refused code action or extract
+  is silently dropped from the host's perspective (#2544). A second gap:
+  `delete_symbol` (`crates/internal/brink-ide/src/structural_delete.rs`) is a
+  real op with real refusals, but as of #2636 no studio surface calls it at
+  all — no context-menu item, no dispatcher branch — so this clause has
+  nothing to apply to yet. That is a reachability gap, not a non-compliant call
+  site. A third, narrower gap: `dispatchSymbolAction`'s own `!session` guard
+  (`const session = state._project?.getSession(); if (!session) return;`,
+  upstream of the reorder/move/promote/demote `switch`) still returns silently
+  with no notification — distinct from, and not fixed by, #2544's rename-side
+  `!session` fix in `performSymbolRename` below, since the two are separate
+  functions with separate guards. Established
   by the file rename (`applyRename`, studio-store's binder slice); extended to the
   knot/stitch rename in #2528, where `performSymbolRename`'s error was previously
-  returned to `SymbolRenamePrompt` and discarded when the prompt closed; and to
+  returned to `SymbolRenamePrompt` and discarded when the prompt closed; to
   the editor's inline (F2) rename commit path in #2543, where
   `applyComputedRename` / `applyMoveResult` applied a refused rename as if it
-  had succeeded. The reason that path's guard is on `ok` and not `safe`:
+  had succeeded; and to the reorder/move/promote/demote ops in
+  `dispatchSymbolAction` in #2544, alongside `performSymbolRename`'s own
+  `!session` early return, which previously carried neither `applied` nor
+  `error` and so fell through `SymbolRenamePrompt.run()`'s terminal-outcome
+  check into a fabricated "would break 0 places" report with a Force-rename
+  button that retried the same empty outcome forever. The reason the F2 path's
+  guard is on `ok` and not `safe`:
   `error_json` (`crates/brink-web/src/editor_refactor.rs`) serializes a refusal
   with `safe: true` and no `introduced_diagnostics`, so `isSafeRename`
   (`packages/ink-editor/src/breakage.ts`) — which reads only those two fields —
@@ -497,11 +520,49 @@ interface Notification {
   the breakage of edits that were actually computed; `ok` is the field that
   says whether the operation happened, so `ok` is what both consumers guard on
   instead. Guarded by
-  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts` and
-  `packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts`.
+  `packages/brink-studio/src/__tests__/symbol-rename-error-notify.test.ts`,
+  `packages/brink-studio/src/__tests__/inline-rename-refusal.test.ts`, and
+  `packages/brink-studio/src/__tests__/symbol-structural-ops.test.ts`.
   PROVISIONAL: this records where a refused rename reports, which follows the
   existing pattern. Whether the rename prompt should additionally *stay open* on
   failure is an open UX question (#2528) and is not settled here.
+  **Folder rename is all-or-nothing (#2587).** The Binder's folder rename
+  (`renameFolder` → `applyDirRename`, `binder.ts`) used to loop a per-file
+  `renameFile` call over every file under the folder: a colliding file was
+  silently skipped and the rest moved, batching only the survivors into one
+  undo entry — a *partial-success* refusal shape. Once `renameFolder` was
+  wired to the atomic `rename_dir` op (#314), that shape changed: `rename_dir`
+  refuses the WHOLE move on any destination collision or an empty folder, so
+  either every file under the prefix moves or none do. This is deliberate,
+  not an oversight — a partial directory move can only be computed by
+  falling back to per-file `INCLUDE` rewriting for the files that "succeed,"
+  which reintroduces the exact cross-file inconsistency `rename_dir` exists
+  to prevent (see §7.7.4's "Fifth enrolment"). A refusal surfaces through the
+  same one-error-notification channel as every other refused structural op
+  above; nothing moves and no undo entry is pushed. Undo of a successful
+  folder move inherits the same all-or-nothing contract (`UndoEntry`'s
+  `rename-dir` kind re-applies `rename_dir` with the prefixes swapped): if
+  the inverse move is itself refused, the forward move's undo entry stays on
+  the stack rather than being popped as if the inverse had succeeded.
+  **Applied-but-unsafe rename/move reports too, at `warning` (#2918).** The
+  clauses above cover a *refused* op (`ok: false`) reporting at `error`. A
+  rename/move can also be computed and *applied* while introducing breakage
+  (`safe: false` on an `ok: true` result) — a divert pointing at the renamed
+  file, for example. The Binder's `applyRename`/`applyDirRename`
+  (`notifyMoveResult`, `binder.ts`) report that case through the same `_notify`
+  channel at `warning` severity, with a " (breaks N reference(s))" suffix on
+  the move's normal message; the undo entry is still pushed, same as a clean
+  move. This is deliberately a post-move report, not the refuse-and-Force
+  semantic ruled for symbol rename (decision-log "Studio symbol Rename is
+  safe-by-default with an in-place breakage report", #305): the Binder's
+  inline tree rename has no confirm/force affordance to hang a preflight off
+  of (unlike the symbol rename's dedicated widget), so the floor shipped here
+  is notification-only. A fuller preflight for the Binder is tracked as a
+  follow-up (#2918), not implied by this clause. **`moveFiles`** (the Binder's
+  batch drag-multiple-files-to-folder move) is a known non-compliant path in
+  this same sense: it loops the now-fixed `applyRename` per file, so each
+  individual move is typed through `safe`/`introducedDiagnostics`, but its one
+  summary notification does not aggregate that into a breakage count.
 - **Out of scope:** progress notifications (compile/story status lives in the status
   bar, §7.3) and do-not-disturb modes.
 
@@ -1109,7 +1170,7 @@ assumed so).
 |---|---|---|---|
 | `move_stitch` / `promote_stitch` / `demote_knot` | `gated_move_json` | yes | yes (`runGatedStructuralOp`, #2767) |
 | `rename_file` | `structural_result_json` | yes | yes (deferred in `ProjectSession.renameFile`; pending state committed by `applyRename` in `binder.ts`, #2776) |
-| `rename_dir` | `dir_move_result_json` | yes | n/a — **no studio caller** (see below); nothing to defer today |
+| `rename_dir` | `dir_move_result_json` | yes | yes (deferred in `ProjectSession.renameDir`; pending state committed by `applyDirRename` in `binder.ts`, #2587 — see "Fifth enrolment" below) |
 | `rename_symbol` / `rename_symbol_at` | `structural_result_json` | yes | yes (#722 inline, #696/#2761 modal) |
 | `extract_to_knot` / `extract_to_function` | `structural_result_json` | yes | yes, transitively (built on `InlineNameInput`, #722) |
 | `reorder_stitch` / `reorder_knot` / `reorder_stitches` / `reorder_knots` | `move_result_json_simple` | no | n/a — not heavy, runs inline |
@@ -1122,22 +1183,25 @@ out of scope) comment directly above it. `packages/brink-studio/src/
 __tests__/paint-path-call-enrolment.test.ts` statically scans every
 `packages/*/src` file (roots derived from `pnpm-workspace.yaml`, same pattern
 as `select-call-enrolment.test.ts`) for `.moveStitch(`/`.promoteStitch(`/
-`.demoteKnot(`/`.session.renameFile(` call sites and fails if one lacks a
-marker with a real (>10 char) reason — deliberately scoped to exactly those
-four method-call shapes, not every gated op in the table above (see the test
-file's own header for why). It is a marker-presence scan, not a control-flow
-check: it cannot verify a `DEFERRED` site is actually wrapped correctly, only
-that a human wrote a marker and so had to look. Real behavioral verification
-is `symbol-structural-ops.test.ts`'s "run off the paint path" describe block
-for the symbol-menu trio, and `file-rename.test.ts`'s "runs off the paint
-path" describe block for `rename_file`.
+`.demoteKnot(`/`.session.renameFile(`/`.session.renameDir(` call sites and
+fails if one lacks a marker with a real (>10 char) reason — deliberately
+scoped to exactly those five method-call shapes, not every gated op in the
+table above (see the test file's own header for why). It is a marker-presence
+scan, not a control-flow check: it cannot verify a `DEFERRED` site is
+actually wrapped correctly, only that a human wrote a marker and so had to
+look. Real behavioral verification is `symbol-structural-ops.test.ts`'s "run
+off the paint path" describe block for the symbol-menu trio,
+`file-rename.test.ts`'s "runs off the paint path" describe block for
+`rename_file`, and `folder-rename.test.ts`'s equivalent describe block for
+`rename_dir`.
 
-**Fourth enrolment (#2776): the Binder's file/folder rename-and-move.** The
+**Fourth enrolment (#2776): the Binder's file rename-and-move.** The
 same hazard recurred a fourth time in `ProjectSession.renameFile`
 (`packages/ink-editor/src/project-session.ts`), reached from the Binder's
 inline rename, drag-move, and multi-select move (`applyRename` in
-`binder.ts`, backing `renameFile`/`moveFile`/`moveFiles`/`renameFolder` —
-`renameFolder` loops one `renameFile` call per contained file). Unlike the
+`binder.ts`, backing `renameFile`/`moveFile`/`moveFiles`). At the time,
+`renameFolder` still looped one `renameFile` call per contained file — see
+"Fifth enrolment" below for where that changed. Unlike the
 symbol-menu trio, the deferred call and the busy-state commit sit in
 different packages: `ProjectSession` (`ink-editor`) has no store to commit UI
 state into, so it only does the `scheduleIdleWork` half — `renameFile` yields
@@ -1154,19 +1218,31 @@ gated structural op"). Same staleness posture as the trio: no
 against whatever the session's live source is when the deferred call actually
 runs.
 
-**Audited and left out, on purpose (#2776).** #2776's ask named three sites;
-one of the three turned out not to need this treatment, and one turned out
-unreachable rather than merely deferred:
+**Fifth enrolment (#2587): the Binder's folder rename-and-move.** `rename_dir`
+runs the identical gate to `rename_file`
+(`crates/internal/brink-ide/src/dir_rename.rs`'s `gate_dir_move`) and was
+named alongside it in #2776's ask, but at that time **no code under
+`packages/*/src` called it** — the Binder's folder rename (`renameFolder` in
+`binder.ts`) looped per-file `renameFile` calls instead of calling the wasm
+`renameDir`/`rename_dir` op, so there was nothing on a real user path to
+defer (#2776 audited and left it out on those grounds). #2587 closed that
+gap: `renameFolder` now calls `ProjectSession.renameDir` (the directory
+analog of `renameFile`, same file) through a new `applyDirRename` helper in
+`binder.ts` (the directory analog of `applyRename`), replacing the per-file
+loop entirely. `ProjectSession.renameDir` gets the identical treatment as
+`renameFile` — `deferGatedCall`'s yield before the gated
+`this.session.renameDir(...)` call — and `applyDirRename` commits
+`structuralOpPending` before the first `await`, the same split as the fourth
+enrolment above. All-or-nothing, unlike the old per-file loop: `rename_dir`
+refuses the WHOLE move on any collision or an empty folder rather than
+silently skipping a colliding file, so a refusal surfaces as one error
+notification with nothing moved.
 
-- **`rename_dir`** runs the identical gate to `rename_file`
-  (`crates/internal/brink-ide/src/dir_rename.rs`'s `gate_dir_move`), but
-  **no code under `packages/*/src` calls it.** The Binder's folder rename
-  (`renameFolder` in `binder.ts`) loops per-file `renameFile` calls instead
-  of calling the wasm `renameDir`/`rename_dir` op — confirmed by grepping
-  every non-test `.renameDir(`/`.rename_dir(` call site in the workspace
-  (`symbol-structural-ops.test.ts`'s own header independently notes
-  "`renameDir` has no studio consumer yet"). There is nothing on a real user
-  path to defer. If a caller is ever added, it needs this same treatment.
+**Audited and left out, on purpose (#2776).** #2776's ask named three sites:
+`rename_file` and `rename_dir` both eventually got enrolled (the fourth and
+fifth enrolments above — `rename_dir` only once #2587 gave it a caller), and
+the third turned out not to need this treatment at all:
+
 - **`applyCodeAction`** (`document-sessions.ts`'s `resolveCodeAction`
   callback) routes through `resolve_code_action_impl`, which CAN take the
   gated `gated_move_json` branch — but only for a `MoveStitch`/

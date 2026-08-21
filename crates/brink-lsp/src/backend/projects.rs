@@ -101,6 +101,7 @@ use std::path::{Path, PathBuf};
 use brink_analyzer::AnalysisOptions;
 use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, suppressions::Suppressions};
 use brink_syntax::Parse;
+use brink_syntax_native::Parse as NativeParse;
 
 use super::ConfigLoadOutcome;
 
@@ -217,10 +218,14 @@ impl NativeRootsContext {
 /// extension this module's root-discovery/classification applies to; ink
 /// files always resolve to [`NativeProjectKey::Default`] (ink's own project
 /// extent is INCLUDE-reachability, out of this issue's scope).
+///
+/// Delegates to [`brink_db::is_native_source_path`] (issue #2368) rather
+/// than its own, case-sensitive `ext == "brink"` copy — the same fix as
+/// `backend.rs`'s function of the same name, so a native root-discovery
+/// classification and the top-level tracking classification never disagree
+/// on a differently-cased path.
 fn is_native_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext == "brink")
+    brink_db::is_native_source_path(path)
 }
 
 /// Every `brink.toml` reachable by walking `roots` **downward** (siblings,
@@ -650,6 +655,28 @@ impl NativeProjects {
         self.project_for_file(id)?.parse(id)
     }
 
+    /// The native (`.brink`) parse tree for `id` (issue #1350) — the
+    /// `NativeProjects`-level proxy of [`brink_db::ProjectDb::parse_native`],
+    /// mirroring [`parse`](Self::parse)'s own shape so a caller routing on
+    /// [`is_native`](Self::is_native) can reach either tree through this one
+    /// multi-project wrapper.
+    pub(crate) fn parse_native(&self, id: FileId) -> Option<&NativeParse> {
+        self.project_for_file(id)?.parse_native(id)
+    }
+
+    /// Whether `id` is a native (`.brink`) module rather than an ink file
+    /// (issue #1350) — the `NativeProjects`-level proxy of
+    /// [`brink_db::ProjectDb::is_native`], the routing signal every
+    /// dialect-branching editor surface (semantic tokens, inlay hints, code
+    /// actions) reads to pick [`parse_native`](Self::parse_native) over
+    /// [`parse`](Self::parse). `false` for an unknown `id` — matching
+    /// `ProjectDb::is_native`'s own `file_path(id).is_some_and(..)` default,
+    /// since "not found" and "not native" both mean "don't route to the
+    /// native frontend".
+    pub(crate) fn is_native(&self, id: FileId) -> bool {
+        self.project_for_file(id).is_some_and(|db| db.is_native(id))
+    }
+
     pub(crate) fn suppressions(&self, id: FileId) -> Option<&Suppressions> {
         self.project_for_file(id)?.suppressions(id)
     }
@@ -749,8 +776,24 @@ impl NativeProjects {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigLoadOutcome, NativeProjectKey, NativeProjects, NativeRootsContext};
+    use super::{
+        ConfigLoadOutcome, NativeProjectKey, NativeProjects, NativeRootsContext, is_native_path,
+    };
     use std::path::{Path, PathBuf};
+
+    /// Issue #2368: this module's own `is_native_path` — used by
+    /// [`NativeProjects::set_file`]'s root-discovery classification — must
+    /// delegate to `brink_db`'s shared, case-insensitive predicate rather
+    /// than a local `ext == "brink"` copy, exactly like `backend.rs`'s
+    /// function of the same name (see that module's own
+    /// `is_native_path_and_is_source_path_are_case_insensitive`).
+    #[test]
+    fn is_native_path_is_case_insensitive() {
+        assert!(is_native_path("main.BRINK"));
+        assert!(is_native_path("market/Vendor.Brink"));
+        assert!(!is_native_path("main.ink"));
+        assert!(!is_native_path("main.INK"));
+    }
 
     fn ctx(
         default_root: Option<&str>,

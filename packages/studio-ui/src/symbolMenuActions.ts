@@ -21,8 +21,13 @@ import type { ContextMenuAction } from "./BinderContextMenu.js";
  * rejection lands. Shaped exactly like a genuine no-op refusal (`ok: false`,
  * `safe: true`, no diagnostics — see `StructuralResult.ok`'s doc comment on
  * why that pairing means "refused", not "succeeded vacuously"), so
- * `dispatchSymbolAction`'s `result.ok && result.path` check below skips
- * `applyMoveResult` the same way it does for any other refusal.
+ * `dispatchSymbolAction`'s `result.ok` check below skips `applyMoveResult`
+ * the same way it does for any other refusal. It is also identity-checked
+ * (`result === DESTROYED_DURING_DEFER_RESULT`) against `notifyStructuralRefusal`
+ * (#2544): this shape is a user-initiated cancel (the project was closed or
+ * switched out from under a pending op), not a refusal the op itself made, so
+ * it must not surface as an error notification either — only a genuine
+ * `ok: false` from `compute()` does.
  */
 const DESTROYED_DURING_DEFER_RESULT: StructuralResult = {
   ok: false,
@@ -236,9 +241,29 @@ export async function dispatchSymbolAction(
       return;
   }
 
-  if (result.ok && result.path) {
-    await applyMoveResult(result, description, [result.path]);
+  if (result.ok) {
+    if (result.path) {
+      await applyMoveResult(result, description, [result.path]);
+    }
+    return;
   }
+  if (result === DESTROYED_DURING_DEFER_RESULT) {
+    // The session was torn down mid-defer (issue #2794 review) — the user
+    // cancelled by closing/switching the project, not by hitting a real
+    // refusal. Nothing was attempted, so nothing to report: nothing pending
+    // is left uncleared either (`runGatedStructuralOp`'s `finally` already
+    // cleared it before returning this sentinel).
+    return;
+  }
+  // Refused (`ok: false`) — report it through the same channel every other
+  // structural-op refusal on this surface uses (#2544). Before this branch
+  // existed, all seven cases above (reorder/move/promote/demote) fell
+  // straight through with no `else`: `applyMoveResult` never ran (correctly
+  // — nothing was written), but nothing told the user why. `applyMoveResult`
+  // itself already refuses a passed-in `!result.ok` at its own seam (binder.ts,
+  // #2543) for exactly this reason — it has no idea what was attempted, only
+  // this dispatcher does.
+  notifyStructuralRefusal(state, description, result.error);
 }
 
 /** How a knot/stitch names itself in a rename message — the symbol's current
@@ -250,11 +275,36 @@ function renameLabel(req: SymbolRenameRequest): string {
 }
 
 /**
- * Report a refused rename through the shell's notification service —
- * error-severity, `binder`-sourced, "Rename X failed: …". Shared by both
- * rename surfaces (`performSymbolRename`'s modal path, #2528, and
- * `applyComputedRename`'s inline/F2 path, #2543) so the two cannot drift:
- * same severity, same source, same frame.
+ * Report a refused structural op through the shell's notification service —
+ * error-severity, `binder`-sourced, "<description> failed: …". This is the
+ * ONE reporting contract for `StructuralResult.ok === false` on this surface
+ * (#2544): every refusal — rename or otherwise — routes through this
+ * function so none of them can drift into a second style. `description`
+ * already names the attempted op ("Rename X", "Move X to Y", "Promote X to
+ * knot", …), so the frame just appends "failed: <reason>" rather than
+ * re-stating the verb.
+ */
+function notifyStructuralRefusal(
+  state: StudioState,
+  description: string,
+  error: string | undefined,
+): void {
+  state._notify?.({
+    severity: "error",
+    source: "binder",
+    message:
+      error != null && error !== ""
+        ? `${description} failed: ${error}`
+        : `${description} failed`,
+  });
+}
+
+/**
+ * Report a refused rename — the `notifyStructuralRefusal` frame, specialized
+ * with the "Rename X" prefix. Shared by both rename surfaces
+ * (`performSymbolRename`'s modal path, #2528, and `applyComputedRename`'s
+ * inline/F2 path, #2543) so the two cannot drift: same severity, same
+ * source, same frame.
  *
  * The frame is "Rename X failed: <reason>", NOT "Cannot rename X: <reason>":
  * the op's most common refusal is literally "cannot rename this symbol",
@@ -262,12 +312,7 @@ function renameLabel(req: SymbolRenameRequest): string {
  * symbol". Keep the frame and the op's own wording from colliding.
  */
 function notifyRenameRefusal(state: StudioState, label: string, error: string | undefined): void {
-  state._notify?.({
-    severity: "error",
-    source: "binder",
-    message:
-      error != null && error !== "" ? `Rename ${label} failed: ${error}` : `Rename ${label} failed`,
-  });
+  notifyStructuralRefusal(state, `Rename ${label}`, error);
 }
 
 /** The outcome of attempting a symbol rename. */
@@ -276,9 +321,10 @@ export interface SymbolRenameOutcome {
   applied: boolean;
   /** The diagnostics the rename would introduce (the breakage report). */
   diagnostics: RenameDiagnostic[];
-  /** An error from the rename op (symbol vanished, etc.), if any. Already
-   *  reported to the user as an error notification before it is returned
-   *  (#2528) — callers use it to decide control flow, not to surface it. */
+  /** An error from the rename op (symbol vanished, etc.), or the "no active
+   *  project session" case (#2544), if any. Already reported to the user as
+   *  an error notification before it is returned (#2528) — callers use it to
+   *  decide control flow, not to surface it. */
   error?: string;
 }
 
@@ -299,7 +345,21 @@ export async function performSymbolRename(
   force: boolean,
 ): Promise<SymbolRenameOutcome> {
   const session = state._project?.getSession();
-  if (!session) return { applied: false, diagnostics: [] };
+  if (!session) {
+    // No bound session — carries neither `applied` nor `error` before this
+    // fix (#2544). `run()` in `SymbolRenamePrompt` only treats
+    // `outcome.applied || outcome.error` as a terminal outcome; an outcome
+    // with neither fell through to the breakage-report branch with an EMPTY
+    // report, rendering "would break 0 places" — asserting the rename is
+    // unsafe when in truth no session was ever bound — with a live
+    // **Force rename** button whose retry hits this same branch forever.
+    // Setting `error` here routes it through the same notify+close path
+    // every other refusal on this surface takes.
+    const label = renameLabel(req);
+    const error = "no active project session";
+    notifyRenameRefusal(state, label, error);
+    return { applied: false, diagnostics: [], error };
+  }
 
   // Offset-based (F2) covers any symbol under the cursor; name-based (menu)
   // targets a knot/stitch. Both return the same safe-rename payload.

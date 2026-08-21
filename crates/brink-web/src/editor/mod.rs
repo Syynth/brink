@@ -176,6 +176,30 @@ pub struct EditorSession {
     /// place that knows whether the named path resolves to a real project
     /// file.
     configured_entry: Option<String>,
+    /// The full warning-string set returned by the most recent
+    /// `apply_project_config`/`discover_project_config` call (issue #2333)
+    /// — read by [`Self::dedupe_config_warnings`], the shared filter both
+    /// entry points funnel their freshly computed warnings through before
+    /// returning. Every edit-flush of `brink.toml` re-runs
+    /// `apply_parsed_config` (re-analyzing the whole project) even when the
+    /// file's *content* didn't change in a way that affects warnings, so
+    /// without this filter a config-editing session with one standing
+    /// warning (e.g. an unfixed typo) re-returns that identical string on
+    /// every settle; the host (`brink-studio`'s `onProjectConfigWarnings`)
+    /// appends every returned string to the 500-entry-capped Output log
+    /// unconditionally, so real compile history was being silently evicted
+    /// one re-application at a time.
+    ///
+    /// Wholesale-**replaced** (never unioned) on every call that reaches
+    /// [`Self::dedupe_config_warnings`] — so a warning that disappears (the
+    /// file was fixed) and later reappears (a fresh typo, or the same one
+    /// reintroduced) is genuinely new again and appends, rather than being
+    /// suppressed forever by a stale membership record. `discover_project_config`'s
+    /// no-config-found branch clears this directly (it returns before
+    /// reaching the shared filter) for the same reason: a deleted
+    /// `brink.toml` must not leave a stale set that silently suppresses the
+    /// same warning if a new `brink.toml` reintroduces it later.
+    last_config_warnings: BTreeSet<String>,
 }
 
 impl Default for EditorSession {
@@ -229,6 +253,7 @@ impl EditorSession {
             mounted_std_ids,
             explain_cache: brink_ir::ExplainMatchCache::new(),
             configured_entry: None,
+            last_config_warnings: BTreeSet::new(),
         }
     }
 
@@ -493,9 +518,17 @@ impl EditorSession {
     /// actually sets (like `set_language_dialect`/`set_type_policy`
     /// themselves).
     ///
-    /// Returns the list of warning strings for unrecognized keys — as JSON
-    /// (a `string[]`) — never an error (forward compat). Errors only on
-    /// malformed TOML or a recognized key with an invalid value.
+    /// Returns the *newly surfaced* warning strings for unrecognized keys —
+    /// as JSON (a `string[]`) — never an error (forward compat). Errors only
+    /// on malformed TOML or a recognized key with an invalid value. As of
+    /// issue #2333, this is a **delta against the immediately preceding**
+    /// `apply_project_config`/`discover_project_config` call on this
+    /// session, not the full current warning set: a warning already
+    /// returned by the previous call is omitted here, while a genuinely new
+    /// warning, or one that cleared and later reappeared, still appends —
+    /// see [`Self::dedupe_config_warnings`]. A host that wants to know the
+    /// full current set on every call (rather than only what changed) must
+    /// track it itself across calls.
     ///
     /// Also **replaces** the session's resolved lint policy from the file's
     /// `[lints]` table / `deny-warnings` flag (issue #1160; fixed to
@@ -507,7 +540,8 @@ impl EditorSession {
             .map_err(|e| JsError::new(&format!("invalid brink.toml: {e}")))?;
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
         all_warnings.extend(self.apply_parsed_config(&config));
-        Ok(serde_json::to_string(&all_warnings).unwrap_or_default())
+        let new_warnings = self.dedupe_config_warnings(all_warnings);
+        Ok(serde_json::to_string(&new_warnings).unwrap_or_default())
     }
 
     /// Discover and apply this session's `brink.toml`, if one exists among
@@ -552,7 +586,11 @@ impl EditorSession {
     /// `set_type_policy` calls still win over the file, `[lints]` is still
     /// fully replaced from the file on every call (see
     /// [`Self::apply_parsed_config`]; #1397), and the returned JSON carries
-    /// the same unrecognized-key/lint-code warnings.
+    /// the same unrecognized-key/lint-code warnings — subject to the same
+    /// issue #2333 delta-against-the-previous-call dedupe documented on
+    /// [`Self::apply_project_config`]'s Returns paragraph: a warning already
+    /// returned by the immediately preceding call on this session is
+    /// omitted here, not the full current set.
     pub fn discover_project_config(&mut self, entry: &str) -> Result<String, JsError> {
         let db = self.session.db();
         let files: BTreeMap<String, String> = db
@@ -583,6 +621,15 @@ impl EditorSession {
             // repoints compilation/the initial tab at a file the current
             // tree no longer names one.
             self.configured_entry = None;
+            // Issue #2333: a deleted/moved-out-of-reach `brink.toml` must not
+            // leave a stale `last_config_warnings` set behind — otherwise a
+            // *new* `brink.toml` that happens to reintroduce the same
+            // warning string later would be silently suppressed by
+            // `dedupe_config_warnings` as "already emitted", even though
+            // nothing has actually shown that warning since this file
+            // disappeared. This branch returns before ever reaching that
+            // shared filter, so it clears the set directly.
+            self.last_config_warnings.clear();
             return Ok("[]".to_owned());
         };
         let text = brink_source_tree::SourceTree::read(&tree, &config_key).map_err(|e| {
@@ -593,7 +640,8 @@ impl EditorSession {
 
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
         all_warnings.extend(self.apply_parsed_config(&config));
-        Ok(serde_json::to_string(&all_warnings).unwrap_or_default())
+        let new_warnings = self.dedupe_config_warnings(all_warnings);
+        Ok(serde_json::to_string(&new_warnings).unwrap_or_default())
     }
 
     /// The `[project] entry` value from the most recently applied
@@ -923,6 +971,29 @@ impl EditorSession {
             .map(|w| w.0)
             .chain(override_warnings)
             .collect()
+    }
+
+    /// Filter a freshly computed `brink.toml`-driven warning set down to
+    /// only the entries not already surfaced by the *previous*
+    /// `apply_project_config`/`discover_project_config` call (issue #2333)
+    /// — the shared point both entry points funnel through right before
+    /// returning. See [`Self::last_config_warnings`]'s doc for why this
+    /// exists and why the stored set is wholesale-replaced rather than
+    /// unioned (a warning that clears and later reappears must append
+    /// again, not stay suppressed).
+    ///
+    /// `warnings` keeps `Vec` order throughout — the membership test uses
+    /// `last_config_warnings` (a `BTreeSet`) only for `.contains`, never
+    /// iterated for output, so this never becomes a
+    /// nondeterministic-iteration-order hazard.
+    fn dedupe_config_warnings(&mut self, warnings: Vec<String>) -> Vec<String> {
+        let new_warnings: Vec<String> = warnings
+            .iter()
+            .filter(|w| !self.last_config_warnings.contains(w.as_str()))
+            .cloned()
+            .collect();
+        self.last_config_warnings = warnings.into_iter().collect();
+        new_warnings
     }
 
     /// Resolve this session's effective `[lints]` policy by layering the
@@ -4671,6 +4742,59 @@ mod tests {
         );
     }
 
+    /// Issue #2320's `brink-web` half. `EditorSession` never declares a
+    /// `native_root` — its files are keyed by already tree-relative virtual
+    /// paths with no OS-filesystem anchor — so the cwd-resolution half of
+    /// the issue cannot bite here, and threading a real root through (the
+    /// LSP's shape) is not the fix for this surface. What CAN bite is the
+    /// silent-swallow half: a well-formed, path-shaped
+    /// `[project] conventions` pointer that names no real file in the
+    /// project (a typo'd/moved/deleted target) must reach the wasm caller
+    /// as a real `E169` diagnostic — not silently vanish. Before this fix,
+    /// `brink_analyzer::conventions_confinement_diagnostics`'s "does not
+    /// match any file" arm was a bare `tracing::warn!` and returned zero
+    /// diagnostics; `brink-web`'s wasm build has no `tracing` subscriber
+    /// at all, so that warning reached NOTHING an embedder could observe —
+    /// `compile_project`'s returned warnings stayed empty, indistinguishable
+    /// from "everything is fine."
+    #[test]
+    fn compile_project_surfaces_an_unresolvable_conventions_pointer_as_e169() {
+        const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", \
+             order = 10)]\nfn interior(place: content) {\n  return place;\n}\n";
+        let mut s = EditorSession::new();
+        s.update_file(
+            "conventions.brink",
+            &format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+        );
+        // Typo'd: no file in this session is named `typo.brink`.
+        s.apply_project_config("[project]\nconventions = \"typo.brink\"\n")
+            .expect("a path-shaped conventions value is valid, even if unresolvable");
+
+        let result = s.compile_project("conventions.brink");
+        let v: serde_json::Value = serde_json::from_str(&result).expect("valid json");
+        let warnings = v["warnings"].as_array().cloned().unwrap_or_default();
+        assert!(
+            warnings.iter().any(|w| w["code"] == "E169"),
+            "an unresolvable [project] conventions pointer must surface as a \
+             real E169 diagnostic reachable through compile_project — a bare \
+             tracing::warn! is invisible in wasm — got {result}"
+        );
+        let message = warnings
+            .iter()
+            .find(|w| w["code"] == "E169")
+            .and_then(|w| w["message"].as_str())
+            .unwrap_or_default();
+        assert!(
+            message.contains("does not match any file"),
+            "got message: {message}"
+        );
+        assert!(
+            !message.contains("may only be declared"),
+            "must not use conventions_module_diagnostics's \"move it there\" \
+             message — there is no correct destination to name — got: {message}"
+        );
+    }
+
     // ── Issue #1414: `discover_project_config` (SourceTree seam, no ────────
     // external host filesystem read) ────────────────────────────────────
 
@@ -4775,6 +4899,298 @@ mod tests {
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("project.future_key"));
+    }
+
+    // ── Issue #2333: dedupe repeated brink.toml warnings against the ───────
+    // last-emitted set (every edit-flush was re-appending identical strings
+    // into the host's 500-entry-capped Output log, evicting real compile
+    // history). These tests drive `EditorSession` directly — the real
+    // consumer both `apply_project_config` and `discover_project_config`
+    // funnel through — per the project's "verify through a real consumer"
+    // rule (#2324 review: the playground has silently lied before).
+
+    /// RED companion (kept, not deleted, so the flood this issue reports
+    /// stays provable): with no dedupe, three settles of an unfixed
+    /// `brink.toml` typo return the identical warning three times — which is
+    /// exactly what used to flood the host's Output log. This asserts the
+    /// PRE-fix shape would have produced 3 identical entries; the second
+    /// half of this same test, below, then drives the real `EditorSession`
+    /// and proves the actual (deduped) behavior. Keeping both halves side
+    /// by side in one test makes the regression this issue fixes legible
+    /// without re-reading history.
+    #[test]
+    fn discover_project_config_repeated_identical_warning_text_would_flood_without_dedupe() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        s.update_file("main.ink", BRINK_EXT_SRC);
+
+        // Three edit-flush settles of the SAME unfixed brink.toml (the user
+        // is mid-edit elsewhere in the file; `future_key` is never removed).
+        // Simulate "no dedupe" by reading straight off `brink_project_config`
+        // (bypassing `EditorSession`'s dedupe filter entirely) three times —
+        // proving the underlying warning text really is identical call over
+        // call, i.e. the flood is real and not an artifact of some other
+        // field changing underneath it.
+        let raw = || {
+            let (_, warnings) = brink_project_config::parse_str(
+                "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+            )
+            .expect("valid toml");
+            warnings.into_iter().map(|w| w.0).collect::<Vec<_>>()
+        };
+        let first = raw();
+        let second = raw();
+        let third = raw();
+        assert_eq!(
+            (first.clone(), second.clone(), third.clone()),
+            (first.clone(), first.clone(), first.clone()),
+            "precondition: an unfixed brink.toml produces byte-identical \
+             warning text on every re-parse — the flood this issue reports \
+             is real, not a coincidence of some other changing field"
+        );
+        assert_eq!(first.len(), 1, "{first:?}");
+
+        // Now drive the actual `EditorSession` three times and show the
+        // dedupe filter this PR adds collapses repeats 2 and 3 to empty —
+        // this is the GREEN half, proven in the same test as the RED
+        // precondition above so the before/after is legible in one place.
+        let w1 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let w2 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let w3 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let p1: Vec<String> = serde_json::from_str(&w1).expect("valid json");
+        let p2: Vec<String> = serde_json::from_str(&w2).expect("valid json");
+        let p3: Vec<String> = serde_json::from_str(&w3).expect("valid json");
+        assert_eq!(
+            p1.len(),
+            1,
+            "first settle: the warning is new, it appends: {p1:?}"
+        );
+        assert!(
+            p2.is_empty(),
+            "second settle of an UNCHANGED brink.toml must not re-append the \
+             identical warning (issue #2333 — this is the fix): {p2:?}"
+        );
+        assert!(
+            p3.is_empty(),
+            "third settle of an UNCHANGED brink.toml must not re-append the \
+             identical warning either: {p3:?}"
+        );
+    }
+
+    /// GREEN: a config change that introduces a genuinely NEW/different
+    /// warning must still append — the dedupe must never suppress real
+    /// changes, only exact repeats of the previously emitted set.
+    #[test]
+    fn discover_project_config_a_changed_warning_still_appends() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let w1 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let p1: Vec<String> = serde_json::from_str(&w1).expect("valid json");
+        assert_eq!(p1.len(), 1, "{p1:?}");
+
+        // Edit brink.toml to a DIFFERENT unrecognized key — a real content
+        // change, not a no-op re-application.
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nanother_new_key = \"x\"\n",
+        );
+        let w2 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let p2: Vec<String> = serde_json::from_str(&w2).expect("valid json");
+        assert_eq!(
+            p2.len(),
+            1,
+            "a genuinely different warning must still append, not be \
+             suppressed by the dedupe filter: {p2:?}"
+        );
+        assert!(p2[0].contains("project.another_new_key"), "{p2:?}");
+    }
+
+    /// GREEN: a warning that is resolved (brink.toml fixed) and later
+    /// reintroduced must append again — the dedupe filter tracks only the
+    /// *previous* call's set (replaced wholesale, never unioned across
+    /// calls), so "cleared" is representable and a later reappearance is
+    /// genuinely new again, not silently swallowed forever.
+    #[test]
+    fn discover_project_config_a_resolved_warning_that_reappears_later_appends_again() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        s.update_file("main.ink", BRINK_EXT_SRC);
+
+        let w1 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let p1: Vec<String> = serde_json::from_str(&w1).expect("valid json");
+        assert_eq!(p1.len(), 1, "first settle: new warning appends: {p1:?}");
+
+        // Fix it: remove the unrecognized key.
+        s.update_file("brink.toml", "[project]\ndialect = \"brink\"\n");
+        let w2 = s
+            .discover_project_config("main.ink")
+            .expect("a fixed brink.toml is valid");
+        let p2: Vec<String> = serde_json::from_str(&w2).expect("valid json");
+        assert!(p2.is_empty(), "resolved: no warnings this settle: {p2:?}");
+
+        // Reintroduce the SAME unrecognized key (e.g. an undo, or the user
+        // re-typing the same typo).
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        let w3 = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let p3: Vec<String> = serde_json::from_str(&w3).expect("valid json");
+        assert_eq!(
+            p3.len(),
+            1,
+            "a warning that reappears after being resolved must append \
+             again, not stay suppressed by a stale last-emitted set: {p3:?}"
+        );
+        assert!(p3[0].contains("project.future_key"), "{p3:?}");
+    }
+
+    /// GREEN: `apply_project_config` (the caller-supplied-text entry point,
+    /// not just `discover_project_config`) gets the same dedupe — both
+    /// funnel through the shared `dedupe_config_warnings` filter.
+    #[test]
+    fn apply_project_config_repeated_settle_of_an_unchanged_warning_does_not_reappend() {
+        let mut s = EditorSession::new();
+        let toml = "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n";
+        let w1 = s.apply_project_config(toml).expect("valid brink.toml");
+        let w2 = s.apply_project_config(toml).expect("valid brink.toml");
+        let p1: Vec<String> = serde_json::from_str(&w1).expect("valid json");
+        let p2: Vec<String> = serde_json::from_str(&w2).expect("valid json");
+        assert_eq!(p1.len(), 1, "{p1:?}");
+        assert!(
+            p2.is_empty(),
+            "a repeated identical apply_project_config call must not \
+             re-append the same warning: {p2:?}"
+        );
+    }
+
+    /// GREEN: the log cap behavior itself (`OUTPUT_LOG_LIMIT`, the TS-side
+    /// cap this filter protects) is out of scope for a Rust test — but the
+    /// dedupe filter's own cap-adjacent invariant IS provable here: it must
+    /// never grow unboundedly itself. `last_config_warnings` is
+    /// wholesale-replaced (never unioned/accumulated) on every call, so its
+    /// size tracks the CURRENT config's warning count, not the historical
+    /// total across many edits — proven by cycling through several distinct
+    /// single-warning configs and checking the set never exceeds 1 entry.
+    #[test]
+    fn discover_project_config_last_emitted_set_does_not_accumulate_across_many_distinct_configs() {
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        for i in 0..20 {
+            s.update_file(
+                "brink.toml",
+                &format!("[project]\ndialect = \"brink\"\nkey_{i} = \"x\"\n"),
+            );
+            s.discover_project_config("main.ink")
+                .expect("unknown keys are warnings, not errors");
+            assert!(
+                s.last_config_warnings.len() <= 1,
+                "last_config_warnings must track only the current config's \
+                 warnings, never accumulate across many distinct configs \
+                 (iteration {i}): {:?}",
+                s.last_config_warnings
+            );
+        }
+    }
+
+    /// GREEN: deleting `brink.toml` entirely clears the last-emitted set —
+    /// so a later `brink.toml` that reintroduces the same warning text is
+    /// not silently suppressed by a stale record from the deleted file. This
+    /// exercises `discover_project_config`'s no-config-found early-return
+    /// branch specifically, since it returns before ever reaching the shared
+    /// `dedupe_config_warnings` filter.
+    #[test]
+    fn discover_project_config_deleting_brink_toml_clears_the_last_emitted_set() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        assert_eq!(s.last_config_warnings.len(), 1);
+
+        s.remove_file("brink.toml");
+        let deleted = s
+            .discover_project_config("main.ink")
+            .expect("no brink.toml anywhere is not an error");
+        assert_eq!(deleted, "[]");
+        assert!(
+            s.last_config_warnings.is_empty(),
+            "a deleted brink.toml must clear the last-emitted set: {:?}",
+            s.last_config_warnings
+        );
+
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        let reintroduced = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let parsed: Vec<String> = serde_json::from_str(&reintroduced).expect("valid json");
+        assert_eq!(
+            parsed.len(),
+            1,
+            "the same warning text reintroduced by a NEW brink.toml after \
+             the old one was deleted must append, not be suppressed by a \
+             stale set from the deleted file: {parsed:?}"
+        );
+    }
+
+    /// Both-roads sanity (issue #2333's own instruction): this dedupe lives
+    /// entirely in the off-db `EditorSession`/Output-log surface — the
+    /// db-direct road's Problems panel (real compile diagnostics, a
+    /// completely separate channel from these `brink.toml`-config warning
+    /// strings) must be unaffected. `compile_project`'s diagnostics on a
+    /// second identical call must still report in full, never deduped —
+    /// proving the two channels were never conflated.
+    #[test]
+    fn discover_project_config_dedupe_does_not_touch_compile_diagnostics() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        s.update_file("main.ink", "~\nHello.\n-> DONE\n");
+        s.discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let first = json(&s.compile_project("main.ink"));
+        s.discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let second = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            first["ok"], second["ok"],
+            "compile diagnostics (the Problems-panel/db-direct-road \
+             surface) must not be affected by the brink.toml warning \
+             dedupe: {first} / {second}"
+        );
+        assert_eq!(first["ok"], serde_json::json!(true), "{first}");
     }
 
     /// The `apply_project_config_applies_lints_from_file` companion for the

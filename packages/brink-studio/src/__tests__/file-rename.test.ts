@@ -92,8 +92,8 @@ describe("ProjectSession.renameFile", () => {
   it("re-keys the file, rewrites referrers, and emits created/deleted/modified", async () => {
     const { provider, project, batches } = await makeProject();
 
-    const referrers = await settleRename(project.renameFile("lib.ink", "util.ink"));
-    expect(referrers).toEqual(["main.ink"]);
+    const result = await settleRename(project.renameFile("lib.ink", "util.ink"));
+    expect(result).toEqual({ referrers: ["main.ink"], safe: true, introducedDiagnostics: [] });
 
     const session = project.getSession();
     expect(session.getFileSource("util.ink")).toBe(LIB);
