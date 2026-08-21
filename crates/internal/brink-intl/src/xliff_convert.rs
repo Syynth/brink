@@ -591,6 +591,21 @@ fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> boo
         || data_ref.is_some_and(|r| r.starts_with("dspan"))
 }
 
+/// The legacy (pre-`SLOT_SUBTYPE`) brink slot spelling: `<ph id="s{n}"
+/// equiv="{slot n}"/>` with no `subType`. Returns the slot number only when
+/// BOTH markers agree — the id is `s` + a fully numeric `u8` AND `equiv` is
+/// brink's own `{slot n}` for the same `n` — so old brink exports keep
+/// re-importing losslessly while a TMS `<ph id="sep1">` (non-numeric) or a
+/// coincidental `<ph id="s2">` without brink's exact `equiv` stays foreign.
+/// See the call site's comment for the compat story (#1823 review).
+fn legacy_slot(ph: &xliff2::model::Ph) -> Option<u8> {
+    if ph.sub_type.is_some() {
+        return None;
+    }
+    let slot: u8 = ph.id.strip_prefix('s')?.parse().ok()?;
+    (ph.equiv.as_deref() == Some(format!("{{slot {slot}}}").as_str())).then_some(slot)
+}
+
 /// [`inline_to_content`]'s per-element reconstruction, factored out so it
 /// can recurse into the child content of a `<pc>` (a paired span) or a
 /// foreign `<mrk>` (a TMS annotation) — those children are themselves
@@ -673,10 +688,28 @@ fn elements_to_parts(
                         IntlError::InvalidUnitId(format!("bad slot ph id: {}", ph.id))
                     })?;
                     parts.push(PartJson::Slot { slot });
+                } else if let Some(slot) = legacy_slot(ph) {
+                    // Back-compat (#1823 review): every `.xlf` brink
+                    // exported BEFORE `SLOT_SUBTYPE` existed spells a slot
+                    // as `<ph id="s{n}" equiv="{slot n}"/>` with no
+                    // `subType` at all. Those files sit at TMSes
+                    // mid-translation; classifying their slots as foreign
+                    // would silently drop them on re-import — translator
+                    // data loss, the exact failure mode this issue exists
+                    // to prevent. So a subType-less `<ph>` is still a slot
+                    // when BOTH legacy markers agree: id is `s` + a fully
+                    // numeric `u8`, AND `equiv` spells brink's own
+                    // `{slot n}` for the same n. A TMS `<ph id="sep1">`
+                    // fails the numeric parse and a foreign `<ph id="s2">`
+                    // without brink's exact `equiv` fails the second check
+                    // — both stay foreign (ignored below), so the #1823
+                    // fix is not weakened.
+                    parts.push(PartJson::Slot { slot });
                 }
                 // No trailing `else`: a `<ph>` that carries none of brink's
                 // own markers — no `SPAN_MARKER_SUBTYPE`, no `dsel`-prefixed
-                // `dataRef`, no `SLOT_SUBTYPE` — is a foreign standalone
+                // `dataRef`, no `SLOT_SUBTYPE`, and not the legacy
+                // id+equiv slot pair — is a foreign standalone
                 // code placeholder (whatever its `id` spelling or whatever
                 // *other* `dataRef` it carries, #1823). `<ph>` is an empty
                 // element — it holds attributes only, never character data —

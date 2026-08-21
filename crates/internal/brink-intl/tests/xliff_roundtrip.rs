@@ -2091,3 +2091,127 @@ fn tms_wrapper_with_no_intervening_structure_imports_as_plain_content() {
          import as ContentJson::Plain, not ContentJson::Template"
     );
 }
+
+/// Back-compat regression (#1823 review, BLOCKING finding): every `.xlf`
+/// brink exported BEFORE `SLOT_SUBTYPE` existed spells a slot as
+/// `<ph id="s{n}" equiv="{slot n}"/>` with no `subType`. Re-importing such
+/// a file (they sit at TMSes mid-translation) must still decode the slot —
+/// classifying it as foreign would silently drop the placeholder from the
+/// translated line: translator-data loss.
+#[test]
+fn legacy_subtype_less_slot_ph_still_decodes_as_slot() {
+    let doc = tms_returned_doc(
+        vec![
+            InlineElement::Text("Compte : ".to_string()),
+            InlineElement::Ph(xliff2::Ph {
+                id: "s0".to_string(),
+                data_ref: None,
+                equiv: Some("{slot 0}".to_string()),
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }),
+        ],
+        None,
+    );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Compte : ".to_string()),
+                PartJson::Slot { slot: 0 },
+            ],
+        }),
+        "a pre-SLOT_SUBTYPE brink slot ph (id s0 + equiv {{slot 0}}, no \
+         subType) must still decode as a slot on re-import (#1823 review)"
+    );
+}
+
+/// The legacy fallback's narrowness: a foreign subType-less `<ph>` whose id
+/// merely LOOKS like a brink slot (`s2`) but lacks brink's own
+/// `equiv="{slot 2}"` stays foreign (ignored) — the fallback requires BOTH
+/// legacy markers to agree, so the #1823 gate is not weakened.
+#[test]
+fn coincidental_slot_shaped_foreign_ph_without_equiv_stays_foreign() {
+    let doc = tms_returned_doc(
+        vec![
+            InlineElement::Text("Hello".to_string()),
+            InlineElement::Ph(xliff2::Ph {
+                id: "s2".to_string(),
+                data_ref: None,
+                equiv: None,
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }),
+            InlineElement::Text(" world".to_string()),
+        ],
+        None,
+    );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Hello".to_string()),
+                PartJson::Literal(" world".to_string()),
+            ],
+        }),
+        "a foreign subType-less ph with a coincidentally slot-shaped id but \
+         no brink equiv must stay foreign, not decode as a slot (#1823)"
+    );
+}
+
+/// Depth regression (#1823 review, NOTE): a *brink-authored* slot nested
+/// inside a FOREIGN `<pc>` wrapper must survive the wrapper's splice — the
+/// splice recurses through the same decoder, so brink markers inside a
+/// foreign wrapper keep decoding with full fidelity.
+#[test]
+fn brink_slot_inside_foreign_pc_decodes_through_the_splice() {
+    let doc = tms_returned_doc(
+        vec![InlineElement::Pc(xliff2::Pc {
+            id: "pc9".to_string(),
+            data_ref_start: None,
+            data_ref_end: None,
+            sub_type: None,
+            content: vec![
+                InlineElement::Text("Score: ".to_string()),
+                InlineElement::Ph(xliff2::Ph {
+                    id: "s1".to_string(),
+                    data_ref: None,
+                    equiv: Some("{slot 1}".to_string()),
+                    disp: None,
+                    sub_type: None,
+                    extensions: Extensions::default(),
+                }),
+            ],
+            extensions: Extensions::default(),
+        })],
+        None,
+    );
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Score: ".to_string()),
+                PartJson::Slot { slot: 1 },
+            ],
+        }),
+        "a brink slot nested inside a foreign <pc> must decode through the \
+         wrapper's splice (#1823)"
+    );
+}
