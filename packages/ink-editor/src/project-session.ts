@@ -18,7 +18,7 @@
 
 import type { FileProvider } from "./provider.js";
 import { EditorSessionHandle } from "@brink-lang/web";
-import type { CompileResult } from "@brink/wasm-types";
+import type { CompileResult, RenameDiagnostic } from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
 
@@ -32,6 +32,41 @@ function isProjectConfigPath(path: string): boolean {
   const slash = path.lastIndexOf("/");
   const base = slash >= 0 ? path.slice(slash + 1) : path;
   return base === PROJECT_CONFIG_FILENAME;
+}
+
+/**
+ * The result of {@link ProjectSession.renameFile} (issue #2918): the moved
+ * file's INCLUDE-referrer paths, plus the breakage-gate verdict the wasm
+ * `rename_file` op already computes (`StructuralResult.safe` /
+ * `.introduced_diagnostics`, #316) — surfaced here rather than discarded, so
+ * a caller can report a move that broke a reference instead of applying it
+ * silently. `safe`/`introducedDiagnostics` describe the edits that were
+ * ACTUALLY APPLIED (this method throws before applying anything on a
+ * refused op — see the method's own doc), not a preflight the caller could
+ * still cancel.
+ */
+export interface RenameFileResult {
+  /** Paths whose `INCLUDE`s were rewritten — same as the pre-#2918 return
+   *  value, kept for callers that only care about refreshing views. */
+  referrers: string[];
+  /** True when the move introduced no new diagnostics. */
+  safe: boolean;
+  /** Diagnostics the move introduced (breaking a reference). Empty ⇒ `safe`. */
+  introducedDiagnostics: RenameDiagnostic[];
+}
+
+/**
+ * The result of {@link ProjectSession.renameDir} (issue #2918) — the
+ * directory analog of {@link RenameFileResult}: every moved `{oldPath,
+ * newPath}` pair, the outside referrers whose `INCLUDE`s were rewritten, and
+ * the same breakage-gate verdict `DirMoveResult.safe` /
+ * `.introduced_diagnostics` already carries.
+ */
+export interface RenameDirResult {
+  moved: Array<{ oldPath: string; newPath: string }>;
+  referrers: string[];
+  safe: boolean;
+  introducedDiagnostics: RenameDiagnostic[];
 }
 
 export interface ProjectSessionOptions {
@@ -475,9 +510,17 @@ export class ProjectSession {
    * this yields lives one layer up, in the caller that has store access
    * (`applyRename`, `packages/studio-store/src/slices/binder.ts`) — this
    * class has no UI-state concept of its own to commit one.
+   *
+   * Returns a {@link RenameFileResult}, not a bare referrer array (issue
+   * #2918): the wasm op's `safe`/`introduced_diagnostics` breakage-gate
+   * verdict used to be discarded here, so a move that broke a reference
+   * applied with no way for any caller to know. The move still applies
+   * either way (this is the notification FLOOR #2918 shipped, not a
+   * preflight gate — see that issue for why) — callers decide how to report
+   * an unsafe move; they can no longer fail to know about one.
    */
-  async renameFile(oldPath: string, newPath: string): Promise<string[]> {
-    if (oldPath === newPath) return [];
+  async renameFile(oldPath: string, newPath: string): Promise<RenameFileResult> {
+    if (oldPath === newPath) return { referrers: [], safe: true, introducedDiagnostics: [] };
     await this.deferGatedCall();
     // PAINT-PATH-DEFERRED rename-file: gated (structural_result::gate_with_source
     // via crates/internal/brink-ide/src/file_rename.rs) — deferred by the
@@ -525,7 +568,7 @@ export class ProjectSession {
       this.applyProjectConfig();
     }
 
-    return referrers;
+    return { referrers, safe: result.safe, introducedDiagnostics: result.introduced_diagnostics };
   }
 
   /**
@@ -567,12 +610,18 @@ export class ProjectSession {
    * layer up, in the caller with store access (`renameFolder`,
    * `packages/studio-store/src/slices/binder.ts`) — same split as
    * `renameFile`/`applyRename`.
+   *
+   * Returns a {@link RenameDirResult}, carrying the same `safe`/
+   * `introducedDiagnostics` breakage-gate verdict {@link renameFile} now
+   * does (issue #2918) — `DirMoveResult.safe`/`.introduced_diagnostics`
+   * were computed correctly by the wasm op all along but discarded here,
+   * so a folder move that broke an outside reference applied silently. Same
+   * floor-not-gate contract as `renameFile`: the move still applies.
    */
-  async renameDir(
-    oldPrefix: string,
-    newPrefix: string,
-  ): Promise<{ moved: Array<{ oldPath: string; newPath: string }>; referrers: string[] }> {
-    if (oldPrefix === newPrefix) return { moved: [], referrers: [] };
+  async renameDir(oldPrefix: string, newPrefix: string): Promise<RenameDirResult> {
+    if (oldPrefix === newPrefix) {
+      return { moved: [], referrers: [], safe: true, introducedDiagnostics: [] };
+    }
     await this.deferGatedCall();
     // PAINT-PATH-DEFERRED rename-dir: gated (structural_result::gate_with_source
     // via crates/internal/brink-ide/src/dir_rename.rs) — deferred by the
@@ -664,6 +713,8 @@ export class ProjectSession {
     return {
       moved: result.moved_files.map((mf) => ({ oldPath: mf.old_path, newPath: mf.new_path })),
       referrers,
+      safe: result.safe,
+      introducedDiagnostics: result.introduced_diagnostics,
     };
   }
 

@@ -183,7 +183,11 @@ export type {
 
 // Project session
 export { ProjectSession } from "./project-session.js";
-export type { ProjectSessionOptions } from "./project-session.js";
+export type {
+  ProjectSessionOptions,
+  RenameFileResult,
+  RenameDirResult,
+} from "./project-session.js";
 
 // File-change egress (issues #154/#137): the shared notify seam.
 export { FileChangeHub } from "./file-change-hub.js";

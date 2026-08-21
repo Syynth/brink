@@ -520,6 +520,25 @@ interface Notification {
   `rename-dir` kind re-applies `rename_dir` with the prefixes swapped): if
   the inverse move is itself refused, the forward move's undo entry stays on
   the stack rather than being popped as if the inverse had succeeded.
+  **Applied-but-unsafe rename/move reports too, at `warning` (#2918).** The
+  clauses above cover a *refused* op (`ok: false`) reporting at `error`. A
+  rename/move can also be computed and *applied* while introducing breakage
+  (`safe: false` on an `ok: true` result) — a divert pointing at the renamed
+  file, for example. The Binder's `applyRename`/`applyDirRename`
+  (`notifyMoveResult`, `binder.ts`) report that case through the same `_notify`
+  channel at `warning` severity, with a " (breaks N reference(s))" suffix on
+  the move's normal message; the undo entry is still pushed, same as a clean
+  move. This is deliberately a post-move report, not the refuse-and-Force
+  semantic ruled for symbol rename (decision-log "Studio symbol Rename is
+  safe-by-default with an in-place breakage report", #305): the Binder's
+  inline tree rename has no confirm/force affordance to hang a preflight off
+  of (unlike the symbol rename's dedicated widget), so the floor shipped here
+  is notification-only. A fuller preflight for the Binder is tracked as a
+  follow-up (#2918), not implied by this clause. **`moveFiles`** (the Binder's
+  batch drag-multiple-files-to-folder move) is a known non-compliant path in
+  this same sense: it loops the now-fixed `applyRename` per file, so each
+  individual move is typed through `safe`/`introducedDiagnostics`, but its one
+  summary notification does not aggregate that into a breakage count.
 - **Out of scope:** progress notifications (compile/story status lives in the status
   bar, §7.3) and do-not-disturb modes.
 
