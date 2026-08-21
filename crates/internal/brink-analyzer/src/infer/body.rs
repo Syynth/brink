@@ -2475,7 +2475,22 @@ impl InferPass<'_, '_> {
             &[SymbolKind::Knot, SymbolKind::External],
             self.ctx.referrer_module,
         ) else {
-            return Ty::Unknown;
+            // Issue #1927: no index symbol named `method.text` — either a
+            // genuinely unresolved name (stays `Unknown`, unchanged), or a
+            // T1b/NS stdlib prelude verb (`UfcsVerdict::PreludeDesugar`,
+            // `m.len()` etc.), which has no `DefinitionId` to look up here
+            // but still has a KNOWN, fixed result type — see
+            // [`Self::prelude_verb_result_ty`]'s own doc for why that is
+            // re-derived independently rather than by calling
+            // [`Self::infer_intrinsic`] on the desugared argument list.
+            if receiver_segs.len() != 1 || !crate::resolve::is_t1b_stdlib_name(&method.text) {
+                return Ty::Unknown;
+            }
+            let receiver_ty = self.ufcs_receiver_ty(receiver_def);
+            if receiver_ty.is_unresolved() {
+                return Ty::Unknown;
+            }
+            return Self::prelude_verb_result_ty(&method.text, &receiver_ty);
         };
         let Some(info) = self.ctx.index.symbols.get(&target) else {
             return Ty::Unknown;
@@ -2496,6 +2511,62 @@ impl InferPass<'_, '_> {
             .known_sigs
             .get(&target)
             .map_or(Ty::Unknown, |sig| sig.return_ty.clone())
+    }
+
+    /// Issue #1927 (the `PreludeDesugar` half of #1909, split out after PR
+    /// #1926 gave the `FreeFnDesugar` half its own result type): the
+    /// **result type** of a UFCS-shaped call that desugars to a T1b/NS
+    /// stdlib prelude verb (`ufcs::UfcsVerdict::PreludeDesugar`) — `m.len()`
+    /// desugared as `len(m)`. A prelude verb has no `DefinitionId` and so no
+    /// entry in `known_sigs` — [`Self::infer_ufcs_free_fn_result`]'s own
+    /// symbol-index lookup can never resolve it — but the verb's return
+    /// type is nonetheless a KNOWN, fixed function of its name and (for a
+    /// couple of container verbs) the receiver's own element/key/value
+    /// type, exactly the same facts [`Self::infer_intrinsic`]'s
+    /// `"len"`/`"keys"`/`"values"`/… arms already encode for the direct
+    /// spelling `len(m)`.
+    ///
+    /// This is a deliberate, independent re-derivation — **not** a call
+    /// into [`Self::infer_intrinsic`] — because that function is not a pure
+    /// result-type table: several of its arms call `self.observe(expr, …)`,
+    /// which needs the receiver as an [`Expr`] (this UFCS branch only ever
+    /// has the callee [`HirPath`], never a synthesized receiver
+    /// expression), and its `"remove"` arm pushes onto
+    /// `self.array_remove_calls`, which `strict::check_array_remove_calls`
+    /// turns into `E149` — `ufcs::strict_verdict_diagnostics` already
+    /// reports `E149` for that exact `PreludeDesugar` site from the verdict
+    /// table (`ufcs.rs`'s own `("remove", Ty::Array(_))` arm), so routing
+    /// through `infer_intrinsic` here would double-report it. Running the
+    /// full effect-harvesting prologue (`intrinsics::intrinsic_effects`,
+    /// the fault/RNG-write bookkeeping) for the UFCS spelling is the same
+    /// out-of-scope move — issue #1540's "second symptom" — and is
+    /// deliberately not attempted here either.
+    ///
+    /// Scoped to the verbs whose result is genuinely receiver/name-only
+    /// (no argument-shaped narrowing, no write-back): every mutator
+    /// (`push`/`insert`/`remove`/`remove_at`/`heap_push`/`clear`) already
+    /// types `Ty::Unknown` in the direct spelling too (see
+    /// [`Self::infer_intrinsic`]'s own arms), so omitting them here changes
+    /// nothing — they still fall through to this function's own `Unknown`
+    /// default, unchanged from before this issue.
+    fn prelude_verb_result_ty(name: &str, receiver_ty: &Ty) -> Ty {
+        match name {
+            "len" => Ty::Int,
+            "int" => Ty::Int,
+            "float" | "dot" => Ty::Float,
+            "string" | "char_at" => Ty::String,
+            "contains" | "contains_value" => Ty::Bool,
+            "find" | "index_of" => Ty::Option(Box::new(Ty::Int)),
+            "keys" => match receiver_ty {
+                Ty::Map(k, _) => Ty::Array(k.clone()),
+                _ => Ty::Unknown,
+            },
+            "values" => match receiver_ty {
+                Ty::Map(_, v) => Ty::Array(v.clone()),
+                _ => Ty::Unknown,
+            },
+            _ => Ty::Unknown,
+        }
     }
 
     /// The UFCS receiver's own type, **read-only** — the deliberate
