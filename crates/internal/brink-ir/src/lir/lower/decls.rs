@@ -220,17 +220,19 @@ pub struct GlobalLambdaCtx<'a> {
     /// `E144` refusal).
     ///
     /// The `or`-coalescing half is genuinely complete now: `coalesce::
-    /// resolve` already hand-recurses over `hir.variables`/`hir.constants`
-    /// (issue #1764) specifically because their initializers sit outside
+    /// resolve` already drives `visit::visit_with_decl_initializers`
+    /// (issue #1764 — its own doc stresses it is *not* a hand-rolled
+    /// second walk) specifically because decl initializers sit outside
     /// `visit::visit`'s block-tree walk, so a decl-default lambda's chains
     /// are recorded in the real table this field now carries.
     ///
     /// The UFCS half is now complete too (issue #2096): `ufcs::resolve`
-    /// drives its `HirVisitor`-shaped `UfcsVisitor` with
-    /// `visit_with_decl_initializers` (mirroring `coalesce::resolve`'s own
-    /// precedent, though by switching walkers rather than hand-recursing —
-    /// see `ufcs::resolve`'s own doc for why the two passes' shapes led to
-    /// different fixes), so a method call inside a decl-default lambda body
+    /// drives its `HirVisitor`-shaped `UfcsVisitor` with the same
+    /// `visit_with_decl_initializers` entry point — the identical shape of
+    /// fix as coalesce's; the pass whose accumulator could NOT adopt the
+    /// shared walker and hand-recurses instead is `comparator_contract`
+    /// (#2085, per its own doc) — so a method call inside a decl-default
+    /// lambda body
     /// is visited and gets a real verdict recorded, same as everywhere
     /// else. The old defensive `E144` refusal
     /// (`compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`,

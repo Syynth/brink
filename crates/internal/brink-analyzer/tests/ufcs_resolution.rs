@@ -1315,3 +1315,43 @@ fn main() {}
         "must never fall through to the old defensive never-visited refusal: {diags:?}"
     );
 }
+
+/// Review NIT on #2096's fix: the receiver inside a decl-default lambda can
+/// itself be a file-scope GLOBAL (a `const` struct value), not a lambda
+/// param — `head_ty`'s `Variable | Constant` arm reads `globals` by id
+/// project-wide, so the decl-initializer walk must resolve it exactly as it
+/// would outside a lambda. Pins that composition.
+#[test]
+fn a_const_valued_global_receiver_inside_a_decl_default_lambda_resolves() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+const guest: Guest = Guest{name: \"Ava\"}
+
+const callGreet = || guest.greet(3)
+
+fn main() {}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::FreeFnDesugar { receiver, name, .. } = &verdicts[0] else {
+        panic!("expected a free-fn desugar verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "greet");
+    assert_eq!(*receiver, brink_analyzer::Ty::Struct("Guest".into()));
+
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E144)
+            && !codes(&diags).contains(&DiagnosticCode::E142),
+        "a const-valued global receiver must resolve, not demand annotation: {diags:?}"
+    );
+}
