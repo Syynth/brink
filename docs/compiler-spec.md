@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E187`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E188`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -561,6 +561,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E185`](diagnostics/E185.md) | A plain assignment target names a field its struct shape does not declare. |
 | [`E186`](diagnostics/E186.md) | A `@[convention(…)]` declaration combines `block` and `attach = StructName` on the same handler — mutually exclusive clauses. |
 | [`E187`](diagnostics/E187.md) | A write to a `CONST` — plain/compound assignment, postfix `++`/`--`, an indexed/field/mutator write whose root is a `CONST`, or passing it by `ref`. Mirrors ink's own compile-time rejection of `CONST` reassignment. |
+| [`E188`](diagnostics/E188.md) | A declared `STRUCT`'s own name collides with a builtin leaf (`int`/`float`/`bool`/`string`/`content`/`divert`) or an NS-A8 tower kind — `annotations::resolve` checks those before consulting declared struct names, so a bare type annotation spelling the colliding name always resolves to the builtin/tower type, never the struct. Warning: the declaration still compiles and constructs normally. |
 
 ## Known limitations
 

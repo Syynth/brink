@@ -1964,6 +1964,50 @@ pub enum DiagnosticCode {
     /// resolved identically for both frontends by the time LIR lowering
     /// sees it.
     E187,
+
+    // ── TM-2 reserved-type-name shadowing (issue #1865) ───────────────
+    /// A declared `STRUCT`'s own name collides with one of the fixed names
+    /// `annotations::resolve`'s `TypeExpr::Named` arm resolves *before* it
+    /// ever consults `names.structs` — a builtin leaf
+    /// (`int`/`float`/`bool`/`string`/`content`/`divert`) or an NS-A8 tower
+    /// kind (`vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4`). That
+    /// ordering is deliberate and unchanged by this code (`resolve`'s own
+    /// doc: "checked before the struct lookup... the same ordering that
+    /// keeps int/float unshadowable") — this diagnostic does not re-order
+    /// resolution, it names the consequence: every bare type annotation
+    /// spelling the colliding name (`VAR v: content = ...`, a param/return
+    /// annotation, …) silently resolves to the builtin/tower type, never to
+    /// the struct, with previously no diagnostic in either direction.
+    ///
+    /// Deliberately does **not** cover the generic heads
+    /// (`List`/`Array`/`Map`/`Option`/`Weighted`/`Handle`): those names are
+    /// special-cased only inside `TypeExpr::Generic`'s own dispatch (e.g.
+    /// `Array<T>`) — a *bare* `Named` reference to a struct sharing one of
+    /// those names (`f: Array`, no `<...>`) still falls through to the
+    /// ordinary `names.structs` lookup and resolves to the struct
+    /// correctly; there is no actual collision to diagnose for those names.
+    /// Also does not cover `void` — unlike the leaves above, `resolve`'s
+    /// `Named` arm has no explicit `"void"` case at all, so a struct named
+    /// `void` resolves fine too. Also does not cover a name shared with a
+    /// declared `LIST` or a registered `Handle<K>` kind: `names.lists`/
+    /// `names.handles` are only ever consulted inside `List<L>`/`Handle<K>`'s
+    /// own generic-argument position, never against a bare `Named`
+    /// annotation — a different namespace, no collision.
+    ///
+    /// A construction literal (`Name#{...}`) is unaffected by this
+    /// shadowing for every name this code covers:
+    /// `resolve::resolve_struct_ref`/`resolve_type_ref` resolve a `STRUCT`
+    /// reference by ordinary `SymbolKind::Struct` lookup alone, with no
+    /// builtin/tower precedence check at all — so `content#{...}` still
+    /// constructs the user's struct even though `VAR v: content = ...`
+    /// cannot name it.
+    ///
+    /// Warning-tier, not a rejected declaration (matches [`Self::E035`]'s
+    /// "name shadows a built-in function" precedent, and the "deliberate"
+    /// framing `resolve`'s own doc already gives this exact ordering) — a
+    /// `STRUCT` named this way still compiles and constructs normally; only
+    /// its *annotation* spelling is shadowed.
+    E188,
 }
 
 impl DiagnosticCode {
@@ -2163,6 +2207,7 @@ impl DiagnosticCode {
         Self::E185,
         Self::E186,
         Self::E187,
+        Self::E188,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2359,6 +2404,7 @@ impl DiagnosticCode {
             Self::E185 => "E185",
             Self::E186 => "E186",
             Self::E187 => "E187",
+            Self::E188 => "E188",
         }
     }
 
@@ -2678,6 +2724,9 @@ impl DiagnosticCode {
             Self::E187 => {
                 "write to a CONST — CONST is immutable and can never be reassigned, mutated, or passed by `ref`"
             }
+            Self::E188 => {
+                "declared STRUCT name collides with a reserved builtin/tower type name and is unreachable in type annotations"
+            }
         }
     }
 
@@ -2732,7 +2781,15 @@ impl DiagnosticCode {
             // Issue #2156: `E031`'s sibling for a divert-with-args call
             // site — same severity precedent as the call-expression arity
             // check it extends.
-            | Self::E176 => Severity::Warning,
+            | Self::E176
+            // Issue #1865: matches E035's "name shadows a built-in
+            // function" precedent — a declared STRUCT colliding with a
+            // reserved builtin/tower type name is legal (the declaration
+            // still compiles and constructs normally), just worth
+            // surfacing so the author doesn't lose the annotation spelling
+            // by accident. `resolve`'s own doc already calls this ordering
+            // "deliberate", the same posture E035's shadow warning takes.
+            | Self::E188 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -2939,6 +2996,7 @@ impl DiagnosticCode {
             "E185" => Some(Self::E185),
             "E186" => Some(Self::E186),
             "E187" => Some(Self::E187),
+            "E188" => Some(Self::E188),
             _ => None,
         }
     }
