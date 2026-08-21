@@ -394,6 +394,8 @@ fn main() {
         receiver,
         field,
         field_ty,
+        arity_mismatch,
+        arg_mismatches,
     } = &verdicts[0]
     else {
         panic!("expected a field-call verdict, got {:?}", verdicts[0]);
@@ -401,6 +403,14 @@ fn main() {
     assert_eq!(*receiver, brink_analyzer::Ty::Struct("Guest".into()));
     assert_eq!(field, "greet");
     assert!(matches!(field_ty, brink_analyzer::Ty::Fn(..)));
+    // Issue #1918: `g.greet(3)` matches `greet: fn(int): int`'s one
+    // parameter both in arity and type — a correctly-typed field call must
+    // stay clean, not just resolve.
+    assert_eq!(*arity_mismatch, None, "correct arity must stay clean");
+    assert!(
+        arg_mismatches.is_empty(),
+        "correct argument types must stay clean: {arg_mismatches:?}"
+    );
 
     let diags = diagnostics(&hir, &manifest);
     assert!(
@@ -1174,6 +1184,7 @@ fn noop() {}
         receiver,
         field,
         field_ty,
+        ..
     } = &verdicts[0]
     else {
         panic!("expected a field-call verdict, got {:?}", verdicts[0]);
@@ -1353,5 +1364,208 @@ fn main() {}
         !codes(&diags).contains(&DiagnosticCode::E144)
             && !codes(&diags).contains(&DiagnosticCode::E142),
         "a const-valued global receiver must resolve, not demand annotation: {diags:?}"
+    );
+}
+
+// ─── issue #1918: `FieldCall` argument checking ──────────────────────────
+//
+// #1881/PR #1914 added argument-type checking for the `FreeFnDesugar`/
+// `FreeFnAutoRef` verdicts (the tests above) but deliberately left
+// `FieldCall` — a call through a struct's own fn-typed field — uncovered
+// (flagged in review on #1881, filed as #1918). `FieldCall` is structurally
+// `strict::check_value_calls`'s T1c "call through a function value" domain
+// (that check's own module doc), just reached via field access, so its own
+// diagnostics are strict-mode-only (`E063`) exactly like that sibling —
+// see `check_field_call_args`'s own doc in `ufcs.rs`.
+//
+// Every fixture here necessarily also carries an `E071` ("mistyped field")
+// on the struct literal's own `greet: "hi"` initializer: the native surface
+// has no first-class function-value literal yet (`#fn(target, args…)` is
+// `brink-syntax`-only, T1c §2) — `brink-analyzer/tests/ufcs_resolution.rs`'s
+// own `a_function_typed_field_wins_and_is_recorded_as_a_field_call` already
+// tolerates this for the same reason, and `b3a_ufcs_e2e.rs`'s module doc
+// tracks the grammar gap as a follow-up on #1505. Assertions below check
+// `E063` specifically, never "diagnostics is empty", for exactly this
+// reason.
+
+/// Strict-mode whole-project diagnostics for one `.brink` file — the same
+/// seam [`diagnostics`] wraps, but with `types = strict` forced
+/// (`dialect = Brink`, so `resolve_type_policy` doesn't need an explicit
+/// override; `is_native = true` so `strict::config_error`'s ink-only gate
+/// is skipped). [`diagnostics`]'s own `AnalysisOptions::default()` resolves
+/// to `dialect = StrictInk` → `types = Gradual` (`resolve_type_policy`'s
+/// own doc), so it never reaches `strict::check` — this is the helper every
+/// test below needs instead.
+fn strict_diagnostics(hir: &HirFile, manifest: &SymbolManifest) -> Vec<Diagnostic> {
+    let files = vec![(FileId(0), hir, manifest)];
+    let analysis = brink_analyzer::analyze(&files);
+    let opts = AnalysisOptions {
+        dialect: brink_analyzer::Dialect::Brink,
+        types: Some(brink_analyzer::TypePolicy::Strict),
+        ..Default::default()
+    };
+    let (diags, _meta) = brink_analyzer::whole_project_diagnostics(
+        &files,
+        &analysis.index,
+        &analysis.resolutions,
+        &opts,
+        // `is_native`: this is a real `.brink` fixture.
+        true,
+        None,
+    );
+    diags
+}
+
+/// A one-field-call fixture: `Guest` declares `greet: fn(int): int`, and
+/// `main`'s body is `CALL_EXPR` (the call site under test).
+fn field_call_fixture(call_expr: &str) -> (HirFile, SymbolManifest) {
+    lower(&format!(
+        "\
+struct Guest {{
+  greet: fn(int): int
+}}
+
+fn main() {{
+  let g = Guest {{ greet: \"hi\" }};
+  let n = {call_expr};
+}}
+"
+    ))
+}
+
+/// A correctly-typed, correct-arity field call (`g.greet(3)` against
+/// `greet: fn(int): int`) must resolve as a clean `FieldCall` verdict with
+/// no `E063` under strict — the should-not-fire control every positive
+/// check below needs.
+#[test]
+fn a_correctly_typed_field_call_reports_no_e063_under_strict() {
+    let (hir, manifest) = field_call_fixture("g.greet(3)");
+    let diags = strict_diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E063),
+        "a correctly-typed, correct-arity field call must stay clean: {diags:?}"
+    );
+}
+
+/// A field call supplying an argument of the wrong type
+/// (`g.greet("nope")` against `greet: fn(int): int`) is a T1c-style
+/// argument-type mismatch — `E063`, naming the field and the
+/// expected/found types, matching `strict::check_value_calls`'s own
+/// `ValueCallKind::ArgMismatch` phrasing ("call through", via
+/// `field_call_arg_mismatch_diagnostic`, not the desugared-call "call to"
+/// wording). The asserted "argument 1" also pins the index convention:
+/// `UfcsArgMismatch::index` is 0-based over the *written* arguments for a
+/// `FieldCall` (no receiver prepend — the Exception paragraph on that
+/// field), so the first written argument reports as argument 1, not 2.
+#[test]
+fn a_field_call_with_a_mistyped_argument_is_reported_under_strict() {
+    let (hir, manifest) = field_call_fixture("g.greet(\"nope\")");
+    let diags = strict_diagnostics(&hir, &manifest);
+    let e063 = only(&diags, DiagnosticCode::E063);
+    assert!(
+        e063.message
+            .contains("argument 1 of call through `greet` has type `string`"),
+        "E063 must use the T1c call-through phrasing, name the field, the mismatched type, and \
+         the written-args-only argument number: {}",
+        e063.message
+    );
+}
+
+/// The should-not-fire control for the mistyped-argument case: the same
+/// fixture, but under gradual mode (`AnalysisOptions::default()`, resolving
+/// to `dialect = StrictInk` → `types = Gradual`) — `check_field_call_args`
+/// computes the fact unconditionally, but `strict_verdict_diagnostics` only
+/// ever runs from `strict::check`, so gradual mode must report nothing
+/// (mirrors `external_binding_cross_kind_argument_is_not_checked_under_gradual`'s
+/// own pattern in `strict.rs` for the same "computed unconditionally,
+/// reported only under strict" posture).
+#[test]
+fn a_field_call_with_a_mistyped_argument_is_not_reported_under_gradual() {
+    let (hir, manifest) = field_call_fixture("g.greet(\"nope\")");
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E063),
+        "gradual mode must never run the strict field-call argument check: {diags:?}"
+    );
+}
+
+/// A field call with too few arguments (`g.greet()` against
+/// `greet: fn(int): int`, one declared parameter) is an arity mismatch —
+/// `E063`, phrased like `strict::check_value_calls`'s own
+/// `ValueCallKind::ArityMismatch` ("call through `X` supplies N
+/// argument(s) but its known type expects M"), naming the field.
+///
+/// This is the house-rule arity check itself: unlike `FreeFnDesugar`'s own
+/// `E031` (unconditional, gradual included — `resolve::check_arity`'s own
+/// convention for a call resolving straight to a known def), `FieldCall`'s
+/// static arity check is strict-only by the same T1c posture as its
+/// argument-*type* check above — gradual mode's own enforcement is the
+/// runtime `FunctionValueArity` fault `Opcode::CallValue` already raises
+/// for every call through a function value (the same bytecode shape this
+/// verdict lowers to, `lower_ufcs_call`'s `FieldCall` arm) — see
+/// `crates/internal/brink-test-harness/tests/tier1_brink.rs`'s own
+/// `FunctionValueArity` tests for that mechanism proven end-to-end (through
+/// `#fn`, the only surface that can construct a real function *value*
+/// today — see `field_call_fixture`'s own doc comment above for why a
+/// `FieldCall`-specific runtime playthrough isn't constructible yet).
+#[test]
+fn a_field_call_with_the_wrong_arity_is_reported_under_strict() {
+    let (hir, manifest) = field_call_fixture("g.greet()");
+    let diags = strict_diagnostics(&hir, &manifest);
+    let e063 = only(&diags, DiagnosticCode::E063);
+    assert!(
+        e063.message.contains("greet") && e063.message.contains('1') && e063.message.contains('0'),
+        "E063 must name the field and the expected/got counts: {}",
+        e063.message
+    );
+}
+
+/// The should-not-fire control for the arity case, gradual mode.
+#[test]
+fn a_field_call_with_the_wrong_arity_is_not_reported_under_gradual() {
+    let (hir, manifest) = field_call_fixture("g.greet()");
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E063),
+        "gradual mode must never run the strict field-call arity check: {diags:?}"
+    );
+}
+
+/// Issue #2948 composition: `ufcs.rs`'s entry points switched to
+/// `visit::visit_with_decl_initializers`, so a decl-default lambda's own
+/// body now reaches this pass too (issue #2096) — a `FieldCall` site nested
+/// inside one must get the exact same arity checking a knot/stitch body
+/// gets. `check_field_call_args`'s arity half reads the call site's own
+/// AST-derived `arg_count`, not `current_body()`'s `BodyTypes` projection
+/// (which is `None` here — no enclosing knot/stitch — see that method's own
+/// doc for why arity must not degrade alongside a body lookup it doesn't
+/// depend on), so this must still fire.
+#[test]
+fn a_field_call_inside_a_decl_default_lambda_body_still_reports_wrong_arity_under_strict() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  greet: fn(int): int
+}
+
+const callGreet = |g: Guest| g.greet()
+
+fn main() {}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    assert!(
+        matches!(verdicts[0], UfcsVerdict::FieldCall { .. }),
+        "expected a field-call verdict, got {:?}",
+        verdicts[0]
+    );
+
+    let diags = strict_diagnostics(&hir, &manifest);
+    let e063 = only(&diags, DiagnosticCode::E063);
+    assert!(
+        e063.message.contains("greet"),
+        "arity checking must still reach a field call inside a decl-default lambda body: {}",
+        e063.message
     );
 }

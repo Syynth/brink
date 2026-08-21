@@ -230,6 +230,37 @@ pub enum UfcsVerdict {
         /// The field's declared type. Always a [`Ty::Fn`] — a
         /// non-callable match is `E140`, never a verdict.
         field_ty: Ty,
+        /// Issue #1918: this verdict's own arity fact. Unlike
+        /// [`Self::FreeFnDesugar`]/[`Self::FreeFnAutoRef`], a field call has
+        /// no receiver-prepending desugar — `npc.on_greet(3)` lowers
+        /// straight to `lir::Expr::CallValue { callee, args }` calling the
+        /// field's own `fn(...)` value with the *written* arguments only
+        /// (`brink_ir::lir::lower::expr::lower_ufcs_call`'s `FieldCall`
+        /// arm), so a mismatch here is a plain expected/got pair, not a
+        /// per-argument [`UfcsArgMismatch`]. Computed unconditionally
+        /// alongside this verdict, like every other verdict's own arg-check
+        /// fields; reported only by strict mode ([`check_strict`], `E063`)
+        /// — this verdict is structurally `strict::check_value_calls`'s T1c
+        /// "call through a function value" domain, just reached via field
+        /// access, and this reuses that check's own
+        /// `ValueCallKind::ArityMismatch` wording verbatim. Gradual mode
+        /// relies on the runtime `FunctionValueArity` fault
+        /// `Opcode::CallValue` already raises for every call through a
+        /// function value — the same bytecode shape this verdict lowers
+        /// to, so arity is enforced there regardless of static policy.
+        arity_mismatch: Option<UfcsArityMismatch>,
+        /// Issue #1918: this verdict's own per-argument type mismatches —
+        /// the `FieldCall` sibling of [`Self::FreeFnDesugar`]'s own
+        /// `arg_mismatches`. **Differs from that sibling's index
+        /// convention**: a field call passes no receiver argument, so
+        /// `index` here is 0-based over the *written* arguments only —
+        /// matching `strict::check_value_calls`'s own
+        /// `ValueCallKind::ArgMismatch` convention, not
+        /// [`UfcsArgMismatch::index`]'s "receiver counts as 0" default (see
+        /// that field's own doc for the exception this carves out).
+        /// Reported only by strict mode (`E063`), same gate as
+        /// `arity_mismatch` above.
+        arg_mismatches: Vec<UfcsArgMismatch>,
     },
     /// **D5 auto-ref** (issue #1462): a free function won (step 3) *and* its
     /// first parameter is declared `ref`, so the call desugars to
@@ -306,12 +337,32 @@ pub struct UfcsArgMismatch {
     /// *written* argument. Matches the "receiver counts as the first
     /// argument" convention this call site's own arity-mismatch diagnostic
     /// already uses (see [`UfcsVisitor::try_free_fn_desugar`]).
+    ///
+    /// **Exception (issue #1918):** a [`UfcsVerdict::FieldCall`]'s own
+    /// `arg_mismatches` does not follow this convention — a field call has
+    /// no receiver-prepending desugar, so `index` there is 0-based over the
+    /// *written* arguments only (`0` names the first written argument, not
+    /// the receiver); see that variant's own field doc.
     pub index: usize,
     /// The desugared target's declared parameter type at `index`.
     pub expected: Ty,
     /// The receiver's (`index == 0`) or written argument's statically
     /// classified type.
     pub found: Ty,
+}
+
+/// A [`UfcsVerdict::FieldCall`]'s own arity fact (issue #1918) — a call
+/// through a struct's fn-typed field expects/supplies a plain count, not a
+/// per-argument type, so this is a separate fact from [`UfcsArgMismatch`]
+/// rather than a shoehorned entry in that list. See that verdict's own
+/// `arity_mismatch` field doc for the full rationale (why this is checked
+/// at all, and why it's strict-mode-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UfcsArityMismatch {
+    /// The field's declared `fn(T…): R` row's own parameter count.
+    pub expected: usize,
+    /// The call site's own written argument count.
+    pub got: usize,
 }
 
 /// Every UFCS call site's verdict for one project.
@@ -473,6 +524,18 @@ pub fn resolve(
 ///   are disjoint diagnostic families keyed on the same `(receiver, name)`
 ///   pair, not a double-report risk.
 ///
+/// - Issue #1918: a `FieldCall` verdict's own `arity_mismatch`/
+///   `arg_mismatches` ([`UfcsVisitor::check_field_call_args`]) — left
+///   uncovered by #1881/PR #1914, which deliberately scoped to the
+///   `FreeFnDesugar`/`FreeFnAutoRef` bullet above and flagged this gap in
+///   review rather than filing it (issue comment on #1881). Structurally
+///   `strict::check_value_calls`'s T1c "call through a function value"
+///   domain, reached via field access instead of a bare name — a call
+///   through the field's `Ty::Fn` value directly, with no receiver-
+///   prepending desugar, so it gets its own arity fact
+///   ([`UfcsArityMismatch`]) rather than folding into a per-argument
+///   `UfcsArgMismatch` at index `0`.
+///
 /// Strict-mode-only **by convention, not by construction**, exactly like
 /// `coalesce::resolve`'s `E066` half: production reaches this only from
 /// `strict::check`, after `strict::config_error` has confirmed
@@ -511,10 +574,16 @@ pub fn check_strict(
 /// `infer::body`'s `remove` arm records; the two spellings must agree, so
 /// the receiver test here (`Ty::Array`) is deliberately the same one.
 ///
-/// `E063` (issue #1881, widened to `PreludeDesugar` by issue #1919) —
-/// every recorded [`UfcsArgMismatch`] on a `FreeFnDesugar`/`FreeFnAutoRef`/
-/// `PreludeDesugar` verdict, reported the same way
-/// `strict::check_direct_call_args` reports `DirectCallArgMismatch`.
+/// `E063` (issue #1881, widened to `PreludeDesugar` by issue #1919, and to
+/// `FieldCall` by issue #1918) — every recorded [`UfcsArgMismatch`] on a
+/// `FreeFnDesugar`/`FreeFnAutoRef`/`PreludeDesugar`/`FieldCall` verdict,
+/// reported the same way `strict::check_direct_call_args` reports
+/// `DirectCallArgMismatch` — plus, for `FieldCall` alone, its own
+/// [`UfcsArityMismatch`] (that verdict has no receiver-prepending desugar to
+/// fold an arity fact into `UfcsArgMismatch`'s index-`0` slot the way the
+/// other three verdicts do), phrased identically to
+/// `strict::check_value_calls`'s own `ValueCallKind::ArityMismatch` — the
+/// T1c "call through a value" domain this verdict structurally is.
 ///
 /// Every future collection-typed check that keys on `(receiver type, verb)`
 /// belongs in this match rather than in a parallel walk — that is the point
@@ -553,7 +622,75 @@ fn strict_verdict_diagnostics(key: NodeKey, verdict: &UfcsVerdict) -> Vec<Diagno
             .iter()
             .map(|mismatch| ufcs_arg_mismatch_diagnostic(key, name, mismatch))
             .collect(),
-        UfcsVerdict::FieldCall { .. } => Vec::new(),
+        UfcsVerdict::FieldCall {
+            field,
+            arity_mismatch,
+            arg_mismatches,
+            ..
+        } => {
+            let mut out: Vec<Diagnostic> = Vec::new();
+            if let Some(arity) = arity_mismatch {
+                out.push(field_call_arity_diagnostic(key, field, *arity));
+            }
+            out.extend(
+                arg_mismatches
+                    .iter()
+                    .map(|mismatch| field_call_arg_mismatch_diagnostic(key, field, mismatch)),
+            );
+            out
+        }
+    }
+}
+
+/// A [`UfcsVerdict::FieldCall`]'s own [`UfcsArgMismatch`] as a diagnostic
+/// — issue #1918. Like [`field_call_arity_diagnostic`] just below, the
+/// wording matches `strict::check_value_calls`'s own
+/// `ValueCallKind::ArgMismatch` phrasing exactly ("call **through**", the
+/// T1c domain this verdict structurally is) — deliberately NOT
+/// [`ufcs_arg_mismatch_diagnostic`]'s desugared-call "call to" phrasing,
+/// so both halves of a `FieldCall` verdict (arity and argument type) speak
+/// with one voice. `mismatch.index` here is 0-based over the *written*
+/// arguments (no receiver prepend — see [`UfcsArgMismatch::index`]'s
+/// Exception paragraph), so `+ 1` yields the same 1-based "argument N"
+/// numbering `check_value_calls` reports.
+fn field_call_arg_mismatch_diagnostic(
+    key: NodeKey,
+    field: &str,
+    mismatch: &UfcsArgMismatch,
+) -> Diagnostic {
+    Diagnostic {
+        file: key.file,
+        range: TextRange::new(key.range.0.into(), key.range.1.into()),
+        message: format!(
+            "argument {} of call through `{field}` has type `{}` but its known type expects `{}`",
+            mismatch.index + 1,
+            mismatch.found.display(),
+            mismatch.expected.display(),
+        ),
+        code: DiagnosticCode::E063,
+    }
+}
+
+/// A [`UfcsVerdict::FieldCall`]'s own [`UfcsArityMismatch`] as a diagnostic
+/// — issue #1918. The message wording matches
+/// `strict::check_value_calls`'s own `ValueCallKind::ArityMismatch`
+/// phrasing exactly (the T1c "call through a value" sibling this verdict
+/// structurally is), naming the field rather than a bare callee name.
+fn field_call_arity_diagnostic(
+    key: NodeKey,
+    field: &str,
+    mismatch: UfcsArityMismatch,
+) -> Diagnostic {
+    Diagnostic {
+        file: key.file,
+        range: TextRange::new(key.range.0.into(), key.range.1.into()),
+        message: format!(
+            "call through `{field}` supplies {got} argument(s) but its known type expects \
+             {expected}",
+            got = mismatch.got,
+            expected = mismatch.expected,
+        ),
+        code: DiagnosticCode::E063,
     }
 }
 
@@ -788,7 +925,7 @@ impl UfcsVisitor<'_> {
         };
 
         // Step 2 — field access wins outright (D1).
-        if self.try_field_call(path, method, &receiver) {
+        if self.try_field_call(path, method, &receiver, arg_count) {
             return;
         }
 
@@ -821,6 +958,7 @@ impl UfcsVisitor<'_> {
         path: &HirPath,
         method: &brink_ir::Name,
         receiver: &Receiver<'_>,
+        arg_count: usize,
     ) -> bool {
         let receiver_ty = &receiver.ty;
         let receiver_text = &receiver.text;
@@ -835,10 +973,19 @@ impl UfcsVisitor<'_> {
             return false;
         };
         if matches!(field_ty, Ty::Fn(..)) {
+            // Issue #1918: this verdict's own argument checking — computed
+            // here (unconditionally, like every other verdict's own
+            // arg-check fields) and carried on the verdict for
+            // `check_strict` to report as `E063`. See
+            // `Self::check_field_call_args`'s own doc.
+            let (arity_mismatch, arg_mismatches) =
+                self.check_field_call_args(path.range, field_ty, arg_count);
             let verdict = UfcsVerdict::FieldCall {
                 receiver: receiver_ty.clone(),
                 field: method.text.clone(),
                 field_ty: field_ty.clone(),
+                arity_mismatch,
+                arg_mismatches,
             };
             self.table
                 .insert(NodeKey::new(self.file, path.range), verdict);
@@ -1156,6 +1303,88 @@ impl UfcsVisitor<'_> {
             }
         }
         mismatches
+    }
+
+    /// Issue #1918: `FieldCall`'s own argument checking — structurally
+    /// `strict::check_value_calls`'s T1c "call through a function value"
+    /// domain (the issue's own framing: `recv.name(args)` resolving through
+    /// a struct's fn-typed field *is* a call through a value, just reached
+    /// via field access instead of a bare name), reached here rather than
+    /// through that pass because a UFCS receiver is deliberately invisible
+    /// to `infer::body::infer_call`'s own T1c branch (see
+    /// [`Self::check_ufcs_arg_types`]'s own doc for why — the same reason
+    /// applies here) — this pass has already resolved the field's own
+    /// `Ty::Fn` row by the time a `FieldCall` verdict is being built, which
+    /// `infer::body` never does for a multi-segment callee.
+    ///
+    /// **No receiver-prepending desugar, unlike [`Self::check_ufcs_arg_types`]
+    /// (`FreeFnDesugar`/`FreeFnAutoRef`).** Those two desugar
+    /// `recv.name(args)` into `name(recv, args)`, so the receiver becomes
+    /// the desugared call's own first argument and gets checked at index
+    /// `0`. A field call has no such rewrite: `npc.on_greet(3)` calls the
+    /// field's own `fn(...)` value directly with the *written* arguments
+    /// only (`brink_ir::lir::lower::expr::lower_ufcs_call`'s `FieldCall`
+    /// arm lowers straight to `lir::Expr::CallValue { callee, args }`, no
+    /// synthetic receiver argument) — the receiver's own type already did
+    /// its only job selecting this field via `try_field_call`'s
+    /// `Ty::Struct` match, so it is never checked as an argument here. Every
+    /// [`UfcsArgMismatch`] this returns is therefore `index`-0-based over
+    /// the written arguments alone, matching
+    /// `strict::check_value_calls`'s own `ValueCallKind::ArgMismatch`
+    /// convention rather than [`UfcsArgMismatch::index`]'s "receiver counts
+    /// as 0" default.
+    ///
+    /// **The arity half reads `arg_count`** — the call site's own
+    /// AST-derived written-argument count (`resolve_call`'s own
+    /// `args.len()`), always available — rather than `current_body()`'s
+    /// best-effort `ufcs_call_args` projection, exactly like
+    /// [`Self::try_free_fn_desugar`]'s own `E031` arity check does for the
+    /// same reason: a missing `BodyTypes` (global-initializer position, see
+    /// [`Self::check_ufcs_arg_types`]'s own doc) must degrade only the
+    /// per-argument *type* half, never arity — an arity fact this cheap to
+    /// derive structurally has no excuse to go missing alongside a body
+    /// lookup failure it doesn't actually depend on.
+    fn check_field_call_args(
+        &self,
+        range: TextRange,
+        field_ty: &Ty,
+        arg_count: usize,
+    ) -> (Option<UfcsArityMismatch>, Vec<UfcsArgMismatch>) {
+        let Ty::Fn(params, _ret, _) = field_ty else {
+            // `try_field_call` only ever calls this once `field_ty` has
+            // already matched `Ty::Fn(..)` — kept defensive (no panic
+            // outside a test helper; house rule) rather than assuming the
+            // caller's own invariant holds.
+            return (None, Vec::new());
+        };
+        let arity_mismatch = (arg_count != params.len()).then_some(UfcsArityMismatch {
+            expected: params.len(),
+            got: arg_count,
+        });
+
+        let empty: Vec<Ty> = Vec::new();
+        let written: &[Ty] = self
+            .current_body()
+            .and_then(|b| b.ufcs_call_args.iter().find(|f| f.range == range))
+            .map_or(empty.as_slice(), |f| f.args.as_slice());
+
+        let mut mismatches = Vec::new();
+        for (i, param_ty) in params.iter().enumerate() {
+            let Some(arg_ty) = written.get(i) else {
+                continue;
+            };
+            if arg_ty.is_unresolved() || param_ty.is_unresolved() {
+                continue;
+            }
+            if !assignable(param_ty, arg_ty) {
+                mismatches.push(UfcsArgMismatch {
+                    index: i,
+                    expected: param_ty.clone(),
+                    found: arg_ty.clone(),
+                });
+            }
+        }
+        (arity_mismatch, mismatches)
     }
 
     /// **D5's receiver gate.** `Some(cause)` when auto-ref cannot write
