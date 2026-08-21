@@ -422,11 +422,18 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
   `E185` closes that gap, mirroring the construction-literal unknown-field
   check (`E070`, above) for a plain assignment target instead of a `#{...}`
   literal. This only ever fires **once the receiver's own shape resolves**
-  (a `VAR`/`CONST`'s declared type, or an annotated `Param`/`Temp`) to a
-  known `STRUCT` — an untyped/unresolved receiver (e.g. an unannotated
-  function parameter) has no shape to check the name against and stays
-  silent, the same "Unknown never disagrees" posture every check on this
-  page takes for its own receiver. See `docs/diagnostics/E185.md`.
+  (a `VAR`/`CONST`'s declared type, an annotated `Param`/`Temp`, or —
+  issue #2906 — an **unannotated** `~ temp`'s own construction-literal
+  initializer) to a known `STRUCT` — an untyped/unresolved receiver (e.g.
+  an unannotated function parameter, or a `~ temp` whose initializer never
+  resolves past `Ty::Unknown`) has no shape to check the name against and
+  stays silent, the same "Unknown never disagrees" posture every check on
+  this page takes for its own receiver. The unannotated-temp case carries
+  its own conservative carve-out: a bare reassignment (`~ p = expr`,
+  including a `ref`-out call-site rebind) anywhere in the enclosing body
+  withdraws the initializer-inferred shape for the rest of that body, since
+  a reassignment to an unresolvable value cannot be told apart from "never
+  reassigned" any other way (issue #2906). See `docs/diagnostics/E185.md`.
 
 ## 7. What strict mode checks in plain-ink content — RULED
 
@@ -447,7 +454,11 @@ initializer-literal-inferred type, not only an explicit `: type`
 annotation — since #1877. A **dotted struct-field assignment target**
 (`~ p.x = expr`, single-level only — see §6) reaches this same checking
 since #1900, plus an unknown-field-*name* check (`E185`, since #1944) once
-the receiver's own shape resolves.
+the receiver's own shape resolves — including, since issue #2906, an
+**unannotated** `~ temp`'s own construction-literal-inferred shape (the
+same "an unannotated local's initializer-inferred type is enough, not only
+an explicit annotation" widening #1877 already ruled for globals), subject
+to §6's reassignment carve-out.
 
 ## 8. Effects touchpoint — RULED direction (T2 owns the detail)
 
