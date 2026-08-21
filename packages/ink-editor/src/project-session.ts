@@ -529,6 +529,104 @@ export class ProjectSession {
   }
 
   /**
+   * Rename/move a directory (#314, wired in #2587), rewriting every affected
+   * `INCLUDE` against ONE atomic pre-move snapshot — moved files' outbound
+   * includes, inbound includes from files outside the folder, and
+   * intra-folder sibling includes are all rewritten together, unlike a
+   * per-file {@link renameFile} loop (which computes each file's cross-file
+   * edits independently against whatever has already moved, so a
+   * same-basename directory move — every moved file keeps its own basename,
+   * only the prefix changes — can leave an outside referrer's `INCLUDE`
+   * pointing at the old, now-nonexistent path; see issue #2587).
+   *
+   * The session op (pure) computes every moved file's content plus outside
+   * referrers' edits from that one snapshot; this applies them the same way
+   * {@link renameFile} applies a single-file result — a provider write is
+   * inherently per-file, so #314's atomicity guarantee lives in the EDIT
+   * COMPUTATION above, not in these writes. All-or-nothing: the op itself
+   * refuses (no partial move) on a destination collision or an empty
+   * folder, so either every file in `oldPrefix` moves consistently or none
+   * do — a caller wanting partial-move-with-skips would reintroduce exactly
+   * the inconsistency #314 exists to prevent.
+   *
+   * Returns the `{oldPath, newPath}` pairs actually moved (so the caller can
+   * re-key open tabs and build an undo entry) plus the outside referrer
+   * paths whose `INCLUDE`s were rewritten (so the caller can refresh their
+   * views). Throws if the op fails (empty folder, or a destination
+   * collision) — same contract as {@link renameFile}.
+   *
+   * Off the paint path (#2587, same remedy as {@link renameFile} — #2776,
+   * spec §7.7.4): `rename_dir` runs the identical `gate_with_source`
+   * breakage gate as `rename_file`
+   * (`crates/internal/brink-ide/src/dir_rename.rs`), so the wasm call below
+   * is deferred to the next idle slot via {@link deferGatedCall} rather than
+   * run inline. This method stays async either way, so the synchronous
+   * busy-state commit a caller needs to paint BEFORE this yields lives one
+   * layer up, in the caller with store access (`renameFolder`,
+   * `packages/studio-store/src/slices/binder.ts`) — same split as
+   * `renameFile`/`applyRename`.
+   */
+  async renameDir(
+    oldPrefix: string,
+    newPrefix: string,
+  ): Promise<{ moved: Array<{ oldPath: string; newPath: string }>; referrers: string[] }> {
+    if (oldPrefix === newPrefix) return { moved: [], referrers: [] };
+    await this.deferGatedCall();
+    // PAINT-PATH-DEFERRED rename-dir: gated (structural_result::gate_with_source
+    // via crates/internal/brink-ide/src/dir_rename.rs) — deferred by the
+    // deferGatedCall yield immediately above (#2587, mirroring #2776's
+    // rename-file remedy; destroy()-safe since #2794 — see that method's
+    // doc comment).
+    const result = this.session.renameDir(oldPrefix, newPrefix);
+    if (!result.ok) {
+      throw new Error(result.error ?? `cannot rename directory ${oldPrefix}`);
+    }
+
+    // Session: add each moved file at its new key, drop the old one.
+    for (const mf of result.moved_files) {
+      this.session.updateFile(mf.new_path, mf.new_source);
+      this.session.removeFile(mf.old_path);
+    }
+
+    // Cross-file INCLUDE rewrites — outside referrers, through the shared
+    // apply-edits seam.
+    const referrers: string[] = [];
+    for (const edit of result.cross_file_edits) {
+      this.applyEdit(edit.path, edit.new_source);
+      referrers.push(edit.path);
+    }
+
+    // Provider: per-file atomic rename, or create-new + delete-old fallback
+    // — the same choice `renameFile` makes, since a provider only ever
+    // writes one file at a time.
+    for (const mf of result.moved_files) {
+      if (this.provider.renameFile) {
+        await this.provider.renameFile(mf.old_path, mf.new_path, mf.new_source);
+      } else {
+        await this.provider.createFile(mf.new_path, mf.new_source);
+        await this.provider.deleteFile?.(mf.old_path);
+      }
+      this.assertLive();
+      this.changes.record(mf.new_path, "created");
+      this.changes.record(mf.old_path, "deleted");
+    }
+
+    // `brink.toml` moved into or out of the tree (issue #2324).
+    if (
+      result.moved_files.some(
+        (mf) => isProjectConfigPath(mf.old_path) || isProjectConfigPath(mf.new_path),
+      )
+    ) {
+      this.applyProjectConfig();
+    }
+
+    return {
+      moved: result.moved_files.map((mf) => ({ oldPath: mf.old_path, newPath: mf.new_path })),
+      referrers,
+    };
+  }
+
+  /**
    * Compile the project from its entry file. Cached against the session's
    * mutation generation: with several live views each compiling on their own
    * debounce, only the first compile after a change does real work.
