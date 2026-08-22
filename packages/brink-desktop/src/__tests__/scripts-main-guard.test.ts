@@ -42,6 +42,7 @@ const scriptsDir = resolve(fileURLToPath(import.meta.url), "../../../scripts");
 // assertions below apply to it automatically.
 const EXPECTED_SCRIPTS = [
   "assert-real-sidecar.mjs",
+  "build-update-manifest.mjs",
   "ensure-cli-sidecar.mjs",
   "ensure-wasm.mjs",
 ];

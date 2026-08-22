@@ -921,6 +921,17 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
 /// item id is `open-recent:{path}`; `on_menu_event` in `run()` strips that
 /// prefix back off to recover the path (paths may themselves contain `:`
 /// on Windows, but `strip_prefix` only ever touches the leading match).
+///
+/// The `#[expect]` follows the repo's convention for a flat declarative
+/// enumeration (CLAUDE.md, "Which gate covers which files"): this is one
+/// menu tree written out in order, and splitting it into per-submenu
+/// helpers would trade a readable top-to-bottom description of the menu
+/// for indirection without removing a single line. Adding the D4
+/// `check-updates` item is what pushed it from 99 to 107.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat menu-tree declaration; splitting adds indirection, not clarity"
+)]
 fn build_menu(
     handle: &tauri::AppHandle,
     recents: &[String],
@@ -934,12 +945,24 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+Q"),
     )?;
+    // D4: the manual update check. Lives in the app menu beside About, the
+    // macOS convention, rather than in File — it is about the application,
+    // not the open project.
+    let check_updates = MenuItem::with_id(
+        handle,
+        "check-updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
     let app_menu = Submenu::with_items(
         handle,
         "Brink Studio",
         true,
         &[
             &PredefinedMenuItem::about(handle, None, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &check_updates,
             &PredefinedMenuItem::separator(handle)?,
             &quit,
         ],
@@ -1061,6 +1084,11 @@ pub fn run() -> tauri::Result<()> {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // D4 (docs/desktop-shell-spec.md): update check/install. `process`
+        // supplies the relaunch that applies a staged update — the frontend
+        // awaits the canonical save (quit.ts) before calling it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
@@ -1085,6 +1113,7 @@ pub fn run() -> tauri::Result<()> {
                     "close-project" => Some("menu:close-project"),
                     "export-inkb" => Some("menu:export-inkb"),
                     "export-xliff" => Some("menu:export-xliff"),
+                    "check-updates" => Some("menu:check-updates"),
                     "quit" => Some("menu:quit"),
                     _ => None,
                 };
@@ -2407,6 +2436,54 @@ on:
         std::fs::read_to_string(&path).expect("just asserted tauri.conf.json exists")
     }
 
+    /// The updater endpoint must not ride the repo-wide "latest" release.
+    ///
+    /// The shipped app polls ONE fixed url forever, so whatever is baked in
+    /// here is unfixable in the field — an app already installed keeps asking
+    /// the old address. `releases/latest/download/...` looks right and is
+    /// wrong: GitHub's "latest" is the newest release across the WHOLE repo,
+    /// and this repo runs three independent release trains. npm and crates
+    /// publish far more often than desktop does, so the first
+    /// `@brink-lang/*` release after a desktop one moves that url to a
+    /// release containing no `latest.json`.
+    ///
+    /// Tauri reads a 404 as "no update available", so the whole update
+    /// channel would go quiet with no error surfacing anywhere — every
+    /// installed copy stranded, and nothing to notice it by. That is why
+    /// this is pinned by a test rather than left to review: the broken form
+    /// is indistinguishable from the working one until months later.
+    ///
+    /// The manifest lives on the permanent `desktop-latest` alias release
+    /// instead, re-uploaded by `desktop-release.yml` on every desktop
+    /// release.
+    #[test]
+    fn updater_endpoint_does_not_depend_on_the_repo_wide_latest_release() {
+        let conf = tauri_conf();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&conf).expect("tauri.conf.json should be valid JSON");
+        let endpoints = parsed["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("updater plugin should declare an endpoints array");
+        assert!(
+            !endpoints.is_empty(),
+            "the updater declares no endpoints, so the app would never find an update"
+        );
+        for endpoint in endpoints {
+            let url = endpoint.as_str().expect("each endpoint should be a string");
+            assert!(
+                !url.contains("/releases/latest/"),
+                "updater endpoint {url} resolves through GitHub's repo-wide \"latest\" \
+                 release, which this repo's npm and crates trains move out from under \
+                 the desktop app; point it at the desktop-latest alias release instead"
+            );
+            assert!(
+                url.starts_with("https://"),
+                "updater endpoint {url} must be https — an update payload fetched over \
+                 plaintext is one an attacker can swap before signature checking helps"
+            );
+        }
+    }
+
     /// #2631: PR #2626's "a real bundle must ship the real `brink-cli`"
     /// invariant held for `cargo tauri build --debug` only through step
     /// ordering — `beforeBuildCommand` -> `pnpm build` happens to stage the
@@ -2866,10 +2943,13 @@ on:
                 // ci.yml and desktop-smoke.yml because `workflow_files()`
                 // walks the directory alphabetically.
                 "desktop-bundle-smoke.yml:desktop-bundle-smoke".to_owned(),
+                // D4 (docs/desktop-shell-spec.md): the tag-triggered official
+                // build. Added deliberately, per this assertion's contract.
+                "desktop-release.yml:build".to_owned(),
                 "desktop-smoke.yml:desktop-smoke".to_owned(),
                 "npm-release.yml:release".to_owned(),
             ],
-            "expected exactly these five jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
+            "expected exactly these six jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
              pnpm-install lane must both pass the ordering assertion above AND be added to \
              this list on purpose — that is what keeps a new lane from opting out of this \
              guard by simply existing"

@@ -209,9 +209,21 @@ jobs:
       # both fire for real, on a real x86_64-unknown-linux-gnu ELF, exactly
       # as `docs/desktop-shell-spec.md`'s by-hand observation table
       # recorded — before tauri-bundler produces the `.deb`.
+      #
+      # `createUpdaterArtifacts` is overridden OFF for this lane. With it on,
+      # `tauri build` hard-fails ("A public key has been found, but no
+      # private key") because this job has no TAURI_SIGNING_PRIVATE_KEY —
+      # and it deliberately should not have one: this lane runs on
+      # `pull_request`, where a fork PR cannot read secrets at all, so a
+      # lane that needed the key would be red for every outside
+      # contributor. What this lane exists to prove is that bundling works
+      # end to end on a real cross-workspace build; signing the update
+      # payload is desktop-release.yml's job, and is covered there.
       - name: tauri build --debug --bundles deb
         working-directory: packages/brink-desktop
-        run: pnpm tauri build --debug --bundles deb
+        run: >
+          pnpm tauri build --debug --bundles deb
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       # Proof this ran for real, not merely that the command exited 0: a
       # bundling step that silently produced nothing would still exit 0 if

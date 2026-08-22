@@ -3111,3 +3111,35 @@
 - **WHY:** Issue #2264 offered two paths — diagnose the co-occurrence as a hard error, or design what "wrap AND attach" would mean together and implement that. This ruling takes the first path only. Defining combined semantics (does the wrapped call's own return value also attach to the run it wraps? to itself?) is a design question with no ruling and no test pinning any answer — house rule 7 (design before implementation) says that question is not decided by default, and house rule 9 (flag silent drops) says the silent-acceptance status quo cannot stand while it's undecided. **Explicitly NOT decided by this entry:** whether `block` and `attach` can ever cooperate on one handler, and if so what it would mean. That question stays open; a future ruling would need to supersede this exclusivity, not just add to it.
 - **CONSEQUENCE:** a `.brink` project that previously declared both clauses on one handler (silently getting wrap-mode behavior with `attach` inert) now gets `E186` at analysis time instead, on both the db-direct and off-db analysis roads (shared HIR lowering). No known in-repo project relied on the previously-silent behavior; the ink-compat surface (`.ink`) has no equivalent annotation and is unaffected.
 - **Also landed:** `docs/diagnostics/E186.md`; `docs/compiler-spec.md`'s diagnostic table range bump (`E001`–`E185` → `E001`–`E186`); `docs/prose-dialect-spec.md` §3.5b cross-referenced from both the `attach` bullet and the `block` bullet.
+
+## Desktop D4: public distribution, signed + notarized on macOS, unsigned elsewhere, independent versioning
+- **WHEN:** 2026-08-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / repo-infra
+- **SCOPE:** architectural
+- **WHAT:** D4 is un-deferred. The desktop app ships **publicly**, which makes Apple codesigning + notarization non-negotiable on macOS (an unsigned public build is effectively broken there). Platforms: **macOS Apple Silicon, Windows, Linux**. **Windows ships UNSIGNED for now** — there is no cheap notarization equivalent; SmartScreen warns until a download earns reputation, and adding a cert later is a secrets change because the workflow uses the same conditional-signing shape as macOS. **Versioning is INDEPENDENT**: `tauri.conf.json`'s `version` is the source of truth, released on `desktop-v*` tags, decoupled from the crate/npm pipelines. New `.github/workflows/desktop-release.yml` — deliberately NOT `release.yml`, which is cargo-dist-generated and forbidden to edit. **iOS is not being built, but must not be foreclosed**: the two couplings that would block it — the `brink-cli` sidecar (iOS cannot ship subprocess binaries) and the native folder picker (iOS has no arbitrary-directory access) — are today confined to one feature behind `cli.ts` and to the `FileProvider` seam respectively, and must stay that way; sidecar- or picker-dependent behavior must never become load-bearing in the core editing loop.
+- **WHY:** Public distribution is the stated goal, and the staging (pipeline first, credentials second) means nothing waits on Apple paperwork: signing steps are conditional on secrets, so the workflow is real and testable while unsigned. Independent versioning matters concretely — the crate/npm release pipeline has not shipped in five weeks (299 pending changesets), and coupling the desktop to it would inherit that stall.
+
+## Update UX: check on launch, prompt to install; save before relaunch
+- **WHEN:** 2026-08-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** The desktop app checks for updates **silently, a few seconds after launch**, and prompts only when one is found (Install and Restart / Later); a manual **Check for Updates…** item in the app menu reports every outcome including "up to date". Nothing installs without consent, and nothing installs silently. Installing **awaits the canonical save before relaunching**, reusing `awaitSaveAllBeforeQuit` (quit.ts) rather than a third save discipline.
+- **WHY:** An editor that swaps itself out under an author mid-session erodes trust, and a "Check for Updates…" button that can produce no visible outcome is a broken button — hence silent-on-launch but talkative-on-request. Relaunching is the same hazard quitting is: an in-flight canonical write must not be raced, and #2370/#2434/#2444 already taught that seam the redispatch-and-cap discipline, so a third copy would only re-learn it.
+
+## The updater lands only once a real signing keypair exists
+- **WHEN:** 2026-08-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** minor/local
+- **WHAT:** `tauri-plugin-updater` is deliberately NOT wired in the first D4 change. It requires a real public key in `tauri.conf.json`; a placeholder would produce an app that advertises an update channel it can never verify. It lands as its own change once `tauri signer generate` has produced a keypair (private key + password in repo secrets, public key in config).
+- **WHY:** Landed-but-inert config is the exact pattern this project's reviews keep catching (#2305, #2113). An update channel that cannot verify anything is worse than no channel — it looks like a feature.
+
+## The update manifest lives on a `desktop-latest` alias release, not GitHub's repo-wide "latest"
+- **WHEN:** 2026-08-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / repo-infra
+- **SCOPE:** architectural
+- **WHAT:** The shipped app polls `https://github.com/Syynth/brink/releases/download/desktop-latest/latest.json`. `desktop-latest` is a permanent alias release holding only the manifest, re-uploaded by `desktop-release.yml` on every desktop release with `--latest=false`; the binaries stay on the versioned `desktop-v*` release the manifest points into. The rejected alternative was hosting the manifest on GitHub Pages beside the book, which decouples it from releases entirely at the cost of a second publish path.
+- **WHY:** `releases/latest/download/...` — the obvious form, and the one originally shipped in #2996 — is wrong for this repo specifically: GitHub's "latest" is the newest release across the WHOLE repo, and brink runs three independent release trains. It resolved to `@brink-lang/studio@0.14.0` at the time of the ruling, a release containing no `latest.json`. Tauri reads the resulting 404 as "no update available", so the first `@brink-lang/*` publish after a desktop release would have killed the update channel silently, with no error surfaced anywhere. This is precisely the failure mode independent desktop versioning was chosen for. The choice is load-bearing beyond ordinary config because the endpoint is **baked into every shipped binary**: an installed app keeps polling the address it was built with, so a wrong value is unfixable in the field by any later release. Pinned by `updater_endpoint_does_not_depend_on_the_repo_wide_latest_release` (src-tauri) rather than left to review, since the broken form is indistinguishable from the working one until months after shipping.

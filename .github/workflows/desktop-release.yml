@@ -1,0 +1,253 @@
+name: Desktop release
+
+# Official brink-desktop builds (D4, docs/desktop-shell-spec.md).
+#
+# Tag-triggered on `desktop-v*` — the desktop version is INDEPENDENT of the
+# crate/npm release pipelines (ruled 2026-08-22): `tauri.conf.json`'s
+# `version` is its source of truth, so the desktop can ship while crates and
+# npm move on their own cadence.
+#
+# ⚠ This is NOT `release.yml`. That file is cargo-dist-generated for the Rust
+# crates and is house-rule-forbidden to edit (editing it breaks the release
+# `plan` check). This is a separate workflow for a separate artifact.
+#
+# APPLE signing/notarization steps are CONDITIONAL on secrets being present
+# (`APPLE_CERTIFICATE` et al). With them absent the build still produces
+# working bundles — unsigned, so macOS quarantines the download — which is
+# what makes this pipeline testable before the Apple credentials exist.
+#
+# ⚠ `TAURI_SIGNING_PRIVATE_KEY` is NOT optional in the same way. Once
+# `createUpdaterArtifacts` is on, `tauri build` HARD-FAILS without it
+# ("A public key has been found, but no private key" — verified locally,
+# not assumed). That is the correct behaviour: an unsigned update payload
+# is one no client will ever accept, so failing the build beats shipping a
+# release whose update channel silently does nothing.
+# Windows ships unsigned by decision (SmartScreen warns until the download
+# earns reputation); the same conditional shape means adding a Windows cert
+# later is a secrets change, not a rewrite.
+#
+# The updater is deliberately NOT wired here yet: `tauri-plugin-updater`
+# requires a real public key in `tauri.conf.json`, and shipping a placeholder
+# would produce an app that advertises updates it can never verify. It lands
+# once the signing keypair exists (`tauri signer generate`).
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build the matrix but do not create a GitHub Release"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Apple Silicon)
+            os: macos-latest
+            bundles: app,dmg
+            artifact: macos-aarch64
+          - label: Linux
+            os: ubuntu-latest
+            bundles: deb,appimage
+            artifact: linux-x86_64
+          - label: Windows
+            os: windows-latest
+            bundles: nsis
+            artifact: windows-x86_64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Same system deps the bundle-smoke lane installs; webkit2gtk + the
+      # AppImage tooling are Linux-only.
+      - name: Install Linux dependencies (Tauri)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with:
+          version: v0.14.0
+
+      # The frontend is a `file:` dependency on this output — it must exist
+      # BEFORE install, or the link silently fails to resolve (#2479/#2593).
+      - name: Build brink-web wasm package
+        run: wasm-pack build crates/brink-web --target web --out-dir www/pkg
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: pnpm install:checked -- --frozen-lockfile
+
+      # Import the Developer ID cert into a throwaway keychain. Skipped
+      # wholesale when the secret is absent, which is what lets this workflow
+      # run end-to-end before the Apple credentials exist.
+      - name: Import Apple signing certificate
+        if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import /tmp/cert.p12 -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f /tmp/cert.p12
+
+      # `tauri build` signs when APPLE_SIGNING_IDENTITY is set and notarizes
+      # when the App Store Connect API key vars are; both resolve to empty
+      # strings otherwise, and the build proceeds unsigned.
+      - name: Build bundles
+        env:
+          # Signs the updater payloads. Absent ⇒ payloads ship unsigned and
+          # the manifest step fails loudly rather than publishing a release
+          # whose update channel no client can verify.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ github.workspace }}/api-key.p8
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_API_KEY_CONTENT }}" ]; then
+            echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > "$APPLE_API_KEY_PATH"
+          fi
+          pnpm --filter @brink/desktop exec tauri build --bundles ${{ matrix.bundles }}
+          rm -f "$APPLE_API_KEY_PATH"
+
+      # Fail loudly rather than uploading an empty artifact — the bundle-smoke
+      # lane's own lesson (#2709): assert the artifact exists, do not assume
+      # a zero exit means a bundle was produced.
+      - name: Verify bundles were produced
+        shell: bash
+        run: |
+          dir=packages/brink-desktop/src-tauri/target/release/bundle
+          test -d "$dir" || { echo "::error::no bundle directory at $dir"; exit 1; }
+          found=$(find "$dir" -type f \( -name '*.dmg' -o -name '*.app' -o -name '*.deb' \
+            -o -name '*.AppImage' -o -name '*.exe' \) | wc -l | tr -d ' ')
+          echo "bundles found: $found"
+          test "$found" -gt 0 || { echo "::error::bundle dir exists but is empty"; exit 1; }
+          find "$dir" -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \
+            -o -name '*.exe' \) -print
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: brink-desktop-${{ matrix.artifact }}
+          path: |
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.dmg
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.deb
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.AppImage
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.exe
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.app.tar.gz
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.nsis.zip
+            packages/brink-desktop/src-tauri/target/release/bundle/**/*.sig
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    # Runs for dry runs too: assembling (and printing) the manifest is the
+    # single most failure-prone step — the filename→platform-key mapping is
+    # unverifiable without real artifacts — so a dry run must exercise it.
+    # Only the PUBLISH step is gated on this being a real tag.
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+      # The manifest the shipped app polls. Built by a TESTED script rather
+      # than inline shell: the filename→platform-key mapping fails silently
+      # when wrong (the app reports "up to date" forever), and the script
+      # refuses to emit an unsigned or empty manifest.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          sparse-checkout: packages/brink-desktop/scripts
+          path: repo
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - name: Build latest.json
+        run: |
+          version="${GITHUB_REF_NAME#desktop-v}"
+          # A dispatch run has a branch name, not a tag, so the strip above
+          # leaves it unchanged; the manifest still proves the mapping.
+          case "$GITHUB_REF_NAME" in desktop-v*) ;; *) version="0.0.0-dryrun" ;; esac
+          node repo/packages/brink-desktop/scripts/build-update-manifest.mjs \
+            artifacts "$version" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" artifacts/latest.json
+          cat artifacts/latest.json
+
+      # The shipped app polls a FIXED url, so the manifest must live at a
+      # stable address. It cannot be `releases/latest/...`: GitHub's "latest"
+      # is the newest release in the WHOLE repo, and this repo's npm and
+      # crates trains publish far more often than desktop does — the first
+      # `@brink-lang/*` release after a desktop one would take that url to a
+      # release with no latest.json in it. Tauri reads a 404 as "no update
+      # available", so the update channel would die silently and stay dead.
+      # (Checked, not theorised: `releases/latest` resolves to
+      # `@brink-lang/studio@0.14.0` today.)
+      #
+      # `desktop-latest` is a permanent alias release holding only the
+      # manifest, re-uploaded on every desktop release. `--latest=false`
+      # keeps it from displacing the real "Latest" badge, and it carries no
+      # binaries — those stay on the versioned `desktop-v*` release the
+      # manifest points into.
+      - name: Publish the manifest to the desktop-latest alias
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create desktop-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Desktop update manifest" \
+              --notes "Update manifest the Brink Studio desktop app polls. Points at the newest desktop-v* release; not a download." \
+              --latest=false
+          gh release upload desktop-latest artifacts/latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "Brink Studio ${{ github.ref_name }}" \
+            --generate-notes \
+            artifacts/*
