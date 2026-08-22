@@ -2436,6 +2436,59 @@ on:
         std::fs::read_to_string(&path).expect("just asserted tauri.conf.json exists")
     }
 
+    /// The app's version must be one number, not three that happen to agree.
+    ///
+    /// `tauri.conf.json` is what the built binary reports and what the
+    /// updater compares against a manifest. `Cargo.toml` and `package.json`
+    /// carry their own copies. Once an update channel exists, a disagreement
+    /// between the shipped version and the version a release advertises is
+    /// not a cosmetic wrong string — it is a permanent update loop: the app
+    /// fetches the newer version, relaunches still reporting the old one,
+    /// and finds the same update again, on every launch, for every user.
+    ///
+    /// `desktop-release.yml` checks the git tag against `tauri.conf.json` at
+    /// release time. This catches the same class one step earlier — when the
+    /// three files drift apart in an ordinary commit, long before anyone
+    /// tags — which is when it is still free to fix.
+    #[test]
+    fn the_three_version_declarations_agree() {
+        let conf: serde_json::Value =
+            serde_json::from_str(&tauri_conf()).expect("tauri.conf.json should be valid JSON");
+        let conf_version = conf["version"]
+            .as_str()
+            .expect("tauri.conf.json should declare a version");
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let cargo_toml = std::fs::read_to_string(manifest_dir.join("Cargo.toml"))
+            .expect("src-tauri/Cargo.toml should be readable");
+        let cargo_version = cargo_toml
+            .lines()
+            .find_map(|line| line.strip_prefix("version = "))
+            .map(|v| v.trim().trim_matches('"'))
+            .expect("src-tauri/Cargo.toml should declare a version");
+
+        let pkg_path = manifest_dir.join("../package.json");
+        let pkg_raw = std::fs::read_to_string(&pkg_path)
+            .expect("packages/brink-desktop/package.json should be readable");
+        let pkg: serde_json::Value =
+            serde_json::from_str(&pkg_raw).expect("package.json should be valid JSON");
+        let pkg_version = pkg["version"]
+            .as_str()
+            .expect("package.json should declare a version");
+
+        assert_eq!(
+            conf_version, cargo_version,
+            "tauri.conf.json says {conf_version} but src-tauri/Cargo.toml says {cargo_version}; \
+             tauri.conf.json is the one the updater compares, so a release tagged to match \
+             Cargo.toml would loop every installed app"
+        );
+        assert_eq!(
+            conf_version, pkg_version,
+            "tauri.conf.json says {conf_version} but package.json says {pkg_version}; bump all \
+             three together"
+        );
+    }
+
     /// The updater endpoint must not ride the repo-wide "latest" release.
     ///
     /// The shipped app polls ONE fixed url forever, so whatever is baked in

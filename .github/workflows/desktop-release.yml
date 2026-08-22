@@ -75,6 +75,34 @@ jobs:
         with:
           persist-credentials: false
 
+      # The tag names the version the manifest will ADVERTISE; tauri.conf.json
+      # names the version the built binary REPORTS. If they disagree, the
+      # result is not a wrong version string — it is an infinite update loop:
+      # an installed app sees the newer manifest version, updates, relaunches
+      # still reporting the old version, sees the same update again, forever.
+      # It would hit every user on every launch, and nothing in the release
+      # itself would look wrong.
+      #
+      # Checked before the matrix builds rather than after, so a mismatch
+      # costs seconds instead of three release-mode builds. Only meaningful
+      # on a tag — a dispatch run has a branch name, not a version.
+      - name: Tag version must match tauri.conf.json
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#desktop-v}"
+          conf_version="$(jq -r .version packages/brink-desktop/src-tauri/tauri.conf.json)"
+          if [ "$tag_version" != "$conf_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} declares version ${tag_version}, but" \
+                 "packages/brink-desktop/src-tauri/tauri.conf.json declares ${conf_version}." \
+                 "Shipping this would put every installed app into a permanent update loop:" \
+                 "it would fetch ${tag_version}, relaunch still reporting ${conf_version}," \
+                 "and immediately find the same update again. Bump tauri.conf.json (and" \
+                 "Cargo.toml / package.json alongside it) to ${tag_version}, or retag."
+            exit 1
+          fi
+          echo "tag and tauri.conf.json agree on ${conf_version}"
+
       # Same system deps the bundle-smoke lane installs; webkit2gtk + the
       # AppImage tooling are Linux-only.
       - name: Install Linux dependencies (Tauri)
