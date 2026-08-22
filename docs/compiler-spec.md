@@ -373,6 +373,33 @@ explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 source of truth for the code set; `crates/internal/brink-test-harness/tests/diagnostic_docs_validation.rs`
 asserts every variant has a corresponding doc file and that no orphaned doc files exist.
 
+**A page's `Example`/`Fix` fences are compile-checked, not just tag-checked**
+(DD-1, issue #2021): `crates/internal/brink-test-harness/tests/diagnostic_docs_fences.rs`
+compiles every `ink`/`brink` fence in `docs/diagnostics/*.md` through the real
+compile path and asserts the page's own code appears (or is absent) per the
+fence's own tag. Every such fence must carry one of:
+
+- `` ink,fires(Exxx) `` / `` brink,fires(Exxx) `` — the fence must produce the
+  page's own code `Exxx` (as a warning on a clean compile, or inside the
+  diagnostics of a failed one).
+- `` ink,contrast `` / `` brink,contrast `` — the fence must **not** produce
+  `Exxx` (a fix, or an adjacent shape that stays clean).
+- `` ink,ignore `` / `` brink,ignore `` — a fragment/pseudocode illustration,
+  not a standalone program.
+- `` ink,skip(reason) `` / `` brink,skip(reason) `` — cannot be represented
+  as one in-memory fence (needs a `brink.toml` project or a host-capability
+  manifest); the reason is mandatory and is enumerated in the test's own
+  output.
+
+A bare, untagged `ink`/`brink` fence is a gate failure — the taxonomy is
+closed so a freshly-written repro (e.g. as issue #1623's content pass fills
+in a still-placeholder page) can never land unchecked. A page still carrying
+the scaffold's placeholder `## Example` text is skipped wholesale (no tag
+needed) until #1623 gives it real content. See that test file's own module
+doc for the full taxonomy, the `<!-- fence: types=strict -->` marker a
+policy-gated code's fence needs, and how a `brink`-tagged fence compiles
+through the real native driver.
+
 | Code | Summary |
 | --- | --- |
 | [`E001`](diagnostics/E001.md) | Knot definition is missing a name. |
