@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <!-- DERIVED from assets/brand/brink-icon-night.svg — full-bleed ground so the
+       OS applies its own mask instead of plating our squircle inside its own. -->
+  <rect x="0" y="0" width="120" height="120" fill="#101420"/>
+  <g transform="translate(23.6,28) scale(0.727)">
+    <path d="M50 0 C54 10 65.6 23.4 74.94 37.34 A30 30 0 1 1 25.06 37.34 C34.4 23.4 46 10 50 0 Z" fill="#7E96FF"/>
+    <path d="M36 54 L56 54 M50 43 L62 54 L50 65" fill="none" stroke="#101420" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
