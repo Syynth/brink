@@ -61,16 +61,22 @@ use crate::manifest::local_definition_id;
 /// project-wide module/export data and diagnoses when a trailing segment
 /// resolves to **neither**.
 ///
-/// ⚠ **Corrected 2026-08-05 (issue #2287).** This doc previously claimed
-/// the submodule reading makes its exports "bare-visible" / "referenceable
-/// by bare name" — that was an over-read of the 2026-07-27 ruling and was
-/// itself the reported bug: a `qualified` entry alone must never license a
-/// *bare* reference (`resolve_divert::lookup_knot_bare`'s
-/// `is_qualified_import_only` exclusion is what now enforces this for
-/// diverts specifically — the only reference kind this issue's repro
-/// covers). `qualified_modules.contains(module)` still legitimately grants
-/// non-divert reference kinds `Candidacy::Imported` for their own
-/// qualified-syntax forms; nothing about that changed.
+/// ⚠ **Corrected 2026-08-05 (issue #2287), widened 2026-08-22 (issue
+/// #2298).** This doc previously claimed the submodule reading makes its
+/// exports "bare-visible" / "referenceable by bare name" — that was an
+/// over-read of the 2026-07-27 ruling and was itself the reported bug: a
+/// `qualified` entry alone must never license a *bare* reference
+/// (`is_qualified_import_only`, enforced via the shared
+/// `lookup_bare_excluding_qualified_only` helper both `lookup_divert`'s
+/// `Knot`/`Stitch`/`Label`/`Variable`+`Constant` steps and
+/// `resolve_function`'s knot-as-tunnel-function step now go through —
+/// #2287 shipped only the `Knot`-in-a-divert case; #2298 closed the
+/// deliberate remainder). `qualified_modules.contains(module)` still
+/// legitimately grants every *other* reference kind (calls resolving to an
+/// `External`/`Variable`/`Constant`, struct literals, etc.)
+/// `Candidacy::Imported` for their own qualified-syntax forms via the
+/// ordinary flat `classify`/`lookup_by_name` path; nothing about that
+/// changed.
 #[must_use]
 pub(crate) fn import_coverage_for_file(
     imports: &[Import],
@@ -344,10 +350,18 @@ fn resolve_divert(
     } else {
         diagnostics.push(unresolved_diag(
             index,
+            scope,
             file_id,
             uref.range,
             &uref.path,
             DiagnosticCode::E024,
+            &[
+                SymbolKind::Knot,
+                SymbolKind::Stitch,
+                SymbolKind::Label,
+                SymbolKind::Variable,
+                SymbolKind::Constant,
+            ],
         ));
     }
 }
@@ -490,25 +504,71 @@ fn lookup_divert(
         return Some(id);
     }
 
-    // 3. Top-level stitch (bare name, no parent knot)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Stitch]) {
+    // 3. Top-level stitch (bare name, no parent knot). Issue #2298: same
+    // `is_qualified_import_only` exclusion as step 2, via the kind-generic
+    // [`lookup_bare_excluding_qualified_only`] — a stitch reachable only
+    // through a qualified-module import must not resolve a bare divert any
+    // more than a knot may. Currently unreachable for native (a `flow`
+    // always classifies `SymbolKind::Knot`, never `Stitch`, so no
+    // top-level-stitch candidate can carry a real cross-module `module` for
+    // this exclusion to fire against) — latent, not dead: fixed here
+    // alongside steps 5–6 so the whole post-knot tail obeys one rule
+    // instead of the Knot-only gate #2296 shipped, per issue #2298's scope.
+    if let Some(id) =
+        lookup_bare_excluding_qualified_only(index, scope, path, &[SymbolKind::Stitch])
+    {
         return Some(id);
     }
 
-    // 4. Label anywhere in current knot (search by suffix)
+    // 4. Label anywhere in current knot (search by suffix). Deliberately
+    // untouched by issue #2298: `knot` here is always `uref.scope.knot`,
+    // i.e. the *referring file's own* currently-open knot — a stitch or
+    // label found this way is always declared alongside it in the same
+    // file, hence the same declared module, hence `Candidacy::InScope`
+    // regardless of any import. There is no cross-module reading for
+    // `lookup_label_in_knot` to leak through, so the exclusion has nothing
+    // to guard here.
     if let Some(knot) = &uref.scope.knot
         && let Some(id) = lookup_label_in_knot(index, scope, knot, path)
     {
         return Some(id);
     }
 
-    // 5. Top-level label — stored as bare name (visible from any scope)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Label]) {
+    // 5. Top-level label — stored as bare name (visible from any scope).
+    // Issue #2298: same reasoning as step 3.
+    if let Some(id) = lookup_bare_excluding_qualified_only(index, scope, path, &[SymbolKind::Label])
+    {
         return Some(id);
     }
 
-    // 6. Variable divert target (`VAR x = -> knot`, then `-> x`)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Variable]) {
+    // 6. Variable divert target (`VAR x = -> knot`, then `-> x`). Issue
+    // #2298: same `is_qualified_import_only` exclusion as steps 2–3/5, via
+    // the shared kind-generic lookup — plus the `SymbolKind::Constant`
+    // omission recorded on issue #2083's thread (crediting that report):
+    // `resolve_function`'s own Variable-divert-target-shaped lookup (its
+    // "Try variables and constants" step) was widened to `[Variable,
+    // Constant]` by #2947 for the call-site gap #2083 reported, but this
+    // divert-target step was left `Variable`-only as a "next-wave
+    // candidate" — a `CONST x = -> knot` could never be diverted to via
+    // `-> x` even though the call-site twin already accepts a const-bound
+    // value. Fixed here in the same pass as the exclusion, not reordered
+    // to locals-first the way #2947 reordered `resolve_function`: step 7
+    // below already runs after this one, so — as for the `Variable` kind
+    // this step has always matched — a global `CONST x = -> knot` now wins
+    // over a same-named local param at a divert site, where before this
+    // widening the local won by falling through to step 7. That shadow
+    // order is deliberate and pinned by
+    // `global_constant_divert_target_shadows_a_same_named_local` below.
+    // Attribution: issue #2298's own body names only Stitch/Label/Variable
+    // at this step — the `Constant` addition is issue #2083's thread's
+    // next-wave candidate (its 2026-08-21 comment), taken in the same
+    // pass, not something #2298 asked for.
+    if let Some(id) = lookup_bare_excluding_qualified_only(
+        index,
+        scope,
+        path,
+        &[SymbolKind::Variable, SymbolKind::Constant],
+    ) {
         return Some(id);
     }
 
@@ -557,8 +617,35 @@ fn is_qualified_import_only(scope: &ImportScope, info: &SymbolInfo) -> bool {
 /// `first_match`/`multiple`, exactly where this one must too — bolting the
 /// exclusion on afterward would still let a qualified-only candidate win
 /// as the "sole" match.
+///
+/// Issue #2298 widened this beyond diverts: `resolve_function`'s "try
+/// knots" step (ink allows a knot as a function via tunnels — the same
+/// divert-shaped addressing space, unlike a call resolving to an
+/// `External`/`Variable`/`Constant`, which stays on the ordinary
+/// `classify`-based rule per this module's top-of-file doc) reproduced bug
+/// (b) for a bare *call* `haggle()`, so it now shares this exact lookup
+/// rather than drifting its own copy. Thin wrapper over
+/// [`lookup_bare_excluding_qualified_only`], kept as its own named function
+/// (rather than inlining `&[SymbolKind::Knot]` at both call sites) because
+/// this name is what the doc comments elsewhere in this file point readers
+/// at.
 fn lookup_knot_bare(index: &SymbolIndex, scope: &ImportScope, name: &str) -> Option<DefinitionId> {
-    if let Some(id) = lookup_knot_bare_direct(index, scope, name) {
+    lookup_bare_excluding_qualified_only(index, scope, name, &[SymbolKind::Knot])
+}
+
+/// The kind-generic form of [`lookup_knot_bare`] (issue #2298): the same
+/// bare, qualified-import-only-excluding lookup, parameterized over the
+/// symbol-kind set so [`lookup_divert`]'s later steps (`Stitch`/`Label`/
+/// `Variable`+`Constant`) can share this one implementation too, instead of
+/// each hand-copying [`lookup_knot_bare_direct`]'s structure the way that
+/// function itself once hand-copied [`lookup_by_name_direct`]'s.
+fn lookup_bare_excluding_qualified_only(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    name: &str,
+    kinds: &[SymbolKind],
+) -> Option<DefinitionId> {
+    if let Some(id) = lookup_bare_excluding_qualified_only_direct(index, scope, name, kinds) {
         return Some(id);
     }
     // Alias fallback (issue #1590), mirroring `lookup_by_name`'s own: an
@@ -574,18 +661,20 @@ fn lookup_knot_bare(index: &SymbolIndex, scope: &ImportScope, name: &str) -> Opt
     let ids = index.by_name.get(source_name.as_str())?;
     ids.iter().find_map(|id| {
         let info = index.symbols.get(id)?;
-        (info.kind == SymbolKind::Knot && info.module.as_deref() == Some(module.as_str()))
+        (kinds.contains(&info.kind) && info.module.as_deref() == Some(module.as_str()))
             .then_some(*id)
     })
 }
 
-/// The direct (non-alias) half of [`lookup_knot_bare`] — see that
-/// function's own doc for why this duplicates
-/// [`lookup_by_name_direct`]'s structure rather than reusing it.
-fn lookup_knot_bare_direct(
+/// The direct (non-alias) half of [`lookup_bare_excluding_qualified_only`] —
+/// see that function's own doc, and [`lookup_knot_bare`]'s original doc, for
+/// why this duplicates [`lookup_by_name_direct`]'s structure rather than
+/// reusing it.
+fn lookup_bare_excluding_qualified_only_direct(
     index: &SymbolIndex,
     scope: &ImportScope,
     name: &str,
+    kinds: &[SymbolKind],
 ) -> Option<DefinitionId> {
     let ids = index.by_name.get(name)?;
     let mut first_match = None;
@@ -596,7 +685,7 @@ fn lookup_knot_bare_direct(
         let Some(info) = index.symbols.get(id) else {
             continue;
         };
-        if info.kind != SymbolKind::Knot {
+        if !kinds.contains(&info.kind) {
             continue;
         }
         let candidacy = classify(scope, info);
@@ -722,10 +811,12 @@ fn resolve_variable(
             }
             diagnostics.push(unresolved_diag(
                 index,
+                scope,
                 file_id,
                 uref.range,
                 path,
                 DiagnosticCode::E025,
+                &[],
             ));
         }
     }
@@ -898,8 +989,23 @@ fn resolve_function(
         return;
     }
 
-    // Try knots (ink allows knots as functions via tunnels)
-    if let Some(id) = lookup_by_name(index, scope, path, &[SymbolKind::Knot]) {
+    // Try knots (ink allows knots as functions via tunnels). Issue #2298:
+    // this is `lookup_knot_bare`, not the flat `lookup_by_name`/`classify`
+    // every other lookup in this function uses — a knot-as-tunnel-function
+    // call sits in the same divert-shaped addressing space `-> knot`
+    // itself does (`lookup_divert`'s step 2), so a bare call `haggle()`
+    // after only a module-qualified import (`use story::market::barter;`,
+    // no symbol-level import of `haggle`) must be rejected exactly like
+    // the bare divert `-> haggle` already is (issue #2287 bug (b)) —
+    // before this fix, this step's flat lookup let `Candidacy::Imported`
+    // from the qualified-module reading win regardless, reproducing bug
+    // (b) for calls instead of diverts. The `External`/`List`/
+    // `Variable`+`Constant` lookups below stay on the ordinary
+    // `classify`-based rule deliberately: they are not divert-shaped, and
+    // this module's top-of-file doc's "calls, struct literals, etc." carve-
+    // out still holds for them — only a knot's own tunnel-call addressing
+    // is special-cased here.
+    if let Some(id) = lookup_knot_bare(index, scope, path) {
         map.push(ResolvedRef {
             file: file_id,
             range: uref.range,
@@ -1133,10 +1239,12 @@ fn resolve_function(
 
     diagnostics.push(unresolved_diag(
         index,
+        scope,
         file_id,
         uref.range,
         path,
         DiagnosticCode::E025,
+        &[SymbolKind::Knot],
     ));
 }
 
@@ -1222,10 +1330,12 @@ fn resolve_list_ref(
 
     diagnostics.push(unresolved_diag(
         index,
+        scope,
         file_id,
         uref.range,
         path,
         DiagnosticCode::E025,
+        &[],
     ));
 }
 
@@ -1254,10 +1364,12 @@ fn resolve_struct_ref(
     }
     diagnostics.push(unresolved_diag(
         index,
+        scope,
         file_id,
         uref.range,
         path,
         DiagnosticCode::E068,
+        &[],
     ));
 }
 
@@ -1777,12 +1889,49 @@ fn is_std_shadowed_name(index: &SymbolIndex, path: &str) -> bool {
     })
 }
 
+/// Look for a candidate named `path`, of one of `kinds`, that resolution
+/// skipped specifically because it is reachable only via a **qualified**
+/// module import ([`is_qualified_import_only`]) — the "module-imported-
+/// but-bare" row of the four-row resolution table issues #2287/#2296
+/// worked through for diverts and #2298 extended to knot-as-tunnel-
+/// function calls and `lookup_divert`'s remaining steps. When one exists,
+/// [`unresolved_diag`] threads its module into the message so this row
+/// gets the same "import it from `module`" framing `modules::check`'s own
+/// E025 already gives the "no import at all" row (issue #2298 item 3),
+/// instead of a bare, unexplained unresolved-reference message.
+///
+/// `kinds` must be exactly the symbol kinds the caller's own lookup chain
+/// actually applied the `is_qualified_import_only` exclusion to — passing
+/// a kind the caller never excluded (e.g. `External` at a function-call
+/// site, which stays on the ordinary `classify` rule per this module's
+/// top-of-file doc) would name a candidate that was never "skipped" at
+/// all, misattributing an unrelated resolution failure. An empty slice
+/// (every call site this exclusion does not apply to) always returns
+/// `None`, leaving the message exactly as it was before this hint existed.
+fn qualified_import_only_hint(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    path: &str,
+    kinds: &[SymbolKind],
+) -> Option<String> {
+    let ids = index.by_name.get(path)?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        if !kinds.contains(&info.kind) || !is_qualified_import_only(scope, info) {
+            return None;
+        }
+        info.module.clone()
+    })
+}
+
 fn unresolved_diag(
     index: &SymbolIndex,
+    scope: &ImportScope,
     file: FileId,
     range: rowan::TextRange,
     path: &str,
     code: DiagnosticCode,
+    qualified_only_kinds: &[SymbolKind],
 ) -> Diagnostic {
     let message = if is_std_shadowed_name(index, path) {
         format!(
@@ -1790,6 +1939,15 @@ fn unresolved_diag(
              (either the mounted stdlib, or your own project file at a `std/…` path); bare \
              names under `std::` are invisible outside it by rule, not by mistake — reference \
              it with `use std::…` (docs/modules-spec.md §4)",
+            code.title(),
+        )
+    } else if let Some(module) =
+        qualified_import_only_hint(index, scope, path, qualified_only_kinds)
+    {
+        format!(
+            "{}: `{path}` — exported by `{module}`, which this file imports only as a module; \
+             a module import never brings bare names into scope — import it from `{module}` \
+             (see modules-spec §2)",
             code.title(),
         )
     } else {
@@ -3394,10 +3552,12 @@ mod tests {
         let (index, _ids) = ambush_index_with_modules(&["std::conventions::screenplay"]);
         let diag = unresolved_diag(
             &index,
+            &ImportScope::default(),
             FileId(0),
             range(0, 6),
             "ambush",
             DiagnosticCode::E025,
+            &[],
         );
         assert_eq!(diag.code, DiagnosticCode::E025);
         assert!(
@@ -3411,7 +3571,15 @@ mod tests {
     #[test]
     fn unresolved_diag_stays_plain_when_no_std_candidate_exists() {
         let index = SymbolIndex::default();
-        let diag = unresolved_diag(&index, FileId(0), range(0, 6), "nope", DiagnosticCode::E025);
+        let diag = unresolved_diag(
+            &index,
+            &ImportScope::default(),
+            FileId(0),
+            range(0, 6),
+            "nope",
+            DiagnosticCode::E025,
+            &[],
+        );
         assert_eq!(
             diag.message,
             format!("{}: `nope`", DiagnosticCode::E025.title()),
@@ -3956,6 +4124,351 @@ mod tests {
             "a totally unimported cross-module Knot must still resolve here — \
              `modules::check`'s E025/E087 gate is what rejects it, with a far \
              more precise diagnostic than a bare E024 would give"
+        );
+    }
+
+    // ── Issue #2298: the remainder #2287/#2296 deliberately left ─────
+    //
+    // Item 1 (the live gap): `resolve_function`'s "try knots" step is bug
+    // (b)'s call-site twin — a bare `haggle()` after only a module-qualified
+    // import must be rejected exactly like bare `-> haggle` already is.
+    // Item 2 (latent): `lookup_divert`'s Stitch/Label/Variable+Constant
+    // steps share the same exclusion now, plus the `Constant` omission
+    // recorded on issue #2083's thread. Item 3: the rejection message
+    // names the qualified-import-only candidate it skipped, mirroring
+    // `modules::check`'s own E025 "import it from" framing.
+
+    fn function_uref(path: &str, arg_count: usize) -> UnresolvedRef {
+        UnresolvedRef {
+            path: path.to_string(),
+            range: range(0, path.len() as u32),
+            kind: RefKind::Function,
+            scope: Scope::default(),
+            arg_count: Some(arg_count),
+            module_qualified: false,
+        }
+    }
+
+    fn qualified_module_only_scope() -> ImportScope {
+        ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "barter".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        )
+    }
+
+    fn symbol_level_import_scope() -> ImportScope {
+        ImportScope::new(
+            None,
+            &[Import {
+                module: "story::market::barter".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "haggle".to_string(),
+                    alias: None,
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        )
+    }
+
+    /// Item 1's RED case: before this fix, `resolve_function`'s "try knots"
+    /// step used the flat `lookup_by_name`/`classify`, under which the
+    /// dual-reading phantom `story::market::barter` qualified-module entry
+    /// classified `haggle` `Candidacy::Imported` and — being the sole
+    /// candidate — the old fast path returned it unconditionally, exactly
+    /// reproducing #2287 bug (b) for a call instead of a divert.
+    #[test]
+    fn bare_call_rejected_after_qualified_module_import_only() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = qualified_module_only_scope();
+        let uref = function_uref("haggle", 0);
+        let mut map = ResolutionMap::new();
+        let mut diagnostics = Vec::new();
+        resolve_function(
+            &index,
+            &scope,
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert!(
+            map.is_empty(),
+            "a qualified-module-only import must not license the bare call \
+             `haggle()` — issue #2298's live gap, the call-site twin of \
+             #2287 bug (b): {map:?}"
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E025);
+    }
+
+    /// Row 3's call-site twin: a genuine symbol-level bare import
+    /// (`use story::market::barter::haggle;`) must still license the bare
+    /// call `haggle()` — the exclusion must not overcorrect into rejecting
+    /// a legitimately bare-imported knot-as-tunnel-function.
+    #[test]
+    fn bare_call_resolves_via_symbol_level_import() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let scope = symbol_level_import_scope();
+        let uref = function_uref("haggle", 0);
+        let mut map = ResolutionMap::new();
+        let mut diagnostics = Vec::new();
+        resolve_function(
+            &index,
+            &scope,
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        assert_eq!(
+            map.iter().map(|r| r.target).collect::<Vec<_>>(),
+            vec![haggle_id],
+            "`use story::market::barter::haggle;` must license the bare call \
+             `haggle()`"
+        );
+    }
+
+    /// Row 4's call-site twin: with no import at all, the call still
+    /// resolves here — `modules::check`'s separate E025/E087 gate is the
+    /// one that rejects a genuinely unimported cross-module reference, not
+    /// this lookup (same deferral `bare_divert_still_resolves_with_no_import_deferring_to_the_e025_e087_gate`
+    /// pins for diverts).
+    #[test]
+    fn bare_call_still_resolves_with_no_import_deferring_to_the_e025_e087_gate() {
+        let (index, haggle_id) = haggle_index("story::market::barter");
+        let uref = function_uref("haggle", 0);
+        let mut map = ResolutionMap::new();
+        let mut diagnostics = Vec::new();
+        resolve_function(
+            &index,
+            &ImportScope::default(),
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            map.iter().map(|r| r.target).collect::<Vec<_>>(),
+            vec![haggle_id],
+            "a totally unimported cross-module Knot must still resolve at a \
+             call site, exactly as it does at a divert site"
+        );
+    }
+
+    /// Item 3: the module-imported-but-bare divert row gets the same
+    /// "import it from `module`" framing `modules::check`'s own E025
+    /// already gives the "no import at all" row, instead of a bare,
+    /// unexplained `E024` naming just `haggle`.
+    #[test]
+    fn unresolved_diag_hints_at_qualified_import_only_candidate_for_divert() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = qualified_module_only_scope();
+        let uref = divert_uref("haggle", false);
+        let mut map = ResolutionMap::new();
+        let mut diagnostics = Vec::new();
+        resolve_divert(
+            &index,
+            &scope,
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E024);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("import it from `story::market::barter`"),
+            "the module-imported-but-bare row must name the qualified-\
+             import-only candidate it skipped: {}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Item 3's call-site twin.
+    #[test]
+    fn unresolved_diag_hints_at_qualified_import_only_candidate_for_call() {
+        let (index, _haggle_id) = haggle_index("story::market::barter");
+        let scope = qualified_module_only_scope();
+        let uref = function_uref("haggle", 0);
+        let mut map = ResolutionMap::new();
+        let mut diagnostics = Vec::new();
+        resolve_function(
+            &index,
+            &scope,
+            &[],
+            FileId(0),
+            &uref,
+            &mut map,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, DiagnosticCode::E025);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("import it from `story::market::barter`"),
+            "the module-imported-but-bare call row must name the qualified-\
+             import-only candidate it skipped too: {}",
+            diagnostics[0].message
+        );
+    }
+
+    fn constant_index(name: &str) -> (SymbolIndex, DefinitionId) {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let id = DefinitionId::new(DefinitionTag::Address, 0x749);
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind: SymbolKind::Constant,
+                file: FileId(0),
+                range: TextRange::default(),
+                id,
+                name: name.to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: None,
+                visibility: Visibility::Public,
+            },
+        );
+        index.by_name.entry(name.to_string()).or_default().push(id);
+        (index, id)
+    }
+
+    /// Item 2's `Constant` omission, credited to issue #2083's thread:
+    /// `resolve_function`'s own "try variables and constants" step was
+    /// widened to `[Variable, Constant]` by #2947 for the call-site gap
+    /// #2083 reported, but `lookup_divert`'s step 6 — the divert-target
+    /// twin of that same lookup — was left `Variable`-only. A `CONST
+    /// target = -> knot` could never be diverted to via `-> target` even
+    /// though the call-site twin already accepts a const-bound value.
+    ///
+    /// Probed directly against a synthetic index (not a real native
+    /// compile): today's native surface has no way to construct a
+    /// `Constant`-kind divert-target candidate through real source, since
+    /// a `flow` always classifies `SymbolKind::Knot` — this is the only
+    /// way to exercise step 6's kind list at all, matching the "probe it;
+    /// if it turns out unreachable, record WHY" instruction this issue's
+    /// build carried.
+    #[test]
+    fn divert_target_resolves_a_constant_symbol() {
+        let (index, const_id) = constant_index("target");
+        let uref = divert_uref("target", false);
+        assert_eq!(
+            lookup_divert(&index, &ImportScope::default(), &[], &uref),
+            Some(const_id),
+            "a top-level Constant-kind divert target must resolve via step \
+             6, matching resolve_function's own [Variable, Constant] \
+             call-site lookup (issue #2083's thread)"
+        );
+    }
+
+    /// The shadow order the `Constant` widening implies, pinned per the
+    /// #2298 review round (finding 4): when BOTH a local (param) `target`
+    /// AND a global `CONST target` (divert-target-holding) exist, the
+    /// global wins — step 6 runs before the locals step 7, exactly the
+    /// established order the `Variable` species has always had at this
+    /// step. Before the widening the param won for the `Constant` species
+    /// only (step 6 missed `Constant`, step 7 found the local). Same
+    /// synthetic-index reachability caveat as
+    /// `divert_target_resolves_a_constant_symbol` above.
+    #[test]
+    fn global_constant_divert_target_shadows_a_same_named_local() {
+        let (index, const_id) = constant_index("target");
+        let locals = vec![LocalSymbol {
+            name: "target".to_string(),
+            range: range(10, 6),
+            scope: Scope::default(),
+            kind: SymbolKind::Param,
+            param_detail: None,
+            annotation: None,
+        }];
+        let uref = divert_uref("target", false);
+        assert_eq!(
+            lookup_divert(&index, &ImportScope::default(), &locals, &uref),
+            Some(const_id),
+            "a global Constant divert target must shadow a same-named local \
+             at a divert site, matching the Variable species' established \
+             step-6-before-step-7 order"
+        );
+    }
+
+    /// Item 2's plumbing proof: the shared [`lookup_bare_excluding_qualified_only`]
+    /// honors the exclusion for a non-`Knot` kind too — not just asserted
+    /// by code inspection. Unreachable via a real native compile today for
+    /// the same reason as the test above (no `Stitch` candidate can carry
+    /// a real cross-module `module` yet), so this is a synthetic-index
+    /// probe of the shared helper directly.
+    #[test]
+    fn lookup_bare_excluding_qualified_only_respects_the_exclusion_for_non_knot_kinds() {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let id = DefinitionId::new(DefinitionTag::Address, 0x750);
+        index.symbols.insert(
+            id,
+            SymbolInfo {
+                kind: SymbolKind::Stitch,
+                file: FileId(1),
+                range: TextRange::default(),
+                id,
+                name: "haggle".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some("story::market::barter".to_string()),
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("haggle".to_string())
+            .or_default()
+            .push(id);
+
+        let scope = qualified_module_only_scope();
+        assert_eq!(
+            lookup_bare_excluding_qualified_only(&index, &scope, "haggle", &[SymbolKind::Stitch]),
+            None,
+            "a qualified-module-only import must not license a bare Stitch \
+             lookup any more than it licenses a bare Knot lookup"
+        );
+
+        // Should-not-fire control: no import at all still defers to the
+        // resolved-but-unimported gate, exactly like the Knot case.
+        assert_eq!(
+            lookup_bare_excluding_qualified_only(
+                &index,
+                &ImportScope::default(),
+                "haggle",
+                &[SymbolKind::Stitch]
+            ),
+            Some(id)
         );
     }
 }

@@ -239,9 +239,16 @@ fn a_qualified_use_licenses_the_reference_it_names() {
 // `UnresolvedRef` fixtures `brink-analyzer::resolve`'s own tests use.
 
 /// `market/barter.brink` — native, module `story::market::barter`,
-/// exporting a public flow `haggle`.
+/// exporting a public flow `haggle`. One *typed* parameter on purpose
+/// (#2298 review round, finding 6): the call fixtures below invoke
+/// `haggle(x)`, so a zero-param declaration made every "clean" control
+/// silently tolerate an arity diagnostic its E024/E025/E087 filter never
+/// saw — and an untyped `x` draws strict inference's E065 instead. With
+/// `x: int` (and the divert fixtures passing an argument to match), each
+/// control fixture analyzes to ZERO diagnostics, so the filters guard
+/// exactly what they claim to.
 const QUALIFIED_MARKET: &str = "\
-pub flow haggle() {
+pub flow haggle(x: int) {
   You haggle at the market stall.
   -> DONE
 }
@@ -254,7 +261,7 @@ const QUALIFIED_MAIN_ACCEPTED: &str = "\
 use story::market::barter;
 
 flow start() {
-  -> barter::haggle
+  -> barter::haggle(1)
 }
 ";
 
@@ -265,7 +272,7 @@ const QUALIFIED_MAIN_BARE_REJECTED: &str = "\
 use story::market::barter;
 
 flow start() {
-  -> haggle
+  -> haggle(1)
 }
 ";
 
@@ -373,5 +380,102 @@ fn glob_use_is_not_reachable_in_the_native_grammar() {
         "a glob `use ...::*;` must fail to parse cleanly — if this starts \
          passing, the native grammar has gained glob-`use` support and \
          issue #2287's row 4 needs a real resolution test, not this pin"
+    );
+}
+
+// ─── Issue #2298: the remainder #2287/#2296 deliberately left ───────
+//
+// Item 1, the live gap: `resolve_function`'s "try knots" step (ink allows
+// a knot as a function via tunnels) is bug (b)'s call-site twin — a bare
+// `haggle()` after only a module-qualified import must be rejected
+// exactly like the bare divert `-> haggle` already is. The fixture below
+// also probes #2948's composition concern (decl-initializer visitation):
+// the call sits inside a decl-default lambda literal (`|x| haggle(x)`
+// as a top-level `const`'s value), the shape #2948 taught other analyzer
+// passes to walk — `project_manifest`'s own `Expr::Lambda` handling
+// already reaches inside one unconditionally (see `symbols::project`'s
+// `walk_expr`/`walk_lambda`), so this fixture is the end-to-end proof
+// that the reference actually gets recorded and resolved there too, not
+// just a unit-tested claim about the walker.
+
+/// `story.brink` — module-qualified import only, then a bare tunnel-
+/// function call to `haggle` nested inside a decl-default lambda.
+const QUALIFIED_MAIN_BARE_CALL_REJECTED: &str = "\
+use story::market::barter;
+
+const probe = |x| haggle(x)
+
+flow start() {
+  -> DONE
+}
+";
+
+/// The same call site, but with a genuine symbol-level bare import — must
+/// resolve cleanly, the should-not-fire control for the rejection above.
+const QUALIFIED_MAIN_BARE_CALL_ACCEPTED: &str = "\
+use story::market::barter::haggle;
+
+const probe = |x| haggle(x)
+
+flow start() {
+  -> DONE
+}
+";
+
+/// Item 1's RED case, end to end: before this fix, `resolve_function`'s
+/// flat `lookup_by_name`/`classify` let the dual-reading phantom
+/// `story::market::barter` qualified-module entry license the bare call,
+/// reproducing #2287 bug (b) for a call instead of a divert. Item 3: the
+/// resulting `E025` must name the qualified-import-only candidate it
+/// skipped, mirroring `modules::check`'s own E025 "import it from"
+/// framing.
+#[test]
+fn qualified_use_does_not_license_the_bare_call() {
+    let result = analyze_qualified_project(QUALIFIED_MAIN_BARE_CALL_REJECTED);
+    let e025s: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == brink_ir::DiagnosticCode::E025)
+        .collect();
+    assert_eq!(
+        e025s.len(),
+        1,
+        "a module-qualified-only import must leave the bare call `haggle()` \
+         unresolved, exactly one E025: {:?}",
+        result.diagnostics
+    );
+    assert!(
+        e025s[0]
+            .message
+            .contains("import it from `story::market::barter`"),
+        "the E025 for a module-imported-but-bare call must name the \
+         qualified-import-only candidate it skipped: {}",
+        e025s[0].message
+    );
+}
+
+/// The should-not-fire control: a genuine symbol-level bare import must
+/// still license the bare call, inside the same decl-default-lambda
+/// nesting — the exclusion must not overcorrect into rejecting a
+/// legitimately bare-imported knot-as-tunnel-function.
+#[test]
+fn symbol_level_use_licenses_the_bare_call() {
+    let result = analyze_qualified_project(QUALIFIED_MAIN_BARE_CALL_ACCEPTED);
+    let offenders: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code,
+                brink_ir::DiagnosticCode::E024
+                    | brink_ir::DiagnosticCode::E025
+                    | brink_ir::DiagnosticCode::E087
+            )
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "`use story::market::barter::haggle;` must license the bare call \
+         `haggle(x)` inside the decl-default lambda: {offenders:?}"
     );
 }
