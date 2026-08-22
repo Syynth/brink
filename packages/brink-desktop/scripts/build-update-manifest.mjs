@@ -21,6 +21,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
+ * @typedef {{ signature: string, url: string }} PlatformEntry
+ * @typedef {{ version: string, notes: string, pub_date: string,
+ *   platforms: Record<string, PlatformEntry> }} UpdateManifest
+ */
+
+/**
  * Tauri platform key for an updater payload filename, or null when the file
  * is not an updater payload (a `.dmg`, a `.deb`, a stray `.sig`).
  *
@@ -28,6 +34,18 @@ import { pathToFileURL } from "node:url";
  * macOS ships `.app.tar.gz`, Linux `.AppImage`, Windows the NSIS `.zip`.
  * A `.dmg`/`.deb` is an INSTALLER, not an update payload — including one
  * here would produce a manifest the updater cannot apply.
+ *
+ * ⚠ The macOS payload is named `Brink Studio.app.tar.gz` — no architecture
+ * marker at all (observed from a real `tauri build`, not assumed). That is
+ * why the arch test below DEFAULTS to aarch64 rather than reading the name:
+ * it is correct only while the macOS matrix is ARM-only. Adding an Intel mac
+ * lane would have BOTH lanes emit that same bare filename, and the release
+ * job's `download-artifact` runs with `merge-multiple: true` — so one would
+ * silently overwrite the other and the manifest would ship one arch's binary
+ * under both keys. Give the lanes distinct artifact names before adding one.
+ *
+ * @param {string} filename
+ * @returns {string | null}
  */
 export function platformKeyFor(filename) {
   if (filename.endsWith(".sig")) return null;
@@ -47,8 +65,24 @@ export function platformKeyFor(filename) {
  * Throws when a payload has no adjacent `.sig`: an unsigned entry would be
  * rejected by every client at verification time, so emitting it would ship a
  * manifest that looks complete and updates nobody.
+ *
+ * `readDir`/`readFile` are injected so the mapping is testable without a
+ * real bundle directory; they are typed narrowly (rather than inheriting
+ * `readdirSync`'s overload set) so a consumer's stub typechecks.
+ *
+ * @param {object} options
+ * @param {string} options.dir
+ * @param {string} options.version
+ * @param {string} options.tag
+ * @param {string} options.repo
+ * @param {string} [options.notes]
+ * @param {string} [options.pubDate]
+ * @param {(dir: string) => string[]} [options.readDir]
+ * @param {(path: string) => string} [options.readFile]
+ * @returns {UpdateManifest}
  */
 export function buildManifest({ dir, version, tag, repo, notes = "", pubDate, readDir = readdirSync, readFile = (p) => readFileSync(p, "utf8") }) {
+  /** @type {Record<string, PlatformEntry>} */
   const platforms = {};
   for (const file of readDir(dir).sort()) {
     const key = platformKeyFor(file);

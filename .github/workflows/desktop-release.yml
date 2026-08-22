@@ -11,10 +11,17 @@ name: Desktop release
 # crates and is house-rule-forbidden to edit (editing it breaks the release
 # `plan` check). This is a separate workflow for a separate artifact.
 #
-# macOS signing/notarization steps are CONDITIONAL on secrets being present
+# APPLE signing/notarization steps are CONDITIONAL on secrets being present
 # (`APPLE_CERTIFICATE` et al). With them absent the build still produces
 # working bundles — unsigned, so macOS quarantines the download — which is
 # what makes this pipeline testable before the Apple credentials exist.
+#
+# ⚠ `TAURI_SIGNING_PRIVATE_KEY` is NOT optional in the same way. Once
+# `createUpdaterArtifacts` is on, `tauri build` HARD-FAILS without it
+# ("A public key has been found, but no private key" — verified locally,
+# not assumed). That is the correct behaviour: an unsigned update payload
+# is one no client will ever accept, so failing the build beats shipping a
+# release whose update channel silently does nothing.
 # Windows ships unsigned by decision (SmartScreen warns until the download
 # earns reputation); the same conditional shape means adding a Windows cert
 # later is a secrets change, not a rewrite.
@@ -169,7 +176,11 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
+    # Runs for dry runs too: assembling (and printing) the manifest is the
+    # single most failure-prone step — the filename→platform-key mapping is
+    # unverifiable without real artifacts — so a dry run must exercise it.
+    # Only the PUBLISH step is gated on this being a real tag.
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -194,11 +205,15 @@ jobs:
       - name: Build latest.json
         run: |
           version="${GITHUB_REF_NAME#desktop-v}"
+          # A dispatch run has a branch name, not a tag, so the strip above
+          # leaves it unchanged; the manifest still proves the mapping.
+          case "$GITHUB_REF_NAME" in desktop-v*) ;; *) version="0.0.0-dryrun" ;; esac
           node repo/packages/brink-desktop/scripts/build-update-manifest.mjs \
             artifacts "$version" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" artifacts/latest.json
           cat artifacts/latest.json
 
       - name: Create release
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
