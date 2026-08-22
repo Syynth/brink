@@ -553,10 +553,16 @@ fn lookup_divert(
     // `-> x` even though the call-site twin already accepts a const-bound
     // value. Fixed here in the same pass as the exclusion, not reordered
     // to locals-first the way #2947 reordered `resolve_function`: step 7
-    // below already runs after this one, and no test or issue here asks
-    // for a local param to shadow a same-named global `VAR`/`CONST` at a
-    // divert site — widening the kind list is the whole of what issue
-    // #2298 asks for at this step.
+    // below already runs after this one, so — as for the `Variable` kind
+    // this step has always matched — a global `CONST x = -> knot` now wins
+    // over a same-named local param at a divert site, where before this
+    // widening the local won by falling through to step 7. That shadow
+    // order is deliberate and pinned by
+    // `global_constant_divert_target_shadows_a_same_named_local` below.
+    // Attribution: issue #2298's own body names only Stitch/Label/Variable
+    // at this step — the `Constant` addition is issue #2083's thread's
+    // next-wave candidate (its 2026-08-21 comment), taken in the same
+    // pass, not something #2298 asked for.
     if let Some(id) = lookup_bare_excluding_qualified_only(
         index,
         scope,
@@ -1939,8 +1945,9 @@ fn unresolved_diag(
         qualified_import_only_hint(index, scope, path, qualified_only_kinds)
     {
         format!(
-            "{}: `{path}` — a qualified-module import makes `{module}::{path}` reachable, but \
-             not the bare `{path}`; import it from `{module}` (see modules-spec §2)",
+            "{}: `{path}` — exported by `{module}`, which this file imports only as a module; \
+             a module import never brings bare names into scope — import it from `{module}` \
+             (see modules-spec §2)",
             code.title(),
         )
     } else {
@@ -4378,6 +4385,36 @@ mod tests {
             "a top-level Constant-kind divert target must resolve via step \
              6, matching resolve_function's own [Variable, Constant] \
              call-site lookup (issue #2083's thread)"
+        );
+    }
+
+    /// The shadow order the `Constant` widening implies, pinned per the
+    /// #2298 review round (finding 4): when BOTH a local (param) `target`
+    /// AND a global `CONST target` (divert-target-holding) exist, the
+    /// global wins — step 6 runs before the locals step 7, exactly the
+    /// established order the `Variable` species has always had at this
+    /// step. Before the widening the param won for the `Constant` species
+    /// only (step 6 missed `Constant`, step 7 found the local). Same
+    /// synthetic-index reachability caveat as
+    /// `divert_target_resolves_a_constant_symbol` above.
+    #[test]
+    fn global_constant_divert_target_shadows_a_same_named_local() {
+        let (index, const_id) = constant_index("target");
+        let locals = vec![LocalSymbol {
+            name: "target".to_string(),
+            range: range(10, 6),
+            scope: Scope::default(),
+            kind: SymbolKind::Param,
+            param_detail: None,
+            annotation: None,
+        }];
+        let uref = divert_uref("target", false);
+        assert_eq!(
+            lookup_divert(&index, &ImportScope::default(), &locals, &uref),
+            Some(const_id),
+            "a global Constant divert target must shadow a same-named local \
+             at a divert site, matching the Variable species' established \
+             step-6-before-step-7 order"
         );
     }
 

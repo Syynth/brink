@@ -239,9 +239,16 @@ fn a_qualified_use_licenses_the_reference_it_names() {
 // `UnresolvedRef` fixtures `brink-analyzer::resolve`'s own tests use.
 
 /// `market/barter.brink` — native, module `story::market::barter`,
-/// exporting a public flow `haggle`.
+/// exporting a public flow `haggle`. One *typed* parameter on purpose
+/// (#2298 review round, finding 6): the call fixtures below invoke
+/// `haggle(x)`, so a zero-param declaration made every "clean" control
+/// silently tolerate an arity diagnostic its E024/E025/E087 filter never
+/// saw — and an untyped `x` draws strict inference's E065 instead. With
+/// `x: int` (and the divert fixtures passing an argument to match), each
+/// control fixture analyzes to ZERO diagnostics, so the filters guard
+/// exactly what they claim to.
 const QUALIFIED_MARKET: &str = "\
-pub flow haggle() {
+pub flow haggle(x: int) {
   You haggle at the market stall.
   -> DONE
 }
@@ -254,7 +261,7 @@ const QUALIFIED_MAIN_ACCEPTED: &str = "\
 use story::market::barter;
 
 flow start() {
-  -> barter::haggle
+  -> barter::haggle(1)
 }
 ";
 
@@ -265,7 +272,7 @@ const QUALIFIED_MAIN_BARE_REJECTED: &str = "\
 use story::market::barter;
 
 flow start() {
-  -> haggle
+  -> haggle(1)
 }
 ";
 
