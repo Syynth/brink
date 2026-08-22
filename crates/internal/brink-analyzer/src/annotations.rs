@@ -37,6 +37,7 @@ use brink_ir::{
 };
 
 use crate::infer::{InferenceResult, Ty};
+use crate::resolve::ImportScope;
 
 /// Recognized bare nominal leaf names (typed-mode-spec §3): everything except
 /// the generic heads (`List`/`Array`/`Map`/`Option`/`Weighted`/`Handle`) and
@@ -335,75 +336,207 @@ pub(crate) fn declared_struct_names(index: &SymbolIndex) -> BTreeSet<String> {
 /// manifest, if any — T1d-2's `Handle<K>` vocabulary source (`None` degrades
 /// to an empty handle-kind set, same posture as every other manifest-driven
 /// check).
+///
+/// Issue #2272: a bare `Named` annotation's struct-name check is
+/// **referrer-scoped**, mirroring `resolve::resolve_type_ref`'s own
+/// `ImportScope`/`Candidacy` semantics (this file's `check_one`'s own doc
+/// has the detail) — `names.structs` itself stays the project-flat set
+/// [`TypeNames::new`] always built (unchanged consumer: [`resolve`]'s
+/// `Ty::Struct` resolution and `structs::declared_shapes`'s field-type
+/// resolution both still want "declared anywhere", not "visible from
+/// here" — see [`check_one`]'s doc for the full accounting of which
+/// consumer gets which view).
+///
+/// `scope`: the referrer's own **declared-module** [`ImportScope`], caller-
+/// supplied rather than derived here from `hir.module`/`hir.imports` in
+/// isolation. An earlier version of this fix built its own per-file scope
+/// exactly that way (mirroring `structs::check_assignments`'s own
+/// construction) and called it a `brink-analyzer::annotations`-only change
+/// — that claim did NOT survive contact with the full gate: `hir.module`
+/// only ever carries an explicit `#@module(...)` directive, but a **native**
+/// file's real declared module is *path*-derived (`analyze_with_modules`'s
+/// own doc: "a native file's `hir.module` carries a deliberately empty
+/// `name`... and would otherwise scope the file to the module named `\"\"`"
+/// — never `None`, so the naive derivation silently excluded a native
+/// file's own siblings, including the mounted stdlib's own internal
+/// same-module references, misfiring `E061` in `std/conventions/
+/// screenplay.brink` itself). The correct scope is only ever resolvable
+/// with the project's real [`ModuleMap`] (or `brink-db`'s
+/// `module_map_query`) in hand — see [`per_file_diagnostics`]'s own `scope`
+/// doc — so this DOES have a caller-side signature-plumbing footprint after
+/// all (`per_file_diagnostics`, `finish_analysis`, `analyze_with_modules`,
+/// and `brink-db`'s `per_file_diagnostics_query`), even though it never
+/// touches LIR lowering.
+///
+/// Takes exactly **one** file, not a slice (review finding on this PR): a
+/// single `scope` applied across a whole `files: &[(FileId, &HirFile)]`
+/// slice would silently apply file A's import scope to file B's
+/// annotations the moment a caller ever passed more than one entry — this
+/// crate already keys a scope per file correctly elsewhere
+/// (`structs::check_assignments`'s `BTreeMap<FileId, ImportScope>`). Every
+/// real and test caller here has only ever passed a single-file slice, so
+/// this narrows the signature to what's actually true rather than widening
+/// it to a map with only ever one entry.
 #[must_use]
 pub fn check(
-    files: &[(FileId, &HirFile)],
+    file: FileId,
+    hir: &HirFile,
     index: &SymbolIndex,
     manifest: Option<&HostManifest>,
+    scope: &ImportScope,
 ) -> Vec<Diagnostic> {
     let names = TypeNames::new(index, manifest);
     let mut out = Vec::new();
-    for &(file, hir) in files {
-        for v in &hir.variables {
-            if let Some(te) = &v.annotation {
-                check_one(te, &names, file, &mut out);
-            }
+    for v in &hir.variables {
+        if let Some(te) = &v.annotation {
+            check_one(te, &names, index, scope, file, &mut out);
         }
-        for c in &hir.constants {
-            if let Some(te) = &c.annotation {
-                check_one(te, &names, file, &mut out);
-            }
+    }
+    for c in &hir.constants {
+        if let Some(te) = &c.annotation {
+            check_one(te, &names, index, scope, file, &mut out);
         }
-        for knot in &hir.knots {
-            check_knot(knot, file, &names, &mut out);
-        }
+    }
+    for knot in &hir.knots {
+        check_knot(knot, file, &names, index, scope, &mut out);
     }
     out
 }
 
-fn check_knot(knot: &Knot, file: FileId, names: &TypeNames, out: &mut Vec<Diagnostic>) {
+fn check_knot(
+    knot: &Knot,
+    file: FileId,
+    names: &TypeNames,
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    out: &mut Vec<Diagnostic>,
+) {
     for p in &knot.params {
         if let Some(te) = &p.annotation {
-            check_one(te, names, file, out);
+            check_one(te, names, index, scope, file, out);
         }
     }
     if let Some(rt) = &knot.return_type {
-        check_one(rt, names, file, out);
+        check_one(rt, names, index, scope, file, out);
     }
     for stitch in &knot.stitches {
-        check_stitch(stitch, file, names, out);
+        check_stitch(stitch, file, names, index, scope, out);
     }
 }
 
-fn check_stitch(stitch: &Stitch, file: FileId, names: &TypeNames, out: &mut Vec<Diagnostic>) {
+fn check_stitch(
+    stitch: &Stitch,
+    file: FileId,
+    names: &TypeNames,
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    out: &mut Vec<Diagnostic>,
+) {
     for p in &stitch.params {
         if let Some(te) = &p.annotation {
-            check_one(te, names, file, out);
+            check_one(te, names, index, scope, file, out);
         }
     }
     if let Some(rt) = &stitch.return_type {
-        check_one(rt, names, file, out);
+        check_one(rt, names, index, scope, file, out);
+    }
+}
+
+/// Every distinct declared module (issue #2272) carrying a `SymbolKind::
+/// Struct` named `name` — consulted only to make an out-of-scope E061 name
+/// *which* module a referrer would need to import from, rather than the
+/// referrer needing to guess. `None` when no declared `STRUCT` anywhere in
+/// the project carries this name at all (the ordinary "unrecognized name"
+/// case — [`check_one`] falls back to the generic message then) or when
+/// every same-named candidate lives in the undeclared/legacy stem-module
+/// (`module: None`) — which `resolve::classify` treats as unconditionally
+/// bare-visible, so a scope miss with such a candidate present cannot
+/// actually happen; this stays defensive rather than assuming that.
+fn declared_struct_modules_hint(index: &SymbolIndex, name: &str) -> Option<String> {
+    let ids = index.by_name.get(name)?;
+    let modules: BTreeSet<String> = ids
+        .iter()
+        .filter_map(|id| index.symbols.get(id))
+        .filter(|info| info.kind == SymbolKind::Struct)
+        .filter_map(|info| info.module.clone())
+        .collect();
+    if modules.is_empty() {
+        None
+    } else {
+        Some(modules.into_iter().collect::<Vec<_>>().join(", "))
     }
 }
 
 /// Check one type expression (and recursively, its generic args / fn
 /// params+return) for unknown names / reserved fn-types.
-fn check_one(te: &brink_ir::TypeExpr, names: &TypeNames, file: FileId, out: &mut Vec<Diagnostic>) {
+///
+/// The `Named` arm's struct-name check is referrer-scoped (issue #2272):
+/// `index`/`scope` route through [`crate::resolve::lookup_by_name`] — the
+/// exact `ImportScope`/`Candidacy` machinery `resolve::resolve_type_ref`
+/// already applies to the underlying `RefKind::Type` resolution — rather
+/// than consulting `names.structs` (project-flat, no referrer-scoping or
+/// std-exclusion) the way this arm used to. Before this fix, an unimported
+/// std-only struct name (e.g. `~ temp c: Cue` with `Cue` unimported) read
+/// as "recognized" here even though `resolve_type_ref` silently missed it
+/// by design — raising no diagnostic anywhere (issue #2272's own
+/// "compounding gap", left open by PR #2271). `names.lists`/`names.handles`
+/// (the `List<L>`/`Handle<K>` arms below) are deliberately **not** touched
+/// by this fix — `resolve_type_ref` only ever resolves `SymbolKind::Struct`
+/// candidates, so there is no referrer-scoping precedent for those two
+/// vocabularies to mirror; scoping them is out of this issue's fence.
+fn check_one(
+    te: &brink_ir::TypeExpr,
+    names: &TypeNames,
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    file: FileId,
+    out: &mut Vec<Diagnostic>,
+) {
     match te {
         brink_ir::TypeExpr::Named { name, range } => {
             // TM-4b (docs/typed-mode-spec.md §6): "declared struct names
             // join the TM-2 annotation type grammar... E061 no longer fires
-            // for a declared name".
-            if !is_known_leaf(name) && !names.structs.contains(name) {
-                out.push(Diagnostic {
-                    file,
-                    range: *range,
-                    message: format!(
+            // for a declared name" — narrowed by #2272: "declared" now
+            // means declared AND reachable from this referrer, not merely
+            // declared somewhere in the project.
+            if !is_known_leaf(name)
+                && crate::resolve::lookup_by_name(index, scope, name, &[SymbolKind::Struct])
+                    .is_none()
+            {
+                let message = match declared_struct_modules_hint(index, name) {
+                    // Dialect-blind wording (review finding — mirrors
+                    // `modules::check`'s own E025 precedent, see that call
+                    // site's comment): this arm runs identically for both
+                    // `.ink` (`STRUCT`) and native `.brink` (`struct`)
+                    // source, so the message must not spell out either
+                    // keyword's casing. Nor does it say "import it" —
+                    // `lookup_by_name`'s `!multiple` fast path (see its own
+                    // doc) returns any sole ordinary candidate regardless of
+                    // scope, so the only candidates that can ever reach this
+                    // arm with a non-empty module hint are reserved-root
+                    // (std) ones — and a real `use std::…` import does not
+                    // exist yet (`std/conventions/screenplay.brink`'s own
+                    // header; `resolve::lookup_by_name_direct`'s std gate):
+                    // it needs #1582's `pub` marker and #2167's
+                    // closure-scoped confinement, neither built. Say what is
+                    // actually true today instead of advice no author can
+                    // follow.
+                    Some(modules) => format!(
+                        "`{name}` names a declared struct in `{modules}`, but it isn't \
+                         reachable from this file yet (see #1582, #2167) — check the spelling, \
+                         or declare/use it from a module this file can see"
+                    ),
+                    None => format!(
                         "`{name}` is not a recognized type — expected int, float, bool, \
                          string, content, divert, void, a tower kind \
                          (vec2/vec3/vec4/quat/mat2/mat3/mat4), List<L>, Array<T>, Map<K, V>, \
                          Option<T>, Weighted<T>, Handle<K>, or a declared STRUCT name"
                     ),
+                };
+                out.push(Diagnostic {
+                    file,
+                    range: *range,
+                    message,
                     code: DiagnosticCode::E061,
                 });
             }
@@ -454,7 +587,7 @@ fn check_one(te: &brink_ir::TypeExpr, names: &TypeNames, file: FileId, out: &mut
             // element against, only its own well-formedness.
             "Array" | "Map" | "Option" | "Weighted" => {
                 for a in args {
-                    check_one(a, names, file, out);
+                    check_one(a, names, index, scope, file, out);
                 }
             }
             _ => {
@@ -471,9 +604,9 @@ fn check_one(te: &brink_ir::TypeExpr, names: &TypeNames, file: FileId, out: &mut
         // Component names are still content-checked recursively (E061).
         brink_ir::TypeExpr::Fn { params, ret, .. } => {
             for p in params {
-                check_one(p, names, file, out);
+                check_one(p, names, index, scope, file, out);
             }
-            check_one(ret, names, file, out);
+            check_one(ret, names, index, scope, file, out);
         }
     }
 }
@@ -867,7 +1000,7 @@ mod tests {
     #[test]
     fn check_accepts_option_and_weighted_annotations() {
         let (hir, index) = build("VAR o: Option<int> = 0\nVAR w: Weighted<float> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -876,7 +1009,7 @@ mod tests {
         // Option<T>/Weighted<T> content-check recursively, exactly like
         // Array<T>/Map<K, V> — an unrecognized element name still flags.
         let (hir, index) = build("VAR o: Option<Bogus> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -913,7 +1046,7 @@ mod tests {
                 "{v:?} should no longer resolve under the old lowercase spelling"
             );
         }
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 3, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E061));
     }
@@ -982,9 +1115,11 @@ mod tests {
     fn check_flags_undeclared_handle_kind() {
         let (hir, index) = build("VAR h: Handle<Nope> = 0\n");
         let diags = check(
-            &[(FileId(0), &hir)],
+            FileId(0),
+            &hir,
             &index,
             Some(&audio_instance_manifest()),
+            &ImportScope::default(),
         );
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
@@ -994,9 +1129,11 @@ mod tests {
     fn check_accepts_declared_handle_kind() {
         let (hir, index) = build("VAR h: Handle<AudioInstance> = 0\n");
         let diags = check(
-            &[(FileId(0), &hir)],
+            FileId(0),
+            &hir,
             &index,
             Some(&audio_instance_manifest()),
+            &ImportScope::default(),
         );
         assert!(diags.is_empty(), "{diags:?}");
     }
@@ -1008,7 +1145,7 @@ mod tests {
         // an empty handle-kind set, same degrade-gracefully posture as
         // every other manifest-driven check.
         let (hir, index) = build("VAR h: Handle<AudioInstance> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1018,7 +1155,7 @@ mod tests {
     #[test]
     fn check_flags_unknown_type_name() {
         let (hir, index) = build("VAR p: Frobnicator = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1027,14 +1164,14 @@ mod tests {
     fn check_accepts_fn_type_since_t1c() {
         // T1c-1 (#699): E062 retired — `fn(T…): R` is a legal type form.
         let (hir, index) = build("VAR cb: fn(int, int): bool = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_still_flags_unknown_names_inside_a_fn_type() {
         let (hir, index) = build("VAR cb: fn(Bogus): bool = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1043,14 +1180,14 @@ mod tests {
     fn check_accepts_known_scalar_and_generic_types() {
         let (hir, index) =
             build("VAR a: int = 1\nVAR b: Array<float> = 0\nVAR c: Map<string, bool> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_accepts_void_return_type() {
         let (hir, index) = build("=== function noop(): void ===\n~ return\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1063,14 +1200,14 @@ mod tests {
     fn check_accepts_content_param_annotation() {
         let (hir, index) =
             build("=== function radio(chan: string, text: content) ===\n~ return text\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_accepts_declared_list_name() {
         let (hir, index) = build("LIST Weathers = sunny, rainy\nVAR w: List<Weathers> = sunny\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1078,7 +1215,154 @@ mod tests {
     #[test]
     fn check_accepts_declared_struct_name() {
         let (hir, index) = build("STRUCT Point = #{x: float}\nVAR p: Point = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    // ── #2272: E061 referrer-scoping (split out of #2249/PR #2271) ───
+
+    /// Inject a `SymbolKind::Struct` named `name`, declared under `module`,
+    /// into `index` — mirrors `resolve.rs`'s own hand-built std-mount
+    /// fixtures (e.g. `resolve_type_ref_excludes_a_std_only_struct_with_no_
+    /// project_homonym_or_import`), reused here so `annotations::check`'s
+    /// own referrer-scoping gets the exact same std-mount shape proven at
+    /// the `resolve_type_ref` layer, rather than a second, possibly
+    /// diverging fixture shape.
+    fn inject_struct(index: &mut SymbolIndex, name: &str, module: &str, tag_seed: u64) {
+        let id = DefinitionId::new(brink_format::DefinitionTag::StructDef, tag_seed);
+        index.symbols.insert(
+            id,
+            brink_ir::SymbolInfo {
+                kind: SymbolKind::Struct,
+                file: FileId(9),
+                range: rowan::TextRange::default(),
+                id,
+                name: name.to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: Some(module.to_string()),
+                visibility: brink_ir::Visibility::Public,
+            },
+        );
+        index.by_name.entry(name.to_string()).or_default().push(id);
+    }
+
+    /// RED characterization (issue #2272's own "compounding gap"): before
+    /// this fix, a std-only struct name unreachable through this file's
+    /// `ImportScope` still read as "recognized" by E061's project-flat
+    /// `names.structs` — even though `resolve::resolve_type_ref` (PR #2271)
+    /// already silently excludes exactly this candidate from the
+    /// `RefKind::Type` resolution feeding lowering. Net effect before this
+    /// fix: `~ temp`/`VAR`-shaped reference to an unimported std-only
+    /// struct name raised NO diagnostic anywhere. This test pins the GREEN
+    /// side — E061 now fires, naming the module to import from.
+    #[test]
+    fn check_flags_unimported_std_only_struct_name_referrer_scoped() {
+        let (hir, mut index) = build("VAR c: Cue = 0\n");
+        inject_struct(&mut index, "Cue", "std::conventions::screenplay", 0xC0F);
+
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
+        assert_eq!(
+            diags.len(),
+            1,
+            "an unimported std-only struct name must now raise E061 — before this fix it \
+             raised nothing anywhere: {diags:?}"
+        );
+        assert_eq!(diags[0].code, DiagnosticCode::E061);
+        assert!(
+            diags[0].message.contains("std::conventions::screenplay"),
+            "the message should hint the module a referrer would import from: {:?}",
+            diags[0].message
+        );
+    }
+
+    /// Forward-looking guard, NOT evidence the escape hatch works today
+    /// (review finding): this test synthesizes TWO states the real
+    /// compilation pipeline cannot produce yet, both required for `check`
+    /// to stay clean here. (1) `inject_struct` marks the std struct
+    /// `Visibility::Public` directly in a hand-built `SymbolIndex` —
+    /// `lookup_by_name_direct`'s own doc (`resolve.rs`, issue #2197) states
+    /// plainly that "nothing under `std` can be marked public yet" in a
+    /// real mount. (2) the hand-built `ImportScope` below claims a
+    /// qualified import of `std::conventions::screenplay` — no real `use
+    /// std::…`/`IMPORT` syntax can populate `qualified_modules`/
+    /// `bare_imports` with a std module today (needs #1582's `pub` marker
+    /// and #2167's closure-scoped confinement, neither built — see the
+    /// E061 message's own comment on this). Given both synthetic
+    /// preconditions, `classify` legitimately answers `Imported` and
+    /// `check` legitimately stays clean — so the test **does** exercise
+    /// real `classify`/`lookup_by_name` machinery correctly, but only
+    /// because it starts from a state no author can reach today. Read it as
+    /// a guard for the day #1582/#2167 land, not as proof the escape hatch
+    /// is usable now.
+    #[test]
+    fn check_accepts_std_only_struct_name_once_imported() {
+        let (hir, mut index) = build("VAR c: Cue = 0\n");
+        inject_struct(&mut index, "Cue", "std::conventions::screenplay", 0xC10);
+
+        // `check()` now takes the referrer's `ImportScope` as a caller-
+        // supplied parameter (issue #2272's own gate finding — see
+        // `check`'s doc for why deriving it locally from `hir.module` was
+        // wrong) rather than deriving one internally, so a real "imported"
+        // scope is exercised end-to-end here: hand-construct the
+        // qualified-import scope shape (mirroring `resolve.rs`'s own
+        // fixtures) and confirm `check` itself, not just the underlying
+        // `lookup_by_name` primitive, stays clean.
+        let scope = ImportScope {
+            file_module: None,
+            qualified_modules: ["std::conventions::screenplay".to_string()]
+                .into_iter()
+                .collect(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let diags = check(FileId(0), &hir, &index, None, &scope);
+        assert!(
+            diags.is_empty(),
+            "an imported std struct must stay clean through the real check() call: {diags:?}"
+        );
+    }
+
+    /// Should-NOT-fire: a locally-declared struct in the *same* (undeclared/
+    /// legacy) stem-module — `module: None`, unconditionally bare-visible
+    /// per `resolve::classify` — still resolves clean. Regression guard:
+    /// referrer-scoping must not narrow the single-file/no-modules world
+    /// this crate's entire pre-#2249 test suite lives in (see
+    /// `check_accepts_declared_struct_name` just above, unmoved).
+    #[test]
+    fn check_still_accepts_locally_declared_struct_with_no_modules_in_play() {
+        let (hir, index) = build("STRUCT Cue = #{x: int}\nVAR c: Cue = 0\n");
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
+        assert!(
+            diags.is_empty(),
+            "an ordinary, single-file, no-`#@module` struct declaration must stay clean: \
+             {diags:?}"
+        );
+    }
+
+    /// Should-NOT-fire: every builtin/tower leaf name from
+    /// [`is_known_leaf`] never routes through the referrer-scoped lookup at
+    /// all — `check_one`'s `is_known_leaf(name)` short-circuit runs first,
+    /// unchanged by this fix. Regression guard for the "leaves are checked
+    /// before the struct lookup" ordering this fix must not disturb.
+    #[test]
+    fn check_still_accepts_every_builtin_leaf_with_a_std_mount_present() {
+        let (hir, mut index) = build(
+            "VAR a: int = 0\nVAR b: float = 0\nVAR c: bool = true\nVAR d: string = \"x\"\n\
+             VAR e: content = 0\nVAR f: divert = 0\nVAR g: vec3 = 0\n",
+        );
+        // A std mount is present in the index but declares nothing named
+        // like any of these leaves — proves the leaf short-circuit, not an
+        // absence of candidates, is what keeps them clean.
+        inject_struct(
+            &mut index,
+            "Unrelated",
+            "std::conventions::screenplay",
+            0xC11,
+        );
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1087,7 +1371,7 @@ mod tests {
         // A name that isn't a known scalar, generic head, or declared
         // struct still flags E061 — TM-4b only widens the accepted set.
         let (hir, index) = build("VAR w: NotAStruct = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1095,7 +1379,7 @@ mod tests {
     #[test]
     fn check_flags_undeclared_list_name() {
         let (hir, index) = build("VAR w: List<Nope> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1103,7 +1387,7 @@ mod tests {
     #[test]
     fn check_flags_param_and_return_type_annotations() {
         let (hir, index) = build("=== function heal(hp: Bogus): AlsoBogus ===\n~ return hp\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None);
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E061));
     }

@@ -767,6 +767,14 @@ pub fn analyze_with_modules(
     let (index, mut diagnostics) =
         symbol_index_with_modules(&manifest_inputs, modules, opts.dialect, is_native);
     let mut resolutions = ResolutionMap::new();
+    // Issue #2272: every file's own resolved scope is captured here (not
+    // just consumed for `resolve` and discarded) so `finish_analysis`'s
+    // per-file diagnostic contributors (`annotations::check`'s
+    // referrer-scoped struct-name lookup, in particular) can reuse the
+    // identical `ImportScope` `resolve_type_ref` just resolved this file's
+    // references against — see `per_file_diagnostics`'s own `scope` doc for
+    // why re-deriving it a second time (from `hir.module` alone) is wrong.
+    let mut scopes: BTreeMap<FileId, ImportScope> = BTreeMap::new();
     for &(file_id, hir, manifest) in files {
         // Import-scoped resolution (M-2d, issue #790), matching
         // `brink-db`'s `resolve_query`: the resolved **declared** module
@@ -787,6 +795,7 @@ pub fn analyze_with_modules(
         let (file_map, file_diags) = resolve(file_id, manifest, &index, &scope);
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
+        scopes.insert(file_id, scope);
     }
 
     // Conventions-module confinement/unconfigured `E169` (issue #2335): the
@@ -812,6 +821,7 @@ pub fn analyze_with_modules(
         opts,
         is_native,
         None,
+        &scopes,
     )
 }
 
@@ -853,7 +863,25 @@ pub fn analyze_with_modules(
 /// no `Language` classification of their own (the pure `analyze_with_options`
 /// path, via [`finish_analysis`]) always pass `false`, unchanged from before
 /// this parameter existed.
+///
+/// `scope` (issue #2272): this file's own **declared-module** [`ImportScope`]
+/// — the exact scope [`resolve`] already resolves this file's references
+/// against (every caller here builds it the identical way: `analyze_with_modules`'s
+/// per-file loop / `brink-db`'s `resolve_query`, never re-derived from
+/// `hir.module` in isolation — that field carries a deliberately empty name
+/// for a native file, see `analyze_with_modules`'s own comment). Threaded
+/// through to [`annotations::check`], whose referrer-scoped struct-name
+/// lookup must agree with [`crate::resolve::resolve_type_ref`]'s own
+/// `RefKind::Type` resolution on exactly the same scope, or the two silently
+/// diverge (issue #2272's own root cause: a per-file-local re-derivation
+/// disagreed with the real declared-module identity for a std/native file).
 #[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each parameter is an independently-necessary per-file input (issue #2272 added \
+              `scope`, the file's own declared-module ImportScope) — bundling them would just \
+              move the count into a struct with no consumer of its own"
+)]
 pub fn per_file_diagnostics(
     file: FileId,
     hir: &HirFile,
@@ -862,6 +890,7 @@ pub fn per_file_diagnostics(
     dialect: Dialect,
     is_native: bool,
     host_manifest: Option<&HostManifest>,
+    scope: &ImportScope,
 ) -> Vec<Diagnostic> {
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
@@ -881,7 +910,7 @@ pub fn per_file_diagnostics(
     // by `dialect_gate` (E051), and critiquing the inside of rejected
     // syntax is noise (maintainer ruling 2026-07-13).
     if dialect == Dialect::Brink {
-        out.extend(annotations::check(&files, index, host_manifest));
+        out.extend(annotations::check(file, hir, index, host_manifest, scope));
         // T1c `#fn` creation-site checks (E079/E080/E081) follow the same
         // brink-only rule: under `strict-ink` the literal is already
         // rejected whole (E051). Per-file by the same argument as
@@ -1634,6 +1663,22 @@ fn hir_has_effects_assertion(hir: &HirFile) -> bool {
 ///
 /// `strict_inference`: see [`whole_project_diagnostics`]'s doc — forwarded
 /// unchanged.
+///
+/// `scopes` (issue #2272): the same per-file declared-module [`ImportScope`]
+/// map [`analyze_with_modules`]'s own resolution loop just built while
+/// calling [`resolve`] — reused here rather than re-derived, so
+/// `per_file_diagnostics`'s referrer-scoped checks agree with `resolve`'s
+/// own resolution on identical scope. A file missing from the map (not
+/// possible from [`analyze_with_modules`]'s only call site, which inserts
+/// one entry per file in `files`) falls back to [`ImportScope::default`] —
+/// the pre-#2272, map-free behavior — rather than panicking.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each parameter is an independently-necessary layer-2 input this function \
+              assembles into the final AnalysisResult (issue #2272 added `scopes`, mirroring \
+              `per_file_diagnostics`'s own new `scope` parameter) — bundling them would just \
+              move the count into a struct with no consumer of its own"
+)]
 pub fn finish_analysis(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     index: Arc<SymbolIndex>,
@@ -1642,13 +1687,16 @@ pub fn finish_analysis(
     opts: &AnalysisOptions,
     is_native: bool,
     strict_inference: Option<&infer::InferenceResult>,
+    scopes: &BTreeMap<FileId, ImportScope>,
 ) -> AnalysisResult {
+    let default_scope = ImportScope::default();
     for &(file_id, hir, _manifest) in files {
         let file_resolutions: ResolutionMap = resolutions
             .iter()
             .filter(|r| r.file == file_id)
             .cloned()
             .collect();
+        let scope = scopes.get(&file_id).unwrap_or(&default_scope);
         diagnostics.extend(per_file_diagnostics(
             file_id,
             hir,
@@ -1657,6 +1705,7 @@ pub fn finish_analysis(
             opts.dialect,
             is_native,
             opts.host_manifest.as_ref(),
+            scope,
         ));
         if is_native {
             // The B0.9 native strict-only gate, in the same per-file
@@ -2043,6 +2092,7 @@ EXTERNAL add_state(who)
             Dialect::StrictInk,
             true,
             None,
+            &ImportScope::default(),
         );
         assert!(
             !diags
@@ -2068,6 +2118,7 @@ EXTERNAL add_state(who)
             Dialect::StrictInk,
             false,
             None,
+            &ImportScope::default(),
         );
         assert!(
             diags

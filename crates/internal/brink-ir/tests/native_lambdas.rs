@@ -28,8 +28,8 @@
 
 use brink_ir::hir::lower_native;
 use brink_ir::{
-    BlockStmt, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, LambdaBody, LambdaExpr, Stmt,
-    TypeExpr,
+    BlockStmt, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, LambdaBody, LambdaExpr, RefKind,
+    Stmt, TypeExpr,
 };
 
 fn lower(src: &str) -> (HirFile, Vec<Diagnostic>) {
@@ -453,6 +453,39 @@ fn lambda_params_are_recorded_as_locals_in_the_symbol_manifest() {
         manifest.locals.iter().any(|l| l.name == "g"),
         "lambda param `g` must be a recorded local: {:?}",
         manifest.locals.iter().map(|l| &l.name).collect::<Vec<_>>()
+    );
+}
+
+/// Issue #2272: a lambda's own typed param/return annotation now registers
+/// a `RefKind::Type` reference too — the same TM-2 registration every other
+/// annotation position gets (`walk_type_annotation`, issue #2249). Before
+/// this fix, `walk_lambda` recorded the param as a local (the test above)
+/// but never walked its own annotation at all — a struct used only as a
+/// lambda's param or return type read as unreferenced by the symbol index,
+/// so goto-def/rename/find-references all missed it.
+#[test]
+fn lambda_param_and_return_annotations_register_ref_kind_type() {
+    let parse = brink_syntax_native::parse(
+        "struct Guest {\n  name: string\n}\n\nfn make() {\n  let f = |g: Guest|: Guest { g };\n}\n",
+    );
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let (_hir, manifest, diags) = lower_native::lower(FileId(0), &parse.tree());
+    assert_eq!(codes(&diags), Vec::<&str>::new(), "{diags:?}");
+    let guest_type_refs = manifest
+        .unresolved
+        .iter()
+        .filter(|r| r.kind == RefKind::Type && r.path == "Guest")
+        .count();
+    assert_eq!(
+        guest_type_refs,
+        2,
+        "expected one RefKind::Type for the param annotation and one for the return \
+         annotation, both naming Guest: {:?}",
+        manifest
+            .unresolved
+            .iter()
+            .filter(|r| r.kind == RefKind::Type)
+            .collect::<Vec<_>>()
     );
 }
 

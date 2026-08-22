@@ -751,4 +751,125 @@ fn main() {
             refs.iter().map(|l| l.range).collect::<Vec<_>>()
         );
     }
+
+    // ── Issue #2272: goto-def/find-references on a struct used only as a
+    // parameter/return type ──────────────────────────────────────────────
+
+    const STRUCT_AS_PARAM_TYPE_SRC: &str = "\
+struct Guest {
+  name: string
+}
+
+fn heal(hp: Guest): Guest {
+  return hp;
+}
+";
+
+    /// Position of the `Guest` occurrence inside `hp: Guest`'s param
+    /// annotation — deliberately not the plain `.find("Guest")` used by
+    /// [`goto_definition_at_native`]'s `needle` for other tests in this
+    /// file, since that would land on the *declaration*'s own `Guest`
+    /// (the first occurrence in [`STRUCT_AS_PARAM_TYPE_SRC`]), not the
+    /// annotation.
+    fn param_annotation_guest_pos() -> TextSize {
+        let offset = STRUCT_AS_PARAM_TYPE_SRC
+            .find("hp: Guest")
+            .expect("param annotation")
+            + "hp: ".len();
+        TextSize::from(u32::try_from(offset).expect("offset"))
+    }
+
+    /// Position of the return-type annotation's `Guest` — the last
+    /// occurrence in the fixture.
+    fn return_annotation_guest_pos() -> TextSize {
+        let offset = STRUCT_AS_PARAM_TYPE_SRC
+            .rfind("Guest")
+            .expect("return annotation");
+        TextSize::from(u32::try_from(offset).expect("offset"))
+    }
+
+    #[test]
+    fn goto_definition_on_a_struct_used_only_as_a_param_type_jumps_to_the_declaration() {
+        // RED before issue #2272's fix: `project_knot` recorded a param's
+        // annotation on `LocalSymbol.annotation` (the `signature()`
+        // firewall's own consumer) but never walked it into a `RefKind::
+        // Type` reference — a struct referenced only from a param's type
+        // was invisible to `analysis.resolutions`, so goto-def from that
+        // occurrence found nothing at all.
+        let mut session = IdeSession::new();
+        let file_id =
+            session.update_and_analyze("test.brink", STRUCT_AS_PARAM_TYPE_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let loc = goto_definition(
+            session.db(),
+            analysis,
+            file_id,
+            param_annotation_guest_pos(),
+        )
+        .expect("jump target");
+        let start: usize = u32::from(loc.range.start()) as usize;
+        let end: usize = u32::from(loc.range.end()) as usize;
+        assert_eq!(
+            &STRUCT_AS_PARAM_TYPE_SRC[start..end],
+            "Guest",
+            "must jump to the `struct Guest` declaration from the param annotation occurrence"
+        );
+    }
+
+    #[test]
+    fn goto_definition_on_a_struct_used_only_as_a_return_type_jumps_to_the_declaration() {
+        // The return-type mirror of the param case above — `Knot::
+        // return_type` was never walked into a reference at all (unlike a
+        // param's, which was at least stored, just not referenced).
+        let mut session = IdeSession::new();
+        let file_id =
+            session.update_and_analyze("test.brink", STRUCT_AS_PARAM_TYPE_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let loc = goto_definition(
+            session.db(),
+            analysis,
+            file_id,
+            return_annotation_guest_pos(),
+        )
+        .expect("jump target");
+        let start: usize = u32::from(loc.range.start()) as usize;
+        let end: usize = u32::from(loc.range.end()) as usize;
+        assert_eq!(&STRUCT_AS_PARAM_TYPE_SRC[start..end], "Guest");
+    }
+
+    #[test]
+    fn find_references_from_a_struct_declaration_includes_its_param_and_return_type_occurrences() {
+        let mut session = IdeSession::new();
+        let file_id =
+            session.update_and_analyze("test.brink", STRUCT_AS_PARAM_TYPE_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let decl_pos =
+            u32::try_from(STRUCT_AS_PARAM_TYPE_SRC.find("Guest {").expect("decl")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            false,
+        );
+
+        assert!(
+            refs.iter()
+                .any(|loc| loc.file == file_id
+                    && loc.range.start() == param_annotation_guest_pos()),
+            "expected the param annotation's `Guest` occurrence among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+        assert!(
+            refs.iter().any(
+                |loc| loc.file == file_id && loc.range.start() == return_annotation_guest_pos()
+            ),
+            "expected the return-type annotation's `Guest` occurrence among references, got \
+             {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+    }
 }

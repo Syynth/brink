@@ -249,6 +249,7 @@ fn native_diagnostics(src: &str) -> Vec<Diagnostic> {
         brink_analyzer::Dialect::default(),
         true,
         None,
+        &brink_analyzer::ImportScope::default(),
     )
 }
 
