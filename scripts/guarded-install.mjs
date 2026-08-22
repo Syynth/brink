@@ -115,6 +115,26 @@ export function sanitizeInstallArgs(rawArgs) {
     };
   }
 
+  //  3. On Windows `pnpm` is a `.cmd` shim, which Node refuses to spawn
+  //     without a shell (the CVE-2024-27980 guard), so `defaultRunInstall`
+  //     has to route through cmd.exe there — see its comment. That makes
+  //     cmd.exe metacharacters live: `&`, `|`, `<`, `>`, `^`, `%`, `"` and
+  //     newlines would be interpreted rather than passed along. No genuine
+  //     pnpm flag contains any of them, so they are rejected here instead,
+  //     which keeps "args are never re-parsed into new commands" true on
+  //     both platforms rather than only on the POSIX one.
+  const unsafe = args.find((arg) => /[&|<>^%"\r\n]/.test(arg));
+  if (unsafe !== undefined) {
+    return {
+      error:
+        `[guarded-install] refusing to forward the argument "${unsafe}" to ` +
+        "`pnpm install` — it contains a character cmd.exe treats as syntax " +
+        "(one of & | < > ^ % \" or a newline). On Windows this command runs " +
+        "through a shell, so such an argument could start a second command " +
+        "rather than be passed to pnpm. No real pnpm flag needs these.",
+    };
+  }
+
   return { args };
 }
 
@@ -249,16 +269,34 @@ export function guardedInstall({
  * The real `pnpm install` invocation. Split out so the test can replace it
  * without stubbing `child_process` globally.
  *
- * `shell: false` — the args are forwarded verbatim, never re-parsed by a
- * shell. Returns 127 for a pnpm that could not be spawned at all, matching
- * the shell convention for "command not found" (spawnSync reports that as
+ * On POSIX, `shell: false` — the args are forwarded verbatim, never
+ * re-parsed by a shell.
+ *
+ * Windows cannot have that. `pnpm` there is a `.cmd` shim, not an
+ * executable, and since the CVE-2024-27980 fix Node refuses to spawn
+ * `.cmd`/`.bat` unless a shell is requested — `spawnSync("pnpm", ...)`
+ * fails with ENOENT even though `pnpm` runs fine from the same PATH in the
+ * step itself. That is exactly how this surfaced: the desktop-release
+ * Windows lane (#2996, the repo's FIRST Windows job) died on
+ * `spawnSync pnpm ENOENT` while the wasm check just above it had already
+ * passed. This script had simply never executed on Windows before.
+ *
+ * So Windows names the shim explicitly and routes through cmd.exe. The
+ * property `shell: false` was protecting — that an argument can never be
+ * re-parsed into a second command — is preserved by rejecting cmd.exe
+ * metacharacters in `sanitizeInstallArgs` instead, which no real pnpm flag
+ * contains.
+ *
+ * Returns 127 for a pnpm that could not be spawned at all, matching the
+ * shell convention for "command not found" (spawnSync reports that as
  * `status: null` plus an `error`, which would otherwise read as success).
  */
 function defaultRunInstall(args, repoRoot) {
-  const result = spawnSync("pnpm", ["install", ...args], {
+  const onWindows = process.platform === "win32";
+  const result = spawnSync(onWindows ? "pnpm.cmd" : "pnpm", ["install", ...args], {
     cwd: repoRoot,
     stdio: "inherit",
-    shell: false,
+    shell: onWindows,
   });
 
   if (result.error) {

@@ -12,14 +12,22 @@ describe("platformKeyFor", () => {
   it("maps each updater payload to its Tauri platform key", () => {
     expect(platformKeyFor("Brink Studio.app.tar.gz")).toBe("darwin-aarch64");
     expect(platformKeyFor("Brink Studio_x64.app.tar.gz")).toBe("darwin-x86_64");
-    expect(platformKeyFor("brink-studio_0.1.0_amd64.AppImage")).toBe("linux-x86_64");
+    // Real names, taken from run 32585401516's Linux job and a local macOS
+    // build — not from the docs. Both carry a SPACE, which the manifest has
+    // to percent-encode; the guessed names in the first draft of this test
+    // did not, so the encoding path was never actually exercised.
+    expect(platformKeyFor("Brink Studio_0.1.0_amd64.AppImage")).toBe("linux-x86_64");
     expect(platformKeyFor("Brink Studio_0.1.0_x64-setup.nsis.zip")).toBe("windows-x86_64");
   });
 
   it("REJECTS installers — a .dmg/.deb is not an update payload", () => {
     // Including one would produce a manifest the updater cannot apply.
     expect(platformKeyFor("Brink Studio_0.1.0_aarch64.dmg")).toBeNull();
-    expect(platformKeyFor("brink-studio_0.1.0_amd64.deb")).toBeNull();
+    // Tauri emits a .deb.sig alongside the .deb, so "it has a signature"
+    // is NOT what makes something an update payload. A deb-installed app
+    // cannot rewrite itself under /usr, so AppImage is the Linux payload
+    // and the .deb stays a download-only installer.
+    expect(platformKeyFor("Brink Studio_0.1.0_amd64.deb")).toBeNull();
     expect(platformKeyFor("Brink Studio.app.tar.gz.sig")).toBeNull();
   });
 });

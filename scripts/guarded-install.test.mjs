@@ -206,6 +206,36 @@ describe("sanitizeInstallArgs", () => {
     assert.match(result.error, /@brink-lang\/studio/);
     assert.match(result.error, /--flag=value/);
   });
+
+  // On Windows `defaultRunInstall` has to route through cmd.exe (pnpm is a
+  // `.cmd` shim Node will not spawn otherwise), so these characters would be
+  // SYNTAX rather than data. The rejection is what keeps "an argument can
+  // never become a second command" true on Windows as well as POSIX, so it
+  // is pinned here rather than left to the spawn call's options.
+  for (const [name, arg] of [
+    ["ampersand", "--reporter=a&calc"],
+    ["pipe", "--reporter=a|calc"],
+    ["redirect", "--reporter=a>out"],
+    ["caret", "--reporter=a^b"],
+    ["percent-expansion", "--reporter=%PATH%"],
+    ["quote", '--reporter=a"b'],
+    ["newline", "--reporter=a\ncalc"],
+  ]) {
+    it(`rejects a ${name}, which cmd.exe would treat as syntax`, () => {
+      const result = sanitizeInstallArgs([arg]);
+
+      assert.equal(result.args, undefined, `${arg} should not be forwarded`);
+      assert.match(result.error, /cmd\.exe treats as syntax/);
+    });
+  }
+
+  it("still accepts the ordinary flags a real install uses", () => {
+    // The rejection above must not be so broad it blocks normal usage.
+    assert.deepEqual(
+      sanitizeInstallArgs(["--frozen-lockfile", "--filter=@brink-lang/studio", "-r"]).args,
+      ["--frozen-lockfile", "--filter=@brink-lang/studio", "-r"],
+    );
+  });
 });
 
 // --- end-to-end layer --------------------------------------------------------
