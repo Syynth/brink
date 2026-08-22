@@ -17,6 +17,12 @@ describe("platformKeyFor", () => {
     // to percent-encode; the guessed names in the first draft of this test
     // did not, so the encoding path was never actually exercised.
     expect(platformKeyFor("Brink Studio_0.1.0_amd64.AppImage")).toBe("linux-x86_64");
+    // The REAL Windows payload is the setup EXE, not a .nsis.zip — that was
+    // tauri v1. Observed in run 32588025582, the first Windows build this
+    // repo ever ran; the guessed `.nsis.zip` here would have mapped to
+    // nothing, silently dropping Windows from the manifest.
+    expect(platformKeyFor("Brink Studio_0.1.0_x64-setup.exe")).toBe("windows-x86_64");
+    // Still accepted, so an older/alternate config does not lose Windows.
     expect(platformKeyFor("Brink Studio_0.1.0_x64-setup.nsis.zip")).toBe("windows-x86_64");
   });
 
@@ -64,6 +70,33 @@ describe("buildManifest", () => {
         readFile: () => { throw new Error("ENOENT"); },
       }),
     ).toThrow(/has no adjacent .*\.sig/);
+  });
+
+  it("THROWS when a signed payload matches no platform, rather than dropping it", () => {
+    // The defect this guards is not a crash but a SILENCE: an unmapped
+    // payload leaves the manifest valid and the release publishable, while
+    // that platform's users are told "up to date" forever. Exactly what
+    // `.nsis.zip` vs `-setup.exe` would have shipped.
+    expect(() =>
+      buildManifest({
+        ...base,
+        readDir: () => ["Brink Studio_0.1.0_x64-setup.msi", "Brink Studio_0.1.0_x64-setup.msi.sig",
+                        "Brink Studio.app.tar.gz", "Brink Studio.app.tar.gz.sig"],
+        readFile: () => "SIG",
+      }),
+    ).toThrow(/matched no platform key/);
+  });
+
+  it("does not demand a manifest entry for the .deb, which cannot self-update", () => {
+    // Tauri signs the .deb too, so "has a .sig" is not sufficient grounds to
+    // expect it in the manifest — the assertion must not fire on it.
+    const m = buildManifest({
+      ...base,
+      readDir: () => ["Brink Studio_0.1.0_amd64.deb", "Brink Studio_0.1.0_amd64.deb.sig",
+                      "Brink Studio_0.1.0_amd64.AppImage", "Brink Studio_0.1.0_amd64.AppImage.sig"],
+      readFile: () => "SIG",
+    });
+    expect(Object.keys(m.platforms)).toEqual(["linux-x86_64"]);
   });
 
   it("THROWS rather than emitting an empty manifest", () => {

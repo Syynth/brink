@@ -55,8 +55,56 @@ export function platformKeyFor(filename) {
       : "darwin-aarch64";
   }
   if (filename.endsWith(".AppImage")) return "linux-x86_64";
-  if (filename.endsWith(".nsis.zip")) return "windows-x86_64";
+  // Windows: tauri v2's NSIS updater payload is the SETUP EXE ITSELF, not a
+  // `.nsis.zip` (that was v1). Observed from the first Windows build this
+  // repo has ever run — run 32588025582 emitted
+  // `Brink Studio_0.1.0_x64-setup.exe` plus a `.sig`, and nothing else.
+  //
+  // `.nsis.zip` is still accepted so a config or toolchain that emits the
+  // older shape does not silently lose Windows. That is the whole hazard
+  // here: an unmatched payload is not an error, it is an ABSENT platform
+  // key, and an absent key means every Windows client polls forever and is
+  // told it is up to date. `assertPlatformsCovered` below is what turns that
+  // silence into a failure.
+  if (filename.endsWith(".nsis.zip") || filename.endsWith(".exe")) {
+    return filename.includes("arm64") || filename.includes("aarch64")
+      ? "windows-aarch64"
+      : "windows-x86_64";
+  }
   return null;
+}
+
+/**
+ * Fail when the manifest is missing a platform whose artifacts are present.
+ *
+ * The mapping's failure mode is silence: an unrecognised payload filename
+ * yields no key, the manifest is still valid JSON, the release still
+ * publishes, and every client on that platform is told it is up to date
+ * forever. That is exactly what `.nsis.zip` vs `-setup.exe` would have
+ * caused. So rather than trusting the mapping, infer what SHOULD be there
+ * from the signed payloads actually on disk and demand they all landed.
+ *
+ * @param {Record<string, PlatformEntry>} platforms
+ * @param {string[]} files
+ */
+export function assertPlatformsCovered(platforms, files) {
+  const signed = new Set(
+    files.filter((f) => f.endsWith(".sig")).map((f) => f.slice(0, -".sig".length)),
+  );
+  // An installer that is not an update payload (.dmg has no .sig; .deb has
+  // one but cannot self-update under /usr) is not expected in the manifest.
+  const expectedButMissing = [...signed].filter(
+    (f) => !f.endsWith(".deb") && platformKeyFor(f) === null,
+  );
+  if (expectedButMissing.length > 0) {
+    throw new Error(
+      `these signed updater payloads matched no platform key, so the platforms ` +
+        `they belong to would be MISSING from latest.json and their users would ` +
+        `never be offered an update: ${expectedButMissing.join(", ")}. Add the ` +
+        `filename shape to platformKeyFor rather than shipping a manifest that ` +
+        `silently covers fewer platforms than were built.`,
+    );
+  }
 }
 
 /**
@@ -84,7 +132,8 @@ export function platformKeyFor(filename) {
 export function buildManifest({ dir, version, tag, repo, notes = "", pubDate, readDir = readdirSync, readFile = (p) => readFileSync(p, "utf8") }) {
   /** @type {Record<string, PlatformEntry>} */
   const platforms = {};
-  for (const file of readDir(dir).sort()) {
+  const entries = readDir(dir).sort();
+  for (const file of entries) {
     const key = platformKeyFor(file);
     if (key === null) continue;
     let signature;
@@ -105,6 +154,7 @@ export function buildManifest({ dir, version, tag, repo, notes = "", pubDate, re
   if (Object.keys(platforms).length === 0) {
     throw new Error(`no updater payloads found in ${dir} — refusing to emit an empty manifest`);
   }
+  assertPlatformsCovered(platforms, entries);
   return { version, notes, pub_date: pubDate, platforms };
 }
 
