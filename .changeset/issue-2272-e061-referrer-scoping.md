@@ -12,10 +12,10 @@ imported) read as "recognized" even though `resolve::resolve_type_ref`
 already silently excluded it from resolution by design. Net effect: that
 shape raised no diagnostic anywhere. `check` now routes a bare `Named`
 annotation through the same `ImportScope`/`Candidacy` lookup
-`resolve_type_ref` uses, so `E061` fires — naming the module to import
-from when the name is declared but out of scope, and falling back to the
-original "not a recognized type" message when the name is unknown
-project-wide. `names.lists`/`names.handles` (the `List<L>`/`Handle<K>`
+`resolve_type_ref` uses, so `E061` fires — naming the module the struct
+is declared in (and noting it isn't reachable from this file yet) when
+the name is declared but out of scope, and falling back to the original
+"not a recognized type" message when the name is unknown project-wide. `names.lists`/`names.handles` (the `List<L>`/`Handle<K>`
 checks) and `check_reserved_type_names` (`E188`) are unaffected —
 `resolve_type_ref` never scopes those vocabularies, so there was no
 referrer-scoping precedent to mirror there.

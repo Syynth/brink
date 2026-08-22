@@ -910,7 +910,7 @@ pub fn per_file_diagnostics(
     // by `dialect_gate` (E051), and critiquing the inside of rejected
     // syntax is noise (maintainer ruling 2026-07-13).
     if dialect == Dialect::Brink {
-        out.extend(annotations::check(&files, index, host_manifest, scope));
+        out.extend(annotations::check(file, hir, index, host_manifest, scope));
         // T1c `#fn` creation-site checks (E079/E080/E081) follow the same
         // brink-only rule: under `strict-ink` the literal is already
         // rejected whole (E051). Per-file by the same argument as

@@ -96,8 +96,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, CallGraph, HarvestIndex, HarvestNames, InferenceResult, SccGraph, Sig,
-    TypePolicy,
+    AnalysisOptions, CallGraph, HarvestIndex, HarvestNames, ImportScope, InferenceResult, SccGraph,
+    Sig, TypePolicy,
 };
 use brink_format::{
     CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
@@ -180,6 +180,10 @@ impl Default for BrinkDatabase {
                 // doc and `harvest_completion_index_query`'s own).
                 .ingredient::<harvest_completion_index_query>()
                 .ingredient::<resolution_index_query>()
+                // Issue #2272 review finding: the shared per-file
+                // `ImportScope` derivation `resolve_query` and
+                // `per_file_diagnostics_query` both now call.
+                .ingredient::<file_import_scope_query>()
                 .ingredient::<resolve_query>()
                 .ingredient::<signature_query>()
                 // Issue #530: the per-file locals path signature_query
@@ -1115,6 +1119,40 @@ pub(crate) fn resolution_index_query(
     Arc::new(stripped)
 }
 
+/// One file's [`ImportScope`] (issue #2272 review finding): the single
+/// derivation [`resolve_query`] and [`analysis::per_file_diagnostics_query`]
+/// now both call, so "the declared-module import scope for this file" has
+/// exactly one answer instead of two independently-maintained copies of the
+/// same four lines that could silently diverge — the exact failure mode
+/// #2272's own gate run spent effort fixing. `ImportScope` carries no
+/// `TextRange` (see its own doc — names only), so this query's derived
+/// `PartialEq`/`Eq` still lets a range-only edit elsewhere backdate for every
+/// caller, the same cutoff shape [`resolution_index_query`] already relies
+/// on; a caller reading [`module_map_query`] directly instead (as
+/// `per_file_diagnostics_query` briefly did before this extraction) would
+/// pick up its range-bearing module diagnostics too, re-executing on any
+/// range shift project-wide — the whole-project churn FG-3 exists to
+/// eliminate.
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
+#[salsa::tracked(returns(ref), lru = 4096)]
+pub(crate) fn file_import_scope_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> ImportScope {
+    // `file_module` comes from the shared module map (declared modules
+    // only — INCLUDE inheritance already applied), matching how
+    // `symbol_index_query` qualified identity.
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let file_module = module_map
+        .get(&file.file_id(db))
+        .filter(|m| m.declared)
+        .map(|m| m.name.clone());
+    let hir = &lowered_query(db, project, file).hir;
+    ImportScope::new(file_module, &hir.imports)
+}
+
 /// Resolve one file's references against the project-wide names. Thin
 /// wrapper over [`brink_analyzer::resolve`], fed the decls-only cutoff
 /// projection for globals and this file's own `manifest.locals` for
@@ -1137,17 +1175,12 @@ pub(crate) fn resolve_query(
     // modules binds to the one this file imported. The scope is inert for
     // the pre-modules / single-module world (no declared module qualifies
     // identity, so every candidate carries `module: None` and the resolver's
-    // fast path is byte-identical). `file_module` comes from the shared
-    // module map (declared modules only — INCLUDE inheritance already
-    // applied), matching how `symbol_index_query` qualified identity.
-    let (module_map, _module_diags) = module_map_query(db, project);
-    let file_module = module_map
-        .get(&file.file_id(db))
-        .filter(|m| m.declared)
-        .map(|m| m.name.clone());
-    let scope = brink_analyzer::ImportScope::new(file_module, &lowered.hir.imports);
+    // fast path is byte-identical). Shared with `per_file_diagnostics_query`
+    // via `file_import_scope_query` (issue #2272 review finding) so the two
+    // consult the literal same `ImportScope` object per file.
+    let scope = file_import_scope_query(db, project, file);
 
-    brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, &scope)
+    brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, scope)
 }
 
 /// Interned key for [`signature_query`] and [`local_signature_query`].

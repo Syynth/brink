@@ -367,29 +367,38 @@ pub(crate) fn declared_struct_names(index: &SymbolIndex) -> BTreeSet<String> {
 /// all (`per_file_diagnostics`, `finish_analysis`, `analyze_with_modules`,
 /// and `brink-db`'s `per_file_diagnostics_query`), even though it never
 /// touches LIR lowering.
+///
+/// Takes exactly **one** file, not a slice (review finding on this PR): a
+/// single `scope` applied across a whole `files: &[(FileId, &HirFile)]`
+/// slice would silently apply file A's import scope to file B's
+/// annotations the moment a caller ever passed more than one entry — this
+/// crate already keys a scope per file correctly elsewhere
+/// (`structs::check_assignments`'s `BTreeMap<FileId, ImportScope>`). Every
+/// real and test caller here has only ever passed a single-file slice, so
+/// this narrows the signature to what's actually true rather than widening
+/// it to a map with only ever one entry.
 #[must_use]
 pub fn check(
-    files: &[(FileId, &HirFile)],
+    file: FileId,
+    hir: &HirFile,
     index: &SymbolIndex,
     manifest: Option<&HostManifest>,
     scope: &ImportScope,
 ) -> Vec<Diagnostic> {
     let names = TypeNames::new(index, manifest);
     let mut out = Vec::new();
-    for &(file, hir) in files {
-        for v in &hir.variables {
-            if let Some(te) = &v.annotation {
-                check_one(te, &names, index, scope, file, &mut out);
-            }
+    for v in &hir.variables {
+        if let Some(te) = &v.annotation {
+            check_one(te, &names, index, scope, file, &mut out);
         }
-        for c in &hir.constants {
-            if let Some(te) = &c.annotation {
-                check_one(te, &names, index, scope, file, &mut out);
-            }
+    }
+    for c in &hir.constants {
+        if let Some(te) = &c.annotation {
+            check_one(te, &names, index, scope, file, &mut out);
         }
-        for knot in &hir.knots {
-            check_knot(knot, file, &names, index, scope, &mut out);
-        }
+    }
+    for knot in &hir.knots {
+        check_knot(knot, file, &names, index, scope, &mut out);
     }
     out
 }
@@ -495,9 +504,27 @@ fn check_one(
                     .is_none()
             {
                 let message = match declared_struct_modules_hint(index, name) {
+                    // Dialect-blind wording (review finding — mirrors
+                    // `modules::check`'s own E025 precedent, see that call
+                    // site's comment): this arm runs identically for both
+                    // `.ink` (`STRUCT`) and native `.brink` (`struct`)
+                    // source, so the message must not spell out either
+                    // keyword's casing. Nor does it say "import it" —
+                    // `lookup_by_name`'s `!multiple` fast path (see its own
+                    // doc) returns any sole ordinary candidate regardless of
+                    // scope, so the only candidates that can ever reach this
+                    // arm with a non-empty module hint are reserved-root
+                    // (std) ones — and a real `use std::…` import does not
+                    // exist yet (`std/conventions/screenplay.brink`'s own
+                    // header; `resolve::lookup_by_name_direct`'s std gate):
+                    // it needs #1582's `pub` marker and #2167's
+                    // closure-scoped confinement, neither built. Say what is
+                    // actually true today instead of advice no author can
+                    // follow.
                     Some(modules) => format!(
-                        "`{name}` names a declared STRUCT in `{modules}`, but this file \
-                         doesn't import it — import it, or check the spelling"
+                        "`{name}` names a declared struct in `{modules}`, but it isn't \
+                         reachable from this file yet (see #1582, #2167) — check the spelling, \
+                         or declare/use it from a module this file can see"
                     ),
                     None => format!(
                         "`{name}` is not a recognized type — expected int, float, bool, \
@@ -973,7 +1000,7 @@ mod tests {
     #[test]
     fn check_accepts_option_and_weighted_annotations() {
         let (hir, index) = build("VAR o: Option<int> = 0\nVAR w: Weighted<float> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -982,7 +1009,7 @@ mod tests {
         // Option<T>/Weighted<T> content-check recursively, exactly like
         // Array<T>/Map<K, V> — an unrecognized element name still flags.
         let (hir, index) = build("VAR o: Option<Bogus> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1019,7 +1046,7 @@ mod tests {
                 "{v:?} should no longer resolve under the old lowercase spelling"
             );
         }
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 3, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E061));
     }
@@ -1088,7 +1115,8 @@ mod tests {
     fn check_flags_undeclared_handle_kind() {
         let (hir, index) = build("VAR h: Handle<Nope> = 0\n");
         let diags = check(
-            &[(FileId(0), &hir)],
+            FileId(0),
+            &hir,
             &index,
             Some(&audio_instance_manifest()),
             &ImportScope::default(),
@@ -1101,7 +1129,8 @@ mod tests {
     fn check_accepts_declared_handle_kind() {
         let (hir, index) = build("VAR h: Handle<AudioInstance> = 0\n");
         let diags = check(
-            &[(FileId(0), &hir)],
+            FileId(0),
+            &hir,
             &index,
             Some(&audio_instance_manifest()),
             &ImportScope::default(),
@@ -1116,7 +1145,7 @@ mod tests {
         // an empty handle-kind set, same degrade-gracefully posture as
         // every other manifest-driven check.
         let (hir, index) = build("VAR h: Handle<AudioInstance> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1126,7 +1155,7 @@ mod tests {
     #[test]
     fn check_flags_unknown_type_name() {
         let (hir, index) = build("VAR p: Frobnicator = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1135,14 +1164,14 @@ mod tests {
     fn check_accepts_fn_type_since_t1c() {
         // T1c-1 (#699): E062 retired — `fn(T…): R` is a legal type form.
         let (hir, index) = build("VAR cb: fn(int, int): bool = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_still_flags_unknown_names_inside_a_fn_type() {
         let (hir, index) = build("VAR cb: fn(Bogus): bool = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1151,14 +1180,14 @@ mod tests {
     fn check_accepts_known_scalar_and_generic_types() {
         let (hir, index) =
             build("VAR a: int = 1\nVAR b: Array<float> = 0\nVAR c: Map<string, bool> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_accepts_void_return_type() {
         let (hir, index) = build("=== function noop(): void ===\n~ return\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1171,14 +1200,14 @@ mod tests {
     fn check_accepts_content_param_annotation() {
         let (hir, index) =
             build("=== function radio(chan: string, text: content) ===\n~ return text\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
     fn check_accepts_declared_list_name() {
         let (hir, index) = build("LIST Weathers = sunny, rainy\nVAR w: List<Weathers> = sunny\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1186,7 +1215,7 @@ mod tests {
     #[test]
     fn check_accepts_declared_struct_name() {
         let (hir, index) = build("STRUCT Point = #{x: float}\nVAR p: Point = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1234,7 +1263,7 @@ mod tests {
         let (hir, mut index) = build("VAR c: Cue = 0\n");
         inject_struct(&mut index, "Cue", "std::conventions::screenplay", 0xC0F);
 
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(
             diags.len(),
             1,
@@ -1249,11 +1278,25 @@ mod tests {
         );
     }
 
-    /// Should-NOT-fire: the same std-only struct, once genuinely imported
-    /// (a declared `#@module` on the referrer plus a qualified import of
-    /// the std module) is visible, and `check` must not flag it —
-    /// referrer-scoping widens what's checked, it must never additionally
-    /// reject an import that resolution itself accepts.
+    /// Forward-looking guard, NOT evidence the escape hatch works today
+    /// (review finding): this test synthesizes TWO states the real
+    /// compilation pipeline cannot produce yet, both required for `check`
+    /// to stay clean here. (1) `inject_struct` marks the std struct
+    /// `Visibility::Public` directly in a hand-built `SymbolIndex` —
+    /// `lookup_by_name_direct`'s own doc (`resolve.rs`, issue #2197) states
+    /// plainly that "nothing under `std` can be marked public yet" in a
+    /// real mount. (2) the hand-built `ImportScope` below claims a
+    /// qualified import of `std::conventions::screenplay` — no real `use
+    /// std::…`/`IMPORT` syntax can populate `qualified_modules`/
+    /// `bare_imports` with a std module today (needs #1582's `pub` marker
+    /// and #2167's closure-scoped confinement, neither built — see the
+    /// E061 message's own comment on this). Given both synthetic
+    /// preconditions, `classify` legitimately answers `Imported` and
+    /// `check` legitimately stays clean — so the test **does** exercise
+    /// real `classify`/`lookup_by_name` machinery correctly, but only
+    /// because it starts from a state no author can reach today. Read it as
+    /// a guard for the day #1582/#2167 land, not as proof the escape hatch
+    /// is usable now.
     #[test]
     fn check_accepts_std_only_struct_name_once_imported() {
         let (hir, mut index) = build("VAR c: Cue = 0\n");
@@ -1275,7 +1318,7 @@ mod tests {
             bare_imports: BTreeSet::new(),
             aliases: BTreeMap::new(),
         };
-        let diags = check(&[(FileId(0), &hir)], &index, None, &scope);
+        let diags = check(FileId(0), &hir, &index, None, &scope);
         assert!(
             diags.is_empty(),
             "an imported std struct must stay clean through the real check() call: {diags:?}"
@@ -1291,7 +1334,7 @@ mod tests {
     #[test]
     fn check_still_accepts_locally_declared_struct_with_no_modules_in_play() {
         let (hir, index) = build("STRUCT Cue = #{x: int}\nVAR c: Cue = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(
             diags.is_empty(),
             "an ordinary, single-file, no-`#@module` struct declaration must stay clean: \
@@ -1319,7 +1362,7 @@ mod tests {
             "std::conventions::screenplay",
             0xC11,
         );
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -1328,7 +1371,7 @@ mod tests {
         // A name that isn't a known scalar, generic head, or declared
         // struct still flags E061 — TM-4b only widens the accepted set.
         let (hir, index) = build("VAR w: NotAStruct = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1336,7 +1379,7 @@ mod tests {
     #[test]
     fn check_flags_undeclared_list_name() {
         let (hir, index) = build("VAR w: List<Nope> = 0\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E061);
     }
@@ -1344,7 +1387,7 @@ mod tests {
     #[test]
     fn check_flags_param_and_return_type_annotations() {
         let (hir, index) = build("=== function heal(hp: Bogus): AlsoBogus ===\n~ return hp\n");
-        let diags = check(&[(FileId(0), &hir)], &index, None, &ImportScope::default());
+        let diags = check(FileId(0), &hir, &index, None, &ImportScope::default());
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E061));
     }

@@ -150,6 +150,26 @@ std-mounted candidate for a file that is itself part of
 excludes that same candidate unconditionally — stricter than
 `lookup_by_name` for exactly that referrer.
 
+**A referrer's `ImportScope` is derivable only from the resolved
+`ModuleMap`, never from `hir.module` alone (issue #2272's gate finding).**
+`hir.module` only ever carries an explicit `#@module(...)` directive; a
+**native** `.brink` file's real declared module is *path*-derived, computed
+once via `ModuleMap`/`brink-db`'s `module_map_query` —
+`analyze_with_modules`'s own doc states `hir.module` "carries a
+deliberately empty `name`" for native source, never `None`. Building an
+`ImportScope` from `hir.module` in isolation therefore silently excludes a
+native file's own siblings, including the mounted stdlib's own internal
+same-module references (`std/conventions/screenplay.brink` referencing its
+own `Cue`/`Parenthetical` structs) — a per-file-local re-derivation that
+looked `brink-analyzer`-only in isolation misfired exactly there. Every
+consumer of `ImportScope` in this codebase (`resolve_query`'s own
+scope-build, `annotations::check`'s referrer-scoped `E061`,
+`effects_assertion_diagnostics_query`'s clause resolution) must build it
+from the project's real `ModuleMap` — `brink-db`'s `module_map_query` on
+the db-direct road, the per-file scope `analyze_with_modules`'s own
+resolution loop builds and threads onward on the off-db road — never from
+a file's own HIR alone.
+
 **`std` is a peer root of `story`, not a child of it (issue #2245, RULED
 2026-08-04; generalized to a set of reserved roots by issue #2251):**
 `story::*` is the universe of what the project *author* provided; `std::*`
@@ -241,16 +261,28 @@ reference kind, where it previously could not. `resolve::
 lookup_unique_by_name`'s own analogous asymmetry (issue #2233, a
 `referrer_module` hint) remains the one unreconciled case in this family.
 
-**Not touched by #2249, still a real gap:** `annotations::check`'s `E061`
-"unrecognized type name" diagnostic (`annotations::declared_struct_names`)
-is project-flat with no referrer-scoping or std-exclusion of its own — a
-std-only struct name is "recognized" for `E061`'s purposes regardless of
-whether the referrer imports it, so an unresolvable-but-`E061`-silent
-`~ temp c: Cue` (std-only `Cue`, no import) still raises no diagnostic
-anywhere. Extending `declared_struct_names` to the same referrer-scoped
-vocabulary `resolve_type_ref` now uses is the natural next step, not
-attempted here — see issue #2249's own "compounding diagnostic gap"
-section.
+**Closed by issue #2272.** The paragraph above used to end here, describing
+`annotations::check`'s `E061` "unrecognized type name" diagnostic
+(`annotations::declared_struct_names`) as project-flat with no
+referrer-scoping or std-exclusion of its own — an unresolvable-but-silent
+`~ temp c: Cue` (std-only `Cue`, no import) raised no diagnostic anywhere,
+compounding the gap `resolve_type_ref` (issue #2249) left open by design
+(a `TypeExpr::Named` leaf isn't always a struct reference, so
+`resolve_type_ref` itself stays silent on a miss). Issue #2272 closed it:
+`check_one`'s bare-`Named` arm now routes through the identical
+`ImportScope`/`Candidacy`-aware `lookup_by_name` `resolve_type_ref` already
+uses (`SymbolKind::Struct` only) instead of consulting `names.structs`
+(still project-flat — unchanged consumer: `resolve`'s own `Ty::Struct`
+resolution and `structs::declared_shapes`'s field-type resolution both
+still want "declared anywhere"). "Declared" for `E061`'s bare-`Named` check
+now means declared **and reachable from this referrer**, not merely
+declared somewhere in the project — when a name is declared in the project
+but out of scope, the diagnostic now names the module it lives in rather
+than staying silent or falling back to the generic "unrecognized type"
+message. `names.lists`/`names.handles` (the `List<L>`/`Handle<K>` arms)
+stay project-flat — `resolve_type_ref` never scopes those vocabularies
+either, so there is no referrer-scoping precedent for #2272 to mirror
+there.
 
 **Two sibling lookups audited and found not to fit the `RefKind` pattern
 (issue #2249):** `lir::lower::decls::collect_externals`'s extern-to-
