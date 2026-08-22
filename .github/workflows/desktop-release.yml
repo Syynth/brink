@@ -303,13 +303,50 @@ jobs:
           gh release upload desktop-latest artifacts/latest.json \
             --repo "$GITHUB_REPOSITORY" --clobber
 
+      # `--generate-notes` alone diffs against the repo's PREVIOUS RELEASE,
+      # whichever train produced it. This repo runs three, and the npm and
+      # crates trains publish far more often than desktop — so the notes for
+      # a desktop release would cover every PR since some `@brink-lang/*`
+      # publish, nearly all of it compiler and editor work that shipped
+      # nothing to this app. At the time of writing that diff was 500+ PRs
+      # back to `@brink-lang/studio@0.14.0`.
+      #
+      # This is the same mistake as pointing the updater at
+      # `releases/latest` (see the endpoint comment above): assuming one
+      # release train. `--notes-start-tag` pins the diff to the previous
+      # DESKTOP release, so an npm publish landing between two desktop
+      # releases cannot widen it. The first desktop release has no
+      # predecessor to diff from, so it gets written notes instead.
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "Brink Studio ${{ github.ref_name }}" \
-            --generate-notes \
-            artifacts/*
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName --jq '[.[] | select(.tagName | startswith("desktop-v"))][0].tagName // empty')"
+
+          if [ -n "$prev" ]; then
+            echo "Generating notes since the previous desktop release: $prev"
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Brink Studio $GITHUB_REF_NAME" \
+              --generate-notes \
+              --notes-start-tag "$prev" \
+              artifacts/*
+          else
+            echo "No previous desktop-v* release — writing first-release notes."
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Brink Studio $GITHUB_REF_NAME" \
+              --notes "First release of the Brink Studio desktop app.
+
+          Not yet signed or notarized, so macOS and Windows will both warn on
+          first launch. On macOS: System Settings -> Privacy & Security ->
+          Open Anyway.
+
+          Downloads: \`.dmg\` (macOS), \`.AppImage\` or \`.deb\` (Linux),
+          \`.exe\` (Windows). The \`.app.tar.gz\`/\`.nsis.zip\` files and their
+          \`.sig\` companions are update payloads for the in-app updater, not
+          downloads." \
+              artifacts/*
+          fi
