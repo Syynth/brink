@@ -53,9 +53,9 @@ use brink_ir::{
 use crate::determinism::LookupSet;
 
 use super::{
-    DefKey, ProjectInput, SourceFile, effects_query, inference_index_query, is_source_file,
-    lowered_query, module_map_query, raw_lowered_query, resolution_index_query, resolve_query,
-    symbol_index_query, type_inference_query,
+    DefKey, ProjectInput, SourceFile, effects_query, file_import_scope_query,
+    inference_index_query, is_source_file, lowered_query, module_map_query, raw_lowered_query,
+    resolution_index_query, resolve_query, symbol_index_query, type_inference_query,
 };
 
 /// Index + resolutions, aggregated across every file's [`resolve_query`]
@@ -101,14 +101,28 @@ pub(crate) fn resolutions_index_query(
 /// checks. Reads only this file's own `lowered_query`/`resolve_query`, plus
 /// the narrow, cutoff-friendly [`resolution_index_query`] projection (for
 /// annotation content checks' declared-`LIST`-name lookup — range-free, so
-/// it doesn't reintroduce whole-project churn) and the registered host
+/// it doesn't reintroduce whole-project churn), the registered host
 /// manifest (T1d-2, docs/t1d-spec.md §3 — `Handle<K>` annotation content
-/// checks' declared-handle-kind lookup). The manifest is project-wide,
-/// host-set config, not derived from any file's edits — reading it here is
-/// the same coarse, range-free dependency shape as `dialect`, already read
-/// two lines below, so it doesn't reintroduce the whole-project churn FG-3
-/// eliminated. Never another file's HIR: a body edit in file Y leaves file
-/// X's memo fully validated (same `Arc`/pointer), not re-executed.
+/// checks' declared-handle-kind lookup), and (issue #2272 review finding)
+/// [`file_import_scope_query`]'s `ImportScope` for the referrer-scoped
+/// `E061` struct-name lookup. The manifest is project-wide, host-set config,
+/// not derived from any file's edits — reading it here is the same coarse,
+/// range-free dependency shape as `dialect`, already read two lines below,
+/// so it doesn't reintroduce the whole-project churn FG-3 eliminated.
+/// `file_import_scope_query` is a *new* dependency edge onto
+/// [`module_map_query`] this query didn't carry before #2272 —
+/// `module_map_query` is itself built from every file's `raw_lowered_query`,
+/// so a declared-module-affecting edit anywhere in the project can in
+/// principle reach this query — but the edge is cutoff-safe: `ImportScope`
+/// carries no `TextRange` (its own doc), so `file_import_scope_query`'s
+/// `PartialEq` backdates on any edit that leaves every file's declared
+/// module name and this file's own `IMPORT` list unchanged, which is the
+/// overwhelming majority of edits (in particular every body-only edit, in
+/// this file or any other). Reading `module_map_query` directly here
+/// instead (as an earlier draft did) would NOT have this property — see
+/// `file_import_scope_query`'s own doc for why. Otherwise still: never
+/// another file's HIR: a body edit in file Y leaves file X's memo fully
+/// validated (same `Arc`/pointer), not re-executed.
 /// `Arc`-wrapped for the same pointer-identity reason as [`ResolvedProject`].
 ///
 /// Also the B0.9 native strict-only enforcement point
@@ -149,6 +163,20 @@ pub(crate) fn per_file_diagnostics_query(
     let index = resolution_index_query(db, project);
     let opts = project.analysis_options(db);
     let is_native = super::file_language(file.path(db)) == super::Language::Native;
+    // Issue #2272 (review finding: share, don't re-derive): the same
+    // **declared-module** `ImportScope` `resolve_query` builds for this file
+    // via `file_import_scope_query` — the literal same tracked query, not a
+    // second copy of the derivation — so `annotations::check`'s
+    // referrer-scoped struct-name lookup agrees with
+    // `resolve::resolve_type_ref`'s own `RefKind::Type` resolution on
+    // exactly the same scope. Deriving it from `hir.module` in isolation
+    // would be wrong for a native file — see that field's own doc and
+    // `analyze_with_modules`'s matching comment. Going through
+    // `file_import_scope_query` (range-free `ImportScope` output) rather
+    // than reading `module_map_query` directly here avoids adding a new
+    // *effective* dependency on its range-bearing module diagnostics — see
+    // that query's own doc for why that distinction matters for cutoff.
+    let scope = file_import_scope_query(db, project, file);
     let mut diagnostics = brink_analyzer::per_file_diagnostics(
         file_id,
         hir,
@@ -157,6 +185,7 @@ pub(crate) fn per_file_diagnostics_query(
         opts.dialect,
         is_native,
         opts.host_manifest.as_ref(),
+        scope,
     );
     if is_native {
         diagnostics.extend(brink_analyzer::native_strict_only_error(

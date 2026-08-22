@@ -165,6 +165,20 @@ pub fn validate_admission(
         c.check_range(knot.name.range);
         for param in &knot.params {
             c.check_range(param.name.range);
+            // Issue #2272: a param's own TM-2 annotation is now a real
+            // `RefKind::Type` reference (`symbols::project`'s
+            // `walk_type_annotation` call in `project_knot`) — its range
+            // must be a recognized candidate here too, mirroring the
+            // `VAR`/`CONST`/struct-field annotation carve-outs above
+            // (issue #2249), or E121 misfires on every typed param.
+            if let Some(ann) = &param.annotation {
+                c.push_ref(ann.range());
+            }
+        }
+        // Issue #2272: the knot/function-header return-type annotation —
+        // same "now a real reference" treatment as a param's just above.
+        if let Some(rt) = &knot.return_type {
+            c.push_ref(rt.range());
         }
         c.walk_block(&knot.body, &knot.name.text);
         for stitch in &knot.stitches {
@@ -172,6 +186,15 @@ pub fn validate_admission(
             c.check_range(stitch.name.range);
             for param in &stitch.params {
                 c.check_range(param.name.range);
+                // Issue #2272: same param-annotation carve-out as a
+                // knot-level param above.
+                if let Some(ann) = &param.annotation {
+                    c.push_ref(ann.range());
+                }
+            }
+            // Issue #2272: a stitch's own return-type annotation.
+            if let Some(rt) = &stitch.return_type {
+                c.push_ref(rt.range());
             }
             let prefix = format!("{}.{}", knot.name.text, stitch.name.text);
             c.walk_block(&stitch.body, &prefix);
@@ -650,6 +673,19 @@ impl Collector {
             // are walked so nothing inside escapes the check.
             Expr::Lambda(l) => {
                 self.check_range(l.ptr.text_range());
+                // Issue #2272: a lambda param's own TM-2 annotation and the
+                // lambda's own `: type` return annotation are now real
+                // `RefKind::Type` references (`symbols::project`'s
+                // `walk_lambda`) — same carve-out as a knot/stitch param's
+                // just above, or E121 misfires on every typed lambda.
+                for p in &l.params {
+                    if let Some(ann) = &p.annotation {
+                        self.push_ref(ann.range());
+                    }
+                }
+                if let Some(rt) = &l.return_type {
+                    self.push_ref(rt.range());
+                }
                 if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
                     for s in stmts {
                         self.walk_block_stmt(s);

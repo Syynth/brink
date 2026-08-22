@@ -407,6 +407,26 @@ impl Projector {
                 Some(param_info(param)),
                 param.annotation.clone(),
             );
+            // Issue #2272: a param's own TM-2 annotation is a nominal
+            // grammar reference in exactly the same sense as a `VAR`/
+            // `CONST`/struct-field annotation (issue #2249's own
+            // `walk_type_annotation` sites, above) — `push_local` above
+            // only records the annotation as `LocalSymbol.annotation` (a
+            // side-table field consumed by `signature()`'s firewall), it
+            // never registers an HIR reference for it, so a struct used
+            // only as a parameter type read as unreferenced by the symbol
+            // index (goto-def/rename/find-references all missed it).
+            if let Some(ann) = &param.annotation {
+                self.walk_type_annotation(ann, Some(&knot.name.text), None);
+            }
+        }
+        // Issue #2272: the knot/function-header return-type annotation
+        // (`Knot::return_type`, TM-2 `): type ===`) — same gap as the param
+        // loop just above, but for the one TM-2 annotation site
+        // `project_manifest` never walked at all until now (unlike a
+        // param's, which was at least stored, just not referenced).
+        if let Some(rt) = &knot.return_type {
+            self.walk_type_annotation(rt, Some(&knot.name.text), None);
         }
 
         self.walk_block(&knot.body, Some(&knot.name.text), None);
@@ -433,6 +453,16 @@ impl Projector {
                     Some(param_info(param)),
                     param.annotation.clone(),
                 );
+                // Issue #2272: same param-annotation registration as a
+                // knot-level param above, scoped under this stitch.
+                if let Some(ann) = &param.annotation {
+                    self.walk_type_annotation(ann, Some(&knot.name.text), Some(&st.name.text));
+                }
+            }
+            // Issue #2272: a stitch's own return-type annotation — same
+            // gap as the knot's above.
+            if let Some(rt) = &st.return_type {
+                self.walk_type_annotation(rt, Some(&knot.name.text), Some(&st.name.text));
             }
             self.walk_block(&st.body, Some(&knot.name.text), Some(&st.name.text));
         }
@@ -915,6 +945,23 @@ impl Projector {
                 None,
                 None,
             );
+            // Issue #2272: a lambda param's own TM-2 annotation, same
+            // registration gap as a knot/stitch param's (`project_knot`,
+            // above) — a struct used only as a lambda param's type read as
+            // unreferenced. `push_local` above deliberately still passes
+            // `None` for the annotation slot itself (lambda params are
+            // recorded as ordinary `SymbolKind::Temp` locals, which have no
+            // `signature()`-firewall consumer of their own the way a
+            // knot/stitch param's `LocalSymbol.annotation` does) — this
+            // walk is only the reference registration, independent of that.
+            if let Some(ann) = &p.annotation {
+                self.walk_type_annotation(ann, knot, stitch);
+            }
+        }
+        // Issue #2272: the lambda's own `: type` return annotation
+        // (`LambdaExpr::return_type`) — same gap as its params just above.
+        if let Some(rt) = &l.return_type {
+            self.walk_type_annotation(rt, knot, stitch);
         }
         match &l.body {
             LambdaBody::Expr(e) => self.walk_expr(e, knot, stitch),
