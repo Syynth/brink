@@ -921,6 +921,17 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
 /// item id is `open-recent:{path}`; `on_menu_event` in `run()` strips that
 /// prefix back off to recover the path (paths may themselves contain `:`
 /// on Windows, but `strip_prefix` only ever touches the leading match).
+///
+/// The `#[expect]` follows the repo's convention for a flat declarative
+/// enumeration (CLAUDE.md, "Which gate covers which files"): this is one
+/// menu tree written out in order, and splitting it into per-submenu
+/// helpers would trade a readable top-to-bottom description of the menu
+/// for indirection without removing a single line. Adding the D4
+/// `check-updates` item is what pushed it from 99 to 107.
+#[expect(
+    clippy::too_many_lines,
+    reason = "flat menu-tree declaration; splitting adds indirection, not clarity"
+)]
 fn build_menu(
     handle: &tauri::AppHandle,
     recents: &[String],
