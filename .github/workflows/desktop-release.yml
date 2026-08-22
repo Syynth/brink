@@ -11,10 +11,16 @@ name: Desktop release
 # crates and is house-rule-forbidden to edit (editing it breaks the release
 # `plan` check). This is a separate workflow for a separate artifact.
 #
-# APPLE signing/notarization steps are CONDITIONAL on secrets being present
-# (`APPLE_CERTIFICATE` et al). With them absent the build still produces
-# working bundles — unsigned, so macOS quarantines the download — which is
-# what makes this pipeline testable before the Apple credentials exist.
+# APPLE signing/notarization is CONDITIONAL on the secrets being present.
+# With them absent the build produces working bundles — unsigned, so macOS
+# quarantines the download — which is what makes this pipeline testable
+# before the Apple credentials exist.
+#
+# ⚠ That degradation is NOT automatic. An absent secret expands to an empty
+# string, and tauri treats an empty `APPLE_SIGNING_IDENTITY` as an identity
+# to sign with rather than as "unsigned" — so the empty vars are unset in
+# the build step rather than merely declared. Gating the STEPS on the
+# secrets is not sufficient; see that step's comment.
 #
 # ⚠ `TAURI_SIGNING_PRIVATE_KEY` is NOT optional in the same way. Once
 # `createUpdaterArtifacts` is on, `tauri build` HARD-FAILS without it
@@ -75,6 +81,34 @@ jobs:
         with:
           persist-credentials: false
 
+      # The tag names the version the manifest will ADVERTISE; tauri.conf.json
+      # names the version the built binary REPORTS. If they disagree, the
+      # result is not a wrong version string — it is an infinite update loop:
+      # an installed app sees the newer manifest version, updates, relaunches
+      # still reporting the old version, sees the same update again, forever.
+      # It would hit every user on every launch, and nothing in the release
+      # itself would look wrong.
+      #
+      # Checked before the matrix builds rather than after, so a mismatch
+      # costs seconds instead of three release-mode builds. Only meaningful
+      # on a tag — a dispatch run has a branch name, not a version.
+      - name: Tag version must match tauri.conf.json
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#desktop-v}"
+          conf_version="$(jq -r .version packages/brink-desktop/src-tauri/tauri.conf.json)"
+          if [ "$tag_version" != "$conf_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} declares version ${tag_version}, but" \
+                 "packages/brink-desktop/src-tauri/tauri.conf.json declares ${conf_version}." \
+                 "Shipping this would put every installed app into a permanent update loop:" \
+                 "it would fetch ${tag_version}, relaunch still reporting ${conf_version}," \
+                 "and immediately find the same update again. Bump tauri.conf.json (and" \
+                 "Cargo.toml / package.json alongside it) to ${tag_version}, or retag."
+            exit 1
+          fi
+          echo "tag and tauri.conf.json agree on ${conf_version}"
+
       # Same system deps the bundle-smoke lane installs; webkit2gtk + the
       # AppImage tooling are Linux-only.
       - name: Install Linux dependencies (Tauri)
@@ -124,8 +158,16 @@ jobs:
           rm -f /tmp/cert.p12
 
       # `tauri build` signs when APPLE_SIGNING_IDENTITY is set and notarizes
-      # when the App Store Connect API key vars are; both resolve to empty
-      # strings otherwise, and the build proceeds unsigned.
+      # when the App Store Connect API key vars are.
+      #
+      # ⚠ "Set" is not the same as "non-empty". An ABSENT secret expands to
+      # an EMPTY STRING, not to an absent variable, so declaring these in
+      # `env:` hands tauri `APPLE_SIGNING_IDENTITY=""` — which it reads as
+      # "sign with the identity ''", runs `codesign`, and dies on
+      # `: no identity found`. The first dry run failed exactly there, after
+      # a full release build: gating the *steps* on the secret is not enough
+      # while the *variables* are still injected. They are unset below
+      # instead, which is what makes the unsigned path actually reachable.
       - name: Build bundles
         env:
           # Signs the updater payloads. Absent ⇒ payloads ship unsigned and
@@ -136,14 +178,34 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_PATH: ${{ github.workspace }}/api-key.p8
+          # Passed through the environment rather than interpolated into the
+          # script body: a `${{ secrets.* }}` expansion inside `run:` is
+          # substituted into the shell SOURCE, so any content that happens to
+          # contain shell syntax would be executed rather than written.
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
         shell: bash
         run: |
-          if [ -n "${{ secrets.APPLE_API_KEY_CONTENT }}" ]; then
-            echo "${{ secrets.APPLE_API_KEY_CONTENT }}" > "$APPLE_API_KEY_PATH"
+          for var in APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY; do
+            if [ -z "${!var}" ]; then
+              unset "$var"
+            fi
+          done
+
+          if [ -n "$APPLE_API_KEY_CONTENT" ]; then
+            export APPLE_API_KEY_PATH="${{ github.workspace }}/api-key.p8"
+            # Removed even if the build fails or the job is cancelled.
+            trap 'rm -f "$APPLE_API_KEY_PATH"' EXIT
+            printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY_PATH"
           fi
+          unset APPLE_API_KEY_CONTENT
+
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "Apple signing identity present — bundles will be signed."
+          else
+            echo "No Apple signing identity — bundles will be UNSIGNED (expected until D4 stage 2)."
+          fi
+
           pnpm --filter @brink/desktop exec tauri build --bundles ${{ matrix.bundles }}
-          rm -f "$APPLE_API_KEY_PATH"
 
       # Fail loudly rather than uploading an empty artifact — the bundle-smoke
       # lane's own lesson (#2709): assert the artifact exists, do not assume
