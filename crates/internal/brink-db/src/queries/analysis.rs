@@ -149,6 +149,21 @@ pub(crate) fn per_file_diagnostics_query(
     let index = resolution_index_query(db, project);
     let opts = project.analysis_options(db);
     let is_native = super::file_language(file.path(db)) == super::Language::Native;
+    // Issue #2272: the same **declared-module** `ImportScope` `resolve_query`
+    // already builds for this file — reused here (not re-derived from
+    // `hir.module` in isolation, which is wrong for a native file; see that
+    // field's own doc and `analyze_with_modules`'s matching comment) so
+    // `annotations::check`'s referrer-scoped struct-name lookup agrees with
+    // `resolve::resolve_type_ref`'s own `RefKind::Type` resolution on
+    // exactly the same scope. `module_map_query` is already a dependency of
+    // `resolve_query` above, so this adds no new *effective* dependency —
+    // just an explicit one, cheap on a memo hit.
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let file_module = module_map
+        .get(&file_id)
+        .filter(|m| m.declared)
+        .map(|m| m.name.clone());
+    let scope = brink_analyzer::ImportScope::new(file_module, &hir.imports);
     let mut diagnostics = brink_analyzer::per_file_diagnostics(
         file_id,
         hir,
@@ -157,6 +172,7 @@ pub(crate) fn per_file_diagnostics_query(
         opts.dialect,
         is_native,
         opts.host_manifest.as_ref(),
+        &scope,
     );
     if is_native {
         diagnostics.extend(brink_analyzer::native_strict_only_error(

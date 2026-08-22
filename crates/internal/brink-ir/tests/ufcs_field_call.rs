@@ -101,6 +101,7 @@ fn main() {
         brink_analyzer::Dialect::StrictInk,
         true,
         None,
+        &brink_analyzer::ImportScope::default(),
     ));
 
     let hir_inputs = vec![(file_id, &hir)];

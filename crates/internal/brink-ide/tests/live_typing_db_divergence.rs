@@ -394,3 +394,61 @@ fn issue_1865_ordinary_struct_name_raises_no_e188_on_either_surface() {
     );
     assert_surfaces_agree(&live, &db, "no E188 for an ordinary struct name");
 }
+
+// ── Issue #2272: E061 referrer-scoping reaches both roads ───────────────
+
+/// A project file naming the mounted stdlib's `std::conventions::screenplay`
+/// `Cue` struct as a param type, with no `use`/`IMPORT` bringing it into
+/// scope at all — the exact "compounding gap" issue #2272 fixes: before
+/// this fix, `annotations::check`'s `names.structs` was project-flat, so
+/// this read as "a recognized declared struct name" even though nothing in
+/// this file ever imports it.
+const HEALER_WITH_UNIMPORTED_STD_CUE: &str = "\
+fn heal(hp: Cue): int {
+  return 0;
+}
+";
+
+/// Build a session with the real stdlib mounted (same mechanism
+/// `issue_2318_std_collision_survives_config_document.rs` uses) plus one
+/// project file that never imports it.
+fn session_with_std_mount_and(path: &str, src: &str) -> IdeSession {
+    let mut session = IdeSession::new();
+    for (key, text) in brink_environment::stdlib_sources() {
+        session.update_source(key, (*text).to_owned());
+    }
+    session.set_language_dialect(Dialect::Brink);
+    session.update_and_analyze(path, src.to_owned());
+    session.set_type_policy(TypePolicy::Gradual);
+    session
+}
+
+/// The headline GREEN assertion (issue #2272): a param type naming a
+/// std-only, unimported struct now raises `E061` — reaching both the
+/// db-direct road (`ProjectDb`'s `diagnostics_query`, the Problems panel)
+/// and the off-db live-typing road (`IdeSession::analysis`) identically,
+/// the same "exercise both roads" posture every other per-file-diagnostic
+/// fix in this file already proves.
+#[test]
+fn issue_2272_unimported_std_only_struct_param_type_raises_e061_on_both_surfaces() {
+    let session = session_with_std_mount_and("main.brink", HEALER_WITH_UNIMPORTED_STD_CUE);
+    let live = session.analysis().expect("analysis").diagnostics.clone();
+    let db = session.db().analysis().diagnostics.clone();
+
+    assert!(
+        has(&live, DiagnosticCode::E061),
+        "expected E061 for an unimported std-only struct used as a param type on the \
+         live-typing road; live saw {:?}",
+        codes(&live)
+    );
+    assert!(
+        has(&db, DiagnosticCode::E061),
+        "expected E061 on the db-direct road too; db saw {:?}",
+        codes(&db)
+    );
+    assert_surfaces_agree(
+        &live,
+        &db,
+        "E061 for an unimported std-only struct used as a param type",
+    );
+}
