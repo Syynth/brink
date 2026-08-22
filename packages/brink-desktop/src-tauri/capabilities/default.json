@@ -1,11 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "brink-desktop main window: core + the folder-picker dialog. File I/O goes through the shell's own guarded commands, not the fs plugin. `core:window:allow-destroy` is not in `core:window:default` (#2370) — the quit path needs it to force-close the window after the awaited save, bypassing another `closeRequested` round-trip. The `brink-cli` sidecar (D3, #2392) is spawned via `Shell::sidecar()`, which never consults this capability's shell scope — that path is gated only by `run_cli`'s own fixed subcommand allowlist (`export-xliff` / `compile-locale` / `regenerate-xliff` / `compile`), so no `shell:allow-execute` grant belongs here.",
-  "windows": ["main"],
+  "description": "brink-desktop main window: core + the folder-picker dialog. File I/O goes through the shell's own guarded commands, not the fs plugin. `core:window:allow-destroy` is not in `core:window:default` (#2370) \u2014 the quit path needs it to force-close the window after the awaited save, bypassing another `closeRequested` round-trip. The `brink-cli` sidecar (D3, #2392) is spawned via `Shell::sidecar()`, which never consults this capability's shell scope \u2014 that path is gated only by `run_cli`'s own fixed subcommand allowlist (`export-xliff` / `compile-locale` / `regenerate-xliff` / `compile`), so no `shell:allow-execute` grant belongs here.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
-    "core:window:allow-destroy"
+    "core:window:allow-destroy",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

@@ -3120,6 +3120,14 @@
 - **WHAT:** D4 is un-deferred. The desktop app ships **publicly**, which makes Apple codesigning + notarization non-negotiable on macOS (an unsigned public build is effectively broken there). Platforms: **macOS Apple Silicon, Windows, Linux**. **Windows ships UNSIGNED for now** — there is no cheap notarization equivalent; SmartScreen warns until a download earns reputation, and adding a cert later is a secrets change because the workflow uses the same conditional-signing shape as macOS. **Versioning is INDEPENDENT**: `tauri.conf.json`'s `version` is the source of truth, released on `desktop-v*` tags, decoupled from the crate/npm pipelines. New `.github/workflows/desktop-release.yml` — deliberately NOT `release.yml`, which is cargo-dist-generated and forbidden to edit. **iOS is not being built, but must not be foreclosed**: the two couplings that would block it — the `brink-cli` sidecar (iOS cannot ship subprocess binaries) and the native folder picker (iOS has no arbitrary-directory access) — are today confined to one feature behind `cli.ts` and to the `FileProvider` seam respectively, and must stay that way; sidecar- or picker-dependent behavior must never become load-bearing in the core editing loop.
 - **WHY:** Public distribution is the stated goal, and the staging (pipeline first, credentials second) means nothing waits on Apple paperwork: signing steps are conditional on secrets, so the workflow is real and testable while unsigned. Independent versioning matters concretely — the crate/npm release pipeline has not shipped in five weeks (299 pending changesets), and coupling the desktop to it would inherit that stall.
 
+## Update UX: check on launch, prompt to install; save before relaunch
+- **WHEN:** 2026-08-22
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** The desktop app checks for updates **silently, a few seconds after launch**, and prompts only when one is found (Install and Restart / Later); a manual **Check for Updates…** item in the app menu reports every outcome including "up to date". Nothing installs without consent, and nothing installs silently. Installing **awaits the canonical save before relaunching**, reusing `awaitSaveAllBeforeQuit` (quit.ts) rather than a third save discipline.
+- **WHY:** An editor that swaps itself out under an author mid-session erodes trust, and a "Check for Updates…" button that can produce no visible outcome is a broken button — hence silent-on-launch but talkative-on-request. Relaunching is the same hazard quitting is: an in-flight canonical write must not be raced, and #2370/#2434/#2444 already taught that seam the redispatch-and-cap discipline, so a third copy would only re-learn it.
+
 ## The updater lands only once a real signing keypair exists
 - **WHEN:** 2026-08-22
 - **PROJECT:** brink

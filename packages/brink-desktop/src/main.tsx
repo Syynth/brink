@@ -58,6 +58,7 @@ import { runCli } from "./cli.js";
 import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { resolveFileOpenAction } from "./file-open.js";
+import { checkForUpdates, type UpdateApi } from "./updater.js";
 
 /** Loadable project extensions; keep in sync with `list_files` in src-tauri. */
 const ENTRY_FALLBACKS = ["story.brink", "main.ink", "main.brink", "story.ink"];
@@ -576,6 +577,61 @@ void listen<string>("menu:open-recent", (event) => void openRecent(event.payload
 // so it funnels through the same guarded path as the window close below
 // rather than the OS quit item's own (unguarded) native teardown.
 void listen("menu:quit", () => void handleQuitRequested());
+void listen("menu:check-updates", () => void checkForUpdates(updateApi()));
+
+/**
+ * Bind the injected {@link UpdateApi} to the real plugins (D4). The decision
+ * tree itself lives in `updater.ts`, dependency-free and unit-tested; this is
+ * only the wiring.
+ */
+function updateApi(): UpdateApi {
+  return {
+    check: async () => {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      return update === null
+        ? null
+        : { version: update.version, downloadAndInstall: () => update.downloadAndInstall() };
+    },
+    confirm: async (version) => {
+      const { ask } = await import("@tauri-apps/plugin-dialog");
+      return ask(`Brink Studio ${version} is available. Install and restart?`, {
+        title: "Update available",
+        kind: "info",
+        okLabel: "Install and Restart",
+        cancelLabel: "Later",
+      });
+    },
+    notify: (severity, message) => {
+      // With a project open the studio's own surface is the right place; on
+      // the landing screen there is no StudioApi yet, so fall back to a
+      // native dialog rather than dropping the message on the floor.
+      const api = current?.api;
+      if (api) {
+        api.notify({ severity, source: "update", message });
+        return;
+      }
+      void import("@tauri-apps/plugin-dialog").then(({ message: dialog }) =>
+        dialog(message, { title: "Brink Studio", kind: severity === "error" ? "error" : "info" }),
+      );
+    },
+    // Reuses the quit guard rather than a third save discipline — see
+    // updater.ts's module doc. A no-op when no project is open.
+    awaitSave: async () => {
+      if (current !== null) await awaitSaveAllBeforeQuit(current.api);
+    },
+    relaunch: async () => {
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    },
+  };
+}
+
+// Launch check (ruled 2026-08-22): silent, and deliberately delayed — the
+// first seconds after startup belong to mounting the editor, not to a
+// network round trip. Silent means a no-update result and an offline failure
+// both say nothing; only an actual update prompts.
+setTimeout(() => void checkForUpdates(updateApi(), { silent: true }), 5_000);
 
 void getCurrentWindow().onCloseRequested(async (event) => {
   // Always prevent the native close first. (`@tauri-apps/api`'s own default

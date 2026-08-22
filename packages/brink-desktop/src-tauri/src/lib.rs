@@ -934,12 +934,24 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+Q"),
     )?;
+    // D4: the manual update check. Lives in the app menu beside About, the
+    // macOS convention, rather than in File — it is about the application,
+    // not the open project.
+    let check_updates = MenuItem::with_id(
+        handle,
+        "check-updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
     let app_menu = Submenu::with_items(
         handle,
         "Brink Studio",
         true,
         &[
             &PredefinedMenuItem::about(handle, None, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &check_updates,
             &PredefinedMenuItem::separator(handle)?,
             &quit,
         ],
@@ -1061,6 +1073,11 @@ pub fn run() -> tauri::Result<()> {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // D4 (docs/desktop-shell-spec.md): update check/install. `process`
+        // supplies the relaunch that applies a staged update — the frontend
+        // awaits the canonical save (quit.ts) before calling it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
@@ -1085,6 +1102,7 @@ pub fn run() -> tauri::Result<()> {
                     "close-project" => Some("menu:close-project"),
                     "export-inkb" => Some("menu:export-inkb"),
                     "export-xliff" => Some("menu:export-xliff"),
+                    "check-updates" => Some("menu:check-updates"),
                     "quit" => Some("menu:quit"),
                     _ => None,
                 };
