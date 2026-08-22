@@ -2436,6 +2436,54 @@ on:
         std::fs::read_to_string(&path).expect("just asserted tauri.conf.json exists")
     }
 
+    /// The updater endpoint must not ride the repo-wide "latest" release.
+    ///
+    /// The shipped app polls ONE fixed url forever, so whatever is baked in
+    /// here is unfixable in the field — an app already installed keeps asking
+    /// the old address. `releases/latest/download/...` looks right and is
+    /// wrong: GitHub's "latest" is the newest release across the WHOLE repo,
+    /// and this repo runs three independent release trains. npm and crates
+    /// publish far more often than desktop does, so the first
+    /// `@brink-lang/*` release after a desktop one moves that url to a
+    /// release containing no `latest.json`.
+    ///
+    /// Tauri reads a 404 as "no update available", so the whole update
+    /// channel would go quiet with no error surfacing anywhere — every
+    /// installed copy stranded, and nothing to notice it by. That is why
+    /// this is pinned by a test rather than left to review: the broken form
+    /// is indistinguishable from the working one until months later.
+    ///
+    /// The manifest lives on the permanent `desktop-latest` alias release
+    /// instead, re-uploaded by `desktop-release.yml` on every desktop
+    /// release.
+    #[test]
+    fn updater_endpoint_does_not_depend_on_the_repo_wide_latest_release() {
+        let conf = tauri_conf();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&conf).expect("tauri.conf.json should be valid JSON");
+        let endpoints = parsed["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("updater plugin should declare an endpoints array");
+        assert!(
+            !endpoints.is_empty(),
+            "the updater declares no endpoints, so the app would never find an update"
+        );
+        for endpoint in endpoints {
+            let url = endpoint.as_str().expect("each endpoint should be a string");
+            assert!(
+                !url.contains("/releases/latest/"),
+                "updater endpoint {url} resolves through GitHub's repo-wide \"latest\" \
+                 release, which this repo's npm and crates trains move out from under \
+                 the desktop app; point it at the desktop-latest alias release instead"
+            );
+            assert!(
+                url.starts_with("https://"),
+                "updater endpoint {url} must be https — an update payload fetched over \
+                 plaintext is one an attacker can swap before signature checking helps"
+            );
+        }
+    }
+
     /// #2631: PR #2626's "a real bundle must ship the real `brink-cli`"
     /// invariant held for `cargo tauri build --debug` only through step
     /// ordering — `beforeBuildCommand` -> `pnpm build` happens to stage the

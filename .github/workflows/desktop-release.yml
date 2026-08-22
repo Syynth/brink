@@ -212,6 +212,35 @@ jobs:
             artifacts "$version" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" artifacts/latest.json
           cat artifacts/latest.json
 
+      # The shipped app polls a FIXED url, so the manifest must live at a
+      # stable address. It cannot be `releases/latest/...`: GitHub's "latest"
+      # is the newest release in the WHOLE repo, and this repo's npm and
+      # crates trains publish far more often than desktop does — the first
+      # `@brink-lang/*` release after a desktop one would take that url to a
+      # release with no latest.json in it. Tauri reads a 404 as "no update
+      # available", so the update channel would die silently and stay dead.
+      # (Checked, not theorised: `releases/latest` resolves to
+      # `@brink-lang/studio@0.14.0` today.)
+      #
+      # `desktop-latest` is a permanent alias release holding only the
+      # manifest, re-uploaded on every desktop release. `--latest=false`
+      # keeps it from displacing the real "Latest" badge, and it carries no
+      # binaries — those stay on the versioned `desktop-v*` release the
+      # manifest points into.
+      - name: Publish the manifest to the desktop-latest alias
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create desktop-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Desktop update manifest" \
+              --notes "Update manifest the Brink Studio desktop app polls. Points at the newest desktop-v* release; not a download." \
+              --latest=false
+          gh release upload desktop-latest artifacts/latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
         env:
