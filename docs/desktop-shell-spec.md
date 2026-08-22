@@ -1175,9 +1175,25 @@ in `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
   dialog; `brink-cli` as a Tauri **sidecar** for batch ops (xliff
   export/locale compile) so both cores ship from one workspace version.
   File associations (`.ink`, `.brink`).
-- **D4 — distribution (deferred).** Signing, notarization, updater, own
-  release workflow, and the promote-to-distributable decision. Not
-  planned until explicitly scheduled.
+- **D4 — distribution (ACTIVE, ruled 2026-08-22).** Public distribution.
+  `.github/workflows/desktop-release.yml` (NOT `release.yml` — that is
+  cargo-dist-generated and forbidden to edit) builds on `desktop-v*` tags
+  across macOS-arm64 / Windows / Linux. macOS is signed + notarized;
+  **Windows ships unsigned for now** (no cheap notarization equivalent;
+  SmartScreen warns until reputation accrues). Signing steps are
+  CONDITIONAL on secrets, so the pipeline runs and is testable before the
+  Apple credentials exist. Versioning is independent of crates/npm —
+  `tauri.conf.json`'s `version` is the source of truth. The **updater**
+  lands separately, once a real `tauri signer generate` keypair exists; a
+  placeholder public key would ship an update channel that can verify
+  nothing.
+
+  ⚠ **iOS is not built, but must not be foreclosed.** Two couplings would
+  block it and both are currently contained: the `brink-cli` **sidecar**
+  (iOS cannot ship subprocess binaries) lives behind `cli.ts` and powers
+  exactly one feature, and **arbitrary-directory access** (iOS has only a
+  sandboxed document picker) lives behind `FileProvider`. Neither may
+  become load-bearing in the core editing loop.
 
 ## Out of scope, recorded so nobody relitigates
 
