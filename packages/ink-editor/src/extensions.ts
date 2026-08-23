@@ -3,6 +3,8 @@ import type { EditorView } from "@codemirror/view";
 import type { CompileResult, SemanticToken, HirProjection, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
+import { hangingIndent } from "./hanging-indent.js";
+import { indentUnit } from "@codemirror/language";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
 import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
@@ -371,6 +373,14 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     dialectCompartment.of(dialectFacet.of(resolvedDialect)),
     elementTypeField,
     theme,
+    // Four-column indent unit (maintainer, 2026-08-23): ink convention —
+    // drives the guide spacing below (the markers package reads this
+    // facet) and any indent-aware command.
+    indentUnit.of("    "),
+    // Hanging indent for wrapped lines (the literal-whitespace ruling's
+    // companion): continuation rows align even with the first row's text
+    // start, so the indent guides never cross wrapped text.
+    hangingIndent(),
     // Indent guides (ruled 2026-08-23): tokens, not hardcoded colors — the
     // extension interpolates these strings into its generated stylesheet,
     // where `var()` resolves against the host theme like any other rule.

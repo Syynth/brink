@@ -14,4 +14,8 @@ classes, `data-depth`, `brink-divert-standalone`) remains the host
 contract — an embedder that wants a styled layout adds its own CSS over
 those hooks. New: whitespace/tab indent guides
 (@replit/codemirror-indentation-markers), themed from the `--bs-*`
-tokens; default on, `indentGuides: false` to opt out.
+tokens, spaced at the editor's 4-column indent unit; default on,
+`indentGuides: false` to opt out. New: hanging indent for soft-wrapped
+lines — continuation rows align even with the first row's text start
+(not flush-left, not Inky's extra padding), carried by a `--line-indent`
+custom property per line.

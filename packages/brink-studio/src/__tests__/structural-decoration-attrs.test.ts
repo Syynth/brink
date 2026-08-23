@@ -81,16 +81,21 @@ describe("structural line-decoration attrs (#414)", () => {
    * stylesheet. A custom property is a data carrier, not a layout
    * imposition — a host restyles or disables it (`indentGuides: false`)
    * freely. So the audit becomes: a line's inline style, when present,
-   * declares `--indent-markers` and NOTHING else — any real CSS property
-   * (padding, text-align, ...) still fails.
+   * declares only known custom-property carriers — `--indent-markers`
+   * (the guides) and `--line-indent` (the wrapped-line hanging indent,
+   * same ruling) — any real CSS property (padding, text-align, ...)
+   * still fails.
    */
+  const CARRIER_PROPS = new Set(["--indent-markers", "--line-indent"]);
   const assertNoImposedInlineStyle = (line: HTMLElement): void => {
     if (!line.hasAttribute("style")) return;
     const style = line.style;
     for (let i = 0; i < style.length; i++) {
-      expect(style.item(i), `unexpected inline property on: ${line.textContent}`).toBe(
-        "--indent-markers",
-      );
+      const prop = style.item(i);
+      expect(
+        CARRIER_PROPS.has(prop),
+        `unexpected inline property "${prop}" on: ${line.textContent}`,
+      ).toBe(true);
     }
   };
 
@@ -121,12 +126,15 @@ describe("structural line-decoration attrs (#414)", () => {
     }
   });
 
-  it("emits NO style attribute at all with indentGuides: false (the fully headless composition)", async () => {
+  it("with indentGuides: false, the only inline carrier left is --line-indent (hanging indent)", async () => {
     h = await mount({ theme: false, indentGuides: false });
     const lines = Array.from(h.view.dom.querySelectorAll<HTMLElement>(".cm-line"));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
-      expect(line.hasAttribute("style")).toBe(false);
+      if (!line.hasAttribute("style")) continue;
+      for (let i = 0; i < line.style.length; i++) {
+        expect(line.style.item(i)).toBe("--line-indent");
+      }
     }
   });
 });
