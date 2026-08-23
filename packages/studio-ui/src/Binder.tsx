@@ -1439,18 +1439,6 @@ function BinderInner() {
           Move to project root
         </div>
       )}
-      {entryFile !== null && (
-        <div className="brink-binder-legend">
-          <div className="brink-binder-legend-row">
-            <span className="brink-binder-legend-swatch legend-entry" />
-            <span>Entry point — what the project compiles from</span>
-          </div>
-          <div className="brink-binder-legend-row">
-            <span className="brink-binder-legend-swatch legend-muted" />
-            <span>On disk, not reached by any INCLUDE</span>
-          </div>
-        </div>
-      )}
       <div className="brink-binder-row brink-binder-new" onClick={handleNewClick}>
         + New file
       </div>

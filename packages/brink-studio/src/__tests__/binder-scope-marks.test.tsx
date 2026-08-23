@@ -83,14 +83,6 @@ describe("Binder scope marks (#3021)", () => {
     mountBinder(seededStore(null, []));
     expect(container!.querySelector(".brink-binder-badge")).toBeNull();
     expect(container!.querySelector(".brink-binder-dimmed")).toBeNull();
-    expect(container!.querySelector(".brink-binder-legend")).toBeNull();
-  });
-
-  it("renders the legend once an entry is known", () => {
-    mountBinder(seededStore("main.ink", ["main.ink"]));
-    const legend = container!.querySelector(".brink-binder-legend");
-    expect(legend?.textContent).toContain("Entry point");
-    expect(legend?.textContent).toContain("not reached by any INCLUDE");
   });
 });
 
