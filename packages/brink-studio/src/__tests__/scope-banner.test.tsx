@@ -66,6 +66,7 @@ function inkDoc(docId: string) {
   return createElement(InkFileDocument, {
     doc: { typeId: "ink-file", docId, title: docId },
     groupId: "g1",
+    active: true,
   });
 }
 
