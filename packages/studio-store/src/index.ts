@@ -153,6 +153,9 @@ export { sortDiagnostics, type ExternalCheckLevel } from "./slices/compile.js";
 // Out-of-scope banner helpers (#3017) — exported for the banner's tests;
 // the production caller is the compile slice's includeInEntry action.
 export { insertIncludeLine, relativeIncludePath } from "./include-insert.js";
+// Comment-preserving structured edits for brink.toml (#3015) — used by
+// the studio's config form panel.
+export { getTomlString, setTomlString } from "./toml-edit.js";
 
 // Shared knot/stitch context-menu transport (#186 follow-up).
 export type { SymbolMenuRequest, SymbolRenameRequest } from "./slices/symbol-menu.js";

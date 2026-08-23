@@ -26,6 +26,7 @@ import { useEffect, useMemo, useRef } from "react";
 import type { DocumentRef, DocumentViewProps } from "@brink/studio-shell";
 import { docKeyFor, docTitleFor, type TabTarget } from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
+import { ConfigFormPanel, isConfigPath } from "./ConfigFormPanel.js";
 
 export const INK_FILE_TYPE_ID = "ink-file";
 
@@ -114,6 +115,7 @@ export function InkFileDocument({ doc, groupId }: DocumentViewProps) {
 
   return (
     <div className="brink-ink-document-frame">
+      {isConfigPath(path) && <ConfigFormPanel path={path} />}
       {outOfScope && (
         <div className="brink-scope-banner" role="note">
           <span className="scope-banner-icon">{INFO_ICON}</span>

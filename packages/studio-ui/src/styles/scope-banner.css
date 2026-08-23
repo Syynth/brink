@@ -71,3 +71,74 @@
 .status-scope-note {
   color: var(--bs-fg-dim, #6c7086);
 }
+
+/* ── brink.toml form view (#3015) ───────────────────────────────── */
+
+.brink-config-form {
+  background: var(--bs-bg-secondary, #2a2a3d);
+  border-bottom: 1px solid var(--bs-border, #45475a);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.config-form-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.config-form-title {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bs-fg-dim, #6c7086);
+}
+
+.config-form-hint {
+  font-size: 11px;
+  color: var(--bs-fg-dim, #6c7086);
+  line-height: 1.5;
+}
+
+.config-form-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 16px;
+}
+
+.config-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.config-form-label {
+  font-size: 11px;
+  color: var(--bs-fg-muted, #a6adc8);
+}
+
+.config-form-select {
+  height: 26px;
+  border: 1px solid var(--bs-border, #45475a);
+  border-radius: 4px;
+  background: var(--bs-bg, #1e1e2e);
+  color: var(--bs-fg, #cdd6f4);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0 6px;
+}
+
+.config-form-select:focus {
+  outline: none;
+  border-color: var(--ctp-blue, #89b4fa);
+}
+
+.config-form-note {
+  font-size: 10.5px;
+  color: var(--bs-fg-dim, #6c7086);
+}
