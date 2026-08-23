@@ -278,6 +278,18 @@ impl ProjectDb {
         self.include_graph().topological_order(entry)
     }
 
+    /// The current compile closure — the exact file set codegen builds from
+    /// ([`compilation_closure_files`](crate::queries::compilation_closure_files)):
+    /// an ink entry's transitive `INCLUDE` closure in topological order, or
+    /// every discovered `.brink` module for a native entry. Empty when no
+    /// entry is set. Issue #3017 reads this through `brink-ide`/`brink-web`
+    /// to mark files that are on disk but **not in the story** — absent
+    /// diagnostics on such a file look identical to clean diagnostics, so
+    /// the editor says so instead.
+    pub fn compilation_closure(&self) -> Vec<FileId> {
+        crate::queries::compilation_closure_files(&self.salsa, self.project)
+    }
+
     /// Get the parse tree for a file.
     pub fn parse(&self, id: FileId) -> Option<&Parse> {
         let file = self.files.get(&id)?;

@@ -46,13 +46,27 @@ import { mountStudio, type StudioApi, type StudioHandle } from "@brink-lang/stud
 import type { FileChange } from "@brink-lang/editor";
 import {
   TauriFileProvider,
+  createProject,
+  discoverProjectConfig,
+  pickProjectFile,
   pickProjectFolder,
-  projectRootExists,
+  previousExitClean,
+  projectAnchorExists,
   pruneRecent,
+  readAppSettings,
+  writeAppSettings,
   pushRecent,
   readRecents,
   saveBytesDialog,
 } from "./tauri-provider.js";
+import {
+  anchorForPath,
+  buildConflictModel,
+  recentDisplayFor,
+  resolveBootAction,
+} from "./project-open.js";
+import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
+import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { runCli } from "./cli.js";
 import { exportStoryToInkb } from "./export.js";
@@ -116,6 +130,19 @@ let autosaveTimer: ReturnType<typeof setInterval> | null = null;
  * `openProject`.
  */
 let currentEntryFile: string | null = null;
+/**
+ * The shell-owned banner strip above the mounted studio (#3021's conflict
+ * banner renders here). Created per `openProject`, cleared with the rest
+ * of `#app` on close/landing.
+ */
+let bannerHost: HTMLElement | null = null;
+/**
+ * Governing configs the user chose "Keep standalone" for, per session —
+ * keyed by config path so reopening the same standalone story in one
+ * session doesn't re-nag. Deliberately NOT persisted: the ruling wants
+ * the precedence to never be silent across sessions.
+ */
+const dismissedConflicts = new Set<string>();
 
 /**
  * Resolve the tab to open first, for a configless project (no `brink.toml`,
@@ -148,22 +175,83 @@ function appRoot(): HTMLElement {
 }
 
 /**
- * Render the landing screen, including the recent-projects list under the
- * Open button (#2394). Paths are inserted via `textContent`, never HTML
- * interpolation — filesystem paths are not attacker input in this shell,
- * but a folder name is still untrusted-enough text that it shouldn't be
- * concatenated into `innerHTML`.
+ * The app-icon lockup (compare `docs/design/project-open-flow/Main.dc.html`
+ * — the night squircle users see in the Dock, brand blue `#7E96FF` kept
+ * exact rather than harmonized to the UI accent). A static markup
+ * constant, never interpolated with data.
  */
-async function renderLanding(): Promise<void> {
+const LANDING_LOCKUP_SVG = `<svg width="84" height="84" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" aria-label="Brink Studio"><path d="M60,0 C12,0 0,12 0,60 C0,108 12,120 60,120 C108,120 120,108 120,60 C120,12 108,0 60,0 Z" fill="#101420"></path><g transform="translate(23.6,28) scale(0.727)"><path d="M50 0 C54 10 65.6 23.4 74.94 37.34 A30 30 0 1 1 25.06 37.34 C34.4 23.4 46 10 50 0 Z" fill="#7E96FF"></path><path d="M36 54 L56 54 M50 43 L62 54 L50 65" fill="none" stroke="#101420" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"></path></g></svg>`;
+
+/**
+ * Render the landing screen (#3021 — compare
+ * `docs/design/project-open-flow/Main.dc.html`): the lockup, the two
+ * doors (New Project… / Open…), and the recents list with door-kind
+ * badges. Paths are inserted via `textContent`, never HTML interpolation —
+ * filesystem paths are not attacker input in this shell, but a folder
+ * name is still untrusted-enough text that it shouldn't be concatenated
+ * into `innerHTML`.
+ *
+ * `error` (e.g. "picked a .toml that isn't brink.toml") renders as a
+ * dismissable line under the doors.
+ */
+async function renderLanding(error?: string): Promise<void> {
   const root = appRoot();
+  bannerHost = null;
+  // Undo openProject's flex-column shell layout — the landing owns #app now.
+  root.classList.remove("project-shell");
   root.innerHTML = `
     <div id="landing">
-      <button id="open-project">Open Project Folder…</button>
-      <div class="hint">A folder containing .brink / .ink files (and optionally a brink.toml) — or ⌘O</div>
-      <ul id="recent-projects" class="recent-projects"></ul>
+      <div class="landing-lockup">
+        ${LANDING_LOCKUP_SVG}
+        <div class="landing-name">Brink Studio</div>
+        <div class="landing-sub">Open a story file or a project config to begin.</div>
+      </div>
+      <div class="landing-doors">
+        <button class="landing-door" id="new-project">
+          <span class="door-head"><span class="door-dot door-dot-new"></span><span class="door-title">New Project…</span></span>
+          <span class="door-body">Pick a folder. Creates main.ink and brink.toml, ready to play.</span>
+        </button>
+        <button class="landing-door" id="open-project">
+          <span class="door-head"><span class="door-dot door-dot-open"></span><span class="door-title">Open…</span></span>
+          <span class="door-body">Open a .ink file — it becomes the entry point — or a brink.toml.</span>
+        </button>
+      </div>
+      <div class="landing-error" hidden></div>
+      <div class="landing-recents">
+        <div class="landing-cap">Recent</div>
+        <ul id="recent-projects" class="recent-projects"></ul>
+      </div>
+      <label class="landing-reopen">
+        <input type="checkbox" id="reopen-last" />
+        <span>Reopen last project on launch</span>
+      </label>
     </div>`;
-  const button = document.getElementById("open-project");
-  button?.addEventListener("click", () => void chooseAndOpen());
+  document
+    .getElementById("new-project")
+    ?.addEventListener("click", () => openNewProjectDialog());
+  document
+    .getElementById("open-project")
+    ?.addEventListener("click", () => void chooseAndOpen());
+
+  const errorEl = root.querySelector<HTMLElement>(".landing-error");
+  if (errorEl !== null && error !== undefined) {
+    errorEl.hidden = false;
+    errorEl.textContent = error;
+  }
+
+  // "Reopen last project on launch" (#3016) — persisted in settings.json;
+  // honored by bootLanding on the next launch (after a clean exit only).
+  const reopenBox = root.querySelector<HTMLInputElement>("#reopen-last");
+  if (reopenBox !== null) {
+    void readAppSettings().then((settings) => {
+      reopenBox.checked = settings.reopenLastProject;
+    });
+    reopenBox.addEventListener("change", () => {
+      void writeAppSettings({ reopenLastProject: reopenBox.checked }).catch((e: unknown) => {
+        console.error("[brink-desktop] write_app_settings failed", e);
+      });
+    });
+  }
 
   const list = document.getElementById("recent-projects");
   if (list === null) return;
@@ -171,16 +259,65 @@ async function renderLanding(): Promise<void> {
     console.error("[brink-desktop] read_recents failed", e);
     return [];
   });
+  // Empty state (maintainer feedback, 2026-08-23): a bordered list with
+  // zero rows collapses to a bare line, and `hidden` on the section was
+  // dead — the class's `display: flex` beats the hidden attribute's UA
+  // `display: none`. Keep the section, say what belongs here instead.
+  if (recents.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "recent-empty";
+    empty.textContent = "No recent projects yet — anything you open shows up here.";
+    list.appendChild(empty);
+  }
   for (const path of recents) {
+    const display = recentDisplayFor(path, null);
     const item = document.createElement("li");
     const entry = document.createElement("button");
     entry.className = "recent-project";
-    entry.textContent = path;
     entry.title = path;
+    const badge = document.createElement("span");
+    badge.className = `recent-badge recent-badge-${display.kind}`;
+    badge.textContent = display.kind.toUpperCase();
+    const name = document.createElement("span");
+    name.className = "recent-name";
+    name.textContent = display.name;
+    const detail = document.createElement("span");
+    detail.className = "recent-detail";
+    detail.textContent = display.detail;
+    entry.append(badge, name, detail);
     entry.addEventListener("click", () => void openRecent(path));
     item.appendChild(entry);
     list.appendChild(item);
   }
+}
+
+/** Wire the New Project dialog (#3012) to the real shell commands. On
+ *  success the created brink.toml opens on the toml door. */
+function openNewProjectDialog(): void {
+  showNewProjectDialog({
+    chooseFolder: () => pickProjectFolder(),
+    create: (dir, entry) => createProject(dir, entry),
+    open: (tomlPath) => openAnchorPath(tomlPath),
+  });
+}
+
+/** How one `openProject` call differs from the pre-#3021 folder open.
+ *  Every field optional: a bare `openProject(root)` is exactly the legacy
+ *  folder door (which `__tests__/autosave-*.test.ts` still drive). */
+export interface OpenProjectOptions {
+  /** Project-relative entry file (the story door's opened file). When
+   *  absent, the configless fallback (`resolveEntryFile`) applies. */
+  entryFile?: string;
+  /** Whether that entry is a human's explicit choice — forwarded to
+   *  `mountStudio` so a `brink.toml`'s `[project] entry` never supersedes
+   *  it (the #2331 revision, ruled 2026-08-23). */
+  entryIsExplicit?: boolean;
+  /** The anchor recorded in recents (the opened FILE for the two file
+   *  doors); defaults to `root` (the legacy folder door). */
+  recentPath?: string;
+  /** Absolute file to run governing-config discovery from after mount —
+   *  the story door's conflict banner probe. */
+  conflictProbe?: string;
 }
 
 /**
@@ -189,7 +326,7 @@ async function renderLanding(): Promise<void> {
  * through the same `chooseAndOpen` / menu-event / `handleFileOpen` wiring as
  * before; the export adds no new call site.
  */
-export async function openProject(root: string): Promise<void> {
+export async function openProject(root: string, opts: OpenProjectOptions = {}): Promise<void> {
   const provider = new TauriFileProvider(root);
   const paths = await provider.listFiles();
   const files: Record<string, string> = {};
@@ -206,22 +343,35 @@ export async function openProject(root: string): Promise<void> {
 
   const el = appRoot();
   el.replaceChildren();
+  // The shell owns a banner strip above the studio (#3021's conflict
+  // banner); the studio mounts into its own child so the strip never
+  // overlaps editor chrome.
+  el.classList.add("project-shell");
+  const banner = document.createElement("div");
+  banner.id = "project-banner-host";
+  const studioHost = document.createElement("div");
+  studioHost.id = "studio-host";
+  el.append(banner, studioHost);
+  bannerHost = banner;
 
   const folderName = root.split("/").at(-1) ?? root;
   document.title = `${folderName} — Brink Studio`;
 
   // A configless-project fallback ONLY — `ProjectSession.initialize()` may
   // supersede this with a `brink.toml`-named entry the instant mountStudio
-  // resolves (issue #2331). `currentEntryFile` is set from the resolved
-  // `StudioHandle.entryFile` below, never from this local, so callers like
-  // `exportXliff` always see the effective entry.
-  const entryFile = resolveEntryFile(files);
+  // resolves (issue #2331) UNLESS the entry is a human's explicit choice
+  // (`opts.entryIsExplicit`, the file-anchored open model). `currentEntryFile`
+  // is set from the resolved `StudioHandle.entryFile` below, never from
+  // this local, so callers like `exportXliff` always see the effective
+  // entry.
+  const entryFile = opts.entryFile ?? resolveEntryFile(files);
   currentRoot = root;
 
-  current = await mountStudio(el, {
+  current = await mountStudio(studioHost, {
     files,
     provider,
     entryFile,
+    entryIsExplicit: opts.entryIsExplicit,
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -266,21 +416,91 @@ export async function openProject(root: string): Promise<void> {
   // hiccup must never block the project the user just opened. The shell
   // also keeps the native Open Recent submenu in sync as part of this
   // command (`rebuild_menu` in src-tauri).
-  void pushRecent(root).catch((e: unknown) => {
+  void pushRecent(opts.recentPath ?? root).catch((e: unknown) => {
     console.error("[brink-desktop] push_recent failed", e);
+  });
+
+  // The story door's governing-config probe (#3010): fire-and-forget —
+  // the project is already open and working; the banner is advisory.
+  if (opts.conflictProbe !== undefined) {
+    void probeGoverningConfig(opts.conflictProbe).catch((e: unknown) => {
+      console.error("[brink-desktop] governing-config discovery failed", e);
+    });
+  }
+}
+
+/**
+ * Walk up from an explicitly opened story file for a governing
+ * `brink.toml` (the compiler's own discovery, via the shell command) and
+ * render the conflict banner when one governs (#3010/#3021 — compare
+ * `docs/design/project-open-flow/Conflict.dc.html`). The one-click switch
+ * is only offered when the opened file IS the config's declared entry,
+ * per the ruling.
+ */
+async function probeGoverningConfig(openedFile: string): Promise<void> {
+  const discovered = await discoverProjectConfig(openedFile);
+  const model = buildConflictModel(openedFile, discovered);
+  if (model === null || dismissedConflicts.has(model.configPath)) return;
+  const host = bannerHost;
+  if (host === null) return;
+  renderConflictBanner(host, model, {
+    switchToProject: () => {
+      void (async () => {
+        // Upgrade rewrites the recents entry IN PLACE (one entry, never
+        // two, per the ruling): open the toml anchor — which pushes it to
+        // recents — then drop the story-file anchor entry.
+        await openAnchorPath(model.configPath);
+        await pruneRecent(openedFile).catch(() => {});
+      })();
+    },
+    keepStandalone: () => {
+      dismissedConflicts.add(model.configPath);
+      clearConflictBanner(host);
+    },
   });
 }
 
+/**
+ * Open one anchor path through its door (#3021): `brink.toml` → the toml
+ * door, `.ink` → the story door (explicit entry + conflict probe),
+ * anything else → the legacy folder door. The single open seam every
+ * caller (landing doors, recents, Open Recent menu, New Project) funnels
+ * through.
+ */
+export async function openAnchorPath(path: string): Promise<void> {
+  const anchor = anchorForPath(path);
+  if ("error" in anchor) {
+    if (current === null) {
+      void renderLanding(anchor.error);
+    } else {
+      // A project is open (⌘O over a mounted studio): surface through its
+      // notification surface instead of a console line nobody sees.
+      current.api.notify({ severity: "error", source: "open", message: anchor.error });
+    }
+    return;
+  }
+  await openProject(anchor.root, {
+    entryFile: anchor.entryFile ?? undefined,
+    entryIsExplicit: anchor.entryIsExplicit,
+    recentPath: anchor.recentPath,
+    conflictProbe: anchor.conflictProbe ?? undefined,
+  });
+}
+
+/** The Open… door (#3021): a native FILE picker — a `.ink` story or a
+ *  `brink.toml` — routed through {@link openAnchorPath}. Opening a folder
+ *  is no longer a door; the legacy folder kind survives only in old
+ *  recents entries. */
 async function chooseAndOpen(): Promise<void> {
-  const root = await pickProjectFolder();
-  if (root === null) return; // user cancelled
+  const path = await pickProjectFile();
+  if (path === null) return; // user cancelled
   try {
-    await openProject(root);
+    await openAnchorPath(path);
   } catch (e: unknown) {
     console.error("[brink-desktop] failed to open project", e);
     if (current === null) {
       currentRoot = null;
-      void renderLanding();
+      void renderLanding(e instanceof Error ? e.message : String(e));
     }
   }
 }
@@ -293,7 +513,7 @@ async function chooseAndOpen(): Promise<void> {
  * pick, so a missing/moved folder is an expected failure mode, not a rare
  * edge case.
  *
- * Pruning is gated on {@link projectRootExists} (2026-08 review finding),
+ * Pruning is gated on {@link projectAnchorExists} (2026-08 review finding),
  * not fired on every rejection: `openProject` can also reject from a
  * permission error, a file deleted mid-listing, or a `mountStudio` failure
  * — none of which mean the project itself is gone. Only an actually-missing
@@ -303,13 +523,13 @@ async function chooseAndOpen(): Promise<void> {
  */
 async function openRecent(path: string): Promise<void> {
   try {
-    await openProject(path);
+    await openAnchorPath(path);
   } catch (e: unknown) {
     console.error("[brink-desktop] failed to open recent project", e);
     // Default to "exists" on a failed check itself, so a transient
     // check-command error can never masquerade as evidence of deletion.
-    const rootGone = !(await projectRootExists(path).catch(() => true));
-    if (rootGone) {
+    const anchorGone = !(await projectAnchorExists(path).catch(() => true));
+    if (anchorGone) {
       await pruneRecent(path).catch(() => {});
     }
     if (current === null) void renderLanding();
@@ -512,7 +732,16 @@ async function handleFileOpen(path: string): Promise<void> {
   const action = resolveFileOpenAction(path, currentRoot);
   if (action.kind === "open") {
     try {
-      await openProject(action.root);
+      await openProject(action.root, {
+        // The story door (#3021): a double-clicked `.ink` is a human's
+        // explicit entry choice, recorded in recents as the file anchor
+        // and probed for a governing config. A `.brink` keeps the legacy
+        // folder door (native file-anchoring deferred).
+        entryFile: action.rel,
+        entryIsExplicit: action.entryIsExplicit,
+        recentPath: action.entryIsExplicit ? path : action.root,
+        conflictProbe: action.entryIsExplicit ? path : undefined,
+      });
     } catch (e: unknown) {
       console.error("[brink-desktop] failed to open project from file-open", e);
       if (current === null) {
@@ -548,7 +777,7 @@ async function handleFileOpen(path: string): Promise<void> {
  * replay). Chaining `.then()` off `listen()`'s own resolution closes that
  * gap.
  */
-void listen<string[]>("shell:file-open", (event) => {
+const coldStartOpens: Promise<boolean> = listen<string[]>("shell:file-open", (event) => {
   void (async () => {
     for (const path of event.payload) {
       await handleFileOpen(path);
@@ -560,11 +789,16 @@ void listen<string[]>("shell:file-open", (event) => {
     for (const path of paths) {
       await handleFileOpen(path);
     }
+    // Reported to bootLanding (#3016): a double-clicked file always wins
+    // over auto-reopen, so a cold-start OS open suppresses it.
+    return paths.length > 0;
   })
   .catch((e: unknown) => {
     console.error("[brink-desktop] file-open wiring failed", e);
+    return false;
   });
 
+void listen("menu:new-project", () => openNewProjectDialog());
 void listen("menu:open-project", () => void chooseAndOpen());
 void listen("menu:close-project", () => void closeProject());
 void listen("menu:export-inkb", () => void handleExportInkb());
@@ -643,4 +877,42 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   await handleQuitRequested();
 });
 
-void renderLanding();
+/**
+ * Launch (#3016): wait for any cold-start OS file-open to land first (a
+ * double-clicked file always wins), then either auto-reopen the last
+ * project — preference ON and the previous session exited cleanly — or
+ * show the landing (with a note when the crash guard suppressed a
+ * reopen). Every input failure degrades to the plain landing screen.
+ */
+async function bootLanding(): Promise<void> {
+  const osOpenHandled = await coldStartOpens;
+  if (current !== null) return; // an OS open already mounted a project
+  const [settings, prevClean, recents] = await Promise.all([
+    readAppSettings(),
+    previousExitClean(),
+    readRecents().catch(() => [] as string[]),
+  ]);
+  const action = resolveBootAction({
+    reopenLastProject: settings.reopenLastProject,
+    previousExitClean: prevClean,
+    osOpenHandled,
+    recents,
+  });
+  if (action.kind === "none") return;
+  if (action.kind === "reopen") {
+    try {
+      await openAnchorPath(action.path);
+      if (current !== null) return;
+    } catch (e: unknown) {
+      console.error("[brink-desktop] reopen-last-project failed", e);
+    }
+    if (current === null) void renderLanding();
+    return;
+  }
+  void renderLanding(action.note);
+}
+
+void bootLanding().catch((e: unknown) => {
+  console.error("[brink-desktop] boot failed", e);
+  void renderLanding();
+});

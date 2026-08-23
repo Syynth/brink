@@ -5,70 +5,518 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Brink Studio</title>
     <style>
+      /* Shell chrome. Landing values match the project-open design
+         artboards (docs/design/project-open-flow/Main.dc.html) — Catppuccin
+         Mocha, lifted from the studio's own theme tokens. */
       html,
       body,
       #app {
         margin: 0;
         height: 100%;
-        background: #1a1c22;
-        color: #c8ccd4;
+        background: #1e1e2e;
+        color: #cdd6f4;
         font-family:
           ui-sans-serif,
           system-ui,
           -apple-system,
           sans-serif;
       }
+      /* With a project open, #app is a column: the shell-owned banner
+         strip (conflict banner, #3021) above the mounted studio. */
+      #app.project-shell {
+        display: flex;
+        flex-direction: column;
+      }
+      #studio-host {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
+      /* ── Landing (Main.dc.html) ─────────────────────────────── */
       #landing {
         height: 100%;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 12px;
+        gap: 30px;
+        background: radial-gradient(120% 80% at 50% -10%, #23233a 0%, #1e1e2e 55%);
+        overflow: auto;
       }
-      #landing button {
-        font-size: 15px;
-        padding: 10px 22px;
-        border-radius: 6px;
-        border: 1px solid #3a3f4b;
-        background: #262a33;
-        color: #c8ccd4;
-        cursor: pointer;
-      }
-      #landing button:hover {
-        background: #2e3340;
-      }
-      #landing .hint {
-        font-size: 13px;
-        color: #6b7280;
-      }
-      #landing .recent-projects {
-        list-style: none;
-        margin: 4px 0 0;
-        padding: 0;
-        width: min(420px, 80vw);
+      .landing-lockup {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        align-items: center;
+        gap: 14px;
       }
-      #landing .recent-project {
-        width: 100%;
-        font-size: 13px;
-        padding: 6px 10px;
-        border-radius: 4px;
-        border: 1px solid transparent;
-        background: transparent;
-        color: #9aa1ae;
+      .landing-lockup svg {
+        filter: drop-shadow(0 10px 26px rgb(0 0 0 / 0.5));
+      }
+      .landing-name {
+        font-size: 25px;
+        font-weight: 300;
+        letter-spacing: 0.005em;
+        color: #cdd6f4;
+      }
+      .landing-sub {
+        font-size: 12.5px;
+        color: #6c7086;
+        text-align: center;
+        margin-top: 5px;
+      }
+      .landing-doors {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        width: min(560px, 85vw);
+      }
+      .landing-door {
+        border: 1px solid #45475a;
+        border-radius: 7px;
+        background: #252536;
+        padding: 14px 15px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
         cursor: pointer;
         text-align: left;
+        color: inherit;
+        font: inherit;
+      }
+      .landing-door:hover {
+        border-color: #585b70;
+        background: #2a2a3d;
+      }
+      .door-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .door-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 2px;
+      }
+      .door-dot-new {
+        background: #a6e3a1;
+      }
+      .door-dot-open {
+        background: #89b4fa;
+      }
+      .door-title {
+        font-size: 12.5px;
+        font-weight: 600;
+        color: #cdd6f4;
+      }
+      .door-body {
+        font-size: 11.5px;
+        line-height: 1.5;
+        color: #6c7086;
+      }
+      .landing-error {
+        width: min(560px, 85vw);
+        font-size: 12px;
+        color: #f38ba8;
+      }
+      .landing-recents {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        width: min(560px, 85vw);
+      }
+      .landing-cap {
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6c7086;
+      }
+      .recent-projects {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid #45475a;
+        border-radius: 7px;
+        overflow: hidden;
+        background: #1c1c2b;
+      }
+      .recent-projects .recent-empty {
+        list-style: none;
+        padding: 13px 12px;
+        font-size: 11.5px;
+        color: #585b70;
+      }
+      .recent-projects li + li {
+        border-top: 1px solid #2a2a3d;
+      }
+      .recent-project {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        border: 0;
+        background: transparent;
+        color: #cdd6f4;
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+      }
+      .recent-project:hover {
+        background: #252536;
+      }
+      .recent-badge {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 8.5px;
+        letter-spacing: 0.07em;
+        border: 1px solid #45475a;
+        border-radius: 3px;
+        padding: 2px 5px;
+        flex-shrink: 0;
+        color: #6c7086;
+      }
+      .recent-badge-ink {
+        color: #cba6f7;
+        border-color: #4a3d63;
+      }
+      .recent-badge-toml {
+        color: #89b4fa;
+        border-color: #3a4a6b;
+      }
+      .recent-name {
+        font-size: 12px;
+        color: #cdd6f4;
+        flex-grow: 1;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      #landing .recent-project:hover {
-        background: #262a33;
-        border-color: #3a3f4b;
-        color: #c8ccd4;
+      .recent-detail {
+        font-size: 10.5px;
+        color: #585b70;
+        font-family: ui-monospace, Menlo, monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 45%;
+      }
+
+      .landing-reopen {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-size: 11.5px;
+        color: #7f849c;
+        user-select: none;
+      }
+      .landing-reopen input {
+        accent-color: #89b4fa;
+      }
+
+      /* ── Conflict banner (Conflict.dc.html; the app's own
+            --bs-conflict-banner-bg #43404b) ───────────────────── */
+      .conflict-banner {
+        background: #43404b;
+        border-bottom: 1px solid #585267;
+        padding: 11px 14px;
+        display: flex;
+        align-items: flex-start;
+        gap: 11px;
+        flex-shrink: 0;
+      }
+      .conflict-icon {
+        color: #f9e2af;
+        flex-shrink: 0;
+        margin-top: 1px;
+        display: flex;
+      }
+      .conflict-body {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        flex-grow: 1;
+        min-width: 0;
+      }
+      .conflict-msg {
+        font-size: 12px;
+        line-height: 1.55;
+        color: #e8e3f0;
+      }
+      .conflict-msg code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #cdd6f4;
+      }
+      .conflict-warning {
+        font-size: 11px;
+        color: #f9e2af;
+      }
+      .conflict-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .conflict-actions button {
+        height: 26px;
+        padding: 0 11px;
+        border-radius: 4px;
+        font-size: 11px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .conflict-switch {
+        background: #89b4fa;
+        border: 0;
+        font-weight: 550;
+        color: #1e1e2e;
+      }
+      .conflict-switch:hover {
+        background: #b4ccfd;
+      }
+      .conflict-keep {
+        background: transparent;
+        border: 1px solid #6c7086;
+        color: #cdd6f4;
+      }
+      .conflict-keep:hover {
+        border-color: #9399b2;
+      }
+      .conflict-trace summary {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6c7086;
+        cursor: pointer;
+        user-select: none;
+      }
+      .conflict-trace-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        margin-top: 8px;
+      }
+      .trace-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 5px 8px;
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .trace-row.trace-found {
+        background: #2a2a3d;
+      }
+      .trace-step {
+        font-size: 11px;
+        color: #6c7086;
+        width: 16px;
+      }
+      .trace-path {
+        font-size: 12px;
+        color: #6c7086;
+        flex-grow: 1;
+      }
+      .trace-found .trace-path,
+      .trace-found .trace-note {
+        color: #f9e2af;
+      }
+      .trace-note {
+        font-size: 11px;
+        color: #6c7086;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      .conflict-trace-hint {
+        font-size: 11px;
+        color: #6c7086;
+        line-height: 1.6;
+        margin-top: 6px;
+      }
+
+      /* ── New Project dialog (NewProject.dc.html) ────────────── */
+      #new-project-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(17, 17, 27, 0.55);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+      }
+      .np-dialog {
+        width: min(460px, 90vw);
+        background: #2a2a3d;
+        border: 1px solid #45475a;
+        border-radius: 8px;
+        box-shadow: 0 16px 48px rgb(0 0 0 / 0.45);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .np-header {
+        padding: 18px 20px 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .np-title {
+        font-size: 15px;
+        font-weight: 550;
+      }
+      .np-sub {
+        font-size: 12px;
+        color: #6c7086;
+        line-height: 1.5;
+      }
+      .np-fields {
+        padding: 18px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .np-label {
+        font-size: 11px;
+        color: #6c7086;
+        margin-top: 10px;
+      }
+      .np-label:first-child {
+        margin-top: 0;
+      }
+      .np-loc-row {
+        display: flex;
+        gap: 8px;
+      }
+      .np-loc-path {
+        flex-grow: 1;
+        min-width: 0;
+        height: 30px;
+        border: 1px solid #45475a;
+        border-radius: 5px;
+        background: #1e1e2e;
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #cdd6f4;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .np-loc-path.np-loc-empty {
+        color: #585b70;
+        font-family: inherit;
+      }
+      .np-choose {
+        height: 32px;
+        padding: 0 12px;
+        border: 1px solid #45475a;
+        border-radius: 5px;
+        background: #313244;
+        font-size: 12px;
+        color: #cdd6f4;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .np-choose:hover {
+        background: #3a3a4d;
+      }
+      .np-entry {
+        height: 30px;
+        border: 1px solid #45475a;
+        border-radius: 5px;
+        background: #1e1e2e;
+        padding: 0 10px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #cdd6f4;
+        outline: none;
+      }
+      .np-entry:focus {
+        border-color: #89b4fa;
+      }
+      .np-panel {
+        border: 1px solid #313244;
+        border-radius: 6px;
+        background: #1e1e2e;
+        overflow: hidden;
+        margin-top: 14px;
+      }
+      .np-panel-cap {
+        padding: 8px 12px;
+        border-bottom: 1px solid #313244;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6c7086;
+      }
+      .np-panel-rows {
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .np-panel-row {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+      }
+      .np-panel-row code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        min-width: 84px;
+      }
+      .np-create-ink {
+        color: #cba6f7;
+      }
+      .np-create-toml {
+        color: #89b4fa;
+      }
+      .np-panel-row span {
+        font-size: 11px;
+        color: #6c7086;
+      }
+      .np-error {
+        font-size: 11.5px;
+        color: #f38ba8;
+        margin-top: 8px;
+        line-height: 1.5;
+      }
+      .np-footer {
+        padding: 0 20px 18px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .np-footer button {
+        height: 30px;
+        border-radius: 5px;
+        font-size: 12px;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .np-cancel {
+        padding: 0 14px;
+        border: 1px solid #45475a;
+        background: transparent;
+        color: #a6adc8;
+      }
+      .np-cancel:hover {
+        border-color: #585b70;
+      }
+      .np-create {
+        padding: 0 16px;
+        border: 0;
+        background: #89b4fa;
+        font-weight: 550;
+        color: #1e1e2e;
+      }
+      .np-create:hover {
+        background: #b4ccfd;
+      }
+      .np-create:disabled {
+        opacity: 0.45;
+        cursor: default;
       }
     </style>
   </head>
