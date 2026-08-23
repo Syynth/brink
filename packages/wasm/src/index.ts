@@ -723,6 +723,20 @@ export class EditorSessionHandle {
   }
 
   /**
+   * Project-relative paths of the current compile closure (#3017) — the
+   * exact file set codegen builds from, keyed by the entry the most recent
+   * `compileProject` set. Empty before any compile. A file
+   * {@link getProjectOutline} lists that is absent here is on disk but NOT
+   * in the story — the out-of-scope editor banner and the Binder's "not
+   * included" marks read exactly this difference. Read-only (never
+   * perturbs the entry), so call it right after a compile for free.
+   */
+  getCompilationClosure(): string[] {
+    const json = this.session.compilation_closure();
+    return JSON.parse(json) as string[];
+  }
+
+  /**
    * Whole-project story graph (studio-shell spec §4.1): knot/stitch nodes
    * plus END/DONE pseudo-nodes, and divert/choice/tunnel/thread edges. Each
    * edge lists the source occurrences (divert sites, UTF-16 spans) that

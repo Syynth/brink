@@ -61,6 +61,7 @@ import {
   Binder,
   COMPILED_OUTPUT_TYPE_ID,
   CompileStatusSegment,
+  ScopeNoteSegment,
   CompiledOutputDocument,
   CursorSegment,
   ElementSegment,
@@ -558,6 +559,10 @@ export async function mountStudio(
       : null;
 
     state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
+    // The compile closure (#3017): read-only, keyed by the entry this very
+    // compile just set — a file in `outline` but not here is on disk, not
+    // in the story (the out-of-scope banner + Binder marks read this).
+    state.setClosureFiles(project.getSession().getCompilationClosure());
     state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
 
     // Story Graph data (#97, spec §4.1): recompute from the analyzer on each
@@ -863,6 +868,15 @@ export async function mountStudio(
     alignment: "left",
     priority: 20,
     component: CompileStatusSegment,
+  });
+  // Out-of-scope note (#3017): sits right after the compile status —
+  // "No issues — file not analyzed" reads as one statement, which is the
+  // point (absent diagnostics are not clean diagnostics here).
+  statusBarItems.register({
+    id: "status.scope-note",
+    alignment: "left",
+    priority: 19,
+    component: ScopeNoteSegment,
   });
   statusBarItems.register({
     id: "status.story",

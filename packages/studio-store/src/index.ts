@@ -150,6 +150,9 @@ export {
 // Problems ordering (canonical sort, unit-testable pure helper) + the
 // external-check severity level (Settings document, #93).
 export { sortDiagnostics, type ExternalCheckLevel } from "./slices/compile.js";
+// Out-of-scope banner helpers (#3017) — exported for the banner's tests;
+// the production caller is the compile slice's includeInEntry action.
+export { insertIncludeLine, relativeIncludePath } from "./include-insert.js";
 
 // Shared knot/stitch context-menu transport (#186 follow-up).
 export type { SymbolMenuRequest, SymbolRenameRequest } from "./slices/symbol-menu.js";
