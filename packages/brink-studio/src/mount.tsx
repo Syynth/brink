@@ -125,6 +125,16 @@ export interface MountStudioOptions {
    */
   entryFile: string;
   /**
+   * Whether `entryFile` is a human's EXPLICIT choice rather than a host
+   * default (the file-anchored project open model, ruled 2026-08-23). When
+   * true, a discovered `brink.toml`'s `[project] entry` never supersedes
+   * `entryFile` — the #2331 precedence applies to host defaults only, and
+   * an explicit open is not a default. Forwarded verbatim to
+   * `ProjectSessionOptions.entryIsExplicit` (`@brink-lang/editor`); see
+   * that option's doc for the full rule. Default `false`.
+   */
+  entryIsExplicit?: boolean;
+  /**
    * Host-provided surfaces (spec §8.1), registered once at mount. A factory
    * receives the `StudioApi` facade for host commands that need it.
    */
@@ -395,6 +405,9 @@ export async function mountStudio(
   const project = new ProjectSession({
     provider,
     entryFile,
+    // File-anchored open (ruled 2026-08-23): an explicit open's entry is
+    // never superseded by a discovered `[project] entry`.
+    entryIsExplicit: options.entryIsExplicit,
     // Host egress (#154): every session-content mutation reports through
     // the project's FileChangeHub, which batches + debounces into this.
     onFilesChanged: options.onFilesChanged,
