@@ -92,6 +92,9 @@ export interface DocumentSessionsOptions {
    *  convention. Applied per mounted view — use the exported `setDialect`
    *  directly on a specific view for live reconfigure. */
   dialect?: DialogueDialect | null;
+  /** Indent guides, forwarded to `brinkStudio` (ruled 2026-08-23): absent ⇒
+   *  on; `false` ⇒ off (a fully headless composition draws its own). */
+  indentGuides?: boolean;
 }
 
 export interface DocumentCallbacks {
@@ -957,6 +960,7 @@ export class DocumentSessions {
     const project = this.project;
     return {
       theme: this.options.theme,
+      indentGuides: this.options.indentGuides,
       dialect: this.options.dialect,
       compile: (source) => {
         slot.handle?.pushSource(source);

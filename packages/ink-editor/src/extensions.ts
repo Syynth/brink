@@ -2,6 +2,7 @@ import { Compartment, type Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { CompileResult, SemanticToken, HirProjection, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
+import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
 import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
@@ -50,6 +51,14 @@ export interface BrinkStudioOptions {
    *  substitute a different CM theme. Structural styles (popup positioning,
    *  data-driven widget colors) are independent of this and always active. */
   theme?: Extension | false;
+  /**
+   * Indentation guides (the vertical whitespace/tab indent lines, ruled
+   * 2026-08-23 alongside "literal whitespace" — the file's real
+   * indentation is now the only indentation, so the editor draws guides
+   * for it). Default on; pass `false` to omit (e.g. a fully headless
+   * composition that draws its own).
+   */
+  indentGuides?: boolean;
 
   /** The view's wasm document-handle slot (per-view DocId, swapped across
    *  mount/unmount). If provided, the editor uses HIR-backed line
@@ -362,6 +371,21 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     dialectCompartment.of(dialectFacet.of(resolvedDialect)),
     elementTypeField,
     theme,
+    // Indent guides (ruled 2026-08-23): tokens, not hardcoded colors — the
+    // extension interpolates these strings into its generated stylesheet,
+    // where `var()` resolves against the host theme like any other rule.
+    options.indentGuides === false
+      ? []
+      : indentationMarkers({
+          hideFirstIndent: true,
+          thickness: 1,
+          colors: {
+            light: "var(--bs-border)",
+            dark: "var(--bs-border)",
+            activeLight: "var(--bs-border-strong, var(--bs-fg-muted))",
+            activeDark: "var(--bs-border-strong, var(--bs-fg-muted))",
+          },
+        }),
     screenplayCompartment.of(screenplayLayer),
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,

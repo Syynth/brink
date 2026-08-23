@@ -15,21 +15,12 @@
      and collapses padding-left to 0 (names render flush-left). The @supports
      block below refines these to `cqi` (1% of the pane's inline size, correct in
      split panes) on engines that support container queries. (#188) */
-  --editor-margin: clamp(10px, 5vw, 1in);
-  --indent-character: clamp(16px, 28vw, 2.5in);
-  --indent-parenthetical: clamp(12px, 23vw, 2in);
-  --indent-dialogue: clamp(10px, 18vw, 1.5in);
-  --indent-dialogue-right: clamp(10px, 35vw, 3in);
-}
-@supports (container-type: inline-size) {
-  .brink-studio .editor {
-    container-type: inline-size;
-    --editor-margin: clamp(10px, 5cqi, 1in);
-    --indent-character: clamp(16px, 28cqi, 2.5in);
-    --indent-parenthetical: clamp(12px, 23cqi, 2in);
-    --indent-dialogue: clamp(10px, 18cqi, 1.5in);
-    --indent-dialogue-right: clamp(10px, 35cqi, 3in);
-  }
+  /* Literal-whitespace presentation (ruled 2026-08-23): a modest fixed
+     gutter, not the old script-page clamp — the screenplay indents
+     (--indent-character/-parenthetical/-dialogue[-right]) are gone with
+     the layout they fed. Still a variable: .brink-section-start's knot
+     divider spans past it with negative offsets. */
+  --editor-margin: 24px;
 }
 .brink-studio .editor .cm-editor {
   height: 100%;
@@ -68,9 +59,7 @@
   padding-left: var(--editor-margin);
   padding-right: var(--editor-margin);
   width: 100%;
-  max-width: 8.5in;
   box-sizing: border-box;
-  border-right: 1px solid var(--bs-border);
 }
 /* Screenplay element line styles */
 .brink-studio .cm-line.brink-knot-header {
@@ -227,21 +216,19 @@
 .brink-studio .cm-line.brink-tag {
   color: var(--bs-fg-muted);
 }
-/* Screenplay: character / parenthetical / dialogue */
+/* Dialect elements: character / parenthetical / dialogue. Highlighting
+   only — the screenplay indents, dialogue column width, and forced
+   uppercase went with the 2026-08-23 "literal whitespace" ruling; the
+   classes remain the styling hooks. */
 .brink-studio .cm-line.brink-character {
   font-weight: 700;
   color: var(--bs-accent);
-  text-transform: uppercase;
-  padding-left: var(--indent-character);
 }
 .brink-studio .cm-line.brink-parenthetical {
   font-style: italic;
   color: var(--bs-fg-muted);
-  padding-left: var(--indent-parenthetical);
 }
 .brink-studio .cm-line.brink-dialogue {
-  padding-left: var(--indent-dialogue);
-  padding-right: var(--indent-dialogue-right);
 }
 /* Hidden sigil widget — zero-width but in flow for cursor anchoring */
 .brink-studio .brink-hidden-sigil {
@@ -249,10 +236,6 @@
   width: 0;
   overflow: hidden;
   font-size: 0;
-}
-/* Depth sigil widget */
-.brink-studio .brink-depth-sigil {
-  opacity: 0.7;
 }
 /* Choice bracket styling */
 .brink-studio .brink-choice-bracket {

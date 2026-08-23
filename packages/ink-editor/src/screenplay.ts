@@ -82,37 +82,6 @@ export function characterName(line: SigilLine, info: LineInfo): {
   return { ws, nameStart: region.start, nameEnd: region.end, name: region.text };
 }
 
-// ── Superscript depth indicators ───────────────────────────────────
-
-const SUPERSCRIPT_DIGITS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"];
-
-function superscriptNumber(n: number): string {
-  return String(n)
-    .split("")
-    .map((ch) => SUPERSCRIPT_DIGITS[Number(ch)])
-    .join("");
-}
-
-class DepthSigilWidget extends WidgetType {
-  constructor(
-    readonly sigil: string,
-    readonly depth: number,
-  ) {
-    super();
-  }
-
-  toDOM(): HTMLElement {
-    const span = document.createElement("span");
-    span.className = "brink-depth-sigil";
-    span.textContent = this.sigil + superscriptNumber(this.depth) + " ";
-    return span;
-  }
-
-  eq(other: DepthSigilWidget): boolean {
-    return this.sigil === other.sigil && this.depth === other.depth;
-  }
-}
-
 class EmptySigilWidget extends WidgetType {
   toDOM(): HTMLElement {
     const span = document.createElement("span");
@@ -121,37 +90,6 @@ class EmptySigilWidget extends WidgetType {
     return span;
   }
   eq(): boolean { return true; }
-}
-
-// ── Sigil prefix parsing ───────────────────────────────────────────
-
-/** Find the full sigil prefix range (all sigils + spaces) for a choice/gather line. */
-function findSigilRange(
-  text: string,
-  type: ElementType,
-): { start: number; end: number; sigil: string } | null {
-  const trimmed = text.trimStart();
-  const ws = text.length - trimmed.length;
-
-  const validSigils =
-    type === ElementType.Choice ? ["*", "+"] : type === ElementType.Gather ? ["-"] : [];
-  if (validSigils.length === 0) return null;
-
-  let pos = ws;
-  let firstSigil = "";
-
-  while (pos < text.length) {
-    if (validSigils.includes(text[pos])) {
-      if (!firstSigil) firstSigil = text[pos];
-      pos++;
-      while (pos < text.length && text[pos] === " ") pos++;
-    } else {
-      break;
-    }
-  }
-
-  if (!firstSigil) return null;
-  return { start: ws, end: pos, sigil: firstSigil };
 }
 
 // ── Line decorations ──────────────────────────────────────────────
@@ -225,21 +163,10 @@ function buildLineDecos(view: EditorView): DecorationSet {
 
     builder.add(line.from, line.from, Decoration.line({ attributes: attrs }));
 
-    // Replace sigil prefix with depth widget for choices/gathers at depth > 1
-    if (
-      (info.type === ElementType.Choice || info.type === ElementType.Gather) &&
-      info.depth > 1
-    ) {
-      const range = findSigilRange(line.text, info.type);
-      if (range) {
-        const widget = new DepthSigilWidget(range.sigil, info.depth);
-        builder.add(
-          line.from + range.start,
-          line.from + range.end,
-          Decoration.replace({ widget }),
-        );
-      }
-    }
+    // NOTE (ruled 2026-08-23, "literal whitespace"): nested choice/gather
+    // sigil runs are no longer collapsed into a superscript-depth widget —
+    // the file's own sigils render as typed. `data-depth` (above) remains
+    // the machine-readable depth for hosts that want a styled look.
 
     // Dialect hidden-geometry decorations (#368): every hidden span the
     // dialect computed at classification time (the `@`/`:<>` sigils on a

@@ -163,16 +163,16 @@ describe("inline-style sweep", () => {
 //
 // #421's regression test (structural-decoration-attrs.test.ts) proved
 // `.cm-line` never carries a `style` attribute under `theme: false` — but
-// that only covers LINE decorations. `screenplay.ts` also has two
-// replaced-RANGE widgets that were never swept by #363/#414:
-// `DepthSigilWidget` (the superscript-depth glyph that replaces a nested
-// choice/gather's `*`/`-` sigil run) and the sigil-hiding widget used for
-// dialect hidden geometry — the `@`/`:<>` cue affixes and `(`/`)<>`
-// parenthetical glue (both render as `.brink-hidden-sigil`). Both already
-// carry only a `className` (no `.style.*` writes in `toDOM`) — this audit
-// proves it holds under both the default theme and headless (`theme:
-// false`), guarding the #363 "no inline styles" contract against a future
-// regression the way #421 does for line decorations.
+// that only covers LINE decorations. `screenplay.ts` also has a
+// replaced-RANGE widget: the sigil-hiding widget used for dialect hidden
+// geometry — the `@`/`:<>` cue affixes and `(`/`)<>` parenthetical glue
+// (rendered as `.brink-hidden-sigil`). It carries only a `className` (no
+// `.style.*` writes in `toDOM`) — this audit proves it holds under both
+// the default theme and headless (`theme: false`), guarding the #363 "no
+// inline styles" contract the way #421 does for line decorations.
+// (`DepthSigilWidget`, the second widget this audit used to sweep, was
+// REMOVED by the 2026-08-23 "literal whitespace" ruling — nested sigil
+// runs now render as typed; the companion test below pins that removal.)
 describe("replaced-range widgets (#427)", () => {
   const mount = (doc: string, theme: false | undefined = undefined): EditorView =>
     new EditorView({
@@ -183,16 +183,16 @@ describe("replaced-range widgets (#427)", () => {
       parent: document.body,
     });
 
-  it.each([
-    ["default theme", undefined],
-    ["headless (theme: false)", false],
-  ] as const)("depth-sigil widget carries no inline style — %s", (_label, theme) => {
-    const view = mount("* Option A\n    * * Nested A1\n        A1 body.\n", theme);
-    const sigils = [...view.dom.querySelectorAll<HTMLElement>(".brink-depth-sigil")];
-    expect(sigils.length).toBeGreaterThan(0);
-    for (const sigil of sigils) {
-      expect(sigil.hasAttribute("style")).toBe(false);
-    }
+  it("nested sigil runs render as typed — no depth-sigil widget (ruled 2026-08-23)", () => {
+    const view = mount("* Option A\n    * * Nested A1\n        A1 body.\n");
+    // The literal `* *` survives into the DOM; nothing replaces it.
+    expect(view.dom.querySelector(".brink-depth-sigil")).toBeNull();
+    expect(view.dom.textContent).toContain("* * Nested A1");
+    // The machine-readable depth contract is untouched.
+    const nested = [...view.dom.querySelectorAll<HTMLElement>(".cm-line")].find((l) =>
+      l.textContent?.includes("Nested A1"),
+    );
+    expect(nested?.getAttribute("data-depth")).toBe("2");
     view.destroy();
   });
 
