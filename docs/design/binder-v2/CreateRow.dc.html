@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #181825; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .cap { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6c7086; }
+    .panel { width: 306px; background: #2a2a3d; border: 1px solid #45475a; border-radius: 6px;
+             padding: 6px 0; }
+    .row { height: 26px; display: flex; align-items: center; gap: 7px;
+           font-size: 12px; padding: 0 10px 0 30px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+</helmet>
+<div style="width: 760px; height: 420px; background: #181825; padding: 24px 28px;
+            display: flex; flex-direction: column; gap: 18px; box-sizing: border-box;">
+
+  <div style="display: flex; flex-direction: column; gap: 4px;">
+    <div style="font-size: 16px; font-weight: 550;">Inline creation — one affordance, three states</div>
+    <div style="font-size: 12px; color: #6c7086;">
+      The create group lives at each container's tail (celeris's TreeCreateRowGroup shape):
+      quiet columns → a full-width name input → inline validation. No prompt, no dialog.
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 18px; align-items: flex-start;">
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">1 · idle — 50/50 icon buttons (tooltip carries the words)</div>
+      <div class="panel">
+        <div class="row" style="color: #a6adc8;">harbour.ink</div>
+        <div class="row" style="color: #a6adc8;">lighthouse.ink</div>
+        <div class="row">
+          <div style="display: flex; gap: 4px; color: #585b70; width: 100%;">
+            <div title="New file" style="flex: 1; display: flex; align-items: center; justify-content: center;
+                        border: 1px dashed #45475a; border-radius: 4px; height: 20px;
+                        cursor: pointer;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6M9 15h6"/></svg>
+            </div>
+            <div title="New folder" style="flex: 1; display: flex; align-items: center; justify-content: center;
+                        border: 1px dashed #45475a; border-radius: 4px; height: 20px;
+                        cursor: pointer;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">2 · editing — full-width name input</div>
+      <div class="panel">
+        <div class="row" style="color: #a6adc8;">harbour.ink</div>
+        <div class="row" style="color: #a6adc8;">lighthouse.ink</div>
+        <div class="row">
+          <div class="mono" style="width: 100%; display: flex; align-items: center; gap: 6px;
+                      border: 1px solid #89b4fa; border-radius: 4px; padding: 2px 8px;
+                      background: #1e1e2e; font-size: 12px;">
+            <span style="color: #cdd6f4;">offcuts</span><span style="width: 1px; height: 13px;
+                  background: #89b4fa;"></span>
+            <span style="color: #585b70; margin-left: auto; font-size: 10.5px;
+                         font-family: system-ui, sans-serif;">.ink · ⏎ create · esc cancel</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cap">3 · invalid — inline reason, nothing modal</div>
+      <div class="panel">
+        <div class="row" style="color: #a6adc8;">harbour.ink</div>
+        <div class="row" style="color: #a6adc8;">lighthouse.ink</div>
+        <div class="row">
+          <div class="mono" style="width: 100%; display: flex; align-items: center; gap: 6px;
+                      border: 1px solid #f38ba8; border-radius: 4px; padding: 2px 8px;
+                      background: #1e1e2e; font-size: 12px;">
+            <span style="color: #cdd6f4;">harbour</span>
+          </div>
+        </div>
+        <div class="row" style="height: 20px; font-size: 10.5px; color: #f38ba8;">
+          a file named harbour.ink already exists here
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 22px; font-size: 11px; color: #a6adc8; line-height: 1.5;">
+    <div style="flex: 1;">— Icon-only everywhere (maintainer note: "the words are long and tend to be
+      ugly"); the tooltip and the input's placeholder carry the words instead.</div>
+    <div style="flex: 1;">— The input takes a bare name; the extension is implied and shown as a
+      hint. Validation mirrors the shell command (no slashes; duplicate check normalizes the
+      extension away).</div>
+    <div style="flex: 1;">— Creating a folder writes it to disk immediately (empty folders become
+      representable via the sidecar), closing #3012's leftover gap.</div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

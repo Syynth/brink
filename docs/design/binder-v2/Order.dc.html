@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #181825; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .cap { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6c7086; }
+  </style>
+</helmet>
+<div style="width: 860px; height: 470px; background: #181825; padding: 24px 28px;
+            display: flex; flex-direction: column; gap: 16px; box-sizing: border-box;">
+
+  <div style="display: flex; flex-direction: column; gap: 4px;">
+    <div style="font-size: 16px; font-weight: 550;">Order is authorship — the <span class="mono">.binder.json</span> sidecar</div>
+    <div style="font-size: 12px; color: #6c7086;">
+      Adapted from celeris (spine-space decision 1: "host-ordered everywhere; there is no
+      alphabetical mode as a design driver"). Drag-to-reorder always works; the sidecar records it.
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 18px; flex-grow: 1;">
+
+    <!-- the sidecar file -->
+    <div style="flex: 1.1; border: 1px solid #313244; border-radius: 7px; background: #1e1e2e;
+                overflow: hidden; display: flex; flex-direction: column;">
+      <div style="padding: 8px 12px; border-bottom: 1px solid #313244;" class="cap">
+        .binder.json — at the project root, committed
+      </div>
+      <pre class="mono" style="margin: 0; padding: 12px 14px; font-size: 11.5px; line-height: 1.65;
+                               color: #a6adc8;">{
+  <span style="color: #89b4fa;">"order"</span>: {
+    <span style="color: #a6e3a1;">""</span>: [<span style="color: #f9e2af;">"codetta.ink"</span>, <span style="color: #f9e2af;">"story/"</span>,
+         <span style="color: #f9e2af;">"clues/"</span>, <span style="color: #f9e2af;">"menus/"</span>, <span style="color: #f9e2af;">"lib/"</span>],
+    <span style="color: #a6e3a1;">"menus/"</span>: [<span style="color: #f9e2af;">"title.ink"</span>, <span style="color: #f9e2af;">"game_menu.ink"</span>,
+                <span style="color: #f9e2af;">"options.ink"</span>]
+  },
+  <span style="color: #89b4fa;">"folders"</span>: [<span style="color: #f9e2af;">"drafts/"</span>]
+}</pre>
+    </div>
+
+    <!-- the rules -->
+    <div style="flex: 1; display: flex; flex-direction: column; gap: 9px;">
+      <div class="cap">The rules (celeris-proven)</div>
+      <div style="display: flex; flex-direction: column; gap: 8px; font-size: 11.5px;
+                  line-height: 1.55; color: #a6adc8;">
+        <div style="display: flex; gap: 8px;"><span style="color: #89b4fa;">1</span>
+          <span><b style="color: #cdd6f4;">Per-container order.</b> One key per container
+          (<span class="mono">""</span> = root); values are child ids in display order.
+          Folder ids carry a trailing slash.</span></div>
+        <div style="display: flex; gap: 8px;"><span style="color: #89b4fa;">2</span>
+          <span><b style="color: #cdd6f4;">Listed first, then the fallback.</b> Stored ids render
+          in saved order; anything unlisted follows — entry first, folders before files,
+          then alphabetical. A missing sidecar IS the fallback.</span></div>
+        <div style="display: flex; gap: 8px;"><span style="color: #89b4fa;">3</span>
+          <span><b style="color: #cdd6f4;">Re-keyed on rename/move.</b> A folder rename rewrites
+          every affected key and id in one pass — the order survives reorganization.</span></div>
+        <div style="display: flex; gap: 8px;"><span style="color: #89b4fa;">4</span>
+          <span><b style="color: #cdd6f4;">Empty folders become real.</b> The
+          <span class="mono">folders</span> list names directories with no files yet — created
+          in-app, they render immediately and survive reloads.</span></div>
+        <div style="display: flex; gap: 8px;"><span style="color: #89b4fa;">5</span>
+          <span><b style="color: #cdd6f4;">Invisible to the compiler.</b>
+          <span class="mono">.json</span> is not a source file
+          (<span class="mono">is_source_file</span>), so the sidecar can never affect a compile —
+          by construction, not by convention.</span></div>
+        <div style="display: flex; gap: 8px;"><span style="color: #89b4fa;">6</span>
+          <span><b style="color: #cdd6f4;">Corrupt = fallback, never an error.</b> Same posture as
+          recents.json: display order is cached authorship, not authored content — self-heal and
+          move on.</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
