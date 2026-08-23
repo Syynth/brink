@@ -1,0 +1,85 @@
+{
+  "artboards": [
+    {
+      "file": "Flow.dc.html",
+      "x": 0,
+      "y": -560,
+      "w": 1120,
+      "h": 470,
+      "title": "The model"
+    },
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 880,
+      "h": 690,
+      "title": "Startup"
+    },
+    {
+      "file": "NewProject.dc.html",
+      "x": 940,
+      "y": 0,
+      "w": 560,
+      "h": 520,
+      "title": "New Project"
+    },
+    {
+      "file": "Binder.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 330,
+      "h": 620,
+      "title": "Binder \u2014 scope marks"
+    },
+    {
+      "file": "Conflict.dc.html",
+      "x": 0,
+      "y": 700,
+      "w": 760,
+      "h": 420,
+      "title": "Conflict warning"
+    },
+    {
+      "file": "ScopeBanner.dc.html",
+      "x": 820,
+      "y": 700,
+      "w": 760,
+      "h": 420,
+      "title": "Out-of-scope banner"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "note-model",
+      "x": 1180,
+      "y": -560,
+      "w": 300,
+      "text": "The whole point:\n\nyou cannot open a project without choosing an entry, because opening IS choosing one.\n\nThat removes #3010 by construction rather than diagnosing it after the fact."
+    },
+    {
+      "id": "note-startup",
+      "x": 0,
+      "y": 720,
+      "w": 300,
+      "text": "Recents carry a kind badge (INK / TOML) because the two doors are different project identities \u2014 reopening must not silently change which one you get."
+    },
+    {
+      "id": "note-conflict",
+      "x": 0,
+      "y": 1160,
+      "w": 340,
+      "text": "Walk-up discovery, not same-directory. The nested case is exactly where a wrong guess is least visible \u2014 and it is what the build does.\n\nThe switch button appears only when the opened file IS that toml's declared entry; otherwise it is warning-only."
+    },
+    {
+      "id": "note-scope",
+      "x": 820,
+      "y": 1160,
+      "w": 340,
+      "text": "Informational, not an error \u2014 the file is fine, it is simply not in the story.\n\nWithout this, absent diagnostics look identical to clean diagnostics."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}
