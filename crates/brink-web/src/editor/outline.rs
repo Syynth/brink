@@ -92,6 +92,18 @@ impl EditorSession {
         serde_json::to_string(&outline).unwrap_or_default()
     }
 
+    /// Project-relative paths of the current compile closure (#3017) —
+    /// the exact file set codegen builds from, keyed by the entry the most
+    /// recent `compile_project` set. Returns a JSON string array; empty
+    /// (`[]`) before any compile. A file `project_outline` lists that is
+    /// absent here is on disk but **not in the story** — the out-of-scope
+    /// editor banner and the Binder's "not included" marks read exactly
+    /// this difference. Read-only: never perturbs the entry or any salsa
+    /// input, so calling it after a compile recomputes nothing.
+    pub fn compilation_closure(&self) -> String {
+        serde_json::to_string(&self.session.compilation_closure_paths()).unwrap_or_default()
+    }
+
     /// Get resolved INCLUDE paths for a file. Returns JSON `[{path, resolved, loaded}]`.
     pub fn file_includes(&self, path: &str) -> String {
         let Some(file_id) = self.session.file_id(path) else {

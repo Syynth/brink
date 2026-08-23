@@ -28,3 +28,6 @@ packages/ink-editor/dist/
 # npm lockfile — this is a pnpm workspace (pnpm-lock.yaml); an npm
 # install at the root creates a stray package-lock.json.
 /package-lock.json
+
+# Design-canvas scratch (seeded payloads; durable sources live in docs/design/)
+.design/

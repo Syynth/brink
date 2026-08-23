@@ -4693,6 +4693,64 @@ mod tests {
     /// was flagged anyway. Mirrors `brink-db`'s own
     /// `issue_2111_conventions_projection.rs::
     /// the_configured_modules_own_handlers_are_projected_in_order` fixture,
+    /// The compile closure surfaced through the wasm boundary (#3017):
+    /// after `compile_project`, `compilation_closure` lists exactly the
+    /// entry's transitive `INCLUDE` closure — a sibling `.ink` nothing
+    /// INCLUDEs is listed by `project_outline` but absent here, which is
+    /// the one fact the out-of-scope editor banner and the Binder's "not
+    /// included" marks need. Before any compile the closure is empty
+    /// (no entry set), so consumers can gate on "has compiled" for free.
+    #[test]
+    fn compilation_closure_is_the_include_closure_not_the_file_listing() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "INCLUDE scenes/harbour.ink
+-> END
+",
+        );
+        s.update_file(
+            "scenes/harbour.ink",
+            "-> END
+",
+        );
+        s.update_file(
+            "offcuts.ink",
+            "-> END
+",
+        );
+
+        // Before any compile: empty, never a guess.
+        let before: Vec<String> =
+            serde_json::from_str(&s.compilation_closure()).expect("valid json");
+        assert!(
+            before.is_empty(),
+            "no entry is set before the first compile, so the closure must              be empty, got {before:?}"
+        );
+
+        let _ = s.compile_project("main.ink");
+        let closure: Vec<String> =
+            serde_json::from_str(&s.compilation_closure()).expect("valid json");
+        assert!(
+            closure.contains(&"main.ink".to_owned())
+                && closure.contains(&"scenes/harbour.ink".to_owned()),
+            "the entry and its INCLUDE must both be in the closure: {closure:?}"
+        );
+        assert!(
+            !closure.contains(&"offcuts.ink".to_owned()),
+            "a sibling nothing INCLUDEs is on disk, not in the story: {closure:?}"
+        );
+
+        // The outline still lists all three — the DIFFERENCE is the signal.
+        let outline: Vec<serde_json::Value> =
+            serde_json::from_str(&s.project_outline()).expect("valid json");
+        let outlined: Vec<&str> = outline.iter().filter_map(|f| f["path"].as_str()).collect();
+        assert!(
+            outlined.contains(&"offcuts.ink"),
+            "project_outline keeps listing the not-included file: {outlined:?}"
+        );
+    }
+
     /// at the layer a real embedder actually drives (`compile_project`, not
     /// a direct `ProjectDb` call).
     #[test]

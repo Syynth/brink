@@ -834,7 +834,59 @@ export class EditorSession {
     if (!this.files.has(entry)) {
       return EditorSession.compileRefusal(`entry file not found in session: ${entry}`);
     }
+    this.lastCompiledEntry = entry;
     return JSON.stringify({ ok: true, warnings: [] });
+  }
+
+  /** The entry of the most recent successful {@link compile_project} —
+   *  what the real session's salsa `set_entry` records; the closure below
+   *  keys off it exactly as `ProjectDb::compilation_closure` does. */
+  private lastCompiledEntry: string | null = null;
+
+  /**
+   * Mock of the real `compilation_closure` (#3017,
+   * `crates/brink-web/src/editor/outline.rs`): the entry's transitive
+   * INCLUDE closure over {@link files}, resolved relative to the including
+   * file (mirroring `brink_db::resolve_include_path`). Empty before any
+   * compile — the real one has no entry set then. Membership only;
+   * consumers must not read order out of this (the real one is
+   * topological).
+   */
+  compilation_closure(): string {
+    const entry = this.lastCompiledEntry;
+    if (entry === null || !this.files.has(entry)) return "[]";
+    const seen = new Set<string>([entry]);
+    const queue = [entry];
+    while (queue.length > 0) {
+      const path = queue.shift();
+      if (path === undefined) break;
+      const source = this.files.get(path);
+      if (source === undefined) continue;
+      for (const m of source.matchAll(/^\s*INCLUDE\s+(\S+)\s*$/gm)) {
+        const target = m[1];
+        if (target === undefined) continue;
+        const resolved = EditorSession.resolveIncludeTarget(path, target);
+        if (this.files.has(resolved) && !seen.has(resolved)) {
+          seen.add(resolved);
+          queue.push(resolved);
+        }
+      }
+    }
+    return JSON.stringify([...seen]);
+  }
+
+  /** Resolve an INCLUDE target relative to the including file's directory,
+   *  normalizing `./` and `../` — the mock twin of
+   *  `brink_db::resolve_include_path`. */
+  private static resolveIncludeTarget(fromPath: string, target: string): string {
+    const idx = fromPath.lastIndexOf("/");
+    const baseSegs = idx < 0 ? [] : fromPath.slice(0, idx).split("/");
+    for (const seg of target.split("/")) {
+      if (seg === "" || seg === ".") continue;
+      if (seg === "..") baseSegs.pop();
+      else baseSegs.push(seg);
+    }
+    return baseSegs.join("/");
   }
 
   /**

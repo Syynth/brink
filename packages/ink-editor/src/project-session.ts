@@ -81,6 +81,20 @@ export interface ProjectSessionOptions {
    * consulted again once a config-named entry supersedes it.
    */
   entryFile: string;
+  /**
+   * Whether `entryFile` is a HUMAN'S EXPLICIT CHOICE rather than a host
+   * default (the file-anchored project open model, ruled 2026-08-23 —
+   * `docs/decision-log.md` "A project is anchored on a FILE"). When true, a
+   * discovered `brink.toml`'s `[project] entry` never supersedes
+   * `entryFile`: the #2331 precedence ruling ("`[project] entry` beats
+   * `mountStudio`'s `entryFile`") stands for its own case — a
+   * *host-supplied default* still loses to authored config — but a person
+   * opening a specific story file IS choosing the entry, and that choice
+   * wins. Discovery itself still runs (lints, conventions, warnings all
+   * apply); only the entry supersession is disabled. Default `false`, the
+   * pre-2026-08-23 behavior.
+   */
+  entryIsExplicit?: boolean;
   /** Re-use an existing session, or a new one is created. */
   session?: EditorSessionHandle;
   /** Called when an external file change is detected. */
@@ -150,6 +164,12 @@ export class ProjectSession {
    */
   private readonly hostEntryFile: string;
   /**
+   * Whether {@link hostEntryFile} was a human's explicit open rather than a
+   * host default — see {@link ProjectSessionOptions.entryIsExplicit}. When
+   * set, {@link getEntryFile} never lets {@link configuredEntry} supersede.
+   */
+  private readonly entryIsExplicit: boolean;
+  /**
    * The most recently discovered `[project] entry`, when it resolves to a
    * real file in this session — `null` when no `brink.toml` was found, it
    * doesn't set `entry`, or the named entry doesn't resolve. Wholesale
@@ -186,6 +206,7 @@ export class ProjectSession {
   constructor(options: ProjectSessionOptions) {
     this.provider = options.provider;
     this.hostEntryFile = options.entryFile;
+    this.entryIsExplicit = options.entryIsExplicit ?? false;
     this.session = options.session ?? new EditorSessionHandle();
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
@@ -419,9 +440,13 @@ export class ProjectSession {
    * found a `brink.toml` naming a valid `[project] entry` (issue #2331,
    * ruled 2026-08-07), which supersedes it; see that method's doc for the
    * full precedence rule. Never sticky past the config that set it — see
-   * {@link configuredEntry}.
+   * {@link configuredEntry}. The one carve-out is an EXPLICIT host entry
+   * ({@link entryIsExplicit}, the file-anchored open model ruled
+   * 2026-08-23): a human's explicit open is not a default, so config never
+   * supersedes it.
    */
   getEntryFile(): string {
+    if (this.entryIsExplicit) return this.hostEntryFile;
     return this.configuredEntry ?? this.hostEntryFile;
   }
 

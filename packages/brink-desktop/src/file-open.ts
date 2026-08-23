@@ -18,10 +18,15 @@
  * logic that deserves real tests.
  */
 
-/** One resolved response to an OS file-open request. */
+/** One resolved response to an OS file-open request. An `open` for a
+ *  `.ink` file is the story door of the file-anchored open model (#3021):
+ *  the double-clicked file is a human's explicit entry choice, so
+ *  `entryIsExplicit` rides along for `openProject` to forward to
+ *  `mountStudio`. A `.brink` open keeps the legacy folder-door behavior
+ *  (native file-anchoring is deferred by the same ruling). */
 export type FileOpenAction =
   | { kind: "focus"; rel: string }
-  | { kind: "open"; root: string; rel: string };
+  | { kind: "open"; root: string; rel: string; entryIsExplicit: boolean };
 
 /**
  * Parent directory of an absolute POSIX path (v1 is a macOS-only local
@@ -66,5 +71,5 @@ export function resolveFileOpenAction(path: string, currentRoot: string | null):
   // fallback to the raw path only guards a malformed input (e.g. one with
   // no `/` at all, where `parentDir` returns "/" and the join is moot).
   const rel = relativeToRoot(root, path) ?? path;
-  return { kind: "open", root, rel };
+  return { kind: "open", root, rel, entryIsExplicit: path.endsWith(".ink") };
 }

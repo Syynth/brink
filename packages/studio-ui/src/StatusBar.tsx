@@ -11,6 +11,7 @@
 import { useCallback, useState } from "react";
 import { useShell, viewToggleCommandId } from "@brink/studio-shell";
 import { useStudioStore } from "./StoreContext.js";
+import { inkDocPath, isOutOfScope } from "./InkFileDocument.js";
 import { ElementDropdown } from "./ElementDropdown.js";
 import type { LineInfo } from "@brink/studio-store";
 import { ElementTypeEnum, sessionDegraded, DEFAULT_SESSION_ID } from "@brink/studio-store";
@@ -67,6 +68,21 @@ function elementLabel(info: LineInfo): string {
 }
 
 // ── Left group ──────────────────────────────────────────────────────
+
+/**
+ * "— file not analyzed" (#3017 — the status-bar half of the out-of-scope
+ * banner in `docs/design/project-open-flow/ScopeBanner.dc.html`): shown
+ * while the active document's file is a source file outside the latest
+ * compile's closure. Renders nothing otherwise.
+ */
+export function ScopeNoteSegment() {
+  const activeDocKey = useStudioStore((s) => s.activeDocKey);
+  const closure = useStudioStore((s) => s.closureFiles);
+  const outline = useStudioStore((s) => s.outline);
+  if (activeDocKey === "") return null;
+  if (!isOutOfScope(inkDocPath(activeDocKey), closure, outline)) return null;
+  return <span className="status-scope-note">— file not analyzed</span>;
+}
 
 /**
  * Compile status: error/warning counts (or a quiet check when clean).

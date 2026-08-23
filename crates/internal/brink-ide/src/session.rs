@@ -906,6 +906,20 @@ impl IdeSession {
         self.db.file_id(path)
     }
 
+    /// Project-relative paths of the current compile closure (#3017) —
+    /// keyed by the entry the most recent [`compile`](Self::compile) set
+    /// (`ProjectDb::compilation_closure`). Empty before any compile. Files
+    /// the session holds but this list omits are on disk, not in the
+    /// story — the "not analyzed" banner/marks read exactly that
+    /// difference.
+    pub fn compilation_closure_paths(&self) -> Vec<String> {
+        self.db
+            .compilation_closure()
+            .into_iter()
+            .filter_map(|id| self.db.file_path(id).map(str::to_owned))
+            .collect()
+    }
+
     /// Get the HIR for a file.
     pub fn hir(&self, id: FileId) -> Option<&HirFile> {
         self.db.hir(id)

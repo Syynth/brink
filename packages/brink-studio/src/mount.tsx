@@ -61,6 +61,7 @@ import {
   Binder,
   COMPILED_OUTPUT_TYPE_ID,
   CompileStatusSegment,
+  ScopeNoteSegment,
   CompiledOutputDocument,
   CursorSegment,
   ElementSegment,
@@ -124,6 +125,16 @@ export interface MountStudioOptions {
    * discovery supersedes it.
    */
   entryFile: string;
+  /**
+   * Whether `entryFile` is a human's EXPLICIT choice rather than a host
+   * default (the file-anchored project open model, ruled 2026-08-23). When
+   * true, a discovered `brink.toml`'s `[project] entry` never supersedes
+   * `entryFile` — the #2331 precedence applies to host defaults only, and
+   * an explicit open is not a default. Forwarded verbatim to
+   * `ProjectSessionOptions.entryIsExplicit` (`@brink-lang/editor`); see
+   * that option's doc for the full rule. Default `false`.
+   */
+  entryIsExplicit?: boolean;
   /**
    * Host-provided surfaces (spec §8.1), registered once at mount. A factory
    * receives the `StudioApi` facade for host commands that need it.
@@ -395,6 +406,9 @@ export async function mountStudio(
   const project = new ProjectSession({
     provider,
     entryFile,
+    // File-anchored open (ruled 2026-08-23): an explicit open's entry is
+    // never superseded by a discovered `[project] entry`.
+    entryIsExplicit: options.entryIsExplicit,
     // Host egress (#154): every session-content mutation reports through
     // the project's FileChangeHub, which batches + debounces into this.
     onFilesChanged: options.onFilesChanged,
@@ -545,6 +559,13 @@ export async function mountStudio(
       : null;
 
     state.setCompileResult(outline, { errors, warnings }, result.warnings ?? [], storyBytes);
+    // The compile closure (#3017): read-only, keyed by the entry this very
+    // compile just set — a file in `outline` but not here is on disk, not
+    // in the story (the out-of-scope banner + Binder marks read this).
+    state.setClosureFiles(project.getSession().getCompilationClosure());
+    // The effective entry (config precedence applied) — the Binder's entry
+    // badge and its ink-project Library gate (#3014) read this.
+    state.setEntryFile(project.getEntryFile());
     state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
 
     // Story Graph data (#97, spec §4.1): recompute from the analyzer on each
@@ -850,6 +871,15 @@ export async function mountStudio(
     alignment: "left",
     priority: 20,
     component: CompileStatusSegment,
+  });
+  // Out-of-scope note (#3017): sits right after the compile status —
+  // "No issues — file not analyzed" reads as one statement, which is the
+  // point (absent diagnostics are not clean diagnostics here).
+  statusBarItems.register({
+    id: "status.scope-note",
+    alignment: "left",
+    priority: 19,
+    component: ScopeNoteSegment,
   });
   statusBarItems.register({
     id: "status.story",
