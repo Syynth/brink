@@ -178,6 +178,13 @@ export class LocalSessionProvider implements SessionProvider {
   private journalUnsub: (() => void) | null = null;
 
   // Mirrored snapshot fields.
+  /**
+   * Reveal mode (#3011). `false` — the default — reveals one line at a time.
+   * Deliberately NOT persisted with the session journal: it is a view
+   * preference about how output is paced, not part of the story's state, and
+   * restoring a journal must not silently change how the next reveal behaves.
+   */
+  private auto = false;
   private status: SessionStatus = "none";
   private transcript: string[] = [];
   private choices: Choice[] = [];
@@ -277,6 +284,7 @@ export class LocalSessionProvider implements SessionProvider {
       programChecksum: this.programChecksum,
       programModel: this.programModel,
       programInkt: this.programInkt,
+      auto: this.auto,
     };
   }
 
@@ -442,6 +450,23 @@ export class LocalSessionProvider implements SessionProvider {
     this.reveal();
   }
 
+  /**
+   * Switch between one-line and run-to-pause reveals (#3011).
+   *
+   * Takes effect on the NEXT reveal. It does not re-run or collapse what is
+   * already in the transcript — turning `auto` on mid-scene continues from
+   * where the reader is, rather than replaying the scene at a different
+   * granularity.
+   *
+   * Emits even though no story state moved, because the snapshot carries
+   * `auto` and the checkbox reads its state from there.
+   */
+  setAuto(auto: boolean): void {
+    if (this.auto === auto) return;
+    this.auto = auto;
+    this.emit();
+  }
+
   continue(): void {
     // Only advance when the session actually can (mid-flow or at a `-> DONE`
     // turn boundary). At a choice point the VM is blocked awaiting input, so a
@@ -503,7 +528,25 @@ export class LocalSessionProvider implements SessionProvider {
     this.journalUnsub = null;
   }
 
-  /** Reveal the next line from the runtime (or surface choices/end). Emits. */
+  /**
+   * Reveal from the runtime and emit.
+   *
+   * ONE line by default; the whole run to the next pause when `auto` is on
+   * (#3011, ruled 2026-08-23 in `docs/decision-log.md`).
+   *
+   * This method previously called `continueToPause()` unconditionally while
+   * its own doc comment claimed it revealed "the next line" — the comment
+   * described the intended behaviour and the code did something else, so a
+   * Continue press dumped every line up to the next choice. That is wrong for
+   * an authoring tool: it makes it impossible to see where a line lands or
+   * which convention fired on it.
+   *
+   * Both branches yield `SessionLine[]`, so everything downstream — the
+   * transcript append, `statusOfLine` on the last element, the choices pull —
+   * is untouched. `continueSingle()` returns a single line that may ITSELF be
+   * terminal (`choices`/`done`/`end`), which is why wrapping it in an array
+   * needs no special-casing.
+   */
   private reveal(): void {
     const session = this.session;
     if (!session) {
@@ -512,7 +555,7 @@ export class LocalSessionProvider implements SessionProvider {
     }
 
     try {
-      const lines = session.continueToPause();
+      const lines = this.auto ? session.continueToPause() : [session.continueSingle()];
       this.appendLines(lines);
       const last = lines.at(-1);
       this.status = last ? statusOfLine(last.type) : this.status;

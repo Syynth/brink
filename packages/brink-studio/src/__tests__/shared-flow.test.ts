@@ -39,7 +39,9 @@ describe("openFlow (store)", () => {
     expect(s.sessions[1]!.id).toBe("flow:1");
     expect(s.activeSessionId).toBe("flow:1");
     // A flow drives its own choices/continue; the shared story owns start/stop.
-    expect([...s.capabilities].sort()).toEqual(["choose", "continue"]);
+    // `auto` joined the set in #3011: a flow can run to the next pause via
+    // `continueFlowMaximally`, so it advertises the reveal-mode toggle too.
+    expect([...s.capabilities].sort()).toEqual(["auto", "choose", "continue"]);
   });
 
   it("does nothing without a live primary session", () => {

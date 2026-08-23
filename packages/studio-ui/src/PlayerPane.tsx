@@ -189,6 +189,12 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const status = useStudioStore((s) => s.sessionStatus);
   const text = useStudioStore((s) => s.sessionText);
   const choices = useStudioStore((s) => s.sessionChoices);
+  const auto = useStudioStore((s) => s.sessionAuto);
+  const setSessionAuto = useStudioStore((s) => s.setSessionAuto);
+  // Hidden when the bound provider cannot switch modes (the flow provider only
+  // ever advances one line) — a visible control that does nothing is worse
+  // than no control (#3011).
+  const canAuto = useStudioStore((s) => s._provider?.capabilities.has("auto") ?? false);
   const { commands } = useShell();
   const maximized = useEditorGroups((s) => s.maximizedGroupId) === groupId;
 
@@ -275,6 +281,23 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
           <button className="btn-restart" onClick={handleRestart}>
             Restart
           </button>
+          {canAuto && (
+            <label
+              className="player-auto"
+              title={
+                auto
+                  ? "Auto: each reveal runs to the next choice or pause"
+                  : "Auto off: each reveal advances a single line"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={auto}
+                onChange={(e) => setSessionAuto(e.target.checked)}
+              />
+              Auto
+            </label>
+          )}
           <button
             onClick={() =>
               commands.dispatch(EDITOR_MAXIMIZE_GROUP_COMMAND_ID, groupId)

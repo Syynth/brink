@@ -29,6 +29,7 @@ import type { DebugState, ReplayOutcome } from "@brink/wasm-types";
  * script each `ReplayOutcome` variant (or throw). */
 function fakeSession(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    continueSingle: vi.fn(() => ({ type: "end", text: "", tags: [] })),
     continueToPause: vi.fn(() => [{ type: "end", text: "", tags: [] }]),
     choose: vi.fn(),
     restart: vi.fn(),
@@ -198,6 +199,7 @@ describe("LocalSessionProvider.start() hot-reload recovery when reload() throws"
       }),
     });
     const fresh = fakeSession({
+      continueSingle: vi.fn(() => ({ type: "text", text: "fresh start\n", tags: [] })),
       continueToPause: vi.fn(() => [{ type: "text", text: "fresh start\n", tags: [] }]),
     });
     const sessionFactory = vi.fn(() => fresh as never);

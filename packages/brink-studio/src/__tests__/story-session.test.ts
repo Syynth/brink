@@ -23,12 +23,20 @@ type Line = {
   choices?: { index: number; text: string; tags: string[] }[];
 };
 
-/** A scripted session: each `continueToPause()` call returns the next
- * single-line batch — one line per call, same cadence as the old
- * `continueSingle`-scripted runner. */
+/** A scripted session: one line per reveal. `continueSingle` is what the
+ * provider calls by default (#3011); `continueToPause` is kept in step for the
+ * `auto` path and draws from the same script, so a test that flips the mode
+ * sees the same sequence. */
 function scriptedSession(lines: Line[]) {
   let i = 0;
+  const next = (): Line => {
+    const line = lines[i];
+    if (!line) throw new Error("script exhausted");
+    i += 1;
+    return line;
+  };
   return {
+    continueSingle: vi.fn((): Line => next()),
     continueToPause: vi.fn((): Line[] => {
       const line = lines[i];
       if (!line) throw new Error("script exhausted");

@@ -23,10 +23,21 @@ import type { Choice } from "@brink/wasm-types";
 
 /** The shared-flow surface `FlowSessionProvider` needs from its host handle —
  * satisfied by both `StoryRunnerHandle` and `StorySessionHandle`. */
+/** One revealed line as the flow verbs return it. */
+export interface FlowLine {
+  type: string;
+  text: string;
+  tags: string[];
+  choices?: Choice[];
+}
+
 export interface FlowHost {
   programModel(): unknown;
   programInkt(): string;
-  continueFlow(name: string): { type: string; text: string; tags: string[]; choices?: Choice[] };
+  continueFlow(name: string): FlowLine;
+  /** Run-to-pause counterpart of `continueFlow` (#3011); last element is
+   * terminal. Both `StoryRunnerHandle` and `StorySessionHandle` provide it. */
+  continueFlowMaximally(name: string): FlowLine[];
   chooseFlow(name: string, index: number): void;
   destroyFlow(name: string): void;
   flowDebugSnapshot(name: string): unknown;
@@ -42,7 +53,14 @@ import {
 } from "./types.js";
 
 /** A flow drives its own choices/continue; the shared story owns start/stop. */
-const FLOW_CAPABILITIES: ReadonlySet<SessionCapability> = new Set(["choose", "continue"]);
+const FLOW_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
+  "choose",
+  "continue",
+  // Flows honour the reveal-mode toggle too (#3011): the runner exposes
+  // `continueFlowMaximally` alongside the single-line `continueFlow`, so there
+  // is nothing special about a flow that would justify withholding it.
+  "auto",
+]);
 
 const NOOP_CALLBACKS: ProviderCallbacks = {
   notify() {
@@ -56,6 +74,9 @@ const NOOP_CALLBACKS: ProviderCallbacks = {
 export class FlowSessionProvider implements SessionProvider {
   readonly kind = "local" as const;
   readonly capabilities = FLOW_CAPABILITIES;
+
+  /** Reveal mode (#3011); `false` reveals one line at a time. */
+  private auto = false;
 
   private readonly runner: FlowHost;
   private readonly flowName: string;
@@ -100,6 +121,7 @@ export class FlowSessionProvider implements SessionProvider {
       programChecksum: this.programChecksum,
       programModel: this.programModel,
       programInkt: this.programInkt,
+      auto: this.auto,
     };
   }
 
@@ -117,6 +139,13 @@ export class FlowSessionProvider implements SessionProvider {
 
   continue(): void {
     this.reveal();
+  }
+
+  /** Set the reveal mode (#3011). Takes effect on the next reveal. */
+  setAuto(auto: boolean): void {
+    if (this.disposed || this.auto === auto) return;
+    this.auto = auto;
+    this.emit();
   }
 
   choose(index: number): void {
@@ -149,11 +178,22 @@ export class FlowSessionProvider implements SessionProvider {
   private reveal(): void {
     if (this.disposed) return;
     try {
-      const line = this.runner.continueFlow(this.flowName);
-      const text = line.text.replace(/\n$/, "");
-      if (text) this.transcript = [...this.transcript, text];
-      this.choices = line.type === "choices" ? (line.choices ?? []) : [];
-      this.status = statusOfLine(line.type);
+      // One line by default, the whole run to the next pause under `auto`
+      // (#3011). `continueFlowMaximally` is the flow-scoped counterpart of the
+      // primary session's `continueToPause`, so both providers offer the same
+      // choice rather than the flow being arbitrarily stuck single-stepping.
+      const lines = this.auto
+        ? this.runner.continueFlowMaximally(this.flowName)
+        : [this.runner.continueFlow(this.flowName)];
+      for (const line of lines) {
+        const text = line.text.replace(/\n$/, "");
+        if (text) this.transcript = [...this.transcript, text];
+      }
+      // An empty maximal result would leave status untouched rather than
+      // crashing on `undefined` — the single-line branch always has one.
+      const last = lines.at(-1);
+      this.choices = last?.type === "choices" ? (last.choices ?? []) : [];
+      this.status = last ? statusOfLine(last.type) : this.status;
     } catch (e) {
       this.fail("Runtime error", e);
       return;
