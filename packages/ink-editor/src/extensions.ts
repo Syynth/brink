@@ -388,6 +388,13 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       ? []
       : indentationMarkers({
           hideFirstIndent: true,
+          // OFF and load-bearing (maintainer perf report, 2026-08-23):
+          // the active-block highlight regenerates every visible guide on
+          // EVERY cursor move, and its block scan walks lazily-computed
+          // indentation from the cursor toward BOTH ends of the whole
+          // document — O(doc) per keystroke, catastrophic on a
+          // real-project file. The static guides never pay that cost.
+          highlightActiveBlock: false,
           thickness: 1,
           colors: {
             light: "var(--bs-border)",
