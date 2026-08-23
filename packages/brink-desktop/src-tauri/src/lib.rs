@@ -794,7 +794,10 @@ fn load_recents(path: &Path) -> Result<Vec<String>, ShellError> {
     Ok(serde_json::from_str(&text).unwrap_or_default())
 }
 
-/// Persist the list.
+/// Persist the list. Atomic (temp + rename, like every project-file
+/// write): a plain truncate-write here tore `recents.json` when two
+/// mutations raced — see [`RecentsLock`] for the writer serialization and
+/// the #3021-stack bug that found it.
 fn save_recents(path: &Path, list: &[String]) -> Result<(), ShellError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
@@ -803,7 +806,36 @@ fn save_recents(path: &Path, list: &[String]) -> Result<(), ShellError> {
         path: path.display().to_string(),
         source: std::io::Error::other(e),
     })?;
-    std::fs::write(path, json).map_err(|e| io_err(path, e))
+    atomic_write(path, json.as_bytes()).map_err(|e| io_err(path, e))
+}
+
+/// Serializes every `recents.json` READ-MODIFY-WRITE (found live in the
+/// #3021 stack): the conflict banner's "Switch to that project" runs
+/// `openProject`'s fire-and-forget `push_recent` (the new toml anchor)
+/// concurrently with the switch's `prune_recent` (the old story anchor) —
+/// the first time two recents mutations ever overlapped. Un-serialized,
+/// the two load/save pairs interleave: at best a lost update, and with
+/// the old non-atomic `std::fs::write` a TORN file, which `load_recents`'s
+/// deliberate corrupt-file self-heal then turns into an EMPTY recents
+/// list. Atomic writes fix the tearing; this lock fixes the lost update
+/// (push+prune of different paths commute, so serialized order doesn't
+/// matter — it just has to be one at a time). Held across sync fs work
+/// only, never an await.
+struct RecentsLock(std::sync::Mutex<()>);
+
+/// The one recents mutation path: load, transform, save — under the lock.
+/// Menu rebuilds happen after, outside the lock, from the returned list.
+fn mutate_recents(
+    file: &Path,
+    lock: &std::sync::Mutex<()>,
+    transform: impl FnOnce(Vec<String>) -> Vec<String>,
+) -> Result<Vec<String>, ShellError> {
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let list = transform(load_recents(file)?);
+    save_recents(file, &list)?;
+    Ok(list)
 }
 
 /// Recents policy, pure and unit-testable without an `AppHandle` (mirrors
@@ -854,19 +886,27 @@ async fn read_recents(app: tauri::AppHandle) -> Result<Vec<String>, ShellError> 
 }
 
 #[tauri::command]
-async fn push_recent(app: tauri::AppHandle, path: String) -> Result<Vec<String>, ShellError> {
+async fn push_recent(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RecentsLock>,
+    path: String,
+) -> Result<Vec<String>, ShellError> {
     let file = recents_path(&app)?;
-    let list = recents_after_push(load_recents(&file)?, path, RECENTS_MAX);
-    save_recents(&file, &list)?;
+    let list = mutate_recents(&file, &state.0, |l| {
+        recents_after_push(l, path, RECENTS_MAX)
+    })?;
     rebuild_menu(&app, &list)?;
     Ok(list)
 }
 
 #[tauri::command]
-async fn prune_recent(app: tauri::AppHandle, path: String) -> Result<Vec<String>, ShellError> {
+async fn prune_recent(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RecentsLock>,
+    path: String,
+) -> Result<Vec<String>, ShellError> {
     let file = recents_path(&app)?;
-    let list = recents_after_prune(load_recents(&file)?, &path);
-    save_recents(&file, &list)?;
+    let list = mutate_recents(&file, &state.0, |l| recents_after_prune(l, &path))?;
     rebuild_menu(&app, &list)?;
     Ok(list)
 }
@@ -1393,6 +1433,7 @@ pub fn run() -> tauri::Result<()> {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(WatchState(std::sync::Mutex::new(None)))
+        .manage(RecentsLock(std::sync::Mutex::new(())))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
         .setup(|app| {
             use tauri::Manager;
@@ -4516,5 +4557,79 @@ mod reopen_tests {
             json.contains("reopenLastProject"),
             "wire name drifted: {json}"
         );
+    }
+}
+
+#[cfg(test)]
+mod recents_race_tests {
+    use super::*;
+
+    /// The #3021-stack switch bug, reproduced at the layer it lived in:
+    /// a concurrent push (the new toml anchor) and prune (the old story
+    /// anchor) must leave `recents.json` parseable and holding exactly the
+    /// toml entry — never a torn file that `load_recents`'s corrupt-file
+    /// self-heal silently turns into an EMPTY list. Runs the real
+    /// load/transform/save path (`mutate_recents`) from two threads, many
+    /// rounds, over real files.
+    #[test]
+    fn concurrent_push_and_prune_never_tear_or_empty_the_recents_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-desktop-test-recents-race-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(std::fs::create_dir_all(&dir).is_ok());
+        let file = dir.join("recents.json");
+        let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+
+        for round in 0..50 {
+            // The repro's starting state: the story anchor at the front,
+            // the toml anchor behind it.
+            assert!(save_recents(
+                &file,
+                &["/p/codetta.ink".to_owned(), "/p/brink.toml".to_owned()]
+            )
+            .is_ok());
+
+            let push = {
+                let (file, lock) = (file.clone(), std::sync::Arc::clone(&lock));
+                std::thread::spawn(move || {
+                    mutate_recents(&file, &lock, |l| {
+                        recents_after_push(l, "/p/brink.toml".to_owned(), RECENTS_MAX)
+                    })
+                })
+            };
+            let prune = {
+                let (file, lock) = (file.clone(), std::sync::Arc::clone(&lock));
+                std::thread::spawn(move || {
+                    mutate_recents(&file, &lock, |l| recents_after_prune(l, "/p/codetta.ink"))
+                })
+            };
+            assert!(
+                push.join().is_ok_and(|r| r.is_ok()),
+                "push failed (round {round})"
+            );
+            assert!(
+                prune.join().is_ok_and(|r| r.is_ok()),
+                "prune failed (round {round})"
+            );
+
+            // The file must parse (not torn) and hold exactly the toml —
+            // push and prune of DIFFERENT paths commute under the lock.
+            let text = std::fs::read_to_string(&file).unwrap_or_default();
+            let parsed: Result<Vec<String>, _> = serde_json::from_str(&text);
+            assert!(
+                parsed.is_ok(),
+                "torn recents.json (round {round}): {text:?}"
+            );
+            let list = parsed.unwrap_or_default();
+            assert_eq!(
+                list,
+                vec!["/p/brink.toml".to_owned()],
+                "lost update (round {round})"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
