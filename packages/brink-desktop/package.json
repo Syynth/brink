@@ -1,7 +1,7 @@
 {
   "name": "@brink/desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Tauri desktop shell for brink-studio (docs/desktop-shell-spec.md, D1)",
   "scripts": {
