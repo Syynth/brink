@@ -1,7 +1,10 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
 import type { CompileResult, SemanticToken, HirProjection, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
+import { indentationMarkers } from "@replit/codemirror-indentation-markers";
+import { hangingIndent } from "./hanging-indent.js";
+import { EditorView } from "@codemirror/view";
+import { indentUnit } from "@codemirror/language";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
 import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
@@ -50,6 +53,14 @@ export interface BrinkStudioOptions {
    *  substitute a different CM theme. Structural styles (popup positioning,
    *  data-driven widget colors) are independent of this and always active. */
   theme?: Extension | false;
+  /**
+   * Indentation guides (the vertical whitespace/tab indent lines, ruled
+   * 2026-08-23 alongside "literal whitespace" — the file's real
+   * indentation is now the only indentation, so the editor draws guides
+   * for it). Default on; pass `false` to omit (e.g. a fully headless
+   * composition that draws its own).
+   */
+  indentGuides?: boolean;
 
   /** The view's wasm document-handle slot (per-view DocId, swapped across
    *  mount/unmount). If provided, the editor uses HIR-backed line
@@ -362,6 +373,51 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     dialectCompartment.of(dialectFacet.of(resolvedDialect)),
     elementTypeField,
     theme,
+    // Four-column indent unit (maintainer, 2026-08-23): ink convention —
+    // drives the guide spacing below (the markers package reads this
+    // facet) and any indent-aware command.
+    indentUnit.of("    "),
+    // Hanging indent for wrapped lines (the literal-whitespace ruling's
+    // companion): continuation rows align even with the first row's text
+    // start, so the indent guides never cross wrapped text.
+    hangingIndent(),
+    // Indent guides (ruled 2026-08-23): tokens, not hardcoded colors — the
+    // extension interpolates these strings into its generated stylesheet,
+    // where `var()` resolves against the host theme like any other rule.
+    options.indentGuides === false
+      ? []
+      : [
+          indentationMarkers({
+          hideFirstIndent: true,
+          // OFF and load-bearing (maintainer perf report, 2026-08-23):
+          // the active-block highlight regenerates every visible guide on
+          // EVERY cursor move, and its block scan walks lazily-computed
+          // indentation from the cursor toward BOTH ends of the whole
+          // document — O(doc) per keystroke, catastrophic on a
+          // real-project file. The static guides never pay that cost.
+          highlightActiveBlock: false,
+          thickness: 1,
+          colors: {
+            light: "var(--bs-border)",
+            dark: "var(--bs-border)",
+            activeLight: "var(--bs-border-strong, var(--bs-fg-muted))",
+            activeDark: "var(--bs-border-strong, var(--bs-fg-muted))",
+          },
+          }),
+          // Guide breaks at wraps (maintainer, 2026-08-23): the package
+          // paints one full-height pseudo per LINE, so a wrapped line's
+          // guides ran alongside every continuation row. Capping the
+          // pseudo to one text row (`1lh` — exact for any line-height)
+          // leaves a visible break under each wrapped continuation. The
+          // old Chromium 88 floor would not know `lh`; the maintainer
+          // ruled that floor out of scope (2026-08-23).
+          EditorView.baseTheme({
+            ".cm-lineWrapping .cm-indent-markers::before": {
+              bottom: "auto",
+              height: "1lh",
+            },
+          }),
+        ],
     screenplayCompartment.of(screenplayLayer),
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,

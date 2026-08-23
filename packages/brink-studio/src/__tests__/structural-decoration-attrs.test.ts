@@ -72,30 +72,69 @@ describe("structural line-decoration attrs (#414)", () => {
     return el;
   };
 
+  /**
+   * The #414/#363 contract, refined for the indent guides (ruled
+   * 2026-08-23): OUR line-decoration pass never emits a style attribute,
+   * but the opted-in `@replit/codemirror-indentation-markers` extension
+   * carries its gradient via ONE inline CUSTOM PROPERTY
+   * (`--indent-markers: ...`) per indented line, consumed by its own
+   * stylesheet. A custom property is a data carrier, not a layout
+   * imposition — a host restyles or disables it (`indentGuides: false`)
+   * freely. So the audit becomes: a line's inline style, when present,
+   * declares only known custom-property carriers — `--indent-markers`
+   * (the guides) and `--line-indent` (the wrapped-line hanging indent,
+   * same ruling) — any real CSS property (padding, text-align, ...)
+   * still fails.
+   */
+  const CARRIER_PROPS = new Set(["--indent-markers", "--line-indent"]);
+  const assertNoImposedInlineStyle = (line: HTMLElement): void => {
+    if (!line.hasAttribute("style")) return;
+    const style = line.style;
+    for (let i = 0; i < style.length; i++) {
+      const prop = style.item(i);
+      expect(
+        CARRIER_PROPS.has(prop),
+        `unexpected inline property "${prop}" on: ${line.textContent}`,
+      ).toBe(true);
+    }
+  };
+
   it("carries data-depth (not inline padding-left) on nested choices/gathers", async () => {
     h = await mount();
     const nested = byText(h.view, "Nested A1");
     expect(nested.getAttribute("data-depth")).toBe("2");
-    expect(nested.hasAttribute("style")).toBe(false);
+    assertNoImposedInlineStyle(nested);
   });
 
   it("carries brink-divert-standalone (not inline text-align) on a standalone divert, but not a tunnel call", async () => {
     h = await mount();
     const standalone = byText(h.view, "-> END");
     expect(standalone.className).toContain("brink-divert-standalone");
-    expect(standalone.hasAttribute("style")).toBe(false);
+    assertNoImposedInlineStyle(standalone);
 
     const tunnel = byText(h.view, "-> tunnel ->");
     expect(tunnel.className).not.toContain("brink-divert-standalone");
-    expect(tunnel.hasAttribute("style")).toBe(false);
+    assertNoImposedInlineStyle(tunnel);
   });
 
-  it("emits NO style attribute on any classified line, headless or themed", async () => {
+  it("emits no imposed inline style on any classified line, headless or themed", async () => {
     h = await mount({ theme: false });
     const lines = Array.from(h.view.dom.querySelectorAll<HTMLElement>(".cm-line"));
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
-      expect(line.hasAttribute("style")).toBe(false);
+      assertNoImposedInlineStyle(line);
+    }
+  });
+
+  it("with indentGuides: false, the only inline carrier left is --line-indent (hanging indent)", async () => {
+    h = await mount({ theme: false, indentGuides: false });
+    const lines = Array.from(h.view.dom.querySelectorAll<HTMLElement>(".cm-line"));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      if (!line.hasAttribute("style")) continue;
+      for (let i = 0; i < line.style.length; i++) {
+        expect(line.style.item(i)).toBe("--line-indent");
+      }
     }
   });
 });
