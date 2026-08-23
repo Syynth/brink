@@ -40,7 +40,7 @@ checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
 name = "brink-analyzer"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-format",
  "brink-ir",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "brink-codegen-inkb"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-format",
  "brink-ir",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "brink-compiler"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-codegen-inkb",
  "brink-driver",
@@ -74,7 +74,7 @@ dependencies = [
 
 [[package]]
 name = "brink-db"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "brink-driver"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-analyzer",
  "brink-db",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "brink-format"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "bitflags",
  "glam",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "brink-ir"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "bitflags",
  "brink-format",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "brink-project-config"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-source-tree",
  "serde",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "brink-runtime"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "brink-format",
  "glam",
@@ -149,18 +149,18 @@ dependencies = [
 
 [[package]]
 name = "brink-source-tree"
-version = "0.0.11"
+version = "0.0.15"
 
 [[package]]
 name = "brink-syntax"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "rowan",
 ]
 
 [[package]]
 name = "brink-syntax-native"
-version = "0.0.11"
+version = "0.0.15"
 dependencies = [
  "rowan",
 ]
