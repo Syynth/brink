@@ -494,6 +494,46 @@ export async function pruneRecent(root: string): Promise<string[]> {
   return invoke<string[]>("prune_recent", { path: root });
 }
 
+/** User-facing app settings (`settings.json` in app-data, #3016). */
+export interface AppSettings {
+  reopenLastProject: boolean;
+}
+
+const DEFAULT_SETTINGS: AppSettings = { reopenLastProject: false };
+
+/** Read settings; any failure (or a legacy/malformed payload) reads as
+ *  defaults — a settings hiccup must never block startup. */
+export async function readAppSettings(): Promise<AppSettings> {
+  try {
+    const raw = await invoke<unknown>("read_app_settings");
+    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+      const value = (raw as Record<string, unknown>).reopenLastProject;
+      return { reopenLastProject: value === true };
+    }
+  } catch (e: unknown) {
+    console.error("[brink-desktop] read_app_settings failed", e);
+  }
+  return DEFAULT_SETTINGS;
+}
+
+export async function writeAppSettings(settings: AppSettings): Promise<void> {
+  return invoke("write_app_settings", { settings });
+}
+
+/**
+ * Whether the PREVIOUS session exited cleanly (#3016's crash guard):
+ * auto-reopen must not walk the author straight back into whatever killed
+ * the last session. A failed check reads as clean — a transient IPC error
+ * must not permanently disable the feature.
+ */
+export async function previousExitClean(): Promise<boolean> {
+  try {
+    return (await invoke<boolean>("previous_exit_clean")) !== false;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Whether a project ANCHOR still exists — a directory for a legacy folder
  * recent, a file for the two file doors (#3021). Gates lazy pruning

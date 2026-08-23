@@ -1092,6 +1092,102 @@ async fn create_project(dir: String, entry: String) -> Result<String, ShellError
     Ok(toml_path.display().to_string())
 }
 
+// ── App settings + launch state (#3016: reopen last project) ─────────────
+
+/// User-facing app settings, persisted as `settings.json` in app-data
+/// (same precedent as `recents.json`). One knob today; additive later.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct AppSettings {
+    /// "Reopen last project on launch" (#3016). Default OFF — reopening
+    /// is an opt-in, per the landing checkbox.
+    reopen_last_project: bool,
+}
+
+/// The app-data path for `settings.json`.
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, ShellError> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| ShellError::Io {
+            path: "app-data dir".to_owned(),
+            source: std::io::Error::other(e),
+        })?
+        .join("settings.json"))
+}
+
+/// Load settings. Missing file = fresh install = defaults; a corrupt file
+/// is non-critical cached state and self-heals to defaults (the
+/// `load_recents` rationale, verbatim).
+fn load_settings(path: &Path) -> Result<AppSettings, ShellError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(AppSettings::default()),
+        Err(e) => return Err(io_err(path, e)),
+    };
+    Ok(serde_json::from_str(&text).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn read_app_settings(app: tauri::AppHandle) -> Result<AppSettings, ShellError> {
+    load_settings(&settings_path(&app)?)
+}
+
+#[tauri::command]
+async fn write_app_settings(
+    app: tauri::AppHandle,
+    settings: AppSettings,
+) -> Result<(), ShellError> {
+    let path = settings_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| io_err(parent, e))?;
+    }
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| ShellError::Io {
+        path: path.display().to_string(),
+        source: std::io::Error::other(e),
+    })?;
+    std::fs::write(&path, json).map_err(|e| io_err(&path, e))
+}
+
+/// Whether the PREVIOUS session exited cleanly — the crash guard #3016's
+/// open question asked for: auto-reopen must not walk the author straight
+/// back into whatever killed the last session (a hang on load, a
+/// pathological file), so it only fires after a clean exit.
+///
+/// Mechanism: `exit-state` in app-data holds `"running"` while a session
+/// is up (written at setup) and `"clean"` once `RunEvent::Exit` lands
+/// (which fires on every normal teardown — ⌘Q, red-button close, Dock
+/// Quit — and never on a crash). At the NEXT boot, finding `"running"`
+/// means the previous session died without reaching `Exit`.
+struct PreviousExitClean(bool);
+
+fn exit_state_path(app: &tauri::AppHandle) -> Result<PathBuf, ShellError> {
+    use tauri::Manager;
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| ShellError::Io {
+            path: "app-data dir".to_owned(),
+            source: std::io::Error::other(e),
+        })?
+        .join("exit-state"))
+}
+
+/// Interpret a prior `exit-state` file's content: only a literal
+/// `"running"` marks an unclean exit — `"clean"`, a missing file (fresh
+/// install), or unrecognized content (a future value, a partial write)
+/// all read as clean, so a corrupt marker can never permanently disable
+/// auto-reopen. Pure, unit-tested.
+fn previous_exit_was_clean(prior: Option<&str>) -> bool {
+    prior.map(str::trim) != Some("running")
+}
+
+#[tauri::command]
+async fn previous_exit_clean(state: tauri::State<'_, PreviousExitClean>) -> Result<bool, ()> {
+    Ok(state.0)
+}
+
 /// Build the native menu bar. Project lifecycle (Open/Close) is
 /// SHELL-owned — it sits above `mountStudio`, so hand-wiring it here does
 /// not conflict with the D2 ruling that *studio* commands reach menus via
@@ -1299,9 +1395,26 @@ pub fn run() -> tauri::Result<()> {
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
         .setup(|app| {
+            use tauri::Manager;
+
             // Load whatever recents.json already holds so a relaunch shows
             // the File → Open Recent submenu populated immediately, not
             // just after the first push in this session (#2394).
+            // Launch state (#3016): capture whether the previous session
+            // exited cleanly BEFORE stamping this one as running. Failures
+            // here must never block startup — a missing app-data dir just
+            // reads as a clean fresh install.
+            let prior = exit_state_path(app.handle())
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok());
+            app.manage(PreviousExitClean(previous_exit_was_clean(prior.as_deref())));
+            if let Ok(path) = exit_state_path(app.handle()) {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, "running");
+            }
+
             let initial_recents = load_recents(&recents_path(app.handle())?)?;
             let menu = build_menu(app.handle(), &initial_recents)?;
             app.set_menu(menu)?;
@@ -1350,6 +1463,9 @@ pub fn run() -> tauri::Result<()> {
             push_recent,
             prune_recent,
             project_anchor_exists,
+            read_app_settings,
+            write_app_settings,
+            previous_exit_clean,
         ])
         .build(tauri::generate_context!())?
         .run(move |app_handle, event| {
@@ -1396,6 +1512,14 @@ pub fn run() -> tauri::Result<()> {
             // Exit`) is correct: the two funnels that matter (⌘Q,
             // red-button close) both already await the guarded save via
             // `handleQuitRequested` before they ever destroy the window.
+            // Clean-exit stamp (#3016): `RunEvent::Exit` fires on every
+            // normal teardown (⌘Q, red-button close, Dock Quit) and never
+            // on a crash — exactly the distinction the reopen guard needs.
+            if let tauri::RunEvent::Exit = &event {
+                if let Ok(path) = exit_state_path(app_handle) {
+                    let _ = std::fs::write(path, "clean");
+                }
+            }
             let _ = (app_handle, &event);
         });
     Ok(())
@@ -4356,5 +4480,41 @@ mod project_open_tests {
         assert!(config.contains("entry = \"main.ink\""));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::*;
+
+    #[test]
+    fn previous_exit_state_reads_only_a_running_marker_as_unclean() {
+        assert!(previous_exit_was_clean(None), "fresh install is clean");
+        assert!(previous_exit_was_clean(Some("clean")));
+        assert!(previous_exit_was_clean(Some("clean\n")));
+        assert!(
+            previous_exit_was_clean(Some("some-future-value")),
+            "unrecognized content must not permanently disable auto-reopen"
+        );
+        assert!(!previous_exit_was_clean(Some("running")));
+        assert!(!previous_exit_was_clean(Some("running\n")));
+    }
+
+    #[test]
+    fn app_settings_default_off_and_survive_unknown_keys() {
+        let defaults = AppSettings::default();
+        assert!(!defaults.reopen_last_project, "reopen is opt-in (#3016)");
+        // A settings.json from a FUTURE version with extra keys must not
+        // reset this version's knobs (serde default + ignore-unknown).
+        let parsed: AppSettings =
+            serde_json::from_str(r#"{"reopenLastProject":true,"someFutureKnob":3}"#)
+                .unwrap_or_default();
+        assert!(parsed.reopen_last_project);
+        // Round-trip uses the camelCase wire name the frontend reads.
+        let json = serde_json::to_string(&parsed).unwrap_or_default();
+        assert!(
+            json.contains("reopenLastProject"),
+            "wire name drifted: {json}"
+        );
     }
 }

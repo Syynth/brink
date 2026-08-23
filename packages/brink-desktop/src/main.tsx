@@ -50,13 +50,21 @@ import {
   discoverProjectConfig,
   pickProjectFile,
   pickProjectFolder,
+  previousExitClean,
   projectAnchorExists,
   pruneRecent,
+  readAppSettings,
+  writeAppSettings,
   pushRecent,
   readRecents,
   saveBytesDialog,
 } from "./tauri-provider.js";
-import { anchorForPath, buildConflictModel, recentDisplayFor } from "./project-open.js";
+import {
+  anchorForPath,
+  buildConflictModel,
+  recentDisplayFor,
+  resolveBootAction,
+} from "./project-open.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
@@ -211,6 +219,10 @@ async function renderLanding(error?: string): Promise<void> {
         <div class="landing-cap">Recent</div>
         <ul id="recent-projects" class="recent-projects"></ul>
       </div>
+      <label class="landing-reopen">
+        <input type="checkbox" id="reopen-last" />
+        <span>Reopen last project on launch</span>
+      </label>
     </div>`;
   document
     .getElementById("new-project")
@@ -223,6 +235,20 @@ async function renderLanding(error?: string): Promise<void> {
   if (errorEl !== null && error !== undefined) {
     errorEl.hidden = false;
     errorEl.textContent = error;
+  }
+
+  // "Reopen last project on launch" (#3016) — persisted in settings.json;
+  // honored by bootLanding on the next launch (after a clean exit only).
+  const reopenBox = root.querySelector<HTMLInputElement>("#reopen-last");
+  if (reopenBox !== null) {
+    void readAppSettings().then((settings) => {
+      reopenBox.checked = settings.reopenLastProject;
+    });
+    reopenBox.addEventListener("change", () => {
+      void writeAppSettings({ reopenLastProject: reopenBox.checked }).catch((e: unknown) => {
+        console.error("[brink-desktop] write_app_settings failed", e);
+      });
+    });
   }
 
   const list = document.getElementById("recent-projects");
@@ -738,7 +764,7 @@ async function handleFileOpen(path: string): Promise<void> {
  * replay). Chaining `.then()` off `listen()`'s own resolution closes that
  * gap.
  */
-void listen<string[]>("shell:file-open", (event) => {
+const coldStartOpens: Promise<boolean> = listen<string[]>("shell:file-open", (event) => {
   void (async () => {
     for (const path of event.payload) {
       await handleFileOpen(path);
@@ -750,9 +776,13 @@ void listen<string[]>("shell:file-open", (event) => {
     for (const path of paths) {
       await handleFileOpen(path);
     }
+    // Reported to bootLanding (#3016): a double-clicked file always wins
+    // over auto-reopen, so a cold-start OS open suppresses it.
+    return paths.length > 0;
   })
   .catch((e: unknown) => {
     console.error("[brink-desktop] file-open wiring failed", e);
+    return false;
   });
 
 void listen("menu:new-project", () => openNewProjectDialog());
@@ -834,4 +864,42 @@ void getCurrentWindow().onCloseRequested(async (event) => {
   await handleQuitRequested();
 });
 
-void renderLanding();
+/**
+ * Launch (#3016): wait for any cold-start OS file-open to land first (a
+ * double-clicked file always wins), then either auto-reopen the last
+ * project — preference ON and the previous session exited cleanly — or
+ * show the landing (with a note when the crash guard suppressed a
+ * reopen). Every input failure degrades to the plain landing screen.
+ */
+async function bootLanding(): Promise<void> {
+  const osOpenHandled = await coldStartOpens;
+  if (current !== null) return; // an OS open already mounted a project
+  const [settings, prevClean, recents] = await Promise.all([
+    readAppSettings(),
+    previousExitClean(),
+    readRecents().catch(() => [] as string[]),
+  ]);
+  const action = resolveBootAction({
+    reopenLastProject: settings.reopenLastProject,
+    previousExitClean: prevClean,
+    osOpenHandled,
+    recents,
+  });
+  if (action.kind === "none") return;
+  if (action.kind === "reopen") {
+    try {
+      await openAnchorPath(action.path);
+      if (current !== null) return;
+    } catch (e: unknown) {
+      console.error("[brink-desktop] reopen-last-project failed", e);
+    }
+    if (current === null) void renderLanding();
+    return;
+  }
+  void renderLanding(action.note);
+}
+
+void bootLanding().catch((e: unknown) => {
+  console.error("[brink-desktop] boot failed", e);
+  void renderLanding();
+});

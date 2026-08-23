@@ -10,6 +10,7 @@ import {
   recentDisplayFor,
   recentKindFor,
   relativeConfigPath,
+  resolveBootAction,
   validateEntryName,
 } from "../project-open.js";
 
@@ -157,6 +158,35 @@ describe("validateEntryName (mirror of the shell command's validator)", () => {
   it("rejects what the Rust validator rejects", () => {
     for (const bad of ["", ".ink", "main", "main.brink", "a/b.ink", "a\\b.ink", ".hidden.ink"]) {
       expect(validateEntryName(bad), bad).not.toBeNull();
+    }
+  });
+});
+
+describe("resolveBootAction (#3016)", () => {
+  const base = {
+    reopenLastProject: true,
+    previousExitClean: true,
+    osOpenHandled: false,
+    recents: ["/stories/harbour/brink.toml", "/drafts/x.ink"],
+  };
+  it("reopens the most recent anchor when the preference is on after a clean exit", () => {
+    expect(resolveBootAction(base)).toEqual({
+      kind: "reopen",
+      path: "/stories/harbour/brink.toml",
+    });
+  });
+  it("a cold-start OS file-open always wins over auto-reopen", () => {
+    expect(resolveBootAction({ ...base, osOpenHandled: true })).toEqual({ kind: "none" });
+  });
+  it("shows the plain landing when the preference is off or recents are empty", () => {
+    expect(resolveBootAction({ ...base, reopenLastProject: false })).toEqual({ kind: "landing" });
+    expect(resolveBootAction({ ...base, recents: [] })).toEqual({ kind: "landing" });
+  });
+  it("the crash guard suppresses reopen after an unclean exit, and says why", () => {
+    const action = resolveBootAction({ ...base, previousExitClean: false });
+    expect(action.kind).toBe("landing");
+    if (action.kind === "landing") {
+      expect(action.note).toContain("didn't exit cleanly");
     }
   });
 });

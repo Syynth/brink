@@ -226,3 +226,45 @@ export function validateEntryName(entry: string): string | null {
   if (stem.startsWith(".")) return "must not be a hidden file";
   return null;
 }
+
+// ── Launch decision (#3016: reopen last project) ──
+
+export interface BootContext {
+  /** The "Reopen last project on launch" setting. */
+  reopenLastProject: boolean;
+  /** Whether the previous session exited cleanly (the crash guard). */
+  previousExitClean: boolean;
+  /** Whether a cold-start OS file-open already opened a project — a
+   *  double-clicked file always wins over auto-reopen. */
+  osOpenHandled: boolean;
+  /** Recents, most-recent-first (anchor paths). */
+  recents: string[];
+}
+
+export type BootAction =
+  | { kind: "none" }
+  | { kind: "landing"; note?: string }
+  | { kind: "reopen"; path: string };
+
+/**
+ * What launch should do (#3016), pure and unit-tested. The crash rule is
+ * the middle option the issue weighed: honour the preference only after a
+ * clean exit — after an abnormal one, show the landing (with the project
+ * one click away at the top of recents) and say why, so the author gets a
+ * window to choose instead of being walked back into whatever broke.
+ */
+export function resolveBootAction(ctx: BootContext): BootAction {
+  if (ctx.osOpenHandled) return { kind: "none" };
+  if (!ctx.reopenLastProject) return { kind: "landing" };
+  const last = ctx.recents[0];
+  if (last === undefined) return { kind: "landing" };
+  if (!ctx.previousExitClean) {
+    return {
+      kind: "landing",
+      note:
+        "Reopen last project was skipped — the previous session didn't exit cleanly. " +
+        "Your project is one click away below.",
+    };
+  }
+  return { kind: "reopen", path: last };
+}
