@@ -91,3 +91,22 @@
   border-radius: 4px;
   margin-top: 8px;
 }
+
+/* Reveal-mode toggle (#3011). Sits in the Player toolbar beside Run/Restart.
+   Styled as a label-wrapped checkbox rather than a button so its state reads
+   at a glance — the whole point is that an author can see, without clicking,
+   whether the next reveal advances one line or runs to the next pause. */
+.brink-studio .player-pane .header .toolbar .player-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-size: 0.85em;
+  user-select: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.brink-studio .player-pane .header .toolbar .player-auto input {
+  margin: 0;
+  cursor: pointer;
+}

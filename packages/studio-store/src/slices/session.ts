@@ -70,6 +70,13 @@ export interface SessionSlice {
   sessionText: string[];
   /** Pending choices; non-empty only when status is "awaiting-choice". */
   sessionChoices: Choice[];
+  /**
+   * Reveal mode (#3011). `false` — the default — reveals one line at a time;
+   * `true` runs to the next pause. Mirrored from the provider snapshot, so the
+   * Player's checkbox shows what reveals actually do rather than a separate
+   * copy that can drift.
+   */
+  sessionAuto: boolean;
 
   /**
    * The session registry (docs/multi-session-spec.md, #182) — ordered, the
@@ -147,6 +154,11 @@ export interface SessionSlice {
   chooseOption(index: number): void;
   /** Reveal the next line from the runtime (or surface choices/end). */
   revealNext(): void;
+  /**
+   * Set the reveal mode (#3011). No-op on a provider without the `auto`
+   * capability, which is also why the Player hides the toggle for those.
+   */
+  setSessionAuto(auto: boolean): void;
 
   /**
    * Open a new local session (#182) — an independent runner with isolated
@@ -209,6 +221,7 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
     sessionStatus: "none",
     sessionText: [],
     sessionChoices: [],
+    sessionAuto: false,
     sessions: [],
     activeSessionId: null,
     _provider: null,
@@ -338,6 +351,10 @@ export const createSessionSlice: StateCreator<StudioState, [], [], SessionSlice>
       get()._provider?.continue?.();
     },
 
+    setSessionAuto(auto) {
+      get()._provider?.setAuto?.(auto);
+    },
+
     _refreshDebugState() {
       const provider = get()._provider;
       if (!provider) {
@@ -392,6 +409,7 @@ function mirror(set: SetFn, snap: SessionSnapshot, resetPrev = false): void {
     sessionStatus: snap.status,
     sessionText: snap.transcript,
     sessionChoices: snap.choices,
+    sessionAuto: snap.auto,
     prevDebugState: resetPrev ? null : s.debugState,
     debugState: snap.debugState,
     programModel: snap.programModel,

@@ -16,6 +16,9 @@ type Line = {
  * `LocalSessionProvider` to drive `revealNext`/`chooseOption`. */
 function fakeSession(overrides: Record<string, unknown> = {}) {
   return {
+    // `reveal()` calls `continueSingle` by default and `continueToPause` only
+    // under `auto` (#3011), so the fake supplies both.
+    continueSingle: vi.fn((): Line => ({ type: "end", text: "", tags: [] })),
     continueToPause: vi.fn((): Line[] => [{ type: "end", text: "", tags: [] }]),
     choose: vi.fn(),
     restart: vi.fn(),
@@ -43,8 +46,78 @@ function storeWithSession(session: Record<string, unknown>) {
 }
 
 function storeRevealing(line: Line) {
-  return storeWithSession(fakeSession({ continueToPause: () => [line] }));
+  return storeWithSession(
+    fakeSession({ continueSingle: () => line, continueToPause: () => [line] }),
+  );
 }
+
+describe("reveal mode (#3011)", () => {
+  // The defect: `reveal()` called `continueToPause()` unconditionally, so one
+  // Continue press dumped every line to the next choice. These pin WHICH verb
+  // each mode uses — asserting only on transcript length would pass against a
+  // maximal call that happened to return one line.
+
+  it("advances ONE line by default — continueSingle, never continueToPause", () => {
+    const session = fakeSession({
+      continueSingle: vi.fn((): Line => ({ type: "text", text: "one\n", tags: [] })),
+      continueToPause: vi.fn((): Line[] => [
+        { type: "text", text: "one\n", tags: [] },
+        { type: "text", text: "two\n", tags: [] },
+        { type: "end", text: "", tags: [] },
+      ]),
+    });
+    const store = storeWithSession(session);
+    store.getState().revealNext();
+
+    expect(session.continueSingle).toHaveBeenCalledTimes(1);
+    expect(session.continueToPause).not.toHaveBeenCalled();
+    expect(store.getState().sessionText).toEqual(["one"]);
+  });
+
+  it("runs to the next pause once auto is on", () => {
+    const session = fakeSession({
+      continueSingle: vi.fn((): Line => ({ type: "text", text: "one\n", tags: [] })),
+      continueToPause: vi.fn((): Line[] => [
+        { type: "text", text: "one\n", tags: [] },
+        { type: "text", text: "two\n", tags: [] },
+        { type: "end", text: "", tags: [] },
+      ]),
+    });
+    const store = storeWithSession(session);
+    store.getState().setSessionAuto(true);
+    store.getState().revealNext();
+
+    expect(session.continueToPause).toHaveBeenCalledTimes(1);
+    expect(session.continueSingle).not.toHaveBeenCalled();
+    expect(store.getState().sessionText).toEqual(["one", "two"]);
+  });
+
+  it("defaults to off, and mirrors the mode into the store", () => {
+    const store = storeWithSession(fakeSession());
+    expect(store.getState().sessionAuto).toBe(false);
+
+    store.getState().setSessionAuto(true);
+    expect(store.getState().sessionAuto).toBe(true);
+
+    store.getState().setSessionAuto(false);
+    expect(store.getState().sessionAuto).toBe(false);
+  });
+
+  it("does not retroactively change what is already revealed", () => {
+    // Flipping the mode mid-scene affects the NEXT reveal only — it must not
+    // replay or collapse the transcript the author is already reading.
+    const session = fakeSession({
+      continueSingle: vi.fn((): Line => ({ type: "text", text: "first\n", tags: [] })),
+      continueToPause: vi.fn((): Line[] => [{ type: "text", text: "rest\n", tags: [] }]),
+    });
+    const store = storeWithSession(session);
+    store.getState().revealNext();
+    expect(store.getState().sessionText).toEqual(["first"]);
+
+    store.getState().setSessionAuto(true);
+    expect(store.getState().sessionText).toEqual(["first"]);
+  });
+});
 
 describe("session revealNext", () => {
   it("keeps the Continue affordance on a Done line (#6)", () => {
@@ -91,6 +164,9 @@ describe("session revealNext", () => {
   it("transitions to error when the runtime throws", () => {
     const store = storeWithSession(
       fakeSession({
+        continueSingle: () => {
+          throw new Error("boom");
+        },
         continueToPause: () => {
           throw new Error("boom");
         },

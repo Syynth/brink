@@ -69,10 +69,19 @@ interface SessionSnapshot {
   choices: Choice[];                // pending offers (today's sessionChoices)
   debugState: DebugState | null;    // name-resolved location / globals / call stack / visits / rng
   programChecksum: string | null;   // identity of the RUNNING program (§5)
+  auto: boolean;                    // reveal mode (#3011): false = one line per reveal
 }
 
+**Reveal granularity (#3011, ruled 2026-08-23).** Every reveal — initial load,
+after a choice, and `continue` — advances a SINGLE line. `setAuto(true)` switches
+all of them to run-to-next-pause. One line is the default because the Player is
+an authoring tool before it is a preview: revealing a whole run at once makes it
+impossible to see where a line lands or which convention fired on it. A provider
+advertises `auto` only if it can actually switch — both current providers can
+(`continueToPause` for the primary session, `continueFlowMaximally` for a flow).
+
 /** Drive verbs. A provider advertises only those it supports (§3.2). */
-type SessionCapability = "start" | "restart" | "stop" | "choose" | "continue";
+type SessionCapability = "start" | "restart" | "stop" | "choose" | "continue" | "auto";
 
 interface SessionProvider {
   readonly kind: "local" | "remote";
@@ -92,6 +101,9 @@ interface SessionProvider {
   stop?(): void;
   choose?(index: number): void;
   continue?(): void;
+  /** Set the reveal mode (#3011). Takes effect on the NEXT reveal; it does not
+   *  retroactively expand or collapse the existing transcript. */
+  setAuto?(auto: boolean): void;
 
   dispose(): void;
 }

@@ -59,11 +59,24 @@ async function continueToChoice(pane: Locator, choice: string): Promise<void> {
     }
     const before = (await pane.locator(".story-text").textContent()) ?? "";
     await continueBtn.first().click();
+    // Wait for PROGRESS, which is not the same as changed text (#3011). Now
+    // that a reveal advances one line, that line can carry no visible text at
+    // all — `appendLines` skips empty strings, and a `done` boundary has none —
+    // so a legitimate advance can leave the transcript byte-identical. Under
+    // the old run-to-pause reveal a batch almost always contained something
+    // visible, which is why polling on text alone used to hold. Treat the
+    // choice list appearing as progress too, or a story that steps onto a
+    // choice via a textless line hangs here for the full timeout.
     await expect
-      .poll(async () => (await pane.locator(".story-text").textContent()) ?? "", {
-        timeout: 10000,
-      })
-      .not.toBe(before);
+      .poll(
+        async () => {
+          const text = (await pane.locator(".story-text").textContent()) ?? "";
+          const atChoice = (await target.count()) > 0;
+          return text !== before || atChoice;
+        },
+        { timeout: 10000 },
+      )
+      .toBe(true);
   }
 
   // Phase 2 — pick the target, riding out any hasPending flicker (the button

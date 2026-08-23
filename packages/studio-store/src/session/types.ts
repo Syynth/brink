@@ -103,6 +103,17 @@ export interface SessionSnapshot {
   programModel: ProgramModel | null;
   /** The compiled program as `.inkt` text (#91). Compile-bound like the model. */
   programInkt: string | null;
+  /**
+   * Reveal mode (#3011). `false` — the default — advances ONE line per reveal;
+   * `true` runs to the next pause. Mirrored into the slice so the Player's
+   * "auto" checkbox reflects provider state rather than keeping its own copy
+   * that could drift from what reveals actually do.
+   *
+   * A provider that can only advance one line at a time (the flow provider —
+   * its runner exposes no run-to-pause verb) reports `false` and ignores
+   * `setAuto`.
+   */
+  auto: boolean;
 }
 
 /** The "no session" snapshot — the store's initial mirror and post-dispose state. */
@@ -114,6 +125,7 @@ export const EMPTY_SNAPSHOT: SessionSnapshot = {
   programChecksum: null,
   programModel: null,
   programInkt: null,
+  auto: false,
 };
 
 // ── Capabilities ────────────────────────────────────────────────────
@@ -124,7 +136,11 @@ export type SessionCapability =
   | "restart"
   | "stop"
   | "choose"
-  | "continue";
+  | "continue"
+  // Can switch between one-line and run-to-pause reveals (#3011). A provider
+  // that only ever advances one line does NOT advertise this — the Player
+  // hides the toggle rather than offering a control that does nothing.
+  | "auto";
 
 /** The full capability set — what the local (wasm) provider advertises. */
 export const ALL_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
@@ -133,6 +149,7 @@ export const ALL_CAPABILITIES: ReadonlySet<SessionCapability> = new Set([
   "stop",
   "choose",
   "continue",
+  "auto",
 ]);
 
 // ── Provider ────────────────────────────────────────────────────────
@@ -161,6 +178,12 @@ export interface SessionProvider {
   stop?(): void;
   choose?(index: number): void;
   continue?(): void;
+  /**
+   * Set the reveal mode (#3011). Only callable with the `auto` capability.
+   * Takes effect on the NEXT reveal — it does not retroactively expand or
+   * collapse what is already in the transcript.
+   */
+  setAuto?(auto: boolean): void;
 
   dispose(): void;
 }
