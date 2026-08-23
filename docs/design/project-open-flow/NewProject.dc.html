@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #181825; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    a { color: #89b4fa; } a:hover { color: #b4ccfd; }
+    .lbl { font-size: 11px; color: #6c7086; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+</helmet>
+<div style="width: 560px; height: 520px; background: rgba(17,17,27,.55);
+            display: flex; align-items: center; justify-content: center;">
+
+  <div style="width: 460px; background: #2a2a3d; border: 1px solid #45475a; border-radius: 8px;
+              box-shadow: 0 16px 48px rgb(0 0 0 / .45); overflow: hidden;
+              display: flex; flex-direction: column;">
+
+    <div style="padding: 18px 20px 0; display: flex; flex-direction: column; gap: 4px;">
+      <div style="font-size: 15px; font-weight: 550;">New Project</div>
+      <div style="font-size: 12px; color: #6c7086; line-height: 1.5;">
+        Creates a story file and a project config, so the project plays immediately.
+      </div>
+    </div>
+
+    <div style="padding: 18px 20px; display: flex; flex-direction: column; gap: 16px;">
+
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div class="lbl">Location</div>
+        <div style="display: flex; gap: 8px;">
+          <div class="mono" style="flex-grow: 1; height: 30px; border: 1px solid #45475a;
+                      border-radius: 5px; background: #1e1e2e; display: flex; align-items: center;
+                      padding: 0 10px; font-size: 12px; color: #cdd6f4;">~/stories/nightjar</div>
+          <div style="height: 30px; padding: 0 12px; border: 1px solid #45475a; border-radius: 5px;
+                      background: #313244; display: flex; align-items: center; font-size: 12px;
+                      color: #cdd6f4; cursor: pointer;">Choose…</div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div class="lbl">Entry file</div>
+        <div class="mono" style="height: 30px; border: 1px solid #45475a; border-radius: 5px;
+                    background: #1e1e2e; display: flex; align-items: center; padding: 0 10px;
+                    font-size: 12px; color: #cdd6f4;">main.ink</div>
+      </div>
+
+      <!-- what will exist afterwards: the anti-#3010 guarantee, made visible -->
+      <div style="border: 1px solid #313244; border-radius: 6px; background: #1e1e2e; overflow: hidden;">
+        <div style="padding: 8px 12px; border-bottom: 1px solid #313244;
+                    font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6c7086;">
+          Will create
+        </div>
+        <div style="padding: 10px 12px; display: flex; flex-direction: column; gap: 7px;">
+          <sc-for list="{{creates}}" as="c" hint-placeholder-count="2">
+            <div style="display: flex; align-items: baseline; gap: 9px;">
+              <div class="mono" style="font-size: 12px; color: {{c.tint}}; min-width: 84px;">{{c.name}}</div>
+              <div style="font-size: 11px; color: #6c7086;">{{c.note}}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+    </div>
+
+    <div style="padding: 0 20px 18px; display: flex; justify-content: flex-end; gap: 8px;">
+      <div style="height: 30px; padding: 0 14px; border-radius: 5px; border: 1px solid #45475a;
+                  display: flex; align-items: center; font-size: 12px; color: #a6adc8; cursor: pointer;">Cancel</div>
+      <div style="height: 30px; padding: 0 16px; border-radius: 5px; background: #89b4fa;
+                  display: flex; align-items: center; font-size: 12px; font-weight: 550;
+                  color: #1e1e2e; cursor: pointer;">Create Project</div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      creates: [
+        { name: 'main.ink',   tint: '#cba6f7', note: 'a starter story — plays on first run' },
+        { name: 'brink.toml', tint: '#89b4fa', note: 'entry = "main.ink"' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

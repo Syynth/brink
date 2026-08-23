@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #1e1e2e; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    a { color: #89b4fa; } a:hover { color: #b4ccfd; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12.5px; line-height: 20px; }
+  </style>
+</helmet>
+<div style="width: 760px; height: 420px; background: #1e1e2e; display: flex; flex-direction: column;">
+
+  <div style="height: 32px; background: #2a2a3d; border-bottom: 1px solid #45475a;
+              display: flex; align-items: stretch; flex-shrink: 0;">
+    <div style="display: flex; align-items: center; padding: 0 14px; font-size: 12px;
+                background: #1e1e2e; color: #a6adc8; border-right: 1px solid #45475a;">offcuts.ink</div>
+  </div>
+
+  <!-- informational, not alarming: this is a true statement, not an error -->
+  <div style="background: #2a2a3d; border-bottom: 1px solid #45475a; padding: 10px 14px;
+              display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
+    <div style="color: #89dceb; flex-shrink: 0; display: flex;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/>
+        <line x1="12" y1="8" x2="12.01" y2="8"/>
+      </svg>
+    </div>
+    <div style="font-size: 12px; color: #a6adc8; flex-grow: 1; line-height: 1.5;">
+      Not included in the project — nothing <span class="mono" style="font-size: 11.5px;
+      color: #cdd6f4;">INCLUDE</span>s this file, so it is not analyzed and will not appear in the story.
+    </div>
+    <div style="height: 24px; padding: 0 10px; border-radius: 4px; border: 1px solid #45475a;
+                display: flex; align-items: center; font-size: 11px; color: #cdd6f4;
+                cursor: pointer; flex-shrink: 0;">Add INCLUDE to main.ink</div>
+  </div>
+
+  <div style="flex-grow: 1; padding: 16px 0; overflow: hidden;">
+    <sc-for list="{{lines}}" as="l" hint-placeholder-count="8">
+      <div style="display: flex; gap: 16px; padding: 0 20px;">
+        <div class="mono" style="color: #45475a; width: 20px; text-align: right;
+                                 flex-shrink: 0; user-select: none;">{{l.n}}</div>
+        <div class="mono" style="color: {{l.tint}};">{{l.text}}</div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="height: 24px; background: #2a2a3d; border-top: 1px solid #45475a;
+              display: flex; align-items: center; padding: 0 12px; gap: 14px; flex-shrink: 0;">
+    <div style="font-size: 11px; color: #6c7086;">No issues</div>
+    <div style="font-size: 11px; color: #6c7086;">— file not analyzed</div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() {
+    const c = '#cdd6f4', k = '#cba6f7', s = '#6c7086';
+    return {
+      lines: [
+        { n: '1', text: '=== abandoned_branch ===', tint: k },
+        { n: '2', text: '', tint: c },
+        { n: '3', text: '    The harbour road, before we cut it.', tint: c },
+        { n: '4', text: '', tint: c },
+        { n: '5', text: '    * [Walk on] -> lighthouse', tint: c },
+        { n: '6', text: '    * [Turn back] -> harbour', tint: c },
+        { n: '7', text: '', tint: c },
+        { n: '8', text: '// kept for reference — not wired up', tint: s },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

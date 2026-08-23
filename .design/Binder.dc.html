@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #2a2a3d; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    a { color: #89b4fa; } a:hover { color: #b4ccfd; }
+    .row { height: 26px; display: flex; align-items: center; gap: 6px;
+           font-size: 12px; padding-right: 10px; }
+  </style>
+</helmet>
+<div style="width: 330px; height: 620px; background: #2a2a3d; display: flex; flex-direction: column;
+            border-right: 1px solid #45475a;">
+
+  <div style="height: 30px; display: flex; align-items: center; padding: 0 12px;
+              font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+              color: #6c7086; border-bottom: 1px solid #45475a; flex-shrink: 0;">Binder</div>
+
+  <div style="flex-grow: 1; padding: 4px 0; overflow: hidden;">
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="10">
+      <div class="row" style="padding-left: {{r.pad}}; background: {{r.bg}};
+                              opacity: {{r.dim}};">
+        <div style="color: {{r.iconTint}}; display: flex; flex-shrink: 0;">{{r.glyph}}</div>
+        <div style="color: {{r.tint}}; font-weight: {{r.weight}}; flex-grow: 1;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{r.name}}</div>
+        <sc-if value="{{r.badge}}" hint-placeholder-val="{{true}}">
+          <div style="font-size: 9px; letter-spacing: .05em; text-transform: uppercase;
+                      color: {{r.badgeTint}}; border: 1px solid {{r.badgeBorder}};
+                      border-radius: 3px; padding: 1px 4px; flex-shrink: 0;">{{r.badge}}</div>
+        </sc-if>
+      </div>
+    </sc-for>
+  </div>
+
+  <!-- legend: what the marks mean -->
+  <div style="border-top: 1px solid #45475a; padding: 10px 12px; display: flex;
+              flex-direction: column; gap: 7px; flex-shrink: 0;">
+    <sc-for list="{{legend}}" as="l" hint-placeholder-count="3">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <div style="width: 8px; height: 8px; border-radius: 2px; background: {{l.swatch}};
+                    border: 1px solid {{l.swatchBorder}}; flex-shrink: 0;"></div>
+        <div style="font-size: 11px; color: #6c7086; line-height: 1.4;">{{l.text}}</div>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() {
+    const D = '#6c7086', T = '#cdd6f4';
+    const file = (name, pad, o) => Object.assign(
+      { name, pad, bg: 'transparent', tint: T, weight: '400', dim: '1',
+        glyph: '◦', iconTint: D, badge: '', badgeTint: D, badgeBorder: '#45475a' }, o || {});
+    return {
+      rows: [
+        // the entry file — highlighted, the project's anchor
+        file('main.ink', '10px', { bg: '#252536', tint: '#cdd6f4', weight: '600',
+          glyph: '◆', iconTint: '#89b4fa', badge: 'entry',
+          badgeTint: '#89b4fa', badgeBorder: '#3a4a6b' }),
+        file('scenes/', '10px', { glyph: '▾', tint: '#a6adc8' }),
+        file('harbour.ink', '28px', {}),
+        file('lighthouse.ink', '28px', {}),
+        // present on disk, reached by nothing — the #3017 case
+        file('offcuts.ink', '28px', { dim: '.55', badge: 'not included',
+          badgeTint: '#6c7086', badgeBorder: '#45475a' }),
+        file('menus/', '10px', { glyph: '▾', tint: '#a6adc8' }),
+        file('title.ink', '28px', {}),
+        // include that escapes the display root — grouped, marked
+        file('Outside project', '10px', { glyph: '▾', tint: '#6c7086',
+          weight: '500' }),
+        file('../shared/lib.ink', '28px', { tint: '#a6adc8', badge: 'included',
+          badgeTint: '#a6e3a1', badgeBorder: '#3d5a44' }),
+      ],
+      legend: [
+        { swatch: '#89b4fa', swatchBorder: '#3a4a6b', text: 'Entry point — what the project compiles from' },
+        { swatch: 'transparent', swatchBorder: '#45475a', text: 'On disk, not reached by any INCLUDE' },
+        { swatch: '#a6e3a1', swatchBorder: '#3d5a44', text: 'In the story, but outside this folder' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
