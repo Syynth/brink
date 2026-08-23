@@ -1,5 +1,0 @@
----
-"@brink-lang/web": patch
----
-
-Issue #2156: a divert-with-args site (`-> knot(args)`, a tunnel call, or a thread-start) whose argument count disagrees with its resolved target's declared parameter count now raises a new diagnostic, **`E176`**, on both dialects. This closes a gap where arity was never checked for a divert at all — `brink_ir::symbols::project`'s divert-reference projection previously hardcoded `arg_count: None` regardless of how many arguments the divert supplied, so the existing arity-check mechanism (`E031`'s, gated on the reference carrying a real argument count) could never fire for a divert. `E176` is `E031`'s sibling for the divert/tunnel/thread-start call shape, `Warning`-tier by default like `E031`, and does not fire when the divert resolves through a `Variable` or a divert-typed local parameter (a stored/forwarded divert-target value has no declared parameter row to check against). Unknown-target-name checking for a divert-with-args site was investigated alongside this and found already correct (`E024`, pre-existing) — no new code needed there.

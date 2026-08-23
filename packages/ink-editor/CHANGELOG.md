@@ -1,5 +1,635 @@
 # @brink-lang/editor
 
+## 0.15.0
+
+### Minor Changes
+
+- 8f30776: `[project] entry` now has a real schema slot and wins over a host's `entryFile` argument (issue
+  #2331, ruled 2026-08-07 "`[project] entry` beats `mountStudio`'s `entryFile`").
+
+  - `brink_project_config::ProjectConfig` gains `entry: Option<String>`, validated the same way as
+    `conventions` (any non-empty string; existence/resolution is left to the consuming mount, kept
+    dependency-free per #1234).
+  - `EditorSession` (`@brink-lang/web`) tracks the discovered file's `[project] entry` and exposes it
+    via the new `configured_entry()`/`EditorSessionHandle.getConfiguredEntry()` — `null` when no
+    `brink.toml` was found, or one was found that doesn't set `entry`.
+  - `ProjectSession` (`@brink-lang/editor`) now owns entry-file precedence: after
+    `discoverProjectConfig` runs, a discovered `entry` that resolves to a real file in the session
+    supersedes the constructor's `entryFile` argument (for both `compileProject()` and
+    `getEntryFile()`); an `entry` that does NOT resolve to a real file falls back to the current
+    `entryFile` and is reported through the existing `onProjectConfigWarnings` channel — no new
+    warning channel invented. The `entryFile` constructor option is now only the configless fallback
+    (and the seed path `brink.toml` discovery walks up from).
+  - `mountStudio` (`@brink-lang/studio`) opens the initial tab from `project.getEntryFile()` (read
+    after `initialize()`, so any config supersession has already happened) instead of its raw
+    `entryFile` option.
+  - `packages/brink-desktop`'s `resolveEntryFile` regex peek at `[project] entry` is deleted (not
+    merely unused) — it shrinks to the plain configless-fallback chain, since `ProjectSession` now
+    supersedes its guess whenever `brink.toml` sets a valid `entry`. Not independently versioned
+    (`@brink/desktop` is private).
+
+  The embedded playground's `?fixture=native` project (`packages/brink-studio/src/main.tsx`'s
+  `NATIVE_FIXTURE`) already sets `entry = "story.brink"`, agreeing with the `entryFile` argument
+  `main.tsx` passes for that fixture — this change is a no-op there by construction, not by luck; a
+  test asserts the agreement holds (`config wins` test in `project-config-application.test.ts`
+  additionally exercises a real mismatch to prove supersession, not just agreement).
+
+- 9fc8665: Binder "Library" section for mounted `std/` files (issue #2343, part 2 of #2306's ruling "Mounted stdlib
+  presents as a read-only library node" — part 3, session-level read-only enforcement, shipped separately
+  in #2342). `list_files`/`project_outline`/`story_graph` (`@brink-lang/web`) switch from **excluding**
+  mounted stdlib files entirely (#2231's phantom-row fix) to **listing them flagged** (`mounted: boolean` on
+  `ProjectFile`/`FileOutline`/`StoryGraphNode`) — dropping the exclusion without adding a consumer that
+  renders the flag would reintroduce the exact phantom-row bug #2231/#2303 fixed, so this ships both
+  together. `EditorSession::remove_file` (`@brink-lang/web`) and `rename_file` now refuse a mounted path
+  (the delete/rename route gap #2343's review found: previously unreachable only because `list_files`
+  excluded the mount from the Binder) — `remove_file` gains a `boolean` return (previously `void`).
+
+  `@brink-lang/studio`'s Binder renders a visually distinct, collapsed-by-default "Library" section below
+  the project's own file tree: browsable (expand/collapse a folder tree, click/double-click to open a file
+  read-only) but with no drag, rename, delete, or new-file affordances. `@brink/studio-store`'s search slice
+  (internal) excludes mounted files from `runSearch`'s candidate list — "Excluded from save-all and
+  search/replace" per the ruling — and `ProjectSession.markAllSaved` (`@brink-lang/editor`) does the same for
+  `file.saveAll`. The binder slice's `applyMoveResult`/`undo` now surface an `applyEdit` refusal (a structural
+  move or undo landing on a mounted path) as a "skipped N read-only file(s)" warning instead of a silent
+  no-op behind a success toast.
+
+  A mounted file's CM6 view (`@brink-lang/editor`'s `DocumentSessions`) is now genuinely non-editable —
+  `EditorState.readOnly` + `EditorView.editable.of(false)`, the same pattern `conflict-view.ts` uses for its
+  "ON DISK" pane — rather than relying solely on the wasm-layer write refusal to make a keystroke silently
+  revert. `ProjectSession` gains a public `isReadOnly(path)` query for this. Navigation (goto-def/hover) into
+  a mounted file lands in the same read-only view via the existing open-file path — no special-casing needed.
+
+- ce263f8: External deletion of an open file: keep the view, mark orphaned; ⌘S
+  recreates (issue #2371, 2026-08-07 decision). `mountStudio`'s
+  `onExternalFileChange` used to skip deletions entirely; it now calls
+  `DocumentSessions.markOrphaned`, which never touches the kept editor buffer
+  (no refresh, no auto-close) and recreates the file in the wasm session from
+  that buffer so IDE queries and a later save keep working. `FileChangeHub`
+  gains an `orphaned` path set (`isOrphaned`/`orphanedPaths`, mirroring the
+  existing `conflicted` tracking) — set by `noteOrphanRecreated` once a kept
+  buffer is confirmed to survive a deletion (`applyExternal(path, null)`
+  alone does not flag it, so a headless deletion with no open view never gets
+  permanently badged), cleared by a canonical save (`markSaved`, or a
+  write-through `flush()`) or by the path reappearing on disk. New
+  `ProjectSession.recreateOrphaned` (the
+  provider is deliberately not notified until a real save, so recreation
+  stays gated on ⌘S even for a provider whose `onFileChanged` is itself the
+  persistence step) and `isOrphaned`/`orphanedPaths` pass-throughs. New
+  `StudioApi.getOrphanedFiles()`, mirroring `getDirtyFiles()`, for a host to
+  render an orphaned-tab badge.
+- 733e3ec: `FileProvider.renameFile` now receives the moved file's rewritten source
+  (issue #2425).
+
+  The rename op folds the moved file's own outbound `INCLUDE` rewrites into
+  `new_source`, but the atomic-rename branch of `ProjectSession.renameFile`
+  passed only the two paths on — so a host whose `renameFile` moves bytes
+  (a real filesystem rename) kept the pre-rewrite text in storage, while the
+  `createFile` + `deleteFile` fallback branch had always written the rewritten
+  source. The optional third parameter, `newContent`, closes that gap:
+
+  ```ts
+  renameFile?(oldPath: string, newPath: string, newContent?: string): Promise<void>;
+  ```
+
+  It is optional and additive — an existing implementation declaring only
+  `(oldPath, newPath)` still satisfies the interface and behaves exactly as
+  before. `InMemoryFileProvider` now stores `newContent` when supplied.
+
+  `@brink-lang/studio` re-exports `FileProvider` through `mountStudio`'s
+  `MountStudioOptions.provider` (`packages/brink-studio/src/mount.tsx`), so an
+  embedder that supplies its own provider and implements `renameFile` is
+  affected by the new third argument: it can keep taking two parameters and
+  see no change, or add the third to persist the rewritten source the way
+  `InMemoryFileProvider` and `TauriFileProvider` now do.
+
+- 255cf53: `ProjectSession` gains `readProviderFile(path)`, a thin pass-through to the
+  provider's existing `FileProvider.readFile`, bypassing session state. It
+  lets a caller confirm what a host write actually persisted rather than
+  assuming a pre-save snapshot still matches (issue #2435) — used by
+  `@brink-lang/studio`'s `file.save`/`file.saveAll` guard.
+- e69d48c: **Breaking:** `ProjectSession.renameFile` now resolves `Promise<RenameFileResult>`
+  instead of `Promise<string[]>` — a consumer doing `(await project.renameFile(a,
+b)).length` or iterating the resolved value directly will break at runtime.
+  `packages/ink-editor/src/index.ts` also gains two new exported types,
+  `RenameFileResult` and `RenameDirResult`.
+
+  Surface the rename/move breakage gate at the Binder's rename call sites (issue #2918).
+
+  `ProjectSession.renameFile`/`renameDir` (`@brink-lang/editor`) run the same
+  safe-by-default breakage gate every other structural op does (#316): the
+  wasm `rename_file`/`rename_dir` ops already compute `safe` and
+  `introduced_diagnostics` correctly. But both methods used to resolve with
+  only the bare data a caller needed to apply the move (a referrer path list,
+  or `{ moved, referrers }`) — discarding the breakage-gate verdict entirely.
+  A move that broke a reference (a divert pointing at the renamed file, for
+  example) applied exactly like a clean one, with nothing anywhere telling the
+  user.
+
+  `renameFile` now resolves with `{ referrers, safe, introducedDiagnostics }`;
+  `renameDir` with `{ moved, referrers, safe, introducedDiagnostics }`. The
+  Binder's `applyRename`/`applyDirRename` (`studio-store`'s binder slice,
+  bundled into `@brink-lang/studio`) thread the verdict through to the same
+  `_notify` channel PR #2916 used for a refused move: a `safe: false` result
+  now raises a `warning`-severity "breaks N reference(s)" notification instead
+  of the unconditional `info` toast every rename got before. This is the
+  notification FLOOR, not a preflight gate — the move still applies (the undo
+  entry still gets pushed) exactly as it did before; the user is now told
+  about the breakage rather than discovering it later. The fuller "will break
+  N references" preflight/confirm pattern (#324) exists for the editor's
+  inline symbol rename, on a dedicated widget the Binder's type-a-new-name
+  tree rename has no analog of — building one is out of this fix's scope; see
+  issue #2918 for the follow-up.
+
+- 658e7a6: Exported `scheduleIdleWork`/`cancelIdleWork` (the off-paint-path scheduling helper #722 added
+  for the inline rename widget) from the package's public entry point, so other rename/analysis
+  surfaces can take the same discipline instead of re-implementing it (issue #696).
+- 18da64e: Overlay persistence for embedding hosts (the celeris file model, 2026-08-07
+  decision): `FileChangeHub`/`ProjectSession`/`mountStudio` gain an
+  `egressPersists: false` contract under which `onFilesChanged` delivery feeds
+  a backup ring rather than counting as persistence — dirty then means
+  "diverges from the last canonical save" and only the save commands clear it
+  (an undo back to the saved text drops to clean). New `OverlayPersistence`
+  coordinator in `@brink-lang/editor`: routes egress batches to a
+  host-provided `BackupSink` (ring bounds are sink-owned), owns canonical
+  `save`/`saveAll` (write + re-baseline, rejected writes stay dirty for
+  retry), and an autosave scheduler where an autosave tick IS `saveAll` —
+  one save path, one artifact class. The default (`egressPersists` absent)
+  is byte-identical to the previous write-through behavior.
+
+### Patch Changes
+
+- e3ae45a: Argument Form: an unregistered semantic type's field label now shows the
+  same honesty marker hover/signature help use, instead of a bare, confident
+  type name (issue #1053, extending #1027).
+
+  `FormField` gains an optional `typeDisplay` — when the brink-ide-supplied
+  `CallWidgetSite` carries it, the Form's label renders it in place of the raw
+  `typeName` (e.g. `id: var_id ⚠ unregistered semantic type — E040`); a
+  registered type's label is unchanged. A producer that hasn't upgraded (no
+  `typeDisplay`) still gets the previous bare-name label — this is additive,
+  not a breaking change to `FormField`.
+
+- 24fa48f: Issue #2134 review finding: add the `cue` completion kind (issue #2134's
+  new `CompletionContext::CueName` items) to `completionType`'s `KIND_MAP`,
+  mapping to `"constant"` (matching the LSP side's
+  `CompletionItemKind::CONSTANT`). Without this entry a cue completion row
+  silently fell back to `"text"`, mis-rendering the row's icon and disabling
+  auto-open-on-completion (#229) the same way a missing `value` entry did
+  before #174 added it.
+- 62dba1d: Session-level read-only enforcement for a mounted stdlib file (issue #2306, ruled 2026-08-06 "Mounted
+  stdlib presents as a read-only library node", part 3 of the ruling — built first per its own sequencing
+  note). #2231/PR #2303 mounted the stdlib into `EditorSession` and hid mounted files from
+  `list_files`/`project_outline`/`story_graph`, but a by-id route that resolves a file outside those three
+  listings — a doc handle opened via goto-def navigation into an inherited symbol, or a bulk TS-level caller
+  like project-wide search/replace — could still write through to the mounted copy and hand the edit to the
+  host to persist, silently forking the stdlib into the project.
+
+  `EditorSession` (`@brink-lang/web`) gains `is_read_only(path)`, and `update_document` /
+  `auto_import_apply_include_doc` now refuse (returning the existing "did not apply" sentinel for each —
+  `"null"` and `{ ok: false, error }` respectively) when the handle's file currently resolves to a mounted
+  id — `open_document`/`open_fragment` still succeed on a mounted path, so it stays browsable/openable, only
+  writing through the handle is rejected. `update_file` is deliberately left unguarded: it is the host's
+  whole-file "this is the content now" API, and a real project file placed at a mounted key must keep
+  winning by construction-time ordering (the existing shadowing contract). `update_source` — the singleton-
+  session sibling, including its fragment-splice branch — is **also** left unguarded in this PR: it has no
+  in-repo caller today, but as published `@brink-lang/web` surface an external embedder driving the
+  singleton API can still reach the same silent-fork hole this PR otherwise closes. That gap is not fixed
+  here; tracked as a known follow-up rather than guessed at.
+
+  `EditorSessionHandle.isReadOnly` (`@brink-lang/web`) exposes the new query. `ProjectSession.applyEdit`
+  (`@brink-lang/editor`) — the shared seam every bulk-edit caller (search/replace, results-buffer edits,
+  binder undo) already routes through per issue #137 — now checks it before writing and returns `boolean`
+  (previously `void`) so a caller can react to a refusal instead of assuming success.
+  `ProjectSession.initialize()`/`addFile()`/the external-change handler are unaffected: they call
+  `session.updateFile` directly, exactly like a legitimate shadow write.
+
+  `@brink/studio-store`'s search slice (internal, not independently versioned) surfaces a refusal from the
+  three `applyEdit` callers (`replaceSearchMatch`, `replaceAllSearchMatches`, `applySearchRowEdit`) as a
+  "read-only" notification instead of silently continuing.
+
+- d9a83d3: `brink.toml` is no longer inert (issue #2324). `EditorSessionHandle.applyProjectConfig`/`discoverProjectConfig`
+  (#1005, #1414) were exposed and unit-tested but nothing outside test files ever called either, so every
+  `[project]`/`[lints]` key in a mounted project's `brink.toml` was silently ignored end to end.
+
+  `ProjectSession` (`@brink-lang/editor`) now calls `discoverProjectConfig` — chosen over `applyProjectConfig`
+  because it walks the session's own already-loaded documents, so no host-specific directory-walk/read code is
+  needed — once during `initialize()` (before the first analysis) and again whenever a `brink.toml` anywhere in
+  the session is created, edited, renamed into/out of, or externally rewritten. A new optional
+  `ProjectSessionOptions.onProjectConfigWarnings` callback forwards the unrecognized-key/lint-code warnings from
+  each call.
+
+  `mountStudio` (`@brink-lang/studio`) wires that callback into the Output tool window, so a typo'd or
+  unrecognized `brink.toml` key is now visible instead of silently dropped. `[project] entry` is one such key:
+  `brink_project_config::ProjectConfig` has no field for it at all (verified against
+  `crates/internal/brink-project-config/src/lib.rs`), so it always reports as an unrecognized key — `mountStudio`'s
+  explicit `entryFile` argument remains the only thing that decides the compiled entry file; there was nothing at
+  the wasm-session layer for it to conflict with.
+
+  **Review-finding fix:** `discoverProjectConfig` throws on malformed TOML or a recognized key with an
+  invalid value, and that throw was unhandled — a typo'd `brink.toml` aborted `mountStudio` entirely (no
+  editor to fix the file in), or, once mounted, threw out of every subsequent keystroke's debounced
+  `notifyFileChanged`/`applyEdit` call. `ProjectSession.applyProjectConfig` now catches the throw at its
+  single call site and reports it through a new optional `ProjectSessionOptions.onProjectConfigError`
+  callback instead of rethrowing; `mountStudio` wires it into the same Output channel as the warnings.
+
+- b50c5a1: The in-editor name prompt (`InlineNameInput` — the shared widget behind F2 inline rename and
+  extract-to-knot/function, issue #2535) no longer selects text you have already typed. It focuses
+  its input from a `setTimeout(…, 0)` scheduled while the widget is still detached, and the
+  `select()` that rode along was unguarded: typing during that window left your text selected, so
+  the next keystroke replaced it and the rename committed the wrong name — silently, since the
+  rename itself still succeeded. `select()` now runs only while the field still holds the value the
+  widget seeded it with, matching the guard `SymbolRenamePrompt` took in #2523. The deferral itself
+  is unchanged and still required: `render()` is called from CodeMirror's `WidgetType.toDOM()`,
+  which returns the element before the view inserts it, and focusing a detached element does
+  nothing.
+- 25534e6: Two internal correctness fixes with no observable behavior change, both found by PR #2548's review (#2557, #2558):
+
+  - `InlineNameInput.dispose()` (the shared widget behind F2 inline rename and extract-to-knot/function)
+    now clears its two remaining deferred `setTimeout(…, 0)` handles — the post-mount focus timer and the
+    breakage-report force-button focus timer — alongside the debounce timer and idle handle it already
+    cleared, matching the class doc's "tears them all down" claim. Applied the same pattern to the two
+    sibling sites with an identical unguarded post-teardown focus timer: `ExtractPrompt` (`extract-actions.ts`)
+    and `InlineRename` (`rename.ts`). All three were latent, not live — the owning DOM is already detached
+    by the time any of these timers fire, and `focus()` on a detached node is a no-op — but each timer is
+    now cancelled on teardown so a future change to the callback can't turn the latent leak into a live one.
+  - `RenameQueryCache`'s cache-key separator is no longer a literal NUL byte. The old
+    `` `${path}\x00${offset}\x00${newName}` `` made `rename.ts` register as a binary file to `grep`/`rg`
+    without `-a`/`--text`, silently hiding the file's own lines (including this method's) from any
+    repo-wide sweep. The key is now `JSON.stringify([path, offset, newName])` — provably collision-free
+    (JSON.stringify of a fixed 3-element array is injective) and, unlike `\x00`, keeps the file plain
+    greppable UTF-8 text.
+
+- fbdb3fb: Wire the Binder's folder rename to the atomic `rename_dir` op (issue #2587).
+
+  The Binder's folder-rename action (`renameFolder`, `packages/studio-store/src/slices/binder.ts`,
+  bundled into `@brink-lang/studio`) looped a per-file `renameFile` call over
+  every file under the folder — the exact pattern `rename_dir` (#314) was built
+  to replace, because a per-file loop computes each file's cross-file INCLUDE
+  edits independently, against whatever has already moved, rather than against
+  one pre-move snapshot. Concretely: a folder move that only changes the
+  directory prefix (every moved file keeps its own basename) left an outside
+  referrer's `INCLUDE` pointing at the old, now-nonexistent path, because a
+  same-basename rename never triggers the per-file op's basename-keyed
+  cross-file rewrite.
+
+  `ProjectSession` (`@brink-lang/editor`) gains `renameDir`, the directory
+  analog of `renameFile`: it calls the atomic wasm `rename_dir` op (unused by
+  any TS caller since #314 landed), applies every moved file's content plus
+  the outside referrers' rewrites from that one snapshot, and writes each
+  moved file through the provider (a provider write is inherently per-file —
+  the atomicity guarantee lives in the edit computation, not in these writes).
+  Deferred off the paint path via the same `deferGatedCall` yield `renameFile`
+  uses (#2776), since `rename_dir` runs the identical breakage gate.
+
+  `renameFolder` now calls `project.renameDir` instead of looping
+  `applyRename`. All-or-nothing failure semantics (a deliberate change from
+  the old loop's silently-skip-a-collision-and-move-the-rest behavior): a
+  partial directory move can only be computed by falling back to per-file
+  INCLUDE rewriting for the files that "succeed," which is exactly the
+  inconsistency #314 exists to prevent, so a collision now refuses the whole
+  move with one error notification and nothing moves. Undo gets a new
+  `rename-dir` entry kind that re-applies `renameDir` with the prefixes
+  swapped, so undoing a folder move gets the same single-snapshot consistency
+  guarantee the forward move does, instead of falling back to a per-file undo
+  loop.
+
+- 2a9abb7: `ProjectSession.renameFile` no longer runs its gated wasm call (`rename_file`, which runs the
+  same full-project breakage gate as the knot/stitch structural ops) synchronously on the paint
+  path (issue #2776, generalizing #2767/#722's remedy). The wasm call is now deferred to the next
+  idle slot via `scheduleIdleWork`, so under CPU contention a file/folder rename or move (the
+  Binder's inline rename, drag-move, and multi-select move all go through this method) no longer
+  blocks the main thread inline in the same frame as the triggering event. Callers that render a
+  busy indicator while awaiting `renameFile` (the studio's `applyRename` commits `structuralOpPending`
+  synchronously before the call) now get a real paint of it before the heavy work begins; callers
+  that don't render one see no behavior change beyond the deferral itself.
+- cd03b9e: Fixes stuck/unescapable menus and popovers (#279).
+
+  The global Escape safety net added alongside the capture-phase dismiss fixes
+  (`dismiss-registry.ts`) previously attached its own listener on `document` in
+  the capture phase — the same phase every individual surface uses for its own
+  dismiss listener. Because the net installs once, on the very first surface
+  that ever registers, it ended up running _before_ a surface's own listener on
+  every subsequent open: on the code-actions menu (Ctrl-./Cmd-.) this stripped
+  focus return and let Escape leak to CodeMirror's keymap; on the argument-
+  widget popover/modal chrome it defeated their own `preventDefault()`/
+  `stopPropagation()` outright. The net now attaches on `window` in the bubble
+  phase, so it only ever runs after every capture-phase listener already had a
+  chance to handle the event — restoring each surface's own dismiss behavior
+  while keeping the net's resilience against an orphaned listener intact.
+
+  Also: `InlineNameInput` (the shared F2-rename / extract-to-knot inline
+  prompt) is now wired into the same safety net — its own Escape handling was
+  scoped to the `<input>` element, so Escape did nothing while the breakage
+  report's force-override button (a sibling subtree) held focus; and the
+  inline element-type picker's (`keybindings.ts`, Alt+Enter) outside-dismiss
+  listener moved from a bubble-phase `mousedown` to a capture-phase
+  `pointerdown`, matching the dismiss contract everywhere else.
+
+- 0f1a4ff: Two structural gaps in the paint-path-defer family (issue #2794, found by
+  #2788's adversarial re-review — "the enrolment family's gap, not this PR's").
+
+  `ProjectSession` (`@brink-lang/editor`): a gated call deferred via
+  `scheduleIdleWork` (today, `renameFile`) could outlive `destroy()` — an
+  unmount landing inside the deferral's idle window let the scheduled callback
+  fire anyway and call into a wasm handle `destroy()` had already freed. This
+  was contained (the throw surfaced as an ordinary error notification through
+  `applyRename`'s existing `catch`), not unreachable, but containment is not a
+  fix. `deferGatedCall` (replacing a bare `scheduleIdleWork` await) now
+  tracks its idle handle and rejects the caller's `await` — instead of
+  resolving into a freed session — if `destroy()` runs first; `destroy()`
+  cancels every still-pending handle and rejects its caller before freeing the
+  wasm handle. One guard, meant to cover every gated call this class defers,
+  present or future — including `runGatedStructuralOp`'s symbol-menu ops
+  (`moveStitch`/`promoteStitch`/`demoteKnot`, in `@brink/studio-ui`), which a
+  follow-up review found still deferred through their own independent
+  `scheduleIdleWork` yield outside this guard; `deferGatedCall` is public for
+  exactly this reuse.
+
+  `structuralOpPending` (`@brink/studio-store`, bundled into
+  `@brink-lang/studio`): two independent fire-and-forget writers
+  (`runGatedStructuralOp` for symbol-menu ops, `applyRename` for Binder
+  rename/move) both cleared this status-bar pending indicator unconditionally
+  in a `finally`. An overlapping Binder drag-move and symbol-menu op could
+  erase each other's still-live indicator, whichever settled last winning
+  regardless of which op was actually still running. `SymbolMenuSlice` gains
+  `clearStructuralOpPending(description)` — a compare-and-clear that only nulls
+  the field when the live value still equals the description the clearing
+  call itself set — and both writers now clear through it instead of an
+  unconditional clear. `setStructuralOpPending` is narrowed to take only
+  `string` (no caller ever passed `null`), so a future regression back to the
+  unconditional shape fails typecheck instead of relying on review attention.
+
+- Updated dependencies [3b94ac6]
+- Updated dependencies [462f61b]
+- Updated dependencies [87fe945]
+- Updated dependencies [f7e54e3]
+- Updated dependencies [e3ae45a]
+- Updated dependencies [f36faf9]
+- Updated dependencies [f71aa3d]
+- Updated dependencies [ae7b829]
+- Updated dependencies [5a95959]
+- Updated dependencies [39f3801]
+- Updated dependencies [bb503cc]
+- Updated dependencies [aeebad7]
+- Updated dependencies [4fd4658]
+- Updated dependencies [640d1d1]
+- Updated dependencies [3ddd90e]
+- Updated dependencies [f87adc2]
+- Updated dependencies [199c822]
+- Updated dependencies [8add320]
+- Updated dependencies [1d5c985]
+- Updated dependencies [1ef7797]
+- Updated dependencies [319f9dc]
+- Updated dependencies [257e7a9]
+- Updated dependencies [c852cbe]
+- Updated dependencies [cf076d5]
+- Updated dependencies [2f0b5cf]
+- Updated dependencies [4bae57f]
+- Updated dependencies [9b1d832]
+- Updated dependencies [ec58199]
+- Updated dependencies [9586408]
+- Updated dependencies [b5fcf8e]
+- Updated dependencies [c074d71]
+- Updated dependencies [7239301]
+- Updated dependencies [74b8586]
+- Updated dependencies [ff8794e]
+- Updated dependencies [5a7c18e]
+- Updated dependencies [2ccae0b]
+- Updated dependencies [269fc6f]
+- Updated dependencies [cb56346]
+- Updated dependencies [2df4377]
+- Updated dependencies [3b18503]
+- Updated dependencies [0dcdd10]
+- Updated dependencies [51d243b]
+- Updated dependencies [137c169]
+- Updated dependencies [e839fa9]
+- Updated dependencies [529bc3f]
+- Updated dependencies [72b978c]
+- Updated dependencies [741ac65]
+- Updated dependencies [5680e1e]
+- Updated dependencies [b6fdef9]
+- Updated dependencies [916837b]
+- Updated dependencies [d27382f]
+- Updated dependencies [cd70ad8]
+- Updated dependencies [8531452]
+- Updated dependencies [cbc6683]
+- Updated dependencies [d7994d5]
+- Updated dependencies [867e75c]
+- Updated dependencies [faf45f2]
+- Updated dependencies [b8e3246]
+- Updated dependencies [80ede86]
+- Updated dependencies [db2a6fa]
+- Updated dependencies [f285bec]
+- Updated dependencies [7545fdf]
+- Updated dependencies [6262d13]
+- Updated dependencies [ef2973c]
+- Updated dependencies [fd10f7a]
+- Updated dependencies [52fb2d3]
+- Updated dependencies [b895c4f]
+- Updated dependencies [4de4d3f]
+- Updated dependencies [ad09a98]
+- Updated dependencies [98a1ae6]
+- Updated dependencies [9dec659]
+- Updated dependencies [d22cef5]
+- Updated dependencies [11cdf95]
+- Updated dependencies [38db35c]
+- Updated dependencies [186546c]
+- Updated dependencies [2ae8fc9]
+- Updated dependencies [63bc2a3]
+- Updated dependencies [276bf6c]
+- Updated dependencies [cc52b83]
+- Updated dependencies [96173a5]
+- Updated dependencies [39124bb]
+- Updated dependencies [acc6b0b]
+- Updated dependencies [73b12c8]
+- Updated dependencies [e5d78d1]
+- Updated dependencies [7182df5]
+- Updated dependencies [a5d1b37]
+- Updated dependencies [67bf45d]
+- Updated dependencies [f58b1f6]
+- Updated dependencies [ad9d451]
+- Updated dependencies [aef14d6]
+- Updated dependencies [5ee89a8]
+- Updated dependencies [b615f7d]
+- Updated dependencies [cc34968]
+- Updated dependencies [34f740a]
+- Updated dependencies [c41b0c7]
+- Updated dependencies [874c40b]
+- Updated dependencies [0c9db81]
+- Updated dependencies [65f96b0]
+- Updated dependencies [e4fb577]
+- Updated dependencies [7e8d3a2]
+- Updated dependencies [b308544]
+- Updated dependencies [fbd074e]
+- Updated dependencies [e4fc530]
+- Updated dependencies [666edaf]
+- Updated dependencies [0de4a8f]
+- Updated dependencies [a9cdbf8]
+- Updated dependencies [1e91561]
+- Updated dependencies [bdeecb2]
+- Updated dependencies [cb874b5]
+- Updated dependencies [f766b2a]
+- Updated dependencies [af56482]
+- Updated dependencies [4917db1]
+- Updated dependencies [78cfd24]
+- Updated dependencies [b1122e3]
+- Updated dependencies [6cd41cc]
+- Updated dependencies [18dffa4]
+- Updated dependencies [025c865]
+- Updated dependencies [689f1f7]
+- Updated dependencies [d7fb30e]
+- Updated dependencies [55976d2]
+- Updated dependencies [029512d]
+- Updated dependencies [405be81]
+- Updated dependencies [9e89eb2]
+- Updated dependencies [12b5302]
+- Updated dependencies [0b94925]
+- Updated dependencies [96998ef]
+- Updated dependencies [25e3742]
+- Updated dependencies [533daf9]
+- Updated dependencies [62e63ba]
+- Updated dependencies [3436d7f]
+- Updated dependencies [96eb265]
+- Updated dependencies [70a1385]
+- Updated dependencies [7915095]
+- Updated dependencies [f73db83]
+- Updated dependencies [c2d0c9f]
+- Updated dependencies [f59a88c]
+- Updated dependencies [16a548e]
+- Updated dependencies [bee5bdb]
+- Updated dependencies [220957f]
+- Updated dependencies [3316a25]
+- Updated dependencies [80735d8]
+- Updated dependencies [6453c13]
+- Updated dependencies [470cef5]
+- Updated dependencies [0d28d28]
+- Updated dependencies [ea92b07]
+- Updated dependencies [ae3eece]
+- Updated dependencies [a6863e3]
+- Updated dependencies [1104a9f]
+- Updated dependencies [9243ec0]
+- Updated dependencies [f07284d]
+- Updated dependencies [a6d86e5]
+- Updated dependencies [3dd7936]
+- Updated dependencies [f81379d]
+- Updated dependencies [19e6cbb]
+- Updated dependencies [fa52c61]
+- Updated dependencies [21a40e8]
+- Updated dependencies [8f0f38b]
+- Updated dependencies [22bac8a]
+- Updated dependencies [329560b]
+- Updated dependencies [b42e3e5]
+- Updated dependencies [c1ed5cd]
+- Updated dependencies [540d094]
+- Updated dependencies [90e0989]
+- Updated dependencies [217ba82]
+- Updated dependencies [4c6c8a5]
+- Updated dependencies [20ab18e]
+- Updated dependencies [1adefcc]
+- Updated dependencies [814276c]
+- Updated dependencies [e976041]
+- Updated dependencies [c1be12d]
+- Updated dependencies [260a94a]
+- Updated dependencies [2a4b311]
+- Updated dependencies [422d968]
+- Updated dependencies [881726e]
+- Updated dependencies [9c211d5]
+- Updated dependencies [a4f14ba]
+- Updated dependencies [92eb241]
+- Updated dependencies [a7556a5]
+- Updated dependencies [ef4d386]
+- Updated dependencies [e44f1fa]
+- Updated dependencies [b2b1ad5]
+- Updated dependencies [f5395de]
+- Updated dependencies [c3ac050]
+- Updated dependencies [0d17b32]
+- Updated dependencies [60b83cd]
+- Updated dependencies [736e8d4]
+- Updated dependencies [4dcafc9]
+- Updated dependencies [06cacc4]
+- Updated dependencies [50c1107]
+- Updated dependencies [52e6809]
+- Updated dependencies [22540ca]
+- Updated dependencies [d64cefc]
+- Updated dependencies [a5e5896]
+- Updated dependencies [115bb40]
+- Updated dependencies [f958d24]
+- Updated dependencies [8632205]
+- Updated dependencies [231bb5f]
+- Updated dependencies [9fac670]
+- Updated dependencies [f628345]
+- Updated dependencies [4a1dee1]
+- Updated dependencies [4bfcdab]
+- Updated dependencies [78b4c2d]
+- Updated dependencies [309c00c]
+- Updated dependencies [19e18be]
+- Updated dependencies [aa26464]
+- Updated dependencies [31155ad]
+- Updated dependencies [a64d78e]
+- Updated dependencies [9943755]
+- Updated dependencies [c91926b]
+- Updated dependencies [f6838e2]
+- Updated dependencies [d120ecb]
+- Updated dependencies [5fabf50]
+- Updated dependencies [8e6427a]
+- Updated dependencies [9c8d51a]
+- Updated dependencies [e5b980d]
+- Updated dependencies [cf57b22]
+- Updated dependencies [546ded5]
+- Updated dependencies [3bbd8d9]
+- Updated dependencies [56ce7bf]
+- Updated dependencies [4a664ec]
+- Updated dependencies [c025a9f]
+- Updated dependencies [85cb6e5]
+- Updated dependencies [9397a1a]
+- Updated dependencies [3be1e5f]
+- Updated dependencies [d43ec7e]
+- Updated dependencies [967bd1b]
+- Updated dependencies [b353095]
+- Updated dependencies [a7e313d]
+- Updated dependencies [d72cad2]
+- Updated dependencies [62dba1d]
+- Updated dependencies [370715c]
+- Updated dependencies [8d92c9c]
+- Updated dependencies [1156ff3]
+- Updated dependencies [c3c6eab]
+- Updated dependencies [633fb8f]
+- Updated dependencies [885ca6f]
+- Updated dependencies [8f30776]
+- Updated dependencies [76cc702]
+- Updated dependencies [d8ddd78]
+- Updated dependencies [246b800]
+- Updated dependencies [9fc8665]
+- Updated dependencies [8e6a225]
+- Updated dependencies [d4eab47]
+- Updated dependencies [79fdaf4]
+- Updated dependencies [d18f149]
+- Updated dependencies [d44e75f]
+- Updated dependencies [07740e1]
+- Updated dependencies [1939b97]
+- Updated dependencies [77cd00a]
+- Updated dependencies [8628395]
+- Updated dependencies [7c8480a]
+- Updated dependencies [88c6754]
+- Updated dependencies [8db452d]
+- Updated dependencies [2c7a43d]
+- Updated dependencies [59528ec]
+- Updated dependencies [db3f8e4]
+- Updated dependencies [bd95b30]
+- Updated dependencies [dadf0ce]
+- Updated dependencies [98d2ad2]
+- Updated dependencies [36d6630]
+- Updated dependencies [3893794]
+- Updated dependencies [dc35b98]
+- Updated dependencies [ff1e121]
+- Updated dependencies [e2e5ec4]
+- Updated dependencies [6fae1a6]
+- Updated dependencies [8c52feb]
+- Updated dependencies [aadc9b5]
+- Updated dependencies [55cc2b1]
+- Updated dependencies [46eb61b]
+  - @brink-lang/web@0.15.0
+
 ## 0.14.0
 
 ### Patch Changes
