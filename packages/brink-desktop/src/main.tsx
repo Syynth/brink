@@ -259,9 +259,15 @@ async function renderLanding(error?: string): Promise<void> {
     console.error("[brink-desktop] read_recents failed", e);
     return [];
   });
-  const recentsSection = root.querySelector<HTMLElement>(".landing-recents");
-  if (recentsSection !== null && recents.length === 0) {
-    recentsSection.hidden = true;
+  // Empty state (maintainer feedback, 2026-08-23): a bordered list with
+  // zero rows collapses to a bare line, and `hidden` on the section was
+  // dead — the class's `display: flex` beats the hidden attribute's UA
+  // `display: none`. Keep the section, say what belongs here instead.
+  if (recents.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "recent-empty";
+    empty.textContent = "No recent projects yet — anything you open shows up here.";
+    list.appendChild(empty);
   }
   for (const path of recents) {
     const display = recentDisplayFor(path, null);
