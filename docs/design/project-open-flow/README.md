@@ -15,6 +15,25 @@ against what gets built — a screenshot in a chat log is not reviewable.
 | `ScopeBanner.dc.html` | Editor banner for a file outside the analyzer's scope |
 | `canvas.json` | Canvas layout, artboard sizes, annotations |
 
+## Implementing? Start here
+
+Open the `.dc.html` in a browser (they are plain HTML — the `support.js`
+line is inert outside the canvas) or just read the markup. Each row names
+the region to compare your build against.
+
+| Issue | File | Compare against |
+|-------|------|-----------------|
+| #3010 | `Flow.dc.html` | the three-column model — what each door guarantees, and the footnotes on precedence |
+| #3010 | `Conflict.dc.html` | the banner (top, on `#43404b`) **and** the "How the config was found" walk-up trace below it |
+| #3012 | `NewProject.dc.html` | the whole dialog; the "Will create" panel is the part that makes the `main.ink` + `brink.toml` guarantee visible |
+| #3015 | `NewProject.dc.html` | the Location / Entry file fields — the form's core case, since a typo'd entry reproduces #3010 |
+| #3016 | `Main.dc.html` | the recents list (INK/TOML kind badges) and the "Reopen last project on launch" checkbox beneath it |
+| #3017 | `ScopeBanner.dc.html` | the banner strip under the tab, and the "— file not analyzed" note in the status bar |
+| #3014 | `Binder.dc.html` | the row treatments and the legend at the bottom: entry / not-included / outside-project |
+
+`Main.dc.html` also carries the startup lockup (app icon + name) if you are
+touching that screen for any reason.
+
 ## What these are matched against
 
 Values were lifted from the shipped app, not eyeballed — **Catppuccin Mocha**
