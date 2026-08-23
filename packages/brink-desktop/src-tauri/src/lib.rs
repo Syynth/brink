@@ -734,12 +734,11 @@ fn handle_opened(app: &tauri::AppHandle, urls: &[tauri::Url]) {
         .0
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    match guard.as_mut() {
-        Some(buffered) => buffered.extend(paths),
-        None => {
-            drop(guard);
-            let _ = app.emit("shell:file-open", paths);
-        }
+    if let Some(buffered) = guard.as_mut() {
+        buffered.extend(paths);
+    } else {
+        drop(guard);
+        let _ = app.emit("shell:file-open", paths);
     }
 }
 
