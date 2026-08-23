@@ -1,9 +1,9 @@
 import { Compartment, type Extension } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
 import type { CompileResult, SemanticToken, HirProjection, CompletionItem, HoverInfo, Location, InlayHint, CallWidgetSite, SignatureInfo, FoldRange, CodeAction, StructuralResult, AutoImportResult, DialogueDialect } from "@brink/wasm-types";
 import { documentHandleFacet, type DocumentHandleSlot } from "./document-handle.js";
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 import { hangingIndent } from "./hanging-indent.js";
+import { EditorView } from "@codemirror/view";
 import { indentUnit } from "@codemirror/language";
 import { brinkTheme } from "./theme.js";
 import { screenplayDecorations } from "./screenplay.js";
@@ -386,7 +386,8 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     // where `var()` resolves against the host theme like any other rule.
     options.indentGuides === false
       ? []
-      : indentationMarkers({
+      : [
+          indentationMarkers({
           hideFirstIndent: true,
           // OFF and load-bearing (maintainer perf report, 2026-08-23):
           // the active-block highlight regenerates every visible guide on
@@ -402,7 +403,21 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
             activeLight: "var(--bs-border-strong, var(--bs-fg-muted))",
             activeDark: "var(--bs-border-strong, var(--bs-fg-muted))",
           },
-        }),
+          }),
+          // Guide breaks at wraps (maintainer, 2026-08-23): the package
+          // paints one full-height pseudo per LINE, so a wrapped line's
+          // guides ran alongside every continuation row. Capping the
+          // pseudo to one text row (`1lh` — exact for any line-height)
+          // leaves a visible break under each wrapped continuation. The
+          // old Chromium 88 floor would not know `lh`; the maintainer
+          // ruled that floor out of scope (2026-08-23).
+          EditorView.baseTheme({
+            ".cm-lineWrapping .cm-indent-markers::before": {
+              bottom: "auto",
+              height: "1lh",
+            },
+          }),
+        ],
     screenplayCompartment.of(screenplayLayer),
     highlightExtension({
       getSemanticTokens: options.getSemanticTokens,
