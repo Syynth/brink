@@ -152,7 +152,11 @@ describe("InkFileDocument config integration", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     const doc = (docId: string) =>
-      createElement(InkFileDocument, { doc: { typeId: "ink-file", docId, title: docId }, groupId: "g1" });
+      createElement(InkFileDocument, {
+        doc: { typeId: "ink-file", docId, title: docId },
+        groupId: "g1",
+        active: true,
+      });
     act(() => {
       root!.render(createElement(StoreProvider, { store, children: doc("brink.toml") }));
     });
