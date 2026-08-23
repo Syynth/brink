@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.12](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.11...bevy-brink-v0.0.12) - 2026-08-23
+## [0.0.15](https://github.com/Syynth/brink/compare/bevy-brink-v0.0.11...bevy-brink-v0.0.15) - 2026-08-23
 
 ### Added
 

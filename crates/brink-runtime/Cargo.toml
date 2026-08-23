@@ -21,7 +21,7 @@ all-features = true
 # `default-features = false` (no `std`) to support the no_std build, which
 # Cargo won't let a member override when the workspace table leaves
 # `default-features` implicit. Versions match `workspace.dependencies`.
-brink-format = { path = "../internal/brink-format", version = "0.0.12", default-features = false }
+brink-format = { path = "../internal/brink-format", version = "0.0.15", default-features = false }
 # NS-A8 numeric tower (T1): glam is the in-memory compute type. The
 # workspace table pins `default-features = false` + `libm` — no_std-clean,
 # and glam's `serde` feature stays OFF (T5: the wire is hand-written lanes).
