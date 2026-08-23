@@ -4,7 +4,7 @@ exclude = ["crates/internal/brink-syntax/fuzz", "crates/internal/brink-syntax-na
 resolver = "2"
 
 [workspace.package]
-version = "0.0.11"
+version = "0.0.12"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/syynth/brink"
@@ -97,26 +97,26 @@ proc-macro2 = "1"
 glam = { version = "0.32.1", default-features = false, features = ["libm"] }
 
 # Internal brink crates (versioned for crates.io publish; release-plz keeps these in sync)
-bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.11" }
-brink-analyzer = { path = "crates/internal/brink-analyzer", version = "0.0.11" }
-brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0.0.11" }
-brink-compiler = { path = "crates/brink-compiler", version = "0.0.11" }
-brink-db = { path = "crates/internal/brink-db", version = "0.0.11" }
-brink-driver = { path = "crates/internal/brink-driver", version = "0.0.11" }
-brink-environment = { path = "crates/internal/brink-environment", version = "0.0.11" }
-brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.11" }
-brink-format = { path = "crates/internal/brink-format", version = "0.0.11" }
-brink-ide = { path = "crates/internal/brink-ide", version = "0.0.11" }
-brink-intl = { path = "crates/internal/brink-intl", version = "0.0.11" }
-brink-ir = { path = "crates/internal/brink-ir", version = "0.0.11" }
-brink-project-config = { path = "crates/internal/brink-project-config", version = "0.0.11" }
-brink-runtime = { path = "crates/brink-runtime", version = "0.0.11" }
-brink-source-tree = { path = "crates/internal/brink-source-tree", version = "0.0.11" }
-brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.11" }
-brink-syntax-native = { path = "crates/internal/brink-syntax-native", version = "0.0.11" }
+bevy-brink-derive = { path = "crates/internal/bevy-brink-derive", version = "0.0.12" }
+brink-analyzer = { path = "crates/internal/brink-analyzer", version = "0.0.12" }
+brink-codegen-inkb = { path = "crates/internal/brink-codegen-inkb", version = "0.0.12" }
+brink-compiler = { path = "crates/brink-compiler", version = "0.0.12" }
+brink-db = { path = "crates/internal/brink-db", version = "0.0.12" }
+brink-driver = { path = "crates/internal/brink-driver", version = "0.0.12" }
+brink-environment = { path = "crates/internal/brink-environment", version = "0.0.12" }
+brink-fmt = { path = "crates/internal/brink-fmt", version = "0.0.12" }
+brink-format = { path = "crates/internal/brink-format", version = "0.0.12" }
+brink-ide = { path = "crates/internal/brink-ide", version = "0.0.12" }
+brink-intl = { path = "crates/internal/brink-intl", version = "0.0.12" }
+brink-ir = { path = "crates/internal/brink-ir", version = "0.0.12" }
+brink-project-config = { path = "crates/internal/brink-project-config", version = "0.0.12" }
+brink-runtime = { path = "crates/brink-runtime", version = "0.0.12" }
+brink-source-tree = { path = "crates/internal/brink-source-tree", version = "0.0.12" }
+brink-syntax = { path = "crates/internal/brink-syntax", version = "0.0.12" }
+brink-syntax-native = { path = "crates/internal/brink-syntax-native", version = "0.0.12" }
 # Unpublished (dev-only): no version, so `cargo publish` strips it from dependents.
 brink-test-harness = { path = "crates/internal/brink-test-harness" }
-xliff2 = { path = "crates/internal/xliff2", version = "0.0.11" }
+xliff2 = { path = "crates/internal/xliff2", version = "0.0.12" }
 
 # Config for 'dist'
 [workspace.metadata.dist]

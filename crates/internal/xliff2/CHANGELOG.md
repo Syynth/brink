@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12](https://github.com/Syynth/brink/compare/xliff2-v0.0.11...xliff2-v0.0.12) - 2026-08-23
+
+### Fixed
+
+- *(xliff2)* coalesce spliced text across the catch-all boundary
+- *(xliff2)* stop read_inline_content dropping text in unrecognized elements
+- *(xliff2)* extract CDATA meta values in metadata module
+
+### Other
+
+- sweep converter mentions after pipeline retirement ([#544](https://github.com/Syynth/brink/pull/544))
+
 ## [0.0.10](https://github.com/Syynth/brink/compare/xliff2-v0.0.9...xliff2-v0.0.10) - 2026-07-10
 
 ### Other
