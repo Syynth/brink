@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address review findings: honest divergence note, pin comment-before-bracket
 - Fix mid-line comment fragmenting choice text ([#2960](https://github.com/Syynth/brink/pull/2960))
 - Fix mid-line block comment fragmenting CONTENT_LINE ([#2366](https://github.com/Syynth/brink/pull/2366))
+<!-- The two entries below are the commits that FIXED the stale grammar
+     quotes; they name the old, wrong `INLINE_WS+` notation in order to
+     describe removing it. The parser has exactly one whitespace primitive,
+     `Parser::skip_ws`, which has always matched zero-or-more, so the
+     notation now says `INLINE_WS*`. This note is what scripts/check-grammar-drift.mjs
+     looks for — without it the guard reads these historical subjects as a
+     live claim about current behaviour. -->
+
 - fix stale INLINE_WS+ spec/mock quotes, pin fused IDENT text
 - fix INLINE_WS+ notation-vs-code gap in declaration.rs + sibling in knot.rs
 - fix stitch_header grammar comment and trust-hierarchy reachability
