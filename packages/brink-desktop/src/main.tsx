@@ -197,6 +197,8 @@ const LANDING_LOCKUP_SVG = `<svg width="84" height="84" viewBox="0 0 120 120" xm
 async function renderLanding(error?: string): Promise<void> {
   const root = appRoot();
   bannerHost = null;
+  // Undo openProject's flex-column shell layout — the landing owns #app now.
+  root.classList.remove("project-shell");
   root.innerHTML = `
     <div id="landing">
       <div class="landing-lockup">
@@ -462,8 +464,13 @@ async function probeGoverningConfig(openedFile: string): Promise<void> {
 export async function openAnchorPath(path: string): Promise<void> {
   const anchor = anchorForPath(path);
   if ("error" in anchor) {
-    if (current === null) void renderLanding(anchor.error);
-    else console.error("[brink-desktop]", anchor.error);
+    if (current === null) {
+      void renderLanding(anchor.error);
+    } else {
+      // A project is open (⌘O over a mounted studio): surface through its
+      // notification surface instead of a console line nobody sees.
+      current.api.notify({ severity: "error", source: "open", message: anchor.error });
+    }
     return;
   }
   await openProject(anchor.root, {
