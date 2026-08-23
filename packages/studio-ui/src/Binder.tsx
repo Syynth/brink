@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Overlay } from "@brink/studio-shell";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
+import { isOutOfScope } from "./InkFileDocument.js";
 import {
   BinderContextMenu,
   type ContextMenuAction,
@@ -182,6 +183,12 @@ interface RowProps {
   draggable: boolean;
   /** When set, the row renders an inline rename field instead of its label. */
   editing?: RenameInputProps;
+  /** Scope badge after the label (#3014/#3021 — Binder.dc.html): the entry
+   *  mark or the "not included" mark. */
+  badge?: { text: string; tone: "entry" | "muted" };
+  /** Dim the row (a file on disk that nothing INCLUDEs — outside the
+   *  compile closure). */
+  dimmed?: boolean;
   onChevronClick: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
@@ -215,6 +222,8 @@ export function BinderRow({
   dropLinePosition,
   draggable,
   editing,
+  badge,
+  dimmed = false,
   onChevronClick,
   onClick,
   onDoubleClick,
@@ -276,7 +285,9 @@ export function BinderRow({
     (isSelected ? " brink-binder-selected" : "") +
     (isFocused ? " brink-binder-focused" : "") +
     (isDragging ? " brink-binder-dragging" : "") +
-    (isDropInto ? " brink-binder-drop-into" : "");
+    (isDropInto ? " brink-binder-drop-into" : "") +
+    (dimmed ? " brink-binder-dimmed" : "") +
+    (badge?.tone === "entry" ? " brink-binder-entry" : "");
 
   const chevronClass =
     "brink-binder-chevron" +
@@ -321,6 +332,11 @@ export function BinderRow({
           <RenameInput key={editing.initial} {...editing} />
         ) : (
           <span className="brink-binder-label">{label}</span>
+        )}
+        {badge !== undefined && !editing && (
+          <span className={"brink-binder-badge brink-binder-badge-" + badge.tone}>
+            {badge.text}
+          </span>
         )}
       </div>
       {dropLinePosition === "after" && <div className="brink-binder-drop-line" />}
@@ -483,6 +499,14 @@ function BinderInner() {
   // the Library section (below) is the only new consumer of the mounted half.
   const outline = useMemo(() => rawOutline.filter((f) => !f.mounted), [rawOutline]);
   const libraryFiles = useMemo(() => rawOutline.filter((f) => f.mounted), [rawOutline]);
+  const closureFiles = useStudioStore((s) => s.closureFiles);
+  const entryFile = useStudioStore((s) => s.entryFile);
+  // #3014: an ink project provably cannot reach the mounted `.brink`
+  // stdlib — `compilation_closure_files` never includes it — so the
+  // Library section is hidden entirely rather than listing files that
+  // are, by construction, not part of the story. A `.brink` entry (or no
+  // compile yet, entryFile null) keeps the section.
+  const projectIsInk = entryFile !== null && entryFile.endsWith(".ink");
   const activeDocKey = useStudioStore((s) => s.activeDocKey);
   const collapsed = useStudioStore((s) => s.collapsed);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
@@ -1175,6 +1199,11 @@ function BinderInner() {
     const isActive = activeDocKey === fileKey;
     const target: TabTarget = { kind: "file", path: file.path };
     const fileRow = flatRows.find((r) => r.key === fileKey);
+    // Scope marks (#3021 — Binder.dc.html): the entry is the project's
+    // anchor; a source file outside the compile closure is on disk, not
+    // in the story ("not included"), and renders dimmed with a badge.
+    const isEntry = entryFile !== null && file.path === entryFile;
+    const notIncluded = !isEntry && isOutOfScope(file.path, closureFiles, rawOutline);
 
     return (
       <div key={fileKey}>
@@ -1183,6 +1212,14 @@ function BinderInner() {
           depth={depth}
           kind="file"
           label={displayName(file.path)}
+          badge={
+            isEntry
+              ? { text: "entry", tone: "entry" }
+              : notIncluded
+                ? { text: "not included", tone: "muted" }
+                : undefined
+          }
+          dimmed={notIncluded}
           expandable={hasChildren}
           isExpanded={isExpanded}
           isActive={isActive}
@@ -1364,7 +1401,7 @@ function BinderInner() {
       onKeyDown={handleKeyDown}
     >
       {renderTree(buildBinderTree(outline), 0)}
-      {libraryFiles.length > 0 && (
+      {libraryFiles.length > 0 && !projectIsInk && (
         <div className="brink-binder-library-section">
           <BinderRow
             rowKey={LIBRARY_ROW_KEY}
@@ -1400,6 +1437,18 @@ function BinderInner() {
           onDrop={handleRootDrop}
         >
           Move to project root
+        </div>
+      )}
+      {entryFile !== null && (
+        <div className="brink-binder-legend">
+          <div className="brink-binder-legend-row">
+            <span className="brink-binder-legend-swatch legend-entry" />
+            <span>Entry point — what the project compiles from</span>
+          </div>
+          <div className="brink-binder-legend-row">
+            <span className="brink-binder-legend-swatch legend-muted" />
+            <span>On disk, not reached by any INCLUDE</span>
+          </div>
         </div>
       )}
       <div className="brink-binder-row brink-binder-new" onClick={handleNewClick}>

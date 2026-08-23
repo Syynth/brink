@@ -563,6 +563,9 @@ export async function mountStudio(
     // compile just set — a file in `outline` but not here is on disk, not
     // in the story (the out-of-scope banner + Binder marks read this).
     state.setClosureFiles(project.getSession().getCompilationClosure());
+    // The effective entry (config precedence applied) — the Binder's entry
+    // badge and its ink-project Library gate (#3014) read this.
+    state.setEntryFile(project.getEntryFile());
     state.appendOutput("compile", compileLogMessage(result.ok, errors, warnings, result.error));
 
     // Story Graph data (#97, spec §4.1): recompute from the analyzer on each

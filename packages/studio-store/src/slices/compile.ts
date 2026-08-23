@@ -35,6 +35,13 @@ export interface CompileSlice {
    * marks read exactly this difference.
    */
   closureFiles: string[];
+  /**
+   * The project's EFFECTIVE entry file (config precedence already applied
+   * by `ProjectSession.getEntryFile`), refreshed on every compile. The
+   * Binder's entry badge and its ink-project Library gate (#3014) read
+   * this. `null` before the first compile.
+   */
+  entryFile: string | null;
   diagnostics: { errors: number; warnings: number };
   /** Full diagnostic list from the latest compile, in canonical order. */
   diagnosticsList: Diagnostic[];
@@ -64,6 +71,8 @@ export interface CompileSlice {
   ): void;
   /** Replace the compile-closure path set (called on each compile, #3017). */
   setClosureFiles(paths: string[]): void;
+  /** Record the effective entry file (called on each compile, #3014). */
+  setEntryFile(path: string | null): void;
   /**
    * The out-of-scope banner's "Add INCLUDE to <entry>" action (#3017):
    * insert `INCLUDE <path-relative-to-entry>` into the entry file (after
@@ -89,6 +98,7 @@ export interface CompileSlice {
 export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice> = (set, get) => ({
   outline: [],
   closureFiles: [],
+  entryFile: null,
   diagnostics: { errors: 0, warnings: 0 },
   diagnosticsList: [],
   storyBytes: null,
@@ -123,6 +133,10 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
 
   setClosureFiles(paths) {
     set({ closureFiles: paths });
+  },
+
+  setEntryFile(path) {
+    set({ entryFile: path });
   },
 
   includeInEntry(path) {
