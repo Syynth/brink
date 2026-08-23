@@ -174,6 +174,10 @@ describe("story errors feed the Output log", () => {
   it("revealNext logs a runtime error entry on a throwing session", () => {
     const store = createStudioStore();
     const session = {
+      // Throw from the verb `reveal()` actually calls (#3011).
+      continueSingle: vi.fn(() => {
+        throw new Error("divert target not found");
+      }),
       continueToPause: vi.fn(() => {
         throw new Error("divert target not found");
       }),

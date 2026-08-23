@@ -33,6 +33,7 @@ function provider(
 ): LocalSessionProvider {
   return new LocalSessionProvider({
     session: {
+      continueSingle: () => ({ type: "end", text: "", tags: [] }),
       continueToPause: () => [{ type: "end", text: "", tags: [] }],
       onJournalDirty: () => () => {},
     } as never,
@@ -130,6 +131,7 @@ describe("secondary sessions are isolated (no persistence)", () => {
   it("a non-persistent session never subscribes to onJournalDirty", () => {
     const onJournalDirty = vi.fn(() => () => {});
     const session = {
+      continueSingle: (): Line => ({ type: "end", text: "", tags: [] }),
       continueToPause: (): Line[] => [{ type: "end", text: "", tags: [] }],
       choose: vi.fn(),
       onJournalDirty,
@@ -153,6 +155,7 @@ describe("secondary sessions are isolated (no persistence)", () => {
   it("the primary (persistent) session subscribes to onJournalDirty and persists on fire", () => {
     let dirtyListener: (() => void) | undefined;
     const session = {
+      continueSingle: (): Line => ({ type: "end", text: "", tags: [] }),
       continueToPause: (): Line[] => [{ type: "end", text: "", tags: [] }],
       choose: vi.fn(),
       onJournalDirty: vi.fn((listener: () => void) => {
