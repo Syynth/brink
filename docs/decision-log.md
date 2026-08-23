@@ -3175,3 +3175,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The editor imposes NO layout of its own. Removed: standalone-divert right-align, the screenplay indents (character/parenthetical/dialogue + dialogue column width), CHARACTER uppercase, the 8.5in page cap and script-page margins, the weave-depth artificial indent, and the superscript depth-sigil collapse (nested sigil runs render as typed). Colors/highlighting stay. The classification taxonomy (element classes, `data-depth`, `brink-divert-standalone`) remains the host contract; an embedder wanting a styled layout adds its own CSS — no toggle is kept in the package. Whitespace/tab indent guides are added as the one presentation aid (default on; `indentGuides: false` opts out).
 - **WHY:** Real-project authoring (working alongside Inky) showed the screenplay layout doesn't hold up — forced geometry fights the file's actual whitespace. The target is Inky parity from a layout perspective, minus Inky's wrapped-line padding, which is explicitly not wanted.
+
+## RMMZ / Chromium 88 support dropped
+- **WHEN:** 2026-08-23
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** moderate
+- **WHAT:** The editor packages no longer maintain compatibility with the Chromium 88 floor (NW.js / RPG Maker MZ embeds — the #276-era constraint). Modern CSS/JS features (first user: the `1lh` unit for the indent-guide wrap breaks) may be used without fallbacks for that floor. Existing #276-era workarounds in the codebase are not being proactively removed — they are simply no longer load-bearing and can go opportunistically.
+- **WHY:** Maintainer: "i'm just dropping the rmmz support" — no active consumer targets that embed floor, and preserving it taxed every editor presentation change with fallback engineering.
