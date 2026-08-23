@@ -286,6 +286,31 @@ jobs:
           # here is quoted accordingly.
           find artifacts -mindepth 2 -type f -exec sh -c 'for f do mv -n "$f" artifacts/; done' sh {} +
           find artifacts -mindepth 1 -type d -empty -delete
+
+          # GitHub REWRITES release asset filenames on upload: characters
+          # outside [A-Za-z0-9._-] become dots. Every bundle tauri produces
+          # here contains a space ("Brink Studio…"), so the asset that lands
+          # is `Brink.Studio.app.tar.gz` while the manifest — built from the
+          # local filename — pointed at `Brink%20Studio.app.tar.gz`. Every
+          # URL in desktop-v0.1.0's manifest returned HTTP 404, and nothing
+          # anywhere reported an error: the release looked complete and the
+          # update channel was dead on arrival.
+          #
+          # No dry run could catch this, because a dry run never uploads.
+          # So rather than trying to PREDICT GitHub's rewrite in the
+          # manifest, the names are normalised HERE, before either consumer
+          # sees them — the manifest and the upload then read the same
+          # bytes, and there is no second name to drift.
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            b=$(basename "$f")
+            n=$(printf '%s' "$b" | tr -c 'A-Za-z0-9._-' '.')
+            if [ "$b" != "$n" ]; then
+              mv -n "$f" "artifacts/$n"
+              echo "normalised: $b -> $n"
+            fi
+          done
+
           echo "Artifacts to publish:"
           ls -1 artifacts
 
@@ -299,49 +324,6 @@ jobs:
             artifacts "$version" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" artifacts/latest.json
           cat artifacts/latest.json
 
-      # The shipped app polls a FIXED url, so the manifest must live at a
-      # stable address. It cannot be `releases/latest/...`: GitHub's "latest"
-      # is the newest release in the WHOLE repo, and this repo's npm and
-      # crates trains publish far more often than desktop does — the first
-      # `@brink-lang/*` release after a desktop one would take that url to a
-      # release with no latest.json in it. Tauri reads a 404 as "no update
-      # available", so the update channel would die silently and stay dead.
-      # (Checked, not theorised: `releases/latest` resolves to
-      # `@brink-lang/studio@0.14.0` today.)
-      #
-      # `desktop-latest` is a permanent alias release holding only the
-      # manifest, re-uploaded on every desktop release. `--latest=false`
-      # keeps it from displacing the real "Latest" badge, and it carries no
-      # binaries — those stay on the versioned `desktop-v*` release the
-      # manifest points into.
-      - name: Publish the manifest to the desktop-latest alias
-        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create desktop-latest \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "Desktop update manifest" \
-              --notes "Update manifest the Brink Studio desktop app polls. Points at the newest desktop-v* release; not a download." \
-              --latest=false
-          gh release upload desktop-latest artifacts/latest.json \
-            --repo "$GITHUB_REPOSITORY" --clobber
-
-      # `--generate-notes` alone diffs against the repo's PREVIOUS RELEASE,
-      # whichever train produced it. This repo runs three, and the npm and
-      # crates trains publish far more often than desktop — so the notes for
-      # a desktop release would cover every PR since some `@brink-lang/*`
-      # publish, nearly all of it compiler and editor work that shipped
-      # nothing to this app. At the time of writing that diff was 500+ PRs
-      # back to `@brink-lang/studio@0.14.0`.
-      #
-      # This is the same mistake as pointing the updater at
-      # `releases/latest` (see the endpoint comment above): assuming one
-      # release train. `--notes-start-tag` pins the diff to the previous
-      # DESKTOP release, so an npm publish landing between two desktop
-      # releases cannot widen it. The first desktop release has no
-      # predecessor to diff from, so it gets written notes instead.
       - name: Create release
         if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
         env:
@@ -375,3 +357,105 @@ jobs:
           downloads." \
               artifacts/*
           fi
+
+
+      # `--generate-notes` alone diffs against the repo's PREVIOUS RELEASE,
+      # whichever train produced it. This repo runs three, and the npm and
+      # crates trains publish far more often than desktop — so the notes for
+      # a desktop release would cover every PR since some `@brink-lang/*`
+      # publish, nearly all of it compiler and editor work that shipped
+      # nothing to this app. At the time of writing that diff was 500+ PRs
+      # back to `@brink-lang/studio@0.14.0`.
+      #
+      # This is the same mistake as pointing the updater at
+      # `releases/latest` (see the endpoint comment above): assuming one
+      # release train. `--notes-start-tag` pins the diff to the previous
+      # DESKTOP release, so an npm publish landing between two desktop
+      # releases cannot widen it. The first desktop release has no
+      # predecessor to diff from, so it gets written notes instead.
+      # The manifest can name a file that does not exist at the URL it
+      # claims, and nothing about the release will look wrong — that is
+      # exactly what desktop-v0.1.0 shipped: three URLs, three 404s, a
+      # green run, and an update channel that was dead the moment it
+      # published. A manifest is only correct if the things it points at
+      # can actually be fetched, so fetch them.
+      #
+      # Runs after the release exists (the assets have to be uploaded to be
+      # resolvable) and before the alias is updated, so a broken manifest
+      # never becomes the one clients poll.
+      # The shipped app polls a FIXED url, so the manifest must live at a
+      # stable address. It cannot be `releases/latest/...`: GitHub's "latest"
+      # is the newest release in the WHOLE repo, and this repo's npm and
+      # crates trains publish far more often than desktop does — the first
+      # `@brink-lang/*` release after a desktop one would take that url to a
+      # release with no latest.json in it. Tauri reads a 404 as "no update
+      # available", so the update channel would die silently and stay dead.
+      # (Checked, not theorised: `releases/latest` resolves to
+      # `@brink-lang/studio@0.14.0` today.)
+      #
+      # `desktop-latest` is a permanent alias release holding only the
+      # manifest, re-uploaded on every desktop release. `--latest=false`
+      # keeps it from displacing the real "Latest" badge, and it carries no
+      # binaries — those stay on the versioned `desktop-v*` release the
+      # manifest points into.
+      # The manifest can name a file that does not exist at the URL it
+      # claims, and nothing about the release will look wrong — that is
+      # exactly what desktop-v0.1.0 shipped: three URLs, three 404s, a
+      # green run, and an update channel that was dead the moment it
+      # published. A manifest is only correct if the things it points at
+      # can actually be fetched, so fetch them.
+      #
+      # Runs after the release exists (the assets have to be uploaded to be
+      # resolvable) and before the alias is updated, so a broken manifest
+      # never becomes the one clients poll.
+
+      # The shipped app polls a FIXED url, so the manifest must live at a
+      # stable address. It cannot be `releases/latest/...`: GitHub's "latest"
+      # is the newest release in the WHOLE repo, and this repo's npm and
+      # crates trains publish far more often than desktop does — the first
+      # `@brink-lang/*` release after a desktop one would take that url to a
+      # release with no latest.json in it. Tauri reads a 404 as "no update
+      # available", so the update channel would die silently and stay dead.
+      # (Checked, not theorised: `releases/latest` resolves to
+      # `@brink-lang/studio@0.14.0` today.)
+      #
+      # `desktop-latest` is a permanent alias release holding only the
+      # manifest, re-uploaded on every desktop release. `--latest=false`
+      # keeps it from displacing the real "Latest" badge, and it carries no
+      # binaries — those stay on the versioned `desktop-v*` release the
+      # manifest points into.
+      - name: Verify every manifest URL resolves
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
+        shell: bash
+        run: |
+          fail=0
+          while read -r url; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -IL "$url")
+            if [ "$code" = "200" ]; then
+              echo "  ok   $url"
+            else
+              echo "::error::manifest URL returned HTTP $code (expected 200): $url"
+              fail=1
+            fi
+          done < <(jq -r '.platforms[].url' artifacts/latest.json)
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::the update manifest points at assets that cannot be fetched." \
+                 "Clients would be offered an update they cannot download, or told they" \
+                 "are up to date forever. The alias has NOT been updated, so the" \
+                 "previously published manifest is still the live one."
+            exit 1
+          fi
+
+      - name: Publish the manifest to the desktop-latest alias
+        if: startsWith(github.ref, 'refs/tags/desktop-v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create desktop-latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Desktop update manifest" \
+              --notes "Update manifest the Brink Studio desktop app polls. Points at the newest desktop-v* release; not a download." \
+              --latest=false
+          gh release upload desktop-latest artifacts/latest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
