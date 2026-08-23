@@ -34,6 +34,8 @@ enum ShellError {
     DisallowedCommand(String),
     #[error("brink-cli sidecar error: {0}")]
     Sidecar(String),
+    #[error("cannot create project: {0}")]
+    InvalidNewProject(String),
 }
 
 impl serde::Serialize for ShellError {
@@ -870,16 +872,18 @@ async fn prune_recent(app: tauri::AppHandle, path: String) -> Result<Vec<String>
     Ok(list)
 }
 
-/// Whether a project root still exists as a directory. Used by the frontend
-/// to gate lazy recents pruning (#2394 review finding): `openRecent`'s catch
-/// handler must only prune an entry when the folder itself is actually
-/// gone, not on every failure `openProject` can raise (a transient
-/// `mountStudio` error, a permission error, a file deleted mid-listing) —
-/// those must surface to the user, not silently delete a valid project from
-/// `recents.json` and the native Open Recent submenu.
+/// Whether a project ANCHOR still exists — a directory for a legacy
+/// folder-door recent, a file for the two file doors (the file-anchored
+/// open model, #3021). Used by the frontend to gate lazy recents pruning
+/// (#2394 review finding): `openRecent`'s catch handler must only prune an
+/// entry when the anchor itself is actually gone, not on every failure
+/// `openProject` can raise (a transient `mountStudio` error, a permission
+/// error, a file deleted mid-listing) — those must surface to the user,
+/// not silently delete a valid project from `recents.json` and the native
+/// Open Recent submenu.
 #[tauri::command]
-async fn project_root_exists(path: String) -> bool {
-    Path::new(&path).is_dir()
+async fn project_anchor_exists(path: String) -> bool {
+    Path::new(&path).exists()
 }
 
 /// Native folder picker. ⚠ This command (like every command here) MUST be
@@ -897,6 +901,196 @@ async fn pick_project_folder(app: tauri::AppHandle) -> Option<String> {
         .blocking_pick_folder()
         .and_then(|p| p.into_path().ok())
         .map(|p| p.display().to_string())
+}
+
+// ── File-anchored project open (epic #3021, ruled 2026-08-23) ────────────
+//
+// "A project is anchored on a FILE, not a folder. Two doors, both files."
+// (`docs/decision-log.md`.) The commands here are the shell half of that
+// model: a native FILE picker for the two door kinds, the compiler's own
+// walk-up discovery of a governing `brink.toml` (so the conflict banner can
+// say how the config was found), and New Project creation
+// (`main.ink` + `brink.toml` together — a new project is never born in the
+// configless state #3010 diagnosed).
+
+/// Native story-file picker for the Open… door: a `.ink` story (that file
+/// becomes the entry point) or a `brink.toml` (its `[project] entry`
+/// names it). Same `async`-for-dialog rule as `pick_project_folder` above.
+/// The `toml` filter necessarily admits any `.toml`; the frontend rejects
+/// a non-`brink.toml` pick with a real message rather than this command
+/// guessing at intent.
+#[tauri::command]
+async fn pick_project_file(app: tauri::AppHandle) -> Option<String> {
+    app.dialog()
+        .file()
+        .add_filter("Ink story or project config", &["ink", "toml"])
+        .blocking_pick_file()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
+}
+
+/// The governing `brink.toml` for an explicitly opened story file, found by
+/// the compiler's own bounded walk-up (`brink-project-config`,
+/// `discover_from_entry_with_warnings` — #1425's git/depth bounds
+/// included), plus everything the conflict banner renders: the config's
+/// `[project] entry`, whether the opened file IS that entry (the one-click
+/// switch is only offered then, per the ruling), and the directories the
+/// walk stepped through (the banner's "How the config was found" trace).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredProjectConfig {
+    /// Absolute path of the governing `brink.toml`.
+    config_path: String,
+    /// Its `[project] entry` as written, if set.
+    entry: Option<String>,
+    /// Whether the opened file resolves to that entry (canonicalized
+    /// comparison, so symlinked paths — e.g. macOS `/var` → `/private/var`
+    /// — cannot produce a false "different file").
+    opened_is_entry: bool,
+    /// Directories the walk stepped through WITHOUT finding a config,
+    /// starting at the opened file's own directory, in walk order. Empty
+    /// when the config sits beside the opened file.
+    walked: Vec<String>,
+    /// Discovery + parse warnings, human-readable. A malformed governing
+    /// config still reports `Some` — the file governs even when it cannot
+    /// be parsed, and the banner should say so rather than silently
+    /// pretending no config exists.
+    warnings: Vec<String>,
+}
+
+/// [`discover_project_config`]'s pure-ish core, separated for unit tests
+/// (the command wrapper only adds the `async` IPC shell).
+fn discover_project_config_impl(path: &Path) -> Option<DiscoveredProjectConfig> {
+    let (found, disc_warnings) = brink_project_config::discover_from_entry_with_warnings(path);
+    let config_path = found?;
+    let mut warnings: Vec<String> = disc_warnings.iter().map(ToString::to_string).collect();
+    let mut entry: Option<String> = None;
+    let mut opened_is_entry = false;
+    match std::fs::read_to_string(&config_path) {
+        Ok(text) => match brink_project_config::parse_str(&text) {
+            Ok((config, parse_warnings)) => {
+                warnings.extend(parse_warnings.iter().map(ToString::to_string));
+                entry.clone_from(&config.entry);
+                if let (Some(e), Some(dir)) = (&config.entry, config_path.parent()) {
+                    opened_is_entry = same_file(&dir.join(e), path);
+                }
+            }
+            Err(e) => warnings.push(format!("brink.toml: {e}")),
+        },
+        Err(e) => warnings.push(format!("{}: {e}", config_path.display())),
+    }
+    Some(DiscoveredProjectConfig {
+        walked: walked_dirs(path, &config_path),
+        config_path: config_path.display().to_string(),
+        entry,
+        opened_is_entry,
+        warnings,
+    })
+}
+
+/// Whether two paths name the same existing file, by canonicalized
+/// comparison. `false` when either does not exist — a config entry naming
+/// a missing file is by definition not the opened file.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The directories `find_config`'s walk stepped through without finding a
+/// config: every ancestor of `opened`'s directory strictly below the
+/// config's own directory, in walk (bottom-up) order.
+fn walked_dirs(opened: &Path, config_path: &Path) -> Vec<String> {
+    let config_dir = config_path.parent();
+    let mut out = Vec::new();
+    let mut cur = opened.parent();
+    while let Some(dir) = cur {
+        if Some(dir) == config_dir {
+            break;
+        }
+        out.push(dir.display().to_string());
+        cur = dir.parent();
+    }
+    out
+}
+
+#[tauri::command]
+async fn discover_project_config(path: String) -> Option<DiscoveredProjectConfig> {
+    discover_project_config_impl(Path::new(&path))
+}
+
+/// The starter story New Project writes — small, but genuinely playable on
+/// first Run (the "plays immediately" guarantee the dialog's "Will create"
+/// panel shows; `docs/design/project-open-flow/NewProject.dc.html`).
+const NEW_PROJECT_STORY: &str = "Welcome to your new story.
+
+* [Begin] -> begin
+
+=== begin ===
+The story starts here.
+-> END
+";
+
+/// The `brink.toml` New Project writes: the two lines whose absence caused
+/// #3010.
+fn new_project_config(entry: &str) -> String {
+    format!("[project]\nentry = \"{entry}\"\n")
+}
+
+/// Validate a New Project entry-file name: a bare `.ink` filename, no path
+/// separators, with a real stem. Pure, unit-tested; the command below is
+/// the only production caller.
+fn validate_new_project_entry(entry: &str) -> Result<(), ShellError> {
+    let bad = |why: &str| ShellError::InvalidNewProject(format!("entry file {why}"));
+    if entry.contains('/') || entry.contains('\\') {
+        return Err(bad("must be a bare filename, not a path"));
+    }
+    let Some(stem) = entry.strip_suffix(".ink") else {
+        return Err(bad("must end in .ink"));
+    };
+    if stem.is_empty() {
+        return Err(bad("needs a name before .ink"));
+    }
+    if stem.starts_with('.') {
+        return Err(bad("must not be a hidden file"));
+    }
+    Ok(())
+}
+
+/// Create a new project in an EXISTING directory `dir`: the starter story
+/// at `entry` plus a `brink.toml` naming it. Refuses to touch a directory
+/// that already has a `brink.toml` or the entry file — New Project creates,
+/// it never overwrites (the "Will create" panel is a promise, not a hope).
+/// Returns the absolute path of the created `brink.toml` (the anchor the
+/// frontend opens, on the toml door).
+#[tauri::command]
+async fn create_project(dir: String, entry: String) -> Result<String, ShellError> {
+    validate_new_project_entry(&entry)?;
+    let dir_path = Path::new(&dir);
+    if !dir_path.is_dir() {
+        return Err(ShellError::InvalidNewProject(format!(
+            "location is not a directory: {dir}"
+        )));
+    }
+    let toml_path = dir_path.join("brink.toml");
+    let entry_path = dir_path.join(&entry);
+    if toml_path.exists() {
+        return Err(ShellError::InvalidNewProject(format!(
+            "{} already has a brink.toml",
+            dir_path.display()
+        )));
+    }
+    if entry_path.exists() {
+        return Err(ShellError::InvalidNewProject(format!(
+            "{} already exists",
+            entry_path.display()
+        )));
+    }
+    atomic_write(&entry_path, NEW_PROJECT_STORY.as_bytes()).map_err(|e| io_err(&entry_path, e))?;
+    atomic_write(&toml_path, new_project_config(&entry).as_bytes())
+        .map_err(|e| io_err(&toml_path, e))?;
+    Ok(toml_path.display().to_string())
 }
 
 /// Build the native menu bar. Project lifecycle (Open/Close) is
@@ -967,6 +1161,18 @@ fn build_menu(
             &quit,
         ],
     )?;
+    // The New Project door (#3012): ⇧⌘N, leaving plain ⌘N free for a
+    // future in-project New File accelerator.
+    let new_project = MenuItem::with_id(
+        handle,
+        "new-project",
+        "New Project…",
+        true,
+        Some("CmdOrCtrl+Shift+N"),
+    )?;
+    // The Open… door is a FILE picker under the file-anchored open model
+    // (#3021, ruled 2026-08-23): a `.ink` story or a `brink.toml`, never a
+    // bare folder — opening IS choosing an entry point.
     let open = MenuItem::with_id(
         handle,
         "open-project",
@@ -1032,6 +1238,7 @@ fn build_menu(
         "File",
         true,
         &[
+            &new_project,
             &open,
             &open_recent,
             &close,
@@ -1109,6 +1316,7 @@ pub fn run() -> tauri::Result<()> {
                     return;
                 }
                 let forwarded = match id {
+                    "new-project" => Some("menu:new-project"),
                     "open-project" => Some("menu:open-project"),
                     "close-project" => Some("menu:close-project"),
                     "export-inkb" => Some("menu:export-inkb"),
@@ -1133,13 +1341,16 @@ pub fn run() -> tauri::Result<()> {
             start_watch,
             stop_watch,
             pick_project_folder,
+            pick_project_file,
+            discover_project_config,
+            create_project,
             save_bytes_dialog,
             run_cli,
             take_pending_opens,
             read_recents,
             push_recent,
             prune_recent,
-            project_root_exists,
+            project_anchor_exists,
         ])
         .build(tauri::generate_context!())?
         .run(move |app_handle, event| {
@@ -1476,6 +1687,16 @@ mod tests {
                 unparsed_root_values.push(format!("{name} (root value {root_value:?})"));
                 continue;
             };
+            // An in-repo PATH dependency with no version requirement cannot
+            // drift: it always builds against the same checkout the root
+            // workspace does, so there is no registry version to diverge
+            // from (and pinning one here would break the desktop build on
+            // every release-plz version bump, since this crate is outside
+            // release-plz's purview). Introduced for `brink-project-config`
+            // (#3021's file-anchored open model).
+            if my_value.contains("path =") && version_requirement(my_value).is_none() {
+                continue;
+            }
             if version_requirement(my_value).is_none() {
                 return Err(format!(
                     "{name} is declared in both manifests, so this one should name a \
@@ -1555,6 +1776,31 @@ mod tests {
              [workspace.dependencies] and src-tauri's — either the overlap really is empty \
              (then this test is dead and should say so) or one of the two tables stopped \
              parsing"
+        );
+    }
+
+    /// An in-repo path dependency (no version requirement) is exempt from
+    /// the drift check by construction — see the comment inside
+    /// `overlap_drift_check`. Without the exemption, adding
+    /// `brink-project-config = {{ path = ... }}` here failed the check with
+    /// "should name a version requirement", and naming one would break the
+    /// desktop build on every release-plz bump instead.
+    #[test]
+    fn overlap_drift_check_exempts_in_repo_path_dependencies() {
+        let root_deps = [(
+            "brink-project-config".to_owned(),
+            "{ path = \"crates/internal/brink-project-config\", version = \"0.0.15\" }".to_owned(),
+        )];
+        let my_deps = [(
+            "brink-project-config".to_owned(),
+            "{ path = \"../../../crates/internal/brink-project-config\" }".to_owned(),
+        )];
+        let result = overlap_drift_check(&root_deps, &my_deps, &[], &[]);
+        assert!(result.is_ok(), "path dep should be exempt: {result:?}");
+        let checked = result.unwrap_or_default();
+        assert!(
+            checked.is_empty(),
+            "a path dep is skipped, not version-checked: {checked:?}"
         );
     }
 
@@ -3921,6 +4167,195 @@ on:
             vec!["story.brink".to_owned()],
             "no writer's temp file should survive all the concurrent writes"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod project_open_tests {
+    use super::*;
+
+    /// A unique, freshly created scratch directory under the OS temp dir.
+    /// std-only (this workspace deliberately avoids a `tempfile` dep for
+    /// one test helper); callers clean up best-effort at the end.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-desktop-test-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // A leftover from a crashed prior run is fine to reuse after a
+        // clean; assert so a real failure is loud.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            std::fs::create_dir_all(&dir).is_ok(),
+            "scratch dir create failed"
+        );
+        dir
+    }
+
+    #[test]
+    fn new_project_entry_names_are_validated() {
+        assert!(validate_new_project_entry("main.ink").is_ok());
+        assert!(validate_new_project_entry("The Harbour.ink").is_ok());
+        for bad in [
+            "",
+            ".ink",
+            "main",
+            "main.brink",
+            "a/b.ink",
+            "a\\b.ink",
+            ".hidden.ink",
+        ] {
+            assert!(
+                validate_new_project_entry(bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_project_config_names_the_entry() {
+        assert_eq!(
+            new_project_config("main.ink"),
+            "[project]\nentry = \"main.ink\"\n"
+        );
+    }
+
+    /// The starter files must themselves survive the config parser — New
+    /// Project must never create the broken state it exists to prevent.
+    #[test]
+    fn new_project_starter_round_trips_through_the_config_parser() {
+        let text = new_project_config("main.ink");
+        let parsed = brink_project_config::parse_str(&text);
+        assert!(parsed.is_ok(), "starter brink.toml failed to parse");
+        let Ok((config, warnings)) = parsed else {
+            return; // asserted above
+        };
+        assert!(
+            warnings.is_empty(),
+            "starter brink.toml warned: {warnings:?}"
+        );
+        assert_eq!(config.entry.as_deref(), Some("main.ink"));
+    }
+
+    #[test]
+    fn walked_dirs_lists_the_ancestors_below_the_config() {
+        let opened = Path::new("/repo/story/act2/chapter3.ink");
+        let config = Path::new("/repo/brink.toml");
+        assert_eq!(
+            walked_dirs(opened, config),
+            vec!["/repo/story/act2".to_owned(), "/repo/story".to_owned()]
+        );
+        // Config beside the opened file: nothing was walked through.
+        assert_eq!(
+            walked_dirs(opened, Path::new("/repo/story/act2/brink.toml")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn discovery_walks_up_and_recognizes_the_declared_entry() {
+        let dir = scratch_dir("discover");
+        let nested = dir.join("story/act2");
+        assert!(std::fs::create_dir_all(&nested).is_ok());
+        let opened = nested.join("chapter3.ink");
+        assert!(std::fs::write(&opened, "-> END\n").is_ok());
+        assert!(std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story/act2/chapter3.ink\"\n"
+        )
+        .is_ok());
+
+        let found = discover_project_config_impl(&opened);
+        assert!(found.is_some(), "expected a governing config to be found");
+        let Some(found) = found else {
+            return; // asserted above
+        };
+        assert!(found.config_path.ends_with("brink.toml"));
+        assert_eq!(found.entry.as_deref(), Some("story/act2/chapter3.ink"));
+        assert!(
+            found.opened_is_entry,
+            "the opened file IS the declared entry"
+        );
+        assert_eq!(
+            found.walked.len(),
+            2,
+            "walked story/act2 and story: {:?}",
+            found.walked
+        );
+        assert!(
+            found.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            found.warnings
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_reports_a_governing_config_whose_entry_is_another_file() {
+        let dir = scratch_dir("discover-other");
+        let opened = dir.join("offcuts.ink");
+        assert!(std::fs::write(&opened, "-> END\n").is_ok());
+        assert!(std::fs::write(dir.join("main.ink"), "-> END\n").is_ok());
+        assert!(
+            std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"main.ink\"\n").is_ok()
+        );
+
+        let found = discover_project_config_impl(&opened);
+        assert!(found.is_some());
+        let Some(found) = found else {
+            return; // asserted above
+        };
+        assert_eq!(found.entry.as_deref(), Some("main.ink"));
+        assert!(
+            !found.opened_is_entry,
+            "a different declared entry must not offer the one-click switch"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A malformed governing config still reports `Some` — the file governs
+    /// even when unparseable, and silence here would reproduce #3010's
+    /// shape one level up.
+    #[test]
+    fn discovery_surfaces_a_malformed_governing_config_instead_of_hiding_it() {
+        let dir = scratch_dir("discover-bad");
+        let opened = dir.join("story.ink");
+        assert!(std::fs::write(&opened, "-> END\n").is_ok());
+        assert!(std::fs::write(dir.join("brink.toml"), "[project\nentry=").is_ok());
+
+        let found = discover_project_config_impl(&opened);
+        assert!(found.is_some(), "a malformed config still governs");
+        let Some(found) = found else {
+            return; // asserted above
+        };
+        assert!(found.entry.is_none());
+        assert!(!found.opened_is_entry);
+        assert!(
+            !found.warnings.is_empty(),
+            "the parse failure must surface as a warning"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_project_starter_files_are_writable_and_playable_shaped() {
+        let dir = scratch_dir("create");
+
+        let toml_path = dir.join("brink.toml");
+        let entry_path = dir.join("main.ink");
+        assert!(atomic_write(&entry_path, NEW_PROJECT_STORY.as_bytes()).is_ok());
+        assert!(atomic_write(&toml_path, new_project_config("main.ink").as_bytes()).is_ok());
+
+        let story = std::fs::read_to_string(&entry_path).unwrap_or_default();
+        assert!(story.contains("-> END"), "starter story must terminate");
+        let config = std::fs::read_to_string(&toml_path).unwrap_or_default();
+        assert!(config.contains("entry = \"main.ink\""));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
