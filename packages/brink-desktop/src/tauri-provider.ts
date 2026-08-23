@@ -406,9 +406,48 @@ export class TauriFileProvider implements FileProvider {
   }
 }
 
-/** Open the native folder picker; null when the user cancels. */
+/** Open the native folder picker; null when the user cancels. Still used
+ *  by the New Project dialog's Choose… (a new project genuinely starts
+ *  from a folder — the dialog then creates the file anchors in it). */
 export async function pickProjectFolder(): Promise<string | null> {
   return invoke<string | null>("pick_project_folder");
+}
+
+/** Open the native story-file picker (the Open… door, #3021): a `.ink`
+ *  story or a `brink.toml`. Null when the user cancels. */
+export async function pickProjectFile(): Promise<string | null> {
+  return invoke<string | null>("pick_project_file");
+}
+
+/**
+ * The governing `brink.toml` for an explicitly opened story file, found by
+ * the compiler's own bounded walk-up (`brink-project-config` via the shell
+ * command — never a same-directory approximation). Null when nothing
+ * governs. See `DiscoveredProjectConfig`'s Rust twin in
+ * `src-tauri/src/lib.rs` for field semantics.
+ */
+export interface DiscoveredProjectConfig {
+  configPath: string;
+  entry: string | null;
+  openedIsEntry: boolean;
+  walked: string[];
+  warnings: string[];
+}
+
+export async function discoverProjectConfig(
+  path: string,
+): Promise<DiscoveredProjectConfig | null> {
+  return invoke<DiscoveredProjectConfig | null>("discover_project_config", { path });
+}
+
+/**
+ * Create a new project (#3012): the starter story at `entry` plus a
+ * `brink.toml` naming it, in the EXISTING directory `dir`. Refuses to
+ * overwrite. Resolves to the absolute path of the created `brink.toml` —
+ * the anchor the caller opens, on the toml door.
+ */
+export async function createProject(dir: string, entry: string): Promise<string> {
+  return invoke<string>("create_project", { dir, entry });
 }
 
 /**
@@ -456,13 +495,15 @@ export async function pruneRecent(root: string): Promise<string[]> {
 }
 
 /**
- * Whether a project root still exists as a directory (#2394 review). Gates
- * lazy pruning: `openProject` failing does not by itself mean the folder is
- * gone — a transient `mountStudio` failure, a permission error, or a file
- * deleted mid-listing must never be conflated with a genuinely missing
- * project root, or a valid entry gets silently deleted from `recents.json`
- * and the native Open Recent submenu over a recoverable error.
+ * Whether a project ANCHOR still exists — a directory for a legacy folder
+ * recent, a file for the two file doors (#3021). Gates lazy pruning
+ * (#2394 review): `openProject` failing does not by itself mean the anchor
+ * is gone — a transient `mountStudio` failure, a permission error, or a
+ * file deleted mid-listing must never be conflated with a genuinely
+ * missing anchor, or a valid entry gets silently deleted from
+ * `recents.json` and the native Open Recent submenu over a recoverable
+ * error.
  */
-export async function projectRootExists(root: string): Promise<boolean> {
-  return invoke<boolean>("project_root_exists", { path: root });
+export async function projectAnchorExists(path: string): Promise<boolean> {
+  return invoke<boolean>("project_anchor_exists", { path });
 }

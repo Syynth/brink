@@ -111,7 +111,10 @@ class FakeTauriFileProvider {
 vi.mock("../tauri-provider.js", () => ({
   TauriFileProvider: FakeTauriFileProvider,
   pickProjectFolder: vi.fn(() => Promise.resolve(null)),
-  projectRootExists: vi.fn(() => Promise.resolve(true)),
+  projectAnchorExists: vi.fn(() => Promise.resolve(true)),
+  pickProjectFile: vi.fn(() => Promise.resolve(null)),
+  discoverProjectConfig: vi.fn(() => Promise.resolve(null)),
+  createProject: vi.fn(() => Promise.resolve("")),
   pruneRecent: vi.fn(() => Promise.resolve([])),
   pushRecent: vi.fn(() => Promise.resolve([])),
   readRecents: vi.fn(() => Promise.resolve([])),

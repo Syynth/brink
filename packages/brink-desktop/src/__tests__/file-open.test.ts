@@ -45,6 +45,19 @@ describe("resolveFileOpenAction", () => {
       kind: "open",
       root: "/Users/ben/other",
       rel: "main.ink",
+      entryIsExplicit: true,
+    });
+  });
+
+  it("keeps the legacy folder door (no explicit entry) for a .brink open", () => {
+    // Native file-anchoring is deferred (#3021): a `.brink` double-click
+    // opens the surrounding folder the pre-#3021 way, where a brink.toml
+    // may still supersede the entry.
+    expect(resolveFileOpenAction("/Users/ben/other/mod.brink", null)).toEqual({
+      kind: "open",
+      root: "/Users/ben/other",
+      rel: "mod.brink",
+      entryIsExplicit: false,
     });
   });
 
@@ -54,6 +67,11 @@ describe("resolveFileOpenAction", () => {
     // one — this module only decides WHAT to do, not how to tear down.
     expect(
       resolveFileOpenAction("/Users/ben/other/main.ink", "/Users/ben/story"),
-    ).toEqual({ kind: "open", root: "/Users/ben/other", rel: "main.ink" });
+    ).toEqual({
+      kind: "open",
+      root: "/Users/ben/other",
+      rel: "main.ink",
+      entryIsExplicit: true,
+    });
   });
 });

@@ -357,6 +357,11 @@ const EXPECTED_LISTENER_FILES: Record<string, string[]> = {
     "widget-popover.ts",
   ],
   "studio-ui": ["BinderContextMenu.tsx", "ElementDropdown.tsx"],
+  // The desktop shell's New Project dialog (#3012) — a modal on the
+  // landing screen, OUTSIDE any studio mount, so there is no live
+  // dismiss-registry to enrol in; its Escape listener carries a
+  // DISMISS-NET-EXEMPT marker instead (see that file for the lifecycle).
+  "brink-desktop": ["new-project-dialog.ts"],
 };
 
 describe("scanListenerSites ignores a listener call quoted inside a block comment (#2846 point 4)", () => {
