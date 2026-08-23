@@ -72,10 +72,28 @@ jobs:
             os: ubuntu-latest
             bundles: deb,appimage
             artifact: linux-x86_64
-          - label: Windows
-            os: windows-latest
-            bundles: nsis
-            artifact: windows-x86_64
+          # Windows is DISABLED, not deleted. It is the slowest lane by a wide
+          # margin (~17m against ~11m for the others), and since the whole
+          # matrix runs in parallel it alone sets the release's wall clock —
+          # dropping it takes a release from ~20m to ~12m. There is no Windows
+          # audience yet to pay that cost for.
+          #
+          # Re-enable by uncommenting: everything downstream already handles
+          # it. `platformKeyFor` maps the real `-setup.exe` payload name
+          # (observed from run 32588025582, not guessed), the upload globs
+          # already include `*.exe`, and `assertPlatformsCovered` infers
+          # expected platforms from the signed payloads actually present, so
+          # it will not complain about the absence and will start requiring
+          # the key again the moment the lane returns.
+          #
+          # ⚠ While disabled, `latest.json` carries no `windows-x86_64` key.
+          # Any Windows client polling it is told it is up to date forever —
+          # silently. That is acceptable only because no Windows build has
+          # been distributed yet; it stops being acceptable the moment one is.
+          # - label: Windows
+          #   os: windows-latest
+          #   bundles: nsis
+          #   artifact: windows-x86_64
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
