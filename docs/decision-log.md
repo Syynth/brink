@@ -3271,3 +3271,10 @@
 - **SCOPE:** minor/local
 - **WHAT:** Cmd/Ctrl-clicking the file-path text of an `INCLUDE` line opens that file (same `onNavigateToFile` route as the context menu's "Open <file>" item). The clickable span is the path text only — the INCLUDE keyword stays an ordinary click.
 - **WHY:** Maintainer ("⌘click on the file in an include statement should open that file, i think"): the path is a navigable reference like any other symbol; cmd-click is the editor's universal follow-the-reference gesture, so it should not dead-end on INCLUDEs.
+## Demo gate off the PR path
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** ci
+- **SCOPE:** minor/local
+- **WHAT:** `demo.yml` loses its `pull_request` trigger — the compound-demo build no longer runs (even advisorily) on PRs. The weekly scheduled run and `workflow_dispatch` remain the demo's health check.
+- **WHY:** Maintainer, while merging the perf stack with only DEMO_GATE outstanding: "the demo is silly" as a per-PR gate — it delays merges for signal that the weekly run provides just as well; it was never in the required-checks list, so a red demo could only ever slow a human down, not protect main.
