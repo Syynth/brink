@@ -271,6 +271,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       gotoDefinition: options.gotoDefinition,
       onNavigateToFile: options.onNavigateToFile,
       getActiveFile: options.getActiveFile,
+      // Cmd-click on the definition itself runs Find References instead
+      // of a no-op self-navigation (ruled 2026-08-24).
+      findReferences: options.findReferences,
+      onShowReferences: options.onShowReferences,
     }));
   }
   if (options.getFoldingRanges) {

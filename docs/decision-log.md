@@ -3239,3 +3239,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The search-results surface (shared by text search and Find References) is rebuilt as a list of per-match cards: a header row (file:line, containing knot/stitch, and for references a kind-of-use badge with the declaration pinned/badged) above an individual small editable buffer showing the match with context lines — default 1 before / 2 after, user-tunable. Inline editing stays. Once a search has been performed the result set is a FROZEN SNAPSHOT: edits — including edits that invalidate the match — never remove or re-filter rows; only running a new search replaces the set. Performance permitting ("if it's not too slow"): virtualize the card list rather than compromising the per-card buffers.
 - **WHY:** Maintainer: inline editing is the point of the surface, and stability under edits is what makes editing through results trustworthy — a row vanishing mid-edit because it no longer matches destroys the workflow. Context lines (1/2) give enough surrounding prose to edit confidently; per-card headers carry the identity information references need. Addendum (same day): an explicit ↻ refresh re-runs against current sources and replaces the snapshot — the user-initiated counterpart to the freeze (references refresh re-resolves from the declaration's edit-mapped current position); cards are fully syntax-highlighted via a per-file semantic-token cache (one wasm call per file with results).
+
+## Cmd-click on a definition runs Find References
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** Cmd/Ctrl-clicking a symbol token that IS the definition (the clicked position sits inside the definition's own span, same file) runs Find References instead of Go to Definition. Use sites keep navigating to the definition; empty/unavailable references fall back to selecting the declaration.
+- **WHY:** Maintainer: "cmd clicking a definition should do find references by default, not go to definition, because you're already... there" — self-navigation is a dead action at the definition, and the references surface is the useful counterpart from that position (matches the VS Code/JetBrains convention).
