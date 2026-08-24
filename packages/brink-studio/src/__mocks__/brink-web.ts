@@ -2406,6 +2406,8 @@ export class EditorSession {
   explain_match(_offset: number): string { return "null"; }
   goto_definition(_offset: number): string { return "null"; }
   find_references(_offset: number): string { return "[]"; }
+  find_references_at(_path: string, _offset: number, _include: boolean): string { return "[]"; }
+  find_references_with_kinds_at(_path: string, _offset: number, _include: boolean): string { return "[]"; }
   prepare_rename(_offset: number): string { return "null"; }
   rename(_offset: number, _name: string): string { return "[]"; }
   code_actions(_offset: number): string { return "[]"; }

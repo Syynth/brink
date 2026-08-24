@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #2a2a3d; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .cap { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6c7086; }
+    .card { border: 1px solid #45475a; border-radius: 6px; margin: 8px 10px; overflow: hidden; }
+    .card-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+                 background: #313244; font-size: 11px; }
+    .card-buf { background: #1e1e2e; font-size: 12px; line-height: 1.55; padding: 4px 0; }
+    .bufline { display: flex; }
+    .ln { width: 34px; text-align: right; padding-right: 10px; color: #45475a; flex-shrink: 0;
+          font-variant-numeric: tabular-nums; }
+    .ctx { color: #6c7086; }
+    .del { background: rgb(243 139 168 / 20%); color: #f38ba8; text-decoration: line-through;
+           border-radius: 2px; padding: 0 1px; }
+    .ins { background: rgb(166 227 161 / 22%); color: #a6e3a1; border-radius: 2px; padding: 0 1px; }
+    .accept { font-size: 10px; border: 1px solid #a6e3a1; color: #a6e3a1; background: rgb(166 227 161 / 10%);
+              border-radius: 3px; padding: 1px 7px; cursor: pointer; }
+    .skip { font-size: 10px; color: #6c7086; cursor: pointer; }
+  </style>
+</helmet>
+<div style="width: 400px; background: #2a2a3d; border-right: 1px solid #45475a; padding-bottom: 10px;">
+  <!-- Query + replace fields (replace row open) -->
+  <div style="padding: 8px 10px 0; display: flex; flex-direction: column; gap: 5px;">
+    <div class="mono" style="border: 1px solid #45475a; border-radius: 5px; background: #1e1e2e;
+                padding: 3px 8px; font-size: 12px;">torch</div>
+    <div class="mono" style="border: 1px solid #45475a; border-radius: 5px; background: #1e1e2e;
+                padding: 3px 8px; font-size: 12px; color: #a6e3a1;">lantern</div>
+  </div>
+
+  <!-- Summary row: pending count + Accept all + refresh -->
+  <div style="display: flex; align-items: center; gap: 10px; padding: 6px 12px 2px; font-size: 11px; color: #6c7086;">
+    <span>7 matches · <span style="color: #a6e3a1;">6 pending</span> · 1 stale</span>
+    <span style="margin-left: auto; display: flex; gap: 10px; align-items: center;">
+      <span class="accept" style="padding: 2px 9px;">Accept all (6)</span>
+      <span style="color: #89b4fa; cursor: pointer;" title="Re-run against current sources">↻</span>
+    </span>
+  </div>
+
+  <!-- Pending card: inline old→new preview + per-card Accept -->
+  <div class="card">
+    <div class="card-head">
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:83</span>
+      <span style="color: #6c7086;">·</span>
+      <span style="color: #cba6f7;">intro</span>
+      <span style="margin-left: auto; display: flex; gap: 10px; align-items: center;">
+        <span class="skip" title="Leave this one out — Accept all skips it">skip</span>
+        <span class="accept">Accept</span>
+      </span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">82</span><span class="ctx"></span></div>
+      <div class="bufline"><span class="ln">83</span><span>Your <span class="del">torch</span><span class="ins">lantern</span> is lit. You have {gold} coin.</span></div>
+      <div class="bufline"><span class="ln">84</span><span class="ctx"></span></div>
+      <div class="bufline"><span class="ln">85</span><span class="ctx">A figure unfolds from the shadow of a</span></div>
+    </div>
+  </div>
+
+  <!-- Accepted card: applied, stays in the snapshot with its receipt -->
+  <div class="card" style="border-color: #2e4436;">
+    <div class="card-head">
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:140</span>
+      <span style="color: #6c7086;">·</span>
+      <span style="color: #cba6f7;">threshold</span>
+      <span style="font-size: 10px; color: #a6e3a1;" title="Replacement applied">✓ replaced</span>
+      <span style="margin-left: auto; color: #45475a;">↗</span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">139</span><span class="ctx">{ torch &lt; 2:</span></div>
+      <div class="bufline"><span class="ln">140</span><span>    Your <span style="color:#a6e3a1;">lantern</span> gutters — the dark leans in.</span></div>
+      <div class="bufline"><span class="ln">141</span><span class="ctx">}</span></div>
+    </div>
+  </div>
+
+  <!-- Skipped card: excluded from Accept all, quietly badged -->
+  <div class="card" style="opacity: .75;">
+    <div class="card-head">
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:152</span>
+      <span style="color: #6c7086;">·</span>
+      <span style="color: #cba6f7;">cursed_altar</span>
+      <span class="cap" style="border: 1px solid #45475a; border-radius: 3px; padding: 0 4px;">skipped</span>
+      <span style="margin-left: auto;" class="skip">undo skip</span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">152</span><span>The <span style="background: rgb(137 180 250 / 22%); border-radius: 2px;">torch</span>-lit altar hums. (proper noun — keep)</span></div>
+    </div>
+  </div>
+
+  <!-- Stale card: hand-edited earlier, no longer matches — Accept all skips it -->
+  <div class="card" style="border-color: #5a5344;">
+    <div class="card-head">
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:166</span>
+      <span style="color: #6c7086;">·</span>
+      <span style="color: #cba6f7;">damage</span>
+      <span style="font-size: 10px; color: #e1b23f; border: 1px solid #5a5344; border-radius: 3px;
+                   padding: 0 4px;" title="Edited by hand — no longer matches; Accept all skips it">edited</span>
+      <span style="margin-left: auto; color: #45475a;">↗</span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">166</span><span>{ candle &lt;= 0:</span></div>
+    </div>
+  </div>
+
+  <div style="padding: 8px 12px 0; font-size: 11px; color: #585b70; line-height: 1.5;">
+    Typing replace text turns pending cards into previews (old struck red,
+    new green — display only; accepting applies it). Per-card Accept applies
+    one; Accept all applies every pending card — skipped and edited-stale
+    cards excluded, each badged with why. The previews ARE the confirmation:
+    no separate arm/confirm step. Editing a card by hand exits its preview
+    (it becomes "edited").
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

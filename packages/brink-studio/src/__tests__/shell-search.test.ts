@@ -257,45 +257,49 @@ describe("search slice", () => {
     expect(store.getState().searchResults!.totalMatches).toBe(0);
   });
 
-  it("replaceSearchMatch rewrites the file through the binder path", () => {
+  it("acceptSearchMatch applies one replacement and keeps the snapshot (frozen)", () => {
     const { store, fake, documents } = searchStore(FILES);
     store.getState().setSearchQuery("begins");
     store.getState().setSearchReplace("starts");
     store.getState().runSearch();
 
-    const file = store.getState().searchResults!.files[0];
-    store.getState().replaceSearchMatch(file.path, file.matches[0]);
+    const id = store.getState().searchResults!.files[0]!.matches[0]!.id;
+    store.getState().acceptSearchMatch(id);
 
     expect(fake.sources.get("story.ink")).toContain("The intro starts.");
     expect(documents.invalidateFile).toHaveBeenCalledWith("story.ink");
     expect(documents.triggerCompile).toHaveBeenCalledTimes(1);
-    // Results refreshed: the old query no longer matches.
-    expect(store.getState().searchResults!.totalMatches).toBe(0);
+    // Frozen snapshot: the row stays, receipted — never re-searched away.
+    expect(store.getState().searchResults!.totalMatches).toBe(1);
+    expect(store.getState().searchReplaced).toEqual({ [id]: true });
   });
 
-  it("replaceSearchMatch on a stale span replaces nothing and refreshes", () => {
+  it("acceptSearchMatch on a live-stale span applies nothing", () => {
     const { store, fake, documents } = searchStore(FILES);
     store.getState().setSearchQuery("begins");
+    store.getState().setSearchReplace("starts");
     store.getState().runSearch();
-    const file = store.getState().searchResults!.files[0];
+    const id = store.getState().searchResults!.files[0]!.matches[0]!.id;
 
-    // The file changes underneath the stale result.
+    // The file changes underneath the snapshot span.
     fake.sources.set("story.ink", "=== intro ===\nRewritten.\n-> END\n");
-    store.getState().replaceSearchMatch(file.path, file.matches[0]);
+    store.getState().acceptSearchMatch(id);
 
     expect(fake.updates).toHaveLength(0);
     expect(documents.invalidateFile).not.toHaveBeenCalled();
-    // Refreshed against the live sources, nothing replaced.
-    expect(store.getState().searchResults!.totalMatches).toBe(0);
+    expect(store.getState().searchReplaced).toEqual({});
+    // The row itself survives (frozen snapshot; the compile-seam remap is
+    // what flags it, in production).
+    expect(store.getState().searchResults!.totalMatches).toBe(1);
   });
 
-  it("replaceAllSearchMatches updates every file and notifies", () => {
+  it("acceptAllSearchMatches applies every pending match and notifies", () => {
     const { store, fake, documents, notifications } = searchStore(FILES);
     store.getState().setSearchQuery("intro");
     store.getState().setSearchReplace("prologue");
     store.getState().runSearch();
 
-    store.getState().replaceAllSearchMatches();
+    store.getState().acceptAllSearchMatches();
 
     expect(fake.sources.get("main.ink")).toContain("-> prologue");
     expect(fake.sources.get("story.ink")).toContain("=== prologue ===");
@@ -310,32 +314,62 @@ describe("search slice", () => {
         message: "Replaced 3 matches in 2 files",
       },
     ]);
-    // Results refreshed against the rewritten sources.
-    expect(store.getState().searchResults!.totalMatches).toBe(0);
+    // Every row keeps its receipt; the set is never re-searched away.
+    expect(Object.keys(store.getState().searchReplaced)).toHaveLength(3);
+    expect(store.getState().searchResults!.totalMatches).toBe(3);
   });
 
-  it("replaceAllSearchMatches is all-or-nothing on stale results", () => {
-    const { store, fake, documents, notifications } = searchStore(FILES);
+  it("acceptAllSearchMatches excludes skipped and live-stale matches per-match", () => {
+    const { store, fake, notifications } = searchStore(FILES);
     store.getState().setSearchQuery("intro");
+    store.getState().setSearchReplace("prologue");
     store.getState().runSearch();
+    const snapshot = store.getState().searchResults!;
+    const mainId = snapshot.files[0]!.matches[0]!.id;
 
+    // Skip main.ink's match; stale story.ink underneath (both its matches
+    // fail the live guard — excluded per-match, never a global abort).
+    store.getState().toggleSearchSkip(mainId);
     fake.sources.set("story.ink", "=== other ===\nRewritten.\n-> END\n");
-    store.getState().replaceAllSearchMatches();
+    store.getState().acceptAllSearchMatches();
 
-    expect(fake.updates).toHaveLength(0);
-    expect(documents.invalidateFile).not.toHaveBeenCalled();
+    expect(fake.sources.get("main.ink")).toContain("-> intro");
+    expect(store.getState().searchReplaced).toEqual({});
     expect(notifications).toEqual([
-      expect.objectContaining({ severity: "warning", source: "search" }),
+      expect.objectContaining({
+        severity: "info",
+        message: "Replaced 0 matches in 0 files",
+      }),
     ]);
+
+    // Undo the skip: main.ink's match is pending again and applies.
+    store.getState().toggleSearchSkip(mainId);
+    store.getState().acceptAllSearchMatches();
+    expect(fake.sources.get("main.ink")).toContain("-> prologue");
+    expect(store.getState().searchReplaced).toEqual({ [mainId]: true });
   });
 
-  it("regex replace-all expands capture groups", () => {
+  it("accepting uses the snapshot's frozen query even after the input changed", () => {
+    const { store, fake } = searchStore(FILES);
+    store.getState().setSearchQuery("begins");
+    store.getState().setSearchReplace("starts");
+    store.getState().runSearch();
+    const id = store.getState().searchResults!.files[0]!.matches[0]!.id;
+
+    // Typing a different query without re-running must not change what
+    // Accept applies (the snapshot owns its origin).
+    store.getState().setSearchQuery("bogus");
+    store.getState().acceptSearchMatch(id);
+    expect(fake.sources.get("story.ink")).toContain("The intro starts.");
+  });
+
+  it("regex accept-all expands capture groups", () => {
     const { store, fake } = searchStore({ "a.ink": "VAR gold = 12\n" });
     store.getState().toggleSearchOption("regex");
     store.getState().setSearchQuery("VAR (\\w+)");
     store.getState().setSearchReplace("CONST $1");
     store.getState().runSearch();
-    store.getState().replaceAllSearchMatches();
+    store.getState().acceptAllSearchMatches();
     expect(fake.sources.get("a.ink")).toBe("CONST gold = 12\n");
   });
 });

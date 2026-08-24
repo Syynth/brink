@@ -253,6 +253,17 @@ pub(crate) struct LocationJs {
     pub(crate) end: u32,
 }
 
+/// A reference location plus how the site uses the symbol — the Search
+/// panel's per-card badges (docs/search-results-cards-spec.md, PR E).
+/// `kind` is one of `"decl"`, `"call"`, `"divert"`, `"read"`, `"write"`.
+#[derive(Serialize)]
+pub(crate) struct LocationWithKindJs {
+    pub(crate) file: String,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) kind: &'static str,
+}
+
 #[derive(Serialize)]
 pub(crate) struct InlayHintJs {
     pub(crate) offset: u32,

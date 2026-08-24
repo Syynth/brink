@@ -1,0 +1,129 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #2a2a3d; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .cap { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6c7086; }
+    .panel { width: 300px; background: #2a2a3d; border-right: 1px solid #45475a; padding-bottom: 8px; }
+    .title { display: flex; align-items: center; gap: 2px; padding: 6px 12px 4px; }
+    .title .cap { font-size: 11px; font-weight: 600; color: #9399b2; margin-right: auto; }
+    .title .x { color: #6c7086; padding-left: 8px; }
+    .tool { padding: 3px; display: flex; color: #6c7086; }
+    .kn { font-size: 11px; padding: 3px 2px; white-space: nowrap; color: #6c7086; }
+    .kn .v { color: #cdd6f4; font-family: ui-monospace, Menlo, monospace; }
+    .refr { color: #89b4fa; padding: 3px 2px; }
+    .inrow { display: flex; gap: 6px; align-items: center; padding: 2px 10px 6px; }
+    .inbox { flex: 1; display: flex; align-items: center; gap: 6px; border: 1px solid #45475a;
+             border-radius: 5px; background: #1e1e2e; padding: 3px 8px; font-size: 12px; min-width: 0; }
+    .opt { font-size: 10px; color: #6c7086; border: 1px solid transparent; border-radius: 4px; padding: 2px 4px; }
+    .chev { color: #6c7086; font-size: 9px; }
+    .meta { display: flex; align-items: baseline; gap: 5px; padding: 1px 12px 5px; font-size: 11px;
+            color: #6c7086; min-width: 0; overflow: hidden; white-space: nowrap;
+            border-bottom: 1px solid rgb(69 71 90 / 55%); }
+    .card { border: 1px solid #45475a; border-radius: 6px; margin: 8px 10px 0; overflow: hidden; }
+    .card-head { display: flex; align-items: center; gap: 7px; padding: 3px 8px;
+                 background: #313244; font-size: 11px; }
+    .card-buf { background: #1e1e2e; font-size: 11px; line-height: 1.5; padding: 3px 0; }
+    .bufline { display: flex; }
+    .ln { width: 30px; text-align: right; padding-right: 8px; color: #45475a; flex-shrink: 0;
+          font-variant-numeric: tabular-nums; }
+    .ctx { color: #6c7086; }
+    .hit { background: rgb(137 180 250 / 22%); border-radius: 2px; }
+    .note { padding: 10px 12px 0; font-size: 11px; color: #585b70; line-height: 1.5; }
+    .statecap { padding: 12px 12px 2px; font-size: 10px; letter-spacing: .08em;
+                text-transform: uppercase; color: #7f849c; }
+  </style>
+</helmet>
+<div>
+  <div class="statecap">B · tools in the panel title bar — query mode</div>
+  <div class="panel">
+    <!-- The tool-window header itself hosts the result-set actions, the way
+         IDE panels do (VS Code's collapse/refresh live next to the ✕). -->
+    <div class="title">
+      <span class="cap">Search</span>
+      <span class="tool"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8l5 5 5-5"/><path d="M7 14l5 5 5-5" opacity=".45"/></svg></span>
+      <span class="tool"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16l5-5 5 5"/><path d="M7 10l5-5 5 5" opacity=".45"/></svg></span>
+      <span class="kn"><span class="v">1↑2↓</span></span>
+      <span class="refr">↻</span>
+      <span class="x">×</span>
+    </div>
+    <div class="inrow">
+      <span class="chev">▶</span>
+      <div class="inbox mono">torch</div>
+      <span class="opt">Aa</span><span class="opt">ab</span><span class="opt">.*</span>
+    </div>
+    <div class="meta"><span style="color:#9399b2">37 results</span><span>· 1 file</span></div>
+    <div class="card">
+      <div class="card-head">
+        <span class="chev">⌄</span>
+        <span class="mono" style="color:#89b4fa">toppled-temple.ink:10</span>
+        <span style="margin-left:auto;color:#45475a">↗</span>
+      </div>
+      <div class="card-buf mono">
+        <div class="bufline"><span class="ln">9</span><span class="ctx">VAR health = 10</span></div>
+        <div class="bufline"><span class="ln">10</span><span>VAR <span class="hit">torch</span> = 6</span></div>
+        <div class="bufline"><span class="ln">11</span><span class="ctx">VAR golem_hp = 12</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statecap">B · tools in the panel title bar — references mode</div>
+  <div class="panel">
+    <div class="title">
+      <span class="cap">Search</span>
+      <span class="tool"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8l5 5 5-5"/><path d="M7 14l5 5 5-5" opacity=".45"/></svg></span>
+      <span class="tool"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16l5-5 5 5"/><path d="M7 10l5-5 5 5" opacity=".45"/></svg></span>
+      <span class="kn"><span class="v">1↑2↓</span></span>
+      <span class="refr">↻</span>
+      <span class="x">×</span>
+    </div>
+    <div class="inrow">
+      <span class="chev">▶</span>
+      <div class="inbox mono" style="color:#585b70">Search</div>
+      <span class="opt">Aa</span><span class="opt">ab</span><span class="opt">.*</span>
+    </div>
+    <!-- References meta is a plain text line; its ✕ is the only extra
+         control outside the title bar. -->
+    <div class="meta">
+      <span class="cap" style="color:#cba6f7">refs</span>
+      <span class="mono" style="color:#cdd6f4; overflow:hidden; text-overflow:ellipsis">set_tint</span>
+      <span>3 · 1 file</span>
+      <span style="margin-left:auto; color:#6c7086">×</span>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="chev">⌄</span>
+        <span class="mono" style="color:#89b4fa">main.ink:12</span>
+        <span style="margin-left:auto;color:#45475a">↗</span>
+      </div>
+      <div class="card-buf mono">
+        <div class="bufline"><span class="ln">12</span><span>EXTERNAL <span class="hit">set_tint</span>(color)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="note" style="width:300px">
+    <b>Direction B — tools promoted to the panel title bar.</b> The
+    collapse/expand-all icons, context knob, and ↻ live in the SEARCH title
+    row next to its ✕ — the JetBrains/VS Code panel-chrome convention, and
+    the binder gets the same treatment for free later. Below, the meta line
+    is pure text. Costs a small shell seam (per-tool-window header actions)
+    but leaves the content area the calmest.
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

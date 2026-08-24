@@ -125,6 +125,10 @@ export const createCompileSlice: StateCreator<StudioState, [], [], CompileSlice>
       storyBytes,
       compiledChecksum,
     });
+    // Frozen search snapshot (docs/search-results-cards-spec.md): every
+    // edit path funnels through a compile, so this is the one seam that
+    // re-maps snapshot spans through whatever changed.
+    get().remapSearchSnapshot();
   },
 
   setStoryGraph(graph) {

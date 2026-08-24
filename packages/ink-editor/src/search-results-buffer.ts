@@ -206,6 +206,9 @@ function baseExtensions(): Extension[] {
  *  edit. */
 const RESET = Annotation.define<boolean>();
 
+/** @deprecated Superseded by the per-match card surface
+ *  (docs/search-results-cards-spec.md; `SearchCardBuffer`). Kept exported —
+ *  external embedders may still mount it — but the studio no longer does. */
 export class SearchResultsBuffer {
   private readonly host: HTMLElement;
   private readonly options: SearchResultsBufferOptions;

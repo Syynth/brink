@@ -68,7 +68,35 @@
   gap: 4px;
 }
 
-.brink-studio .search-input,
+/* The query box is a shell so the references scope chip can live inside
+   it (Direction C, ruled 2026-08-24); the input itself is bare. */
+.brink-studio .search-input-shell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 5px 8px;
+}
+.brink-studio .search-input-shell:focus-within {
+  outline: 1px solid var(--bs-accent);
+  outline-offset: -1px;
+}
+.brink-studio .search-input {
+  flex: 1;
+  min-width: 40px;
+  font: inherit;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--bs-fg);
+  background: none;
+  border: none;
+  padding: 0;
+  outline: none;
+}
 .brink-studio .search-replace-input {
   flex: 1;
   min-width: 0;
@@ -81,10 +109,50 @@
   border-radius: 4px;
   padding: 3px 6px;
 }
-.brink-studio .search-input:focus,
 .brink-studio .search-replace-input:focus {
   outline: 1px solid var(--bs-accent);
   outline-offset: -1px;
+}
+
+/* References scope chip (JetBrains convention): the ✕ sits on the thing
+   it clears; typing replaces the chip. */
+.brink-studio .search-refs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 85%;
+  flex-shrink: 0;
+  background: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 14%);
+  border: 1px solid rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.brink-studio .search-refs-chip-cap {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bs-accent-secondary, #cba6f7);
+}
+.brink-studio .search-refs-chip-symbol {
+  color: var(--bs-fg);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.brink-studio .search-refs-chip-clear {
+  background: none;
+  border: none;
+  padding: 0 0 0 2px;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.brink-studio .search-refs-chip-clear:hover {
+  color: var(--bs-fg);
 }
 .brink-studio .search-input::placeholder,
 .brink-studio .search-replace-input::placeholder {
@@ -307,4 +375,320 @@
 }
 .brink-studio .search-row-replace:hover {
   color: var(--bs-accent);
+}
+
+/* References-mode chip (baseline; the results-surface revamp is designed
+   separately). */
+
+
+/* ── Result cards (docs/search-results-cards-spec.md, PR C) ───────── */
+
+.brink-studio .search-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--bs-fg-muted);
+  border-bottom: 1px solid rgb(var(--bs-border-rgb) / 55%);
+  min-width: 0;
+}
+.brink-studio .search-summary-count {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.brink-studio .search-summary-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brink-studio .search-summary-tools button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.brink-studio .search-summary-tools button:hover {
+  color: var(--bs-fg);
+}
+/* Expand/collapse-all reuse the binder's .brink-binder-tool icon buttons. */
+.brink-studio .search-summary-tools .brink-binder-tool {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .search-refresh {
+  color: var(--bs-accent) !important;
+}
+.brink-studio .search-context-knob {
+  position: relative;
+  display: inline-flex;
+}
+.brink-studio .search-context-toggle {
+  white-space: nowrap;
+}
+.brink-studio .search-context-value {
+  color: var(--bs-fg);
+  font-family: var(--bs-mono, ui-monospace, monospace);
+}
+.brink-studio .search-context-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--bs-border);
+  border-radius: 5px;
+  background: var(--bs-panel-bg);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 30%);
+}
+.brink-studio .search-context-stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--bs-fg-muted);
+}
+.brink-studio .search-context-stepper input {
+  width: 40px;
+  font-size: 11px;
+  color: var(--bs-fg);
+  background: var(--bs-surface-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.brink-studio .search-cards {
+  padding-bottom: 8px;
+}
+.brink-studio .search-card {
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  margin: 8px 10px 0;
+  overflow: hidden;
+}
+.brink-studio .search-card.stale {
+  border-color: rgb(var(--bs-warning-rgb) / 45%);
+}
+.brink-studio .search-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  background: var(--bs-surface-bg);
+  font-size: 11px;
+  min-width: 0;
+}
+.brink-studio .search-card-head button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  line-height: 1;
+}
+/* Chevron + reveal share one fixed 20px slot (the fold gutter's glyph,
+   with a real hit target): consistent size, rotation for open state. */
+.brink-studio .search-card-chevron,
+.brink-studio .search-card-reveal {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: -3px 0;
+  border-radius: 3px;
+  color: var(--bs-fg-muted);
+  flex-shrink: 0;
+}
+.brink-studio .search-card-chevron:hover,
+.brink-studio .search-card-reveal:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .search-card-chevron svg {
+  transition: transform 120ms ease;
+}
+.brink-studio .search-card-chevron.open svg {
+  transform: rotate(90deg);
+}
+.brink-studio .search-card-loc {
+  color: var(--bs-accent);
+  font-family: var(--bs-mono, ui-monospace, monospace);
+  flex-shrink: 0;
+}
+.brink-studio .search-card-sep {
+  color: var(--bs-fg-muted);
+  flex-shrink: 0;
+}
+.brink-studio .search-card-container {
+  color: var(--bs-accent-secondary, var(--bs-fg));
+  /* The knot name yields first at narrow widths — the replace actions and
+     badges must never clip. */
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brink-studio .search-card-badge {
+  font-size: 10px;
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.brink-studio .search-card-badge.edited {
+  color: var(--bs-warning, #e1b23f);
+  border-color: rgb(var(--bs-warning-rgb) / 45%);
+}
+.brink-studio .search-card-badge.deleted {
+  color: var(--bs-error);
+}
+.brink-studio .search-card-preview {
+  color: var(--bs-fg-muted);
+  font-family: var(--bs-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.brink-studio .search-card-reveal {
+  margin-left: auto;
+}
+.brink-studio .search-card-preview + .search-card-reveal {
+  margin-left: 0;
+}
+
+/* Card bodies: the live CM6 buffer and its static twin share metrics. */
+.brink-studio .search-card-editor .cm-editor {
+  background: var(--bs-editor-bg, var(--bs-panel-bg));
+  font-size: 12px;
+}
+.brink-studio .search-card-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.brink-studio .search-card-static {
+  background: var(--bs-editor-bg, var(--bs-panel-bg));
+  font-family: var(--bs-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 2px 0;
+  overflow-x: auto;
+}
+.brink-studio .search-card-static-line {
+  display: flex;
+  white-space: pre;
+}
+.brink-studio .search-card-ln {
+  min-width: 34px;
+  text-align: right;
+  padding-right: 10px;
+  color: var(--bs-fg-muted);
+  opacity: 0.6;
+  flex-shrink: 0;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.brink-studio .brink-search-hit {
+  background: rgb(var(--bs-accent-rgb) / 22%);
+  border-radius: 2px;
+}
+
+/* ── Replace previews (card spec PR D) ────────────────────────────── */
+
+.brink-studio .search-pending-count {
+  color: var(--bs-success, #a6e3a1);
+}
+.brink-studio .search-accept-all,
+.brink-studio .search-card-accept {
+  font-size: 11px;
+  border: 1px solid var(--bs-success, #a6e3a1);
+  color: var(--bs-success, #a6e3a1);
+  background: rgb(var(--bs-success-rgb, 166 227 161) / 10%);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.brink-studio .search-accept-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.brink-studio .search-card-replace-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.brink-studio .search-card-skip {
+  font-size: 11px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .search-card-skip:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .search-card-undo-skip {
+  margin-left: auto;
+}
+.brink-studio .search-card.skipped {
+  opacity: 0.75;
+}
+.brink-studio .search-card.replaced {
+  border-color: rgb(var(--bs-success-rgb, 166 227 161) / 40%);
+}
+.brink-studio .search-card-replaced-badge {
+  font-size: 10px;
+  color: var(--bs-success, #a6e3a1);
+  flex-shrink: 0;
+}
+.brink-studio .search-card-badge.skipped-badge {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .search-card-del {
+  background: rgb(var(--bs-error-rgb, 243 139 168) / 20%);
+  color: var(--bs-error, #f38ba8);
+  text-decoration: line-through;
+  border-radius: 2px;
+}
+.brink-studio .search-card-ins {
+  background: rgb(var(--bs-success-rgb, 166 227 161) / 20%);
+  color: var(--bs-success, #a6e3a1);
+  border-radius: 2px;
+}
+
+/* ── References dressing (card spec PR E) ─────────────────────────── */
+
+.brink-studio .search-card.decl {
+  border-color: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 60%);
+}
+.brink-studio .search-card-kind {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--bs-border);
+  border-radius: 3px;
+  padding: 0 4px;
+  color: var(--bs-accent);
+  flex-shrink: 0;
+}
+.brink-studio .search-card-kind.decl {
+  color: var(--bs-accent-secondary, #cba6f7);
+  border-color: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
+}
+.brink-studio .search-card-kind.read,
+.brink-studio .search-card-kind.write {
+  color: var(--bs-fg-muted);
 }

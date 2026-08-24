@@ -4,16 +4,19 @@
  *
  * The view is a thin surface over the store's search slice: it debounces
  * live search as the user types and renders the results through the
- * editor-owned *editable* results buffer ({@link SearchResultsBufferView} —
- * the locked Zed-style design D): a synthetic CodeMirror document mirroring
- * the cross-file matches (file headers + match lines), where editing a match
- * row routes the change back to the source document through the shared
- * apply-edits seam. Double-clicking a match row dispatches `editor.reveal`
- * exactly like the old tree rows.
+ * per-match card list ({@link SearchCardList} —
+ * docs/search-results-cards-spec.md, superseding #322's results buffer):
+ * one editable card per match (match line + context window), edits routed
+ * back through the shared apply-edits seam, `editor.reveal` on the card's
+ * ↗. The result set is a frozen snapshot — the summary row's ↻ (or a new
+ * search) is what replaces it; the context knob tunes the window.
  *
- * Replace-all is gated by an inline confirmation step (the acceptance
- * criterion "replace with confirmation"): the first click arms a confirm
- * bar with the match/file counts; only the explicit Replace click commits.
+ * Replace is the preview/accept model (card spec PR D): with the replace
+ * row open and text typed, every still-matching card renders a display-only
+ * old→new preview — the previews ARE the confirmation. Per-card Accept
+ * applies one; the summary's Accept all (N) applies every pending card
+ * (skipped and edited-stale cards excluded, badged with why). The old
+ * arm/confirm flow is gone.
  *
  * Search state is transient (slice memory only) — query/options reset per
  * session; the tool window's placement persists like any other.
@@ -26,9 +29,14 @@ import {
   type CommandRegistry,
   type ShellLayoutStore,
 } from "@brink/studio-shell";
-import { SEARCH_RESULT_CAP, type StudioStore } from "@brink/studio-store";
+import {
+  MAX_SEARCH_CONTEXT_LINES,
+  SEARCH_RESULT_CAP,
+  type StudioStore,
+} from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
-import { SearchResultsBufferView } from "./SearchResultsBufferView.js";
+import { SearchCardList } from "./SearchCardList.js";
+import { CollapseAllIcon, ExpandAllIcon } from "./icons.js";
 
 export const SEARCH_TOOL_WINDOW_ID = "search";
 export const SEARCH_FOCUS_COMMAND_ID = "search.focus";
@@ -74,7 +82,100 @@ export function SearchCommands() {
     () => registerSearchFocusCommand(commands, layout, store),
     [commands, layout, store],
   );
+  // Find References populated the panel (showReferences bumps the seq) —
+  // make sure the window is actually open and visible.
+  const revealSeq = useStudioStore((s) => s.searchRevealSeq);
+  useEffect(() => {
+    if (revealSeq > 0) ensureToolWindowOpen(layout, SEARCH_TOOL_WINDOW_ID);
+  }, [revealSeq, layout]);
   return null;
+}
+
+// ── Summary-row tools ───────────────────────────────────────────────
+
+/** The `context 1↑ 2↓ ▾` knob: click opens a two-stepper popover tuning
+ *  the card context window (store-backed, clamped 0–9). */
+function SearchContextKnob() {
+  const contextLines = useStudioStore((s) => s.searchContextLines);
+  const setContextLines = useStudioStore((s) => s.setSearchContextLines);
+  const [open, setOpen] = useState(false);
+  const stepper = (label: string, key: "before" | "after") => (
+    <label className="search-context-stepper">
+      {label}
+      <input
+        type="number"
+        min={0}
+        max={MAX_SEARCH_CONTEXT_LINES}
+        value={contextLines[key]}
+        aria-label={`Context lines ${key}`}
+        onChange={(event) =>
+          setContextLines({ ...contextLines, [key]: Number(event.target.value) })
+        }
+      />
+    </label>
+  );
+  return (
+    <span className="search-context-knob">
+      <button
+        type="button"
+        className="search-context-toggle"
+        title="Context lines shown around each match"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="search-context-value">
+          {contextLines.before}↑{contextLines.after}↓
+        </span>
+      </button>
+      {open && (
+        <span className="search-context-pop" role="group" aria-label="Context lines">
+          {stepper("above", "before")}
+          {stepper("below", "after")}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Collapse-all / expand-all / context knob / ↻ — shared by the query
+ *  summary row and the references mode header. */
+function SearchSummaryTools() {
+  const setAllCollapsed = useStudioStore((s) => s.setAllSearchCardsCollapsed);
+  const refresh = useStudioStore((s) => s.refreshSearchSnapshot);
+  return (
+    <span className="search-summary-tools">
+      {/* The binder header's expand/collapse-all buttons, reused (same
+          icons + .brink-binder-tool treatment — one vocabulary). */}
+      <button
+        type="button"
+        className="brink-binder-tool search-expand-all"
+        title="Expand all cards"
+        aria-label="Expand all cards"
+        onClick={() => setAllCollapsed(false)}
+      >
+        <ExpandAllIcon />
+      </button>
+      <button
+        type="button"
+        className="brink-binder-tool search-collapse-all"
+        title="Collapse all cards"
+        aria-label="Collapse all cards"
+        onClick={() => setAllCollapsed(true)}
+      >
+        <CollapseAllIcon />
+      </button>
+      <SearchContextKnob />
+      <button
+        type="button"
+        className="search-refresh"
+        title="Re-run against current sources — the only thing that replaces the pinned snapshot"
+        aria-label="Refresh results"
+        onClick={refresh}
+      >
+        ↻
+      </button>
+    </span>
+  );
 }
 
 // ── View ────────────────────────────────────────────────────────────
@@ -90,18 +191,27 @@ function SearchViewInner() {
   const toggleOption = useStudioStore((s) => s.toggleSearchOption);
   const setReplace = useStudioStore((s) => s.setSearchReplace);
   const runSearch = useStudioStore((s) => s.runSearch);
-  const replaceAll = useStudioStore((s) => s.replaceAllSearchMatches);
+  const mode = useStudioStore((s) => s.searchMode);
+  const clearReferences = useStudioStore((s) => s.clearReferences);
+  const replaceOpen = useStudioStore((s) => s.searchReplaceOpen);
+  const setReplaceOpen = useStudioStore((s) => s.setSearchReplaceOpen);
 
-  const [replaceOpen, setReplaceOpen] = useState(false);
-  const [confirmingAll, setConfirmingAll] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Live search, debounced while typing (also runs on mount, which simply
-  // recomputes the current results against the live sources).
+  // recomputes the current results against the live sources). References
+  // mode is the exception: opening the panel to SHOW references must not
+  // immediately clobber them with a text-search rerun — only an actual
+  // query/options change (the user typing) exits references mode.
+  const lastInput = useRef<{ q: string; o: typeof options } | null>(null);
   useEffect(() => {
+    const prev = lastInput.current;
+    const changed = prev !== null && (prev.q !== query || prev.o !== options);
+    lastInput.current = { q: query, o: options };
+    if (mode.kind === "references" && !changed) return;
     const timer = setTimeout(() => runSearch(), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, options, runSearch]);
+  }, [query, options, runSearch, mode.kind]);
 
   // search.focus → focus + select the query input (fires on mount too, so
   // opening the window by strip click or its Mod-6 toggle also lands in the
@@ -142,12 +252,6 @@ function SearchViewInner() {
     inputRef.current?.select();
   }, [focusSeq]);
 
-  // New results disarm a pending replace-all confirmation — the confirmed
-  // counts must match what's on screen.
-  useEffect(() => {
-    setConfirmingAll(false);
-  }, [results]);
-
   const optionButton = (
     key: "caseSensitive" | "wholeWord" | "regex",
     label: string,
@@ -168,6 +272,28 @@ function SearchViewInner() {
   const total = results?.totalMatches ?? 0;
   const fileCount = results?.files.length ?? 0;
 
+  // Replace previews (card spec PR D): active iff the row is open with
+  // text, on a query-mode snapshot. The previews are the confirmation.
+  const skipped = useStudioStore((s) => s.searchSkipped);
+  const replaced = useStudioStore((s) => s.searchReplaced);
+  const acceptAll = useStudioStore((s) => s.acceptAllSearchMatches);
+  const previewActive =
+    mode.kind === "query" && replaceOpen && replaceText !== "" && results !== null;
+  let pendingCount = 0;
+  let staleCount = 0;
+  let skippedCount = 0;
+  let replacedCount = 0;
+  if (previewActive && results !== null) {
+    for (const file of results.files) {
+      for (const match of file.matches) {
+        if (replaced[match.id]) replacedCount++;
+        else if (match.stale) staleCount++;
+        else if (skipped[match.id]) skippedCount++;
+        else pendingCount++;
+      }
+    }
+  }
+
   return (
     <div className="search-view">
       <div className="search-form">
@@ -178,7 +304,7 @@ function SearchViewInner() {
             aria-label="Toggle replace"
             aria-expanded={replaceOpen}
             title="Toggle replace"
-            onClick={() => setReplaceOpen((open) => !open)}
+            onClick={() => setReplaceOpen(!replaceOpen)}
           >
             <span className={"search-chevron" + (replaceOpen ? "" : " collapsed")}>
               {"▶"}
@@ -186,15 +312,31 @@ function SearchViewInner() {
           </button>
           <div className="search-fields">
             <div className="search-input-row">
-              <input
-                ref={inputRef}
-                className="search-input"
-                value={query}
-                placeholder="Search"
-                spellCheck={false}
-                aria-label="Search query"
-                onChange={(event) => setQuery(event.target.value)}
-              />
+              <div className="search-input-shell">
+                {mode.kind === "references" && (
+                  <span className="search-refs-chip" role="status">
+                    <span className="search-refs-chip-cap">refs</span>
+                    <code className="search-refs-chip-symbol">{mode.symbol}</code>
+                    <button
+                      type="button"
+                      className="search-refs-chip-clear"
+                      aria-label="Clear references"
+                      onClick={clearReferences}
+                    >
+                      ×
+                    </button>
+                  </span>
+                )}
+                <input
+                  ref={inputRef}
+                  className="search-input"
+                  value={mode.kind === "references" ? "" : query}
+                  placeholder={mode.kind === "references" ? "" : "Search"}
+                  spellCheck={false}
+                  aria-label="Search query"
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
               <div className="search-options" role="group" aria-label="Search options">
                 {optionButton("caseSensitive", "Aa", "Match case")}
                 {optionButton("wholeWord", "ab", "Match whole word")}
@@ -211,15 +353,6 @@ function SearchViewInner() {
                   aria-label="Replace text"
                   onChange={(event) => setReplace(event.target.value)}
                 />
-                <button
-                  type="button"
-                  className="search-replace-all"
-                  disabled={total === 0}
-                  title="Replace all matches"
-                  onClick={() => setConfirmingAll(true)}
-                >
-                  Replace All
-                </button>
               </div>
             )}
           </div>
@@ -229,33 +362,45 @@ function SearchViewInner() {
             {error}
           </p>
         )}
-        {confirmingAll && total > 0 && (
-          <div className="search-confirm" role="alertdialog" aria-label="Confirm replace all">
-            <span className="search-confirm-text">
-              Replace {total} {total === 1 ? "match" : "matches"} in {fileCount}{" "}
-              {fileCount === 1 ? "file" : "files"}?
-            </span>
-            <button
-              type="button"
-              className="search-confirm-yes"
-              onClick={() => {
-                setConfirmingAll(false);
-                replaceAll();
-              }}
-            >
-              Replace
-            </button>
-            <button
-              type="button"
-              className="search-confirm-no"
-              onClick={() => setConfirmingAll(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
       </div>
 
+      {results !== null && total > 0 && (
+        <div className="search-summary">
+          {previewActive ? (
+            <span className="search-summary-count">
+              {total} {total === 1 ? "match" : "matches"} ·{" "}
+              <span className="search-pending-count">{pendingCount} pending</span>
+              {staleCount > 0 && <> · {staleCount} stale</>}
+              {skippedCount > 0 && <> · {skippedCount} skipped</>}
+              {replacedCount > 0 && <> · {replacedCount} replaced</>}
+            </span>
+          ) : (
+            <span className="search-summary-count">
+              {total}{" "}
+              {mode.kind === "references"
+                ? total === 1
+                  ? "reference"
+                  : "references"
+                : total === 1
+                  ? "result"
+                  : "results"}{" "}
+              · {fileCount} {fileCount === 1 ? "file" : "files"}
+            </span>
+          )}
+          {previewActive && (
+            <button
+              type="button"
+              className="search-accept-all"
+              disabled={pendingCount === 0}
+              title="Apply every pending replacement (skipped and edited cards excluded)"
+              onClick={acceptAll}
+            >
+              Accept all ({pendingCount})
+            </button>
+          )}
+          <SearchSummaryTools />
+        </div>
+      )}
       <div className="search-results">
         {results !== null && total === 0 && (
           <p className="search-empty">No results</p>
@@ -266,12 +411,10 @@ function SearchViewInner() {
           </p>
         )}
         {results !== null && total > 0 && (
-          // Editor-owned editable results buffer (#322 Track V, design D):
-          // headers + match lines in a scrollable CM6 document; editing a
-          // match row routes back to the source. Keyed on the total so a
-          // structural change (files added/removed between searches) remounts
-          // cleanly; in-place edits keep the same view via setResult.
-          <SearchResultsBufferView key={fileCount} results={results} />
+          // Per-match card list (docs/search-results-cards-spec.md, PR C):
+          // one editable card per snapshot match, virtualized, frozen-set
+          // semantics — see SearchCardList.
+          <SearchCardList />
         )}
       </div>
     </div>

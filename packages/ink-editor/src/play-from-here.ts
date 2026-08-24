@@ -15,7 +15,7 @@ import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
 import type { Location } from "@brink/wasm-types";
 import { foldEffect, foldable, foldedRanges, unfoldEffect } from "@codemirror/language";
 import { navigateToLocation } from "./goto-definition.js";
-import { showReferencesAt } from "./references.js";
+import { findReferencesAt } from "./references.js";
 import { startInlineRename } from "./rename.js";
 import { elementTypeField, ElementType } from "./element-type.js";
 
@@ -34,6 +34,12 @@ export interface PlayFromHereOptions {
    *  callbacks the cmd-click / Shift-Alt-F / F2 surfaces use. */
   gotoDefinition?: (source: string, offset: number) => Location | null;
   findReferences?: (source: string, offset: number) => Location[];
+  /** Host references surface (the Search panel) — see references.ts. */
+  onShowReferences?: (
+    symbol: string,
+    locations: Location[],
+    declaration?: Location | null,
+  ) => void;
   getActiveFile?: () => string;
   onNavigateToFile?: (location: Location) => void;
   /** Whether the inline-rename surface is mounted (gates the Rename item). */
@@ -240,13 +246,13 @@ function identitySectionAt(
   const word = view.state.wordAt(pos);
   const name = word ? view.state.sliceDoc(word.from, word.to) : "";
   const loc = location;
-  const { findReferences } = options;
+  const { findReferences, onShowReferences, gotoDefinition } = options;
   return {
     name,
     gotoDefinition: () => navigateToLocation(view, loc, options),
     findReferences: findReferences
       ? () => {
-          showReferencesAt(view, pos, findReferences);
+          findReferencesAt(view, pos, { findReferences, onShowReferences, gotoDefinition });
         }
       : undefined,
     rename:

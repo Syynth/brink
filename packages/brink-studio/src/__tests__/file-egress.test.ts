@@ -371,7 +371,8 @@ describe("search replace (#137)", () => {
     store.getState().runSearch();
     expect(store.getState().searchResults?.totalMatches).toBe(2);
 
-    store.getState().replaceAllSearchMatches();
+    store.getState().setSearchReplaceOpen(true);
+    store.getState().acceptAllSearchMatches();
     expect(onFileChanged).toHaveBeenCalledTimes(2);
 
     vi.advanceTimersByTime(500);
@@ -391,8 +392,8 @@ describe("search replace (#137)", () => {
     store.getState().setSearchQuery("Hello");
     store.getState().setSearchReplace("Howdy");
     store.getState().runSearch();
-    const file = store.getState().searchResults!.files[0]!;
-    store.getState().replaceSearchMatch(file.path, file.matches[0]!);
+    const match = store.getState().searchResults!.files[0]!.matches[0]!;
+    store.getState().acceptSearchMatch(match.id);
 
     vi.advanceTimersByTime(500);
     expect(batches).toEqual([

@@ -2,7 +2,7 @@ use rowan::TextSize;
 use wasm_bindgen::prelude::*;
 
 use super::{EditorSession, ViewContext, byte_to_utf16};
-use crate::editor_dto::LocationJs;
+use crate::editor_dto::{LocationJs, LocationWithKindJs};
 
 #[wasm_bindgen]
 impl EditorSession {
@@ -48,6 +48,56 @@ impl EditorSession {
     /// a JSON `Location[]` array (`"[]"` if the path or analysis is unavailable).
     pub fn find_references_at(&self, path: &str, offset: u32, include_declaration: bool) -> String {
         self.find_references_impl(path, None, offset, include_declaration)
+    }
+
+    /// [`Self::find_references_at`], with each site classified by how it
+    /// uses the symbol (the Search panel's per-card badges — card spec
+    /// PR E). Returns a JSON array of `{file, start, end, kind}` where
+    /// `kind` ∈ `"decl" | "call" | "divert" | "read" | "write"`.
+    /// Document-agnostic and file-absolute like `find_references_at`.
+    pub fn find_references_with_kinds_at(
+        &self,
+        path: &str,
+        offset: u32,
+        include_declaration: bool,
+    ) -> String {
+        let Some(file_id) = self.session.file_id(path) else {
+            return "[]".to_owned();
+        };
+        let Some(analysis) = self.session.analysis() else {
+            return "[]".to_owned();
+        };
+
+        let abs_offset = self.to_absolute(path, None, offset);
+        let db = self.session.db();
+        let refs = brink_ide::navigation::find_references_with_kinds(
+            db,
+            analysis,
+            file_id,
+            TextSize::new(abs_offset),
+            include_declaration,
+        );
+
+        let items: Vec<LocationWithKindJs> = refs
+            .iter()
+            .map(|r| {
+                let src = self.session.source(r.file).unwrap_or("");
+                LocationWithKindJs {
+                    file: db.file_path(r.file).unwrap_or_default().to_owned(),
+                    start: byte_to_utf16(src, r.range.start().into()),
+                    end: byte_to_utf16(src, r.range.end().into()),
+                    kind: match r.kind {
+                        brink_ide::navigation::ReferenceKind::Decl => "decl",
+                        brink_ide::navigation::ReferenceKind::Call => "call",
+                        brink_ide::navigation::ReferenceKind::Divert => "divert",
+                        brink_ide::navigation::ReferenceKind::Read => "read",
+                        brink_ide::navigation::ReferenceKind::Write => "write",
+                    },
+                }
+            })
+            .collect();
+
+        serde_json::to_string(&items).unwrap_or_default()
     }
 
     /// Find all references to a symbol identified by its canonical name. Resolves

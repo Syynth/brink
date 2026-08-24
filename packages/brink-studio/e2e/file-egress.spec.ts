@@ -127,14 +127,15 @@ test.describe("file egress — search replace-all (#137)", () => {
 
     await page.keyboard.press("ControlOrMeta+Shift+F");
     await page.locator(".search-input").fill("intro");
-    // Results rendered in the editable buffer (design D): its CM6 content is the
-    // signal that the debounced search produced matches to replace.
-    await expect(page.locator(".search-results-buffer .cm-content")).toBeVisible();
+    // Results rendered as cards (docs/search-results-cards-spec.md): a card
+    // is the signal that the debounced search produced matches to replace.
+    await expect(page.locator(".search-card").first()).toBeVisible();
 
     await page.locator(".search-replace-toggle").click();
     await page.locator(".search-replace-input").fill("prologue");
-    await page.locator(".search-replace-all").click();
-    await page.locator(".search-confirm-yes").click();
+    // The previews are the confirmation (card spec PR D) — Accept all
+    // applies every pending replacement directly.
+    await page.locator(".search-accept-all").click();
 
     // Both edits land inside one debounce window → one batch, both files.
     await expect.poll(() => batches(page)).not.toHaveLength(0);

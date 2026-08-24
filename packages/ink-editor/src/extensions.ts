@@ -155,6 +155,15 @@ export interface BrinkStudioOptions {
    *  menu (docs/editor-context-menu-spec.md). When provided, the native
    *  context menu never appears inside the editor. */
   onTextContextMenu?: (request: import("./play-from-here.js").TextMenuRequest) => void;
+  /** Host references surface: Find References (menu + Shift-Alt-F) routes
+   *  its results here (the Search panel) instead of the in-view highlight.
+   *  `declaration` (when goto-definition resolves one) anchors the host's
+   *  references refresh (docs/search-results-cards-spec.md). */
+  onShowReferences?: (
+    symbol: string,
+    locations: Location[],
+    declaration?: Location | null,
+  ) => void;
   /**
    * Host gutter-marker contribution (#343): the host's markers (breakpoints,
    * per-line annotations, run/flag icons) for the inclusive 1-based line range
@@ -262,6 +271,10 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       gotoDefinition: options.gotoDefinition,
       onNavigateToFile: options.onNavigateToFile,
       getActiveFile: options.getActiveFile,
+      // Cmd-click on the definition itself runs Find References instead
+      // of a no-op self-navigation (ruled 2026-08-24).
+      findReferences: options.findReferences,
+      onShowReferences: options.onShowReferences,
     }));
   }
   if (options.getFoldingRanges) {
@@ -283,7 +296,13 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     ideExtensions.push(signatureHelpExtension({ getSignatureHelp: options.getSignatureHelp }));
   }
   if (options.findReferences) {
-    ideExtensions.push(referencesExtension({ findReferences: options.findReferences }));
+    ideExtensions.push(
+      referencesExtension({
+        findReferences: options.findReferences,
+        gotoDefinition: options.gotoDefinition,
+        onShowReferences: options.onShowReferences,
+      }),
+    );
   }
   if (options.prepareRename && options.renameSymbolAt && options.commitRename) {
     ideExtensions.push(
@@ -337,6 +356,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         // callbacks the cmd-click / Shift-Alt-F / F2 surfaces use.
         gotoDefinition: options.gotoDefinition,
         findReferences: options.findReferences,
+        onShowReferences: options.onShowReferences,
         getActiveFile: options.getActiveFile,
         onNavigateToFile: options.onNavigateToFile,
         renameEnabled: Boolean(
