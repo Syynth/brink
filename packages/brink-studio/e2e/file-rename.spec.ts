@@ -148,14 +148,21 @@ function folderRow(page: Page, name: string) {
 }
 
 /** Drive an HTML5 drag of a file row onto a folder row via a shared
- *  DataTransfer (Chromium native DnD is unreliable through synthetic mouse). */
+ *  DataTransfer (Chromium native DnD is unreliable through synthetic mouse).
+ *  The dragover/drop carry the folder row's CENTER coordinates: since
+ *  #3038, a folder's top/bottom 30% are sibling-REORDER zones and only the
+ *  middle is move-into — a coordinate-less synthetic event lands at y=0,
+ *  i.e. in the reorder zone. */
 async function dragFileOntoFolder(page: Page, file: string, folder: string): Promise<void> {
   const src = fileRow(page, file);
   const dst = folderRow(page, folder);
   const dt = await page.evaluateHandle(() => new DataTransfer());
+  const box = await dst.boundingBox();
+  if (box === null) throw new Error("folder row has no box");
+  const at = { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
   await src.dispatchEvent("dragstart", { dataTransfer: dt });
-  await dst.dispatchEvent("dragover", { dataTransfer: dt });
-  await dst.dispatchEvent("drop", { dataTransfer: dt });
+  await dst.dispatchEvent("dragover", { dataTransfer: dt, ...at });
+  await dst.dispatchEvent("drop", { dataTransfer: dt, ...at });
   await src.dispatchEvent("dragend", { dataTransfer: dt });
 }
 
@@ -211,8 +218,12 @@ test.describe("file move + folder rename (nested)", () => {
     const dt = await page.evaluateHandle(() => new DataTransfer());
     await fileRow(page, "helper.ink").dispatchEvent("dragstart", { dataTransfer: dt });
     const dst = folderRow(page, "scenes");
-    await dst.dispatchEvent("dragover", { dataTransfer: dt });
-    await dst.dispatchEvent("drop", { dataTransfer: dt });
+    // Row-center coordinates: the middle is the move-into zone (#3038).
+    const box = await dst.boundingBox();
+    if (box === null) throw new Error("folder row has no box");
+    const at = { clientX: box.x + box.width / 2, clientY: box.y + box.height / 2 };
+    await dst.dispatchEvent("dragover", { dataTransfer: dt, ...at });
+    await dst.dispatchEvent("drop", { dataTransfer: dt, ...at });
 
     // Both files moved (referrer INCLUDEs rewritten), one "Moved 2 files" toast.
     await expect(

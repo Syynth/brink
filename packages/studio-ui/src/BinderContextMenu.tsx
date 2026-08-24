@@ -62,6 +62,7 @@ export type ContextMenuAction =
   | { type: "deleteFile"; path: string }
   | { type: "deleteFolder"; prefix: string; paths: string[] }
   | { type: "newFileInFolder"; dir: string }
+  | { type: "newFolderInFolder"; dir: string }
   | { type: "renameFile"; path: string }
   | { type: "renameFolder"; prefix: string };
 
@@ -123,7 +124,16 @@ function BinderContextMenuInner({ x, y, target, outline, onAction, onClose }: Pr
   // See dismiss-registry.ts.
   useEffect(() => registerDismissible(onClose), [onClose]);
 
-  const items: MenuItem[] = buildItems(target, outline, onAction);
+  // Normalized at render (maintainer, 2026-08-23): a separator only ever
+  // renders BETWEEN two real items — leading, trailing, and doubled
+  // separators (e.g. from a conditionally empty group) collapse away.
+  const items: MenuItem[] = buildItems(target, outline, onAction).filter(
+    (item, i, all) =>
+      item.label !== "---" ||
+      (all.slice(0, i).some((p) => p.label !== "---") &&
+        all.slice(i + 1).some((n) => n.label !== "---") &&
+        all[i - 1]?.label !== "---"),
+  );
 
   const handleItemClick = useCallback(
     (item: MenuItem) => {
@@ -209,6 +219,10 @@ function buildItems(
         label: "New file here",
         action: () => onAction({ type: "newFileInFolder", dir: dirOf(target.path) }),
       },
+      {
+        label: "New folder here",
+        action: () => onAction({ type: "newFolderInFolder", dir: dirOf(target.path) }),
+      },
     ];
     if (target.canRename) {
       items.push({
@@ -231,6 +245,10 @@ function buildItems(
       {
         label: "New file here",
         action: () => onAction({ type: "newFileInFolder", dir: target.prefix }),
+      },
+      {
+        label: "New folder here",
+        action: () => onAction({ type: "newFolderInFolder", dir: target.prefix }),
       },
     ];
     if (target.canRename) {
@@ -270,6 +288,9 @@ function buildItems(
 
   // Rename — safe-by-default; the prompt flips to a breakage report if the
   // rename would introduce diagnostics (#305).
+  // One ops group after Play-from-here (maintainer, 2026-08-23: dividers
+  // around single items chopped the menu into confetti) — Rename, the
+  // moves, and the re-parent ops read as one family.
   items.push({
     label: "Rename…",
     action: () =>
@@ -280,7 +301,6 @@ function buildItems(
         stitch: target.kind === "stitch" ? target.stitch : undefined,
       }),
   });
-  items.push({ label: "---" });
 
   if (target.kind === "stitch") {
     items.push({
@@ -307,8 +327,6 @@ function buildItems(
           direction: 1,
         }),
     });
-    items.push({ label: "---" });
-
     // Move to submenu — knots excluding current parent, excluding name collisions
     const moveTargets = allKnots.filter((k) => {
       if (k.name === target.knot) return false;
@@ -358,8 +376,6 @@ function buildItems(
     action: () =>
       onAction({ type: "reorderKnot", path: target.path, knot: target.knot, direction: 1 }),
   });
-  items.push({ label: "---" });
-
   // Demote into submenu — sibling knots excluding self and collision check
   const knotNode = allKnots.find((k) => k.name === target.knot);
   const hasStitches = knotNode?.children.some((c) => c.kind === "stitch") ?? false;

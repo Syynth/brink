@@ -9,6 +9,7 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 function group(page: Page, index: number): Locator {
   return page.locator(".shell-editor-group").nth(index);
@@ -38,6 +39,7 @@ async function runPaletteCommand(page: Page, title: string): Promise<void> {
 test.describe("editor groups", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?fixture=screenplay");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-knot-header", { timeout: 5000 });
 
     // The default layout opens the Player document in a right split (#120).

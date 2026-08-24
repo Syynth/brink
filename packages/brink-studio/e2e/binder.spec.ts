@@ -1,9 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/** Wait for the binder to render with knot entries. */
+/** Wait for the binder, switch to STRUCTURE mode (the #3036 toggle —
+ *  Files mode is the default and hides symbol rows), and wait for knots. */
 async function waitForBinder(page: Page) {
+  await enterStructureMode(page);
   await page.waitForSelector(".brink-binder-knot", { timeout: 5000 });
 }
 
@@ -64,36 +67,30 @@ test.describe("binder", () => {
     expect(knots).toContain("interrogation");
   });
 
-  test("file has expand/collapse chevron", async ({ page }) => {
-    const chevron = page.locator(".brink-binder-chevron").first();
-    await expect(chevron).toBeVisible();
-    // Chevron is always ▶, rotation is CSS
-    const text = await chevron.textContent();
-    expect(text).toBe("\u25b6");
-    // Expanded state: no .collapsed class
-    await expect(chevron).not.toHaveClass(/collapsed/);
+  test("an expandable file's icon is the toggle (chevronless, 2026-08-23)", async ({ page }) => {
+    // The icon carries the affordance and the state: filled droplet =
+    // collapsed with content, outline = expanded (see icons.tsx).
+    const icon = page.locator(".brink-binder-file-row .brink-binder-icon.toggle").first();
+    await expect(icon).toBeVisible();
   });
 
   test("collapse hides knots", async ({ page }) => {
-    const chevron = page.locator(".brink-binder-chevron").first();
-    await chevron.click();
+    const icon = page.locator(".brink-binder-file-row .brink-binder-icon.toggle").first();
+    await icon.click();
 
     // Knots should be hidden
     const knots = await getKnotLabels(page);
     expect(knots).toHaveLength(0);
-
-    // Chevron should have .collapsed class
-    await expect(chevron).toHaveClass(/collapsed/);
   });
 
   test("expand shows knots again", async ({ page }) => {
-    const arrow = page.locator(".brink-binder-chevron").first();
+    const icon = page.locator(".brink-binder-file-row .brink-binder-icon.toggle").first();
     // Collapse
-    await arrow.click();
+    await icon.click();
     expect(await getKnotLabels(page)).toHaveLength(0);
 
     // Expand
-    await arrow.click();
+    await icon.click();
     const knots = await getKnotLabels(page);
     expect(knots.length).toBeGreaterThan(0);
   });
@@ -168,11 +165,11 @@ test.describe("binder → tab opening", () => {
     expect(activeLabel).toBe("main.ink");
   });
 
-  test("clicking arrow does not open tab", async ({ page }) => {
+  test("clicking the toggle icon does not open a tab", async ({ page }) => {
     const tabsBefore = await getTabLabels(page);
 
-    // Click the arrow
-    await page.locator(".brink-binder-chevron").first().click();
+    // Click an expandable row's icon (the chevronless toggle).
+    await page.locator(".brink-binder-icon.toggle").first().click();
 
     await page.waitForTimeout(300);
 

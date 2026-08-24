@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 /**
  * "Play from here" (#186) — start a fresh play session entered at a knot/stitch
@@ -21,6 +22,7 @@ async function runPaletteCommand(page: Page, title: string): Promise<void> {
 test.describe("play from here (#186)", () => {
   test("binder context menu opens a session at the knot", async ({ page }) => {
     await page.goto("/");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
     const knot = page.locator(".brink-binder-knot").first();

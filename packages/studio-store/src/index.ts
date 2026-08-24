@@ -156,6 +156,20 @@ export { insertIncludeLine, relativeIncludePath } from "./include-insert.js";
 // Comment-preserving structured edits for brink.toml (#3015) — used by
 // the studio's config form panel.
 export { getTomlString, setTomlString } from "./toml-edit.js";
+// The .binder.json order sidecar's pure model (#3038).
+export {
+  BINDER_SIDECAR_PATH,
+  EMPTY_BINDER_ORDER,
+  addFolder,
+  applyReorder,
+  isFolderId,
+  orderChildIds,
+  parseBinderOrder,
+  rekeyBinderOrder,
+  removeFromBinderOrder,
+  serializeBinderOrder,
+  type BinderOrder,
+} from "./binder-order.js";
 
 // Shared knot/stitch context-menu transport (#186 follow-up).
 export type { SymbolMenuRequest, SymbolRenameRequest } from "./slices/symbol-menu.js";

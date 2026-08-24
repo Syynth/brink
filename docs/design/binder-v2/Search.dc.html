@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #2a2a3d; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .row { height: 26px; display: flex; align-items: center; gap: 7px;
+           font-size: 12px; padding-right: 10px; }
+    .icon { width: 14px; height: 14px; flex-shrink: 0; display: flex;
+            align-items: center; justify-content: center; }
+    svg { display: block; }
+    .hit { background: rgba(137, 180, 250, .22); border-radius: 2px; padding: 0 1px; }
+  </style>
+</helmet>
+<div style="width: 330px; height: 480px; background: #2a2a3d; display: flex; flex-direction: column;
+            border-right: 1px solid #45475a;">
+
+  <div style="height: 34px; display: flex; align-items: center; padding: 0 8px 0 12px;
+              border-bottom: 1px solid #45475a; flex-shrink: 0; gap: 8px;">
+    <div style="font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                color: #6c7086; flex-grow: 1;">Binder</div>
+    <div class="icon" style="color: #89b4fa;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    </div>
+  </div>
+
+  <!-- the filter row (note-4): one query matches file names, structural
+       names (knots/stitches/functions), and #tags carried on symbols.
+       Esc or the ×  clears; the tree filters live as you type. -->
+  <div style="padding: 6px 8px; border-bottom: 1px solid #45475a; flex-shrink: 0;">
+    <div style="display: flex; align-items: center; gap: 6px; border: 1px solid #89b4fa;
+                border-radius: 5px; background: #1e1e2e; padding: 3px 8px; font-size: 12px;
+                font-family: ui-monospace, Menlo, monospace;">
+      <span style="color: #cdd6f4;">inter</span>
+      <span style="width: 1px; height: 13px; background: #89b4fa;"></span>
+      <span style="margin-left: auto; color: #585b70; cursor: pointer; font-size: 13px;">×</span>
+    </div>
+  </div>
+
+  <!-- filtered results: matches grouped under their files, non-matching
+       rows collapsed away. The match kind is visible from the row itself. -->
+  <div style="flex-grow: 1; padding: 4px 0; overflow: hidden; font-size: 12px;">
+
+    <div class="row" style="padding-left: 12px;">
+      <span class="icon" style="color: #89b4fa;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <span style="flex-grow: 1; font-weight: 600;">codetta.ink</span>
+    </div>
+
+    <!-- structural-name match -->
+    <div class="row" style="padding-left: 30px; color: #cba6f7;">
+      <span class="icon">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7 9-7 9-7-9z"/></svg>
+      </span>
+      <span style="flex-grow: 1; color: #cdd6f4;"><span class="hit">inter</span>rogation</span>
+    </div>
+
+    <!-- tag match: the tag chip shows WHY the row matched -->
+    <div class="row" style="padding-left: 30px; color: #94e2d5;">
+      <span class="icon">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v8a4 4 0 0 0 4 4h8"/><path d="M14 12l4 4-4 4"/></svg>
+      </span>
+      <span style="flex-grow: 1; color: #a6adc8;">evidence</span>
+      <span style="font-size: 9.5px; color: #94e2d5; border: 1px solid #3d5a52; border-radius: 3px;
+                   padding: 1px 5px; font-family: ui-monospace, Menlo, monospace;">#<span class="hit">inter</span>view</span>
+    </div>
+
+    <div class="row" style="padding-left: 12px;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <!-- filename match -->
+      <span style="flex-grow: 1;">menus/<span class="hit">inter</span>ludes.ink</span>
+    </div>
+  </div>
+
+  <div style="border-top: 1px solid #45475a; padding: 8px 12px; flex-shrink: 0; font-size: 11px;
+              color: #585b70; line-height: 1.5;">
+    One query, three namespaces: file names, structural names, and # tags on
+    knots/stitches/functions. Matches keep their file context; everything else filters away.
+    Works in both Files and Structure modes (Files mode reveals matching symbols' files).
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

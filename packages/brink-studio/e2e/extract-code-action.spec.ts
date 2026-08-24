@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 /**
  * Extract selection → knot code action (#315 H) — the studio-enabled path
@@ -44,6 +45,7 @@ test.describe("extract to knot code action (#315 H)", () => {
     page,
   }) => {
     await page.goto("/?fixture=screenplay");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-knot-header", { timeout: 8000 });
 
     // Focus the editor and select the two body lines of `=== opening ===`.

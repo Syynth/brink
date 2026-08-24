@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Overlay } from "@brink/studio-shell";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isOutOfScope } from "./InkFileDocument.js";
@@ -8,20 +8,42 @@ import {
   type ContextMenuTarget,
 } from "./BinderContextMenu.js";
 import { dispatchSymbolAction } from "./symbolMenuActions.js";
-import type { FileOutline, DocumentSymbol } from "@brink/wasm-types";
+import type { Diagnostic, FileOutline, DocumentSymbol } from "@brink/wasm-types";
 import type { TabTarget } from "@brink/studio-store";
+import {
+  EMPTY_BINDER_ORDER,
+  orderChildIds,
+  type BinderOrder,
+} from "@brink/studio-store";
+import {
+  BrinkFileIcon,
+  BrinkFileFilledIcon,
+  CollapseAllIcon,
+  ExpandAllIcon,
+  FilePlusIcon,
+  FilesModeIcon,
+  FolderPlusIcon,
+  FolderFilledIcon,
+  FolderIcon,
+  FolderOpenIcon,
+  FunctionIcon,
+  DotsIcon,
+  GearIcon,
+  ErrorMarkIcon,
+  KnotPlusIcon,
+  StitchPlusIcon,
+  GrabHandleIcon,
+  WarningMarkIcon,
+  KnotFilledIcon,
+  KnotIcon,
+  LibraryIcon,
+  SearchIcon,
+  StitchIcon,
+  StructureModeIcon,
+} from "./icons.js";
 
-// ── Icons ──────────────────────────────────────────────────────────
-
-const ICON_FILE = "\ud83d\udcc4";
-const ICON_FOLDER = "\ud83d\udcc1"; // \ud83d\udcc1
-const ICON_KNOT = "\u25c6";
-const ICON_STITCH = "\u25c7";
-const ICON_FUNCTION = "\u0192"; // \u0192 \u2014 a knot declared as a function
-/** The Binder's "Library" section (mounted `std/` files, issue #2306/#2343):
- *  a closed-book glyph, visually distinct from the project's own open-book
- *  file/folder icons. */
-const ICON_LIBRARY = "\ud83d\udcda";
+// ── Icons (#3037: currentColor SVGs from icons.tsx — the glyph
+//    characters this section used to hold are gone by ruling) ─────────
 
 /** Synthetic row key for the Library section's own collapse toggle \u2014 distinct
  *  from any real file/folder key (which never contain a NUL byte). */
@@ -33,20 +55,35 @@ function libraryFolderKey(folderKey: string): string {
   return `${LIBRARY_ROW_KEY}:${folderKey}`;
 }
 
-function iconChar(kind: string, isFunction = false): string {
+/** The v2 icon element for a row kind (#3037). Tinting stays with the
+ *  `.brink-binder-icon-*` classes ({@link iconClass}) — these render in
+ *  `currentColor`. The icon IS the expansion indicator (Zed-style, no
+ *  chevrons), and the FILL carries the state (ruled 2026-08-23):
+ *  **filled = collapsed with content inside; outline = expanded or a
+ *  leaf.** Folders additionally switch to the open-folder silhouette
+ *  when expanded. */
+function iconElement(
+  kind: string,
+  isFunction = false,
+  expandable = false,
+  expanded = false,
+): React.ReactElement | null {
+  const filled = expandable && !expanded;
   switch (kind) {
     case "folder":
-      return ICON_FOLDER;
+      if (expandable && expanded) return <FolderOpenIcon />;
+      return filled ? <FolderFilledIcon /> : <FolderIcon />;
     case "file":
-      return ICON_FILE;
+      return filled ? <BrinkFileFilledIcon /> : <BrinkFileIcon />;
     case "knot":
-      return isFunction ? ICON_FUNCTION : ICON_KNOT;
+      if (isFunction) return <FunctionIcon />;
+      return filled ? <KnotFilledIcon /> : <KnotIcon />;
     case "stitch":
-      return ICON_STITCH;
+      return <StitchIcon />;
     case "library":
-      return ICON_LIBRARY;
+      return <LibraryIcon />;
     default:
-      return "\u00b7";
+      return null;
   }
 }
 
@@ -152,7 +189,7 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
 
 interface DragState {
   sourceKeys: string[];
-  sourceKind: "knot" | "stitch" | "file";
+  sourceKind: "knot" | "stitch" | "file" | "folder";
   sourcePath: string;
   sourceParent?: string;
 }
@@ -161,6 +198,47 @@ interface DropTarget {
   kind: "between" | "into";
   afterKey?: string;
   targetKey?: string;
+}
+
+// ── Diagnostics marks (#3041) ───────────────────────────────────────
+
+export interface RowMarks {
+  errors: number;
+  warnings: number;
+}
+
+/** Per-file diagnostic counts (Error vs Warning; Info/Hint don't mark).
+ *  The file's count is the SUM over the file — the roll-up rule the
+ *  Structure artboard states. */
+export function fileMarks(diagnostics: readonly Diagnostic[]): Map<string, RowMarks> {
+  const map = new Map<string, RowMarks>();
+  for (const d of diagnostics) {
+    const file = d.file;
+    if (file === undefined) continue;
+    if (d.severity !== "Error" && d.severity !== "Warning") continue;
+    const entry = map.get(file) ?? { errors: 0, warnings: 0 };
+    if (d.severity === "Error") entry.errors += 1;
+    else entry.warnings += 1;
+    map.set(file, entry);
+  }
+  return map;
+}
+
+/** A symbol's own counts: diagnostics whose start falls inside its full
+ *  body range. */
+export function symbolMarks(
+  diagnostics: readonly Diagnostic[],
+  file: string,
+  sym: DocumentSymbol,
+): RowMarks {
+  const marks: RowMarks = { errors: 0, warnings: 0 };
+  for (const d of diagnostics) {
+    if (d.file !== file) continue;
+    if (d.start < sym.full_start || d.start >= sym.full_end) continue;
+    if (d.severity === "Error") marks.errors += 1;
+    else if (d.severity === "Warning") marks.warnings += 1;
+  }
+  return marks;
 }
 
 // ── Row component ──────────────────────────────────────────────────
@@ -189,6 +267,14 @@ interface RowProps {
   /** Dim the row (a file on disk that nothing INCLUDEs — outside the
    *  compile closure). */
   dimmed?: boolean;
+  /** Diagnostics marks (#3041): error/warning counts, zero-suppressed. */
+  marks?: RowMarks;
+  /** Hover-revealed ⋯ menu (the mockup's row-actions affordance) —
+   *  opens the same menu as right-click. */
+  onMenuClick?: (e: React.MouseEvent) => void;
+  /** Hover-revealed extra action buttons (Structure mode's +knot /
+   *  +stitch), rendered before the ⋯. */
+  extraActions?: React.ReactNode;
   onChevronClick: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
@@ -224,6 +310,9 @@ export function BinderRow({
   editing,
   badge,
   dimmed = false,
+  marks,
+  onMenuClick,
+  extraActions,
   onChevronClick,
   onClick,
   onDoubleClick,
@@ -289,9 +378,6 @@ export function BinderRow({
     (dimmed ? " brink-binder-dimmed" : "") +
     (badge?.tone === "entry" ? " brink-binder-entry" : "");
 
-  const chevronClass =
-    "brink-binder-chevron" +
-    (expandable ? (isExpanded ? "" : " collapsed") : " leaf");
 
   return (
     <>
@@ -313,11 +399,22 @@ export function BinderRow({
             <div key={i} className="brink-binder-guide" />
           ))}
         </div>
-        <div className={chevronClass} onClick={handleChevronClick}>
-          {expandable ? "\u25b6" : ""}
-        </div>
-        <span className={"brink-binder-icon " + iconClass(kind, isFunction)}>
-          {iconChar(kind, isFunction)}
+        {depth > 0 && (
+          <span
+            className="brink-binder-guide-lines"
+            aria-hidden
+            style={{ width: `calc(${depth} * var(--binder-indent))` }}
+          />
+        )}
+        <span
+          className={
+            "brink-binder-icon " +
+            iconClass(kind, isFunction) +
+            (expandable ? " toggle" : "")
+          }
+          onClick={expandable ? handleChevronClick : undefined}
+        >
+          {iconElement(kind, isFunction, expandable, isExpanded)}
         </span>
         {editing ? (
           // `key={editing.initial}` forces a fresh RenameInput instance (and
@@ -333,9 +430,44 @@ export function BinderRow({
         ) : (
           <span className="brink-binder-label">{label}</span>
         )}
+        {marks !== undefined && !editing && (marks.errors > 0 || marks.warnings > 0) && (
+          <span className="brink-binder-marks">
+            {marks.errors > 0 && (
+              <span className="brink-mark brink-mark-error">
+                <ErrorMarkIcon />
+                {marks.errors}
+              </span>
+            )}
+            {marks.warnings > 0 && (
+              <span className="brink-mark brink-mark-warning">
+                <WarningMarkIcon />
+                {marks.warnings}
+              </span>
+            )}
+          </span>
+        )}
         {badge !== undefined && !editing && (
           <span className={"brink-binder-badge brink-binder-badge-" + badge.tone}>
             {badge.text}
+          </span>
+        )}
+        {extraActions}
+        {onMenuClick !== undefined && (
+          <button
+            type="button"
+            className="brink-binder-row-action"
+            title="Actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMenuClick(e);
+            }}
+          >
+            <DotsIcon />
+          </button>
+        )}
+        {draggable && (
+          <span className="brink-binder-handle" aria-hidden>
+            <GrabHandleIcon />
           </span>
         )}
       </div>
@@ -364,50 +496,99 @@ export interface FolderNode {
   key: string;
   folders: FolderNode[];
   files: FileOutline[];
+  /** The level's children in DISPLAY order (#3038): the `.binder.json`
+   *  sidecar's authored order first, then the fallback (entry first,
+   *  folders before files, alphabetical). Folders and files interleave —
+   *  placement is authorship. */
+  children: TreeChild[];
 }
+
+export type TreeChild =
+  | { kind: "folder"; folder: FolderNode }
+  | { kind: "file"; file: FileOutline };
 
 interface TreeLevel {
   folders: FolderNode[];
   files: FileOutline[];
+  /** See {@link FolderNode.children}. */
+  children: TreeChild[];
 }
 
 /** Group files into a collapsible folder tree by splitting their paths on `/`.
  *  Purely presentational (no new data model); files with no `/` sit at root.
  *  Folders and files are sorted by name within each level for determinism. */
-export function buildBinderTree(outline: FileOutline[]): TreeLevel {
-  const root: TreeLevel = { folders: [], files: [] };
+export interface BuildTreeOptions {
+  /** The `.binder.json` sidecar (#3038); absent = pure fallback order. */
+  order?: BinderOrder;
+  /** The entry file — the fallback rule puts it first in its container. */
+  entry?: string | null;
+}
+
+export function buildBinderTree(
+  outline: FileOutline[],
+  options: BuildTreeOptions = {},
+): TreeLevel {
+  const root: TreeLevel = { folders: [], files: [], children: [] };
+  const ensureFolder = (dirPath: string): TreeLevel => {
+    let level: TreeLevel = root;
+    let prefix = "";
+    for (const segment of dirPath.split("/")) {
+      if (segment === "") continue;
+      prefix += `${segment}/`;
+      let child = level.folders.find((f) => f.key === prefix);
+      if (!child) {
+        child = { name: segment, key: prefix, folders: [], files: [], children: [] };
+        level.folders.push(child);
+      }
+      level = child;
+    }
+    return level;
+  };
   for (const file of outline) {
     const slash = file.path.lastIndexOf("/");
     if (slash < 0) {
       root.files.push(file);
       continue;
     }
-    let level: TreeLevel = root;
-    let prefix = "";
-    for (const segment of file.path.substring(0, slash).split("/")) {
-      prefix += `${segment}/`;
-      let child = level.folders.find((f) => f.key === prefix);
-      if (!child) {
-        child = { name: segment, key: prefix, folders: [], files: [] };
-        level.folders.push(child);
-      }
-      level = child;
-    }
-    level.files.push(file);
+    ensureFolder(file.path.substring(0, slash)).files.push(file);
   }
-  const sortLevel = (lvl: TreeLevel): void => {
+  // Registered empty folders (#3038): a file-derived tree cannot represent
+  // them, so the sidecar's `folders` list materializes them here.
+  for (const folderId of options.order?.folders ?? []) {
+    ensureFolder(folderId.slice(0, -1));
+  }
+  const order = options.order ?? EMPTY_BINDER_ORDER;
+  const entry = options.entry ?? null;
+  const orderLevel = (lvl: TreeLevel, containerId: string): void => {
     lvl.folders.sort((a, b) => a.name.localeCompare(b.name));
     lvl.files.sort((a, b) => a.path.localeCompare(b.path));
-    lvl.folders.forEach(sortLevel);
+    const byId = new Map<string, TreeChild>();
+    for (const folder of lvl.folders) byId.set(folder.key, { kind: "folder", folder });
+    for (const file of lvl.files) byId.set(file.path, { kind: "file", file });
+    lvl.children = orderChildIds(containerId, [...byId.keys()], order, entry)
+      .map((id) => byId.get(id))
+      .filter((c): c is TreeChild => c !== undefined);
+    lvl.folders.forEach((f) => orderLevel(f, f.key));
   };
-  sortLevel(root);
+  orderLevel(root, "");
   return root;
 }
 
-function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[] {
+interface FlatRowOptions extends BuildTreeOptions {
+  /** Files mode (#3036) omits symbol rows — keyboard nav and drag must
+   *  see exactly what renders. */
+  structureMode?: boolean;
+}
+
+function buildFlatRows(
+  outline: FileOutline[],
+  collapsed: Set<string>,
+  options: FlatRowOptions = {},
+): FlatRow[] {
   const rows: FlatRow[] = [];
   const pushFile = (file: FileOutline): void => {
     rows.push({ key: file.path, kind: "file", path: file.path, index: 0, siblingCount: 1 });
+    if (options.structureMode !== true) return;
     if (collapsed.has(file.path)) return;
     const knots = file.symbols.filter((s) => s.kind === "knot");
     knots.forEach((knot, ki) => {
@@ -436,17 +617,34 @@ function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[
     });
   };
   const walk = (level: TreeLevel): void => {
-    for (const folder of level.folders) {
-      rows.push({ key: folder.key, kind: "folder", path: folder.key, index: 0, siblingCount: 1 });
-      if (!collapsed.has(folder.key)) walk(folder);
+    for (const child of level.children) {
+      if (child.kind === "folder") {
+        rows.push({
+          key: child.folder.key,
+          kind: "folder",
+          path: child.folder.key,
+          index: 0,
+          siblingCount: 1,
+        });
+        if (!collapsed.has(child.folder.key)) walk(child.folder);
+      } else {
+        pushFile(child.file);
+      }
     }
-    for (const file of level.files) pushFile(file);
   };
-  walk(buildBinderTree(outline));
+  walk(buildBinderTree(outline, options));
   return rows;
 }
 
 // ── Drag-reorder helpers ────────────────────────────────────────────
+
+/** The container id a file/folder id lives directly in (#3038): a file
+ *  `"a/b/c.ink"` → `"a/b/"`; a folder `"a/b/"` → `"a/"`; root → `""`. */
+export function containerOf(id: string): string {
+  const body = id.endsWith("/") ? id.slice(0, -1) : id;
+  const cut = body.lastIndexOf("/");
+  return cut >= 0 ? body.slice(0, cut + 1) : "";
+}
 
 /** Last `::`-separated segment of a row key (the knot or stitch name). */
 function lastSegment(key: string): string {
@@ -487,6 +685,38 @@ export function computeReorder(
   return [...without.slice(0, idx), ...orderedDragged, ...without.slice(idx)];
 }
 
+// ── Search filter (#3040) ───────────────────────────────────────────
+
+/**
+ * Filter the outline for one query (case-insensitive substring): a file
+ * stays when its basename matches OR it contains a matching symbol; its
+ * symbol list narrows to the matching subtree (a knot whose stitch
+ * matches survives as the stitch's context). Tag matching is #474's
+ * scope — the tag data does not exist at any layer yet.
+ */
+export function filterOutline(outline: FileOutline[], query: string): FileOutline[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return outline;
+  const matches = (name: string): boolean => name.toLowerCase().includes(q);
+  const out: FileOutline[] = [];
+  for (const file of outline) {
+    const base = file.path.slice(file.path.lastIndexOf("/") + 1);
+    const symbols: DocumentSymbol[] = [];
+    for (const sym of file.symbols) {
+      const childHits = sym.children.filter((c) => matches(c.name));
+      if (matches(sym.name)) {
+        symbols.push(sym);
+      } else if (childHits.length > 0) {
+        symbols.push({ ...sym, children: childHits });
+      }
+    }
+    if (matches(base) || matches(file.path) || symbols.length > 0) {
+      out.push(matches(base) || matches(file.path) ? file : { ...file, symbols });
+    }
+  }
+  return out;
+}
+
 // ── Main Binder component ──────────────────────────────────────────
 
 function BinderInner() {
@@ -497,7 +727,17 @@ function BinderInner() {
   // `story_graph`), so every existing tree/drag/search/rename/delete code
   // path below keeps operating on exactly the same file set it always did —
   // the Library section (below) is the only new consumer of the mounted half.
-  const outline = useMemo(() => rawOutline.filter((f) => !f.mounted), [rawOutline]);
+  // The pinned config row (#3042) owns brink.toml — it leaves the tree.
+  const outline = useMemo(
+    () => rawOutline.filter((f) => !f.mounted && f.path !== "brink.toml"),
+    [rawOutline],
+  );
+  const hasConfig = useMemo(
+    () => rawOutline.some((f) => !f.mounted && f.path === "brink.toml"),
+    [rawOutline],
+  );
+  const diagnosticsList = useStudioStore((s) => s.diagnosticsList);
+  const marksByFile = useMemo(() => fileMarks(diagnosticsList), [diagnosticsList]);
   const libraryFiles = useMemo(() => rawOutline.filter((f) => f.mounted), [rawOutline]);
   const closureFiles = useStudioStore((s) => s.closureFiles);
   const entryFile = useStudioStore((s) => s.entryFile);
@@ -509,6 +749,11 @@ function BinderInner() {
   const projectIsInk = entryFile !== null && entryFile.endsWith(".ink");
   const activeDocKey = useStudioStore((s) => s.activeDocKey);
   const collapsed = useStudioStore((s) => s.collapsed);
+  const structureMode = useStudioStore((s) => s.structureMode);
+  const toggleStructureMode = useStudioStore((s) => s.toggleStructureMode);
+  const setAllCollapsed = useStudioStore((s) => s.setAllCollapsed);
+  const reorderBinderSiblings = useStudioStore((s) => s.reorderBinderSiblings);
+  const registerBinderFolder = useStudioStore((s) => s.registerBinderFolder);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
   const focusedKey = useStudioStore((s) => s.focusedKey);
   const openTarget = useStudioStore((s) => s.openTarget);
@@ -529,9 +774,13 @@ function BinderInner() {
   const addFile = useStudioStore((s) => s.addFile);
   const storeApi = useStudioStoreApi();
 
-  const [inputActive, setInputActive] = useState(false);
-  /** Directory prefix the New File input is pre-filled with ("New file here"). */
-  const [newFileDir, setNewFileDir] = useState("");
+  /** The one open inline-create input (#3039): which container, and
+   *  whether it creates a file or a folder. */
+  const [creating, setCreating] = useState<{
+    container: string;
+    kind: "file" | "folder" | "knot" | "stitch";
+  } | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -557,7 +806,27 @@ function BinderInner() {
   // Whether the "move to project root" drop zone is currently hovered.
   const [rootDropActive, setRootDropActive] = useState(false);
 
-  const flatRows = buildFlatRows(outline, collapsed);
+  const binderOrder = useStudioStore((s) => s.binderOrder);
+  // Search (#3040): a live query narrows the tree; matches keep their
+  // file context, everything else filters away. While searching, the
+  // collapsed set is ignored (matches must be visible) and symbol rows
+  // for matches show in BOTH modes ("Files mode reveals matching
+  // symbols' files" — and their symbols, which are the evidence).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searching = searchOpen && query.trim() !== "";
+  const visibleOutline = useMemo(
+    () => (searching ? filterOutline(outline, query) : outline),
+    [searching, outline, query],
+  );
+  const effectiveCollapsed = searching ? new Set<string>() : collapsed;
+  const treeOptions: FlatRowOptions = {
+    order: binderOrder,
+    entry: entryFile,
+    structureMode: structureMode || searching,
+  };
+  const flatRows = buildFlatRows(visibleOutline, effectiveCollapsed, treeOptions);
 
   // ── Helpers ─────────────────────────────────────────────────────
 
@@ -622,15 +891,18 @@ function BinderInner() {
     [clearSelection, handleOpenUnpinned],
   );
 
-  // ── New file input ──────────────────────────────────────────────
+  // ── Inline creation (#3039 — CreateRow.dc.html) ─────────────────
 
-  /** Open the inline New File input, optionally pre-filled with a directory
-   *  prefix ("New file here" on a file/folder row). Cursor lands at the end. */
-  const openNewFileInput = useCallback(
-    (dir: string) => {
-      if (inputActive) return;
-      setNewFileDir(dir);
-      setInputActive(true);
+  /** Open the inline create input for one container (#3039). The caret
+   *  discipline is unchanged from the old New File input (#2571,
+   *  SELECT-INVARIANT Binder.newFileInput.cursorToEnd): the deferred
+   *  frame reads `input.value` fresh and places a zero-width caret at its
+   *  end, so text typed during the frame is never clobbered or selected. */
+  const openCreateInput = useCallback(
+    (container: string, kind: "file" | "folder" | "knot" | "stitch") => {
+      if (creating !== null) return;
+      setCreating({ container, kind });
+      setCreateError(null);
       requestAnimationFrame(() => {
         const input = inputRef.current;
         if (!input) return;
@@ -638,34 +910,129 @@ function BinderInner() {
         const end = input.value.length;
         // SELECT-INVARIANT Binder.newFileInput.cursorToEnd: a zero-width
         // range (start === end) places the caret, it does not select any
-        // text — there is nothing typed here for it to clobber even though
-        // it runs inside this deferred frame, and `end` is read fresh from
-        // `input.value` at fire time, not a value captured before the frame.
+        // text — text typed during this deferred frame is never clobbered
+        // even though it runs after the frame, and `end` is read fresh
+        // from `input.value` at fire time, not captured before the frame.
         input.setSelectionRange(end, end);
       });
     },
-    [inputActive],
+    [creating],
   );
 
-  const handleNewClick = useCallback(() => openNewFileInput(""), [openNewFileInput]);
-
   const cancelInput = useCallback(() => {
-    setInputActive(false);
-    setNewFileDir("");
+    setCreating(null);
+    setCreateError(null);
   }, []);
+
+  /** Sibling ids already taken in `container` — files keyed by their
+   *  extension-normalized basename (celeris's `dedupName`), folders by
+   *  name. */
+  const takenIn = useCallback(
+    (container: string): Set<string> => {
+      const taken = new Set<string>();
+      for (const f of outline) {
+        const slash = f.path.lastIndexOf("/");
+        const dir = slash < 0 ? "" : f.path.slice(0, slash + 1);
+        if (dir === container) {
+          const base = f.path.slice(container.length);
+          taken.add(base);
+          taken.add(base.replace(/\.ink$/, ""));
+        }
+      }
+      for (const id of binderOrder.folders) {
+        if (id.startsWith(container) && !id.slice(container.length, -1).includes("/")) {
+          taken.add(id.slice(container.length, -1));
+        }
+      }
+      // Folders that exist through files:
+      for (const f of outline) {
+        if (f.path.startsWith(container)) {
+          const rest = f.path.slice(container.length);
+          const cut = rest.indexOf("/");
+          if (cut > 0) taken.add(rest.slice(0, cut));
+        }
+      }
+      return taken;
+    },
+    [outline, binderOrder],
+  );
 
   const confirmInput = useCallback(() => {
     const input = inputRef.current;
-    if (!input) return;
-    let name = input.value.trim();
-    setInputActive(false);
-    setNewFileDir("");
-    if (!name) return;
-    if (!name.includes(".")) {
-      name += ".ink";
+    const spec = creating;
+    if (!input || spec === null) return;
+    const raw = input.value.trim();
+    if (!raw) {
+      cancelInput();
+      return;
     }
-    void addFile(name);
-  }, [addFile]);
+    if (raw.includes("/") || raw.includes("\\")) {
+      setCreateError("must be a bare name, not a path");
+      return;
+    }
+    // Structure-mode creation (#3043 follow-up): a knot appends to its
+    // file; a stitch appends inside its knot's body. Both are ordinary
+    // session edits — the recompile refreshes the outline.
+    if (spec.kind === "knot" || spec.kind === "stitch") {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) {
+        setCreateError("must be a plain identifier (letters, digits, _)");
+        return;
+      }
+      const project = storeApi.getState()._project;
+      const docs = storeApi.getState()._documents;
+      if (project === null) return;
+      if (spec.kind === "knot") {
+        const filePath = spec.container;
+        const file = outline.find((f) => f.path === filePath);
+        if (file?.symbols.some((sym) => sym.name === raw)) {
+          setCreateError(`a knot named ${raw} already exists in this file`);
+          return;
+        }
+        const src = project.getSession().getFileSource(filePath);
+        if (src === null) return;
+        const sep = src.endsWith("\n") ? "\n" : "\n\n";
+        project.applyEdit(filePath, `${src}${sep}=== ${raw} ===\n`);
+        docs?.refreshExternal(filePath);
+        docs?.triggerCompile();
+      } else {
+        const [filePath, knotName] = spec.container.split("::");
+        const file = outline.find((f) => f.path === filePath);
+        const knot = file?.symbols.find((sym) => sym.name === knotName);
+        if (filePath === undefined || knot === undefined) return;
+        if (knot.children.some((c) => c.name === raw)) {
+          setCreateError(`a stitch named ${raw} already exists in this knot`);
+          return;
+        }
+        const src = project.getSession().getFileSource(filePath);
+        if (src === null) return;
+        const at = Math.min(knot.full_end, src.length);
+        const before = src.slice(0, at);
+        const lead = before.endsWith("\n") ? "" : "\n";
+        project.applyEdit(filePath, `${before}${lead}= ${raw}\n${src.slice(at)}`);
+        docs?.refreshExternal(filePath);
+        docs?.triggerCompile();
+      }
+      cancelInput();
+      return;
+    }
+    const taken = takenIn(spec.container);
+    if (spec.kind === "folder") {
+      if (taken.has(raw)) {
+        setCreateError(`${raw} already exists here`);
+        return;
+      }
+      registerBinderFolder(`${spec.container}${raw}/`);
+      cancelInput();
+      return;
+    }
+    const name = raw.includes(".") ? raw : `${raw}.ink`;
+    if (taken.has(name) || taken.has(name.replace(/\.ink$/, ""))) {
+      setCreateError(`a file named ${name} already exists here`);
+      return;
+    }
+    cancelInput();
+    void addFile(`${spec.container}${name}`);
+  }, [creating, cancelInput, takenIn, addFile, registerBinderFolder, outline, storeApi]);
 
   const handleInputKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -679,6 +1046,76 @@ function BinderInner() {
     },
     [confirmInput, cancelInput],
   );
+
+  /** One container's create affordance (#3039 — CreateRow.dc.html): the
+   *  50/50 icon-button pair, expanding in place to a full-width name
+   *  input with inline validation. `big` is the root group at the foot. */
+  function renderCreateGroup(container: string, depth: number, big = false) {
+    const active = creating !== null && creating.container === container;
+    // Per-container idle buttons were ruled OUT after live use (maintainer,
+    // 2026-08-23: "kind of obnoxious/noisy") — only the root group renders
+    // idle affordances; a folder's input opens via its context menu and
+    // renders here, in place, while active.
+    if (!active && !big) return null;
+    if (active) {
+      return (
+        <div
+          className="brink-create-editing"
+          style={{ paddingLeft: `calc(var(--binder-pad-x, 12px) + ${depth} * var(--binder-indent, 18px))` }}
+          data-create-container={container}
+        >
+          <input
+            ref={inputRef}
+            className="brink-create-input"
+            type="text"
+            placeholder={
+              creating.kind === "file"
+                ? "name (.ink implied)"
+                : creating.kind === "folder"
+                  ? "folder name"
+                  : creating.kind === "knot"
+                    ? "knot name"
+                    : "stitch name"
+            }
+            onKeyDown={handleInputKeyDown}
+            onChange={() => setCreateError(null)}
+            onBlur={cancelInput}
+          />
+          {createError !== null && <div className="brink-create-error">{createError}</div>}
+        </div>
+      );
+    }
+    return (
+      <div
+        className={"brink-create-group" + (big ? " big" : "")}
+        style={
+          big
+            ? undefined
+            : { paddingLeft: `calc(var(--binder-pad-x, 12px) + ${depth} * var(--binder-indent, 18px))` }
+        }
+        data-create-container={container}
+      >
+        <button
+          type="button"
+          className="brink-create-btn"
+          title="New file"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => openCreateInput(container, "file")}
+        >
+          <FilePlusIcon />
+        </button>
+        <button
+          type="button"
+          className="brink-create-btn"
+          title="New folder"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => openCreateInput(container, "folder")}
+        >
+          <FolderPlusIcon />
+        </button>
+      </div>
+    );
+  }
 
   // ── Inline rename commit ────────────────────────────────────────
 
@@ -760,7 +1197,10 @@ function BinderInner() {
       setContextMenu(null);
       switch (action.type) {
         case "newFileInFolder":
-          openNewFileInput(action.dir);
+          openCreateInput(action.dir, "file");
+          break;
+        case "newFolderInFolder":
+          openCreateInput(action.dir, "folder");
           return;
         case "renameFile":
           setRenaming({ key: action.path, isFolder: false });
@@ -786,7 +1226,7 @@ function BinderInner() {
           void executeAction(action);
       }
     },
-    [executeAction, openNewFileInput, deleteFile, deleteFolder, storeApi],
+    [executeAction, openCreateInput, deleteFile, deleteFolder, storeApi],
   );
 
   // ── Keyboard handler ────────────────────────────────────────────
@@ -889,7 +1329,12 @@ function BinderInner() {
   const handleDragStart = useCallback(
     (e: React.DragEvent, row: FlatRow) => {
       if (row.kind === "folder") {
-        e.preventDefault();
+        // Folder drag = same-container REORDER only (#3038; celeris's
+        // `move: false` for folders — a cross-folder dir-move is #314's
+        // unsupported atomic op). Placement is authorship, always on.
+        setDragState({ sourceKeys: [row.key], sourceKind: "folder", sourcePath: row.key });
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", row.key);
         return;
       }
       if (row.kind === "file") {
@@ -953,9 +1398,27 @@ function BinderInner() {
       if (!dragState) return;
       e.preventDefault();
 
-      // File drag: only folders are drop targets (move into folder).
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const isTop = y < rect.height * 0.3;
+      const isBottom = y > rect.height * 0.7;
+
+      // File drag (#3038): same-container siblings reorder (edge zones →
+      // between); a folder's middle keeps the existing move-into. A file
+      // over a DIFFERENT container's file is not a target.
       if (dragState.sourceKind === "file") {
-        if (row.kind === "folder") {
+        const sameContainer =
+          (row.kind === "file" || row.kind === "folder") &&
+          containerOf(row.key) === containerOf(dragState.sourceKeys[0] ?? "") &&
+          !dragState.sourceKeys.includes(row.key);
+        if (sameContainer && (isTop || isBottom || row.kind === "file")) {
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget({
+            kind: "between",
+            afterKey: row.key,
+            targetKey: isTop || (row.kind === "file" && y < rect.height / 2) ? "before" : "after",
+          });
+        } else if (row.kind === "folder") {
           e.dataTransfer.dropEffect = "move";
           setDropTarget({ kind: "into", targetKey: row.key });
         } else {
@@ -965,17 +1428,32 @@ function BinderInner() {
         return;
       }
 
-      // Determine drop kind
+      // Folder drag (#3038): same-container reorder only.
+      if (dragState.sourceKind === "folder") {
+        const sameContainer =
+          (row.kind === "file" || row.kind === "folder") &&
+          containerOf(row.key) === containerOf(dragState.sourceKeys[0] ?? "") &&
+          !dragState.sourceKeys.includes(row.key);
+        if (sameContainer) {
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget({
+            kind: "between",
+            afterKey: row.key,
+            targetKey: y < rect.height / 2 ? "before" : "after",
+          });
+        } else {
+          e.dataTransfer.dropEffect = "none";
+          setDropTarget(null);
+        }
+        return;
+      }
+
+      // Symbol drags below never target file rows.
       if (row.kind === "file") {
         e.dataTransfer.dropEffect = "none";
         setDropTarget(null);
         return;
       }
-
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const y = e.clientY - rect.top;
-      const isTop = y < rect.height * 0.3;
-      const isBottom = y > rect.height * 0.7;
 
       if (dragState.sourceKind === "stitch") {
         if (row.kind === "knot") {
@@ -1023,10 +1501,30 @@ function BinderInner() {
       e.preventDefault();
       if (!dragState || !dropTarget) return;
 
-      // File drag onto a folder = move (keys change; includes rewrite). All
-      // selected files move together; a single drag is a batch of one.
-      if (dragState.sourceKind === "file") {
-        if (dropTarget.kind === "into" && dropTarget.targetKey) {
+      // File/folder drag (#3038): a BETWEEN drop is a same-container
+      // sidecar reorder; a file's INTO drop on a folder stays the move.
+      if (dragState.sourceKind === "file" || dragState.sourceKind === "folder") {
+        if (dropTarget.kind === "between" && dropTarget.afterKey) {
+          const container = containerOf(dragState.sourceKeys[0] ?? "");
+          const siblings = flatRows
+            .filter(
+              (r) =>
+                (r.kind === "file" || r.kind === "folder") && containerOf(r.key) === container,
+            )
+            .map((r) => r.key);
+          const side = dropTarget.targetKey === "after" ? "after" : "before";
+          const ordered = computeReorder(
+            siblings,
+            dragState.sourceKeys,
+            dropTarget.afterKey,
+            side,
+          );
+          reorderBinderSiblings(container, ordered);
+        } else if (
+          dragState.sourceKind === "file" &&
+          dropTarget.kind === "into" &&
+          dropTarget.targetKey
+        ) {
           void moveFiles(dragState.sourceKeys, dropTarget.targetKey); // "folder/"
         }
         setDragState(null);
@@ -1082,7 +1580,7 @@ function BinderInner() {
       setDragState(null);
       setDropTarget(null);
     },
-    [dragState, dropTarget, executeAction, outline, moveFiles],
+    [dragState, dropTarget, executeAction, outline, moveFiles, flatRows, reorderBinderSiblings],
   );
 
   // ── Drop line helper ───────────────────────────────────────────
@@ -1144,7 +1642,7 @@ function BinderInner() {
     const knotKey = row.key;
     const stitches = knot.children.filter((c) => c.kind === "stitch");
     const hasStitches = stitches.length > 0;
-    const isExpanded = !collapsed.has(knotKey);
+    const isExpanded = !effectiveCollapsed.has(knotKey);
     const isActive = activeDocKey === knotKey;
     const target: TabTarget = {
       kind: "symbol",
@@ -1160,6 +1658,20 @@ function BinderInner() {
           rowKey={knotKey}
           depth={depth}
           kind="knot"
+          marks={symbolMarks(diagnosticsList, path, knot)}
+          extraActions={
+            <button
+              type="button"
+              className="brink-binder-row-action"
+              title="New stitch"
+              onClick={(e) => {
+                e.stopPropagation();
+                openCreateInput(knotKey, "stitch");
+              }}
+            >
+              <StitchPlusIcon />
+            </button>
+          }
           isFunction={knot.detail === "function"}
           label={knot.name}
           expandable={hasStitches}
@@ -1187,15 +1699,23 @@ function BinderInner() {
             if (!sRow) return null;
             return renderStitch(path, knot, s, sRow, depth + 1);
           })}
+        {creating !== null &&
+          creating.kind === "stitch" &&
+          creating.container === knotKey &&
+          renderCreateGroup(knotKey, depth + 1)}
       </div>
     );
   }
 
   function renderFile(file: FileOutline, depth: number) {
     const knots = file.symbols.filter((s) => s.kind === "knot");
-    const hasChildren = knots.length > 0;
+    // Files mode (#3036, the ruled default): symbol rows exist only in
+    // Structure mode — a file is a leaf, and the whole knot/stitch layer
+    // (with every structural op) reveals behind the toggle. A live search
+    // (#3040) overrides both gates: matches must be visible.
+    const hasChildren = (structureMode || searching) && knots.length > 0;
     const fileKey = file.path;
-    const isExpanded = !collapsed.has(fileKey);
+    const isExpanded = !effectiveCollapsed.has(fileKey);
     const isActive = activeDocKey === fileKey;
     const target: TabTarget = { kind: "file", path: file.path };
     const fileRow = flatRows.find((r) => r.key === fileKey);
@@ -1220,6 +1740,30 @@ function BinderInner() {
                 : undefined
           }
           dimmed={notIncluded}
+          marks={marksByFile.get(file.path)}
+          onMenuClick={(e) => fileRow && handleContextMenu(e, fileRow)}
+          extraActions={
+            // Rendered in BOTH modes (inert outside Structure): a slot that
+            // appears only sometimes shifts the badge on every mode toggle —
+            // the same reserved-width disease the left-side handle had.
+            structureMode ? (
+              <button
+                type="button"
+                className="brink-binder-row-action"
+                title="New knot"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCreateInput(file.path, "knot");
+                }}
+              >
+                <KnotPlusIcon />
+              </button>
+            ) : (
+              <span className="brink-binder-row-action placeholder" aria-hidden>
+                <KnotPlusIcon />
+              </span>
+            )
+          }
           expandable={hasChildren}
           isExpanded={isExpanded}
           isActive={isActive}
@@ -1227,7 +1771,7 @@ function BinderInner() {
           isFocused={focusedKey === fileKey}
           isDragging={dragState?.sourceKind === "file" && dragState.sourceKeys.includes(fileKey)}
           isDropInto={false}
-          dropLinePosition={null}
+          dropLinePosition={dropLineFor(fileKey)}
           draggable={canRenameFiles}
           editing={
             renaming && !renaming.isFolder && renaming.key === fileKey
@@ -1243,7 +1787,12 @@ function BinderInner() {
           onDragOver={(e) => fileRow && handleDragOver(e, fileRow)}
           onDrop={(e) => fileRow && handleDrop(e, fileRow)}
         />
+        {creating !== null &&
+          creating.kind === "knot" &&
+          creating.container === file.path &&
+          renderCreateGroup(file.path, depth + 1)}
         {isExpanded &&
+          hasChildren &&
           knots.map((k) => {
             const kRow = flatRows.find((r) => r.key === `${file.path}::${k.name}`);
             if (!kRow) return null;
@@ -1254,7 +1803,7 @@ function BinderInner() {
   }
 
   function renderFolder(folder: FolderNode, depth: number) {
-    const isExpanded = !collapsed.has(folder.key);
+    const isExpanded = !effectiveCollapsed.has(folder.key);
     const folderRow = flatRows.find((r) => r.key === folder.key);
     return (
       <div key={folder.key}>
@@ -1263,20 +1812,21 @@ function BinderInner() {
           depth={depth}
           kind="folder"
           label={folder.name}
-          expandable={true}
+          expandable={folder.children.length > 0}
           isExpanded={isExpanded}
           isActive={false}
           isSelected={selectedKeys.has(folder.key)}
           isFocused={focusedKey === folder.key}
-          isDragging={false}
+          isDragging={dragState?.sourceKind === "folder" && dragState.sourceKeys.includes(folder.key)}
           isDropInto={dropTarget?.kind === "into" && dropTarget.targetKey === folder.key}
-          dropLinePosition={null}
-          draggable={false}
+          dropLinePosition={dropLineFor(folder.key)}
+          draggable={canRenameFiles}
           editing={
             renaming?.isFolder && renaming.key === folder.key
               ? { initial: folder.name, onCommit: commitRename, onCancel: cancelRename }
               : undefined
           }
+          onMenuClick={(e) => folderRow && handleContextMenu(e, folderRow)}
           onChevronClick={() => toggleCollapsed(folder.key)}
           onClick={() => {
             setFocusedKey(folder.key);
@@ -1284,12 +1834,13 @@ function BinderInner() {
           }}
           onDoubleClick={() => {}}
           onContextMenu={(e) => (folderRow ? handleContextMenu(e, folderRow) : e.preventDefault())}
-          onDragStart={() => {}}
+          onDragStart={(e) => folderRow && handleDragStart(e, folderRow)}
           onDragEnd={handleDragEnd}
           onDragOver={(e) => folderRow && handleDragOver(e, folderRow)}
           onDrop={(e) => folderRow && handleDrop(e, folderRow)}
         />
         {isExpanded && renderTree(folder, depth + 1)}
+        {creating !== null && creating.container === folder.key && renderCreateGroup(folder.key, depth + 1)}
       </div>
     );
   }
@@ -1297,8 +1848,11 @@ function BinderInner() {
   function renderTree(level: TreeLevel, depth: number) {
     return (
       <>
-        {level.folders.map((folder) => renderFolder(folder, depth))}
-        {level.files.map((file) => renderFile(file, depth))}
+        {level.children.map((child) =>
+          child.kind === "folder"
+            ? renderFolder(child.folder, depth)
+            : renderFile(child.file, depth),
+        )}
       </>
     );
   }
@@ -1385,13 +1939,43 @@ function BinderInner() {
   function renderLibraryTree(level: TreeLevel, depth: number) {
     return (
       <>
-        {level.folders.map((folder) => renderLibraryFolder(folder, depth))}
-        {level.files.map((file) => renderLibraryFile(file, depth))}
+        {level.children.map((child) =>
+          child.kind === "folder"
+            ? renderLibraryFolder(child.folder, depth)
+            : renderLibraryFile(child.file, depth),
+        )}
       </>
     );
   }
 
   const libraryTree = buildBinderTree(libraryFiles);
+
+  // Every expandable key, for collapse-all (#3036): folders, files with
+  // symbol children (Structure mode only), knots with stitches, and the
+  // Library's folders. Cheap to recompute per render; only used on click.
+  const collapseAllKeys = (): string[] => {
+    const keys: string[] = [];
+    const walkFolders = (level: TreeLevel, toKey: (k: string) => string): void => {
+      for (const folder of level.folders) {
+        keys.push(toKey(folder.key));
+        walkFolders(folder, toKey);
+      }
+      if (structureMode) {
+        for (const file of level.files) {
+          const knots = file.symbols.filter((sym) => sym.kind === "knot");
+          if (knots.length > 0) keys.push(toKey(file.path));
+          for (const k of knots) {
+            if (k.children.some((c) => c.kind === "stitch")) {
+              keys.push(toKey(`${file.path}::${k.name}`));
+            }
+          }
+        }
+      }
+    };
+    walkFolders(buildBinderTree(outline), (k) => k);
+    walkFolders(buildBinderTree(libraryFiles), (k) => libraryFolderKey(k));
+    return keys;
+  };
 
   return (
     <div
@@ -1400,7 +1984,81 @@ function BinderInner() {
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
-      {renderTree(buildBinderTree(outline), 0)}
+      <div className="brink-binder-toolbar">
+        <div className="brink-binder-mode-toggle" role="tablist" aria-label="Binder mode">
+          <button
+            title="Files"
+            className={structureMode ? "" : "active"}
+            onClick={() => structureMode && toggleStructureMode()}
+          >
+            <FilesModeIcon />
+          </button>
+          <button
+            title="Structure"
+            className={structureMode ? "active" : ""}
+            onClick={() => !structureMode && toggleStructureMode()}
+          >
+            <StructureModeIcon />
+          </button>
+        </div>
+        <div className="spacer" />
+        <button
+          className={"brink-binder-tool" + (searchOpen ? " active" : "")}
+          title="Search binder"
+          onClick={() => {
+            const next = !searchOpen;
+            setSearchOpen(next);
+            if (!next) setQuery("");
+            else requestAnimationFrame(() => searchRef.current?.focus());
+          }}
+        >
+          <SearchIcon />
+        </button>
+        <button
+          className="brink-binder-tool"
+          title="Expand all"
+          onClick={() => setAllCollapsed([])}
+        >
+          <ExpandAllIcon />
+        </button>
+        <button
+          className="brink-binder-tool"
+          title="Collapse all"
+          onClick={() => setAllCollapsed(collapseAllKeys())}
+        >
+          <CollapseAllIcon />
+        </button>
+      </div>
+      {searchOpen && (
+        <div className="brink-binder-search">
+          <input
+            ref={searchRef}
+            className="brink-binder-search-input"
+            type="text"
+            placeholder="file or knot/stitch name…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setQuery("");
+                setSearchOpen(false);
+              }
+            }}
+          />
+          {query !== "" && (
+            <button
+              className="brink-binder-search-clear"
+              title="Clear"
+              onClick={() => setQuery("")}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+      {renderTree(buildBinderTree(visibleOutline, treeOptions), 0)}
+      {renderCreateGroup("", 0, true)}
       {libraryFiles.length > 0 && !projectIsInk && (
         <div className="brink-binder-library-section">
           <BinderRow
@@ -1439,21 +2097,18 @@ function BinderInner() {
           Move to project root
         </div>
       )}
-      <div className="brink-binder-row brink-binder-new" onClick={handleNewClick}>
-        + New file
-      </div>
-      {inputActive && (
-        <div className="brink-binder-input-wrapper">
-          <input
-            ref={inputRef}
-            className="brink-tab-input"
-            type="text"
-            placeholder="filename.ink"
-            defaultValue={newFileDir}
-            size={16}
-            onKeyDown={handleInputKeyDown}
-            onBlur={cancelInput}
-          />
+      {hasConfig && (
+        <div className="brink-binder-config-slot">
+          <div
+            className="brink-binder-row brink-binder-config-row"
+            data-binder-row-key="brink.toml"
+            onClick={() => openTarget({ kind: "file", path: "brink.toml" }, false)}
+          >
+            <span className="brink-binder-icon brink-binder-icon-config">
+              <GearIcon />
+            </span>
+            <span className="brink-binder-config-name">brink.toml</span>
+          </div>
         </div>
       )}
       {contextMenu && (

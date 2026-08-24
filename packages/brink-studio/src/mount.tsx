@@ -31,7 +31,12 @@ import {
   type FileConflict,
   type FileProvider,
 } from "@brink-lang/editor";
-import { createStudioStore, type StudioStore } from "@brink/studio-store";
+import {
+  BINDER_SIDECAR_PATH,
+  createStudioStore,
+  parseBinderOrder,
+  type StudioStore,
+} from "@brink/studio-store";
 import {
   CommandRegistry,
   DocumentTypeRegistry,
@@ -454,6 +459,15 @@ export async function mountStudio(
     },
   });
   await project.initialize();
+
+  // The .binder.json order sidecar (#3038): loaded straight from the
+  // provider — it never enters the wasm session (presentation, not
+  // source). Mutations persist through the provider's canonical write.
+  const sidecarText = await provider.requestFile?.(BINDER_SIDECAR_PATH).catch(() => null);
+  store.getState().setBinderOrder(parseBinderOrder(sidecarText ?? null));
+  store.setState({
+    _persistBinderOrder: (text: string) => provider.createFile(BINDER_SIDECAR_PATH, text),
+  });
 
   // Register the host's capability manifest before anything compiles, so
   // the very first analysis already validates call sites against it.

@@ -1,0 +1,88 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 330,
+      "h": 640,
+      "title": "Files mode"
+    },
+    {
+      "file": "Structure.dc.html",
+      "x": 400,
+      "y": 0,
+      "w": 330,
+      "h": 560,
+      "title": "Structure mode"
+    },
+    {
+      "file": "CreateRow.dc.html",
+      "x": 800,
+      "y": 0,
+      "w": 760,
+      "h": 420,
+      "title": "Inline creation"
+    },
+    {
+      "file": "Order.dc.html",
+      "x": 800,
+      "y": 470,
+      "w": 860,
+      "h": 470,
+      "title": "The order sidecar"
+    },
+    {
+      "file": "Search.dc.html",
+      "x": 400,
+      "y": 620,
+      "w": 330,
+      "h": 480,
+      "title": "Search & filter"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "note-1",
+      "x": 279,
+      "y": 28,
+      "w": 124,
+      "text": "we should have some icons for this toggle"
+    },
+    {
+      "id": "note-2",
+      "x": 192,
+      "y": 221,
+      "w": 240,
+      "text": "we should also use icons for the + file and + folder buttons, the words are long and tend to be ugly in this case"
+    },
+    {
+      "id": "note-3",
+      "x": 585,
+      "y": 175,
+      "w": 240,
+      "text": "we should add the grab handles to the structure mode like you have in the file view"
+    },
+    {
+      "id": "note-4",
+      "x": 670,
+      "y": 40,
+      "w": 240,
+      "text": "we also probably want a search/filter affordance where we can search by filename, structural name, and also tags on the knots/stitches/functions"
+    },
+    {
+      "id": "note-5",
+      "x": 58,
+      "y": 159,
+      "w": 240,
+      "text": "we should use the brink icon for .ink files in the binder view. or a modified version of it, at least"
+    },
+    {
+      "id": "note-6",
+      "x": 52,
+      "y": 453,
+      "w": 240,
+      "text": "maybe we want a dedicated sort at the top/bottom for the brink.toml ? \n\nlet's also consider how we display files/knots/etc. that contain warnings/errors"
+    }
+  ]
+}

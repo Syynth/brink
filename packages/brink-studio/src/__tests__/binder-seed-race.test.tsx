@@ -275,17 +275,18 @@ describe("Binder in-row rename pre-select (#2571, SELECT-INVARIANT Binder.rename
 // ── Binder.newFileInput.cursorToEnd (the inline New File field) ───────
 
 describe("Binder new-file caret placement (#2571, SELECT-INVARIANT Binder.newFileInput.cursorToEnd)", () => {
-  /** Click "+ New file" — the plain, undebounced row handler. Returns the
-   *  field with its animation frame still pending. */
+  /** Click the root create group's New-file button (#3039's 50/50 icon
+   *  pair replaced the old "+ New file" row). Returns the field with its
+   *  animation frame still pending. */
   function openNewFile(): HTMLInputElement {
     mountBinder();
-    click(query(".brink-binder-new"));
-    return query<HTMLInputElement>(".brink-tab-input");
+    click(query(".brink-create-group.big .brink-create-btn[title='New file']"));
+    return query<HTMLInputElement>(".brink-create-input");
   }
 
-  /** Open "New file here" from a folder row's context menu, which seeds the
-   *  field with that folder's prefix (`target.prefix` in
-   *  `BinderContextMenu.tsx`'s FOLDER branch). */
+  /** Open "New file here" from a folder row's context menu — under #3039
+   *  this opens that FOLDER's inline create input (the container is
+   *  implied; the field takes a bare name, no seeded prefix). */
   function openNewFileInFolder(): HTMLInputElement {
     mountBinder();
     // Right-click the folder row; folders render expanded by default so no
@@ -299,7 +300,7 @@ describe("Binder new-file caret placement (#2571, SELECT-INVARIANT Binder.newFil
     );
     if (item === undefined) throw new Error("no 'New file here' item in the context menu");
     click(item);
-    return query<HTMLInputElement>(".brink-tab-input");
+    return query<HTMLInputElement>(".brink-create-input");
   }
 
   it("leaves text typed during the deferred frame alone, and never widens to a selection", () => {
@@ -330,37 +331,25 @@ describe("Binder new-file caret placement (#2571, SELECT-INVARIANT Binder.newFil
     expect(input.selectionStart).toBe("hello.ink".length);
   });
 
-  it("puts the caret after the seeded directory prefix on an untouched field", () => {
-    // Preservation guard: the point of the deferred call is that a field
-    // pre-filled with "scenes/" is ready to type a filename into, rather than
-    // leaving the caret in front of the prefix. Deleting the
-    // `setSelectionRange` must fail here — otherwise this call site could be
-    // "fixed" by removing it and the invariant would hold vacuously.
+  it("the folder context menu opens THAT container's create input, and the caret invariant holds there too", () => {
+    // #3039 replaced the seeded "scenes/" prefix with an implied container:
+    // the input opens EMPTY inside the folder's own create row, and the
+    // typed-during-the-frame invariant is identical to the root case.
     const input = openNewFileInFolder();
-    expect(input.value).toBe("scenes/");
+    expect(input.value).toBe("");
+    expect(
+      input.closest("[data-create-container]")?.getAttribute("data-create-container"),
+      "the create input must belong to the right-clicked folder's container",
+    ).toBe("scenes/");
     expect(frames).toHaveLength(1);
 
-    // A write to `.value` parks the caret at the end of the value, so a
-    // freshly seeded field arrives here already reading (7, 7) — which would
-    // make the assertions below pass with the call site deleted (measured:
-    // deleting it left this test green). Reset to 0 so the assertions have to
-    // be EARNED by the call site instead of inheriting their expected answer
-    // from the seed.
-    //
-    // This reset is a vacuity guard, not a jsdom-vs-browser correction
-    // (#2595). The park is platform behaviour the HTML standard mandates for
-    // the `.value` setter, and React seeds an uncontrolled `defaultValue`
-    // field by writing exactly that property — measured at (6, 6) on the real
-    // `#brink-rename-input` in Chromium 145 by the e2e "a defaultValue-seeded
-    // field parks the caret at the end in a real browser"
-    // (`e2e/symbol-rename.spec.ts`). jsdom is faithful here; the earlier claim
-    // that a real browser starts such a field at 0 was inferred and is wrong.
-    // Do not delete this line on the theory that it fakes a browser.
-    input.setSelectionRange(0, 0);
+    typeInto(input, "intro");
+    input.setSelectionRange(1, 1); // caret parked mid-word during the frame
 
     flushFrames();
 
-    expect(input.selectionStart).toBe("scenes/".length);
-    expect(input.selectionEnd).toBe("scenes/".length);
+    expect(input.value).toBe("intro");
+    expect(input.selectionStart).toBe(input.selectionEnd);
+    expect(input.selectionStart).toBe("intro".length);
   });
 });

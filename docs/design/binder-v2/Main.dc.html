@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #2a2a3d; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .row { height: 26px; display: flex; align-items: center; gap: 7px;
+           font-size: 12px; padding-right: 10px; }
+    .icon { width: 14px; height: 14px; flex-shrink: 0; display: flex;
+            align-items: center; justify-content: center; }
+    svg { display: block; }
+  </style>
+</helmet>
+<div style="width: 330px; height: 640px; background: #2a2a3d; display: flex; flex-direction: column;
+            border-right: 1px solid #45475a;">
+
+  <!-- Header: title + the mode toggle + tree tools. No text legends anywhere. -->
+  <div style="height: 34px; display: flex; align-items: center; padding: 0 8px 0 12px;
+              border-bottom: 1px solid #45475a; flex-shrink: 0; gap: 8px;">
+    <div style="font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                color: #6c7086; flex-grow: 1;">Binder</div>
+    <!-- Files | Structure segmented toggle -->
+    <div style="display: flex; background: #1e1e2e; border: 1px solid #45475a; border-radius: 5px;
+                overflow: hidden;">
+      <div title="Files" style="padding: 4px 8px; background: #45475a; color: #cdd6f4; cursor: pointer;
+                  display: flex; align-items: center;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+      </div>
+      <div title="Structure" style="padding: 4px 8px; color: #6c7086; cursor: pointer;
+                  display: flex; align-items: center;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7 9-7 9-7-9z"/></svg>
+      </div>
+    </div>
+    <!-- search (note-4): expands to the filter row — see the Search artboard -->
+    <div class="icon" style="color: #6c7086; cursor: pointer;" title="Search binder">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    </div>
+    <!-- expand-all / collapse-all -->
+    <div class="icon" style="color: #6c7086; cursor: pointer;" title="Expand all">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8l5 5 5-5"/><path d="M7 14l5 5 5-5" opacity=".45"/></svg>
+    </div>
+    <div class="icon" style="color: #6c7086; cursor: pointer;" title="Collapse all">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16l5-5 5 5"/><path d="M7 10l5-5 5 5" opacity=".45"/></svg>
+    </div>
+  </div>
+
+  <!-- FILES MODE: calm, files + folders only. SVG icons in currentColor,
+       muted; the ENTRY file carries the open-flow badge. Sidecar display
+       order (not alphabetical): story files first, as the author placed
+       them. Hovered row (harbour.ink) reveals the grab handle. -->
+  <div style="flex-grow: 1; padding: 4px 0; overflow: hidden; font-size: 12px;">
+
+    <div class="row" style="padding-left: 12px; background: #313244;">
+      <span class="icon" style="color: #89b4fa;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <span style="flex-grow: 1; font-weight: 600;">codetta.ink</span>
+      <span style="font-size: 9px; letter-spacing: .05em; text-transform: uppercase; color: #89b4fa;
+                   border: 1px solid #3a4a6b; border-radius: 3px; padding: 1px 4px;">entry</span>
+    </div>
+
+    <div class="row" style="padding-left: 12px; color: #a6adc8;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" transform="rotate(-90 12 12)"/></svg>
+      </span>
+      <span class="icon" style="color: #b4befe; opacity: .8;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      </span>
+      <span style="flex-grow: 1;">clues</span>
+    </div>
+
+    <div class="row" style="padding-left: 12px; color: #a6adc8;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </span>
+      <span class="icon" style="color: #b4befe; opacity: .8;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 9h18" opacity=".5"/></svg>
+      </span>
+      <span style="flex-grow: 1;">menus</span>
+    </div>
+
+    <!-- expanded folder children -->
+    <div class="row" style="padding-left: 30px;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <span style="flex-grow: 1;">title.ink</span>
+      <span style="font-size: 10px; color: #f9e2af; display: flex; align-items: center; gap: 3px;">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>2</span>
+    </div>
+
+    <!-- hover state: grab handle appears; row surface lifts -->
+    <div class="row" style="padding-left: 30px; background: #313244;">
+      <span class="icon" style="color: #585b70; cursor: grab;">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+      </span>
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <span style="flex-grow: 1;">game_menu.ink</span>
+      <span class="icon" style="color: #6c7086; cursor: pointer;" title="Row actions">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+      </span>
+    </div>
+
+    <div class="row" style="padding-left: 30px;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <span style="flex-grow: 1;">options.ink</span>
+      <span style="font-size: 10px; color: #f38ba8; display: flex; align-items: center; gap: 3px;">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="9"/></svg>1</span>
+    </div>
+
+    <!-- the container's create-row group: quiet columns at the container tail -->
+    <div class="row" style="padding-left: 30px; color: #585b70;">
+      <div style="display: flex; gap: 4px; width: 100%; padding-right: 2px;">
+        <div title="New file" style="flex: 1; display: flex; align-items: center; justify-content: center;
+                    border: 1px dashed #45475a; border-radius: 4px; height: 20px;
+                    cursor: pointer;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6M9 15h6"/></svg>
+        </div>
+        <div title="New folder" style="flex: 1; display: flex; align-items: center; justify-content: center;
+                    border: 1px dashed #45475a; border-radius: 4px; height: 20px;
+                    cursor: pointer;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="padding-left: 12px; color: #a6adc8;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" transform="rotate(-90 12 12)"/></svg>
+      </span>
+      <span class="icon" style="color: #b4befe; opacity: .8;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      </span>
+      <span style="flex-grow: 1;">story</span>
+    </div>
+
+    <div class="row" style="padding-left: 12px; opacity: .55;">
+      <span class="icon" style="color: #6c7086;">
+        <svg width="13" height="13" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M50 6 C54 16 64 28 73 41 A28 28 0 1 1 27 41 C36 28 46 16 50 6 Z"/></svg>
+      </span>
+      <span style="flex-grow: 1;">offcuts.ink</span>
+      <span style="font-size: 9px; letter-spacing: .05em; text-transform: uppercase; color: #6c7086;
+                   border: 1px solid #45475a; border-radius: 3px; padding: 1px 4px;">not included</span>
+    </div>
+  </div>
+
+  <!-- pinned config slot (note-6): brink.toml gets a dedicated row above the
+       foot, separated from the story tree — it is the project's identity,
+       not a story file. Click opens the form view (#3015). -->
+  <div style="border-top: 1px solid #45475a; flex-shrink: 0;">
+    <div class="row" style="padding-left: 12px; color: #a6adc8;">
+      <span class="icon" style="color: #89b4fa; opacity: .8;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h0a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h0a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+      </span>
+      <span style="flex-grow: 1; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;">brink.toml</span>
+    </div>
+  </div>
+
+  <!-- root create group, pinned at the foot: icon-only (note-2) -->
+  <div style="border-top: 1px solid #45475a; padding: 7px 12px; flex-shrink: 0;
+              display: flex; gap: 6px;">
+    <div title="New file" style="flex: 1; display: flex; align-items: center; justify-content: center;
+                border: 1px dashed #45475a; border-radius: 5px; height: 24px;
+                cursor: pointer; color: #6c7086;">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6M9 15h6"/></svg>
+    </div>
+    <div title="New folder" style="flex: 1; display: flex; align-items: center; justify-content: center;
+                border: 1px dashed #45475a; border-radius: 5px; height: 24px;
+                cursor: pointer; color: #6c7086;">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/></svg>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

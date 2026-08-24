@@ -10,6 +10,15 @@
  */
 
 import type { StateCreator } from "zustand";
+import {
+  EMPTY_BINDER_ORDER,
+  addFolder,
+  applyReorder,
+  rekeyBinderOrder,
+  removeFromBinderOrder,
+  serializeBinderOrder,
+  type BinderOrder,
+} from "../binder-order.js";
 import type { StudioState } from "../index.js";
 import type { StructuralResult, RenameDiagnostic } from "@brink/wasm-types";
 
@@ -69,6 +78,21 @@ export type UndoEntry =
 
 export interface BinderSlice {
   collapsed: Set<string>;
+  /**
+   * Binder v2 (#3036): whether Structure mode is on — symbol rows
+   * (knots/stitches/functions) render only then. Files-only is the ruled
+   * default ("the noise", 2026-08-23). Session state; not persisted yet.
+   */
+  structureMode: boolean;
+  /**
+   * The `.binder.json` order sidecar (#3038) — authored display order +
+   * the empty-folder registry. Loaded by `mountStudio` after project
+   * init; every mutation persists through {@link BinderSlice._persistBinderOrder}.
+   */
+  binderOrder: BinderOrder;
+  /** Host persistence seam for the sidecar (set by `mountStudio`; null in
+   *  tests/hosts without one — mutations then stay in-memory). */
+  _persistBinderOrder: ((text: string) => Promise<void>) | null;
   selectedKeys: Set<string>;
   focusedKey: string | null;
   undoStack: UndoEntry[];
@@ -77,6 +101,21 @@ export interface BinderSlice {
   libraryExpanded: boolean;
 
   toggleCollapsed(key: string): void;
+  /** Flip Files ⇄ Structure mode (#3036). */
+  toggleStructureMode(): void;
+  /** Wholesale-replace the collapsed set — expand all (`[]`) / collapse
+   *  all (every expandable key, computed by the Binder) (#3036). */
+  setAllCollapsed(keys: string[]): void;
+  /** Seed the sidecar state at mount (#3038). */
+  setBinderOrder(value: BinderOrder): void;
+  /** Record a container's new full child order and persist (#3038). */
+  reorderBinderSiblings(container: string, orderedIds: string[]): void;
+  /** Register a created (possibly empty) folder and persist (#3038/#3039). */
+  registerBinderFolder(folderId: string): void;
+  /** Re-key the sidecar for a rename/move and persist (#3038). */
+  rekeyBinderPaths(oldId: string, newId: string): void;
+  /** Drop a removed file/folder from the sidecar and persist (#3038). */
+  removeBinderPath(id: string): void;
   toggleLibraryExpanded(): void;
   selectKey(key: string, multi: boolean): void;
   clearSelection(): void;
@@ -114,8 +153,24 @@ function areSameKindSiblings(a: string, b: string): boolean {
 
 // ── Slice creator ───────────────────────────────────────────────────
 
-export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> = (set, get) => ({
+export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> = (set, get) => {
+  /** Apply + persist one sidecar mutation (#3038). A no-op when the value
+   *  is unchanged; persistence failures surface to the console — display
+   *  order is cached authorship, never worth blocking an op over. */
+  const persistOrder = (next: BinderOrder): void => {
+    if (next === get().binderOrder) return;
+    set({ binderOrder: next });
+    const persist = get()._persistBinderOrder;
+    if (persist === null) return;
+    void persist(serializeBinderOrder(next)).catch((e: unknown) => {
+      console.error("[binder] .binder.json write failed", e);
+    });
+  };
+  return {
   collapsed: new Set<string>(),
+  structureMode: false,
+  binderOrder: EMPTY_BINDER_ORDER,
+  _persistBinderOrder: null,
   selectedKeys: new Set<string>(),
   focusedKey: null,
   undoStack: [],
@@ -133,6 +188,34 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
 
   toggleLibraryExpanded() {
     set({ libraryExpanded: !get().libraryExpanded });
+  },
+
+  toggleStructureMode() {
+    set({ structureMode: !get().structureMode });
+  },
+
+  setAllCollapsed(keys) {
+    set({ collapsed: new Set(keys) });
+  },
+
+  setBinderOrder(value) {
+    set({ binderOrder: value });
+  },
+
+  reorderBinderSiblings(container, orderedIds) {
+    persistOrder(applyReorder(get().binderOrder, container, orderedIds));
+  },
+
+  registerBinderFolder(folderId) {
+    persistOrder(addFolder(get().binderOrder, folderId));
+  },
+
+  rekeyBinderPaths(oldId, newId) {
+    persistOrder(rekeyBinderOrder(get().binderOrder, oldId, newId));
+  },
+
+  removeBinderPath(id) {
+    persistOrder(removeFromBinderOrder(get().binderOrder, id));
   },
 
   selectKey(key, multi) {
@@ -251,6 +334,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
 
   async deleteFile(path) {
     await deleteFilesWithUndo(get, set, [path], `Deleted ${path}`);
+    get().removeBinderPath(path);
   },
 
   async deleteFolder(prefix, paths) {
@@ -262,14 +346,17 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       paths,
       `Deleted ${label}/ (${paths.length} file${paths.length === 1 ? "" : "s"})`,
     );
+    get().removeBinderPath(prefix);
   },
 
   async renameFile(oldPath, newPath) {
     await renameWithUndo(get, set, oldPath, newPath, "Renamed");
+    get().rekeyBinderPaths(oldPath, newPath);
   },
 
   async moveFile(oldPath, newPath) {
     await renameWithUndo(get, set, oldPath, newPath, "Moved");
+    get().rekeyBinderPaths(oldPath, newPath);
   },
 
   async moveFiles(paths, destPrefix) {
@@ -292,6 +379,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       if (moved === old) continue;
       if (await applyRename(get, old, moved)) {
         renames.unshift({ from: moved, to: old }); // reverse order for undo
+        get().rekeyBinderPaths(old, moved);
       }
     }
     if (renames.length === 0) return;
@@ -319,6 +407,7 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
     const result = await applyDirRename(get, oldPrefix, newPrefix);
     if (result === null || result.moved.length === 0) return;
 
+    get().rekeyBinderPaths(oldPrefix, newPrefix);
     const label = `Renamed ${oldPrefix.replace(/\/$/, "")}/ → ${newPrefix.replace(/\/$/, "")}/`;
     set({
       undoStack: [
@@ -406,7 +495,8 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
       message: `Undid: ${entry.description}${undoSkippedSuffix}`,
     });
   },
-});
+  };
+};
 
 // ── Delete helper ───────────────────────────────────────────────────
 
