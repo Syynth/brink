@@ -1436,7 +1436,7 @@ function BinderInner() {
           }}
           onDoubleClick={() => {}}
           onContextMenu={(e) => (folderRow ? handleContextMenu(e, folderRow) : e.preventDefault())}
-          onDragStart={() => {}}
+          onDragStart={(e) => folderRow && handleDragStart(e, folderRow)}
           onDragEnd={handleDragEnd}
           onDragOver={(e) => folderRow && handleDragOver(e, folderRow)}
           onDrop={(e) => folderRow && handleDrop(e, folderRow)}
