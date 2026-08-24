@@ -713,6 +713,11 @@ export async function mountStudio(
     // native context menu never appears inside the editor
     // (docs/editor-context-menu-spec.md).
     onTextContextMenu: (request) => store.getState().openTextMenu(request),
+    // Find References (menu + Shift-Alt-F) presents through the Search
+    // panel (context-menu spec ruling) — grouped results, click-to-reveal,
+    // inline-editable rows, cross-file included.
+    onShowReferences: (symbol, locations) =>
+      store.getState().showReferences(symbol, locations),
     // Inline rename (#323/#324): the editor's F2 / context-menu rename runs
     // fully in the editor — the badge computes the breakage live, and this
     // commit applies the (already-computed) edits + re-keys the symbol tab.
