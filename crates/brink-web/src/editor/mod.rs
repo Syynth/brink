@@ -20,6 +20,7 @@ mod refactor;
 mod spans;
 mod story_graph;
 mod transform;
+pub(crate) mod utf16_index;
 
 // ── EditorSession ───────────────────────────────────────────────────
 
@@ -800,12 +801,27 @@ impl EditorSession {
         // file-relative) — an INCLUDEd file's error lands on the right tab
         // instead of collapsing onto the entry. No throwaway-driver id
         // remapping: the ids are already this db's.
+        //
+        // Offsets convert through a per-file `Utf16Index` built once per
+        // referenced file (#3065) — the naive per-offset scan made this
+        // conversion O(diagnostics × file size).
+        let mut indexes: BTreeMap<brink_ir::FileId, utf16_index::Utf16Index<'_>> = BTreeMap::new();
+        for d in product.errors.iter().chain(product.warnings.iter()) {
+            indexes.entry(d.file).or_insert_with(|| {
+                utf16_index::Utf16Index::new(self.session.source(d.file).unwrap_or(""))
+            });
+        }
         let to_js = |d: &brink_ir::Diagnostic| {
-            let src = self.session.source(d.file).unwrap_or("");
+            let (start, end) = indexes.get(&d.file).map_or((0, 0), |ix| {
+                (
+                    ix.byte_to_utf16(d.range.start().into()),
+                    ix.byte_to_utf16(d.range.end().into()),
+                )
+            });
             DiagnosticJs {
                 message: d.message.clone(),
-                start: byte_to_utf16(src, d.range.start().into()),
-                end: byte_to_utf16(src, d.range.end().into()),
+                start,
+                end,
                 // Effective severity (issue #1367), not the raw
                 // `DiagnosticCode::severity()` default — `options` is the
                 // same `AnalysisOptions` `compile` above ran under.

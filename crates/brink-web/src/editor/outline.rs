@@ -1,6 +1,7 @@
 use wasm_bindgen::prelude::*;
 
 use super::EditorSession;
+use super::utf16_index::Utf16Index;
 use crate::editor_dto::{DocumentSymbolJs, FileOutlineJs, IncludeInfoJs, convert_document_symbol};
 
 #[wasm_bindgen]
@@ -39,9 +40,10 @@ impl EditorSession {
 
         let source = self.session.source(file_id).unwrap_or("");
         let syms = brink_ide::document::document_symbols(hir, manifest, source);
+        let index = Utf16Index::new(source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
-            .map(|s| convert_document_symbol(s, source))
+            .map(|s| convert_document_symbol(s, &index))
             .collect();
         serde_json::to_string(&items).unwrap_or_default()
     }
@@ -121,9 +123,10 @@ impl EditorSession {
 
             let source = db.source(id).unwrap_or("");
             let syms = brink_ide::document::document_symbols(hir, manifest, source);
+            let index = Utf16Index::new(source);
             let items: Vec<DocumentSymbolJs> = syms
                 .into_iter()
-                .map(|s| convert_document_symbol(s, source))
+                .map(|s| convert_document_symbol(s, &index))
                 .collect();
             outline.push(FileOutlineJs {
                 path: path.to_owned(),
@@ -149,9 +152,10 @@ impl EditorSession {
 
         let source = self.session.source(file_id).unwrap_or("");
         let syms = brink_ide::document::document_symbols(hir, manifest, source);
+        let index = Utf16Index::new(source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
-            .map(|s| convert_document_symbol(s, source))
+            .map(|s| convert_document_symbol(s, &index))
             .collect();
 
         serde_json::to_string(&items).unwrap_or_default()
