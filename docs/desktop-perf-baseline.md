@@ -148,6 +148,20 @@ task **2.9 s**. The desktop shell adds the 2×N serial IPC read on top
 | 5 | Scroll path: rails gutter per-line maps, viewportChanged rebuilds, hover machinery | **Confirmed, led by the rails gutter**: 19.7 ms per rebuild batch, 1.5 s per full scroll pass; hover/mouse-move 32–40 ms per event | fast-scroll rows |
 | 6 | Startup O(N²): double IPC read + per-file analysis | **Confirmed shape natively** (analyze-each 81 ms vs analyze-once 33 ms at 50 files, gap superlinear); first compile 2.2 s in-browser; desktop IPC half still to be timed in the shell | `ide_init.*`; project-open |
 
+## Filed issues (the fix-wave backlog)
+
+One issue per confirmed hot path, each carrying its numbers and its judge
+scenario — filed 2026-08-24, on the Brink board:
+
+- #3063 — `IdeSnapshot` deep-clones the whole project's HIR per keystroke (needs-design)
+- #3064 — per-keystroke whole-document query stack (96 ms p50 keystroke)
+- #3065 — `byte_to_utf16` linear scans (17,744 calls/compile cycle)
+- #3066 — unconditional compile fan-out (outline/story-graph/disassembly)
+- #3067 — rails gutter per-visible-line map rebuild (1.5 s per scroll pass)
+- #3068 — superlinear project open (per-file analysis + desktop double IPC read)
+- #3069 — one-time ~1.1 s first post-edit compile (root-cause)
+- #2885 — commented with the refutation numbers (perf half answered)
+
 ## Recording + comparing runs
 
 ```sh
