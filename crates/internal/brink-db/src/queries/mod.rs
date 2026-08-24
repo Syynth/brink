@@ -117,6 +117,9 @@ use crate::include_graph::IncludeGraph;
 
 mod analysis;
 mod heap_size;
+mod segments;
+
+pub(crate) use segments::{FileSegment, file_segments_query};
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
@@ -159,6 +162,10 @@ impl Default for BrinkDatabase {
                 // Option A total (2026-08-24): the member-set key for
                 // per-root subset analysis (`subset_analysis_query`).
                 .ingredient::<MemberSet<'_>>()
+                // Per-knot lowering (#3084): the segment tracked structs
+                // plus the segmentation query minting them.
+                .ingredient::<FileSegment<'_>>()
+                .ingredient::<file_segments_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-

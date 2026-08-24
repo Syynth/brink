@@ -258,6 +258,20 @@ impl ProjectDb {
         self.path_to_id.get(path).copied()
     }
 
+    /// Test-only reach into the salsa database, for in-crate pins that
+    /// drive `pub(crate)` queries directly (e.g. the `file_segments_query`
+    /// identity pins) without widening the public API.
+    #[cfg(test)]
+    pub(crate) fn test_salsa(&self) -> &crate::queries::BrinkDatabase {
+        &self.salsa
+    }
+
+    /// Test-only [`SourceFile`] lookup — see [`test_salsa`](Self::test_salsa).
+    #[cfg(test)]
+    pub(crate) fn test_source_file(&self, id: FileId) -> Option<crate::queries::SourceFile> {
+        self.files.get(&id).copied()
+    }
+
     /// Look up a file's path by ID.
     pub fn file_path(&self, id: FileId) -> Option<&str> {
         self.id_to_path.get(&id).map(String::as_str)
