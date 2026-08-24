@@ -673,3 +673,21 @@ export const elementTypeField = StateField.define<LineInfo[]>({
     return computeLineInfos(tr.state);
   },
 });
+
+/**
+ * The INCLUDE target when `pos` sits on the path text of an INCLUDE line
+ * (ruled 2026-08-24: cmd-clicking the file in an INCLUDE opens it). The
+ * keyword and surrounding whitespace are not part of the clickable span —
+ * only the path itself. Null anywhere else.
+ */
+export function includePathAt(state: EditorState, pos: number): string | null {
+  const line = state.doc.lineAt(pos);
+  const info = state.field(elementTypeField, false)?.[line.number - 1];
+  if (info?.type !== ElementType.Include) return null;
+  const m = /^(\s*INCLUDE\s+)(.+?)\s*$/.exec(line.text);
+  const target = m?.[2];
+  if (m === null || target === undefined || target === "") return null;
+  const start = line.from + (m[1]?.length ?? 0);
+  const end = start + target.length;
+  return pos >= start && pos <= end ? target : null;
+}

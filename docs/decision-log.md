@@ -3263,3 +3263,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The Search panel's top piece is Direction C of the search-panel-header canvas: the bordered references header is gone; references identity renders as a dismissible scope chip (`refs <symbol> ✕`) INSIDE the query box (typing replaces it — the existing exit semantic made visible), and below the form sits one flat summary strip shared by both modes: count left ("N results/references · M files"), tool cluster right (binder expand/collapse-all icons · context value `1↑2↓` · ↻). The strip never wraps; the chip symbol ellipsizes.
 - **WHY:** Maintainer ("C is great, let's do that") after rejecting the stacked bordered pill ("this is dookie"): the ✕ belongs on the thing it clears, the chip makes typing-to-exit physically obvious (JetBrains scope-chip convention), and a strip that carries no identity always fits one row at panel widths.
+
+## Cmd-click on an INCLUDE path opens the file
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** Cmd/Ctrl-clicking the file-path text of an `INCLUDE` line opens that file (same `onNavigateToFile` route as the context menu's "Open <file>" item). The clickable span is the path text only — the INCLUDE keyword stays an ordinary click.
+- **WHY:** Maintainer ("⌘click on the file in an include statement should open that file, i think"): the path is a navigable reference like any other symbol; cmd-click is the editor's universal follow-the-reference gesture, so it should not dead-end on INCLUDEs.

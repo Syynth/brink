@@ -2,6 +2,7 @@ import { type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Location } from "@brink/wasm-types";
 import { findReferencesAt } from "./references.js";
+import { includePathAt } from "./element-type.js";
 
 export interface GotoDefinitionOptions {
   gotoDefinition: (source: string, offset: number) => Location | null;
@@ -45,8 +46,10 @@ export function navigateToLocation(
  * is *inside* the definition's own span (same file), where navigation
  * would be a no-op; there, run Find References instead (ruled 2026-08-24).
  * Falls back to navigation when references are unavailable or empty, so
- * the click still selects the declaration. Returns false when nothing
- * resolves (the click stays an ordinary click).
+ * the click still selects the declaration. When no definition resolves but
+ * `pos` sits on the path text of an INCLUDE line, opens that file (ruled
+ * 2026-08-24). Returns false when nothing resolves (the click stays an
+ * ordinary click).
  */
 export function gotoOrReferencesAt(
   view: EditorView,
@@ -62,7 +65,14 @@ export function gotoOrReferencesAt(
     return false;
   }
 
-  if (!location) return false;
+  if (!location) {
+    const include = includePathAt(view.state, pos);
+    if (include !== null && options.onNavigateToFile) {
+      options.onNavigateToFile({ file: include, start: 0, end: 0 });
+      return true;
+    }
+    return false;
+  }
 
   const activeFile = options.getActiveFile?.();
   const sameFile = activeFile === undefined || location.file === activeFile;

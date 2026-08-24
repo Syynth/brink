@@ -9,11 +9,12 @@
  * `posAtCoords` is untestable here and stays a thin wrapper.
  */
 
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Location } from "@brink/wasm-types";
 import { gotoOrReferencesAt } from "../goto-definition.js";
+import { brinkStudio } from "../extensions.js";
 
 const DOC = "== barter ==\nSee the wares.\n-> barter\n";
 const DECL: Location = { file: "a.ink", start: 3, end: 9 };
@@ -111,5 +112,55 @@ describe("gotoOrReferencesAt", () => {
   it("stays inert when nothing resolves", () => {
     const v = makeView();
     expect(gotoOrReferencesAt(v, 20, { gotoDefinition: () => null })).toBe(false);
+  });
+});
+
+describe("gotoOrReferencesAt on INCLUDE lines", () => {
+  // The INCLUDE fallback needs line classification (elementTypeField), so
+  // these mount the full extension set with stub callbacks.
+  function makeClassifiedView(doc: string): EditorView {
+    view = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [
+          brinkStudio({
+            compile: () => ({ ok: true, diagnostics: [] }) as never,
+            getSemanticTokens: () => [],
+            getTokenTypeNames: () => [],
+          } as Parameters<typeof brinkStudio>[0]),
+        ],
+      }),
+      parent: document.body,
+    });
+    return view;
+  }
+
+  const DOC2 = "INCLUDE scenes/intro.ink\nHello\n";
+
+  it("cmd-click on the path text opens the file (ruled 2026-08-24)", () => {
+    const v = makeClassifiedView(DOC2);
+    const nav = vi.fn();
+    const ok = gotoOrReferencesAt(v, DOC2.indexOf("intro"), {
+      gotoDefinition: () => null,
+      onNavigateToFile: nav,
+    });
+    expect(ok).toBe(true);
+    expect(nav).toHaveBeenCalledWith({ file: "scenes/intro.ink", start: 0, end: 0 });
+  });
+
+  it("the INCLUDE keyword is not part of the clickable span", () => {
+    const v = makeClassifiedView(DOC2);
+    const nav = vi.fn();
+    expect(
+      gotoOrReferencesAt(v, 2, { gotoDefinition: () => null, onNavigateToFile: nav }),
+    ).toBe(false);
+    expect(nav).not.toHaveBeenCalled();
+  });
+
+  it("stays inert without an onNavigateToFile host", () => {
+    const v = makeClassifiedView(DOC2);
+    expect(
+      gotoOrReferencesAt(v, DOC2.indexOf("intro"), { gotoDefinition: () => null }),
+    ).toBe(false);
   });
 });

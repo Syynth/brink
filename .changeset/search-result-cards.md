@@ -18,4 +18,5 @@ rows — the frozen snapshot flags them instead.
 Also fixes cmd/ctrl-click goto/references from a real pointer: the
 handler now binds mousedown (CodeMirror's own cmd-mousedown multi-cursor
 preventDefault suppressed the browser click event a click-bound handler
-was waiting for).
+was waiting for). And cmd/ctrl-clicking the file path in an INCLUDE
+statement now opens that file.
