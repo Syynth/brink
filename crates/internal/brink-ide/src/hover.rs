@@ -49,106 +49,23 @@ pub fn hover(
     }
 
     let content = if let Some(info) = find_def_at_offset(analysis, file_id, offset) {
-        let kind_str = match info.kind {
-            brink_ir::SymbolKind::Knot => "knot",
-            brink_ir::SymbolKind::Stitch => "stitch",
-            brink_ir::SymbolKind::Variable => "variable",
-            brink_ir::SymbolKind::Constant => "constant",
-            brink_ir::SymbolKind::List => "list",
-            brink_ir::SymbolKind::ListItem => "list item",
-            brink_ir::SymbolKind::External => "external function",
-            brink_ir::SymbolKind::Label => "label",
-            brink_ir::SymbolKind::Param => "parameter",
-            brink_ir::SymbolKind::Temp => "temp variable",
-            brink_ir::SymbolKind::Struct => "struct",
+        let ctx = SectionCtx {
+            analysis,
+            db,
+            file_id,
+            info,
+            meta: analysis.symbol_meta.get(&info.id),
         };
-
-        // Symbol-metadata enrichment: docs and typed params/returns for
-        // externals, knots, and stitches; initializer info for VAR/CONST.
-        let meta = analysis.symbol_meta.get(&info.id);
-
-        let (params_str, ret_str) = signature_strs(info, meta, db);
-        let inferred_local_str = inferred_local_type_str(analysis, db, info);
-
-        // Initializer info: `health: int`, `SPEED: float = 0.5`.
-        let value_str = meta
-            .and_then(|m| m.value.as_ref())
-            .map_or(String::new(), |v| {
-                let mut s = String::new();
-                if let Some(ty) = &v.ty {
-                    let _ = write!(s, ": {}", ty.name());
-                }
-                if let Some(text) = &v.value_text {
-                    let _ = write!(s, " = {text}");
-                }
-                s
-            });
-
-        let kind_tag = meta.map_or(String::new(), |m| match m.kind {
-            brink_ir::ExternalKind::Plain => String::new(),
-            brink_ir::ExternalKind::Query => " [query]".to_string(),
-            brink_ir::ExternalKind::Effect => " [effect]".to_string(),
-            brink_ir::ExternalKind::Presentation => " [presentation]".to_string(),
-        });
-
-        let detail_str = info
-            .detail
-            .as_deref()
-            .map_or(String::new(), |d| format!(" [{d}]"));
-
-        let doc_block = meta
-            .and_then(|m| m.doc.as_deref())
-            .map_or(String::new(), |d| format!("\n\n{d}"));
-
-        let file_note = project_files
-            .iter()
-            .find(|(fid, _, _)| *fid == info.file)
-            .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
-
-        // T1c-4 (#702, docs/t1c-spec.md §11): a fn-value slot — a
-        // VAR/CONST/temp whose declaration initializer is a direct
-        // `#fn(target, args…)` literal — shows the same bound-signature
-        // display form `string(f)` produces at runtime (spec §5), built
-        // statically from the HIR since there is no compiled `Program` at
-        // hover time. `None` for every other symbol and for indirect
-        // (`bind()`, copy-of-a-variable) bindings — see
-        // `fn_value_hover`'s module doc.
-        let fn_value_str = db
-            .hir(file_id)
-            .and_then(|hir| crate::fn_value_hover::fn_value_slot_signature(analysis, hir, info))
-            .map_or(String::new(), |sig| format!("\n\n`{sig}`"));
-
-        // T2-4 (#863, docs/effects-spec.md §10): a knot/stitch's *inferred*
-        // effect row — the boring, stable reads/writes/calls display. Only
-        // knots/stitches have a `DefinitionId → row` (`db.effects` is `None`
-        // for every other symbol), so this suffix is empty everywhere else.
-        // Purely advisory: it *shows* the row; the only contract is the
-        // optional `#@effects` assertion (checked in the analyzer, `E103`).
-        let effect_row_str = matches!(
-            info.kind,
-            brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
-        )
-        .then(|| db.effects(info.id))
-        .flatten()
-        .map_or(String::new(), |row| {
-            let view = crate::effects::EffectRowView::from_row(&row, &analysis.index);
-            format!("\n\n**effects** `{}`", view.display_line())
-        });
-
-        // Issue #1719's remaining scope: a `@[style(...)]` annotation
-        // declared on a native knot/stitch (`crate::style_hover`'s module
-        // doc — a compiler-side-only query, not the held editor-rendering
-        // consumer). Empty for every ink file and every symbol with no
-        // `@[style]` of its own.
-        let style_str = db
-            .hir(file_id)
-            .and_then(|hir| crate::style_hover::style_hover_text(hir, info))
-            .unwrap_or_default();
-
-        format!(
-            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}{effect_row_str}{style_str}",
-            info.name
-        )
+        let mut blocks = vec![head_line(&ctx)];
+        for section in HOVER_SECTIONS {
+            if let Some(block) = section(&ctx) {
+                blocks.push(block);
+            }
+        }
+        if let Some(note) = defined_in_section(info, project_files) {
+            blocks.push(note);
+        }
+        blocks.join("\n\n")
     } else {
         let word = word_at_offset(source, offset)?;
         builtin_hover_text(word).or_else(|| stdlib_hover_text(word))?
@@ -317,6 +234,182 @@ fn inferred_local_type_str(
         .unwrap_or_default()
 }
 
+// ── Hover sections — the flexible dispatch (#3054 review) ───────────
+//
+// The hover is one HEAD line (kind + name + signature/value) followed by
+// zero-or-more Markdown BLOCKS, joined with blank lines. Every per-kind
+// enrichment is a section provider in `HOVER_SECTIONS`; adding hover
+// content means adding a provider here, not growing a format! call.
+
+/// Everything a section provider may consult.
+struct SectionCtx<'a> {
+    analysis: &'a AnalysisResult,
+    db: &'a ProjectDb,
+    file_id: FileId,
+    info: &'a brink_ir::SymbolInfo,
+    meta: Option<&'a brink_analyzer::SymbolMeta>,
+}
+
+/// Ordered section providers. Each returns one Markdown block or `None`.
+const HOVER_SECTIONS: &[fn(&SectionCtx) -> Option<String>] = &[
+    doc_section,
+    list_members_section,
+    fn_value_section,
+    effect_row_section,
+    style_section,
+];
+
+/// The head line: `**kind** \`name[: ty][= value][(params)][-> ret]\`` plus
+/// detail/external-kind tags.
+fn head_line(ctx: &SectionCtx) -> String {
+    let info = ctx.info;
+    let kind_str = match info.kind {
+        brink_ir::SymbolKind::Knot => "knot",
+        brink_ir::SymbolKind::Stitch => "stitch",
+        brink_ir::SymbolKind::Variable => "variable",
+        brink_ir::SymbolKind::Constant => "constant",
+        brink_ir::SymbolKind::List => "list",
+        brink_ir::SymbolKind::ListItem => "list item",
+        brink_ir::SymbolKind::External => "external function",
+        brink_ir::SymbolKind::Label => "label",
+        brink_ir::SymbolKind::Param => "parameter",
+        brink_ir::SymbolKind::Temp => "temp variable",
+        brink_ir::SymbolKind::Struct => "struct",
+    };
+    let (params_str, ret_str) = signature_strs(info, ctx.meta, ctx.db);
+    let inferred_local_str = inferred_local_type_str(ctx.analysis, ctx.db, info);
+
+    // Initializer info: `health: int`, `SPEED: float = 0.5`.
+    let value_str = ctx
+        .meta
+        .and_then(|m| m.value.as_ref())
+        .map_or(String::new(), |v| {
+            let mut s = String::new();
+            if let Some(ty) = &v.ty {
+                let _ = write!(s, ": {}", ty.name());
+            }
+            if let Some(text) = &v.value_text {
+                let _ = write!(s, " = {text}");
+            }
+            s
+        });
+    let kind_tag = ctx.meta.map_or(String::new(), |m| match m.kind {
+        brink_ir::ExternalKind::Plain => String::new(),
+        brink_ir::ExternalKind::Query => " [query]".to_string(),
+        brink_ir::ExternalKind::Effect => " [effect]".to_string(),
+        brink_ir::ExternalKind::Presentation => " [presentation]".to_string(),
+    });
+    let detail_str = info
+        .detail
+        .as_deref()
+        .map_or(String::new(), |d| format!(" [{d}]"));
+
+    format!(
+        "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}",
+        info.name
+    )
+}
+
+/// The symbol's `///` doc block.
+fn doc_section(ctx: &SectionCtx) -> Option<String> {
+    ctx.meta.and_then(|m| m.doc.clone())
+}
+
+/// LIST / list-item member set — see [`list_members_hover`].
+fn list_members_section(ctx: &SectionCtx) -> Option<String> {
+    let s = list_members_hover(ctx.db, ctx.info);
+    (!s.is_empty()).then_some(s)
+}
+
+/// T1c-4 (#702): a fn-value slot's bound-signature display form.
+fn fn_value_section(ctx: &SectionCtx) -> Option<String> {
+    ctx.db
+        .hir(ctx.file_id)
+        .and_then(|hir| crate::fn_value_hover::fn_value_slot_signature(ctx.analysis, hir, ctx.info))
+        .map(|sig| format!("`{sig}`"))
+}
+
+/// T2-4 (#863): a knot/stitch's inferred effect row — advisory display.
+fn effect_row_section(ctx: &SectionCtx) -> Option<String> {
+    matches!(
+        ctx.info.kind,
+        brink_ir::SymbolKind::Knot | brink_ir::SymbolKind::Stitch
+    )
+    .then(|| ctx.db.effects(ctx.info.id))
+    .flatten()
+    .map(|row| {
+        let view = crate::effects::EffectRowView::from_row(&row, &ctx.analysis.index);
+        format!("**effects** `{}`", view.display_line())
+    })
+}
+
+/// #1719: a native knot/stitch's own `@[style(...)]` annotation.
+fn style_section(ctx: &SectionCtx) -> Option<String> {
+    ctx.db
+        .hir(ctx.file_id)
+        .and_then(|hir| crate::style_hover::style_hover_text(hir, ctx.info))
+        .map(|s| s.trim_start().to_string())
+}
+
+/// The trailing *Defined in `path`* note — placed last, outside the table
+/// (it needs `project_files`, which sections don't).
+fn defined_in_section(
+    info: &brink_ir::SymbolInfo,
+    project_files: &[(FileId, String, String)],
+) -> Option<String> {
+    project_files
+        .iter()
+        .find(|(fid, _, _)| *fid == info.file)
+        .map(|(_, p, _)| format!("*Defined in `{p}`*"))
+}
+
+/// The member-set block for a LIST or list-item hover; empty for every
+/// other symbol kind. The list is looked up in ITS defining file's HIR by
+/// the (unqualified) list name; a hovered member renders bold.
+fn list_members_hover(db: &ProjectDb, info: &brink_ir::SymbolInfo) -> String {
+    let (list_name, hovered_member) = match info.kind {
+        brink_ir::SymbolKind::List => (info.name.as_str(), None),
+        brink_ir::SymbolKind::ListItem => {
+            let mut parts = info.name.splitn(2, '.');
+            let list = parts.next().unwrap_or("");
+            (list, parts.next())
+        }
+        _ => return String::new(),
+    };
+    let Some(hir) = db.hir(info.file) else {
+        return String::new();
+    };
+    let Some(list) = hir.lists.iter().find(|l| l.name.text == list_name) else {
+        return String::new();
+    };
+    let rendered: Vec<String> = list
+        .members
+        .iter()
+        .map(|m| {
+            let mut t = m.name.text.clone();
+            if let Some(v) = m.value {
+                t = format!("{t} = {v}");
+            }
+            if m.is_active {
+                t = format!("({t})");
+            }
+            let code = format!("`{t}`");
+            if hovered_member == Some(m.name.text.as_str()) {
+                format!("**{code}**")
+            } else {
+                code
+            }
+        })
+        .collect();
+    format!(
+        "
+
+**LIST** `{}` — {}",
+        list.name.text,
+        rendered.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use rowan::TextSize;
@@ -422,6 +515,26 @@ mod tests {
             &[],
         )
         .map(|info| info.content)
+    }
+
+    #[test]
+    fn list_and_item_hovers_show_the_member_set() {
+        // #3054 review: hovering a list item (or the list) shows every
+        // member — declared order, ordinals and default-active parens
+        // preserved, the hovered member bold.
+        let src = "LIST Boon = blessed, (cursed), spare = 5
+~ temp b = Boon.cursed
+";
+        let item = hover_at(src, "Boon.cursed");
+        assert!(item.contains("**LIST** `Boon`"), "{item}");
+        assert!(item.contains("**`(cursed)`**"), "{item}");
+        assert!(item.contains("`blessed`"), "{item}");
+        assert!(item.contains("`spare = 5`"), "{item}");
+
+        let list = hover_at(src, "Boon =");
+        assert!(list.contains("**LIST** `Boon`"), "{list}");
+        // No member is bold on the list's own hover.
+        assert!(!list.contains("**`"), "{list}");
     }
 
     #[test]
