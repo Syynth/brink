@@ -8,6 +8,12 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import {
+  CommandRegistry,
+  KeymapOverridesService,
+  ShellProvider,
+  ThemeService,
+} from "@brink/studio-shell";
 import { createStudioStore, type EditorTextMenuRequest } from "@brink/studio-store";
 import { EditorTextMenuHost, StoreProvider } from "@brink/studio-ui";
 
@@ -33,9 +39,16 @@ function mount() {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const commands = new CommandRegistry();
+  const themes = new ThemeService();
+  const overrides = new KeymapOverridesService();
   act(() => {
     root!.render(
-      createElement(StoreProvider, { store } as never, createElement(EditorTextMenuHost)),
+      createElement(
+        ShellProvider,
+        { commands, themes, keymapOverrides: overrides, isMac: true } as never,
+        createElement(StoreProvider, { store } as never, createElement(EditorTextMenuHost)),
+      ),
     );
   });
   return store;

@@ -13,6 +13,7 @@
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
 import type { Location } from "@brink/wasm-types";
+import { foldEffect, foldable, foldedRanges, unfoldEffect } from "@codemirror/language";
 import { navigateToLocation } from "./goto-definition.js";
 import { showReferencesAt } from "./references.js";
 import { startInlineRename } from "./rename.js";
@@ -181,11 +182,23 @@ export interface TextMenuRequest {
   copy: () => void;
   paste: () => void;
   selectAll: () => void;
+  /** The clicked line's element kind (`todo`, `include`, …) — lets the
+   *  host contribute studio-side items (e.g. "Show in TODOs Panel"). */
+  lineType?: string;
+  /** Editor-side line-context items (context-menu spec, structural rows):
+   *  Open File on INCLUDEs, Fold/Unfold on foldable regions. */
+  lineActions?: LineMenuAction[];
   /** Present when the click landed on an identity-bearing token (a divert
    *  target, VAR/CONST/list/label/param/EXTERNAL reference or declaration —
    *  the test is "goto-definition resolves here"). Actions are bound to the
    *  raising view; the menu's Navigate/Rename group renders from this. */
   identity?: IdentityMenuSection;
+}
+
+/** One line-context menu item, bound to the raising view. */
+export interface LineMenuAction {
+  label: string;
+  run: () => void;
 }
 
 /** The identity group of the editor context menu (context-menu spec: the
@@ -256,6 +269,56 @@ function renameableAt(view: EditorView, pos: number, options: PlayFromHereOption
   }
 }
 
+/** Line-context items for the line at `pos` (context-menu spec, structural
+ *  rows): INCLUDE lines open their file; foldable regions fold/unfold.
+ *  Exported for tests (jsdom has no layout, so the pointer path can't be
+ *  driven there). */
+export function lineActionsAt(
+  view: EditorView,
+  pos: number,
+  options: PlayFromHereOptions,
+): LineMenuAction[] {
+  const actions: LineMenuAction[] = [];
+  const line = view.state.doc.lineAt(pos);
+
+  const info = view.state.field(elementTypeField, false)?.[line.number - 1];
+  if (info?.type === ElementType.Include && options.onNavigateToFile) {
+    const m = /^\s*INCLUDE\s+(.+?)\s*$/.exec(line.text);
+    const target = m?.[1];
+    if (target !== undefined && target !== "") {
+      const { onNavigateToFile } = options;
+      actions.push({
+        label: `Open ${target.split("/").pop() ?? target}`,
+        run: () => onNavigateToFile({ file: target, start: 0, end: 0 }),
+      });
+    }
+  }
+
+  // Fold/Unfold — CM's registered fold service decides what's foldable; a
+  // fold already anchored in this line offers Unfold instead.
+  let folded: { from: number; to: number } | null = null;
+  foldedRanges(view.state).between(line.from, line.to, (from, to) => {
+    folded = { from, to };
+    return false;
+  });
+  if (folded !== null) {
+    const range: { from: number; to: number } = folded;
+    actions.push({
+      label: "Unfold",
+      run: () => view.dispatch({ effects: unfoldEffect.of(range) }),
+    });
+  } else {
+    const range = foldable(view.state, line.from, line.to);
+    if (range) {
+      actions.push({
+        label: "Fold",
+        run: () => view.dispatch({ effects: foldEffect.of(range) }),
+      });
+    }
+  }
+  return actions;
+}
+
 function buildTextMenuRequest(
   view: EditorView,
   x: number,
@@ -264,8 +327,14 @@ function buildTextMenuRequest(
 ): TextMenuRequest {
   const hasSelection = !view.state.selection.main.empty;
   const pos = view.posAtCoords({ x, y });
+  const lineInfo =
+    pos == null
+      ? undefined
+      : view.state.field(elementTypeField, false)?.[view.state.doc.lineAt(pos).number - 1];
   return {
     identity: pos == null ? undefined : identitySectionAt(view, pos, options),
+    lineType: lineInfo?.type,
+    lineActions: pos == null ? undefined : lineActionsAt(view, pos, options),
     x,
     y,
     hasSelection,
