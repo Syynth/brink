@@ -1,8 +1,20 @@
 # Per-knot incremental lowering — spec draft
 
-Status: **RULED 2026-08-24** (§5's three questions answered — see the
-decision log entry "Per-knot incremental lowering: keys, frontend order,
-sequencing"); implementation may begin at the §1 measurement gate.
+Status: **IMPLEMENTED for ink, 2026-08-24** (steps 1–3; v1 stopped at
+step 3 per the measurement gate). The segmenter, tracked-struct
+segments, per-segment lowering, and range-rebasing assembly are live —
+`raw_lowered_query`'s ink arm rides the segment road; the retired
+whole-file composition stays in-tree as the corpus-equality oracle.
+Byte-identity bar met for HIR/manifest/admission with ONE declared
+adjustment: the assembled diagnostics vector is multiset-identical in a
+deterministic segment-major order (reproducing the whole-file road's
+kind-grouped interleaving would thread per-kind streams through every
+segment product for zero semantic value). One design addition forced by
+the whole-file parse's trivia absorption: segments carry a
+`lowered_range` that OVERLAPS the next segment's doc block (a knot's
+node range absorbs trailing trivia up to the next header, so its
+fragment must too). Native (`.brink`) remains whole-file — its
+segmenter is the ruled follow-up.
 Follow-up to option A (decision log 2026-08-24); the measured motivation
 lives in `docs/desktop-perf-baseline.md` §"Option A delta".
 
@@ -197,7 +209,25 @@ applies to it the same way.
    analysis as freshness — the same "don't wall off slow code" logic as
    the wave-first ruling.
 
-## 6. Success criteria
+## 6. Success criteria — MET (measured 2026-08-24, wired)
+
+`ide_bench` on the 5,863-line large fixture, idle machine, 7-run medians,
+segment road live end-to-end (control row 0.0 — full coverage):
+
+| row | morning baseline | post-#3088 | segment road |
+|---|---|---|---|
+| `ide_large.update_and_analyze` | 30.6 ms | 20.1 ms | **4.3 ms** |
+| `ide_large.phase.db_analysis` | 29.8 ms | 19.2 ms | **3.9 ms** |
+| `stage.0_segments` (scan + minting toll) | — | — | 0.7 ms |
+| `stage.2_lower` (one knot's fragment parse+lower + assembly) | 24.0 ms | 14.0 ms | **1.9 ms** |
+| whole-file parse | 3.8 ms (on path) | 3.8 ms (on path) | 3.8 ms — **off the analysis path** (IDE-only) |
+| small-project keystroke | 1.0 ms | 1.0 ms | 0.7 ms |
+
+The maintainer's memory-traffic concern (stated 2026-08-24) measured in
+place: the segmentation toll is 0.7 ms against ~15 ms saved. The 2×
+text-residency posture stays tentative pending the memory bench.
+
+## 6a. Original success criteria
 
 `ide_large.phase.db_analysis` ~30 ms → within ~2× of the small-file cost
 (~1–3 ms); wasm `updateDocument` p95 on the perf fixture from ~35 ms to

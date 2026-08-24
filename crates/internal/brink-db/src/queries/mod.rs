@@ -106,7 +106,7 @@ use brink_ir::suppressions::{Suppressions, apply_suppressions, parse_suppression
 use brink_ir::symbols::project_manifest;
 use brink_ir::{
     Diagnostic, DiagnosticCode, FileId, HirFile, ResolutionMap, Severity, SymbolIndex, SymbolKind,
-    SymbolManifest, lower, lower_single_knot, lower_top_level,
+    SymbolManifest, lower_declarations, lower_single_knot, lower_top_level,
 };
 use brink_syntax::Parse;
 use brink_syntax_native::Parse as NativeParse;
@@ -117,6 +117,9 @@ use crate::include_graph::IncludeGraph;
 
 mod analysis;
 mod heap_size;
+mod segments;
+
+pub(crate) use segments::{FileSegment, file_segments_query};
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
@@ -159,6 +162,11 @@ impl Default for BrinkDatabase {
                 // Option A total (2026-08-24): the member-set key for
                 // per-root subset analysis (`subset_analysis_query`).
                 .ingredient::<MemberSet<'_>>()
+                // Per-knot lowering (#3084): the segment tracked structs
+                // plus the segmentation query minting them.
+                .ingredient::<FileSegment<'_>>()
+                .ingredient::<file_segments_query>()
+                .ingredient::<segments::segment_lowered_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-
@@ -488,10 +496,21 @@ pub(crate) fn raw_lowered_query(db: &dyn salsa::Database, file: SourceFile) -> A
     // Decide the frontend from the path *before* touching either parser
     // (B0.10a, the native compile seam, issue #1106): this branch precedes
     // the parse call, so an `.ink` file never runs the native parser and a
-    // native file never runs the ink one. The ink arm is byte-identical to
-    // the pre-seam body, keeping the oracle invariance a tautology.
+    // native file never runs the ink one.
+    //
+    // The ink arm rides the SEGMENT road (#3084): per-knot fragment
+    // parse + lower, memoized per content-keyed segment, assembled with
+    // range rebasing — so a knot-interior edit re-lowers one knot, not
+    // the file. The retired whole-file composition (`lower_file`)
+    // remains in this module as the road's corpus-equality oracle: the
+    // assembled HIR/manifest/admission are byte-identical, diagnostics
+    // multiset-identical (see `assemble_lowered_file`'s doc and the
+    // gate tests in `segments.rs`). Note the segment road deliberately
+    // does NOT read `parse_query` — the analysis path no longer pays a
+    // whole-file parse per keystroke; IDE consumers that want the
+    // whole-file tree still pull `parse_query` themselves.
     Arc::new(match file_language(file.path(db)) {
-        Language::Ink => lower_file(file_id, parse_query(db, file)),
+        Language::Ink => segments::assemble_lowered_file(db, file),
         Language::Native => lower_native_file(file_id, parse_native_query(db, file), None),
     })
 }
@@ -3087,15 +3106,21 @@ pub fn partition_diagnostics(
 
 /// Lower one parsed file to HIR + manifest + diagnostics.
 ///
-/// This is the exact composition the pre-salsa `set_file` performed
-/// (per-knot lowering + top-level lowering + assembly + syntax errors), kept
-/// intact so the assembled `HirFile` stays byte-identical to the previous
-/// pipeline. The manifest is no longer assembled by merging per-knot/
-/// top-level manifest fragments (B0.4, docs/hir-admission-contract.md
-/// Q3(b), issue #1173): `project_manifest` derives the whole
-/// `SymbolManifest` from the fully assembled `HirFile` in one pass, so
-/// `lower_single_knot`/`lower_top_level` no longer need to produce a
-/// manifest at all.
+/// The composition is the pre-salsa `set_file`'s (per-knot lowering +
+/// top-level lowering + assembly + syntax errors), restructured by #3088 so
+/// every construct is lowered exactly once: `lower_declarations` harvests
+/// the declaration surface (values AND their diagnostics, one walk),
+/// `lower_top_level` lowers only top-level content (stitches, root weave,
+/// `TODO:` notes), and `lower_single_knot` runs per knot. Before #3088 the
+/// declarations came from a discarded whole-file `lower()` call — every
+/// knot and declaration lowered twice per edit, and the file-level
+/// `#@module`/`#@was` arbitration diagnostics (`E095`/`E049`) silently
+/// dropped with that call's sink; both defects are gone (the arbitration
+/// pair now reaches consumers, pinned by `module_arbitration_diagnostics_
+/// reach_the_db_road` in `brink-db`'s tests). The manifest is not
+/// assembled from fragments (B0.4, docs/hir-admission-contract.md Q3(b),
+/// issue #1173): `project_manifest` derives the whole `SymbolManifest`
+/// from the fully assembled `HirFile` in one pass.
 fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
     let tree = parse.tree();
 
@@ -3105,13 +3130,13 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         .map(|knot_ast| lower_single_knot(file_id, &knot_ast))
         .collect();
 
-    // Top-level lowering (everything outside knots).
+    // Top-level content lowering (stitches, root weave, top-level notes).
     let (root_content, top_level_knots, top_diagnostics) = lower_top_level(file_id, &tree);
 
-    // Assemble a complete `HirFile`: use `lower()` for the declarations
-    // (variables, constants, lists, externals, includes), then replace knots
-    // and root content with the per-knot/top-level products above.
-    let (mut hir, _full_manifest, _full_diag) = lower(file_id, &tree);
+    // Declaration surface: values + diagnostics from one walk, plus module
+    // identity, imports, and directive collections. Knots and root content
+    // land in the skeleton below.
+    let (mut hir, decl_diagnostics) = lower_declarations(file_id, &tree);
     hir.knots = knot_entries
         .iter()
         .filter_map(|(knot, _)| knot.clone())
@@ -3121,9 +3146,12 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
 
     let manifest = project_manifest(&hir);
 
-    // Merge diagnostics, then surface parser/syntax errors as compile
-    // diagnostics (`E037`) so malformed source fails the compile.
-    let mut diagnostics = top_diagnostics;
+    // Merge diagnostics (declaration + module arbitration first, matching
+    // the retired composition's decl-first order), then surface
+    // parser/syntax errors as compile diagnostics (`E037`) so malformed
+    // source fails the compile.
+    let mut diagnostics = decl_diagnostics;
+    diagnostics.extend(top_diagnostics);
     for (_, knot_diags) in &knot_entries {
         diagnostics.extend(knot_diags.iter().cloned());
     }

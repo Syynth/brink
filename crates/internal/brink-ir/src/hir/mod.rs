@@ -16,6 +16,7 @@ mod ink_provenance;
 pub mod lower;
 pub mod lower_native;
 mod normalize;
+pub mod rebase;
 mod spans;
 mod stamp;
 mod types;
@@ -30,7 +31,9 @@ pub use diagnostics::*;
 pub use explain::{ExplainMatchCache, LineExplanation, explain_match, explain_match_node};
 pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
 pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
-pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
+pub use lower::{
+    WeaveItem, fold_weave, lower, lower_declarations, lower_single_knot, lower_top_level,
+};
 pub use normalize::normalize_file;
 pub use spans::expr_span;
 pub use stamp::{root_content_scope_path, stamp_container_ids};

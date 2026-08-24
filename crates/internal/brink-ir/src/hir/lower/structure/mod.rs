@@ -64,47 +64,47 @@ pub fn lower_single_knot(
     (result, diagnostics)
 }
 
-/// Lower only the top-level content and declarations of a file, skipping
-/// knots. No manifest — see [`lower_single_knot`]'s doc.
+/// Lower only a file's DECLARATION surface — everything [`lower`] computes
+/// except knots, top-level stitches, and root content (left empty), and
+/// without the manifest projection or the author-warning walk. The db
+/// road's `lower_file` assembler (#3088) uses this to harvest declarations,
+/// module identity, imports, and directive collections without re-lowering
+/// every knot it already lowered via [`lower_single_knot`]. The returned
+/// diagnostics — decl lowering plus the file-level `#@module`/`#@was`
+/// arbitration (`E095`/`E049`) — are the assembler's KEPT decl-diagnostic
+/// source. Before #3088 the arbitration pair was silently dropped on the
+/// db road (the whole-file [`lower`] call that emitted it was discarded),
+/// while the analyzer skipped re-diagnosing E095 on the assumption
+/// lowering had surfaced it; keeping this sink closes that hole.
+/// Composed from the same [`lower_decl_head`]/[`assemble_hir_file`] pieces
+/// as [`lower`] itself, so the two surfaces cannot drift apart again.
+pub fn lower_declarations(
+    file_id: FileId,
+    file: &ast::SourceFile,
+) -> (HirFile, Vec<crate::Diagnostic>) {
+    let mut scope = LowerScope::new(file_id);
+    let mut sink = EffectSink::new(file_id);
+    let head = lower_decl_head(&mut scope, &mut sink, file);
+    let hir = assemble_hir_file(&mut sink, file, head, Vec::new(), Block::default());
+    let diagnostics = sink.finish();
+    (hir, diagnostics)
+}
+
+/// Lower only the top-level CONTENT of a file — top-level stitches, root
+/// weave content, and top-level `TODO:` notes — skipping knots. No
+/// manifest — see [`lower_single_knot`]'s doc.
 ///
-/// Useful for incremental analysis where knots are lowered separately.
+/// Declarations are NOT lowered here (#3088): before the fix this
+/// function re-walked every `VAR`/`CONST`/`LIST`/`STRUCT`/`EXTERNAL`
+/// purely for their diagnostics (values discarded), duplicating the walk
+/// the assembler's [`lower_declarations`] call performs — whose
+/// diagnostics are now the kept copy.
 pub fn lower_top_level(
     file_id: FileId,
     file: &ast::SourceFile,
 ) -> (Block, Vec<Knot>, Vec<crate::Diagnostic>) {
     let mut scope = LowerScope::new(file_id);
     let mut sink = EffectSink::new(file_id);
-
-    // Lower declarations.
-    // Walk descendants — VAR/CONST/LIST are global regardless of nesting.
-    let _variables: Vec<_> = file
-        .syntax()
-        .descendants()
-        .filter_map(ast::VarDecl::cast)
-        .filter_map(|v| v.declare_and_lower(&scope, &mut sink).ok())
-        .collect();
-    let _constants: Vec<_> = file
-        .syntax()
-        .descendants()
-        .filter_map(ast::ConstDecl::cast)
-        .filter_map(|c| c.declare_and_lower(&scope, &mut sink).ok())
-        .collect();
-    let _lists: Vec<_> = file
-        .syntax()
-        .descendants()
-        .filter_map(ast::ListDecl::cast)
-        .filter_map(|l| l.declare_and_lower(&scope, &mut sink).ok())
-        .collect();
-    // TM-4b (docs/typed-mode-spec.md §6): `STRUCT` is top-level only, unlike
-    // `VAR`/`CONST`/`LIST` — `file.struct_decls()` is a direct-children scan.
-    let _structs: Vec<_> = file
-        .struct_decls()
-        .filter_map(|s| s.declare_and_lower(&scope, &mut sink).ok())
-        .collect();
-    let _externals: Vec<_> = file
-        .externals()
-        .filter_map(|e| e.declare_and_lower(&scope, &mut sink).ok())
-        .collect();
 
     // Top-level stitches (no parent knot) — promoted to knots.
     let top_level_knots: Vec<_> = file
@@ -157,11 +157,25 @@ fn emit_author_warnings(sink: &mut EffectSink, node: &SyntaxNode, skip: SkipInsi
 
 // ─── Source file ────────────────────────────────────────────────────
 
-fn lower_source_file(
+/// The declaration half of [`lower_source_file`] that precedes knots in
+/// emission order: `VAR`/`CONST`/`LIST` (whole-tree — global regardless of
+/// nesting), `STRUCT`, `EXTERNAL`, and `INCLUDE`. Split out (#3088) so
+/// [`lower_declarations`] can harvest exactly these without lowering every
+/// knot; [`lower_source_file`] composes it back in the identical order.
+struct DeclHead {
+    variables: Vec<crate::VarDecl>,
+    constants: Vec<crate::ConstDecl>,
+    lists: Vec<crate::ListDecl>,
+    structs: Vec<crate::StructDecl>,
+    externals: Vec<crate::ExternalDecl>,
+    includes: Vec<IncludeSite>,
+}
+
+fn lower_decl_head(
     scope: &mut LowerScope,
     sink: &mut impl LowerSink,
     file: &ast::SourceFile,
-) -> HirFile {
+) -> DeclHead {
     // In ink, VAR/CONST/LIST are always global regardless of where they
     // appear. Walk the entire tree to collect them all.
     let variables = file
@@ -196,6 +210,22 @@ fn lower_source_file(
         .includes()
         .filter_map(|i| lower_include(scope, &i, sink).ok())
         .collect();
+    DeclHead {
+        variables,
+        constants,
+        lists,
+        structs,
+        externals,
+        includes,
+    }
+}
+
+fn lower_source_file(
+    scope: &mut LowerScope,
+    sink: &mut impl LowerSink,
+    file: &ast::SourceFile,
+) -> HirFile {
+    let head = lower_decl_head(scope, sink, file);
     let mut knots: Vec<Knot> = file
         .knots()
         .filter_map(|k| lower_knot(scope, sink, &k).ok())
@@ -206,7 +236,21 @@ fn lower_source_file(
         }
     }
     let root_content = lower_weave_body(file.syntax(), scope, sink);
+    assemble_hir_file(sink, file, head, knots, root_content)
+}
 
+/// The tail of [`lower_source_file`]: file-level module/`#@was`
+/// arbitration, imports, and directive collections, assembled around the
+/// already-lowered declarations and knots. Emission order is unchanged —
+/// the module diagnostics still land after knot/root lowering exactly as
+/// before the #3088 split.
+fn assemble_hir_file(
+    sink: &mut impl LowerSink,
+    file: &ast::SourceFile,
+    head: DeclHead,
+    knots: Vec<Knot>,
+    root_content: Block,
+) -> HirFile {
     // M-1 (docs/modules-spec.md §1): a file-level `#@module(name)`
     // directive declares the module explicitly. Absent, the file is an
     // undeclared stem-module (identity hashing stays byte-identical).
@@ -223,10 +267,14 @@ fn lower_source_file(
     // the module's rename. Only meaningful alongside `#@module` — a
     // self-alias (`old_name` equals the current module name) is `E095`
     // ("nothing to migrate"); a `#@was` with no `#@module` to attach to is
-    // `E049` ("directive not supported on this target").
+    // `E049` ("directive not supported on this target") — UNLESS the same
+    // line attaches to a following declaration, whose own lookback claims
+    // it (the #1672 rename flow stamps `#@was(old)` directly above a
+    // renamed declaration; on a line-1 declaration that placement is
+    // byte-identical to the file-level one, and the declaration owns it).
     let module_was = super::directive::file_module_was(file.syntax(), sink);
     let module = match (module, module_was) {
-        (Some(mut m), Some((old_name, was_range))) => {
+        (Some(mut m), Some((old_name, was_range, _))) => {
             if old_name == m.name {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
@@ -235,8 +283,10 @@ fn lower_source_file(
             Some(m)
         }
         (Some(m), None) => Some(m),
-        (None, Some((_, was_range))) => {
-            sink.diagnose(was_range, DiagnosticCode::E049);
+        (None, Some((_, was_range, attaches_to_decl))) => {
+            if !attaches_to_decl {
+                sink.diagnose(was_range, DiagnosticCode::E049);
+            }
             None
         }
         (None, None) => None,
@@ -251,12 +301,12 @@ fn lower_source_file(
     HirFile {
         root_content,
         knots,
-        variables,
-        constants,
-        lists,
-        structs,
-        externals,
-        includes,
+        variables: head.variables,
+        constants: head.constants,
+        lists: head.lists,
+        structs: head.structs,
+        externals: head.externals,
+        includes: head.includes,
         module,
         imports,
         visibility,
