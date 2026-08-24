@@ -148,6 +148,22 @@ task **2.9 s**. The desktop shell adds the 2×N serial IPC read on top
 | 5 | Scroll path: rails gutter per-line maps, viewportChanged rebuilds, hover machinery | **Confirmed, led by the rails gutter**: 19.7 ms per rebuild batch, 1.5 s per full scroll pass; hover/mouse-move 32–40 ms per event | fast-scroll rows |
 | 6 | Startup O(N²): double IPC read + per-file analysis | **Confirmed shape natively** (analyze-each 81 ms vs analyze-once 33 ms at 50 files, gap superlinear); first compile 2.2 s in-browser; desktop IPC half still to be timed in the shell | `ide_init.*`; project-open |
 
+## Toolchain delta — web dep sweep (vite 6.4 → 8.2, same day)
+
+The sweep (vite 8, plugin-react 6, Playwright 1.62, CM6/zustand/react
+minors; TypeScript 7 and changesets 3 deliberately held) was landed as a
+discrete commit and the four scenarios re-recorded
+(`perf-runs/2026-08-24T15-55-*` vs `15-43-*`, via `perf-compare`):
+
+- **typing-burst: neutral within ±3% on every span** — keystroke p95
+  stays 104 ms, `cm.elementType` p95 57.1 ms both sides. The toolchain is
+  acquitted; the costs are architectural (#3063–#3067).
+- fast-scroll shows `frame.long` 83× → 3× — **a measurement artifact,
+  not a speedup**: Playwright 1.62 bundles a newer Chromium whose frame
+  scheduling under synthetic wheel events differs; the actual gutter work
+  (`cm.hirRails.lineMarkers`) is unchanged (−7%, within noise). Compare
+  scroll runs only within one Chromium version.
+
 ## Filed issues (the fix-wave backlog)
 
 One issue per confirmed hot path, each carrying its numbers and its judge
