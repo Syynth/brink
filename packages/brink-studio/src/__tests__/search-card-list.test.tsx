@@ -45,6 +45,10 @@ interface Harness {
   commands: CommandRegistry;
   sources: Map<string, string>;
   highlightCalls: string[];
+  /** What the fake session's kinds-variant references resolution returns. */
+  setReferenceKinds(
+    locs: { file: string; start: number; end: number; kind: string }[],
+  ): void;
   /** Deliver the compile seam (remap), like an edit debounce would. */
   compile(): void;
   rerender(): void;
@@ -75,10 +79,12 @@ function mountList(
 ): Harness {
   const sources = new Map(Object.entries(files));
   const highlightCalls: string[] = [];
+  let referenceKinds: { file: string; start: number; end: number; kind: string }[] = [];
   const session = {
     listFiles: () => [...sources.keys()].map((path) => ({ path })),
     getFileSource: (path: string) => sources.get(path) ?? null,
     updateFile: (path: string, source: string) => sources.set(path, source),
+    findReferencesWithKindsAt: () => referenceKinds,
     openDocument: (path: string) => {
       highlightCalls.push(path);
       return 1;
@@ -122,7 +128,17 @@ function mountList(
     });
   };
   render();
-  return { store, commands, sources, highlightCalls, compile, rerender: render };
+  return {
+    store,
+    commands,
+    sources,
+    highlightCalls,
+    setReferenceKinds(locs) {
+      referenceKinds = locs;
+    },
+    compile,
+    rerender: render,
+  };
 }
 
 function cardEls(): HTMLElement[] {
@@ -326,6 +342,31 @@ describe("SearchCardList", () => {
     expect(card?.querySelector(".search-card-del")).toBeNull();
     expect(card?.querySelector(".search-card-accept")).toBeNull();
     expect(card?.querySelector(".search-card-editor")).not.toBeNull();
+  });
+
+  it("references: the decl card pins first with kind badges (PR E)", () => {
+    // Use site BEFORE the declaration in file order — pinning must reorder.
+    const doc = "-> barter\n== barter ==";
+    const h = mountList({ "a.ink": doc }, () => {});
+    h.setReferenceKinds([
+      { file: "a.ink", start: 3, end: 9, kind: "divert" },
+      { file: "a.ink", start: 13, end: 19, kind: "decl" },
+    ]);
+    act(() =>
+      h.store
+        .getState()
+        .showReferences("barter", [{ file: "a.ink", start: 3, end: 9 }], {
+          file: "a.ink",
+          start: 13,
+          end: 19,
+        }),
+    );
+    const cards = cardEls();
+    expect(cards).toHaveLength(2);
+    expect(cards[0]?.classList.contains("decl")).toBe(true);
+    expect(cards[0]?.querySelector(".search-card-kind")?.textContent).toBe("decl");
+    expect(cards[1]?.querySelector(".search-card-kind")?.textContent).toBe("divert");
+    expect(cards[1]?.classList.contains("decl")).toBe(false);
   });
 
   it("references snapshots render through the same cards", () => {

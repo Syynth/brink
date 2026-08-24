@@ -42,6 +42,7 @@ import {
 } from "@brink-lang/editor";
 import {
   DEFAULT_SEARCH_CONTEXT_LINES,
+  attachReferenceKinds,
   captureSnapshot,
   clampContextLines,
   remapSnapshot,
@@ -398,9 +399,9 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     if (current === null || current.origin.kind !== "references") return;
     const anchor = current.anchor;
     if (anchor === null) return;
-    let locations: { file: string; start: number; end: number }[];
+    let locations: { file: string; start: number; end: number; kind: string }[];
     try {
-      locations = session.findReferencesAt(anchor.file, anchor.start, true);
+      locations = session.findReferencesWithKindsAt(anchor.file, anchor.start, true);
     } catch {
       // Resolution failed (symbol gone, project mid-edit) — keep the
       // existing snapshot rather than blanking the panel.
@@ -409,11 +410,14 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     const getSource = (path: string): string | null => session.getFileSource(path);
     const results = locationsToSearchResult(locations, getSource);
     set({
-      searchResults: captureSnapshot(
-        results,
-        { kind: "references", symbol: current.origin.symbol },
-        getSource,
-        anchor,
+      searchResults: attachReferenceKinds(
+        captureSnapshot(
+          results,
+          { kind: "references", symbol: current.origin.symbol },
+          getSource,
+          anchor,
+        ),
+        locations,
       ),
       searchCardCollapsed: {},
       searchSkipped: {},
@@ -440,9 +444,34 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     if (project === null) return;
     const session = project.getSession();
     const getSource = (path: string): string | null => session.getFileSource(path);
-    const results = locationsToSearchResult(locations, getSource);
+    // With a declaration anchor, re-resolve through the kinds variant so
+    // every card carries its use badge (decl/call/divert/read/write —
+    // PR E). Resolution failure (or a host without the entry point) keeps
+    // the caller's plain locations; badges are dressing, never a gate.
+    let resolved: { file: string; start: number; end: number }[] = locations;
+    let kinds: { file: string; start: number; end: number; kind: string }[] = [];
+    if (declaration !== null) {
+      try {
+        const withKinds = session.findReferencesWithKindsAt(
+          declaration.file,
+          declaration.start,
+          true,
+        );
+        if (withKinds.length > 0) {
+          resolved = withKinds;
+          kinds = withKinds;
+        }
+      } catch {
+        kinds = [];
+      }
+    }
+    const results = locationsToSearchResult(resolved, getSource);
+    const snapshot = attachReferenceKinds(
+      captureSnapshot(results, { kind: "references", symbol }, getSource, declaration),
+      kinds,
+    );
     set({
-      searchResults: captureSnapshot(results, { kind: "references", symbol }, getSource, declaration),
+      searchResults: snapshot,
       searchError: null,
       searchMode: { kind: "references", symbol },
       searchRevealSeq: get().searchRevealSeq + 1,

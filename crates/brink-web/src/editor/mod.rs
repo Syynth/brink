@@ -2792,6 +2792,52 @@ mod tests {
     }
 
     #[test]
+    fn find_references_with_kinds_classifies_sites() {
+        // Variable with a write and a read, a divert, a function call —
+        // the Search panel's badge vocabulary (card spec PR E).
+        let mut s = EditorSession::new();
+        s.update_file(
+            "main.ink",
+            "VAR gold = 1\n=== function pay(n) ===\n~ gold = gold - n\n== shop ==\n~ pay(2)\nYou have {gold}.\n-> shop\n",
+        );
+        assert!(s.set_active_file("main.ink"));
+
+        let src = "VAR gold = 1\n=== function pay(n) ===\n~ gold = gold - n\n== shop ==\n~ pay(2)\nYou have {gold}.\n-> shop\n";
+        let kinds_of = |json: &str| -> Vec<String> {
+            let v: serde_json::Value = serde_json::from_str(json).unwrap();
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l["kind"].as_str().unwrap().to_owned())
+                .collect()
+        };
+
+        let gold = s.find_references_with_kinds_at(
+            "main.ink",
+            u32::try_from(src.find("gold").unwrap()).unwrap(),
+            true,
+        );
+        let gold_kinds = kinds_of(&gold);
+        assert_eq!(gold_kinds[0], "decl", "{gold}");
+        assert!(gold_kinds.contains(&"write".to_owned()), "{gold}");
+        assert!(gold_kinds.contains(&"read".to_owned()), "{gold}");
+
+        let shop = s.find_references_with_kinds_at(
+            "main.ink",
+            u32::try_from(src.find("== shop").unwrap() + 3).unwrap(),
+            true,
+        );
+        assert_eq!(kinds_of(&shop), vec!["decl", "divert"], "{shop}");
+
+        let pay = s.find_references_with_kinds_at(
+            "main.ink",
+            u32::try_from(src.find("pay").unwrap()).unwrap(),
+            true,
+        );
+        assert_eq!(kinds_of(&pay), vec!["decl", "call"], "{pay}");
+    }
+
+    #[test]
     fn find_references_at_honors_include_declaration() {
         let mut s = EditorSession::new();
         s.update_file("main.ink", "-> hello\n=== hello ===\nHi.\n-> hello\n");

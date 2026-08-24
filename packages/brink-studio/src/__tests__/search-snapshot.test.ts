@@ -55,22 +55,22 @@ interface FakeSession {
   listFiles(): { path: string }[];
   getFileSource(path: string): string | null;
   updateFile(path: string, source: string): void;
-  findReferencesAt(
+  findReferencesWithKindsAt(
     path: string,
     offset: number,
     includeDeclaration: boolean,
-  ): { file: string; start: number; end: number }[];
+  ): { file: string; start: number; end: number; kind: string }[];
 }
 
 function sliceHarness(files: Record<string, string>) {
   const sources = new Map(Object.entries(files));
   const referenceCalls: Array<{ path: string; offset: number }> = [];
-  let referenceAnswer: { file: string; start: number; end: number }[] = [];
+  let referenceAnswer: { file: string; start: number; end: number; kind: string }[] = [];
   const session: FakeSession = {
     listFiles: () => [...sources.keys()].map((path) => ({ path })),
     getFileSource: (path) => sources.get(path) ?? null,
     updateFile: (path, source) => sources.set(path, source),
-    findReferencesAt: (path, offset) => {
+    findReferencesWithKindsAt: (path, offset) => {
       referenceCalls.push({ path, offset });
       return referenceAnswer;
     },
@@ -85,7 +85,7 @@ function sliceHarness(files: Record<string, string>) {
     sources,
     session,
     referenceCalls,
-    setReferenceAnswer(locs: { file: string; start: number; end: number }[]) {
+    setReferenceAnswer(locs: { file: string; start: number; end: number; kind: string }[]) {
       referenceAnswer = locs;
     },
     /** Mutate a file and deliver the compile seam, like an edit debounce. */
@@ -446,12 +446,21 @@ describe("search slice snapshots", () => {
     // Edit ABOVE the declaration: the original click offset is stale; the
     // mapped anchor is 8 characters further in.
     harness.edit("a.ink", "// hdr\n== barter ==\n-> barter");
-    harness.setReferenceAnswer([{ file: "a.ink", start: 23, end: 29 }]);
+    harness.setReferenceAnswer([{ file: "a.ink", start: 23, end: 29, kind: "divert" }]);
     harness.store.getState().refreshSearchSnapshot();
 
-    expect(harness.referenceCalls).toEqual([{ path: "a.ink", offset: 10 }]);
+    // showReferences resolved once at the declaration; ↻ re-resolves at
+    // the edit-mapped anchor.
+    expect(harness.referenceCalls).toEqual([
+      { path: "a.ink", offset: 3 },
+      { path: "a.ink", offset: 10 },
+    ]);
     const snap = harness.store.getState().searchResults;
-    expect(snap?.files[0].matches[0]).toMatchObject({ start: 23, end: 29 });
+    expect(snap?.files[0].matches[0]).toMatchObject({
+      start: 23,
+      end: 29,
+      refKind: "divert",
+    });
     expect(snap?.anchor).toMatchObject({ start: 10, end: 16, text: "barter" });
   });
 
@@ -465,7 +474,7 @@ describe("search slice snapshots", () => {
         { file: "a.ink", start: 3, end: 9 },
       );
     const before = harness.store.getState().searchResults;
-    harness.session.findReferencesAt = () => {
+    harness.session.findReferencesWithKindsAt = () => {
       throw new Error("mid-edit");
     };
     harness.store.getState().refreshSearchSnapshot();
@@ -479,6 +488,36 @@ describe("search slice snapshots", () => {
     harness.store.getState().refreshSearchSnapshot();
     expect(harness.store.getState().searchResults).toBe(before);
     expect(harness.referenceCalls).toEqual([]);
+  });
+
+  it("showReferences with an anchor re-resolves through the kinds variant (PR E)", () => {
+    const harness = sliceHarness({ "a.ink": "== barter ==\n-> barter" });
+    harness.setReferenceAnswer([
+      { file: "a.ink", start: 3, end: 9, kind: "decl" },
+      { file: "a.ink", start: 16, end: 22, kind: "divert" },
+    ]);
+    harness.store
+      .getState()
+      .showReferences("barter", [{ file: "a.ink", start: 16, end: 22 }], {
+        file: "a.ink",
+        start: 3,
+        end: 9,
+      });
+    const snap = harness.store.getState().searchResults;
+    // The kinds resolution is authoritative: both sites, badged.
+    expect(snap?.totalMatches).toBe(2);
+    expect(snap?.files[0].matches.map((m) => m.refKind)).toEqual(["decl", "divert"]);
+  });
+
+  it("showReferences without an anchor keeps the caller's locations, unbadged", () => {
+    const harness = sliceHarness({ "a.ink": "-> barter" });
+    harness.setReferenceAnswer([
+      { file: "a.ink", start: 0, end: 1, kind: "decl" },
+    ]);
+    harness.store.getState().showReferences("barter", [{ file: "a.ink", start: 3, end: 9 }]);
+    const snap = harness.store.getState().searchResults;
+    expect(harness.referenceCalls).toEqual([]);
+    expect(snap?.files[0].matches[0]?.refKind).toBeUndefined();
   });
 
   it("clamps the context-lines knob and starts at the ruled default", () => {

@@ -268,6 +268,14 @@ test.describe("search tool window", () => {
     await expect(page.locator(".search-summary-count")).toContainText("references");
     await expect.poll(() => cardCount(page)).toBeGreaterThan(1);
 
+    // References dressing (PR E): the declaration card pins first with the
+    // accent border + decl badge; call sites carry their kind badges.
+    await expect(page.locator(".search-card").first()).toHaveClass(/decl/);
+    await expect(
+      page.locator(".search-card").first().locator(".search-card-kind"),
+    ).toHaveText("decl");
+    await expect(page.locator(".search-card-kind", { hasText: "call" }).first()).toBeVisible();
+
     // The chip's ✕ clears references mode.
     await page.locator(".search-refs-chip-clear").click();
     await expect(page.locator(".search-refs-chip")).toHaveCount(0);

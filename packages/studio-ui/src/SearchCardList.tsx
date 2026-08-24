@@ -88,6 +88,14 @@ function deriveCards(
       });
     }
   }
+  // References mode: the declaration card pins first (accent border +
+  // `decl` badge — PR E); everything else keeps file order.
+  if (snapshot.origin.kind === "references") {
+    cards.sort(
+      (a, b) =>
+        Number(b.match.refKind === "decl") - Number(a.match.refKind === "decl"),
+    );
+  }
   return cards;
 }
 
@@ -389,6 +397,7 @@ function SearchCard({
       ref={rootRef}
       className={
         "search-card" +
+        (card.match.refKind === "decl" ? " decl" : "") +
         (card.match.stale && status !== "replaced" ? " stale" : "") +
         (status === "skipped" ? " skipped" : "") +
         (status === "replaced" ? " replaced" : "")
@@ -405,6 +414,11 @@ function SearchCard({
         >
           <CardChevron />
         </button>
+        {card.match.refKind !== undefined && (
+          <span className={"search-card-kind " + card.match.refKind}>
+            {card.match.refKind}
+          </span>
+        )}
         <span className="search-card-loc">
           {card.path}:{card.match.line}
         </span>

@@ -270,6 +270,7 @@ export {
 export {
   DEFAULT_SEARCH_CONTEXT_LINES,
   MAX_SEARCH_CONTEXT_LINES,
+  attachReferenceKinds,
   captureSnapshot,
   cardSlice,
   clampContextLines,

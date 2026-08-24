@@ -61,6 +61,9 @@ export interface SnapshotMatch extends SearchMatch {
   edited: boolean;
   /** The live text at the mapped span no longer satisfies the origin. */
   stale: boolean;
+  /** References origin only: how the site uses the symbol (per-card
+   *  badge, PR E). Absent when kind resolution was unavailable. */
+  refKind?: "decl" | "call" | "divert" | "read" | "write";
 }
 
 export interface SnapshotFile {
@@ -424,6 +427,40 @@ export function cardSlice(
     firstLine,
     text: source.slice(from, to),
     hit: hitTo > hitFrom ? { from: hitFrom, to: hitTo } : null,
+  };
+}
+
+// ── Reference kinds (PR E) ──────────────────────────────────────────
+
+/** The badge vocabulary (mirrors the wasm `ReferenceUseKind`). */
+const REFERENCE_KINDS = new Set(["decl", "call", "divert", "read", "write"]);
+
+/** Attach per-site use kinds to a freshly captured references snapshot,
+ *  matching by (file, span) — capture-time spans, before any remap. Pure;
+ *  unmatched matches keep no kind (badges simply absent). */
+export function attachReferenceKinds(
+  snapshot: SearchSnapshot,
+  kinds: readonly { file: string; start: number; end: number; kind: string }[],
+): SearchSnapshot {
+  if (kinds.length === 0) return snapshot;
+  const bySite = new Map<string, SnapshotMatch["refKind"]>();
+  for (const k of kinds) {
+    if (REFERENCE_KINDS.has(k.kind)) {
+      bySite.set(
+        JSON.stringify([k.file, k.start, k.end]),
+        k.kind as NonNullable<SnapshotMatch["refKind"]>,
+      );
+    }
+  }
+  return {
+    ...snapshot,
+    files: snapshot.files.map((file) => ({
+      ...file,
+      matches: file.matches.map((match) => {
+        const kind = bySite.get(JSON.stringify([file.path, match.start, match.end]));
+        return kind === undefined ? match : { ...match, refKind: kind };
+      }),
+    })),
   };
 }
 

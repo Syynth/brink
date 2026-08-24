@@ -1,6 +1,7 @@
 use brink_analyzer::AnalysisResult;
 use brink_db::ProjectDb;
 use brink_format::DefinitionId;
+use brink_ir::symbols::{RefKind, SymbolKind};
 use brink_ir::{FileId, SymbolInfo};
 use rowan::TextRange;
 
@@ -185,6 +186,56 @@ pub fn find_references(
     offset: rowan::TextSize,
     include_declaration: bool,
 ) -> Vec<LocationResult> {
+    find_references_with_kinds(db, analysis, file_id, offset, include_declaration)
+        .into_iter()
+        .map(|r| LocationResult {
+            file: r.file,
+            range: r.range,
+        })
+        .collect()
+}
+
+/// How a reference site uses the symbol — the Search panel's per-card
+/// badges (docs/search-results-cards-spec.md, PR E).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceKind {
+    /// The declaration itself.
+    Decl,
+    /// A function/external call site (UFCS-desugared calls included).
+    Call,
+    /// A divert/tunnel/thread target.
+    Divert,
+    /// A value read (list/struct/type uses included).
+    Read,
+    /// An assignment target (`~ x = …`, `~ x += …`, `~ x++`).
+    Write,
+}
+
+/// A reference location plus how the site uses the symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceWithKind {
+    pub file: FileId,
+    pub range: TextRange,
+    pub kind: ReferenceKind,
+}
+
+/// [`find_references`], with each site classified ([`ReferenceKind`]).
+///
+/// Classification sources, in order: the site's own manifest
+/// [`RefKind`] (the per-file `unresolved` entry sharing the resolution's
+/// exact range — the analyzer resolves those entries in place, so the
+/// ranges correspond); else the *target symbol's* kind (a knot/stitch/label
+/// reference is a divert, a function/external reference is a call). A
+/// variable-shaped read upgrades to [`ReferenceKind::Write`] when the
+/// pre-narrowing range sits inside an assignment target (or a `++`/`--`
+/// statement) in that file's HIR.
+pub fn find_references_with_kinds(
+    db: &ProjectDb,
+    analysis: &AnalysisResult,
+    file_id: FileId,
+    offset: rowan::TextSize,
+    include_declaration: bool,
+) -> Vec<ReferenceWithKind> {
     let ufcs_target = db
         .hir(file_id)
         .and_then(|hir| crate::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset));
@@ -243,12 +294,16 @@ pub fn find_references(
     };
 
     let mut locations = Vec::new();
+    // Per-file assignment-target ranges, computed lazily (write upgrade).
+    let mut write_ranges: std::collections::BTreeMap<FileId, Vec<TextRange>> =
+        std::collections::BTreeMap::new();
 
     // Include the definition itself if requested
     if include_declaration && let Some(info) = analysis.index.symbols.get(&analysis_def_id) {
-        locations.push(LocationResult {
+        locations.push(ReferenceWithKind {
             file: info.file,
             range: info.range,
+            kind: ReferenceKind::Decl,
         });
     }
 
@@ -293,30 +348,154 @@ pub fn find_references(
             {
                 continue;
             }
+            let kind = reference_kind_of(db, resolved, target_kind, &mut write_ranges);
             let range = hir
                 .and_then(|h| {
                     crate::ufcs_hover::narrowed_reference_range(h, resolved.range, target_kind)
                 })
                 .unwrap_or(resolved.range);
-            locations.push(LocationResult {
+            locations.push(ReferenceWithKind {
                 file: resolved.file,
                 range,
+                kind,
             });
         }
     }
 
     // UFCS-desugared call sites targeting the same free function (issue
     // #1539).
-    locations.extend(ufcs_reference_locations(db, db_def_id));
+    locations.extend(
+        ufcs_reference_locations(db, db_def_id)
+            .into_iter()
+            .map(|loc| ReferenceWithKind {
+                file: loc.file,
+                range: loc.range,
+                kind: ReferenceKind::Call,
+            }),
+    );
 
     locations
+}
+
+/// Classify one plain resolution site. The manifest's own [`RefKind`] for
+/// the site (matched by exact range) wins; the target symbol's kind is the
+/// fallback. Variable-shaped reads upgrade to writes inside an assignment
+/// target.
+fn reference_kind_of(
+    db: &ProjectDb,
+    resolved: &brink_ir::symbols::ResolvedRef,
+    target_kind: SymbolKind,
+    write_ranges: &mut std::collections::BTreeMap<FileId, Vec<TextRange>>,
+) -> ReferenceKind {
+    let site_kind = db
+        .manifest(resolved.file)
+        .and_then(|m| m.unresolved.iter().find(|r| r.range == resolved.range))
+        .map(|r| r.kind);
+    let base = match site_kind {
+        Some(RefKind::Divert) => ReferenceKind::Divert,
+        Some(RefKind::Function) => ReferenceKind::Call,
+        Some(RefKind::Variable | RefKind::List | RefKind::Struct | RefKind::Type) => {
+            ReferenceKind::Read
+        }
+        // No manifest entry (locals resolve in-file without one): fall back
+        // to what the *target* is — a knot/stitch/label reference is a
+        // divert, a function/external reference is a call.
+        None => match target_kind {
+            SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label => ReferenceKind::Divert,
+            SymbolKind::External => ReferenceKind::Call,
+            _ => ReferenceKind::Read,
+        },
+    };
+    if base != ReferenceKind::Read {
+        return base;
+    }
+    let ranges = write_ranges
+        .entry(resolved.file)
+        .or_insert_with(|| assignment_target_ranges(db, resolved.file));
+    if ranges.iter().any(|r| r.contains_range(resolved.range)) {
+        ReferenceKind::Write
+    } else {
+        ReferenceKind::Read
+    }
+}
+
+/// Every assignment-target span in `file`'s HIR: `~ x = …` / `~ x += …`
+/// statements (weave and `~ { … }` logic-block forms) plus `x++`/`x--`
+/// statement targets.
+fn assignment_target_ranges(db: &ProjectDb, file: FileId) -> Vec<TextRange> {
+    use brink_ir::hir::{BlockStmt, Expr, Stmt};
+
+    struct Targets {
+        ranges: Vec<TextRange>,
+    }
+    impl Targets {
+        fn push_target(&mut self, target: &Expr) {
+            match target {
+                Expr::Path(p) => self.ranges.push(p.range),
+                Expr::Postfix(inner, _) => self.push_target(inner),
+                _ => {}
+            }
+        }
+        fn collect_if(&mut self, i: &brink_ir::hir::IfStmt) {
+            for b in &i.body {
+                self.collect_block_stmt(b);
+            }
+            match &i.else_branch {
+                Some(brink_ir::hir::ElseBranch::ElseIf(nested)) => self.collect_if(nested),
+                Some(brink_ir::hir::ElseBranch::Else(body)) => {
+                    for b in body {
+                        self.collect_block_stmt(b);
+                    }
+                }
+                None => {}
+            }
+        }
+        fn collect_block_stmt(&mut self, bs: &BlockStmt) {
+            match bs {
+                BlockStmt::Assignment(a) => self.push_target(&a.target),
+                BlockStmt::ExprStmt(Expr::Postfix(inner, _)) => self.push_target(inner),
+                BlockStmt::If(i) => self.collect_if(i),
+                BlockStmt::While(w) => {
+                    for b in &w.body {
+                        self.collect_block_stmt(b);
+                    }
+                }
+                BlockStmt::For(f) => {
+                    for b in &f.body {
+                        self.collect_block_stmt(b);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    impl brink_ir::hir::HirVisitor for Targets {
+        fn enter_stmt(&mut self, stmt: &Stmt) {
+            match stmt {
+                Stmt::Assignment(a) => self.push_target(&a.target),
+                Stmt::ExprStmt(Expr::Postfix(inner, _)) => self.push_target(inner),
+                Stmt::LogicBlock(lb) => {
+                    for bs in &lb.stmts {
+                        self.collect_block_stmt(bs);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut targets = Targets { ranges: Vec::new() };
+    if let Some(hir) = db.hir(file) {
+        brink_ir::hir::visit::visit(hir, &mut targets);
+    }
+    targets.ranges
 }
 
 #[cfg(test)]
 mod tests {
     use rowan::TextSize;
 
-    use super::{find_references, goto_definition};
+    use super::{ReferenceKind, find_references, find_references_with_kinds, goto_definition};
     use crate::session::IdeSession;
 
     const UFCS_FREE_FN_SRC: &str = "\
@@ -346,6 +525,91 @@ fn main() {
             let end: u32 = loc.range.end().into();
             (src[start as usize..end as usize].to_owned(), start)
         })
+    }
+
+    // ── Card spec PR E: reference kinds ──────────────────────────────
+
+    const KINDS_SRC: &str = "\
+VAR gold = 10
+
+=== function pay(n) ===
+~ gold = gold - n
+
+== shop ==
+~ pay(2)
+~ gold++
+You have {gold} coins.
+-> shop
+";
+
+    /// Kinds for every reference of the symbol at `needle`'s first
+    /// occurrence, as (site text, kind) pairs in result order.
+    fn kinds_at(src: &str, needle: &str) -> Vec<(String, ReferenceKind)> {
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
+        find_references_with_kinds(session.db(), analysis, file_id, TextSize::from(pos), true)
+            .into_iter()
+            .map(|r| {
+                let start: usize = r.range.start().into();
+                let end: usize = r.range.end().into();
+                (src[start..end].to_owned(), r.kind)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn variable_references_classify_decl_reads_and_writes() {
+        let kinds = kinds_at(KINDS_SRC, "gold");
+        // Declaration first, then sites: LHS of `~ gold = gold - n` is a
+        // write, its RHS a read, `~ gold++` a write, `{gold}` a read.
+        assert_eq!(kinds[0], ("gold".to_owned(), ReferenceKind::Decl));
+        let writes = kinds
+            .iter()
+            .filter(|(_, k)| *k == ReferenceKind::Write)
+            .count();
+        let reads = kinds
+            .iter()
+            .filter(|(_, k)| *k == ReferenceKind::Read)
+            .count();
+        assert_eq!(writes, 2, "LHS assignment + increment: {kinds:?}");
+        assert_eq!(reads, 2, "RHS read + inline print: {kinds:?}");
+        assert_eq!(kinds.len(), 5, "{kinds:?}");
+    }
+
+    #[test]
+    fn divert_and_call_sites_classify_as_such() {
+        let shop = kinds_at(KINDS_SRC, "shop");
+        assert_eq!(shop[0].1, ReferenceKind::Decl, "{shop:?}");
+        assert!(
+            shop[1..].iter().all(|(_, k)| *k == ReferenceKind::Divert),
+            "{shop:?}"
+        );
+        assert_eq!(shop.len(), 2, "{shop:?}");
+
+        let pay = kinds_at(KINDS_SRC, "pay");
+        assert_eq!(pay[0].1, ReferenceKind::Decl, "{pay:?}");
+        assert!(
+            pay[1..].iter().all(|(_, k)| *k == ReferenceKind::Call),
+            "{pay:?}"
+        );
+        assert_eq!(pay.len(), 2, "{pay:?}");
+    }
+
+    #[test]
+    fn ufcs_call_sites_classify_as_calls() {
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", UFCS_FREE_FN_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let pos = u32::try_from(UFCS_FREE_FN_SRC.find("greet(g, loudness)").expect("decl"))
+            .expect("offset");
+        let kinds =
+            find_references_with_kinds(session.db(), analysis, file_id, TextSize::from(pos), true);
+        assert!(
+            kinds.iter().any(|r| r.kind == ReferenceKind::Call),
+            "the `g.greet(3)` UFCS site must classify as a call: {kinds:?}"
+        );
     }
 
     // ── Issue #1507: go-to-def follows the D2-resolved target ────────────
