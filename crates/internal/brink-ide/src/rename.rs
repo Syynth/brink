@@ -513,6 +513,36 @@ pub fn rename_safe(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn prepare_rename_accepts_function_call_sites_and_refuses_externals() {
+        // #3061 review question ("i can't rename at a function call site,
+        // or on externals, is that expected?"): call sites ARE renameable
+        // (reference-site path); externals are refused BY DESIGN (the
+        // host-binding contract).
+        let mut session = crate::session::IdeSession::new();
+        let src = "EXTERNAL play_se(name)\n=== function roll(x) ===\n~ return x\n=== k ===\n~ temp v = roll(3)\n~ play_se(1)\n";
+        let file_id = session.update_and_analyze("t.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let call = src.find("roll(3)").expect("call site") + 1;
+        let got = prepare_rename(
+            session.db(),
+            analysis,
+            file_id,
+            rowan::TextSize::from(u32::try_from(call).expect("fits")),
+        );
+        assert!(got.is_some(), "function call site must be renameable");
+
+        let ext_call = src.rfind("play_se(").expect("ext call") + 1;
+        let got = prepare_rename(
+            session.db(),
+            analysis,
+            file_id,
+            rowan::TextSize::from(u32::try_from(ext_call).expect("fits")),
+        );
+        assert!(got.is_none(), "external call site is refused by design");
+    }
     use rowan::TextSize;
 
     use super::{declaration_offset, prepare_rename, rename, rename_safe};

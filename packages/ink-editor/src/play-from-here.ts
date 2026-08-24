@@ -37,6 +37,10 @@ export interface PlayFromHereOptions {
   onNavigateToFile?: (location: Location) => void;
   /** Whether the inline-rename surface is mounted (gates the Rename item). */
   renameEnabled?: boolean;
+  /** Per-token rename gate — the same query F2 uses. A token goto-definition
+   *  resolves but prepareRename refuses (externals: the host-binding
+   *  contract) gets Navigate items but NO dead Rename item. */
+  prepareRename?: (source: string, offset: number) => Location | null;
 }
 
 // ── Path computation ────────────────────────────────────────────────
@@ -232,12 +236,24 @@ function identitySectionAt(
           showReferencesAt(view, pos, findReferences);
         }
       : undefined,
-    rename: options.renameEnabled
-      ? () => {
-          startInlineRename(view, pos);
-        }
-      : undefined,
+    rename:
+      options.renameEnabled && renameableAt(view, pos, options)
+        ? () => {
+            startInlineRename(view, pos);
+          }
+        : undefined,
   };
+}
+
+/** Whether prepareRename accepts this offset — mirrors the F2 gate, so the
+ *  menu never offers a Rename that would silently no-op (externals). */
+function renameableAt(view: EditorView, pos: number, options: PlayFromHereOptions): boolean {
+  if (!options.prepareRename) return true;
+  try {
+    return options.prepareRename(view.state.doc.toString(), pos) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function buildTextMenuRequest(

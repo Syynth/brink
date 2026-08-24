@@ -341,6 +341,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         renameEnabled: Boolean(
           options.prepareRename && options.renameSymbolAt && options.commitRename,
         ),
+        prepareRename: options.prepareRename,
       }),
     );
   }
