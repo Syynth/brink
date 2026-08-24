@@ -249,6 +249,8 @@ interface RailInfo {
   endLine: number;
   /** The container's own first line of text (name / choice text), trimmed. */
   label: string;
+  /** Choice color bucket (0–7, golden-step by handle); absent for other kinds. */
+  hue?: number;
 }
 
 // ── Rail tooltip (a real floating tooltip, not `title`) ─────────────
@@ -271,7 +273,9 @@ function showRailTooltip(anchor: HTMLElement, info: RailInfo): void {
   const label = tip.appendChild(document.createElement("div"));
   label.className = "brink-rail-tooltip-label";
   const dot = label.appendChild(document.createElement("span"));
-  dot.className = `brink-rail-tooltip-dot brink-hir-rail-${info.kind}`;
+  dot.className =
+    `brink-rail-tooltip-dot brink-hir-rail-${info.kind}` +
+    (info.hue !== undefined ? ` brink-rail-c${info.hue}` : "");
   label.appendChild(document.createTextNode(info.label === "" ? "(empty line)" : info.label));
   const meta = tip.appendChild(document.createElement("div"));
   meta.className = "brink-rail-tooltip-meta";
@@ -296,8 +300,32 @@ function railLabel(kind: string, raw: string): string {
     text = text.replace(/^=+\s*/, "").replace(/\s*=+$/, "");
   } else if (kind === "choice") {
     text = text.replace(/^[*+\s]+/, "");
+    // INTERIM heuristic (#3055): skip the `{condition}` guard(s); show the
+    // text before and inside the `[]`. To be replaced by a CST-computed
+    // label on the wire span — ruled "do this properly".
+    while (text.startsWith("{")) {
+      let depth = 0;
+      let end = -1;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}" && --depth === 0) {
+          end = i;
+          break;
+        }
+      }
+      if (end < 0) break;
+      text = text.slice(end + 1).trimStart();
+    }
+    const close = text.indexOf("]");
+    if (close >= 0) text = text.slice(0, close + 1);
   } else if (kind === "gather") {
     text = text.replace(/^[-\s]+(?!>)/, "");
+  } else if (kind === "cond_branch") {
+    // Show the CONDITION: strip the `{` / `-` opener and keep what's
+    // before the branch colon (`{ torch < 0:` -> `torch < 0`).
+    text = text.replace(/^[{\-\s]+/, "");
+    const colon = text.lastIndexOf(":");
+    if (colon >= 0) text = text.slice(0, colon).trim();
   }
   return text.slice(0, 60);
 }
@@ -316,6 +344,7 @@ class RailMarker extends GutterMarker {
           o !== undefined &&
           c.kind === o.kind &&
           c.depth === o.depth &&
+          c.hue === o.hue &&
           c.label === o.label &&
           c.startLine === o.startLine &&
           c.endLine === o.endLine
@@ -329,7 +358,9 @@ class RailMarker extends GutterMarker {
     wrap.className = "brink-hir-rails";
     for (const c of this.stack) {
       const bar = wrap.appendChild(document.createElement("span"));
-      bar.className = `brink-hir-rail brink-hir-rail-${c.kind}`;
+      bar.className =
+        `brink-hir-rail brink-hir-rail-${c.kind}` +
+        (c.hue !== undefined ? ` brink-rail-c${c.hue}` : "");
       bar.setAttribute("data-depth", String(c.depth));
       bar.addEventListener("pointerenter", () => showRailTooltip(bar, c));
       bar.addEventListener("pointerleave", hideRailTooltip);
@@ -404,9 +435,22 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
           const span = byHandle.get(c.handle);
           const startLine = (span?.start_line ?? lineNo) + 1;
           const endLine = (span?.end_line ?? lineNo) + 1;
-          const raw =
+          let raw =
             startLine >= 1 && startLine <= doc.lines ? doc.line(startLine).text.trim() : "";
-          return {
+          if (c.kind === "cond_branch" && !/:\s*$/.test(raw) && !raw.includes(":")) {
+            // INTERIM heuristic (#3055): the branch span covers the BODY;
+            // its condition sits on the nearest preceding `{ cond:` /
+            // `- else:` opener line. CST-computed labels replace this.
+            for (let l = startLine - 1; l >= Math.max(1, startLine - 6); l--) {
+              const t = doc.line(l).text.trim();
+              if (/:\s*$/.test(t)) {
+                raw = t;
+                break;
+              }
+              if (t.endsWith("}") || t === "") break;
+            }
+          }
+          const info: RailInfo = {
             kind: c.kind,
             depth: c.depth,
             handle: c.handle,
@@ -414,6 +458,11 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
             endLine,
             label: railLabel(c.kind, raw),
           };
+          // Distinct sibling-choice colors: a golden-step permutation over
+          // eight theme buckets, keyed by the stable container handle so a
+          // choice keeps its color across its whole body.
+          if (c.kind === "choice") info.hue = (c.handle * 5) % 8;
+          return info;
         });
         return new RailMarker(infos);
       },

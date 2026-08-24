@@ -315,6 +315,17 @@
 .brink-studio .brink-hir-rail-gather { background: var(--bs-syn-label); }
 .brink-studio .brink-hir-rail-cond_branch { background: var(--bs-syn-operator); }
 .brink-studio .brink-hir-rail-seq_branch { background: var(--bs-syn-enum); }
+/* Sibling-choice distinction: eight buckets assigned golden-step by the
+   container handle (hir-overlay). Declared after the kind rules so the
+   bucket wins the specificity tie on choice rails and tooltip dots. */
+.brink-studio .brink-rail-c0 { background: var(--bs-syn-keyword); }
+.brink-studio .brink-rail-c1 { background: var(--bs-syn-string); }
+.brink-studio .brink-rail-c2 { background: var(--bs-syn-number); }
+.brink-studio .brink-rail-c3 { background: var(--bs-syn-enum); }
+.brink-studio .brink-rail-c4 { background: var(--bs-syn-function); }
+.brink-studio .brink-rail-c5 { background: var(--bs-syn-label); }
+.brink-studio .brink-rail-c6 { background: var(--bs-syn-decorator); }
+.brink-studio .brink-rail-c7 { background: var(--bs-syn-parameter); }
 
 /* Rail hover tooltip (a real floating tooltip, not a title attr). The
    position rides the fixed-position custom-property carrier pattern the

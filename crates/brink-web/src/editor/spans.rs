@@ -179,6 +179,16 @@ impl EditorSession {
             .filter_map(|s| {
                 let (abs_start_line, start_char) = idx.line_col(s.range.start());
                 let (abs_end_line, end_char) = idx.line_col(s.range.end());
+                // Column-0 end rule (see `build_line_stacks`): a span ending
+                // exactly at a line's start ends on the PREVIOUS line — step
+                // the end position back one byte so line and char stay
+                // consistent (the byte before column 0 is the prior line's
+                // terminator).
+                let (abs_end_line, end_char) = if end_char == 0 && abs_end_line > abs_start_line {
+                    idx.line_col(s.range.end() - rowan::TextSize::from(1))
+                } else {
+                    (abs_end_line, end_char)
+                };
                 // Drop spans that end above the view; clamp ones straddling its
                 // start so partially-visible containers keep their rails.
                 // Non-containers straddling the start are dropped instead —

@@ -790,7 +790,16 @@ fn build_line_stacks(spans: &[ProjectedSpan], source: &str) -> Vec<LineStack> {
             continue;
         };
         let (start_line, _) = idx.line_col(span.range.start());
-        let (end_line, _) = idx.line_col(span.range.end());
+        let (end_line, end_char) = idx.line_col(span.range.end());
+        // A span ending at column 0 of a line does not occupy that line: a
+        // knot body's range ends exactly where the next header begins, and
+        // without this its rail overlaps the next container's header row
+        // by one line (issue #3054 review).
+        let end_line = if end_char == 0 && end_line > start_line {
+            end_line - 1
+        } else {
+            end_line
+        };
         for line in start_line..=end_line {
             if let Some(stack) = lines.get_mut(line as usize) {
                 stack.containers.push(LineContainer {
