@@ -119,6 +119,36 @@ describe("EditorTextMenuHost", () => {
     expect(items().every((i) => !i.disabled)).toBe(true);
   });
 
+  it("identity group renders in spec order above the text group; gaps collapse", () => {
+    const store = mount();
+    const req = request(false);
+    const gotoDef = vi.fn();
+    const rename = vi.fn();
+    act(() =>
+      store.getState().openTextMenu({
+        ...req,
+        identity: { name: "gold", gotoDefinition: gotoDef, rename },
+      }),
+    );
+    // findReferences absent -> omitted; order: Navigate, Rename, then text.
+    expect(items().map((i) => i.label)).toEqual([
+      "Go to Definition⌘Click",
+      "Rename 'gold'…F2",
+      "Cut⌘X",
+      "Copy⌘C",
+      "Paste⌘V",
+      "Select All⌘A",
+    ]);
+    const g = [...container!.querySelectorAll(".brink-context-menu-item")].find((el) =>
+      el.textContent?.startsWith("Go to Definition"),
+    )!;
+    act(() => {
+      g.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(gotoDef).toHaveBeenCalledOnce();
+    expect(container!.querySelector(".brink-text-menu")).toBeNull();
+  });
+
   it("symbol menu and text menu are mutually exclusive in the store", () => {
     const store = mount();
     act(() => store.getState().openTextMenu(request(false)));

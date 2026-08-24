@@ -43,7 +43,26 @@ function EditorTextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   useContextMenuDismiss(menuRef, closeTextMenu);
 
-  const items: TextMenuItem[] = [
+  // Group order per the context-menu spec: Navigate · Rename · Text.
+  const identity = textMenu.identity;
+  const identityItems: TextMenuItem[] = identity
+    ? [
+        { label: "Go to Definition", shortcut: "⌘Click", run: identity.gotoDefinition },
+        ...(identity.findReferences
+          ? [{ label: "Find References", shortcut: "⇧⌥F", run: identity.findReferences }]
+          : []),
+        ...(identity.rename
+          ? [
+              {
+                label: identity.name === "" ? "Rename…" : `Rename '${identity.name}'…`,
+                shortcut: "F2",
+                run: identity.rename,
+              },
+            ]
+          : []),
+      ]
+    : [];
+  const textItems: TextMenuItem[] = [
     { label: "Cut", shortcut: "⌘X", disabled: !textMenu.hasSelection, run: textMenu.cut },
     { label: "Copy", shortcut: "⌘C", disabled: !textMenu.hasSelection, run: textMenu.copy },
     { label: "Paste", shortcut: "⌘V", run: textMenu.paste },
@@ -57,7 +76,23 @@ function EditorTextMenu({
       style={{ left: textMenu.x, top: textMenu.y }}
       role="menu"
     >
-      {items.map((item, i) => (
+      {identityItems.map((item) => (
+        <div key={item.label} role="presentation">
+          <div
+            role="menuitem"
+            className="brink-context-menu-item"
+            onClick={() => {
+              closeTextMenu();
+              item.run();
+            }}
+          >
+            {item.label}
+            <span className="brink-context-menu-shortcut">{item.shortcut}</span>
+          </div>
+        </div>
+      ))}
+      {identityItems.length > 0 && <div className="brink-context-menu-separator" />}
+      {textItems.map((item, i) => (
         <div key={item.label} role="presentation">
           {i === 3 && <div className="brink-context-menu-separator" />}
           <div

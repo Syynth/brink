@@ -12,6 +12,10 @@
 
 import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter } from "@codemirror/view";
+import type { Location } from "@brink/wasm-types";
+import { navigateToLocation } from "./goto-definition.js";
+import { showReferencesAt } from "./references.js";
+import { startInlineRename } from "./rename.js";
 import { elementTypeField, ElementType } from "./element-type.js";
 
 export interface PlayFromHereOptions {
@@ -25,6 +29,14 @@ export interface PlayFromHereOptions {
    *  + Cut/Copy/Paste/Select All bound to this view). When provided, the
    *  native context menu never appears inside the editor. */
   onTextContextMenu?: (request: TextMenuRequest) => void;
+  /** Identity resolution for the menu's Navigate/Rename group — the same
+   *  callbacks the cmd-click / Shift-Alt-F / F2 surfaces use. */
+  gotoDefinition?: (source: string, offset: number) => Location | null;
+  findReferences?: (source: string, offset: number) => Location[];
+  getActiveFile?: () => string;
+  onNavigateToFile?: (location: Location) => void;
+  /** Whether the inline-rename surface is mounted (gates the Rename item). */
+  renameEnabled?: boolean;
 }
 
 // ── Path computation ────────────────────────────────────────────────
@@ -165,6 +177,23 @@ export interface TextMenuRequest {
   copy: () => void;
   paste: () => void;
   selectAll: () => void;
+  /** Present when the click landed on an identity-bearing token (a divert
+   *  target, VAR/CONST/list/label/param/EXTERNAL reference or declaration —
+   *  the test is "goto-definition resolves here"). Actions are bound to the
+   *  raising view; the menu's Navigate/Rename group renders from this. */
+  identity?: IdentityMenuSection;
+}
+
+/** The identity group of the editor context menu (context-menu spec: the
+ *  Navigate · Rename rows every identity token shares). */
+export interface IdentityMenuSection {
+  /** The token's word at the click, for display ("Rename 'gold'…"). */
+  name: string;
+  gotoDefinition: () => void;
+  /** Absent when the host wired no findReferences. */
+  findReferences?: () => void;
+  /** Absent when the inline-rename surface isn't mounted. */
+  rename?: () => void;
 }
 
 function selectionText(view: EditorView): string {
@@ -174,9 +203,53 @@ function selectionText(view: EditorView): string {
   );
 }
 
-function buildTextMenuRequest(view: EditorView, x: number, y: number): TextMenuRequest {
-  const hasSelection = !view.state.selection.main.empty;
+/** The identity group for the token at `pos`, or undefined off-identity.
+ *  "Goto-definition resolves here" is the identity test: exactly the tokens
+ *  with definitions (references and declarations alike) get the group. */
+function identitySectionAt(
+  view: EditorView,
+  pos: number,
+  options: PlayFromHereOptions,
+): IdentityMenuSection | undefined {
+  if (!options.gotoDefinition) return undefined;
+  const source = view.state.doc.toString();
+  let location: Location | null;
+  try {
+    location = options.gotoDefinition(source, pos);
+  } catch {
+    return undefined;
+  }
+  if (!location) return undefined;
+  const word = view.state.wordAt(pos);
+  const name = word ? view.state.sliceDoc(word.from, word.to) : "";
+  const loc = location;
+  const { findReferences } = options;
   return {
+    name,
+    gotoDefinition: () => navigateToLocation(view, loc, options),
+    findReferences: findReferences
+      ? () => {
+          showReferencesAt(view, pos, findReferences);
+        }
+      : undefined,
+    rename: options.renameEnabled
+      ? () => {
+          startInlineRename(view, pos);
+        }
+      : undefined,
+  };
+}
+
+function buildTextMenuRequest(
+  view: EditorView,
+  x: number,
+  y: number,
+  options: PlayFromHereOptions,
+): TextMenuRequest {
+  const hasSelection = !view.state.selection.main.empty;
+  const pos = view.posAtCoords({ x, y });
+  return {
+    identity: pos == null ? undefined : identitySectionAt(view, pos, options),
     x,
     y,
     hasSelection,
@@ -288,7 +361,7 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
         return true;
       }
       if (onTextContextMenu) {
-        onTextContextMenu(buildTextMenuRequest(view, event.clientX, event.clientY));
+        onTextContextMenu(buildTextMenuRequest(view, event.clientX, event.clientY, options));
       }
       return true;
     },

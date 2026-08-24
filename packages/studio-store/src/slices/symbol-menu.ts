@@ -24,6 +24,13 @@ export interface EditorTextMenuRequest {
   copy: () => void;
   paste: () => void;
   selectAll: () => void;
+  /** Navigate/Rename group for identity-bearing tokens (context-menu spec). */
+  identity?: {
+    name: string;
+    gotoDefinition: () => void;
+    findReferences?: () => void;
+    rename?: () => void;
+  };
 }
 
 export interface SymbolMenuRequest {

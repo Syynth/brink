@@ -10,6 +10,25 @@ export interface GotoDefinitionOptions {
   getActiveFile?: () => string;
 }
 
+/** Navigate to a resolved definition location — cross-file via the host's
+ *  onNavigateToFile, same-file via selection + centered scroll. Shared by
+ *  the cmd-click handler and the context menu's Go to Definition item. */
+export function navigateToLocation(
+  view: EditorView,
+  location: Location,
+  options: Pick<GotoDefinitionOptions, "getActiveFile" | "onNavigateToFile">,
+): void {
+  const activeFile = options.getActiveFile?.();
+  if (activeFile && location.file !== activeFile && options.onNavigateToFile) {
+    options.onNavigateToFile(location);
+    return;
+  }
+  view.dispatch({
+    selection: { anchor: location.start },
+    effects: EditorView.scrollIntoView(location.start, { y: "center" }),
+  });
+}
+
 export function gotoDefinitionExtension(options: GotoDefinitionOptions): Extension {
   return EditorView.domEventHandlers({
     click(event: MouseEvent, view: EditorView) {
@@ -29,19 +48,7 @@ export function gotoDefinitionExtension(options: GotoDefinitionOptions): Extensi
 
       if (!location) return false;
 
-      const activeFile = options.getActiveFile?.();
-      if (activeFile && location.file !== activeFile && options.onNavigateToFile) {
-        options.onNavigateToFile(location);
-        event.preventDefault();
-        return true;
-      }
-
-      // Same-file navigation
-      view.dispatch({
-        selection: { anchor: location.start },
-        effects: EditorView.scrollIntoView(location.start, { y: "center" }),
-      });
-
+      navigateToLocation(view, location, options);
       event.preventDefault();
       return true;
     },
