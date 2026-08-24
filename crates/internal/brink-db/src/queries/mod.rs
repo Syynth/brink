@@ -119,7 +119,7 @@ mod analysis;
 mod heap_size;
 mod segments;
 
-pub(crate) use segments::{FileSegment, file_segments_query};
+pub(crate) use segments::{FileSegment, file_segments_query, projection_query};
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
@@ -168,6 +168,8 @@ impl Default for BrinkDatabase {
                 .ingredient::<file_segments_query>()
                 .ingredient::<segments::segment_lowered_query>()
                 .ingredient::<resolved_dialect_query>()
+                .ingredient::<segments::segment_projection_query>()
+                .ingredient::<segments::projection_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-
@@ -443,6 +445,41 @@ pub(crate) fn resolved_dialect_query(
     )
 }
 
+/// Memo payload wrapper for `no_eq` queries whose output type lives
+/// upstream without a `salsa::Update` impl (#3064 B2). Semantics: the
+/// memo never backdates — correct wherever every re-execution implies a
+/// genuinely changed output (per-segment projections re-execute only
+/// when their segment's content changed; the assembly re-executes every
+/// edit because offsets moved).
+#[derive(Clone)]
+pub(crate) struct NoEqArc<T>(pub Arc<T>);
+
+impl<T> std::fmt::Debug for NoEqArc<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("NoEqArc")
+            .field(&std::any::type_name::<T>())
+            .finish()
+    }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "salsa::Update is an unsafe trait by design; this is the \
+              always-replace impl a derive would emit for a local type. \
+              The body is a plain pointer write per the trait's documented \
+              contract."
+)]
+// SAFETY: always replaces the old value and reports it changed — the
+// most conservative legal `Update` behavior (never falsely "unchanged").
+unsafe impl<T: 'static> salsa::Update for NoEqArc<T> {
+    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
+        // SAFETY: caller guarantees `old_pointer` is valid per the trait
+        // contract; plain replacement drops the old value normally.
+        unsafe { *old_pointer = new_value };
+        true
+    }
+}
+
 /// Memo payload for [`resolved_dialect_query`]: `ResolvedDialect` holds
 /// compiled regexes (no `Eq`, no derivable `salsa::Update`), so this
 /// newtype carries the manual always-replace `Update` impl the `no_eq`
@@ -459,8 +496,6 @@ impl std::fmt::Debug for ResolvedDialectHandle {
     }
 }
 
-// SAFETY: always replaces the old value and reports it changed — the
-// most conservative legal `Update` behavior (never falsely "unchanged").
 #[expect(
     unsafe_code,
     reason = "salsa::Update is an unsafe trait by design; this is the \
@@ -469,6 +504,8 @@ impl std::fmt::Debug for ResolvedDialectHandle {
               deliberately has no salsa dependency). The body is a plain \
               pointer write per the trait's documented contract."
 )]
+// SAFETY: always replaces the old value and reports it changed — the
+// most conservative legal `Update` behavior (never falsely "unchanged").
 unsafe impl salsa::Update for ResolvedDialectHandle {
     unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
         // SAFETY: caller guarantees `old_pointer` is valid per the trait

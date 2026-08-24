@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use brink_analyzer::AnalysisResult;
 use brink_ir::{DiagnosticCode, FileId, Severity};
 
-use crate::line_index::LineIndex;
 use crate::rename::FileEdit;
 use crate::session::IdeSession;
+use brink_ir::LineIndex;
 
 /// A diagnostic an op *would introduce* — present after the edit but not before.
 /// Carries everything the studio's breakage report needs to render and navigate

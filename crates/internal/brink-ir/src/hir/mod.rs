@@ -16,6 +16,7 @@ mod ink_provenance;
 pub mod lower;
 pub mod lower_native;
 mod normalize;
+pub mod projection;
 pub mod rebase;
 mod spans;
 mod stamp;

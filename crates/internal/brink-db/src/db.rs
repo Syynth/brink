@@ -284,6 +284,16 @@ impl ProjectDb {
         Some(crate::queries::file_segments_query(&self.salsa, file).len())
     }
 
+    /// The file's assembled, identity-joined projection (#3064 B2) — the
+    /// per-segment memoized replacement for `IdeSession`'s retired
+    /// wipe-on-every-edit projection cache. `None` for an unknown id.
+    pub fn projection(&self, id: FileId) -> Option<Arc<brink_ir::hir::projection::Projection>> {
+        let file = *self.files.get(&id)?;
+        Some(Arc::clone(
+            &crate::queries::projection_query(&self.salsa, self.project, file).0,
+        ))
+    }
+
     /// Look up a file's ID by path.
     pub fn file_id(&self, path: &str) -> Option<FileId> {
         self.path_to_id.get(path).copied()

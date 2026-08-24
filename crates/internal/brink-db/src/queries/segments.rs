@@ -353,6 +353,169 @@ pub(crate) fn assemble_lowered_file(
     }
 }
 
+// ─── Per-segment projection (#3064 B2) ───────────────────────────────
+
+/// One segment's STRUCTURAL projection walk (`project_walk_parts`):
+/// spans + join keys + option paths, segment-relative, handles local
+/// from 0. Reads the segment's lowered fragment and its text — never
+/// `offset`, so shift edits leave it memoized (the same contract as
+/// [`segment_lowered_query`]).
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_projection_query<'db>(
+    db: &'db dyn salsa::Database,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<brink_ir::hir::projection::ProjectionParts> {
+    let product = segment_lowered_query(db, file, segment);
+    let mut fragment_hir = product.decl_hir.clone();
+    fragment_hir.knots = product
+        .knot_entries
+        .iter()
+        .filter_map(|(knot, _)| knot.clone())
+        .collect();
+    fragment_hir
+        .knots
+        .extend(product.top_level_knots.iter().cloned());
+    fragment_hir.root_content = product.root_content.clone();
+    super::NoEqArc(Arc::new(brink_ir::hir::projection::project_walk_parts(
+        &fragment_hir,
+        segment.text(db),
+    )))
+}
+
+/// The assembled, identity-joined whole-file projection (#3064 B2) —
+/// the per-keystroke replacement for the retired wipe-on-every-edit
+/// session projection cache. Composition mirrors the whole-file
+/// `project_hir` exactly:
+///
+/// 1. the file-level declaration prologue over the ASSEMBLED HIR
+///    (`project_file_decl_parts` — shared emitter, cannot drift);
+/// 2. every segment's memoized walk parts, rebased by the segment's
+///    current offset, handles renumbered by a running count, in the
+///    whole-file `visit` order — header root content, then knot
+///    segments, then stitch segments (matching `hir.knots`' assembly
+///    order: knots first, stitch-promotions appended);
+/// 3. the analyzer identity join, replayed at assembly from the
+///    recorded [`brink_ir::hir::projection::JoinKey`]s against
+///    `resolutions_index` (the cheap FG-3 half — never the diagnostics
+///    bundle);
+/// 4. `build_line_stacks` once over the assembled spans.
+///
+/// A native (`.brink`) file has no segment road — its walk runs
+/// whole-file here (delta 0), the same composition with one fragment.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn projection_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<brink_ir::hir::projection::Projection> {
+    use brink_ir::hir::projection as proj;
+
+    let source = file.text(db);
+    let lowered = super::lowered_query(db, project, file);
+
+    // Pass 1: the declaration prologue over the assembled HIR.
+    let decl_parts = proj::project_file_decl_parts(&lowered.hir, source);
+    let mut spans = decl_parts.spans;
+    let mut join_keys: Vec<(Option<proj::JoinKey>, TextSize)> = decl_parts
+        .join_keys
+        .into_iter()
+        .map(|k| (k, TextSize::from(0)))
+        .collect();
+    let mut option_paths: std::collections::BTreeMap<u32, Vec<u32>> = decl_parts.option_paths;
+    let mut handle_offset = decl_parts.handle_count;
+
+    // Pass 2: segment walks in whole-file visit order.
+    let append = |parts: &proj::ProjectionParts,
+                  delta: TextSize,
+                  spans: &mut Vec<proj::ProjectedSpan>,
+                  join_keys: &mut Vec<(Option<proj::JoinKey>, TextSize)>,
+                  option_paths: &mut std::collections::BTreeMap<u32, Vec<u32>>,
+                  handle_offset: &mut u32| {
+        for (span, key) in parts.spans.iter().zip(&parts.join_keys) {
+            let mut s = *span;
+            s.range += delta;
+            if let Some(h) = s.handle.as_mut() {
+                *h += *handle_offset;
+            }
+            spans.push(s);
+            join_keys.push((*key, delta));
+        }
+        for (handle, path) in &parts.option_paths {
+            option_paths.insert(handle + *handle_offset, path.clone());
+        }
+        *handle_offset += parts.handle_count;
+    };
+
+    if super::file_language(file.path(db)) == super::Language::Ink {
+        let segs = file_segments_query(db, file);
+        for pass_stitches in [false, true] {
+            for seg in segs {
+                let is_stitch = seg.kind(db) == SegmentKind::TopLevelStitch;
+                if is_stitch != pass_stitches {
+                    continue;
+                }
+                let parts = &segment_projection_query(db, file, *seg).0;
+                append(
+                    parts,
+                    TextSize::from(seg.offset(db)),
+                    &mut spans,
+                    &mut join_keys,
+                    &mut option_paths,
+                    &mut handle_offset,
+                );
+            }
+        }
+    } else {
+        let parts = proj::project_walk_parts(&lowered.hir, source);
+        append(
+            &parts,
+            TextSize::from(0),
+            &mut spans,
+            &mut join_keys,
+            &mut option_paths,
+            &mut handle_offset,
+        );
+    }
+
+    // Pass 3: identity join via rebased keys.
+    let resolved = super::resolutions_index_query(db, project);
+    let file_id = file.file_id(db);
+    let mut decl_ids: std::collections::BTreeMap<(u32, u32), brink_format::DefinitionId> =
+        std::collections::BTreeMap::new();
+    for info in resolved.index.symbols.values() {
+        if info.file == file_id {
+            decl_ids.insert(proj::range_key(info.range), info.id);
+        }
+    }
+    let mut ref_targets: std::collections::BTreeMap<(u32, u32), brink_format::DefinitionId> =
+        std::collections::BTreeMap::new();
+    for r in &resolved.resolutions {
+        if r.file == file_id {
+            ref_targets.insert(proj::range_key(r.range), r.target);
+        }
+    }
+    for (span, (key, delta)) in spans.iter_mut().zip(&join_keys) {
+        match key {
+            Some(proj::JoinKey::Decl(r)) => {
+                span.def_id = decl_ids.get(&proj::range_key(*r + *delta)).copied();
+            }
+            Some(proj::JoinKey::Ref(r)) => {
+                span.target_id = ref_targets.get(&proj::range_key(*r + *delta)).copied();
+            }
+            None => {}
+        }
+    }
+
+    // Pass 4: line stacks over the assembled whole.
+    let lines = proj::build_line_stacks(&spans, source);
+    super::NoEqArc(Arc::new(proj::Projection {
+        spans,
+        lines,
+        option_paths,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use salsa::plumbing::AsId;
@@ -490,6 +653,33 @@ Gamma body.
             assembled.admission, oracle.admission,
             "admission diverged: {label}"
         );
+        // Projection parity (#3064 B2): the assembled per-segment
+        // projection must equal the whole-file walk with the identity
+        // join, spans/handles/line-stacks/option-paths included.
+        {
+            use brink_ir::hir::projection as proj;
+            let analysis = db.analysis();
+            let mut decl_ids = std::collections::BTreeMap::new();
+            for info in analysis.index.symbols.values() {
+                if info.file == id {
+                    decl_ids.insert(proj::range_key(info.range), info.id);
+                }
+            }
+            let mut ref_targets = std::collections::BTreeMap::new();
+            for r in &analysis.resolutions {
+                if r.file == id {
+                    ref_targets.insert(proj::range_key(r.range), r.target);
+                }
+            }
+            let oracle_projection =
+                proj::project_with_maps(&oracle.hir, source, &decl_ids, &ref_targets);
+            let assembled_projection = db.projection(id).expect("projection");
+            assert_eq!(
+                *assembled_projection, oracle_projection,
+                "projection diverged: {label}"
+            );
+        }
+
         let mut a = assembled.diagnostics.clone();
         let mut b = oracle.diagnostics.clone();
         let key = |d: &brink_ir::Diagnostic| {

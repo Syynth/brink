@@ -67,6 +67,39 @@ impl LineIndex {
     }
 }
 
+/// Byte offset where a declaration's *ownership* starts: the start of the
+/// contiguous `///` doc-comment block immediately above the declaration at
+/// `decl_start`, or `decl_start` itself if there is none.
+///
+/// Mirrors the attachment rule of `parse_doc_comment` in `hir::lower`:
+/// contiguous `///` lines directly above the declaration, broken by a
+/// blank line or a plain `//` comment. Per the decision log, a doc block
+/// is structurally part of its declaration — folding, structural moves,
+/// and view slices use this to keep them together. Moved up from
+/// `brink-ide::text` (#3064 B2) so `hir::projection`'s line-stack build
+/// can live in this crate; `brink-ide::text` re-exports it.
+#[must_use]
+pub fn doc_extended_start(source: &str, decl_start: usize) -> usize {
+    let decl_start = decl_start.min(source.len());
+    // Start of the line containing the declaration.
+    let mut line_start = source[..decl_start].rfind('\n').map_or(0, |i| i + 1);
+    let mut extended = None;
+    while line_start > 0 {
+        let prev_newline = line_start - 1;
+        let prev_start = source[..prev_newline].rfind('\n').map_or(0, |i| i + 1);
+        if source[prev_start..prev_newline]
+            .trim_start()
+            .starts_with("///")
+        {
+            extended = Some(prev_start);
+            line_start = prev_start;
+        } else {
+            break;
+        }
+    }
+    extended.unwrap_or(decl_start)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
