@@ -148,6 +148,73 @@ task **2.9 s**. The desktop shell adds the 2×N serial IPC read on top
 | 5 | Scroll path: rails gutter per-line maps, viewportChanged rebuilds, hover machinery | **Confirmed, led by the rails gutter**: 19.7 ms per rebuild batch, 1.5 s per full scroll pass; hover/mouse-move 32–40 ms per event | fast-scroll rows |
 | 6 | Startup O(N²): double IPC read + per-file analysis | **Confirmed shape natively** (analyze-each 81 ms vs analyze-once 33 ms at 50 files, gap superlinear); first compile 2.2 s in-browser; desktop IPC half still to be timed in the shell | `ide_init.*`; project-open |
 
+## Deep dive: the keystroke, fully attributed
+
+The typing-burst spans sum to ≈94.6 ms per keystroke against the observed
+96 ms `input.keydown` p50 — the budget closes; nothing material is
+unmeasured. Top-level composition (nested spans indented, per keystroke,
+5.9k-line file):
+
+| Pass | ms | Share |
+|---|---:|---:|
+| `cm.elementType.computeLineInfos` | 53.6 | 56% |
+| — `wasm.updateDocument` (snapshot clone ≈28, analyze ≈4, relower ≈1.4) | 35.3 | |
+| — `wasm.getLineContextsDoc` (whole-doc JSON round trip) | 17.3 | |
+| `cm.folding.computeRanges` (whole-doc) | 12.3 | 13% |
+| `cm.hirOverlay.buildState` (incl. `getHirSpansDoc` 7.4) | 10.8 | 11% |
+| `cm.highlight.decorations` (incl. `getSemanticTokensDoc` 5.5) | 7.1 | 7% |
+| `cm.hirRails.lineMarkers` | 4.1 | 4% |
+| everything else (occurrences, screenplay, argument widgets, inlay hints, inline markup, React commits, store sweeps) | ≈6.7 | 7% |
+
+**Acquitted by measurement** (recon suspects that turned out immaterial at
+this scale): the zustand fan-out (`store.set.*` + React commits ≈0.7 ms
+per keystroke), argument-widgets/hanging-indent viewport rebuilds
+(≈1.3 ms; 124 ms across a whole scroll pass), screenplay passes (≈2 ms).
+
+Startup marks add one more headline: `studio.projectInitialized` at
+792 ms but `studio.renderStart` at 3,535 ms — **first paint waits ~2.7 s
+behind the first compile**, which `mountStudio` runs to completion before
+rendering anything.
+
+## Optimize vs. architecture (the discussion split)
+
+**Local optimizations — no design change, each judged by its scenario row:**
+
+1. `byte_to_utf16` → `LineIndex` (#3065): removes most of the ~485 ms
+   outline+story-graph share of every compile cycle. Byte-identical
+   output required; purely local.
+2. Rails gutter map hoist (#3067): 19.7 ms/batch → sub-ms; one function.
+3. Desktop double IPC read (#3068, shell half): stop discarding the
+   pre-read, or stop pre-reading.
+4. Memoize per-generation whole-doc query results wasm-side (folding
+   12 ms + line contexts 17 ms + semantic tokens 5.5 ms are recomputed
+   even when only serialized output is wanted again); incremental but
+   local per query.
+
+**Architectural shortcomings — need a design discussion before touching:**
+
+1. **The snapshot clone / off-db analyze road** (#3063): ~28–33 ms per
+   keystroke, scaling with total project HIR. Options range from
+   Arc-sharing `HirFile`s (data-model change in brink-ide) to retiring
+   the off-db road for the editor in favor of the salsa road — a
+   both-roads-doctrine question the maintainer owns.
+2. **What must be synchronous with a keystroke at all** (#3064): even
+   with the clone fixed, ~60 ms of whole-doc work rides every
+   transaction. Viewport-scoping, deferring passes a frame, or a worker
+   are different architectures with different correctness stories.
+3. **Compile-before-first-paint at startup**: `mountStudio` blocks
+   render on the initial compile (2.2 s on the fixture). Rendering
+   first and compiling after is an ordering/UX decision.
+4. **Effect inference on the interactive path** (#3069 + the 2.2 s first
+   compile): cold compile is 88% effect inference for rows the runtime
+   does not read (compile-time-profile-findings), and the decision log
+   (2026-08-01, #1511 close) already ruled full recompile "a build/on-
+   save operation, not an interactive path" — yet the studio runs
+   compile-to-bytes on a 500 ms debounce while typing. Whether the
+   interactive loop should compile at all (vs. analyze-only until play),
+   and whether effect inference belongs in editor compiles, are ruling-
+   level questions.
+
 ## Toolchain delta — web dep sweep (vite 6.4 → 8.2, same day)
 
 The sweep (vite 8, plugin-react 6, Playwright 1.62, CM6/zustand/react
