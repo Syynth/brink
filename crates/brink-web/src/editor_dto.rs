@@ -459,6 +459,11 @@ pub(crate) struct HirSpanJs {
     pub(crate) target_id: Option<brink_format::DefinitionId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) handle: Option<u32>,
+    /// TIGHT end line for containers (issue #3054 review, two-range model):
+    /// last line of actual content — trailing whitespace and the next
+    /// declaration's doc block excluded. Absent on non-containers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) content_end_line: Option<u32>,
 }
 
 /// One entry of a line's container stack (outermost→innermost by depth).

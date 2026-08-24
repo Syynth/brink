@@ -780,6 +780,36 @@ fn stmt_extent(stmt: &Stmt) -> Option<TextRange> {
 /// Build the per-line container stack from the emitted container spans: for each
 /// line a container covers, record it; then order each line's stack outermost →
 /// innermost by depth.
+/// The last line a container's rail (and reported range) should cover — the
+/// TIGHT end of the two-range model (issue #3054 review): the structural
+/// range still runs to where the next sibling begins (ownership — folding,
+/// containment), but the display range trims trailing whitespace AND a
+/// trailing `///` doc block, which documents the NEXT declaration, not this
+/// container ("look at what roll gets defined as": a function whose body is
+/// two lines was reported four lines long, through the next function's
+/// docs).
+#[must_use]
+pub fn tight_container_end_line(idx: &LineIndex, source: &str, range: rowan::TextRange) -> u32 {
+    let start = usize::from(range.start()).min(source.len());
+    let end = usize::from(range.end()).min(source.len());
+    let doc_start = crate::doc_extended_start(source, end);
+    let content_end = if doc_start > start {
+        doc_start.min(end)
+    } else {
+        end
+    };
+    // `trimmed` is the exclusive end of the trimmed text — a char boundary.
+    // After `trim_end` it can never sit at column 0 (the text does not end
+    // in a newline), so its own line IS the last content line; deriving
+    // `trimmed - 1` instead would split a multi-byte char (the live wasm
+    // panic this comment memorializes: em-dashes in the fixture).
+    let trimmed = start + source[start..content_end].trim_end().len();
+    idx.line_col(rowan::TextSize::from(
+        u32::try_from(trimmed).unwrap_or(u32::MAX),
+    ))
+    .0
+}
+
 fn build_line_stacks(spans: &[ProjectedSpan], source: &str) -> Vec<LineStack> {
     let idx = LineIndex::new(source);
     let line_count = source.lines().count().max(1);
@@ -790,7 +820,10 @@ fn build_line_stacks(spans: &[ProjectedSpan], source: &str) -> Vec<LineStack> {
             continue;
         };
         let (start_line, _) = idx.line_col(span.range.start());
-        let (end_line, _) = idx.line_col(span.range.end());
+        // Rails cover the TIGHT range — actual content only, not the
+        // trailing blank lines / next declaration's doc block the
+        // structural range owns. See `tight_container_end_line`.
+        let end_line = tight_container_end_line(&idx, source, span.range).max(start_line);
         for line in start_line..=end_line {
             if let Some(stack) = lines.get_mut(line as usize) {
                 stack.containers.push(LineContainer {
@@ -1319,5 +1352,60 @@ Take the {red|blue} pill.
                 .filter(|s| matches!(s.kind, SpanKind::Conditional | SpanKind::Sequence))
                 .all(|s| s.handle.is_none() && !s.kind.is_container())
         );
+    }
+}
+
+#[cfg(test)]
+mod tight_end_tests {
+    use super::*;
+
+    #[test]
+    fn playground_fixture_sweep_never_panics() {
+        // Repro harness for the wasm `unreachable` seen live (#3054): run
+        // the tight-end computation over every span of the real playground
+        // fixture.
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../packages/brink-studio/src/stories/toppled-temple.ink.txt"
+        );
+        let source = std::fs::read_to_string(fixture).expect("fixture readable");
+        let parse = brink_syntax::parse(&source);
+        let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parse.tree());
+        let projection = crate::hir_projection::project_hir_structural(&hir, &source);
+        let idx = LineIndex::new(&source);
+        for sp in &projection.spans {
+            let _ = tight_container_end_line(&idx, &source, sp.range);
+        }
+    }
+
+    #[test]
+    fn tight_end_excludes_trailing_blanks_and_next_decls_docs() {
+        // `roll`'s structural range runs to `spend_torch`'s header — the
+        // tight end must stop at `~ return …` (line 1), before the blank
+        // line and the NEXT function's `///` block (#3054 review).
+        let source = "\
+=== function roll(lo, hi) ===
+~ return RANDOM(lo, hi)
+
+/// Burn the torch down by n notches.
+/// @param n {int}
+=== function spend_torch(n) ===
+~ torch = torch - n
+";
+        let idx = LineIndex::new(source);
+        let header_of_next = source.find("=== function spend_torch").expect("fixture");
+        let range = rowan::TextRange::new(
+            rowan::TextSize::from(0),
+            rowan::TextSize::from(u32::try_from(header_of_next).expect("fits")),
+        );
+        assert_eq!(tight_container_end_line(&idx, source, range), 1);
+
+        // Whitespace-only tail (no doc block): still trimmed.
+        let blank_tail_end = source.find("/// Burn").expect("fixture");
+        let range = rowan::TextRange::new(
+            rowan::TextSize::from(0),
+            rowan::TextSize::from(u32::try_from(blank_tail_end).expect("fits")),
+        );
+        assert_eq!(tight_container_end_line(&idx, source, range), 1);
     }
 }

@@ -357,5 +357,9 @@
   flex: 1;
 }
 .brink-studio .shell-hamburger {
-  margin: 4px 0 2px;
+  /* Centered on the strip's icon axis (the rail column doesn't center its
+     children like .shell-strip does) and vertically rhyming with the
+     panel-header row beside it. */
+  align-self: center;
+  margin: 6px 0 2px;
 }

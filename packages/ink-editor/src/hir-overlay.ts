@@ -229,17 +229,127 @@ export function hirIdentityAt(
 
 // ── Rails gutter (phase 4) ──────────────────────────────────────────
 
+/** Display names for the rail kinds. */
+const RAIL_KIND_NAMES: Record<string, string> = {
+  knot: "Knot",
+  stitch: "Stitch",
+  choice: "Choice",
+  gather: "Gather",
+  cond_branch: "Conditional branch",
+  seq_branch: "Sequence branch",
+};
+
+/** One rail bar's resolved display facts. */
+interface RailInfo {
+  kind: string;
+  depth: number;
+  handle: number;
+  /** 1-based inclusive line range of the container. */
+  startLine: number;
+  endLine: number;
+  /** The container's own first line of text (name / choice text), trimmed. */
+  label: string;
+  /** Choice color bucket (0–7, golden-step by handle); absent for other kinds. */
+  hue?: number;
+}
+
+// ── Rail tooltip (a real floating tooltip, not `title`) ─────────────
+//
+// One shared element per document; shown on rail hover, positioned beside
+// the gutter at the pointer's row. Styled by the host via
+// `.brink-rail-tooltip` (studio editor.css).
+
+let railTooltip: HTMLElement | null = null;
+
+function hideRailTooltip(): void {
+  railTooltip?.remove();
+  railTooltip = null;
+}
+
+function showRailTooltip(anchor: HTMLElement, info: RailInfo): void {
+  hideRailTooltip();
+  const tip = document.createElement("div");
+  tip.className = "brink-rail-tooltip";
+  const label = tip.appendChild(document.createElement("div"));
+  label.className = "brink-rail-tooltip-label";
+  const dot = label.appendChild(document.createElement("span"));
+  dot.className =
+    `brink-rail-tooltip-dot brink-hir-rail-${info.kind}` +
+    (info.hue !== undefined ? ` brink-rail-c${info.hue}` : "");
+  label.appendChild(document.createTextNode(info.label === "" ? "(empty line)" : info.label));
+  const meta = tip.appendChild(document.createElement("div"));
+  meta.className = "brink-rail-tooltip-meta";
+  meta.textContent =
+    info.startLine === info.endLine
+      ? `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · line ${info.startLine}`
+      : `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · lines ${info.startLine}–${info.endLine}`;
+  // Inside the .brink-studio root, or the --bs-* tokens don't resolve and
+  // the chrome (background, border, shadow) silently disappears.
+  (anchor.closest(".brink-studio") ?? document.body).appendChild(tip);
+  const r = anchor.getBoundingClientRect();
+  tip.style.setProperty("--brink-popup-left", `${Math.round(r.right + 10)}px`);
+  tip.style.setProperty("--brink-popup-top", `${Math.round(r.top)}px`);
+  railTooltip = tip;
+}
+
+/** The container's display label from its own first line: knots/stitches
+ *  show their bare name, choices/gathers their text without the sigils. */
+function railLabel(kind: string, raw: string): string {
+  let text = raw;
+  if (kind === "knot" || kind === "stitch") {
+    text = text.replace(/^=+\s*/, "").replace(/\s*=+$/, "");
+  } else if (kind === "choice") {
+    text = text.replace(/^[*+\s]+/, "");
+    // INTERIM heuristic (#3055): skip the `{condition}` guard(s); show the
+    // text before and inside the `[]`. To be replaced by a CST-computed
+    // label on the wire span — ruled "do this properly".
+    while (text.startsWith("{")) {
+      let depth = 0;
+      let end = -1;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}" && --depth === 0) {
+          end = i;
+          break;
+        }
+      }
+      if (end < 0) break;
+      text = text.slice(end + 1).trimStart();
+    }
+    const close = text.indexOf("]");
+    if (close >= 0) text = text.slice(0, close + 1);
+  } else if (kind === "gather") {
+    text = text.replace(/^[-\s]+(?!>)/, "");
+  } else if (kind === "cond_branch") {
+    // Show the CONDITION: strip the `{` / `-` opener and keep what's
+    // before the branch colon (`{ torch < 0:` -> `torch < 0`).
+    text = text.replace(/^[{\-\s]+/, "");
+    const colon = text.lastIndexOf(":");
+    if (colon >= 0) text = text.slice(0, colon).trim();
+  }
+  return text.slice(0, 60);
+}
+
 class RailMarker extends GutterMarker {
-  constructor(private readonly stack: readonly { kind: string; depth: number }[]) {
+  constructor(private readonly stack: readonly RailInfo[]) {
     super();
   }
 
   override eq(other: RailMarker): boolean {
     return (
       this.stack.length === other.stack.length &&
-      this.stack.every(
-        (c, i) => c.kind === other.stack[i]?.kind && c.depth === other.stack[i]?.depth,
-      )
+      this.stack.every((c, i) => {
+        const o = other.stack[i];
+        return (
+          o !== undefined &&
+          c.kind === o.kind &&
+          c.depth === o.depth &&
+          c.hue === o.hue &&
+          c.label === o.label &&
+          c.startLine === o.startLine &&
+          c.endLine === o.endLine
+        );
+      })
     );
   }
 
@@ -248,10 +358,20 @@ class RailMarker extends GutterMarker {
     wrap.className = "brink-hir-rails";
     for (const c of this.stack) {
       const bar = wrap.appendChild(document.createElement("span"));
-      bar.className = `brink-hir-rail brink-hir-rail-${c.kind}`;
+      bar.className =
+        `brink-hir-rail brink-hir-rail-${c.kind}` +
+        (c.hue !== undefined ? ` brink-rail-c${c.hue}` : "");
       bar.setAttribute("data-depth", String(c.depth));
+      bar.addEventListener("pointerenter", () => showRailTooltip(bar, c));
+      bar.addEventListener("pointerleave", hideRailTooltip);
     }
     return wrap;
+  }
+
+  override destroy(dom: Node): void {
+    // The shared tooltip must not outlive the marker that opened it.
+    hideRailTooltip();
+    super.destroy(dom);
   }
 }
 
@@ -304,10 +424,49 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
       class: "brink-hir-rail-gutter",
       lineMarker(view, line) {
         const { projection } = view.state.field(field);
-        const lineNo = view.state.doc.lineAt(line.from).number - 1;
+        const doc = view.state.doc;
+        const lineNo = doc.lineAt(line.from).number - 1;
         const stack = projection.lines[lineNo];
         if (!stack || stack.length === 0) return null;
-        return new RailMarker(stack);
+        const byHandle = new Map(
+          projection.spans.filter((sp) => sp.handle !== undefined).map((sp) => [sp.handle, sp]),
+        );
+        const infos: RailInfo[] = stack.map((c) => {
+          const span = byHandle.get(c.handle);
+          const startLine = (span?.start_line ?? lineNo) + 1;
+          // Tooltip range = the TIGHT end (actual content), not the
+          // structural end that runs to the next sibling (#3054).
+          const endLine = (span?.content_end_line ?? span?.end_line ?? lineNo) + 1;
+          let raw =
+            startLine >= 1 && startLine <= doc.lines ? doc.line(startLine).text.trim() : "";
+          if (c.kind === "cond_branch" && !/:\s*$/.test(raw) && !raw.includes(":")) {
+            // INTERIM heuristic (#3055): the branch span covers the BODY;
+            // its condition sits on the nearest preceding `{ cond:` /
+            // `- else:` opener line. CST-computed labels replace this.
+            for (let l = startLine - 1; l >= Math.max(1, startLine - 6); l--) {
+              const t = doc.line(l).text.trim();
+              if (/:\s*$/.test(t)) {
+                raw = t;
+                break;
+              }
+              if (t.endsWith("}") || t === "") break;
+            }
+          }
+          const info: RailInfo = {
+            kind: c.kind,
+            depth: c.depth,
+            handle: c.handle,
+            startLine,
+            endLine,
+            label: railLabel(c.kind, raw),
+          };
+          // Distinct sibling-choice colors: a golden-step permutation over
+          // eight theme buckets, keyed by the stable container handle so a
+          // choice keeps its color across its whole body.
+          if (c.kind === "choice") info.hue = (c.handle * 5) % 8;
+          return info;
+        });
+        return new RailMarker(infos);
       },
       lineMarkerChange: (update) => update.docChanged || update.startState.field(field) !== update.state.field(field),
     }),

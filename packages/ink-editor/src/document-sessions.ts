@@ -28,7 +28,6 @@
 
 import { EditorState, type ChangeSet, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { basicSetup } from "codemirror";
 import { defaultKeymap } from "@codemirror/commands";
 import type {
   CodeAction,
@@ -42,6 +41,7 @@ import type {
 import type { ExtractKind } from "./extract-actions.js";
 import { getTokenTypeNames } from "@brink-lang/web";
 import { brinkStudio, type BrinkStudioOptions } from "./extensions.js";
+import { brinkBasicSetup } from "./setup.js";
 import { startInlineRename, type BreakageContext } from "./rename.js";
 import {
   setFormGlyphMode,
@@ -920,7 +920,7 @@ export class DocumentSessions {
     if (slot.extensions === null) {
       slot.extensions = [
         brinkStudio(this.slotOptions(slot)),
-        basicSetup,
+        brinkBasicSetup,
         keymap.of(defaultKeymap),
         EditorView.lineWrapping,
         this.slotListener(slot),

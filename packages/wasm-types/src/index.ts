@@ -89,6 +89,13 @@ export interface HirSpan {
   target_id?: string;
   /** Stable-within-doc container id; absent on non-containers. */
   handle?: number;
+  /**
+   * TIGHT end line for containers (two-range model, #3054): last line of
+   * actual content — trailing whitespace and the next declaration's doc
+   * block excluded. `end_line` remains the structural/ownership end.
+   * Absent on non-containers.
+   */
+  content_end_line?: number;
 }
 
 /** One entry of a line's container stack. */

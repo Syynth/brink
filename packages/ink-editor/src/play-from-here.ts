@@ -112,7 +112,21 @@ class PlayMarker extends GutterMarker {
     btn.className = "brink-play-gutter-icon";
     btn.title = "Play from here";
     btn.setAttribute("aria-label", "Play from here");
-    btn.textContent = "▶";
+    // An SVG triangle, not the ▶ text glyph — the glyph's size and
+    // baseline vary by font and always sat off-center in the slot.
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 12 12");
+    svg.setAttribute("width", "9");
+    svg.setAttribute("height", "9");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M3.2 1.8 L10 6 L3.2 10.2 Z");
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.appendChild(path);
+    btn.appendChild(svg);
     return btn;
   }
 }
@@ -223,16 +237,20 @@ const playFromHereTheme = EditorView.baseTheme({
     justifyContent: "center",
     // Intrinsic size — `initialSpacer` measures this to reserve the column
     // width, so a percentage width here would collapse the gutter to zero.
-    width: "1.2em",
-    height: "100%",
-    padding: "0 2px",
-    fontSize: "0.7em",
-    lineHeight: "1",
-    color: "var(--bs-accent, #3b82f6)",
+    width: "16px",
+    // First-row height (see the fold marker) — headers can soft-wrap.
+    height: "1lh",
+    borderRadius: "3px",
+    color: "var(--bs-success, #22c55e)",
     cursor: "pointer",
-    opacity: "0.85",
+    opacity: "0.9",
   },
   ".brink-play-gutter-icon:hover": {
     opacity: "1",
+    backgroundColor: "rgb(var(--bs-success-rgb, 34 197 94) / 18%)",
+  },
+  ".brink-play-gutter-icon:focus-visible": {
+    outline: "1px solid var(--bs-accent, #3b82f6)",
+    outlineOffset: "-1px",
   },
 });

@@ -23,8 +23,13 @@ import { QuickOpen } from "./QuickOpen.js";
 import { NewFilePrompt } from "./NewFilePrompt.js";
 import { SearchCommands } from "./SearchView.js";
 import { ConflictMergeView } from "./ConflictMergeView.js";
+import type { ReactNode } from "react";
 
-function App() {
+/** `children` render inside the `.brink-studio` root — popup hosts and other
+ *  fixed-position surfaces MUST live here, or the scoped styles and theme
+ *  tokens never reach them (the "menu renders unstyled at the document
+ *  tail" bug class, #3054 review). */
+function App({ children }: { children?: ReactNode }) {
   const tier = useShellLayout((s) => s.tier);
   // Theme (spec §7.4): the persisted selection is read by the ThemeService
   // before the first render, so data-theme is right on the initial paint.
@@ -42,6 +47,7 @@ function App() {
       <SearchCommands />
       <ConflictMergeView />
       <NotificationStack />
+      {children}
     </div>
   );
 }

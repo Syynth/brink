@@ -179,6 +179,22 @@ impl EditorSession {
             .filter_map(|s| {
                 let (abs_start_line, start_char) = idx.line_col(s.range.start());
                 let (abs_end_line, end_char) = idx.line_col(s.range.end());
+                // Column-0 end rule (see `build_line_stacks`): a span ending
+                // exactly at a line's start ends on the PREVIOUS line — step
+                // the end position back one byte so line and char stay
+                // consistent (the byte before column 0 is the prior line's
+                // terminator).
+                let (abs_end_line, end_char) = if end_char == 0 && abs_end_line > abs_start_line {
+                    idx.line_col(s.range.end() - rowan::TextSize::from(1))
+                } else {
+                    (abs_end_line, end_char)
+                };
+                // Containers additionally carry the TIGHT end (two-range
+                // model, issue #3054 review) — the rails/tooltip range.
+                let abs_content_end = s.kind.is_container().then(|| {
+                    brink_ide::hir_projection::tight_container_end_line(&idx, source, s.range)
+                        .max(abs_start_line)
+                });
                 // Drop spans that end above the view; clamp ones straddling its
                 // start so partially-visible containers keep their rails.
                 // Non-containers straddling the start are dropped instead —
@@ -191,11 +207,14 @@ impl EditorSession {
                     None if s.kind.is_container() => (0, 0),
                     None => return None,
                 };
+                let content_end_line =
+                    abs_content_end.and_then(|l| Self::to_relative_line(view, l));
                 Some(HirSpanJs {
                     start_line,
                     start_char,
                     end_line,
                     end_char,
+                    content_end_line,
                     kind: span_kind_str(s.kind),
                     container: s.kind.is_container(),
                     depth: s.depth,
