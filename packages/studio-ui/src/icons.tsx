@@ -202,3 +202,13 @@ export function ErrorMarkIcon({ size = 10 }: IconProps) {
     </svg>
   );
 }
+
+/** The binder search toggle (#3040). */
+export function SearchIcon({ size = 14 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.3-4.3" />
+    </svg>
+  );
+}

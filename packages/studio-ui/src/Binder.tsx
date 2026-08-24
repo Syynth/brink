@@ -31,6 +31,7 @@ import {
   WarningMarkIcon,
   KnotIcon,
   LibraryIcon,
+  SearchIcon,
   StitchIcon,
   StructureModeIcon,
 } from "./icons.js";
@@ -636,6 +637,38 @@ export function computeReorder(
   return [...without.slice(0, idx), ...orderedDragged, ...without.slice(idx)];
 }
 
+// ── Search filter (#3040) ───────────────────────────────────────────
+
+/**
+ * Filter the outline for one query (case-insensitive substring): a file
+ * stays when its basename matches OR it contains a matching symbol; its
+ * symbol list narrows to the matching subtree (a knot whose stitch
+ * matches survives as the stitch's context). Tag matching is #474's
+ * scope — the tag data does not exist at any layer yet.
+ */
+export function filterOutline(outline: FileOutline[], query: string): FileOutline[] {
+  const q = query.trim().toLowerCase();
+  if (q === "") return outline;
+  const matches = (name: string): boolean => name.toLowerCase().includes(q);
+  const out: FileOutline[] = [];
+  for (const file of outline) {
+    const base = file.path.slice(file.path.lastIndexOf("/") + 1);
+    const symbols: DocumentSymbol[] = [];
+    for (const sym of file.symbols) {
+      const childHits = sym.children.filter((c) => matches(c.name));
+      if (matches(sym.name)) {
+        symbols.push(sym);
+      } else if (childHits.length > 0) {
+        symbols.push({ ...sym, children: childHits });
+      }
+    }
+    if (matches(base) || matches(file.path) || symbols.length > 0) {
+      out.push(matches(base) || matches(file.path) ? file : { ...file, symbols });
+    }
+  }
+  return out;
+}
+
 // ── Main Binder component ──────────────────────────────────────────
 
 function BinderInner() {
@@ -725,8 +758,26 @@ function BinderInner() {
   const [rootDropActive, setRootDropActive] = useState(false);
 
   const binderOrder = useStudioStore((s) => s.binderOrder);
-  const treeOptions: FlatRowOptions = { order: binderOrder, entry: entryFile, structureMode };
-  const flatRows = buildFlatRows(outline, collapsed, treeOptions);
+  // Search (#3040): a live query narrows the tree; matches keep their
+  // file context, everything else filters away. While searching, the
+  // collapsed set is ignored (matches must be visible) and symbol rows
+  // for matches show in BOTH modes ("Files mode reveals matching
+  // symbols' files" — and their symbols, which are the evidence).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const searching = searchOpen && query.trim() !== "";
+  const visibleOutline = useMemo(
+    () => (searching ? filterOutline(outline, query) : outline),
+    [searching, outline, query],
+  );
+  const effectiveCollapsed = searching ? new Set<string>() : collapsed;
+  const treeOptions: FlatRowOptions = {
+    order: binderOrder,
+    entry: entryFile,
+    structureMode: structureMode || searching,
+  };
+  const flatRows = buildFlatRows(visibleOutline, effectiveCollapsed, treeOptions);
 
   // ── Helpers ─────────────────────────────────────────────────────
 
@@ -1480,7 +1531,7 @@ function BinderInner() {
     const knotKey = row.key;
     const stitches = knot.children.filter((c) => c.kind === "stitch");
     const hasStitches = stitches.length > 0;
-    const isExpanded = !collapsed.has(knotKey);
+    const isExpanded = !effectiveCollapsed.has(knotKey);
     const isActive = activeDocKey === knotKey;
     const target: TabTarget = {
       kind: "symbol",
@@ -1532,10 +1583,11 @@ function BinderInner() {
     const knots = file.symbols.filter((s) => s.kind === "knot");
     // Files mode (#3036, the ruled default): symbol rows exist only in
     // Structure mode — a file is a leaf, and the whole knot/stitch layer
-    // (with every structural op) reveals behind the toggle.
-    const hasChildren = structureMode && knots.length > 0;
+    // (with every structural op) reveals behind the toggle. A live search
+    // (#3040) overrides both gates: matches must be visible.
+    const hasChildren = (structureMode || searching) && knots.length > 0;
     const fileKey = file.path;
-    const isExpanded = !collapsed.has(fileKey);
+    const isExpanded = !effectiveCollapsed.has(fileKey);
     const isActive = activeDocKey === fileKey;
     const target: TabTarget = { kind: "file", path: file.path };
     const fileRow = flatRows.find((r) => r.key === fileKey);
@@ -1596,7 +1648,7 @@ function BinderInner() {
   }
 
   function renderFolder(folder: FolderNode, depth: number) {
-    const isExpanded = !collapsed.has(folder.key);
+    const isExpanded = !effectiveCollapsed.has(folder.key);
     const folderRow = flatRows.find((r) => r.key === folder.key);
     return (
       <div key={folder.key}>
@@ -1793,6 +1845,18 @@ function BinderInner() {
             <StructureModeIcon />
           </button>
         </div>
+        <button
+          className={"brink-binder-tool" + (searchOpen ? " active" : "")}
+          title="Search binder"
+          onClick={() => {
+            const next = !searchOpen;
+            setSearchOpen(next);
+            if (!next) setQuery("");
+            else requestAnimationFrame(() => searchRef.current?.focus());
+          }}
+        >
+          <SearchIcon />
+        </button>
         <div className="spacer" />
         <button
           className="brink-binder-tool"
@@ -1809,7 +1873,35 @@ function BinderInner() {
           <CollapseAllIcon />
         </button>
       </div>
-      {renderTree(buildBinderTree(outline, treeOptions), 0)}
+      {searchOpen && (
+        <div className="brink-binder-search">
+          <input
+            ref={searchRef}
+            className="brink-binder-search-input"
+            type="text"
+            placeholder="file or knot/stitch name…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setQuery("");
+                setSearchOpen(false);
+              }
+            }}
+          />
+          {query !== "" && (
+            <button
+              className="brink-binder-search-clear"
+              title="Clear"
+              onClick={() => setQuery("")}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+      {renderTree(buildBinderTree(visibleOutline, treeOptions), 0)}
       {libraryFiles.length > 0 && !projectIsInk && (
         <div className="brink-binder-library-section">
           <BinderRow
