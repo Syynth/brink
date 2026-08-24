@@ -11,11 +11,18 @@
   --binder-indent: 18px;
   --binder-row-height: 26px;
   --binder-guide-color: rgb(var(--bs-fg-muted-rgb) / 20%);
+  /* THE one horizontal inset (maintainer, 2026-08-23: "not even or
+     principled") — rows, toolbar, search, create group, and the config
+     row all key off this; depth is strictly pad + n × indent. The old
+     chevron column used to supply the base inset by accident; this is it on
+     purpose. */
+  --binder-pad-x: 12px;
 }
 .brink-studio .brink-binder-row {
   display: flex;
   align-items: center;
   height: var(--binder-row-height);
+  padding-left: var(--binder-pad-x);
   padding-right: 8px;
   cursor: pointer;
   user-select: none;
@@ -47,7 +54,7 @@
    under ancestor k's icon. Faint — structure, not chrome. */
 .brink-studio .brink-binder-guide-lines {
   position: absolute;
-  left: 0;
+  left: var(--binder-pad-x);
   top: 0;
   bottom: 0;
   pointer-events: none;
@@ -57,9 +64,6 @@
     rgb(var(--bs-border-rgb, 69 71 90) / 35%) 8px 9px,
     transparent 9px var(--binder-indent)
   );
-}
-.brink-studio .brink-binder-row {
-  position: relative;
 }
 /* Icon — the expansion indicator too (Zed-style, no chevrons): open vs
    closed folder, filled vs outline droplet/diamond; clicking an
@@ -309,7 +313,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px 0 12px;
+  padding: 0 8px 0 var(--binder-pad-x, 12px);
   border-bottom: 1px solid var(--bs-border);
   flex-shrink: 0;
 }
@@ -436,7 +440,6 @@
 }
 .brink-studio .brink-binder-config-row {
   cursor: pointer;
-  padding-left: 12px;
   gap: 7px;
 }
 .brink-studio .brink-binder-icon-config {
@@ -461,7 +464,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 8px;
+  padding: 6px 8px 6px var(--binder-pad-x, 12px);
   border-bottom: 1px solid var(--bs-border);
   flex-shrink: 0;
 }

@@ -1061,7 +1061,7 @@ function BinderInner() {
       return (
         <div
           className="brink-create-editing"
-          style={{ paddingLeft: 12 + depth * 18 }}
+          style={{ paddingLeft: `calc(var(--binder-pad-x, 12px) + ${depth} * var(--binder-indent, 18px))` }}
           data-create-container={container}
         >
           <input
@@ -1088,7 +1088,11 @@ function BinderInner() {
     return (
       <div
         className={"brink-create-group" + (big ? " big" : "")}
-        style={big ? undefined : { paddingLeft: 12 + depth * 18 }}
+        style={
+          big
+            ? undefined
+            : { paddingLeft: `calc(var(--binder-pad-x, 12px) + ${depth} * var(--binder-indent, 18px))` }
+        }
         data-create-container={container}
       >
         <button
