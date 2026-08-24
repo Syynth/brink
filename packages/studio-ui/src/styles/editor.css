@@ -214,10 +214,11 @@
    editor's .brink-todo-keyword mark. --bs-todo overrides per-theme; falls
    back to the warning family. */
 .brink-studio .cm-line.brink-todo {
-  /* Inky-style inversion: a solid warm-amber band with dark ink — the
-     note is a flag, not syntax. Band + ink come from the theme's
-     --bs-todo/--bs-todo-ink (warning-family fallback). */
-  background: color-mix(in srgb, var(--bs-todo, var(--bs-warning)) 82%, var(--bs-editor-bg));
+  /* Inky-style inversion: a solid goldenrod band with dark ink — the
+     note is a flag, not syntax. Band, bar, and ink come from the theme's
+     precomputed --bs-todo-band/--bs-todo/--bs-todo-ink tokens
+     (warning-family fallback for embedder themes). */
+  background: var(--bs-todo-band, var(--bs-warning));
   box-shadow: inset 3px 0 0 var(--bs-todo, var(--bs-warning));
   color: var(--bs-todo-ink, #2a2130);
 }
