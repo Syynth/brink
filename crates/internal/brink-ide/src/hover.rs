@@ -259,8 +259,8 @@ const HOVER_SECTIONS: &[fn(&SectionCtx) -> Option<String>] = &[
     style_section,
 ];
 
-/// The head line: `**kind** \`name[: ty][= value][(params)][-> ret]\`` plus
-/// detail/external-kind tags.
+/// The head line — bold kind, then the name with its type/value/signature
+/// in a code span, then detail/external-kind tags.
 fn head_line(ctx: &SectionCtx) -> String {
     let info = ctx.info;
     let kind_str = match info.kind {
