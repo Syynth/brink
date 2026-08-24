@@ -7,6 +7,7 @@
  */
 
 import { create } from "zustand";
+import { isPerfEnabled, perfRecord } from "@brink-lang/editor";
 
 import type { EditorSlice } from "./slices/editor.js";
 import type { CompileSlice } from "./slices/compile.js";
@@ -77,8 +78,50 @@ export interface StudioState
 // ── Store factory ───────────────────────────────────────────────────
 
 export const createStudioStore = () =>
-  create<StudioState>()((...args) => {
-    const [set, get] = args;
+  create<StudioState>()((rawSet, get, api) => {
+    // Store-write timing (measure-first ruling, 2026-08-24): every `set()`
+    // synchronously re-runs every mounted selector, so its duration IS the
+    // subscription sweep cost. The span is tagged with the partial's first
+    // key (`store.set.cursor`, `store.set.diagnosticsList`, …) so a report
+    // attributes sweeps to the field that triggered them. Inert single
+    // branch while the probe is disabled — the production state.
+    const timedSet: typeof rawSet = (partial, replace) => {
+      if (!isPerfEnabled()) {
+        (rawSet as (p: unknown, r?: unknown) => void)(partial, replace);
+        return;
+      }
+      const tag =
+        typeof partial === "function"
+          ? "store.set.fn"
+          : `store.set.${Object.keys(partial as object)[0] ?? "empty"}`;
+      const t0 = performance.now();
+      try {
+        (rawSet as (p: unknown, r?: unknown) => void)(partial, replace);
+      } finally {
+        perfRecord(tag, t0, performance.now() - t0);
+      }
+    };
+    // Slices created below close over the timed variant; external callers
+    // going through `api.setState`/`useStore.setState` get it too.
+    const origSetState = api.setState;
+    api.setState = ((partial, replace) => {
+      if (!isPerfEnabled()) {
+        (origSetState as (p: unknown, r?: unknown) => void)(partial, replace);
+        return;
+      }
+      const tag =
+        typeof partial === "function"
+          ? "store.set.fn"
+          : `store.set.${Object.keys(partial as object)[0] ?? "empty"}`;
+      const t0 = performance.now();
+      try {
+        (origSetState as (p: unknown, r?: unknown) => void)(partial, replace);
+      } finally {
+        perfRecord(tag, t0, performance.now() - t0);
+      }
+    }) as typeof api.setState;
+    const args = [timedSet, get, api] as const;
+    const set = timedSet;
 
     return {
       // Slices

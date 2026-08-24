@@ -18,6 +18,7 @@ import {
   type DialectGeometry,
 } from "./element-type.js";
 import { detectCast, type SourceLine } from "./dialect.js";
+import { perfTime } from "./perf/probe.js";
 
 export type { FoldKind } from "@brink/wasm-types";
 
@@ -41,7 +42,7 @@ const foldRangesFacet = Facet.define<FoldingOptions["getFoldingRanges"], Folding
 function computeFoldRanges(state: EditorState): FoldRange[] {
   const getFoldingRanges = state.facet(foldRangesFacet);
   try {
-    return getFoldingRanges(state.doc.toString());
+    return perfTime("cm.folding.computeRanges", () => getFoldingRanges(state.doc.toString()));
   } catch {
     return [];
   }

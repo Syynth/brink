@@ -132,6 +132,7 @@ export {
   type TodoFileGroup,
 } from "./TodosView.js";
 export { OutputView, formatOutputTimestamp } from "./OutputView.js";
+export { PerfView } from "./PerfView.js";
 export {
   SEARCH_DEBOUNCE_MS,
   SEARCH_FOCUS_COMMAND_ID,

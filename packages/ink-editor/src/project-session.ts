@@ -21,6 +21,8 @@ import { EditorSessionHandle } from "@brink-lang/web";
 import type { CompileResult, RenameDiagnostic } from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
+import { withPerfTiming } from "./perf/wasm-proxy.js";
+import { perfSpan } from "./perf/probe.js";
 
 // The config filename `discoverProjectConfig`'s walk-up looks for (mirrors
 // `brink_project_config::CONFIG_FILE_NAME` — see crates/internal/brink-project-config/src/lib.rs).
@@ -207,7 +209,10 @@ export class ProjectSession {
     this.provider = options.provider;
     this.hostEntryFile = options.entryFile;
     this.entryIsExplicit = options.entryIsExplicit ?? false;
-    this.session = options.session ?? new EditorSessionHandle();
+    // The perf proxy times every wasm call from this one choke point (all
+    // DocHandles and panel pulls share this instance); it is a pass-through
+    // branch per call while the probe is disabled (the production state).
+    this.session = withPerfTiming(options.session ?? new EditorSessionHandle());
     this.onExternalFileChange = options.onExternalFileChange;
     this.onFileConflict = options.onFileConflict;
     this.onProjectConfigWarnings = options.onProjectConfigWarnings;
@@ -304,10 +309,15 @@ export class ProjectSession {
 
   /** Load all files from provider and resolve INCLUDEs. */
   async initialize(): Promise<void> {
+    const endInit = perfSpan("project.initialize");
+    const endList = perfSpan("project.initialize.listFiles");
     const files = await this.provider.listFiles();
+    endList(files.length);
     this.assertLive();
     for (const file of files) {
+      const endRead = perfSpan("project.initialize.readFile");
       const content = await this.provider.readFile(file);
+      endRead(content.length);
       this.assertLive();
       this.session.updateFile(file, content);
       // Host-loaded content is the clean baseline: the project starts with
@@ -315,7 +325,9 @@ export class ProjectSession {
       this.changes.setBaseline(file, content);
     }
 
+    const endIncludes = perfSpan("project.initialize.resolveIncludes");
     await this.resolveIncludes();
+    endIncludes();
     this.assertLive();
 
     // `brink.toml` (issue #2324): every project file is loaded above, so
@@ -358,6 +370,7 @@ export class ProjectSession {
       // discovery so an external edit is not silently ignored either.
       if (isProjectConfigPath(path)) this.applyProjectConfig();
     });
+    endInit(files.length);
   }
 
   /** Underlying wasm session. */
@@ -751,9 +764,14 @@ export class ProjectSession {
   compileProject(): CompileResult {
     const generation = this.session.generation;
     if (this.lastCompile !== null && this.lastCompile.generation === generation) {
+      // Zero-duration counter: hit count vs `project.compileProject` count
+      // reads as the generation cache's effectiveness in a report.
+      perfSpan("project.compileProject.cacheHit")();
       return this.lastCompile.result;
     }
+    const end = perfSpan("project.compileProject");
     const result = this.session.compileProject(this.getEntryFile());
+    end();
     this.lastCompile = { generation, result };
     return result;
   }
@@ -799,11 +817,13 @@ export class ProjectSession {
     // no `isReadOnly` — absent means "nothing is read-only", which is
     // exactly their world (only the real wasm handle mounts a stdlib).
     if (this.sessionIsReadOnly(path)) return;
+    const end = perfSpan("project.notifyFileChanged");
     const source = this.session.getFileSource(path);
     if (source !== null) {
       this.provider.onFileChanged?.(path, source);
     }
     this.changes.record(path, "modified");
+    end(source?.length);
     // `brink.toml` edited in the studio (issue #2324) — CM6 edits (this is
     // the direct caller) and every bulk-edit path (through {@link applyEdit},
     // which calls this) both land here. The session's content for `path` is
@@ -1004,7 +1024,9 @@ export class ProjectSession {
    * the provider — the next compile picks up newly discovered files.
    */
   async refreshIncludes(): Promise<void> {
+    const end = perfSpan("project.refreshIncludes");
     await this.resolveIncludes();
+    end();
   }
 
   /** Request a canonical save via the provider (optionally narrowed to

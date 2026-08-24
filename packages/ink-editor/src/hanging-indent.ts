@@ -23,6 +23,7 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
+import { perfTime } from "./perf/probe.js";
 
 /** Leading-whitespace width of `text` in columns: spaces are 1, a tab
  *  advances to the next `tabSize` stop (matching how the editor renders
@@ -66,7 +67,7 @@ const hangingIndentPlugin = ViewPlugin.fromClass(
     }
     update(update: ViewUpdate) {
       if (update.docChanged || update.viewportChanged) {
-        this.decorations = buildIndents(update.view);
+        this.decorations = perfTime("cm.hangingIndent.build", () => buildIndents(update.view));
       }
     }
   },

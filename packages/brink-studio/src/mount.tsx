@@ -18,7 +18,7 @@
  */
 
 import { createRoot } from "react-dom/client";
-import { useEffect } from "react";
+import { Profiler, useEffect } from "react";
 import { initWasm } from "@brink-lang/web";
 import type { CompileResult, FileOutline, HostManifest, DialogueDialect } from "@brink/wasm-types";
 import {
@@ -27,6 +27,12 @@ import {
   InMemoryFileProvider,
   setHostWidgets,
   brinkTheme,
+  attachPerfObservers,
+  perfMark,
+  perfRecord,
+  perfSpan,
+  perfTime,
+  setPerfEnabled,
   type FileChange,
   type FileConflict,
   type FileProvider,
@@ -74,6 +80,7 @@ import {
   InkFileDocument,
   KeyHintsSegment,
   OutputView,
+  PerfView,
   PLAYER_TYPE_ID,
   PlayerPane,
   ProblemsBadge,
@@ -295,6 +302,14 @@ const TODO_ICON = (
   </svg>
 );
 
+// Dev-only Performance HUD (measure-first ruling, 2026-08-24): a stopwatch.
+const PERF_ICON = (
+  <svg {...iconProps}>
+    <circle cx="8" cy="9" r="5.5" />
+    <path d="M8 6.5V9l2 1.5M6.5 2h3" />
+  </svg>
+);
+
 // ── Compile log messages (Output tool window, spec §4) ─────────────
 //
 // CompileResult carries no timing, so entries log outcome + counts.
@@ -406,7 +421,21 @@ export async function mountStudio(
   // code can run.
   installAdoptedStyleSheetsShim();
 
+  // Perf probe dev edge (measure-first ruling, docs/decision-log.md
+  // 2026-08-24): collection, observers, and the HUD tool window exist only
+  // in dev builds. `import.meta.env.DEV` is statically false in production
+  // bundles (vite replaces it at build time; the tsup lib build leaves
+  // `import.meta.env` undefined, which the optional chain reads as
+  // disabled), so shipped bundles never enable the probe.
+  const perfDev = Boolean(import.meta.env?.DEV);
+  if (perfDev) {
+    setPerfEnabled(true);
+    attachPerfObservers();
+    perfMark("studio.mountStart");
+  }
+
   await initWasm(options.wasmLocation);
+  perfMark("studio.wasmReady");
 
   // Initialize the project BEFORE rendering so the wasm session has files
   // loaded. The store is constructed here (rather than after, as before
@@ -473,6 +502,7 @@ export async function mountStudio(
     },
   });
   await project.initialize();
+  perfMark("studio.projectInitialized");
 
   // The .binder.json order sidecar (#3038): loaded straight from the
   // provider — it never enters the wasm session (presentation, not
@@ -569,6 +599,13 @@ export async function mountStudio(
   // debounced compiles, compile.run, the initial compile). DocumentSessions
   // collapses reference-equal (cached) deliveries.
   const handleCompileResult = (result: CompileResult): void => {
+    // Fan-out spans (measure-first ruling, 2026-08-24): this handler runs
+    // after EVERY debounced compile and is a prime whole-project-work
+    // suspect — each phase is timed so a report splits compile-reaction
+    // cost from compile cost. The wasm proxy separately times the
+    // underlying `wasm.getProjectOutline`/`wasm.getStoryGraph` calls;
+    // `store.set.*` spans cover the selector sweeps each `state.*` triggers.
+    const endFanOut = perfSpan("studio.compileFanOut");
     const state = store.getState();
     const outline: FileOutline[] = project.getSession().getProjectOutline();
 
@@ -613,8 +650,9 @@ export async function mountStudio(
     // the `storyBytes === null` branch and leaves the existing session
     // running on the old program.
     if (storyBytes) {
-      state.startSession(storyBytes);
+      perfTime("studio.startSession", () => state.startSession(storyBytes));
     }
+    endFanOut();
   };
 
   // Per-(document, group) editor views over wasm document handles. Cursor,
@@ -908,6 +946,18 @@ export async function mountStudio(
     badge: TodosBadge,
     component: TodosView,
   });
+  // Performance HUD (measure-first ruling, 2026-08-24): dev builds only —
+  // production bundles never register it (perfDev is statically false there).
+  if (perfDev) {
+    toolWindows.register({
+      id: "perf",
+      title: "Performance",
+      icon: PERF_ICON,
+      defaultPlacement: { dock: "bottom", section: "end" },
+      defaultOpen: false,
+      component: PerfView,
+    });
+  }
 
   // Status-bar segments (spec §7.3). Higher priority renders further left
   // within its group. Left: app status; right: editor context.
@@ -1046,8 +1096,14 @@ export async function mountStudio(
   // every fresh load reproduces this.
   openPlayerSplit(editorGroups);
 
+  perfMark("studio.renderStart");
+  if (perfDev) {
+    // First frame after the initial render commit — the end of the startup
+    // timeline (project-open → wasm → initialize → first paint).
+    requestAnimationFrame(() => perfMark("studio.firstFrame"));
+  }
   const root = createRoot(container);
-  root.render(
+  const appTree = (
     <Root
       store={store}
       project={project}
@@ -1059,7 +1115,23 @@ export async function mountStudio(
       editorGroups={editorGroups}
       notifications={notifications}
       api={api}
-    />,
+    />
+  );
+  root.render(
+    perfDev ? (
+      // React commit durations feed the probe in dev; the Profiler wrapper
+      // never exists in production trees.
+      <Profiler
+        id="studio"
+        onRender={(_id, phase, actualDuration, _base, startTime) =>
+          perfRecord(`react.commit.${phase}`, startTime, actualDuration)
+        }
+      >
+        {appTree}
+      </Profiler>
+    ) : (
+      appTree
+    ),
   );
 
   return {

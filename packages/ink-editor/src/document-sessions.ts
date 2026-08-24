@@ -55,6 +55,7 @@ import { elementTypeField, type LineInfo } from "./element-type.js";
 import { getHintsForElement, lineHasContent, buildContext } from "./transitions.js";
 import { convertLineToType as cmConvertLineToType } from "./convert.js";
 import type { ProjectSession } from "./project-session.js";
+import { perfTime } from "./perf/probe.js";
 
 // ── Public types ───────────────────────────────────────────────────
 
@@ -1136,14 +1137,16 @@ export class DocumentSessions {
 
       if (update.docChanged && !mirrored) {
         this.callbacks.onDocEdited?.(slot.docKey, slot.groupId);
-        this.mirrorEdit(slot, update.changes, update.state.doc.toString());
+        perfTime("cm.slotListener.mirrorEdit", () =>
+          this.mirrorEdit(slot, update.changes, update.state.doc.toString()),
+        );
       }
 
       if (
         (update.docChanged || update.selectionSet) &&
         this.focusedSlotId === slotId(slot.docKey, slot.groupId)
       ) {
-        this.reportCursor(update.view);
+        perfTime("cm.slotListener.reportCursor", () => this.reportCursor(update.view));
       }
     });
   }

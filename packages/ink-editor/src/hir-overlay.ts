@@ -46,6 +46,7 @@ import {
   gutter,
 } from "@codemirror/view";
 import type { HirProjection, HirSpan } from "@brink/wasm-types";
+import { isPerfEnabled, perfRecord, perfTime } from "./perf/probe.js";
 
 export interface HirOverlayOptions {
   /** Fetch the current projection from the document's wasm session. */
@@ -163,7 +164,9 @@ function buildState(projection: HirProjection, doc: EditorState["doc"]): HirOver
 function createOverlayField(options: HirOverlayOptions) {
   const fetchState = (doc: EditorState["doc"]): HirOverlayState | null => {
     try {
-      return buildState(options.getHirProjection(), doc);
+      return perfTime("cm.hirOverlay.buildState", () =>
+        buildState(options.getHirProjection(), doc),
+      );
     } catch {
       return null;
     }
@@ -413,16 +416,27 @@ function buildOccurrences(
 export function hirOverlayExtension(options: HirOverlayOptions): Extension {
   const field = createOverlayField(options);
 
-  return [
-    field,
-    EditorView.decorations.from(field, (v) => v.marks),
-    EditorView.decorations.from(field, (v) => v.lineDecos),
-    EditorView.decorations.compute([field, "selection"], (state) =>
-      buildOccurrences(state, field),
-    ),
-    gutter({
-      class: "brink-hir-rail-gutter",
-      lineMarker(view, line) {
+  // The rails gutter's lineMarker runs once per visible line per rebuild —
+  // recording each call as its own span would flood the probe's ring during
+  // a scroll, so calls accumulate here and flush as ONE
+  // `cm.hirRails.lineMarkers` span (meta: calls in the batch) per microtask,
+  // i.e. per synchronous gutter rebuild.
+  let railsAcc: { startMs: number; totalMs: number; count: number } | null = null;
+  const accumulateRailsTime = (startMs: number, durMs: number): void => {
+    if (railsAcc === null) {
+      railsAcc = { startMs, totalMs: 0, count: 0 };
+      queueMicrotask(() => {
+        if (railsAcc !== null) {
+          perfRecord("cm.hirRails.lineMarkers", railsAcc.startMs, railsAcc.totalMs, railsAcc.count);
+        }
+        railsAcc = null;
+      });
+    }
+    railsAcc.totalMs += durMs;
+    railsAcc.count++;
+  };
+
+  const buildLineMarker = (view: EditorView, line: { from: number }): RailMarker | null => {
         const { projection } = view.state.field(field);
         const doc = view.state.doc;
         const lineNo = doc.lineAt(line.from).number - 1;
@@ -467,6 +481,25 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
           return info;
         });
         return new RailMarker(infos);
+  };
+
+  return [
+    field,
+    EditorView.decorations.from(field, (v) => v.marks),
+    EditorView.decorations.from(field, (v) => v.lineDecos),
+    EditorView.decorations.compute([field, "selection"], (state) =>
+      perfTime("cm.hirOverlay.occurrences", () => buildOccurrences(state, field)),
+    ),
+    gutter({
+      class: "brink-hir-rail-gutter",
+      lineMarker(view, line) {
+        if (!isPerfEnabled()) return buildLineMarker(view, line);
+        const t0 = performance.now();
+        try {
+          return buildLineMarker(view, line);
+        } finally {
+          accumulateRailsTime(t0, performance.now() - t0);
+        }
       },
       lineMarkerChange: (update) => update.docChanged || update.startState.field(field) !== update.state.field(field),
     }),

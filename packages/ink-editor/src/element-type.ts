@@ -2,6 +2,7 @@ import { Facet, StateEffect, StateField, type EditorState, type Transaction } fr
 import type { LineContext, WeaveElement } from "@brink/wasm-types";
 import { documentHandleFacet } from "./document-handle.js";
 import { AT_CUE_DIALECT, ResolvedDialect } from "./dialect.js";
+import { perfTime } from "./perf/probe.js";
 
 export { type LineContext } from "@brink/wasm-types";
 
@@ -592,6 +593,10 @@ function applyDialectFallback(
 // ── StateField ──────────────────────────────────────────────────────
 
 function computeLineInfos(state: EditorState): LineInfo[] {
+  return perfTime("cm.elementType.computeLineInfos", () => computeLineInfosInner(state));
+}
+
+function computeLineInfosInner(state: EditorState): LineInfo[] {
   // The view's own document handle (per-view DocId, see document-handle.ts).
   // Pushing here keeps the wasm session in sync with this view on every doc
   // change, before any extension queries run against the new state.

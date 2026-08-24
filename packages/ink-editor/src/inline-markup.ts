@@ -48,6 +48,7 @@ import {
 } from "@codemirror/view";
 import { elementTypeField, ElementType, type DialectGeometry } from "./element-type.js";
 import { leadingWsLen } from "./screenplay.js";
+import { perfTime } from "./perf/probe.js";
 
 // `contentRegions` is a pure function of `(text, type)`, plus an OPTIONAL
 // third `geometry` argument (#395). Character/Parenthetical content-region
@@ -416,7 +417,9 @@ export function inlineMarkup(rules: InlineMarkupRule[]): Extension {
       decorations: DecorationSet;
 
       constructor(view: EditorView) {
-        this.decorations = buildMarkupDecos(view, compiled);
+        this.decorations = perfTime("cm.inlineMarkup.build", () =>
+          buildMarkupDecos(view, compiled),
+        );
       }
 
       update(update: ViewUpdate) {
@@ -424,7 +427,9 @@ export function inlineMarkup(rules: InlineMarkupRule[]): Extension {
         // (which recomputes on docChanged), so a viewport-only scroll keeps
         // the existing set — same policy as the screenplay passes.
         if (update.docChanged) {
-          this.decorations = buildMarkupDecos(update.view, compiled);
+          this.decorations = perfTime("cm.inlineMarkup.build", () =>
+            buildMarkupDecos(update.view, compiled),
+          );
         }
       }
     },

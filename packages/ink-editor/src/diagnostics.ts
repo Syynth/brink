@@ -2,6 +2,7 @@ import { type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { setDiagnostics, type Diagnostic } from "@codemirror/lint";
 import type { CompileResult } from "@brink/wasm-types";
+import { perfSpan, perfTime } from "./perf/probe.js";
 
 export interface DiagnosticsOptions {
   compile: (source: string) => CompileResult;
@@ -60,8 +61,9 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
         // The view may have been detached/replaced between scheduling and now.
         if (!this.view.dom.isConnected) return;
 
+        const endCycle = perfSpan("cm.diagnostics.compileCycle");
         const source = this.view.state.doc.toString();
-        const result = options.compile(source);
+        const result = perfTime("cm.diagnostics.compile", () => options.compile(source));
 
         // A project compile reports diagnostics for every file; keep only the
         // ones belonging to the file shown here so an INCLUDEd file's errors
@@ -100,8 +102,14 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
           });
         }
 
-        this.view.dispatch(setDiagnostics(this.view.state, diags));
-        options.onCompile?.(result);
+        perfTime("cm.diagnostics.setDiagnostics", () =>
+          this.view.dispatch(setDiagnostics(this.view.state, diags)),
+        );
+        // The studio's compile fan-out (outline, story graph, player reload,
+        // store sweeps) all runs inside this callback — the span separates
+        // "compiling" from "reacting to the compile".
+        perfTime("cm.diagnostics.onCompile", () => options.onCompile?.(result));
+        endCycle();
       }
     },
   );
