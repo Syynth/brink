@@ -39,6 +39,7 @@ import type {
   CodeActionData,
   ProjectFile,
   FileOutline,
+  PerfCounters,
   StoryGraph,
   LineContext,
   ConvertTarget,
@@ -715,6 +716,39 @@ export class EditorSessionHandle {
   compileProject(entry: string): CompileResult {
     const json = this.session.compile_project(entry);
     return JSON.parse(json) as CompileResult;
+  }
+
+  // ── Wasm-internal perf counters (measure-first ruling, 2026-08-24) ──
+
+  /**
+   * Enable/disable the wasm-internal perf counters. Off by default; the
+   * studio's dev edge turns them on alongside its JS-side probe so the
+   * boundary spans (`wasm.<method>`) can be decomposed into internal
+   * phases (`ide.analyze`, `ide.snapshotClone`, …).
+   */
+  setPerfEnabled(on: boolean): void {
+    this.session.set_perf_enabled(on);
+  }
+
+  /** The internal counters: `{ [name]: { count, totalMs, maxMs } }`. */
+  getPerfCounters(): PerfCounters {
+    return JSON.parse(this.session.perf_counters_json()) as PerfCounters;
+  }
+
+  /** Clear the internal counters (scenario boundaries). */
+  resetPerfCounters(): void {
+    this.session.perf_reset();
+  }
+
+  /**
+   * The #2885 revision-stamp experiment: two back-to-back compiles with
+   * zero edits between them, returning `[firstMs, secondMs]`. Warm salsa
+   * memoization would make the second near-free; the hypothesis under test
+   * is that `compile`'s unconditional options write cold-prices every
+   * editor compile — in which case the two are priced alike.
+   */
+  perfCompileProbe(entry: string): [number, number] {
+    return JSON.parse(this.session.perf_compile_probe(entry)) as [number, number];
   }
 
   getProjectOutline(): FileOutline[] {

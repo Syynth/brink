@@ -62,7 +62,9 @@ js-sys = "0.3"
 rmp-serde = "1"
 # `console.warn` for the reentrancy guard and the throwing-binding warn — the
 # one logging path the crate otherwise lacks.
-web-sys = { version = "0.3", features = ["console"] }
+# `Window`/`Performance` power the perf counters' high-resolution clock
+# (measure-first ruling, 2026-08-24) — see src/perf.rs.
+web-sys = { version = "0.3", features = ["console", "Window", "Performance"] }
 
 [dev-dependencies]
 # Drives the `#[wasm_bindgen_test]` suite (run via `wasm-pack test --node`),

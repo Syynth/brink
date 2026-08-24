@@ -25,6 +25,14 @@ impl EditorSession {
     /// Binder's Library section can render its own story-graph nodes. Each
     /// node carries `mounted` (see [`StoryGraphNodeJs::mounted`]).
     pub fn story_graph(&self) -> String {
+        crate::perf::time("ide.storyGraph", || self.story_graph_inner())
+    }
+}
+
+// Private helpers — outside the `#[wasm_bindgen]` block, per this crate's
+// convention (see `navigation.rs`).
+impl EditorSession {
+    fn story_graph_inner(&self) -> String {
         let Some(analysis) = self.session.analysis() else {
             return "null".to_owned();
         };

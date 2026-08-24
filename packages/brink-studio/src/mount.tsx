@@ -30,6 +30,8 @@ import {
   attachPerfObservers,
   perfMark,
   perfRecord,
+  perfReport,
+  perfReset,
   perfSpan,
   perfTime,
   setPerfEnabled,
@@ -503,6 +505,29 @@ export async function mountStudio(
   });
   await project.initialize();
   perfMark("studio.projectInitialized");
+  if (perfDev) {
+    // Wasm-internal counters ride along with the JS probe in dev. Feature-
+    // detected: injected sessions/mocks predate the perf API.
+    const session = project.getSession() as {
+      setPerfEnabled?: (on: boolean) => void;
+      getPerfCounters?: () => unknown;
+      resetPerfCounters?: () => void;
+      perfCompileProbe?: (entry: string) => [number, number];
+    };
+    session.setPerfEnabled?.(true);
+    // Dev-only harvesting hook for the scenario runner (perf-runs/) and
+    // hand-driven console sessions: the probe report + wasm counters +
+    // the #2885 compile probe, in one place.
+    (globalThis as Record<string, unknown>).__brinkPerf = {
+      report: () => perfReport(),
+      reset: () => {
+        perfReset();
+        session.resetPerfCounters?.();
+      },
+      wasmCounters: () => session.getPerfCounters?.() ?? null,
+      compileProbe: () => session.perfCompileProbe?.(project.getEntryFile()) ?? null,
+    };
+  }
 
   // The .binder.json order sidecar (#3038): loaded straight from the
   // provider — it never enters the wasm session (presentation, not

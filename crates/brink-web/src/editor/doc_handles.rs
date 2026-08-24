@@ -81,7 +81,7 @@ impl EditorSession {
                 end: byte_to_utf16(&full, outcome.replaced_end),
                 text: outcome.inserted_separator.then(|| format!("{source}\n")),
             };
-            self.session.update_and_analyze(&path, outcome.spliced);
+            super::timed_update_and_analyze(&mut self.session, &path, outcome.spliced);
             spec
         } else {
             #[expect(
@@ -95,7 +95,7 @@ impl EditorSession {
                 end: byte_to_utf16(&full, full_len),
                 text: None,
             };
-            self.session.update_and_analyze(&path, source.to_owned());
+            super::timed_update_and_analyze(&mut self.session, &path, source.to_owned());
             spec
         };
         serde_json::to_string(&spec).unwrap_or_default()

@@ -25,6 +25,7 @@ mod editor;
 mod editor_dto;
 mod editor_refactor;
 mod external_binding;
+mod perf;
 mod program_model;
 mod session;
 mod speculation;

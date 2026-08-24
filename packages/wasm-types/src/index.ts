@@ -1771,3 +1771,19 @@ export interface ProjectSource {
    * unconfigured defaults, exactly as if no `brink.toml` existed. */
   files: Record<string, string>;
 }
+
+// ── Wasm-internal perf counters (measure-first ruling, 2026-08-24) ────
+
+/** One internal counter row from `EditorSession::perf_counters_json`. */
+export interface PerfCounterRow {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+}
+
+/**
+ * The wasm-internal counters, keyed by phase name (`ide.analyze`,
+ * `ide.snapshotClone`, `ide.compile`, `ide.byteToUtf16`, …). Mirrors the
+ * JSON `crates/brink-web/src/perf.rs::report_json` emits.
+ */
+export type PerfCounters = Record<string, PerfCounterRow>;

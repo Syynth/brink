@@ -282,7 +282,7 @@ impl EditorSession {
             insert: edit.insert,
         };
 
-        self.session.update_and_analyze(&current, merged);
+        super::timed_update_and_analyze(&mut self.session, &current, merged);
 
         serde_json::to_string(&AutoImportJs {
             ok: true,
