@@ -26,6 +26,7 @@
  * `"main.ink::start"` for symbol (fragment) documents.
  */
 
+import { docString } from "./doc-string";
 import { EditorState, type ChangeSet, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -1148,7 +1149,7 @@ export class DocumentSessions {
       if (update.docChanged && !mirrored) {
         this.callbacks.onDocEdited?.(slot.docKey, slot.groupId);
         perfTime("cm.slotListener.mirrorEdit", () =>
-          this.mirrorEdit(slot, update.changes, update.state.doc.toString()),
+          this.mirrorEdit(slot, update.changes, docString(update.state)),
         );
       }
 

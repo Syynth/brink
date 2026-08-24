@@ -1,3 +1,4 @@
+import { docString } from "./doc-string";
 import {
   Compartment,
   Facet,
@@ -42,7 +43,7 @@ const foldRangesFacet = Facet.define<FoldingOptions["getFoldingRanges"], Folding
 function computeFoldRanges(state: EditorState): FoldRange[] {
   const getFoldingRanges = state.facet(foldRangesFacet);
   try {
-    return perfTime("cm.folding.computeRanges", () => getFoldingRanges(state.doc.toString()));
+    return perfTime("cm.folding.computeRanges", () => getFoldingRanges(docString(state)));
   } catch {
     return [];
   }

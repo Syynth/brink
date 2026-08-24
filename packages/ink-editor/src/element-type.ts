@@ -1,3 +1,4 @@
+import { docString } from "./doc-string";
 import { Facet, StateEffect, StateField, type EditorState, type Transaction } from "@codemirror/state";
 import type { LineContext, WeaveElement } from "@brink/wasm-types";
 import { documentHandleFacet } from "./document-handle.js";
@@ -602,7 +603,7 @@ function computeLineInfosInner(state: EditorState): LineInfo[] {
   // change, before any extension queries run against the new state.
   const handle = state.facet(documentHandleFacet)?.handle ?? null;
   if (handle) {
-    handle.pushSource(state.doc.toString());
+    handle.pushSource(docString(state));
     const contexts = handle.lineContexts();
 
     const infos: LineInfo[] = [];
