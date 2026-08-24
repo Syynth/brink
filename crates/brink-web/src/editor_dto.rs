@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::compile::DiagnosticJs;
 use crate::editor::byte_to_utf16;
+use crate::editor::utf16_index::Utf16Index;
 
 // ── Serialization types ─────────────────────────────────────────────
 
@@ -665,23 +666,26 @@ mod diagnostic_to_js_tests {
 }
 
 /// Convert a symbol tree to JSON, translating byte ranges to UTF-16 offsets
-/// against `source` (the file the symbols belong to).
+/// through `index` (built over the file the symbols belong to). Takes the
+/// prebuilt [`Utf16Index`] rather than the source (#3065): four conversions
+/// per symbol times a naive from-zero scan made `project_outline`
+/// O(symbols × file size) — the caller builds the index once per file.
 pub(crate) fn convert_document_symbol(
     sym: brink_ide::document::DocumentSymbol,
-    source: &str,
+    index: &Utf16Index<'_>,
 ) -> DocumentSymbolJs {
     DocumentSymbolJs {
         name: sym.name,
         kind: symbol_kind_str(sym.kind).to_owned(),
         detail: sym.detail,
-        start: byte_to_utf16(source, sym.range.start().into()),
-        end: byte_to_utf16(source, sym.range.end().into()),
-        full_start: byte_to_utf16(source, sym.full_range.start().into()),
-        full_end: byte_to_utf16(source, sym.full_range.end().into()),
+        start: index.byte_to_utf16(sym.range.start().into()),
+        end: index.byte_to_utf16(sym.range.end().into()),
+        full_start: index.byte_to_utf16(sym.full_range.start().into()),
+        full_end: index.byte_to_utf16(sym.full_range.end().into()),
         children: sym
             .children
             .into_iter()
-            .map(|c| convert_document_symbol(c, source))
+            .map(|c| convert_document_symbol(c, index))
             .collect(),
     }
 }

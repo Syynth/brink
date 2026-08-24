@@ -1,22 +1,23 @@
 {
-	"packageManager": "pnpm@10.34.5",
-	"scripts": {
-		"release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/studio build && pnpm changeset publish",
-		"check:grammar-drift": "node scripts/check-grammar-drift.mjs",
-		"check:no-nul-bytes": "node scripts/check-no-nul-bytes.mjs",
-		"check:pnpm-pin": "node scripts/check-pnpm-pin.mjs",
-		"check:scripts": "node scripts/check-scripts.mjs",
-		"check:studio-changeset": "node scripts/check-studio-changeset.mjs",
-		"check:target-freshness": "node scripts/check-target-freshness.mjs",
-		"check:wasm-pkg": "node scripts/check-wasm-pkg.mjs",
-		"install:checked": "node scripts/guarded-install.mjs",
-		"test:scripts": "node --test scripts/*.test.mjs",
-		"test:setup-dev": "bash scripts/setup-dev.test.sh",
-		"test:refresh-lockfiles": "bash scripts/refresh-excluded-lockfiles.test.sh"
-	},
-	"devDependencies": {
-		"@changesets/cli": "^2.31.0",
-		"@types/react": "^19.2.14",
-		"@types/react-dom": "^19.2.3"
-	}
+  "packageManager": "pnpm@10.34.5",
+  "scripts": {
+    "release": "pnpm --filter @brink-lang/web build && pnpm --filter @brink-lang/studio build && pnpm changeset publish",
+    "check:grammar-drift": "node scripts/check-grammar-drift.mjs",
+    "check:no-nul-bytes": "node scripts/check-no-nul-bytes.mjs",
+    "check:pnpm-pin": "node scripts/check-pnpm-pin.mjs",
+    "check:scripts": "node scripts/check-scripts.mjs",
+    "check:studio-changeset": "node scripts/check-studio-changeset.mjs",
+    "check:target-freshness": "node scripts/check-target-freshness.mjs",
+    "check:wasm-pkg": "node scripts/check-wasm-pkg.mjs",
+    "install:checked": "node scripts/guarded-install.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "test:setup-dev": "bash scripts/setup-dev.test.sh",
+    "test:refresh-lockfiles": "bash scripts/refresh-excluded-lockfiles.test.sh",
+    "perf:compare": "node scripts/perf-compare.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5"
+  }
 }

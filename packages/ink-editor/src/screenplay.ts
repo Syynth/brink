@@ -1,6 +1,7 @@
 import { type Extension, RangeSetBuilder, EditorState, Annotation } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { elementTypeField, elementClass, ElementType, type LineInfo } from "./element-type.js";
+import { perfTime } from "./perf/probe.js";
 
 // ── Screenplay sigil geometry (#368) ────────────────────────────────
 //
@@ -97,6 +98,10 @@ class EmptySigilWidget extends WidgetType {
 // ── Line decorations ──────────────────────────────────────────────
 
 function buildLineDecos(view: EditorView): DecorationSet {
+  return perfTime("cm.screenplay.lineDecos", () => buildLineDecosInner(view));
+}
+
+function buildLineDecosInner(view: EditorView): DecorationSet {
   const infos = view.state.field(elementTypeField);
   const builder = new RangeSetBuilder<Decoration>();
 
@@ -224,6 +229,10 @@ const screenplayPlugin = ViewPlugin.fromClass(
 // ── Bracket mark decorations ──────────────────────────────────────
 
 function buildBracketDecos(view: EditorView): DecorationSet {
+  return perfTime("cm.screenplay.bracketDecos", () => buildBracketDecosInner(view));
+}
+
+function buildBracketDecosInner(view: EditorView): DecorationSet {
   const infos = view.state.field(elementTypeField);
   const builder = new RangeSetBuilder<Decoration>();
 
@@ -278,7 +287,11 @@ const bracketPlugin = ViewPlugin.fromClass(
 
 const atomicMark = Decoration.mark({});
 
-const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
+const screenplayAtomicRanges = EditorView.atomicRanges.of((view) =>
+  perfTime("cm.screenplay.atomicRanges", () => buildAtomicRanges(view)),
+);
+
+function buildAtomicRanges(view: EditorView): DecorationSet {
   const infos = view.state.field(elementTypeField);
   const builder = new RangeSetBuilder<Decoration>();
 
@@ -295,7 +308,7 @@ const screenplayAtomicRanges = EditorView.atomicRanges.of((view) => {
   }
 
   return builder.finish();
-});
+}
 
 /** Annotation to bypass the sigil guard — used by our own key handlers. */
 export const sigilBypass = Annotation.define<boolean>();

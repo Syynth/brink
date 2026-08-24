@@ -302,3 +302,22 @@ export type { FindPanelOptions } from "./find-panel.js";
 // Framework-agnostic — the studio mounts it into a host container.
 export { ConflictView } from "./conflict-view.js";
 export type { ConflictViewOptions } from "./conflict-view.js";
+
+// Performance probe (measure-first ruling, docs/decision-log.md 2026-08-24):
+// the shared collector + observers behind the desktop perf work. Hosts enable
+// collection at their dev edge (`setPerfEnabled(import.meta.env.DEV)`);
+// everything is inert branches while disabled.
+export {
+  setPerfEnabled,
+  isPerfEnabled,
+  perfSpan,
+  perfTime,
+  perfRecord,
+  perfMark,
+  perfReport,
+  perfReset,
+} from "./perf/probe.js";
+export type { PerfReport, PerfSpanAggregate, PerfRawSpan } from "./perf/probe.js";
+export { attachPerfObservers } from "./perf/observers.js";
+export { perfViewportProbe } from "./perf/viewport-probe.js";
+export { withPerfTiming } from "./perf/wasm-proxy.js";

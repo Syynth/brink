@@ -27,6 +27,7 @@
   "include": [
     "alias-map.ts",
     "playwright.config.ts",
+    "playwright.perf.config.ts",
     "vite.config.ts",
     "vite.config.embed.ts",
     "vitest.config.ts",

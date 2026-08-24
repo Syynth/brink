@@ -33,6 +33,7 @@ import {
 import { playFromHereExtension } from "./play-from-here.js";
 import { hostGutterExtension, type HostGutterMarker } from "./host-gutter.js";
 import { hirOverlayExtension } from "./hir-overlay.js";
+import { perfViewportProbe } from "./perf/viewport-probe.js";
 
 export interface BrinkStudioOptions {
   compile: (source: string) => CompileResult;
@@ -382,6 +383,9 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
     options.dialect === null ? [] : screenplayDecorations();
 
   return [
+    // Viewport/scroll instrumentation (measure-first ruling, 2026-08-24).
+    // Inert branches while the probe is disabled — the production state.
+    perfViewportProbe(),
     // The per-view document-handle slot, readable by every extension and the
     // elementTypeField via state.facet(documentHandleFacet).
     documentHandleFacet.of(options.handleSlot ?? null),

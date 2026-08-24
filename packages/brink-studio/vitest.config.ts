@@ -4,7 +4,10 @@ import { studioPackageAliases, studioTestWasmAliases } from "./alias-map";
 export default defineConfig({
   test: {
     environment: "jsdom",
-    exclude: ["e2e/**", "node_modules/**"],
+    // "perf/**": Playwright perf scenarios (measure-first ruling,
+    // 2026-08-24) — run by playwright.perf.config.ts, never by vitest,
+    // same as the e2e specs.
+    exclude: ["e2e/**", "perf/**", "node_modules/**"],
     // Without this, vitest stubs every .css import to an empty module — even
     // `?raw` imports — which would blind the Chromium-88 style scan in
     // chromium88-color-mix.test.ts (#276).

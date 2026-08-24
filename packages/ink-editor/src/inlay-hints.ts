@@ -1,7 +1,8 @@
-import { type Extension, RangeSetBuilder } from "@codemirror/state";
+import { type EditorState, type Extension, RangeSetBuilder } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, WidgetType } from "@codemirror/view";
 import type { InlayHint } from "@brink/wasm-types";
 import { ensureStructuralStyles } from "./structural-styles.js";
+import { perfTime } from "./perf/probe.js";
 
 class InlayHintWidget extends WidgetType {
   constructor(
@@ -31,7 +32,12 @@ export interface InlayHintsOptions {
 }
 
 export function inlayHintsExtension(options: InlayHintsOptions): Extension {
-  return EditorView.decorations.compute(["doc"], (state) => {
+  return EditorView.decorations.compute(["doc"], (state) =>
+    perfTime("cm.inlayHints.decorations", () => buildInlayDecorations(state, options)),
+  );
+}
+
+function buildInlayDecorations(state: EditorState, options: InlayHintsOptions): DecorationSet {
     const source = state.doc.toString();
     const builder = new RangeSetBuilder<Decoration>();
 
@@ -60,5 +66,4 @@ export function inlayHintsExtension(options: InlayHintsOptions): Extension {
     }
 
     return builder.finish();
-  });
 }

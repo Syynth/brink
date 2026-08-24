@@ -38,6 +38,7 @@ import { openPopover } from "./widget-popover.js";
 import { openModal } from "./widget-modal.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import "./color-widget.js"; // side-effect: registers the built-in "color" widget
+import { perfTime } from "./perf/probe.js";
 
 /**
  * How the *inline* call-level glyph is shown (spec §6.5). Independent of the
@@ -1026,7 +1027,7 @@ export function argumentWidgetsExtension(options: ArgumentWidgetsOptions): Exten
         const modeChanged =
           update.startState.field(formGlyphField) !== update.state.field(formGlyphField);
         if (update.docChanged || update.viewportChanged || modeChanged) {
-          this.decorations = build(update.view);
+          this.decorations = perfTime("cm.argumentWidgets.build", () => build(update.view));
         }
       }
     },

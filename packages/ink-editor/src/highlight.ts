@@ -1,6 +1,7 @@
 import { type Extension, RangeSetBuilder } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView } from "@codemirror/view";
 import type { SemanticToken } from "@brink/wasm-types";
+import { perfTime } from "./perf/probe.js";
 
 const decoCache = new Map<string, Decoration>();
 
@@ -68,11 +69,13 @@ export function highlightExtension(options: HighlightOptions): Extension {
   const typeNames = options.getTokenTypeNames();
 
   return EditorView.decorations.compute(["doc"], (state) => {
-    return buildHighlightDecorations(
-      state.doc.toString(),
-      state.doc,
-      typeNames,
-      options.getSemanticTokens,
+    return perfTime("cm.highlight.decorations", () =>
+      buildHighlightDecorations(
+        state.doc.toString(),
+        state.doc,
+        typeNames,
+        options.getSemanticTokens,
+      ),
     );
   });
 }

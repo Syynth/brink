@@ -1,6 +1,7 @@
 use wasm_bindgen::prelude::*;
 
-use super::{EditorSession, byte_to_utf16};
+use super::EditorSession;
+use super::utf16_index::Utf16Index;
 use crate::editor_dto::{
     StoryGraphEdgeJs, StoryGraphEdgeOccurrenceJs, StoryGraphJs, StoryGraphNodeJs,
     story_edge_kind_str, story_node_kind_str,
@@ -25,6 +26,14 @@ impl EditorSession {
     /// Binder's Library section can render its own story-graph nodes. Each
     /// node carries `mounted` (see [`StoryGraphNodeJs::mounted`]).
     pub fn story_graph(&self) -> String {
+        crate::perf::time("ide.storyGraph", || self.story_graph_inner())
+    }
+}
+
+// Private helpers — outside the `#[wasm_bindgen]` block, per this crate's
+// convention (see `navigation.rs`).
+impl EditorSession {
+    fn story_graph_inner(&self) -> String {
         let Some(analysis) = self.session.analysis() else {
             return "null".to_owned();
         };
@@ -35,6 +44,13 @@ impl EditorSession {
             .collect();
         let graph = brink_ide::story_graph::story_graph(analysis, &files);
 
+        // One Utf16Index per file (#3065): the naive per-offset scan made
+        // node/edge-occurrence conversion O(occurrences × file size).
+        let indexes: std::collections::BTreeMap<brink_ir::FileId, Utf16Index<'_>> = files
+            .iter()
+            .map(|(id, _)| (*id, Utf16Index::new(db.source(*id).unwrap_or(""))))
+            .collect();
+
         let nodes: Vec<StoryGraphNodeJs> = graph
             .nodes
             .into_iter()
@@ -42,12 +58,13 @@ impl EditorSession {
                 let mounted = n.file.is_some_and(|f| self.mounted_std_ids.contains(&f));
                 let (file, start, end) = match (n.file, n.range) {
                     (Some(f), Some(r)) => {
-                        let src = db.source(f).unwrap_or("");
-                        (
-                            db.file_path(f).map(str::to_owned),
-                            Some(byte_to_utf16(src, r.start().into())),
-                            Some(byte_to_utf16(src, r.end().into())),
-                        )
+                        let (start, end) = indexes.get(&f).map_or((0, 0), |ix| {
+                            (
+                                ix.byte_to_utf16(r.start().into()),
+                                ix.byte_to_utf16(r.end().into()),
+                            )
+                        });
+                        (db.file_path(f).map(str::to_owned), Some(start), Some(end))
                     }
                     _ => (None, None, None),
                 };
@@ -75,12 +92,13 @@ impl EditorSession {
                     .iter()
                     .filter_map(|o| {
                         let file = db.file_path(o.file)?.to_owned();
-                        let src = db.source(o.file).unwrap_or("");
-                        Some(StoryGraphEdgeOccurrenceJs {
-                            file,
-                            start: byte_to_utf16(src, o.range.start().into()),
-                            end: byte_to_utf16(src, o.range.end().into()),
-                        })
+                        let (start, end) = indexes.get(&o.file).map_or((0, 0), |ix| {
+                            (
+                                ix.byte_to_utf16(o.range.start().into()),
+                                ix.byte_to_utf16(o.range.end().into()),
+                            )
+                        });
+                        Some(StoryGraphEdgeOccurrenceJs { file, start, end })
                     })
                     .collect(),
             })

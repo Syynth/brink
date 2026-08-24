@@ -7,9 +7,9 @@
   "types": "src/index.ts",
   "dependencies": {
     "@brink/wasm-types": "workspace:*",
-    "@floating-ui/react-dom": "^2.1.2",
-    "react-resizable-panels": "^4.7.4",
-    "zustand": "^5.0.0"
+    "@floating-ui/react-dom": "^2.1.9",
+    "react-resizable-panels": "^4.12.3",
+    "zustand": "^5.0.15"
   },
   "peerDependencies": {
     "react": "^19.0.0"

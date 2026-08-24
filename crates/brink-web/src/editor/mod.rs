@@ -20,6 +20,7 @@ mod refactor;
 mod spans;
 mod story_graph;
 mod transform;
+pub(crate) mod utf16_index;
 
 // ── EditorSession ───────────────────────────────────────────────────
 
@@ -272,11 +273,9 @@ impl EditorSession {
             if let Some(v) = &mut self.view {
                 v.end = outcome.new_view_end;
             }
-            self.session
-                .update_and_analyze(&self.active_path, outcome.spliced);
+            timed_update_and_analyze(&mut self.session, &self.active_path, outcome.spliced);
         } else {
-            self.session
-                .update_and_analyze(&self.active_path, source.to_owned());
+            timed_update_and_analyze(&mut self.session, &self.active_path, source.to_owned());
         }
         // Same already-present-wins precedent as `update_file` (issue
         // #2231 review finding): a real edit at a mounted stdlib key's
@@ -297,7 +296,7 @@ impl EditorSession {
     /// would stay flagged `mounted: true` in `list_files`/`project_outline`/
     /// `story_graph` even after its real content replaced the stdlib copy.
     pub fn update_file(&mut self, path: &str, source: &str) {
-        self.session.update_and_analyze(path, source.to_owned());
+        timed_update_and_analyze(&mut self.session, path, source.to_owned());
         if let Some(id) = self.session.file_id(path) {
             self.mounted_std_ids.remove(&id);
         }
@@ -779,7 +778,12 @@ impl EditorSession {
     /// #1032 closed by unifying compile and analysis onto one db.
     pub fn compile_project(&mut self, entry: &str) -> String {
         let options = self.session.analysis_options();
-        let product = match self.session.compile(entry, &options) {
+        // `ide.compile` vs the JS-side `wasm.compileProject` boundary span:
+        // the difference is diagnostics/DTO conversion. Its warm-vs-cold
+        // behavior is the #2885 revision-stamp question — see
+        // `perf_compile_probe` for the direct experiment.
+        let compiled = crate::perf::time("ide.compile", || self.session.compile(entry, &options));
+        let product = match compiled {
             Ok(product) => product,
             Err(e) => {
                 let resp = CompileResult {
@@ -797,12 +801,27 @@ impl EditorSession {
         // file-relative) — an INCLUDEd file's error lands on the right tab
         // instead of collapsing onto the entry. No throwaway-driver id
         // remapping: the ids are already this db's.
+        //
+        // Offsets convert through a per-file `Utf16Index` built once per
+        // referenced file (#3065) — the naive per-offset scan made this
+        // conversion O(diagnostics × file size).
+        let mut indexes: BTreeMap<brink_ir::FileId, utf16_index::Utf16Index<'_>> = BTreeMap::new();
+        for d in product.errors.iter().chain(product.warnings.iter()) {
+            indexes.entry(d.file).or_insert_with(|| {
+                utf16_index::Utf16Index::new(self.session.source(d.file).unwrap_or(""))
+            });
+        }
         let to_js = |d: &brink_ir::Diagnostic| {
-            let src = self.session.source(d.file).unwrap_or("");
+            let (start, end) = indexes.get(&d.file).map_or((0, 0), |ix| {
+                (
+                    ix.byte_to_utf16(d.range.start().into()),
+                    ix.byte_to_utf16(d.range.end().into()),
+                )
+            });
             DiagnosticJs {
                 message: d.message.clone(),
-                start: byte_to_utf16(src, d.range.start().into()),
-                end: byte_to_utf16(src, d.range.end().into()),
+                start,
+                end,
                 // Effective severity (issue #1367), not the raw
                 // `DiagnosticCode::severity()` default — `options` is the
                 // same `AnalysisOptions` `compile` above ran under.
@@ -851,6 +870,45 @@ impl EditorSession {
             };
             serde_json::to_string(&resp).unwrap_or_default()
         }
+    }
+
+    // ── Perf counters (measure-first ruling, 2026-08-24) ─────────────
+
+    /// Enable/disable the wasm-internal perf counters (`crate::perf`). Off
+    /// by default; the JS dev edge turns them on alongside its own probe.
+    pub fn set_perf_enabled(&self, on: bool) {
+        crate::perf::set_enabled(on);
+    }
+
+    /// The wasm-internal counters as JSON:
+    /// `{ name: { count, totalMs, maxMs } }`.
+    pub fn perf_counters_json(&self) -> String {
+        crate::perf::report_json()
+    }
+
+    /// Clear the wasm-internal counters (scenario boundaries).
+    pub fn perf_reset(&self) {
+        crate::perf::reset();
+    }
+
+    /// The #2885 revision-stamp experiment, run directly: two back-to-back
+    /// `IdeSession::compile` calls with zero edits between them. If salsa
+    /// memoization held across compiles both would be warm-priced; the
+    /// hypothesis under test is that `compile`'s unconditional
+    /// `set_analysis_options` write makes EVERY editor compile cold-priced —
+    /// in which case the second call costs the same as the first. Returns
+    /// `[first_ms, second_ms]`. Diagnostic only: perturbs nothing the next
+    /// real compile would not also set.
+    pub fn perf_compile_probe(&mut self, entry: &str) -> String {
+        let options = self.session.analysis_options();
+        let run = |session: &mut brink_ide::session::IdeSession| {
+            let start = crate::perf::now_ms();
+            let _ = session.compile(entry, &options);
+            crate::perf::now_ms() - start
+        };
+        let first = run(&mut self.session);
+        let second = run(&mut self.session);
+        format!("[{first:.3},{second:.3}]")
     }
 }
 
@@ -1184,12 +1242,38 @@ fn count_newlines(s: &str) -> u32 {
 // boundary up to the next char start (CodeMirror never produces such inputs,
 // but the clamp keeps us panic-free).
 
+/// The per-keystroke reanalysis, decomposed for the perf counters
+/// (measure-first ruling, 2026-08-24): identical composition to
+/// `IdeSession::update_and_analyze` (update → snapshot → analyze → apply),
+/// with each phase timed when the counters are enabled. Every editor-path
+/// caller of `update_and_analyze` in this crate routes through here so the
+/// dominant-cost hypothesis (whole-project analysis per keystroke) is
+/// measurable phase-by-phase, not just as one opaque boundary span.
+pub(crate) fn timed_update_and_analyze(
+    session: &mut brink_ide::session::IdeSession,
+    path: &str,
+    source: String,
+) {
+    if !crate::perf::enabled() {
+        session.update_and_analyze(path, source);
+        return;
+    }
+    crate::perf::time("ide.updateSource", || session.update_source(path, source));
+    let snap = crate::perf::time("ide.snapshotClone", || session.snapshot());
+    let result = crate::perf::time("ide.analyze", || snap.analyze());
+    crate::perf::time("ide.applyAnalysis", || session.apply_analysis(result));
+}
+
 /// Convert a byte offset within `s` to a UTF-16 code-unit offset.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "ink files are always < 4GB"
 )]
 pub(crate) fn byte_to_utf16(s: &str, byte: u32) -> u32 {
+    // Count-only (no per-call clock): a linear scan from offset 0, called
+    // per diagnostic/symbol/graph-node — the CALLER spans carry the time;
+    // this counter carries the multiplier.
+    crate::perf::count("ide.byteToUtf16");
     let byte = byte as usize;
     let mut units = 0u32;
     for (i, c) in s.char_indices() {

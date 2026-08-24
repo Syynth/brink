@@ -49,6 +49,6 @@
     "brink-web": "file:../../crates/brink-web/www/pkg",
     "tsup": "^8.5.1",
     "typescript": "^5.7.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.11"
   }
 }

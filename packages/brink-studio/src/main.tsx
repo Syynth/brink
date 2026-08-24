@@ -9,6 +9,7 @@ import { mountStudio, type StudioHandle } from "./mount.js";
 import { InMemoryFileProvider, type FileChange } from "@brink-lang/editor";
 import { createExampleExtension, EXAMPLE_HOST_MANIFEST } from "./example-extension.js";
 import toppledTemple from "./stories/toppled-temple.ink.txt?raw";
+import { generatePerfFixture } from "./perf-fixture.js";
 
 const MAIN_INK = `INCLUDE toppled-temple.ink
 
@@ -166,10 +167,14 @@ async function main(): Promise<void> {
         ? NESTED_FIXTURE
         : fixture === "native"
           ? NATIVE_FIXTURE
-          : {
-            "main.ink": MAIN_INK,
-            "toppled-temple.ink": toppledTemple,
-          };
+          : fixture === "perf"
+            // The synthetic studio-scale + large-file measurement project
+            // (measure-first ruling, 2026-08-24) — see perf-fixture.ts.
+            ? generatePerfFixture()
+            : {
+              "main.ink": MAIN_INK,
+              "toppled-temple.ink": toppledTemple,
+            };
 
   const appRoot = document.getElementById("app");
   if (!appRoot) throw new Error("Missing #app container");

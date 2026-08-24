@@ -1,6 +1,7 @@
 use wasm_bindgen::prelude::*;
 
 use super::EditorSession;
+use super::utf16_index::Utf16Index;
 use crate::editor_dto::{DocumentSymbolJs, FileOutlineJs, IncludeInfoJs, convert_document_symbol};
 
 #[wasm_bindgen]
@@ -39,9 +40,10 @@ impl EditorSession {
 
         let source = self.session.source(file_id).unwrap_or("");
         let syms = brink_ide::document::document_symbols(hir, manifest, source);
+        let index = Utf16Index::new(source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
-            .map(|s| convert_document_symbol(s, source))
+            .map(|s| convert_document_symbol(s, &index))
             .collect();
         serde_json::to_string(&items).unwrap_or_default()
     }
@@ -57,39 +59,7 @@ impl EditorSession {
     /// the Binder (`packages/brink-studio/src/mount.tsx` feeds the Binder
     /// from this on every compile) can render a distinct "Library" section.
     pub fn project_outline(&self) -> String {
-        let db = self.session.db();
-        let mut outline: Vec<FileOutlineJs> = Vec::new();
-
-        for id in db.file_ids() {
-            let mounted = self.mounted_std_ids.contains(&id);
-            let Some(path) = db.file_path(id) else {
-                continue;
-            };
-            let (Some(hir), Some(manifest)) = (db.hir(id), db.manifest(id)) else {
-                outline.push(FileOutlineJs {
-                    path: path.to_owned(),
-                    symbols: Vec::new(),
-                    mounted,
-                });
-                continue;
-            };
-
-            let source = db.source(id).unwrap_or("");
-            let syms = brink_ide::document::document_symbols(hir, manifest, source);
-            let items: Vec<DocumentSymbolJs> = syms
-                .into_iter()
-                .map(|s| convert_document_symbol(s, source))
-                .collect();
-            outline.push(FileOutlineJs {
-                path: path.to_owned(),
-                symbols: items,
-                mounted,
-            });
-        }
-
-        // Sort by path for deterministic output
-        outline.sort_by(|a, b| a.path.cmp(&b.path));
-        serde_json::to_string(&outline).unwrap_or_default()
+        crate::perf::time("ide.projectOutline", || self.project_outline_inner())
     }
 
     /// Project-relative paths of the current compile closure (#3017) —
@@ -133,6 +103,43 @@ impl EditorSession {
 }
 
 impl EditorSession {
+    fn project_outline_inner(&self) -> String {
+        let db = self.session.db();
+        let mut outline: Vec<FileOutlineJs> = Vec::new();
+
+        for id in db.file_ids() {
+            let mounted = self.mounted_std_ids.contains(&id);
+            let Some(path) = db.file_path(id) else {
+                continue;
+            };
+            let (Some(hir), Some(manifest)) = (db.hir(id), db.manifest(id)) else {
+                outline.push(FileOutlineJs {
+                    path: path.to_owned(),
+                    symbols: Vec::new(),
+                    mounted,
+                });
+                continue;
+            };
+
+            let source = db.source(id).unwrap_or("");
+            let syms = brink_ide::document::document_symbols(hir, manifest, source);
+            let index = Utf16Index::new(source);
+            let items: Vec<DocumentSymbolJs> = syms
+                .into_iter()
+                .map(|s| convert_document_symbol(s, &index))
+                .collect();
+            outline.push(FileOutlineJs {
+                path: path.to_owned(),
+                symbols: items,
+                mounted,
+            });
+        }
+
+        // Sort by path for deterministic output
+        outline.sort_by(|a, b| a.path.cmp(&b.path));
+        serde_json::to_string(&outline).unwrap_or_default()
+    }
+
     fn document_symbols_impl(&self, path: &str) -> String {
         let Some(file_id) = self.session.file_id(path) else {
             return "[]".to_owned();
@@ -145,9 +152,10 @@ impl EditorSession {
 
         let source = self.session.source(file_id).unwrap_or("");
         let syms = brink_ide::document::document_symbols(hir, manifest, source);
+        let index = Utf16Index::new(source);
         let items: Vec<DocumentSymbolJs> = syms
             .into_iter()
-            .map(|s| convert_document_symbol(s, source))
+            .map(|s| convert_document_symbol(s, &index))
             .collect();
 
         serde_json::to_string(&items).unwrap_or_default()

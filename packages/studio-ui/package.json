@@ -11,16 +11,16 @@
     "@brink/studio-shell": "workspace:*",
     "@brink/studio-store": "workspace:*",
     "@brink/wasm-types": "workspace:*",
-    "@codemirror/language": "^6.10.8",
-    "@codemirror/search": "^6.5.10",
-    "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.36.5",
-    "@dagrejs/dagre": "^3.0.0",
-    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.9",
+    "@dagrejs/dagre": "^3.1.1",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@lezer/highlight": "^1.2.1",
-    "@xyflow/react": "^12.11.0",
-    "react-resizable-panels": "^4.7.4",
-    "zustand": "^5.0.0"
+    "@xyflow/react": "^12.11.3",
+    "react-resizable-panels": "^4.12.3",
+    "zustand": "^5.0.15"
   },
   "peerDependencies": {
     "react": "^19.0.0"
