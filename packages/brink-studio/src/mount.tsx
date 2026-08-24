@@ -716,8 +716,8 @@ export async function mountStudio(
     // Find References (menu + Shift-Alt-F) presents through the Search
     // panel (context-menu spec ruling) — grouped results, click-to-reveal,
     // inline-editable rows, cross-file included.
-    onShowReferences: (symbol, locations) =>
-      store.getState().showReferences(symbol, locations),
+    onShowReferences: (symbol, locations, declaration) =>
+      store.getState().showReferences(symbol, locations, declaration ?? null),
     // Inline rename (#323/#324): the editor's F2 / context-menu rename runs
     // fully in the editor — the badge computes the breakage live, and this
     // commit applies the (already-computed) edits + re-keys the symbol tab.

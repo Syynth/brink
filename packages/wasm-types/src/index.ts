@@ -497,6 +497,15 @@ export interface Location {
   end: number;
 }
 
+/** How a reference site uses the symbol — the Search panel's per-card
+ *  badges (docs/search-results-cards-spec.md, PR E). */
+export type ReferenceUseKind = "decl" | "call" | "divert" | "read" | "write";
+
+/** A reference location plus its use kind (`find_references_with_kinds_at`). */
+export interface LocationWithKind extends Location {
+  kind: ReferenceUseKind;
+}
+
 /**
  * A handler location for the explain-match query (#2113) — a name plus its
  * declaration-site range in the project's conventions module. `start`/`end`

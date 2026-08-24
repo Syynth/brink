@@ -35,7 +35,11 @@ export interface PlayFromHereOptions {
   gotoDefinition?: (source: string, offset: number) => Location | null;
   findReferences?: (source: string, offset: number) => Location[];
   /** Host references surface (the Search panel) — see references.ts. */
-  onShowReferences?: (symbol: string, locations: Location[]) => void;
+  onShowReferences?: (
+    symbol: string,
+    locations: Location[],
+    declaration?: Location | null,
+  ) => void;
   getActiveFile?: () => string;
   onNavigateToFile?: (location: Location) => void;
   /** Whether the inline-rename surface is mounted (gates the Rename item). */
@@ -242,13 +246,13 @@ function identitySectionAt(
   const word = view.state.wordAt(pos);
   const name = word ? view.state.sliceDoc(word.from, word.to) : "";
   const loc = location;
-  const { findReferences, onShowReferences } = options;
+  const { findReferences, onShowReferences, gotoDefinition } = options;
   return {
     name,
     gotoDefinition: () => navigateToLocation(view, loc, options),
     findReferences: findReferences
       ? () => {
-          findReferencesAt(view, pos, { findReferences, onShowReferences });
+          findReferencesAt(view, pos, { findReferences, onShowReferences, gotoDefinition });
         }
       : undefined,
     rename:

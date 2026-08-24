@@ -3239,3 +3239,35 @@
 - **SCOPE:** moderate
 - **WHAT:** The search-results surface (shared by text search and Find References) is rebuilt as a list of per-match cards: a header row (file:line, containing knot/stitch, and for references a kind-of-use badge with the declaration pinned/badged) above an individual small editable buffer showing the match with context lines — default 1 before / 2 after, user-tunable. Inline editing stays. Once a search has been performed the result set is a FROZEN SNAPSHOT: edits — including edits that invalidate the match — never remove or re-filter rows; only running a new search replaces the set. Performance permitting ("if it's not too slow"): virtualize the card list rather than compromising the per-card buffers.
 - **WHY:** Maintainer: inline editing is the point of the surface, and stability under edits is what makes editing through results trustworthy — a row vanishing mid-edit because it no longer matches destroys the workflow. Context lines (1/2) give enough surrounding prose to edit confidently; per-card headers carry the identity information references need. Addendum (same day): an explicit ↻ refresh re-runs against current sources and replaces the snapshot — the user-initiated counterpart to the freeze (references refresh re-resolves from the declaration's edit-mapped current position); cards are fully syntax-highlighted via a per-file semantic-token cache (one wasm call per file with results).
+
+## Cmd-click on a definition runs Find References
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** Cmd/Ctrl-clicking a symbol token that IS the definition (the clicked position sits inside the definition's own span, same file) runs Find References instead of Go to Definition. Use sites keep navigating to the definition; empty/unavailable references fall back to selecting the declaration.
+- **WHY:** Maintainer: "cmd clicking a definition should do find references by default, not go to definition, because you're already... there" — self-navigation is a dead action at the definition, and the references surface is the useful counterpart from that position (matches the VS Code/JetBrains convention).
+
+## Search panel reuses the binder's expand/collapse-all buttons
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** The search summary row's collapse-all/expand-all controls are the binder header's icon buttons (same `ExpandAllIcon`/`CollapseAllIcon` + `.brink-binder-tool` treatment), not bespoke glyphs.
+- **WHY:** Maintainer ("re-use the expand/collapse all buttons from the binder, please"): one icon vocabulary for the same operation across panels — new panels should reach for the existing control set before inventing controls.
+
+## Search panel top: references as a scope chip in the query box
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** The Search panel's top piece is Direction C of the search-panel-header canvas: the bordered references header is gone; references identity renders as a dismissible scope chip (`refs <symbol> ✕`) INSIDE the query box (typing replaces it — the existing exit semantic made visible), and below the form sits one flat summary strip shared by both modes: count left ("N results/references · M files"), tool cluster right (binder expand/collapse-all icons · context value `1↑2↓` · ↻). The strip never wraps; the chip symbol ellipsizes.
+- **WHY:** Maintainer ("C is great, let's do that") after rejecting the stacked bordered pill ("this is dookie"): the ✕ belongs on the thing it clears, the chip makes typing-to-exit physically obvious (JetBrains scope-chip convention), and a strip that carries no identity always fits one row at panel widths.
+
+## Cmd-click on an INCLUDE path opens the file
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** Cmd/Ctrl-clicking the file-path text of an `INCLUDE` line opens that file (same `onNavigateToFile` route as the context menu's "Open <file>" item). The clickable span is the path text only — the INCLUDE keyword stays an ordinary click.
+- **WHY:** Maintainer ("⌘click on the file in an include statement should open that file, i think"): the path is a navigable reference like any other symbol; cmd-click is the editor's universal follow-the-reference gesture, so it should not dead-end on INCLUDEs.

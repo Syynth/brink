@@ -11,10 +11,19 @@ import type { Location } from "@brink/wasm-types";
 
 export interface ReferencesOptions {
   findReferences: (source: string, offset: number) => Location[];
+  /** Resolve the symbol's declaration (the same callback the cmd-click
+   *  navigate surface uses). When provided, `onShowReferences` receives it
+   *  as the third argument so the host can anchor a references refresh at
+   *  the declaration's position (docs/search-results-cards-spec.md). */
+  gotoDefinition?: (source: string, offset: number) => Location | null;
   /** Route results to the host's references surface (the Search panel —
    *  context-menu spec ruling). When absent, fall back to the in-view
    *  3s highlight (same-file only). */
-  onShowReferences?: (symbol: string, locations: Location[]) => void;
+  onShowReferences?: (
+    symbol: string,
+    locations: Location[],
+    declaration?: Location | null,
+  ) => void;
 }
 
 const setReferenceHighlights = StateEffect.define<DecorationSet>();
@@ -129,7 +138,13 @@ export function findReferencesAt(
   if (refs.length === 0) return false;
   const word = view.state.wordAt(pos);
   const symbol = word ? view.state.sliceDoc(word.from, word.to) : "";
-  options.onShowReferences(symbol, refs);
+  let declaration: Location | null = null;
+  try {
+    declaration = options.gotoDefinition?.(source, pos) ?? null;
+  } catch {
+    declaration = null;
+  }
+  options.onShowReferences(symbol, refs, declaration);
   return true;
 }
 

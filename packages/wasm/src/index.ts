@@ -28,6 +28,7 @@ import type {
   CompletionItem,
   HoverInfo,
   Location,
+  LocationWithKind,
   ExplainMatch,
   InlayHint,
   ColorHint,
@@ -871,6 +872,24 @@ export class EditorSessionHandle {
       includeDeclaration,
     );
     return JSON.parse(json) as Location[];
+  }
+
+  /**
+   * `findReferencesAt`, with each site classified by how it uses the
+   * symbol (`decl`/`call`/`divert`/`read`/`write` — the Search panel's
+   * per-card badges, docs/search-results-cards-spec.md PR E).
+   */
+  findReferencesWithKindsAt(
+    path: string,
+    offset: number,
+    includeDeclaration: boolean,
+  ): LocationWithKind[] {
+    const json = this.session.find_references_with_kinds_at(
+      path,
+      offset,
+      includeDeclaration,
+    );
+    return JSON.parse(json) as LocationWithKind[];
   }
 
   /**

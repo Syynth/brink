@@ -246,6 +246,8 @@ export {
   mapRowEditToSource,
   SearchResultsBuffer,
   DEFAULT_COMMIT_DELAY_MS,
+  SearchCardBuffer,
+  cardLineSegments,
   type FileSearchResult,
   type MatchLineSegments,
   type ProjectSearchResult,
@@ -256,7 +258,35 @@ export {
   type SearchPatternResult,
   type SearchQueryOptions,
   type SearchResultsBufferOptions,
+  type CardLineSegment,
+  type SearchCardBufferOptions,
+  type SearchCardHighlight,
+  type SearchCardModel,
 } from "@brink-lang/editor";
+
+// Frozen search snapshot (docs/search-results-cards-spec.md, PR B): the
+// pure model — capture, edit-mapping, staleness — plus the context-lines
+// knob's defaults. The slice owns when to capture/remap.
+export {
+  DEFAULT_SEARCH_CONTEXT_LINES,
+  MAX_SEARCH_CONTEXT_LINES,
+  attachReferenceKinds,
+  captureSnapshot,
+  cardSlice,
+  clampContextLines,
+  diffSources,
+  lineInfoAt,
+  mapSpan,
+  remapSnapshot,
+  type CardSlice,
+  type SearchContextLines,
+  type SearchSnapshot,
+  type SnapshotAnchor,
+  type SnapshotFile,
+  type SnapshotMatch,
+  type SnapshotOrigin,
+  type SourceDiff,
+} from "./search-snapshot.js";
 
 // Document key/title helpers (shared with the shell's DocumentRefs).
 export { docKeyFor, docTitleFor } from "@brink-lang/editor";

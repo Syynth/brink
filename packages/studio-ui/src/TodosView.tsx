@@ -50,8 +50,9 @@ export interface TodoFileGroup {
   count: number;
 }
 
-/** Deepest knot/stitch (by `full_start..full_end`) containing `offset`. */
-function containerAt(symbols: readonly DocumentSymbol[], offset: number): string | null {
+/** Deepest knot/stitch (by `full_start..full_end`) containing `offset`.
+ *  Exported for the Search panel's card headers (same lookup, spec PR C). */
+export function containerAt(symbols: readonly DocumentSymbol[], offset: number): string | null {
   for (const sym of symbols) {
     if (sym.kind !== "knot" && sym.kind !== "stitch" && sym.kind !== "function") continue;
     if (offset < sym.full_start || offset >= sym.full_end) continue;

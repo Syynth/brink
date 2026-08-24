@@ -280,6 +280,18 @@ export type {
   SearchResultsBufferOptions,
 } from "./search-results-buffer.js";
 
+// Per-match result cards (docs/search-results-cards-spec.md, PR C): the
+// card's own small CM6 buffer (visible cards) plus the static-HTML segment
+// model (off-screen / collapsed cards), sharing the host's per-file
+// semantic-token cache.
+export { SearchCardBuffer, cardLineSegments } from "./search-card.js";
+export type {
+  CardLineSegment,
+  SearchCardBufferOptions,
+  SearchCardHighlight,
+  SearchCardModel,
+} from "./search-card.js";
+
 // Extensible inline-markup rules (#367): host-registered patterns decorated
 // as `brink-markup-<name>` marks, scoped to the narrative content regions of
 // classified lines (never over ink syntax). Ships zero rules by default;
