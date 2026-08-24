@@ -7,6 +7,7 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 import type { FileChange } from "../src/index.js";
 
 /** The recorded onFilesChanged batches (window hook from `?egress=test`). */
@@ -93,6 +94,7 @@ test.describe("file egress — file.save (Mod-S)", () => {
 test.describe("file egress — binder structural ops (#137)", () => {
   test("drag-reordering knots delivers the rewritten file to the host", async ({ page }) => {
     await gotoStudio(page, "/?egress=test&fixture=screenplay");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot");
 
     // Drag "interrogation" onto the top 30% of "opening" → reorder before.

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 /**
  * Knot/stitch Rename (#305) — the shared symbol context menu's "Rename…" item
@@ -100,6 +101,7 @@ test.describe("knot/stitch rename (#305)", () => {
   }) => {
     await installSeedProbe(page);
     await page.goto("/");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
     // CONTROL — the raw platform split, measured in this browser rather than
@@ -165,6 +167,7 @@ test.describe("knot/stitch rename (#305)", () => {
 
   test("a clean rename applies and the binder shows the new name", async ({ page }) => {
     await page.goto("/");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
     await expect(binderKnot(page, "barter")).toHaveCount(1);
 
@@ -180,6 +183,7 @@ test.describe("knot/stitch rename (#305)", () => {
 
   test("F2 in the editor opens the inline rename seeded at the cursor (#323)", async ({ page }) => {
     await page.goto("/");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
     // Open a knot in the editor, then click its name token in the header to
@@ -220,6 +224,7 @@ test.describe("knot/stitch rename (#305)", () => {
     page,
   }) => {
     await page.goto("/");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
     // Open `threshold` in the editor and F2 on its name token.
@@ -306,6 +311,7 @@ test.describe("knot/stitch rename (#305)", () => {
     // proving a sub-poll-interval ordering; the unit test's fake timers are.
     test.slow();
     await page.goto("/");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-binder-knot", { timeout: 8000 });
 
     // Rename `threshold` onto the existing `intro` knot → duplicate-knot breakage.

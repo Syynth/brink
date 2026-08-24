@@ -10,6 +10,7 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 function group(page: Page, index: number): Locator {
   return page.locator(".shell-editor-group").nth(index);
@@ -39,6 +40,7 @@ async function startDrag(page: Page, tabEl: Locator): Promise<void> {
 test.describe("editor tab drag", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?fixture=screenplay");
+    await enterStructureMode(page);
     await page.waitForSelector(".brink-knot-header", { timeout: 5000 });
     // Default layout (#120): group 1 = main.ink, group 2 = Player.
     await expect(page.locator(".shell-editor-group")).toHaveCount(2);

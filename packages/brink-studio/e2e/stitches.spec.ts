@@ -1,7 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
+import { enterStructureMode } from "./binder-mode";
 
 /** Wait for the binder to render with knot entries. */
 async function waitForBinder(page: Page) {
+  await enterStructureMode(page);
   await page.waitForSelector(".brink-binder-knot", { timeout: 5000 });
 }
 
