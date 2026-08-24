@@ -66,3 +66,24 @@ fn well_formed_module_rename_emits_no_arbitration_diagnostics() {
     assert_eq!(diag_count(diags, DiagnosticCode::E095), 0);
     assert_eq!(diag_count(diags, DiagnosticCode::E049), 0);
 }
+
+/// A `#@was` whose line attaches to a following declaration is the #1672
+/// rename flow's stamp (decl-owned), not an orphaned module directive —
+/// even at the top of the file, where the placement is byte-identical to
+/// the file-level one. No `E049`. (This exact shape broke `brink ide
+/// rename --write` when the orphan diagnostic first surfaced: the CLI
+/// stamps `#@was(old)` directly above a line-1 `VAR`.)
+#[test]
+fn decl_attached_was_on_line_one_is_not_an_orphan() {
+    let mut db = ProjectDb::new();
+    let file = db.update_file(
+        "story.ink",
+        "#@was(gold)\nVAR coins = 1\n=== greet ===\nYou have {coins}.\n-> END\n".to_owned(),
+    );
+    let diags = db.diagnostics(file).expect("file is loaded");
+    assert_eq!(
+        diag_count(diags, DiagnosticCode::E049),
+        0,
+        "a decl-attached #@was must not be diagnosed as an orphaned module directive: {diags:?}"
+    );
+}
