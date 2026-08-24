@@ -294,6 +294,20 @@ impl ProjectDb {
         ))
     }
 
+    /// The file's assembled per-line contexts (#3064 B3) — per-segment
+    /// memoized for ink (an edit reclassifies the edited knot's fragment
+    /// only), whole-file for native. Dialect-classified when a dialect
+    /// config is registered ([`set_dialect`](Self::set_dialect)).
+    pub fn line_contexts(
+        &self,
+        id: FileId,
+    ) -> Option<Arc<Vec<brink_ir::hir::line_context::LineContext>>> {
+        let file = *self.files.get(&id)?;
+        Some(Arc::clone(
+            &crate::queries::line_contexts_query(&self.salsa, self.project, file).0,
+        ))
+    }
+
     /// Look up a file's ID by path.
     pub fn file_id(&self, path: &str) -> Option<FileId> {
         self.path_to_id.get(path).copied()

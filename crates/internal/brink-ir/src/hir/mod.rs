@@ -13,6 +13,7 @@ pub mod emit_native;
 mod explain;
 pub mod frame_shape;
 mod ink_provenance;
+pub mod line_context;
 pub mod lower;
 pub mod lower_native;
 mod normalize;

@@ -367,18 +367,9 @@ pub(crate) fn segment_projection_query<'db>(
     segment: FileSegment<'db>,
 ) -> super::NoEqArc<brink_ir::hir::projection::ProjectionParts> {
     let product = segment_lowered_query(db, file, segment);
-    let mut fragment_hir = product.decl_hir.clone();
-    fragment_hir.knots = product
-        .knot_entries
-        .iter()
-        .filter_map(|(knot, _)| knot.clone())
-        .collect();
-    fragment_hir
-        .knots
-        .extend(product.top_level_knots.iter().cloned());
-    fragment_hir.root_content = product.root_content.clone();
+    let hir = fragment_hir(product);
     super::NoEqArc(Arc::new(brink_ir::hir::projection::project_walk_parts(
-        &fragment_hir,
+        &hir,
         segment.text(db),
     )))
 }
@@ -514,6 +505,152 @@ pub(crate) fn projection_query(
         lines,
         option_paths,
     }))
+}
+
+// ─── Per-segment line contexts (#3064 B3) ────────────────────────────
+
+/// Build the fragment `HirFile` a segment's structural views project
+/// from — the lowered product's decl skeleton plus its knots and root
+/// content, exactly the shape [`segment_projection_query`] walks.
+fn fragment_hir(product: &LoweredSegment) -> HirFile {
+    let mut hir = product.decl_hir.clone();
+    hir.knots = product
+        .knot_entries
+        .iter()
+        .filter_map(|(knot, _)| knot.clone())
+        .collect();
+    hir.knots.extend(product.top_level_knots.iter().cloned());
+    hir.root_content = product.root_content.clone();
+    hir
+}
+
+/// One segment's per-line contexts (#3064 B3): fragment parse (trivia
+/// facet), fragment-local structural projection (decl prologue + the
+/// memoized walk), and the registered dialect's classify+chain
+/// post-pass — all fragment-relative. `LineContext` carries no absolute
+/// positions (dialect spans are line-relative), so assembly is pure
+/// per-line concatenation under the line-ownership rule in
+/// [`line_contexts_query`]. Chains cannot cross fragments: a fragment
+/// boundary is a knot/stitch header (structural — breaks every chain),
+/// and the only lines before it in the fragment are its doc block's
+/// comment lines.
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn segment_line_contexts_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+    segment: FileSegment<'db>,
+) -> super::NoEqArc<Vec<brink_ir::hir::line_context::LineContext>> {
+    use brink_ir::hir::{line_context as lc, projection as proj};
+
+    let product = segment_lowered_query(db, file, segment);
+    let text = segment.text(db);
+    let parse = brink_syntax::parse(text);
+    let root = parse.syntax();
+
+    let hir = fragment_hir(product);
+    let decl_parts = proj::project_file_decl_parts(&hir, text);
+    let walk = &segment_projection_query(db, file, segment).0;
+    let mut spans = decl_parts.spans;
+    spans.extend(walk.spans.iter().copied());
+    let mut option_paths = decl_parts.option_paths;
+    for (handle, path) in &walk.option_paths {
+        option_paths.insert(*handle, path.clone());
+    }
+    let lines = proj::build_line_stacks(&spans, text);
+    let projection = proj::Projection {
+        spans,
+        lines,
+        option_paths,
+    };
+
+    let contexts = match &super::resolved_dialect_query(db, project).0 {
+        Some(dialect) => lc::line_contexts_with_dialect(text, &root, &projection, dialect),
+        None => lc::line_contexts(text, &root, &projection),
+    };
+    super::NoEqArc(Arc::new(contexts))
+}
+
+/// The assembled whole-file line contexts (#3064 B3) — per-segment
+/// memoized for ink, whole-file for native (no segment road there yet).
+///
+/// Assembly is per-line concatenation under a line-OWNERSHIP rule: a
+/// file line belongs to the segment whose TILING range contains the
+/// line's start offset (segments' `lowered_range`s overlap on doc
+/// blocks; tiling ranges don't). For the owned line `L`, the context
+/// comes from the owner's fragment at index `L - line_of(owner start)`.
+/// A mid-line cut (the trailing-comment doc quirk) leaves the cut line
+/// owned by the PRECEDING segment, whose fragment ends exactly at the
+/// cut — its classification of the truncated line matches the
+/// whole-file one for every corpus case (equality-gated below).
+#[salsa::tracked(returns(ref), no_eq)]
+pub(crate) fn line_contexts_query(
+    db: &dyn salsa::Database,
+    project: super::ProjectInput,
+    file: SourceFile,
+) -> super::NoEqArc<Vec<brink_ir::hir::line_context::LineContext>> {
+    use brink_ir::hir::line_context as lc;
+
+    let source = file.text(db);
+
+    if super::file_language(file.path(db)) != super::Language::Ink {
+        // Native: whole-file composition (the pre-B3 shape), using the
+        // assembled projection.
+        let projection = &projection_query(db, project, file).0;
+        let parse = super::parse_native_query(db, file);
+        let root = parse.syntax();
+        let contexts = match &super::resolved_dialect_query(db, project).0 {
+            Some(dialect) => {
+                lc::line_contexts_with_dialect_native(source, &root, projection, dialect)
+            }
+            None => lc::line_contexts_native(source, &root, projection),
+        };
+        return super::NoEqArc(Arc::new(contexts));
+    }
+
+    // Line-start offsets (0-based line -> byte offset of line start).
+    let mut line_starts: Vec<u32> = vec![0];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
+    }
+    let total_lines = lc::line_count_for(source);
+    let line_of = |offset: u32| -> usize {
+        match line_starts.binary_search(&offset) {
+            Ok(l) => l,
+            Err(next) => next - 1,
+        }
+    };
+
+    let segs = file_segments_query(db, file);
+    let mut owned_from: Vec<usize> = Vec::with_capacity(segs.len() + 1);
+    for seg in segs {
+        let start = seg.offset(db);
+        let l = line_of(start);
+        // A segment starting mid-line owns that line iff everything
+        // before its start is whitespace (an INDENTED header — the
+        // fragment's own line 0 is the real header line). A cut after
+        // real content (the trailing-comment doc quirk) leaves the line
+        // with the preceding segment, whose fragment ends at the cut.
+        let prefix = &source[line_starts[l] as usize..start as usize];
+        // "Whitespace" here must match the LEXER's trivia notion — a
+        // leading UTF-8 BOM (U+FEFF) is trivia to the parser but not
+        // whitespace to `str::trim` (it's a format character).
+        let only_trivia = prefix.chars().all(|c| c.is_whitespace() || c == '\u{feff}');
+        owned_from.push(if only_trivia { l } else { l + 1 });
+    }
+    owned_from.push(total_lines);
+
+    let mut out: Vec<lc::LineContext> = Vec::with_capacity(total_lines);
+    for (i, seg) in segs.iter().enumerate() {
+        let ctxs = &segment_line_contexts_query(db, project, file, *seg).0;
+        let seg_start_line = line_of(seg.offset(db));
+        for line in owned_from[i]..owned_from[i + 1] {
+            out.push(ctxs.get(line - seg_start_line).cloned().unwrap_or_default());
+        }
+    }
+    super::NoEqArc(Arc::new(out))
 }
 
 #[cfg(test)]
@@ -680,6 +817,20 @@ Gamma body.
             );
         }
 
+        // Line-context parity (#3064 B3): assembled per-segment contexts
+        // must equal the whole-file classification.
+        {
+            use brink_ir::hir::line_context as lc;
+            let root = brink_syntax::parse(source).syntax();
+            let projection = db.projection(id).expect("projection");
+            let oracle_contexts = lc::line_contexts(source, &root, &projection);
+            let assembled_contexts = db.line_contexts(id).expect("contexts");
+            assert_eq!(
+                *assembled_contexts, oracle_contexts,
+                "line contexts diverged: {label}"
+            );
+        }
+
         let mut a = assembled.diagnostics.clone();
         let mut b = oracle.diagnostics.clone();
         let key = |d: &brink_ir::Diagnostic| {
@@ -742,6 +893,45 @@ Gamma body.
         for (label, source) in fixtures {
             assert_roads_agree(source, label);
         }
+    }
+
+    /// Dialect classification parity (#3064 B3): with a dialect config
+    /// registered, the assembled per-segment contexts must equal the
+    /// whole-file dialect pass — chains, hidden geometry, carry attrs.
+    #[test]
+    fn dialect_line_contexts_agree_with_whole_file() {
+        use brink_ir::hir::line_context as lc;
+
+        // The `@Name:<>` at-cue preset — the same default the studio
+        // registers (reproduces the hardcoded screenplay behavior).
+        let config = brink_ir::DialogueDialect::default();
+
+        let source = "Intro prose.
+== alpha ==
+@Alice:<>
+Hello there.
+Second dialogue line.
+
+Plain narrative after blank.
+== beta ==
+@Bob:<>
+Hi.
+-> END
+";
+        let mut db = ProjectDb::new();
+        db.set_dialect(Some(config));
+        let id = db.update_file("gate.ink", source.to_owned());
+
+        let root = brink_syntax::parse(source).syntax();
+        let projection = db.projection(id).expect("projection");
+        let dialect = std::sync::Arc::clone(db.resolved_dialect().expect("dialect compiles"));
+        let oracle = lc::line_contexts_with_dialect(source, &root, &projection, &dialect);
+        let assembled = db.line_contexts(id).expect("contexts");
+        assert_eq!(*assembled, oracle, "dialect contexts diverged");
+        assert!(
+            oracle.iter().any(|c| c.dialect.is_some()),
+            "fixture must actually exercise dialect classification"
+        );
     }
 
     /// The tier corpora, swept file by file. `tests_github`/`tests_patched`

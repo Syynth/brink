@@ -13,13 +13,23 @@ pub mod fn_value_hover;
 pub mod folding;
 pub mod formatting;
 pub mod hir_projection;
+/// Re-export shim (#3064 B3): the line-context core moved to
+/// `brink_ir::hir::line_context` so `brink-db`'s per-segment queries can
+/// call it; every existing `brink_ide::line_context::…` path keeps
+/// working through this module.
+pub mod line_context {
+    pub use brink_ir::hir::line_context::*;
+}
+/// Re-export shim (#3064 B3) — see [`line_context`].
+pub mod trivia {
+    pub use brink_ir::trivia::*;
+}
 pub mod hover;
 pub mod import_block;
 pub mod import_fix;
 pub mod include_block;
 mod inferred_types;
 pub mod inlay_hints;
-pub mod line_context;
 pub mod line_convert;
 pub mod navigation;
 pub mod rename;
@@ -34,7 +44,6 @@ pub mod structural_move;
 pub mod structural_result;
 pub mod style_hover;
 mod text;
-pub mod trivia;
 pub mod ufcs_hover;
 pub mod value_call_fix;
 

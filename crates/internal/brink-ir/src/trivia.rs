@@ -8,7 +8,7 @@
 
 use brink_syntax::SyntaxNode;
 
-use crate::LineIndex;
+use crate::line_index::LineIndex;
 
 /// Trivia facts for one source line.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

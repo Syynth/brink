@@ -437,6 +437,16 @@ impl IdeSession {
     /// generation and shared by every structural view (#480). Always carries
     /// the analyzer identity join (a superset the structural views simply
     /// ignore) — analysis is always available from the db since option A.
+    /// The file's assembled per-line contexts (#3064 B3) — per-segment
+    /// memoized on the db road; dialect-classified when a dialect config
+    /// is registered via [`set_dialect_config`](Self::set_dialect_config).
+    pub fn line_contexts(
+        &self,
+        file: FileId,
+    ) -> Option<Arc<Vec<brink_ir::hir::line_context::LineContext>>> {
+        self.db.line_contexts(file)
+    }
+
     pub fn projection(&self, file: FileId) -> Option<Arc<Projection>> {
         // #3064 B2: the db's assembled per-segment projection replaces the
         // session-level wipe-on-every-edit cache — a keystroke inside one
