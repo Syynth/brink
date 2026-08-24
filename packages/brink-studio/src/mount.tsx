@@ -888,12 +888,13 @@ export async function mountStudio(
     component: SearchView,
   });
   // TODOs (#3050): author notes over the E189 diagnostics the compile
-  // already carries — shares bottom/start with Program/Problems.
+  // already carries. Right/end by default (maintainer placement request) —
+  // the bottom dock stays the compile-feedback row (Problems/Output).
   toolWindows.register({
     id: "todos",
     title: "TODOs",
     icon: TODO_ICON,
-    defaultPlacement: { dock: "bottom", section: "start" },
+    defaultPlacement: { dock: "right", section: "end" },
     defaultOpen: false,
     badge: TodosBadge,
     component: TodosView,

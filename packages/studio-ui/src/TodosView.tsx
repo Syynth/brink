@@ -128,21 +128,21 @@ export function groupTodoItems(items: readonly TodoItem[]): TodoFileGroup[] {
   return files;
 }
 
-/** Stable identity for exit-animation diffing (JSON key per house rule). */
-export function todoKey(item: TodoItem, occurrence: number): string {
-  return JSON.stringify([item.file, item.container, item.text, occurrence]);
+/**
+ * Stable identity for exit-animation diffing: file + line (JSON key per
+ * house rule). Ruled 2026-08-23: keying by LOCATION, not text, so editing
+ * a note's wording never churns the panel — the row just updates in place;
+ * only deleting the line itself counts as removal. Two notes can't share a
+ * line, so the pair is unique; a source-less file falls back to the offset.
+ */
+export function todoKey(item: TodoItem): string {
+  return JSON.stringify([item.file, item.line ?? `@${item.start}`]);
 }
 
-/** Key every item, disambiguating repeated identical notes by occurrence. */
+/** Key every item by its location. */
 export function keyTodoItems(items: readonly TodoItem[]): Map<string, TodoItem> {
-  const seen = new Map<string, number>();
   const out = new Map<string, TodoItem>();
-  for (const item of items) {
-    const base = JSON.stringify([item.file, item.container, item.text]);
-    const n = seen.get(base) ?? 0;
-    seen.set(base, n + 1);
-    out.set(todoKey(item, n), item);
-  }
+  for (const item of items) out.set(todoKey(item), item);
   return out;
 }
 
@@ -164,6 +164,8 @@ export function TodosBadge() {
 interface LeavingTodo {
   key: string;
   item: TodoItem;
+  /** Epoch ms when this entry drops out. */
+  expiresAt: number;
 }
 
 /** How long a removed note lingers (strikethrough) before dropping out. */
@@ -194,23 +196,42 @@ function TodosViewInner() {
   const keyed = useMemo(() => keyTodoItems(items), [items]);
 
   // Exit animation: a key present last render but absent now lingers as a
-  // struck-through row for LEAVE_MS. Existence in source is the state —
-  // this is presentation only, nothing is persisted.
+  // struck-through row until its own deadline. Existence in source is the
+  // state — this is presentation only, nothing is persisted. Each entry
+  // carries its expiry so identity-only churn (every recompile delivers a
+  // new-but-equal diagnostics array) can neither strike live rows nor
+  // cancel a pending drop (pinned by todos-leaving.test).
   useEffect(() => {
     const prev = prevKeyed.current;
     prevKeyed.current = keyed;
     if (!prev) return;
     const removed: LeavingTodo[] = [];
     for (const [key, item] of prev) {
-      if (!keyed.has(key)) removed.push({ key, item });
+      if (!keyed.has(key)) {
+        removed.push({ key, item, expiresAt: Date.now() + LEAVE_MS });
+      }
     }
-    if (removed.length === 0) return;
-    setLeaving((cur) => [...cur.filter((l) => !removed.some((r) => r.key === l.key)), ...removed]);
-    const timer = setTimeout(() => {
-      setLeaving((cur) => cur.filter((l) => !removed.some((r) => r.key === l.key)));
-    }, LEAVE_MS);
-    return () => clearTimeout(timer);
+    setLeaving((cur) => {
+      // A note that reappeared (undo) stops leaving; fresh removals join.
+      const kept = cur.filter((l) => !keyed.has(l.key) && !removed.some((r) => r.key === l.key));
+      if (removed.length === 0 && kept.length === cur.length) return cur;
+      return [...kept, ...removed];
+    });
   }, [keyed]);
+
+  // Purge each entry on its own deadline.
+  useEffect(() => {
+    if (leaving.length === 0) return;
+    const next = Math.min(...leaving.map((l) => l.expiresAt));
+    const timer = setTimeout(
+      () => {
+        const now = Date.now();
+        setLeaving((cur) => cur.filter((l) => l.expiresAt > now));
+      },
+      Math.max(0, next - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [leaving]);
 
   // Live and leaving items merged in (file, offset) order, then filtered
   // and grouped — a leaving row holds its old place in its old group.

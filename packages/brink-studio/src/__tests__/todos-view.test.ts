@@ -119,12 +119,16 @@ describe("matchesTodoFilter", () => {
 });
 
 describe("keyTodoItems", () => {
-  it("disambiguates identical notes by occurrence", () => {
+  it("keys by file + line so text edits keep the same identity", () => {
     const a: TodoItem = { file: "a.ink", start: 0, end: 1, text: "same", line: 1, container: null };
-    const b: TodoItem = { ...a, start: 50 };
+    const b: TodoItem = { ...a, start: 50, line: 3 };
     const keyed = keyTodoItems([a, b]);
     expect(keyed.size).toBe(2);
-    expect(keyed.get(todoKey(a, 0))).toBe(a);
-    expect(keyed.get(todoKey(b, 1))).toBe(b);
+    expect(keyed.get(todoKey(a))).toBe(a);
+    expect(keyed.get(todoKey(b))).toBe(b);
+    // Reworded note on the same line: identical key — no churn.
+    expect(todoKey({ ...a, text: "reworded" })).toBe(todoKey(a));
+    // No source → offset fallback still distinguishes.
+    expect(todoKey({ ...a, line: null })).not.toBe(todoKey({ ...b, line: null }));
   });
 });

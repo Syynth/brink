@@ -124,6 +124,7 @@ function lineElementToType(element: string): ElementType {
     case "logic": return ElementType.Logic;
     case "var_decl": return ElementType.VarDecl;
     case "comment": return ElementType.Comment;
+    case "todo": return ElementType.Todo;
     case "include": return ElementType.Include;
     case "external": return ElementType.External;
     case "tag": return ElementType.Tag;

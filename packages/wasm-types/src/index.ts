@@ -1071,6 +1071,7 @@ export type LineElement =
   | "logic"
   | "var_decl"
   | "comment"
+  | "todo"
   | "include"
   | "external"
   | "tag"

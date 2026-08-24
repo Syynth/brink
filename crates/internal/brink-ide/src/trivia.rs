@@ -12,6 +12,11 @@ use crate::LineIndex;
 
 /// Trivia facts for one source line.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "a per-line fact record — each flag is an independent trivia \
+              classification, not a state machine to encode as an enum"
+)]
 pub struct LineTrivia {
     /// The line is a `//` line comment, or lies inside a `/* ... */` block
     /// comment.
@@ -20,6 +25,10 @@ pub struct LineTrivia {
     pub block_comment: bool,
     /// The line is a standalone tag line (`# ...`) — and not a comment.
     pub tag: bool,
+    /// The line is a `TODO:` author note (`AUTHOR_WARNING`, #3050). Ink
+    /// only — the native surface has no `TODO` construct, so
+    /// [`line_trivia_native`] never sets it.
+    pub todo: bool,
 }
 
 /// Compute per-line trivia from the source text and syntax tree.
@@ -39,6 +48,18 @@ pub fn line_trivia(source: &str, root: &SyntaxNode, line_count: usize) -> Vec<Li
             && token.kind() == brink_syntax::SyntaxKind::BLOCK_COMMENT
         {
             mark_block_comment(&mut trivia, &idx, token.text_range());
+        }
+    }
+
+    // ── `TODO:` author notes (#3050) from the syntax tree ──
+    // Single-line by grammar (`author_warning` consumes through NEWLINE);
+    // mark the node's start line.
+    for node in root.descendants() {
+        if node.kind() == brink_syntax::SyntaxKind::AUTHOR_WARNING {
+            let line = idx.line_col(node.text_range().start()).0 as usize;
+            if let Some(t) = trivia.get_mut(line) {
+                t.todo = true;
+            }
         }
     }
 
