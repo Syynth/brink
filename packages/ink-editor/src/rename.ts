@@ -19,15 +19,14 @@
  * suppress the default inline report); the default is this inline report.
  */
 
-import { StateEffect, type Extension } from "@codemirror/state";
+import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import {
   Decoration,
-  type DecorationSet,
   EditorView,
   keymap,
-  ViewPlugin,
-  type ViewUpdate,
-  WidgetType,
+  showTooltip,
+  type Tooltip,
+  type TooltipView,
 } from "@codemirror/view";
 import type { Location, StructuralResult } from "@brink/wasm-types";
 import { InlineNameInput } from "./inline-name-input.js";
@@ -134,23 +133,18 @@ export function startInlineRename(view: EditorView, offset?: number): void {
  * Rendering + behavior are the shared {@link InlineNameInput} primitive (#315 H
  * factored it out so extract-to-knot/function reuses the same chip + report).
  */
-class InlineRenameWidget extends WidgetType {
-  constructor(private readonly controller: RenameController) {
-    super();
-  }
+/** Mark over the symbol being renamed — the token STAYS in the document
+ *  (the old design replaced it with a widget, which is how Escape could
+ *  appear to eat the text); the input floats beneath in a tooltip. */
+const renameTargetMark = Decoration.mark({ class: "brink-rename-target" });
 
-  // Always rebuild on a new controller session; the controller owns identity.
-  eq(): boolean {
-    return false;
-  }
+const stopInlineRenameEffect = StateEffect.define<null>();
 
-  toDOM(): HTMLElement {
-    return this.controller.render();
-  }
-
-  ignoreEvent(): boolean {
-    return true;
-  }
+/** The active rename target, resolved at start-effect time. */
+interface ActiveRename {
+  from: number;
+  to: number;
+  name: string;
 }
 
 /** A live inline-rename session — a thin adapter binding the shared
@@ -205,109 +199,65 @@ class RenameController {
   }
 }
 
-/**
- * The inline-rename plugin: holds the active session's replace-decoration and
- * controller, starts one on `startInlineRenameEffect`, and disposes it on
- * cancel/commit, on the document changing underneath it, or on editor unmount.
- */
-class InlineRename {
-  decorations: DecorationSet = Decoration.none;
-  private controller: RenameController | null = null;
-  /** Handle for `stop()`'s deferred `view.focus()` (#2557 sibling site,
-   *  found alongside #2558 in this same file). */
-  private focusTimer: ReturnType<typeof setTimeout> | null = null;
-
-  constructor(
-    private readonly view: EditorView,
-    private readonly options: RenameOptions,
-  ) {}
-
-  update(update: ViewUpdate): void {
-    for (const tr of update.transactions) {
+export function renameExtension(options: RenameOptions): Extension {
+  // Zed/JetBrains-style floating rename: a StateField holds the resolved
+  // target; it provides a mark over the token (which stays put — Escape can
+  // no longer disturb document text by construction) and a `showTooltip`
+  // that floats the name input just below the symbol.
+  const field = StateField.define<ActiveRename | null>({
+    create: () => null,
+    update(value, tr) {
       for (const effect of tr.effects) {
         if (effect.is(startInlineRenameEffect)) {
-          this.start(effect.value.offset);
+          const pos = effect.value.offset ?? tr.state.selection.main.head;
+          const source = tr.state.doc.toString();
+          let range: Location | null;
+          try {
+            range = options.prepareRename(source, pos);
+          } catch {
+            return null;
+          }
+          if (range === null) return value;
+          return {
+            from: range.start,
+            to: range.end,
+            name: source.slice(range.start, range.end),
+          };
         }
+        if (effect.is(stopInlineRenameEffect)) return null;
       }
-    }
-    // A user edit while an inline rename is open dismisses it (its anchor moved
-    // and the replace decoration would otherwise drift); a no-op map keeps the
-    // decoration aligned across viewport-only updates.
-    if (this.controller !== null && update.docChanged) {
-      this.stop();
-    } else if (update.docChanged) {
-      this.decorations = this.decorations.map(update.changes);
-    }
-  }
-
-  /** Begin an inline rename at `offset` (view coords; cursor when null). */
-  private start(offset: number | null): void {
-    this.stop();
-    const view = this.view;
-    const pos = offset ?? view.state.selection.main.head;
-    const source = view.state.doc.toString();
-
-    let range: Location | null;
-    try {
-      range = this.options.prepareRename(source, pos);
-    } catch {
-      return;
-    }
-    if (range === null) return;
-
-    const currentName = source.slice(range.start, range.end);
-    // The whole-file offset for renameSymbolAt is folded in by the host's
-    // `renameSymbolAt` closure (it adds any fragment-view origin), so we hand it
-    // the view-coord symbol start; `path` is informational for the cache key.
-    const controller = new RenameController(
-      this.options,
-      range.start,
-      "",
-      currentName,
-      () => this.stop(),
-    );
-    this.controller = controller;
-    this.decorations = Decoration.set([
-      Decoration.replace({
-        widget: new InlineRenameWidget(controller),
-      }).range(range.start, range.end),
-    ]);
-    // No dispatch here — `update` runs inside a transaction; CM re-reads
-    // `this.decorations` after it returns and mounts the widget on that pass.
-  }
-
-  /** Dismiss the active inline rename (no-op when none). */
-  private stop(): void {
-    if (this.controller === null) return;
-    const view = this.view;
-    this.controller.dispose();
-    this.controller = null;
-    this.decorations = Decoration.none;
-    // Return focus to the editor after a cancel/commit so the user keeps typing.
-    if (this.focusTimer !== null) clearTimeout(this.focusTimer);
-    this.focusTimer = setTimeout(() => {
-      this.focusTimer = null;
-      view.focus();
-    }, 0);
-  }
-
-  destroy(): void {
-    this.controller?.dispose();
-    this.controller = null;
-    this.decorations = Decoration.none;
-    // #2557 sibling: clear a still-pending focus timer from stop() so it
-    // can't fire after the plugin (and its view) is torn down.
-    if (this.focusTimer !== null) {
-      clearTimeout(this.focusTimer);
-      this.focusTimer = null;
-    }
-  }
-}
-
-export function renameExtension(options: RenameOptions): Extension {
-  const plugin = ViewPlugin.define((view) => new InlineRename(view, options), {
-    decorations: (v) => v.decorations,
+      // A user edit while the rename is open dismisses it (its anchor moved).
+      if (value !== null && tr.docChanged) return null;
+      return value;
+    },
+    provide: (f) => [
+      EditorView.decorations.from(f, (v) =>
+        v ? Decoration.set([renameTargetMark.range(v.from, v.to)]) : Decoration.none,
+      ),
+      showTooltip.from(f, (v) => (v ? renameTooltip(v) : null)),
+    ],
   });
+
+  function renameTooltip(active: ActiveRename): Tooltip {
+    return {
+      pos: active.from,
+      above: false,
+      create(view: EditorView): TooltipView {
+        const controller = new RenameController(options, active.from, "", active.name, () => {
+          view.dispatch({ effects: stopInlineRenameEffect.of(null) });
+          // Return focus to the editor after cancel/commit (#2557-safe: the
+          // tooltip's own teardown has already run by the time this fires).
+          setTimeout(() => {
+            if (view.dom.isConnected) view.focus();
+          }, 0);
+        });
+        const dom = document.createElement("div");
+        dom.className = "brink-rename-tooltip";
+        dom.appendChild(controller.render());
+        return { dom, destroy: () => controller.dispose() };
+      },
+    };
+  }
 
   const keys = keymap.of([
     {
@@ -330,5 +280,5 @@ export function renameExtension(options: RenameOptions): Extension {
     },
   ]);
 
-  return [plugin, keys];
+  return [field, keys];
 }
