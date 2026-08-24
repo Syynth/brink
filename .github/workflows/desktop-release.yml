@@ -70,7 +70,15 @@ jobs:
       matrix:
         include:
           - label: macOS (Apple Silicon)
-            os: macos-latest
+            # macos-15, not macos-latest (2026-08-24): five consecutive
+            # release runs on the macos-26 image hung inside codesign at
+            # "replacing existing signature" — its only network dependency
+            # is Apple's timestamp server, and the hang has no timeout.
+            # 0.1.2 signed in 0.6s on the same image earlier that day, so
+            # this pins the older fleet as the variable-isolation move; the
+            # probe step below turns any recurrence into a fast, named
+            # failure instead of a 30-minute cap kill.
+            os: macos-15
             bundles: app,dmg
             artifact: macos-aarch64
           - label: Linux
@@ -164,7 +172,7 @@ jobs:
       # wholesale when the secret is absent, which is what lets this workflow
       # run end-to-end before the Apple credentials exist.
       - name: Import Apple signing certificate
-        if: matrix.os == 'macos-latest' && env.APPLE_CERTIFICATE != ''
+        if: matrix.os == 'macos-15' && env.APPLE_CERTIFICATE != ''
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -179,6 +187,22 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" build.keychain
           rm -f /tmp/cert.p12
+
+      # codesign's secure timestamp is its one network dependency, and a
+      # codesign that cannot reach the timestamp server hangs with NO
+      # timeout — the 2026-08-24 release attempts each burned the full
+      # 30-minute cap exactly there. Probe first: a broken runner fails in
+      # seconds with a named cause, and the retry gets a fresh VM.
+      - name: Probe Apple timestamp endpoint (fail fast instead of hanging in codesign)
+        if: matrix.os == 'macos-15' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          code=$(curl -sS -m 20 -o /dev/null -w '%{http_code}' http://timestamp.apple.com/ts01) || {
+            echo "::error::timestamp.apple.com unreachable from this runner — codesign would hang here. Failing fast; re-run for a fresh VM."
+            exit 1
+          }
+          echo "timestamp.apple.com reachable (HTTP $code)"
 
       # `tauri build` signs when APPLE_SIGNING_IDENTITY is set and notarizes
       # when the App Store Connect API key vars are.
