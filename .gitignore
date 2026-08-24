@@ -31,3 +31,8 @@ packages/ink-editor/dist/
 
 # Design-canvas scratch (seeded payloads; durable sources live in docs/design/)
 .design/
+
+# Recorded performance runs (probe JSON + CDP traces; measure-first ruling
+# 2026-08-24). Artifacts are per-machine measurements — the durable summary
+# lives in docs/desktop-perf-baseline.md.
+perf-runs/

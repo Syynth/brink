@@ -1,7 +1,7 @@
 {
   "name": "@brink-lang/studio",
   "version": "0.15.0",
-  "description": "Embeddable brink studio — a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
+  "description": "Embeddable brink studio \u2014 a full ink IDE (CodeMirror editor, compiler diagnostics, story player, binder, story graph) mounted into a DOM element with one call.",
   "license": "MIT",
   "type": "module",
   "homepage": "https://github.com/Syynth/brink",
@@ -48,6 +48,7 @@
     "build:embed": "vite build --config vite.config.embed.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:perf": "playwright test --config playwright.perf.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.e2e.json",
     "prepack": "pnpm run build"
   },

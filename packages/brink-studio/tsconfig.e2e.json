@@ -31,5 +31,9 @@
     // "types" override here would otherwise drop.
     "types": ["@playwright/test", "node", "vite/client"]
   },
-  "include": ["e2e", "playwright.config.ts"]
+  // "perf" (measure-first ruling, 2026-08-24): the perf scenario specs are
+  // Playwright specs like e2e/*, run by their own config
+  // (playwright.perf.config.ts, `pnpm test:perf`) — typechecked here for
+  // the same reason the e2e specs are.
+  "include": ["e2e", "perf", "playwright.config.ts", "playwright.perf.config.ts"]
 }
