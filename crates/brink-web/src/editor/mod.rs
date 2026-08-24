@@ -1244,11 +1244,11 @@ fn count_newlines(s: &str) -> u32 {
 
 /// The per-keystroke reanalysis, decomposed for the perf counters
 /// (measure-first ruling, 2026-08-24): identical composition to
-/// `IdeSession::update_and_analyze` (update → snapshot → analyze → apply),
-/// with each phase timed when the counters are enabled. Every editor-path
-/// caller of `update_and_analyze` in this crate routes through here so the
-/// dominant-cost hypothesis (whole-project analysis per keystroke) is
-/// measurable phase-by-phase, not just as one opaque boundary span.
+/// `IdeSession::update_and_analyze` (update the file input, then
+/// `refresh_analysis` — the guarded options sync + memoized db pull that
+/// replaced the retired snapshot-clone/off-db road under option A). The
+/// old `ide.snapshotClone` / `ide.applyAnalysis` counters retired with
+/// that road; `ide.analyze` now measures the incremental salsa pull.
 pub(crate) fn timed_update_and_analyze(
     session: &mut brink_ide::session::IdeSession,
     path: &str,
@@ -1259,9 +1259,7 @@ pub(crate) fn timed_update_and_analyze(
         return;
     }
     crate::perf::time("ide.updateSource", || session.update_source(path, source));
-    let snap = crate::perf::time("ide.snapshotClone", || session.snapshot());
-    let result = crate::perf::time("ide.analyze", || snap.analyze());
-    crate::perf::time("ide.applyAnalysis", || session.apply_analysis(result));
+    crate::perf::time("ide.analyze", || session.refresh_analysis());
 }
 
 /// Convert a byte offset within `s` to a UTF-16 code-unit offset.
@@ -2602,9 +2600,13 @@ mod tests {
     const GRAPH_EAST: &str = "=== east ===\n= gate\nGate.\n-> start\n";
 
     #[test]
-    fn story_graph_null_without_analysis() {
+    fn story_graph_empty_on_a_fresh_session() {
+        // Option A (2026-08-24): analysis is always available from the db,
+        // so the pre-analysis "null" sentinel is gone — a fresh session
+        // yields a valid, empty graph (the mounted stdlib contributes no
+        // story nodes: its knots are functions, which the graph excludes).
         let s = EditorSession::new();
-        assert_eq!(s.story_graph(), "null");
+        assert_eq!(s.story_graph(), "{\"nodes\":[],\"edges\":[]}");
     }
 
     #[test]

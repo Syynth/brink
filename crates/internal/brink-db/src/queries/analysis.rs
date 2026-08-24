@@ -1082,15 +1082,26 @@ pub(crate) fn whole_project_diagnostics_query(
         let inline_docs = inline_docs_query(db, project);
         // `is_native` (issue #1348): `dialect` is an ink-only axis — a
         // native project has no dialect to be wrong about, so the ink-only
-        // `E064` config error must never fire for one. Same
-        // `super::project_is_native` seam `compilation_closure_files` itself
-        // uses to decide the frontend for the whole compilation unit.
+        // `E064` config error must never fire for one.
+        //
+        // `project_is_all_native`, NOT the entry-derived
+        // `project_is_native` (option A landing, 2026-08-24): an editor
+        // session analyzes with no compile entry set, where the
+        // entry-derived predicate answers `false` and the ink-arm `E064`
+        // fires on an all-native session — the latent divergence
+        // `native_rule_selection.rs`'s non-vacuity guards exposed the
+        // moment the editor started reading this query. All-native is also
+        // the classification the retired off-db road used (#1358, with the
+        // #2318 non-source carve-out), and the correct one for a mixed
+        // project under `types = strict` regardless of entry: any ink
+        // member file genuinely needs `dialect = brink` for strict's
+        // annotation syntax.
         diagnostics.extend(brink_analyzer::strict_diagnostics(
             &hir_refs,
             &resolved.index,
             &resolved.resolutions,
             opts,
-            super::project_is_native(db, project),
+            super::project_is_all_native(db, project),
             strict_inference,
             inline_docs,
         ));

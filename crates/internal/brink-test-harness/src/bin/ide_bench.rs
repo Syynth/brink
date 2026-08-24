@@ -1,14 +1,17 @@
 //! Editor-road latency bench (measure-first ruling, `docs/decision-log.md`
 //! 2026-08-24).
 //!
-//! `compile_bench` (#498) profiles the **db road** (`ProjectDb` query
-//! pulls) and `editor_session_bench` (#529) its memory growth — but the
-//! studio editor's per-keystroke path is the **off-db analyze road**:
-//! `IdeSession::update_and_analyze` = update → `snapshot()` (clones every
-//! file's `HirFile` + `SymbolManifest` + the module map) → whole-project
-//! `IdeSnapshot::analyze` → `apply_analysis` (wipes the projection cache).
-//! Nothing measured that road natively until this bin. It answers, with
-//! numbers, the desktop-perf hypotheses:
+//! `compile_bench` (#498) profiles the `ProjectDb` query graph layer by
+//! layer and `editor_session_bench` (#529) its memory growth — this bin
+//! measures the editor's actual per-keystroke composition,
+//! `IdeSession::update_and_analyze`. Under option A (ruled 2026-08-24)
+//! that is update → `refresh_analysis` (guarded options sync + one
+//! incremental `analysis_query` pull); the pre-option-A composition this
+//! bin originally measured — `snapshot()` deep-cloning every `HirFile` +
+//! manifest + module map, then a whole-project off-db
+//! `IdeSnapshot::analyze` — is retired, and its recorded rows in
+//! `docs/desktop-perf-baseline.md` are the before-picture. It answers,
+//! with numbers, the desktop-perf hypotheses:
 //!
 //! 1. **Startup is O(N²)**: `ProjectSession.initialize` calls
 //!    `updateFile` per file, and each one runs a full-project analysis —
@@ -109,8 +112,7 @@ fn bench_init_curve(project: &BTreeMap<String, String>) {
         for (path, source) in &subset {
             session.update_source(path, (*source).clone());
         }
-        let result = session.snapshot().analyze();
-        session.apply_analysis(result);
+        session.refresh_analysis();
         let once = ms(start);
 
         row(
@@ -148,17 +150,17 @@ fn bench_keystroke(project: &BTreeMap<String, String>, runs: usize) {
     );
 }
 
-/// The same keystroke, split into the four phases `update_and_analyze`
-/// composes — the same decomposition `crates/brink-web`'s perf counters
-/// report in-browser (`ide.updateSource` / `ide.snapshotClone` /
-/// `ide.analyze` / `ide.applyAnalysis`).
+/// The same keystroke, split into the two phases `update_and_analyze`
+/// composes since option A (2026-08-24) — the same decomposition
+/// `crates/brink-web`'s perf counters report in-browser
+/// (`ide.updateSource` / `ide.analyze`). The old four-phase split
+/// (snapshot clone / off-db analyze / apply) retired with the off-db road;
+/// its recorded rows in docs/desktop-perf-baseline.md are the before-picture.
 fn bench_keystroke_phases(project: &BTreeMap<String, String>, runs: usize) {
     let mut session = seeded_session(project);
     let path = edit_path();
     let mut update = Vec::with_capacity(runs);
-    let mut snapshot = Vec::with_capacity(runs);
     let mut analyze = Vec::with_capacity(runs);
-    let mut apply = Vec::with_capacity(runs);
     for revision in 1..=runs as u64 {
         // Offset revisions past bench_keystroke's so every edit is fresh.
         let edited = generate_file(EDIT_FILE, 1000 + revision);
@@ -168,16 +170,8 @@ fn bench_keystroke_phases(project: &BTreeMap<String, String>, runs: usize) {
         update.push(ms(start));
 
         let start = Instant::now();
-        let snap = session.snapshot();
-        snapshot.push(ms(start));
-
-        let start = Instant::now();
-        let result = snap.analyze();
+        session.refresh_analysis();
         analyze.push(ms(start));
-
-        let start = Instant::now();
-        session.apply_analysis(result);
-        apply.push(ms(start));
     }
     row(
         "ide_keystroke.phase.update_source",
@@ -185,19 +179,9 @@ fn bench_keystroke_phases(project: &BTreeMap<String, String>, runs: usize) {
         &update,
     );
     row(
-        "ide_keystroke.phase.snapshot",
-        "clone every HirFile + manifest + module map",
-        &snapshot,
-    );
-    row(
-        "ide_keystroke.phase.analyze",
-        "whole-project off-db analyze_with_modules",
+        "ide_keystroke.phase.db_analysis",
+        "guarded options sync + incremental analysis_query pull",
         &analyze,
-    );
-    row(
-        "ide_keystroke.phase.apply",
-        "store result, wipe projection cache",
-        &apply,
     );
 }
 
@@ -276,9 +260,7 @@ fn bench_keystroke_large(project: &BTreeMap<String, String>, runs: usize) {
     let large_lines = project.get(&path).map_or(0, |s| s.lines().count());
     let mut total = Vec::with_capacity(runs);
     let mut update = Vec::with_capacity(runs);
-    let mut snapshot = Vec::with_capacity(runs);
     let mut analyze = Vec::with_capacity(runs);
-    let mut apply = Vec::with_capacity(runs);
     for revision in 1..=runs as u64 {
         let edited = generate_large_file(revision);
 
@@ -287,23 +269,10 @@ fn bench_keystroke_large(project: &BTreeMap<String, String>, runs: usize) {
         update.push(ms(start));
 
         let start = Instant::now();
-        let snap = session.snapshot();
-        snapshot.push(ms(start));
-
-        let start = Instant::now();
-        let result = snap.analyze();
+        session.refresh_analysis();
         analyze.push(ms(start));
 
-        let start = Instant::now();
-        session.apply_analysis(result);
-        apply.push(ms(start));
-
-        total.push(
-            update[update.len() - 1]
-                + snapshot[snapshot.len() - 1]
-                + analyze[analyze.len() - 1]
-                + apply[apply.len() - 1],
-        );
+        total.push(update[update.len() - 1] + analyze[analyze.len() - 1]);
     }
     let detail = format!("one-line edit in large.ink ({large_lines} lines)");
     row("ide_large.update_and_analyze", &detail, &total);
@@ -313,19 +282,9 @@ fn bench_keystroke_large(project: &BTreeMap<String, String>, runs: usize) {
         &update,
     );
     row(
-        "ide_large.phase.snapshot",
-        "clone every HirFile + manifest + module map",
-        &snapshot,
-    );
-    row(
-        "ide_large.phase.analyze",
-        "whole-project off-db analyze_with_modules",
+        "ide_large.phase.db_analysis",
+        "guarded options sync + incremental analysis_query pull",
         &analyze,
-    );
-    row(
-        "ide_large.phase.apply",
-        "store result, wipe projection cache",
-        &apply,
     );
 }
 
@@ -385,7 +344,8 @@ fn verify_analyzes_clean(project: &BTreeMap<String, String>) -> Result<(), Strin
     for (path, source) in project {
         session.update_source(path, source.clone());
     }
-    let result = session.snapshot().analyze();
+    session.refresh_analysis();
+    let result = session.db().analysis();
     let errors = result
         .diagnostics
         .iter()

@@ -15,8 +15,11 @@ impl EditorSession {
     /// edge-occurrence spans are UTF-16 offsets in their own file; each edge
     /// lists the divert sites that produced it (#371). Deterministically
     /// ordered (nodes by id, edges by from/to/kind, occurrences by
-    /// file/span). Returns JSON `StoryGraph`, or `"null"` when no analysis
-    /// is available.
+    /// file/span). Returns JSON `StoryGraph` — since option A (2026-08-24)
+    /// analysis is always available from the db, so the former pre-analysis
+    /// `"null"` sentinel no longer occurs (a fresh session yields an empty
+    /// graph); the wrapper's `StoryGraph | null` type is kept for wire
+    /// compatibility.
     ///
     /// Lists mounted stdlib files' knots/stitches alongside real project
     /// files' (issue #2306/#2343, "Mounted stdlib presents as a read-only
