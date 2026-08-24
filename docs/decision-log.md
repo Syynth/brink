@@ -3304,3 +3304,12 @@
 - **SCOPE:** moderate
 - **WHAT:** The `lower_file` double-lowering defect (#3088) is fixed by restructuring, not by a byte-identical patch: declarations are lowered once (values + diagnostics from one walk), `lower()` and the db road share the same composition pieces so they cannot drift again, and the previously-dropped file-level `#@module`/`#@was` arbitration diagnostics (E095 self-alias, E049 was-without-module) now reach the editor, pinned by a db-road test.
 - **WHY:** The silent drop is a live bug by the house rule (silent drops are bugs until proven otherwise) — the analyzer explicitly skips re-diagnosing E095 on the assumption lowering surfaced it, while the db road discarded it. No test pins the broken behavior; the affected population is malformed module directives, where failing loudly is correct. Preserving the drop for byte-identity would embalm a bug and hand #3084's assembler a documented wart. (The maintainer chose the proper fix over the byte-identical patch and a two-PR split when presented with all three.)
+
+## Segment tracked structs carry their text (2x source residency) — provisional
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** brink-db — per-knot incremental lowering (#3084)
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** `FileSegment` tracked structs store each segment's source text as an untracked (identity) field — salsa's own untracked-field hash IS the ruled content-hash identity, and its recreate-time equality check makes hash collisions harmless. Consequence: source text is resident ~2x (the input plus the segment copies). Accepted provisionally; the memory accounting must cover the new ingredient from day one, and the posture is revisited once real numbers (memory bench / studio-scale project) are in hand.
+- **WHY:** The alternative — segments carrying only ranges, lowering slicing the original file text — silently reintroduces a whole-file input dependency and nothing ever backdates (the exact trap the FG-3 range-free projections avoid). A hand-rolled content-hash field hashes the same bytes anyway and makes collisions alias distinct knots. Source text is the smallest payload class in the db, but the maintainer flags the duplication as a likely real cost — hence tentative, with measurement before any doubling-down.
