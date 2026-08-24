@@ -11,6 +11,11 @@ import { dispatchSymbolAction } from "./symbolMenuActions.js";
 import type { FileOutline, DocumentSymbol } from "@brink/wasm-types";
 import type { TabTarget } from "@brink/studio-store";
 import {
+  EMPTY_BINDER_ORDER,
+  orderChildIds,
+  type BinderOrder,
+} from "@brink/studio-store";
+import {
   BrinkFileIcon,
   ChevronIcon,
   CollapseAllIcon,
@@ -160,7 +165,7 @@ function RenameInput({ initial, onCommit, onCancel }: RenameInputProps) {
 
 interface DragState {
   sourceKeys: string[];
-  sourceKind: "knot" | "stitch" | "file";
+  sourceKind: "knot" | "stitch" | "file" | "folder";
   sourcePath: string;
   sourceParent?: string;
 }
@@ -377,50 +382,99 @@ export interface FolderNode {
   key: string;
   folders: FolderNode[];
   files: FileOutline[];
+  /** The level's children in DISPLAY order (#3038): the `.binder.json`
+   *  sidecar's authored order first, then the fallback (entry first,
+   *  folders before files, alphabetical). Folders and files interleave —
+   *  placement is authorship. */
+  children: TreeChild[];
 }
+
+export type TreeChild =
+  | { kind: "folder"; folder: FolderNode }
+  | { kind: "file"; file: FileOutline };
 
 interface TreeLevel {
   folders: FolderNode[];
   files: FileOutline[];
+  /** See {@link FolderNode.children}. */
+  children: TreeChild[];
 }
 
 /** Group files into a collapsible folder tree by splitting their paths on `/`.
  *  Purely presentational (no new data model); files with no `/` sit at root.
  *  Folders and files are sorted by name within each level for determinism. */
-export function buildBinderTree(outline: FileOutline[]): TreeLevel {
-  const root: TreeLevel = { folders: [], files: [] };
+export interface BuildTreeOptions {
+  /** The `.binder.json` sidecar (#3038); absent = pure fallback order. */
+  order?: BinderOrder;
+  /** The entry file — the fallback rule puts it first in its container. */
+  entry?: string | null;
+}
+
+export function buildBinderTree(
+  outline: FileOutline[],
+  options: BuildTreeOptions = {},
+): TreeLevel {
+  const root: TreeLevel = { folders: [], files: [], children: [] };
+  const ensureFolder = (dirPath: string): TreeLevel => {
+    let level: TreeLevel = root;
+    let prefix = "";
+    for (const segment of dirPath.split("/")) {
+      if (segment === "") continue;
+      prefix += `${segment}/`;
+      let child = level.folders.find((f) => f.key === prefix);
+      if (!child) {
+        child = { name: segment, key: prefix, folders: [], files: [], children: [] };
+        level.folders.push(child);
+      }
+      level = child;
+    }
+    return level;
+  };
   for (const file of outline) {
     const slash = file.path.lastIndexOf("/");
     if (slash < 0) {
       root.files.push(file);
       continue;
     }
-    let level: TreeLevel = root;
-    let prefix = "";
-    for (const segment of file.path.substring(0, slash).split("/")) {
-      prefix += `${segment}/`;
-      let child = level.folders.find((f) => f.key === prefix);
-      if (!child) {
-        child = { name: segment, key: prefix, folders: [], files: [] };
-        level.folders.push(child);
-      }
-      level = child;
-    }
-    level.files.push(file);
+    ensureFolder(file.path.substring(0, slash)).files.push(file);
   }
-  const sortLevel = (lvl: TreeLevel): void => {
+  // Registered empty folders (#3038): a file-derived tree cannot represent
+  // them, so the sidecar's `folders` list materializes them here.
+  for (const folderId of options.order?.folders ?? []) {
+    ensureFolder(folderId.slice(0, -1));
+  }
+  const order = options.order ?? EMPTY_BINDER_ORDER;
+  const entry = options.entry ?? null;
+  const orderLevel = (lvl: TreeLevel, containerId: string): void => {
     lvl.folders.sort((a, b) => a.name.localeCompare(b.name));
     lvl.files.sort((a, b) => a.path.localeCompare(b.path));
-    lvl.folders.forEach(sortLevel);
+    const byId = new Map<string, TreeChild>();
+    for (const folder of lvl.folders) byId.set(folder.key, { kind: "folder", folder });
+    for (const file of lvl.files) byId.set(file.path, { kind: "file", file });
+    lvl.children = orderChildIds(containerId, [...byId.keys()], order, entry)
+      .map((id) => byId.get(id))
+      .filter((c): c is TreeChild => c !== undefined);
+    lvl.folders.forEach((f) => orderLevel(f, f.key));
   };
-  sortLevel(root);
+  orderLevel(root, "");
   return root;
 }
 
-function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[] {
+interface FlatRowOptions extends BuildTreeOptions {
+  /** Files mode (#3036) omits symbol rows — keyboard nav and drag must
+   *  see exactly what renders. */
+  structureMode?: boolean;
+}
+
+function buildFlatRows(
+  outline: FileOutline[],
+  collapsed: Set<string>,
+  options: FlatRowOptions = {},
+): FlatRow[] {
   const rows: FlatRow[] = [];
   const pushFile = (file: FileOutline): void => {
     rows.push({ key: file.path, kind: "file", path: file.path, index: 0, siblingCount: 1 });
+    if (options.structureMode !== true) return;
     if (collapsed.has(file.path)) return;
     const knots = file.symbols.filter((s) => s.kind === "knot");
     knots.forEach((knot, ki) => {
@@ -449,17 +503,34 @@ function buildFlatRows(outline: FileOutline[], collapsed: Set<string>): FlatRow[
     });
   };
   const walk = (level: TreeLevel): void => {
-    for (const folder of level.folders) {
-      rows.push({ key: folder.key, kind: "folder", path: folder.key, index: 0, siblingCount: 1 });
-      if (!collapsed.has(folder.key)) walk(folder);
+    for (const child of level.children) {
+      if (child.kind === "folder") {
+        rows.push({
+          key: child.folder.key,
+          kind: "folder",
+          path: child.folder.key,
+          index: 0,
+          siblingCount: 1,
+        });
+        if (!collapsed.has(child.folder.key)) walk(child.folder);
+      } else {
+        pushFile(child.file);
+      }
     }
-    for (const file of level.files) pushFile(file);
   };
-  walk(buildBinderTree(outline));
+  walk(buildBinderTree(outline, options));
   return rows;
 }
 
 // ── Drag-reorder helpers ────────────────────────────────────────────
+
+/** The container id a file/folder id lives directly in (#3038): a file
+ *  `"a/b/c.ink"` → `"a/b/"`; a folder `"a/b/"` → `"a/"`; root → `""`. */
+export function containerOf(id: string): string {
+  const body = id.endsWith("/") ? id.slice(0, -1) : id;
+  const cut = body.lastIndexOf("/");
+  return cut >= 0 ? body.slice(0, cut + 1) : "";
+}
 
 /** Last `::`-separated segment of a row key (the knot or stitch name). */
 function lastSegment(key: string): string {
@@ -525,6 +596,7 @@ function BinderInner() {
   const structureMode = useStudioStore((s) => s.structureMode);
   const toggleStructureMode = useStudioStore((s) => s.toggleStructureMode);
   const setAllCollapsed = useStudioStore((s) => s.setAllCollapsed);
+  const reorderBinderSiblings = useStudioStore((s) => s.reorderBinderSiblings);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
   const focusedKey = useStudioStore((s) => s.focusedKey);
   const openTarget = useStudioStore((s) => s.openTarget);
@@ -573,7 +645,9 @@ function BinderInner() {
   // Whether the "move to project root" drop zone is currently hovered.
   const [rootDropActive, setRootDropActive] = useState(false);
 
-  const flatRows = buildFlatRows(outline, collapsed);
+  const binderOrder = useStudioStore((s) => s.binderOrder);
+  const treeOptions: FlatRowOptions = { order: binderOrder, entry: entryFile, structureMode };
+  const flatRows = buildFlatRows(outline, collapsed, treeOptions);
 
   // ── Helpers ─────────────────────────────────────────────────────
 
@@ -905,7 +979,12 @@ function BinderInner() {
   const handleDragStart = useCallback(
     (e: React.DragEvent, row: FlatRow) => {
       if (row.kind === "folder") {
-        e.preventDefault();
+        // Folder drag = same-container REORDER only (#3038; celeris's
+        // `move: false` for folders — a cross-folder dir-move is #314's
+        // unsupported atomic op). Placement is authorship, always on.
+        setDragState({ sourceKeys: [row.key], sourceKind: "folder", sourcePath: row.key });
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", row.key);
         return;
       }
       if (row.kind === "file") {
@@ -969,9 +1048,27 @@ function BinderInner() {
       if (!dragState) return;
       e.preventDefault();
 
-      // File drag: only folders are drop targets (move into folder).
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const isTop = y < rect.height * 0.3;
+      const isBottom = y > rect.height * 0.7;
+
+      // File drag (#3038): same-container siblings reorder (edge zones →
+      // between); a folder's middle keeps the existing move-into. A file
+      // over a DIFFERENT container's file is not a target.
       if (dragState.sourceKind === "file") {
-        if (row.kind === "folder") {
+        const sameContainer =
+          (row.kind === "file" || row.kind === "folder") &&
+          containerOf(row.key) === containerOf(dragState.sourceKeys[0] ?? "") &&
+          !dragState.sourceKeys.includes(row.key);
+        if (sameContainer && (isTop || isBottom || row.kind === "file")) {
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget({
+            kind: "between",
+            afterKey: row.key,
+            targetKey: isTop || (row.kind === "file" && y < rect.height / 2) ? "before" : "after",
+          });
+        } else if (row.kind === "folder") {
           e.dataTransfer.dropEffect = "move";
           setDropTarget({ kind: "into", targetKey: row.key });
         } else {
@@ -981,17 +1078,32 @@ function BinderInner() {
         return;
       }
 
-      // Determine drop kind
+      // Folder drag (#3038): same-container reorder only.
+      if (dragState.sourceKind === "folder") {
+        const sameContainer =
+          (row.kind === "file" || row.kind === "folder") &&
+          containerOf(row.key) === containerOf(dragState.sourceKeys[0] ?? "") &&
+          !dragState.sourceKeys.includes(row.key);
+        if (sameContainer) {
+          e.dataTransfer.dropEffect = "move";
+          setDropTarget({
+            kind: "between",
+            afterKey: row.key,
+            targetKey: y < rect.height / 2 ? "before" : "after",
+          });
+        } else {
+          e.dataTransfer.dropEffect = "none";
+          setDropTarget(null);
+        }
+        return;
+      }
+
+      // Symbol drags below never target file rows.
       if (row.kind === "file") {
         e.dataTransfer.dropEffect = "none";
         setDropTarget(null);
         return;
       }
-
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const y = e.clientY - rect.top;
-      const isTop = y < rect.height * 0.3;
-      const isBottom = y > rect.height * 0.7;
 
       if (dragState.sourceKind === "stitch") {
         if (row.kind === "knot") {
@@ -1039,10 +1151,30 @@ function BinderInner() {
       e.preventDefault();
       if (!dragState || !dropTarget) return;
 
-      // File drag onto a folder = move (keys change; includes rewrite). All
-      // selected files move together; a single drag is a batch of one.
-      if (dragState.sourceKind === "file") {
-        if (dropTarget.kind === "into" && dropTarget.targetKey) {
+      // File/folder drag (#3038): a BETWEEN drop is a same-container
+      // sidecar reorder; a file's INTO drop on a folder stays the move.
+      if (dragState.sourceKind === "file" || dragState.sourceKind === "folder") {
+        if (dropTarget.kind === "between" && dropTarget.afterKey) {
+          const container = containerOf(dragState.sourceKeys[0] ?? "");
+          const siblings = flatRows
+            .filter(
+              (r) =>
+                (r.kind === "file" || r.kind === "folder") && containerOf(r.key) === container,
+            )
+            .map((r) => r.key);
+          const side = dropTarget.targetKey === "after" ? "after" : "before";
+          const ordered = computeReorder(
+            siblings,
+            dragState.sourceKeys,
+            dropTarget.afterKey,
+            side,
+          );
+          reorderBinderSiblings(container, ordered);
+        } else if (
+          dragState.sourceKind === "file" &&
+          dropTarget.kind === "into" &&
+          dropTarget.targetKey
+        ) {
           void moveFiles(dragState.sourceKeys, dropTarget.targetKey); // "folder/"
         }
         setDragState(null);
@@ -1098,7 +1230,7 @@ function BinderInner() {
       setDragState(null);
       setDropTarget(null);
     },
-    [dragState, dropTarget, executeAction, outline, moveFiles],
+    [dragState, dropTarget, executeAction, outline, moveFiles, flatRows, reorderBinderSiblings],
   );
 
   // ── Drop line helper ───────────────────────────────────────────
@@ -1246,7 +1378,7 @@ function BinderInner() {
           isFocused={focusedKey === fileKey}
           isDragging={dragState?.sourceKind === "file" && dragState.sourceKeys.includes(fileKey)}
           isDropInto={false}
-          dropLinePosition={null}
+          dropLinePosition={dropLineFor(fileKey)}
           draggable={canRenameFiles}
           editing={
             renaming && !renaming.isFolder && renaming.key === fileKey
@@ -1288,10 +1420,10 @@ function BinderInner() {
           isActive={false}
           isSelected={selectedKeys.has(folder.key)}
           isFocused={focusedKey === folder.key}
-          isDragging={false}
+          isDragging={dragState?.sourceKind === "folder" && dragState.sourceKeys.includes(folder.key)}
           isDropInto={dropTarget?.kind === "into" && dropTarget.targetKey === folder.key}
-          dropLinePosition={null}
-          draggable={false}
+          dropLinePosition={dropLineFor(folder.key)}
+          draggable={canRenameFiles}
           editing={
             renaming?.isFolder && renaming.key === folder.key
               ? { initial: folder.name, onCommit: commitRename, onCancel: cancelRename }
@@ -1317,8 +1449,11 @@ function BinderInner() {
   function renderTree(level: TreeLevel, depth: number) {
     return (
       <>
-        {level.folders.map((folder) => renderFolder(folder, depth))}
-        {level.files.map((file) => renderFile(file, depth))}
+        {level.children.map((child) =>
+          child.kind === "folder"
+            ? renderFolder(child.folder, depth)
+            : renderFile(child.file, depth),
+        )}
       </>
     );
   }
@@ -1405,8 +1540,11 @@ function BinderInner() {
   function renderLibraryTree(level: TreeLevel, depth: number) {
     return (
       <>
-        {level.folders.map((folder) => renderLibraryFolder(folder, depth))}
-        {level.files.map((file) => renderLibraryFile(file, depth))}
+        {level.children.map((child) =>
+          child.kind === "folder"
+            ? renderLibraryFolder(child.folder, depth)
+            : renderLibraryFile(child.file, depth),
+        )}
       </>
     );
   }
@@ -1480,7 +1618,7 @@ function BinderInner() {
           <CollapseAllIcon />
         </button>
       </div>
-      {renderTree(buildBinderTree(outline), 0)}
+      {renderTree(buildBinderTree(outline, treeOptions), 0)}
       {libraryFiles.length > 0 && !projectIsInk && (
         <div className="brink-binder-library-section">
           <BinderRow

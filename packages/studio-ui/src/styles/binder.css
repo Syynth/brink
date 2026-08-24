@@ -38,6 +38,16 @@
   width: var(--binder-indent);
   height: 100%;
   flex-shrink: 0;
+  /* Subtle indent guides (maintainer, 2026-08-23): a hairline at each
+     depth column, echoing the editor's guides. The guide elements were
+     always emitted per depth; this just makes them faintly visible. */
+  background: linear-gradient(
+    to right,
+    rgb(var(--bs-border-rgb, 69 71 90) / 45%) 1px,
+    transparent 1px
+  );
+  background-position: 8px 0;
+  background-repeat: no-repeat;
 }
 /* Chevron for expand/collapse */
 .brink-studio .brink-binder-chevron {
