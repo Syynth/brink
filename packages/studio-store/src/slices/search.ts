@@ -22,6 +22,7 @@ import {
   DEFAULT_SEARCH_OPTIONS,
   applyReplacements,
   buildSearchPattern,
+  locationsToSearchResult,
   replacementTextFor,
   searchSources,
   type ProjectSearchResult,
@@ -33,6 +34,21 @@ import {
 // ── Slice interface ─────────────────────────────────────────────────
 
 export interface SearchSlice {
+  /** What the results currently show: a text query, or a symbol's
+   *  references (context-menu spec ruling: the Search panel is the
+   *  references surface). Typing a query returns the panel to query mode. */
+  searchMode: { kind: "query" } | { kind: "references"; symbol: string };
+  /** Populate the panel with a symbol's references (grouped like search
+   *  results; replace controls are inert in this mode). */
+  showReferences(symbol: string, locations: { file: string; start: number; end: number }[]): void;
+  /** Bumped by showReferences — <SearchCommands/> reacts by ensuring the
+   *  Search tool window is open (the layout store lives in the shell,
+   *  unreachable from the slice). */
+  searchRevealSeq: number;
+  /** Leave references mode (the chip's ✕): clears the results; the typed
+   *  query (if any) is left alone and not re-run. */
+  clearReferences(): void;
+
   searchQuery: string;
   searchOptions: SearchQueryOptions;
   searchReplace: string;
@@ -114,15 +130,36 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     set({ searchFocusSeq: get().searchFocusSeq + 1 });
   },
 
+  searchMode: { kind: "query" },
+  searchRevealSeq: 0,
+
+  clearReferences() {
+    if (get().searchMode.kind !== "references") return;
+    set({ searchResults: null, searchMode: { kind: "query" } });
+  },
+
+  showReferences(symbol, locations) {
+    const project = get()._project;
+    if (project === null) return;
+    const session = project.getSession();
+    const results = locationsToSearchResult(locations, (path) => session.getFileSource(path));
+    set({
+      searchResults: results,
+      searchError: null,
+      searchMode: { kind: "references", symbol },
+      searchRevealSeq: get().searchRevealSeq + 1,
+    });
+  },
+
   runSearch() {
     const { searchQuery, searchOptions, _project } = get();
     if (_project === null || searchQuery === "") {
-      set({ searchResults: null, searchError: null });
+      set({ searchResults: null, searchError: null, searchMode: { kind: "query" } });
       return;
     }
     const built = buildSearchPattern(searchQuery, searchOptions);
     if (!built.ok) {
-      set({ searchResults: null, searchError: built.error });
+      set({ searchResults: null, searchError: built.error, searchMode: { kind: "query" } });
       return;
     }
     const session = _project.getSession();
@@ -144,7 +181,11 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       const source = session.getFileSource(path);
       if (source !== null) sources.push({ path, source });
     }
-    set({ searchResults: searchSources(sources, built.pattern), searchError: null });
+    set({
+      searchResults: searchSources(sources, built.pattern),
+      searchError: null,
+      searchMode: { kind: "query" },
+    });
   },
 
   replaceSearchMatch(path, match) {

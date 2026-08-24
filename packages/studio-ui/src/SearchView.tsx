@@ -74,6 +74,12 @@ export function SearchCommands() {
     () => registerSearchFocusCommand(commands, layout, store),
     [commands, layout, store],
   );
+  // Find References populated the panel (showReferences bumps the seq) —
+  // make sure the window is actually open and visible.
+  const revealSeq = useStudioStore((s) => s.searchRevealSeq);
+  useEffect(() => {
+    if (revealSeq > 0) ensureToolWindowOpen(layout, SEARCH_TOOL_WINDOW_ID);
+  }, [revealSeq, layout]);
   return null;
 }
 
@@ -91,17 +97,27 @@ function SearchViewInner() {
   const setReplace = useStudioStore((s) => s.setSearchReplace);
   const runSearch = useStudioStore((s) => s.runSearch);
   const replaceAll = useStudioStore((s) => s.replaceAllSearchMatches);
+  const mode = useStudioStore((s) => s.searchMode);
+  const clearReferences = useStudioStore((s) => s.clearReferences);
 
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [confirmingAll, setConfirmingAll] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Live search, debounced while typing (also runs on mount, which simply
-  // recomputes the current results against the live sources).
+  // recomputes the current results against the live sources). References
+  // mode is the exception: opening the panel to SHOW references must not
+  // immediately clobber them with a text-search rerun — only an actual
+  // query/options change (the user typing) exits references mode.
+  const lastInput = useRef<{ q: string; o: typeof options } | null>(null);
   useEffect(() => {
+    const prev = lastInput.current;
+    const changed = prev !== null && (prev.q !== query || prev.o !== options);
+    lastInput.current = { q: query, o: options };
+    if (mode.kind === "references" && !changed) return;
     const timer = setTimeout(() => runSearch(), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, options, runSearch]);
+  }, [query, options, runSearch, mode.kind]);
 
   // search.focus → focus + select the query input (fires on mount too, so
   // opening the window by strip click or its Mod-6 toggle also lands in the
@@ -170,6 +186,22 @@ function SearchViewInner() {
 
   return (
     <div className="search-view">
+      {mode.kind === "references" && (
+        <div className="search-mode-chip" role="status">
+          <span className="search-mode-chip-label">
+            References: <code>{mode.symbol}</code> · {total} in {fileCount}{" "}
+            {fileCount === 1 ? "file" : "files"}
+          </span>
+          <button
+            type="button"
+            className="search-mode-chip-clear"
+            aria-label="Clear references"
+            onClick={clearReferences}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="search-form">
         <div className="search-query-block">
           <button

@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif;
+           background: #2a2a3d; color: #cdd6f4; -webkit-font-smoothing: antialiased; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .cap { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #6c7086; }
+    .card { border: 1px solid #45475a; border-radius: 6px; margin: 8px 10px; overflow: hidden; }
+    .card-head { display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+                 background: #313244; font-size: 11px; }
+    .card-buf { background: #1e1e2e; font-size: 12px; line-height: 1.55; padding: 4px 0; }
+    .bufline { display: flex; }
+    .ln { width: 34px; text-align: right; padding-right: 10px; color: #45475a; flex-shrink: 0;
+          font-variant-numeric: tabular-nums; }
+    .ctx { color: #6c7086; }
+    .hit { background: rgb(203 166 247 / 24%); border-radius: 2px; }
+    .kind { font-size: 10px; border-radius: 3px; padding: 0 5px; border: 1px solid; }
+  </style>
+</helmet>
+<div style="width: 400px; background: #2a2a3d; border-right: 1px solid #45475a; padding-bottom: 10px;">
+  <!-- References mode header replaces the query summary -->
+  <div style="display: flex; align-items: center; gap: 8px; margin: 8px 10px 0; padding: 4px 10px;
+              border: 1px solid #45475a; border-radius: 5px; background: #313244; font-size: 12px;">
+    <span class="cap">references</span>
+    <span class="mono" style="color: #cba6f7;">spend_torch</span>
+    <span style="color: #6c7086; font-size: 11px;">4 in 2 files</span>
+    <span style="margin-left: auto; display: flex; gap: 10px;">
+      <span style="color: #89b4fa; cursor: pointer;" title="Re-resolve references from the declaration's current position">↻</span>
+      <span style="color: #6c7086; cursor: pointer;">×</span>
+    </span>
+  </div>
+
+  <!-- Declaration pinned first, badged -->
+  <div class="card" style="border-color: #cba6f7;">
+    <div class="card-head">
+      <span class="kind" style="color: #cba6f7; border-color: #cba6f7;">decl</span>
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:39</span>
+      <span style="margin-left: auto; color: #45475a;">↗</span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">38</span><span class="ctx">/// @param n {int}</span></div>
+      <div class="bufline"><span class="ln">39</span><span>=== function <span class="hit">spend_torch</span>(n) ===</span></div>
+      <div class="bufline"><span class="ln">40</span><span class="ctx">~ torch = torch - n</span></div>
+      <div class="bufline"><span class="ln">41</span><span class="ctx">{ torch &lt; 0:</span></div>
+    </div>
+  </div>
+
+  <!-- Call sites with kind-of-use badges + containing knot -->
+  <div class="card">
+    <div class="card-head">
+      <span class="kind" style="color: #89b4fa; border-color: #45475a;">call</span>
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:104</span>
+      <span style="color: #6c7086;">·</span>
+      <span style="color: #cba6f7;">barter</span>
+      <span style="margin-left: auto; color: #45475a;">↗</span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">103</span><span class="ctx">You browse. Time burns.</span></div>
+      <div class="bufline"><span class="ln">104</span><span>~ <span class="hit">spend_torch</span>(1)</span></div>
+      <div class="bufline"><span class="ln">105</span><span class="ctx">-&gt; barter_menu</span></div>
+      <div class="bufline"><span class="ln">106</span><span class="ctx"></span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="kind" style="color: #89b4fa; border-color: #45475a;">call</span>
+      <span class="mono" style="color: #89b4fa;">toppled-temple.ink:131</span>
+      <span style="color: #6c7086;">·</span>
+      <span style="color: #cba6f7;">riddle_hall</span>
+      <span style="margin-left: auto; color: #45475a;">↗</span>
+    </div>
+    <div class="card-buf mono">
+      <div class="bufline"><span class="ln">130</span><span class="ctx">Wrong. The ghost tuts.</span></div>
+      <div class="bufline"><span class="ln">131</span><span>~ <span class="hit">spend_torch</span>(2)</span></div>
+      <div class="bufline"><span class="ln">132</span><span class="ctx">-&gt; riddle_retry</span></div>
+      <div class="bufline"><span class="ln">133</span><span class="ctx"></span></div>
+    </div>
+  </div>
+
+  <div style="padding: 8px 12px 0; font-size: 11px; color: #585b70; line-height: 1.5;">
+    Same card surface as text search: declaration pinned first with the
+    accent border + decl badge; call/divert/read/write badges per site;
+    containing knot in the header. Cards stay editable — fixing a call site
+    inline is the point. ↻ re-resolves from the declaration's current
+    (edit-mapped) position, since the original click offset goes stale.
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

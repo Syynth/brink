@@ -11,6 +11,10 @@ import type { Location } from "@brink/wasm-types";
 
 export interface ReferencesOptions {
   findReferences: (source: string, offset: number) => Location[];
+  /** Route results to the host's references surface (the Search panel —
+   *  context-menu spec ruling). When absent, fall back to the in-view
+   *  3s highlight (same-file only). */
+  onShowReferences?: (symbol: string, locations: Location[]) => void;
 }
 
 const setReferenceHighlights = StateEffect.define<DecorationSet>();
@@ -105,6 +109,30 @@ export function showReferencesAt(
   return true;
 }
 
+/** Find references at `pos` and present them: through the host's surface
+ *  when wired (the Search panel), else the in-view highlight fallback. */
+export function findReferencesAt(
+  view: EditorView,
+  pos: number,
+  options: ReferencesOptions,
+): boolean {
+  if (!options.onShowReferences) {
+    return showReferencesAt(view, pos, options.findReferences);
+  }
+  const source = view.state.doc.toString();
+  let refs: Location[];
+  try {
+    refs = options.findReferences(source, pos);
+  } catch {
+    return false;
+  }
+  if (refs.length === 0) return false;
+  const word = view.state.wordAt(pos);
+  const symbol = word ? view.state.sliceDoc(word.from, word.to) : "";
+  options.onShowReferences(symbol, refs);
+  return true;
+}
+
 export function referencesExtension(options: ReferencesOptions): Extension {
   return [
     referenceHighlightField,
@@ -113,7 +141,7 @@ export function referencesExtension(options: ReferencesOptions): Extension {
       {
         key: "Shift-Alt-f",
         run: (view: EditorView) =>
-          showReferencesAt(view, view.state.selection.main.head, options.findReferences),
+          findReferencesAt(view, view.state.selection.main.head, options),
       },
     ]),
   ];

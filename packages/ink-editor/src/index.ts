@@ -252,6 +252,7 @@ export {
   matchLineSegments,
   replacementTextFor,
   searchSources,
+  locationsToSearchResult,
 } from "./project-search.js";
 export type {
   FileSearchResult,

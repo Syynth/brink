@@ -97,6 +97,59 @@ export interface ProjectSearchResult {
 }
 
 /**
+ * Convert symbol-reference locations into the search-result shape, so Find
+ * References renders through the same results buffer as text search
+ * (context-menu spec ruling: the Search panel is the references surface).
+ * Locations are grouped by file in sorted-path order; unreadable files are
+ * skipped.
+ */
+export function locationsToSearchResult(
+  locations: readonly { file: string; start: number; end: number }[],
+  getSource: (path: string) => string | null,
+): ProjectSearchResult {
+  const byFile = new Map<string, { start: number; end: number }[]>();
+  for (const loc of locations) {
+    let list = byFile.get(loc.file);
+    if (!list) {
+      list = [];
+      byFile.set(loc.file, list);
+    }
+    list.push({ start: loc.start, end: loc.end });
+  }
+  const files: FileSearchResult[] = [];
+  let total = 0;
+  for (const path of [...byFile.keys()].sort()) {
+    const source = getSource(path);
+    if (source === null) continue;
+    const spans = byFile.get(path) ?? [];
+    spans.sort((a, b) => a.start - b.start);
+    const matches: SearchMatch[] = [];
+    for (const span of spans) {
+      if (span.start > source.length) continue;
+      const lineStartIdx = source.lastIndexOf("\n", Math.max(0, span.start - 1)) + 1;
+      let lineEndIdx = source.indexOf("\n", span.start);
+      if (lineEndIdx < 0) lineEndIdx = source.length;
+      const lineText = source.slice(lineStartIdx, lineEndIdx);
+      const line = source.slice(0, lineStartIdx).split("\n").length;
+      matches.push({
+        start: span.start,
+        end: span.end,
+        line,
+        lineText,
+        lineStart: span.start - lineStartIdx,
+        lineEnd: Math.min(span.end, lineEndIdx) - lineStartIdx,
+        text: source.slice(span.start, span.end),
+      });
+    }
+    if (matches.length > 0) {
+      files.push({ path, matches });
+      total += matches.length;
+    }
+  }
+  return { files, totalMatches: total, capped: false };
+}
+
+/**
  * Run `pattern` (a `g`-flagged RegExp) over every source, grouping matches
  * by file. Stops at `cap` total matches. Zero-length matches (e.g. `a*`)
  * advance by one code unit so the loop always terminates.

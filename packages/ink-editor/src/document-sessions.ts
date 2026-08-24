@@ -127,6 +127,8 @@ export interface DocumentCallbacks {
   /** Right-click on plain editor content → the text context menu request
    *  (position + Cut/Copy/Paste/Select All bound to the right view). */
   onTextContextMenu?(request: import("./play-from-here.js").TextMenuRequest): void;
+  /** Find References routes its results here (the Search panel). */
+  onShowReferences?(symbol: string, locations: Location[]): void;
   /** Inline rename (#323/#324): commit a safe (or forced) rename. `result` is
    *  the already-computed safe-rename payload; the host applies its edits and
    *  re-keys any open symbol tab. `path` is the file the rename ran in.
@@ -1000,6 +1002,9 @@ export class DocumentSessions {
         : undefined,
       onTextContextMenu: this.callbacks.onTextContextMenu
         ? (request) => this.callbacks.onTextContextMenu?.(request)
+        : undefined,
+      onShowReferences: this.callbacks.onShowReferences
+        ? (symbol, locations) => this.callbacks.onShowReferences?.(symbol, locations)
         : undefined,
       getCompletions: (_source, offset) => slot.handle?.completions(offset) ?? [],
       // Auto-import on completion-accept (#312 F): ensure the current file
