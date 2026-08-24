@@ -279,7 +279,9 @@ function showRailTooltip(anchor: HTMLElement, info: RailInfo): void {
     info.startLine === info.endLine
       ? `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · line ${info.startLine}`
       : `${RAIL_KIND_NAMES[info.kind] ?? info.kind} · lines ${info.startLine}–${info.endLine}`;
-  document.body.appendChild(tip);
+  // Inside the .brink-studio root, or the --bs-* tokens don't resolve and
+  // the chrome (background, border, shadow) silently disappears.
+  (anchor.closest(".brink-studio") ?? document.body).appendChild(tip);
   const r = anchor.getBoundingClientRect();
   tip.style.setProperty("--brink-popup-left", `${Math.round(r.right + 10)}px`);
   tip.style.setProperty("--brink-popup-top", `${Math.round(r.top)}px`);
