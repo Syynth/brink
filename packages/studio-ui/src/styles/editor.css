@@ -214,9 +214,16 @@
    editor's .brink-todo-keyword mark. --bs-todo overrides per-theme; falls
    back to the warning family. */
 .brink-studio .cm-line.brink-todo {
-  background: rgb(var(--bs-todo-rgb, var(--bs-warning-rgb)) / 13%);
+  background: rgb(var(--bs-todo-rgb, var(--bs-warning-rgb)) / 20%);
   box-shadow: inset 3px 0 0 var(--bs-todo, var(--bs-warning));
   color: var(--bs-todo, var(--bs-warning));
+}
+/* Syntax-token marks inside the note inherit the amber — the whole line
+   reads as one called-out note, not syntax-colored source. (The E189
+   squiggle is suppressed in the editor for the same reason: the band IS
+   the diagnostic's presentation there.) */
+.brink-studio .cm-line.brink-todo [class*="tok-"] {
+  color: inherit;
 }
 .brink-studio .cm-line.brink-todo .brink-todo-keyword {
   font-weight: 700;
