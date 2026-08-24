@@ -42,6 +42,7 @@
 }
 .brink-studio .problems-severity.is-error { color: var(--bs-error); }
 .brink-studio .problems-severity.is-warning { color: var(--bs-warning); }
+.brink-studio .problems-severity.is-info { color: var(--bs-info); }
 .brink-studio .problems-message {
   min-width: 0;
   overflow: hidden;

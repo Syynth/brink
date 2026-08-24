@@ -78,6 +78,8 @@ import {
   PlayerPane,
   ProblemsBadge,
   ProblemsView,
+  TodosBadge,
+  TodosView,
   ProgramView,
   SEARCH_TOOL_WINDOW_ID,
   SETTINGS_TYPE_ID,
@@ -282,6 +284,13 @@ const SEARCH_ICON = (
   <svg {...iconProps}>
     <circle cx="7" cy="7" r="4.5" />
     <path d="M10.3 10.3L14 14" />
+  </svg>
+);
+
+const TODO_ICON = (
+  <svg {...iconProps}>
+    <path d="M13.5 7.5V12a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+    <path d="M5.5 7.5L8 10l6-6.5" />
   </svg>
 );
 
@@ -562,8 +571,10 @@ export async function mountStudio(
     let warnings = 0;
     if (result.warnings) {
       for (const w of result.warnings) {
+        // Info/Hint (E189 TODO notes, #3050) are advisory — they belong to
+        // neither count, or every TODO would inflate the warning badge.
         if (w.severity === "Error") errors++;
-        else warnings++;
+        else if (w.severity === "Warning") warnings++;
       }
     }
     if (result.error) errors++;
@@ -875,6 +886,17 @@ export async function mountStudio(
     defaultPlacement: { dock: "left", section: "start" },
     defaultOpen: false,
     component: SearchView,
+  });
+  // TODOs (#3050): author notes over the E189 diagnostics the compile
+  // already carries — shares bottom/start with Program/Problems.
+  toolWindows.register({
+    id: "todos",
+    title: "TODOs",
+    icon: TODO_ICON,
+    defaultPlacement: { dock: "bottom", section: "start" },
+    defaultOpen: false,
+    badge: TodosBadge,
+    component: TodosView,
   });
 
   // Status-bar segments (spec §7.3). Higher priority renders further left

@@ -114,6 +114,7 @@ function ProblemsViewInner() {
         {rows.map((row, i) => {
           const d = row.diagnostic;
           const isError = d.severity === "Error";
+          const isAdvisory = d.severity === "Info" || d.severity === "Hint";
           return (
             <li key={`${row.location}:${i}`}>
               <button
@@ -123,10 +124,13 @@ function ProblemsViewInner() {
                 title={`${d.message} — ${row.location}`}
               >
                 <span
-                  className={"problems-severity " + (isError ? "is-error" : "is-warning")}
-                  aria-label={isError ? "Error" : "Warning"}
+                  className={
+                    "problems-severity " +
+                    (isError ? "is-error" : isAdvisory ? "is-info" : "is-warning")
+                  }
+                  aria-label={isError ? "Error" : isAdvisory ? "Info" : "Warning"}
                 >
-                  {isError ? "●" : "▲"}
+                  {isError ? "●" : isAdvisory ? "ℹ" : "▲"}
                 </span>
                 <span className="problems-message">{d.message}</span>
                 <span className="problems-location">{row.location}</span>
