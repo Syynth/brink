@@ -170,14 +170,35 @@ impl IdeSession {
     /// dialect's patterns once, up front, so `line_contexts` never
     /// re-compiles on a hot path. Tooling-only — consumed at query time by
     /// `line_contexts`, never by analysis, so no re-analyze.
+    ///
+    /// Prefer [`set_dialect_config`](Self::set_dialect_config): it also
+    /// writes the db's dialect input (#3064 B1), which the per-segment
+    /// editor queries read as a tracked dependency. This compiled-form
+    /// setter remains for callers that never touch those queries.
     pub fn set_dialect(&mut self, dialect: ResolvedDialect) {
         self.dialect = Some(dialect);
+    }
+
+    /// Register (or replace) the dialect from its pure-JSON config —
+    /// compiles once here AND writes the db input (guarded against
+    /// no-op rewrites: salsa's setter stamps the revision
+    /// unconditionally, the same hazard `sync_db_options` guards).
+    pub fn set_dialect_config(&mut self, config: brink_ir::DialogueDialect) {
+        if let Ok(resolved) = ResolvedDialect::compile(&config) {
+            self.dialect = Some(resolved);
+        }
+        if self.db.dialect_config() != Some(&config) {
+            self.db.set_dialect(Some(config));
+        }
     }
 
     /// Clear the registered dialect. `line_contexts` reverts to plain
     /// structural classification (no `dialect` facet on any line).
     pub fn clear_dialect(&mut self) {
         self.dialect = None;
+        if self.db.dialect_config().is_some() {
+            self.db.set_dialect(None);
+        }
     }
 
     /// The registered dialect, if any.

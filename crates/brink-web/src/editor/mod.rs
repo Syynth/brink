@@ -343,9 +343,9 @@ impl EditorSession {
             .map_err(|e| JsError::new(&format!("invalid dialect: {e}")))?;
         brink_ir::dialect::validate(&dialect)
             .map_err(|errs| JsError::new(&format!("invalid dialect: {errs:?}")))?;
-        let resolved = brink_ir::ResolvedDialect::compile(&dialect)
+        brink_ir::ResolvedDialect::compile(&dialect)
             .map_err(|e| JsError::new(&format!("invalid dialect: {e}")))?;
-        self.session.set_dialect(resolved);
+        self.session.set_dialect_config(dialect);
         Ok(())
     }
 

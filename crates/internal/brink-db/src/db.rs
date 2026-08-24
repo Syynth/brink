@@ -83,6 +83,7 @@ impl ProjectDb {
             AnalysisOptions::default(),
             None,
             None,
+            None,
         );
         Self {
             salsa,
@@ -192,6 +193,27 @@ impl ProjectDb {
 
     /// Set the analysis options (host manifest + external-check severity)
     /// used by the [`analysis`](Self::analysis) and downstream queries.
+    /// Register (or clear) the screenplay dialect config (#3064 B1).
+    /// UNGUARDED like `set_analysis_options` — the salsa write stamps the
+    /// revision unconditionally, so callers guard against no-op writes
+    /// (`IdeSession::set_dialect` does).
+    pub fn set_dialect(&mut self, dialect: Option<brink_ir::DialogueDialect>) {
+        self.project.set_dialect(&mut self.salsa).to(dialect);
+    }
+
+    /// The registered dialect config, if any.
+    pub fn dialect_config(&self) -> Option<&brink_ir::DialogueDialect> {
+        self.project.dialect(&self.salsa).as_ref()
+    }
+
+    /// The compiled dialect (memoized — regexes compile once per config
+    /// change), if one is registered and valid.
+    pub fn resolved_dialect(&self) -> Option<&Arc<brink_ir::ResolvedDialect>> {
+        crate::queries::resolved_dialect_query(&self.salsa, self.project)
+            .0
+            .as_ref()
+    }
+
     pub fn set_analysis_options(&mut self, options: AnalysisOptions) {
         self.project
             .set_analysis_options(&mut self.salsa)
