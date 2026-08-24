@@ -46,6 +46,14 @@
   /* ── Severity & story status ────────────────────────────────────── */
   --bs-error: var(--ctp-red);
   --bs-warning: var(--ctp-yellow);
+  /* TODO author notes (#3050): goldenrod accents, PRECOMPUTED (like the
+     -rgb triplets) — nested color-mix() through custom properties is
+     unreliable in Firefox, and an invalid background drops the whole
+     band. Derivation: --bs-todo = mix(#daa520 78%, --ctp-yellow);
+     --bs-todo-band = mix(--bs-todo 82%, --bs-editor-bg). */
+  --bs-todo: #dba01f;
+  --bs-todo-band: #dfaf46;
+  --bs-todo-ink: #2a2130;
   --bs-success: var(--ctp-green);
   --bs-info: var(--ctp-teal);
 

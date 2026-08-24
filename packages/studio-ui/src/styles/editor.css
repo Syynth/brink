@@ -209,6 +209,29 @@
   font-style: italic;
   opacity: 0.5;
 }
+/* TODO author notes (#3050): Inky-grade visibility — full-line amber band,
+   left bar, amber text. The `TODO` keyword itself is bolded via the
+   editor's .brink-todo-keyword mark. --bs-todo overrides per-theme; falls
+   back to the warning family. */
+.brink-studio .cm-line.brink-todo {
+  /* Inky-style inversion: a solid goldenrod band with dark ink — the
+     note is a flag, not syntax. Band, bar, and ink come from the theme's
+     precomputed --bs-todo-band/--bs-todo/--bs-todo-ink tokens
+     (warning-family fallback for embedder themes). */
+  background: var(--bs-todo-band, var(--bs-warning));
+  box-shadow: inset 3px 0 0 var(--bs-todo, var(--bs-warning));
+  color: var(--bs-todo-ink, #2a2130);
+}
+/* Syntax-token marks inside the note inherit the amber — the whole line
+   reads as one called-out note, not syntax-colored source. (The E189
+   squiggle is suppressed in the editor for the same reason: the band IS
+   the diagnostic's presentation there.) */
+.brink-studio .cm-line.brink-todo [class*="tok-"] {
+  color: inherit;
+}
+.brink-studio .cm-line.brink-todo .brink-todo-keyword {
+  font-weight: 700;
+}
 .brink-studio .cm-line.brink-include,
 .brink-studio .cm-line.brink-external {
   opacity: 0.7;

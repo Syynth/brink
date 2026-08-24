@@ -1,17 +1,14 @@
 /**
- * Chromium 88 CSS-compat guard (issue #276).
+ * Theme-token consistency guard (originally issue #276's Chromium 88
+ * compat file).
  *
- * The studio runs on Chromium 88 (RMMZ's NW.js), which has no color-mix()
- * — it landed in Chrome 111 — so every color-mix() declaration is invalid
- * and silently dropped there (invisible selection, dead highlights).
- *
- * Two guards:
- *  1. No `color-mix(` may appear in any style source in the workspace
- *     (CSS files or TS-embedded CM6 themes). Alpha variants are written as
- *     `rgb(var(--bs-X-rgb) / N%)` over per-theme sRGB triplets instead.
- *  2. The precomputed triplets and opaque two-color mixes in the theme
- *     files must stay in sync with their base tokens — this recomputes
- *     them from the palette and fails on drift.
+ * The color-mix() ban that used to live here was RETIRED with the
+ * Chromium 88 / RMMZ floor (ruled 2026-08-23, docs/decision-log.md
+ * "Chromium 88 floor dropped") — modern CSS is fine, and #3050's TODO
+ * band is the first color-mix() user. What remains is floor-independent:
+ * the precomputed `--bs-*-rgb` triplets and opaque two-color mixes in the
+ * theme files must stay in sync with their base tokens — this recomputes
+ * them from the palette and fails on drift.
  */
 
 import { describe, expect, it } from "vitest";
@@ -34,25 +31,17 @@ const THEME_FILES: Record<string, string> = Object.fromEntries(
     .map(([path, css]) => [path.replace(/^.*\/([\w-]+)\.css$/, "$1"), css]),
 );
 
-/** Strip block and line comments so explanatory mentions don't trip the scan. */
+/** Strip block and line comments so explanatory mentions don't trip parsing. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
-describe("no color-mix() anywhere in workspace styles (#276)", () => {
-  it("scans a plausible file set (sanity check on the glob)", () => {
+describe("style-source glob sanity", () => {
+  it("scans a plausible file set", () => {
     const paths = Object.keys(STYLE_SOURCES);
     expect(paths.length).toBeGreaterThan(50);
     expect(paths.some((p) => p.endsWith("studio-ui/src/styles/editor.css"))).toBe(true);
-    expect(paths.some((p) => p.endsWith("ink-editor/src/theme.ts"))).toBe(true);
     expect(Object.keys(THEME_FILES).sort()).toEqual(["latte", "mocha"]);
-  });
-
-  it("finds zero color-mix( declarations across packages/*/src", () => {
-    const offenders = Object.entries(STYLE_SOURCES)
-      .filter(([, source]) => stripComments(source).includes("color-mix("))
-      .map(([path]) => path);
-    expect(offenders).toEqual([]);
   });
 });
 

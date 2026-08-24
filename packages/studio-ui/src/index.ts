@@ -118,6 +118,19 @@ export {
   offsetToLineCol,
   type ProblemRow,
 } from "./ProblemsView.js";
+export {
+  TodosView,
+  TodosBadge,
+  TODO_DIAGNOSTIC_CODE,
+  collectTodoItems,
+  matchesTodoFilter,
+  groupTodoItems,
+  todoKey,
+  keyTodoItems,
+  type TodoItem,
+  type TodoContainerGroup,
+  type TodoFileGroup,
+} from "./TodosView.js";
 export { OutputView, formatOutputTimestamp } from "./OutputView.js";
 export {
   SEARCH_DEBOUNCE_MS,

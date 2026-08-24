@@ -52,6 +52,8 @@ pub enum LineElement {
     Logic,
     VarDecl,
     Comment,
+    /// A `TODO:` author note (#3050) — an `AUTHOR_WARNING` line.
+    Todo,
     Include,
     External,
     Tag,
@@ -229,6 +231,13 @@ fn line_contexts_from_trivia(
     for (i, t) in trivia.iter().enumerate() {
         if t.comment {
             ctx[i].element = LineElement::Comment;
+        } else if t.todo {
+            // `TODO:` author notes (#3050) — CST facts like comments (the
+            // HIR never sees `AUTHOR_WARNING`), so they ride the trivia
+            // facet. The structural passes never reclassify a todo line
+            // for the same reason they skip comments: no statement shares
+            // the line.
+            ctx[i].element = LineElement::Todo;
         } else if t.tag && ctx[i].element == LineElement::Blank {
             ctx[i].element = LineElement::Tag;
         }
@@ -1090,6 +1099,24 @@ mod tests {
         let (hir, _, _) = brink_ir::hir::lower_native::lower(file_id, &ast);
         let projection = crate::hir_projection::project_hir_structural(&hir, source);
         line_contexts_native(source, &parse.syntax(), &projection)
+    }
+
+    #[test]
+    fn todo_lines_classify_as_todo() {
+        // `TODO:` author notes (#3050): trivia-facet classification, ink
+        // only — top-level and knot-nested notes both classify; `TODOS…`
+        // narrative and `// TODO` comments are untouched.
+        let source = "TODO: top-level note
+TODOS are narrative
+// TODO in a comment
+=== k ===
+TODO knot note
+";
+        let ctx = make_contexts(source);
+        assert_eq!(ctx[0].element, LineElement::Todo);
+        assert_eq!(ctx[1].element, LineElement::Narrative);
+        assert_eq!(ctx[2].element, LineElement::Comment);
+        assert_eq!(ctx[4].element, LineElement::Todo);
     }
 
     #[test]

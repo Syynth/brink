@@ -72,12 +72,21 @@ export function diagnosticsExtension(options: DiagnosticsOptions): Extension {
         if (result.warnings) {
           for (const w of result.warnings) {
             if (activeFile !== undefined && w.file !== activeFile) continue;
+            // TODO author notes (#3050): the brink-todo line band is their
+            // entire in-editor presentation — a squiggle under the note
+            // would double-mark it. They still reach Problems + TODOs.
+            if (w.code === "E189") continue;
             const from = Math.min(w.start, source.length);
             const to = Math.min(w.end, source.length);
             diags.push({
               from,
               to: Math.max(to, from),
-              severity: w.severity === "Error" ? "error" : "warning",
+              severity:
+                w.severity === "Error"
+                  ? "error"
+                  : w.severity === "Warning"
+                    ? "warning"
+                    : "info",
               message: w.message,
             });
           }

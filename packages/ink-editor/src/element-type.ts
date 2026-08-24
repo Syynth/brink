@@ -32,6 +32,7 @@ export const ElementType = {
   Logic: "logic",
   VarDecl: "var-decl",
   Comment: "comment",
+  Todo: "todo",
   Include: "include",
   External: "external",
   Tag: "tag",
@@ -92,6 +93,7 @@ const BASE_CLASSES: Record<string, string> = {
   [ElementType.Logic]: "brink-logic",
   [ElementType.VarDecl]: "brink-var-decl",
   [ElementType.Comment]: "brink-comment",
+  [ElementType.Todo]: "brink-todo",
   [ElementType.Include]: "brink-include",
   [ElementType.External]: "brink-external",
   [ElementType.Tag]: "brink-tag",
@@ -122,6 +124,7 @@ function lineElementToType(element: string): ElementType {
     case "logic": return ElementType.Logic;
     case "var_decl": return ElementType.VarDecl;
     case "comment": return ElementType.Comment;
+    case "todo": return ElementType.Todo;
     case "include": return ElementType.Include;
     case "external": return ElementType.External;
     case "tag": return ElementType.Tag;
@@ -214,7 +217,7 @@ function lineContextToLineInfo(ctx: LineContext, lineText: string): LineInfo {
 
 // ── Regex fallback for when session hasn't been updated yet ─────────
 
-function classifyLine(text: string): LineInfo {
+export function classifyLine(text: string): LineInfo {
   const trimmed = text.trimStart();
 
   if (trimmed === "") {
@@ -268,6 +271,14 @@ function classifyLine(text: string): LineInfo {
 
   if (trimmed.startsWith("//") || trimmed.startsWith("/*")) {
     return { type: ElementType.Comment, depth: 0, sticky: false, standalone: false };
+  }
+
+  // `TODO` is a keyword only when it opens the line; the colon is optional
+  // (the parser's `author_warning` consumes `KW_TODO` then the rest of the
+  // line). `\b` keeps `TODOS are…` narrative, matching the lexer's
+  // longest-identifier rule.
+  if (/^TODO\b/.test(trimmed)) {
+    return { type: ElementType.Todo, depth: 0, sticky: false, standalone: false };
   }
 
   if (trimmed.startsWith("INCLUDE ")) {
