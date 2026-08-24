@@ -356,7 +356,10 @@ fn bench_keystroke_large_stages(project: &BTreeMap<String, String>, runs: usize)
         ("4_symbol_index", "project symbol-index rebuild"),
         ("5_resolve_edited", "resolve the edited file"),
         ("6_per_file_diags", "edited file's per-file diagnostic pass"),
-        ("7_resolutions_index", "remaining files' resolve + index bundle"),
+        (
+            "7_resolutions_index",
+            "remaining files' resolve + index bundle",
+        ),
         ("8_analysis_diags", "cross-file analysis diagnostics pass"),
         ("9_assembly", "whole-project pass + bundle assembly"),
         ("control_refresh", "must be ~0: stages covered everything"),

@@ -33,6 +33,27 @@ phase split decides how far §3's scope must reach — committing to scope
 before that measurement repeats the #3063 half-hypothesis (the clone was
 the vehicle, not the cargo).
 
+**Gate result (2026-08-24, `ide_bench` staged-attribution rows —
+`ide_large.stage.*`, 7 runs, idle machine, stages sum 29.4 ms vs the
+unsplit 29.8 ms with a 0.0 ms control row):**
+
+| pass | median | share |
+|---|---|---|
+| HIR-lower the edited file (parse warm) | **24.0 ms** | **~80%** |
+| reparse the edited file | 3.8 ms | ~13% |
+| cross-file analysis diagnostics | 0.5 ms | ~2% |
+| symbol-index rebuild | 0.5 ms | ~2% |
+| module map + resolve + per-file diags + resolutions bundle + assembly | ~0.6 ms | ~2% |
+
+Verdict: **parse+lower own ~93% of the cost — §3 step 4 resolves to "v1
+stops at step 3"** (segmentation + per-segment parse/lower + assembly);
+resolve/diagnostics/index need no segment decomposition. Secondary
+observation, worth a look during implementation but not a scope change:
+HIR lowering costs ~6× the parse on the same bytes — if a constant-factor
+inefficiency (allocation churn, quadratic append) hides in
+`lowered_query`, fixing it is upside on top of, not instead of, the
+firewall.
+
 ## 2. Precedents
 
 - **In-repo:** FG-4d's `knot_chunks` — per-knot **LIR** chunk memos with a
