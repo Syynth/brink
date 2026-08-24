@@ -109,31 +109,36 @@
   display: inline-block;
   vertical-align: baseline;
 }
-/* Floating rename (Zed/JetBrains style): the token stays in the document,
-   marked; the input floats in a badge tooltip just below it. */
+/* Inserted rename row (Zed style, ruled 2026-08-24): a block widget row
+   beneath the target's line — no gutter number, lines pushed down, and the
+   input reads as INLINE TEXT: editor font inherited, the token's own tok-*
+   highlight classes copied onto it, no chrome and no focus ring. The
+   hidden spacer carries the line's actual prefix text so the input sits
+   exactly under the token, tabs and wide glyphs included. */
 .brink-studio .brink-rename-target {
   background: rgb(var(--bs-accent-rgb) / 22%);
   border-radius: 2px;
 }
-.brink-studio .cm-tooltip:has(> .brink-rename-tooltip),
-.brink-studio .cm-tooltip.brink-rename-tooltip {
-  background: var(--bs-surface-bg);
-  border: 1px solid var(--bs-accent);
-  border-radius: 6px;
-  box-shadow: var(--bs-shadow-strong, var(--bs-shadow));
-  padding: 3px 5px;
-  margin-top: 4px;
+.brink-studio .brink-rename-row {
+  display: flex;
+  align-items: baseline;
+  /* Match .cm-line's own padding so the spacer's column math lands the
+     input EXACTLY under the token. */
+  padding: 0 2px 0 4px;
 }
-/* Inside the badge the input is chromeless — the badge IS the chrome. */
-.brink-studio .brink-rename-tooltip .brink-inline-rename-input {
-  border: none;
-  background: transparent;
-  box-shadow: none;
-  padding: 0 2px;
+.brink-studio .brink-rename-spacer {
+  visibility: hidden;
+  white-space: pre;
+  flex-shrink: 0;
 }
-.brink-studio .brink-rename-tooltip .brink-inline-rename-input:focus {
+.brink-studio .brink-rename-row .brink-inline-rename-input,
+.brink-studio .brink-rename-row .brink-inline-rename-input:focus {
   border: none;
+  background: rgb(var(--bs-accent-rgb) / 10%);
+  border-radius: 2px;
   box-shadow: none;
+  outline: none;
+  padding: 0;
 }
 .brink-studio .brink-inline-rename-row {
   display: inline-flex;

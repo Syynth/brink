@@ -20,14 +20,7 @@
  */
 
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
-import {
-  Decoration,
-  EditorView,
-  keymap,
-  showTooltip,
-  type Tooltip,
-  type TooltipView,
-} from "@codemirror/view";
+import { Decoration, EditorView, keymap, WidgetType } from "@codemirror/view";
 import type { Location, StructuralResult } from "@brink/wasm-types";
 import { InlineNameInput } from "./inline-name-input.js";
 import {
@@ -199,11 +192,90 @@ class RenameController {
   }
 }
 
+/** The rename editor row — a BLOCK widget inserted after the target's line
+ *  (a widget row gets no gutter number, so it reads as an inserted blank
+ *  line). A hidden spacer carrying the line's actual prefix text aligns the
+ *  input exactly under the token — byte-for-byte, so tabs and wide glyphs
+ *  align too, with no inline styles. The input carries the target token's
+ *  own `tok-*` classes, so it renders in the same font and highlight color
+ *  as what it renames. */
+class RenameRowWidget extends WidgetType {
+  private controller: RenameController | null = null;
+
+  constructor(
+    private readonly active: ActiveRename,
+    private readonly options: RenameOptions,
+  ) {
+    super();
+  }
+
+  override eq(other: RenameRowWidget): boolean {
+    return (
+      this.active.from === other.active.from &&
+      this.active.to === other.active.to &&
+      this.active.name === other.active.name
+    );
+  }
+
+  override toDOM(view: EditorView): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "brink-rename-row";
+
+    // Exact column alignment: the real prefix text, hidden but occupying
+    // its true width.
+    const line = view.state.doc.lineAt(this.active.from);
+    const spacer = document.createElement("span");
+    spacer.className = "brink-rename-spacer";
+    spacer.textContent = view.state.sliceDoc(line.from, this.active.from);
+    spacer.setAttribute("aria-hidden", "true");
+    row.appendChild(spacer);
+
+    this.controller = new RenameController(
+      this.options,
+      this.active.from,
+      "",
+      this.active.name,
+      () => {
+        view.dispatch({ effects: stopInlineRenameEffect.of(null) });
+        setTimeout(() => {
+          if (view.dom.isConnected) view.focus();
+        }, 0);
+      },
+    );
+    const inner = this.controller.render();
+    // Same highlight color as the token being renamed: copy its semantic
+    // token classes onto the input.
+    const domAt = view.domAtPos(Math.min(this.active.from + 1, this.active.to));
+    const tokEl =
+      domAt.node instanceof Element
+        ? domAt.node
+        : (domAt.node.parentElement ?? null);
+    const tokHost = tokEl?.closest('[class*="tok-"]');
+    const input = inner.querySelector("input");
+    if (tokHost && input) {
+      for (const cls of tokHost.classList) {
+        if (cls.startsWith("tok-")) input.classList.add(cls);
+      }
+    }
+    row.appendChild(inner);
+    return row;
+  }
+
+  override destroy(): void {
+    this.controller?.dispose();
+    this.controller = null;
+  }
+
+  override ignoreEvent(): boolean {
+    return true;
+  }
+}
+
 export function renameExtension(options: RenameOptions): Extension {
-  // Zed/JetBrains-style floating rename: a StateField holds the resolved
-  // target; it provides a mark over the token (which stays put — Escape can
-  // no longer disturb document text by construction) and a `showTooltip`
-  // that floats the name input just below the symbol.
+  // Zed-style inserted rename row (ruled 2026-08-24): a StateField holds the
+  // resolved target; it provides a mark over the token (which stays put —
+  // Escape can never disturb document text) and a block widget row beneath
+  // the line holding the name input.
   const field = StateField.define<ActiveRename | null>({
     create: () => null,
     update(value, tr) {
@@ -228,36 +300,33 @@ export function renameExtension(options: RenameOptions): Extension {
       }
       // A user edit while the rename is open dismisses it (its anchor moved).
       if (value !== null && tr.docChanged) return null;
+      // Moving the editor cursor off the target's line dismisses WITHOUT
+      // committing (ruled 2026-08-24) — clicking elsewhere is a cancel
+      // gesture. Clicks inside the rename row never get here (the widget
+      // ignores events), and typing in the input moves no editor selection.
+      if (value !== null && tr.selection) {
+        const targetLine = tr.state.doc.lineAt(value.from).number;
+        const headLine = tr.state.doc.lineAt(tr.state.selection.main.head).number;
+        if (headLine !== targetLine) return null;
+      }
       return value;
     },
     provide: (f) => [
-      EditorView.decorations.from(f, (v) =>
-        v ? Decoration.set([renameTargetMark.range(v.from, v.to)]) : Decoration.none,
-      ),
-      showTooltip.from(f, (v) => (v ? renameTooltip(v) : null)),
+      EditorView.decorations.compute([f], (state) => {
+        const active = state.field(f);
+        if (!active) return Decoration.none;
+        const line = state.doc.lineAt(active.from);
+        return Decoration.set([
+          renameTargetMark.range(active.from, active.to),
+          Decoration.widget({
+            widget: new RenameRowWidget(active, options),
+            block: true,
+            side: 1,
+          }).range(line.to),
+        ]);
+      }),
     ],
   });
-
-  function renameTooltip(active: ActiveRename): Tooltip {
-    return {
-      pos: active.from,
-      above: false,
-      create(view: EditorView): TooltipView {
-        const controller = new RenameController(options, active.from, "", active.name, () => {
-          view.dispatch({ effects: stopInlineRenameEffect.of(null) });
-          // Return focus to the editor after cancel/commit (#2557-safe: the
-          // tooltip's own teardown has already run by the time this fires).
-          setTimeout(() => {
-            if (view.dom.isConnected) view.focus();
-          }, 0);
-        });
-        const dom = document.createElement("div");
-        dom.className = "brink-rename-tooltip";
-        dom.appendChild(controller.render());
-        return { dom, destroy: () => controller.dispose() };
-      },
-    };
-  }
 
   const keys = keymap.of([
     {
