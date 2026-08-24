@@ -49,9 +49,16 @@ main_git=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir
 main_root=$(dirname "$main_git")
 
 # ── Tag ──────────────────────────────────────────────────────────────
-conf="$repo_root/packages/brink-desktop/src-tauri/tauri.conf.json"
-version=$(node -e "console.log(require('$conf').version)")
-tag="${1:-desktop-v$version}"
+tag="${1:-}"
+if [ -z "$tag" ]; then
+  # No tag argument: default from the INVOKING checkout's version.
+  conf="$repo_root/packages/brink-desktop/src-tauri/tauri.conf.json"
+  [ -f "$conf" ] || die "no tag argument and no tauri.conf.json in this checkout — pass desktop-vX.Y.Z"
+  tag="desktop-v$(node -e "console.log(require('$conf').version)")"
+fi
+# The version ALWAYS comes from the tag — the invoking checkout may be on
+# any branch (it only needs to be somewhere in the repo).
+version="${tag#desktop-v}"
 case "$tag" in desktop-v*) ;; *) die "tag must look like desktop-vX.Y.Z, got: $tag";; esac
 git -C "$main_root" rev-parse -q --verify "refs/tags/$tag" >/dev/null || die "tag $tag not found"
 say "Releasing $tag (tag commit $(git -C "$main_root" rev-parse --short "$tag"))"
