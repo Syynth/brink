@@ -37,6 +37,8 @@ export interface ResolvedSigilGeometry {
 /** Resolve a classified line's cached dialect geometry to absolute document
  *  offsets. Returns `null` for lines with no dialect match (plain narrative,
  *  structural lines, chain-only kinds with no geometry of their own). */
+const todoKeywordMark = Decoration.mark({ class: "brink-todo-keyword" });
+
 export function sigilGeometry(line: SigilLine, info: LineInfo): ResolvedSigilGeometry | null {
   const d = info.dialect;
   if (!d) return null;
@@ -162,6 +164,17 @@ function buildLineDecos(view: EditorView): DecorationSet {
     }
 
     builder.add(line.from, line.from, Decoration.line({ attributes: attrs }));
+
+    // TODO author notes (#3050): mark the opening `TODO`/`TODO:` keyword so
+    // hosts can weight it separately from the note text. The line-level
+    // band rides the `brink-todo` element class like every other kind.
+    if (info.type === ElementType.Todo) {
+      const m = /^(\s*)(TODO\s*:?)/.exec(line.text);
+      if (m) {
+        const from = line.from + m[1].length;
+        builder.add(from, from + m[2].length, todoKeywordMark);
+      }
+    }
 
     // NOTE (ruled 2026-08-23, "literal whitespace"): nested choice/gather
     // sigil runs are no longer collapsed into a superscript-depth widget —

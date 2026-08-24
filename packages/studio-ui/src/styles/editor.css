@@ -209,6 +209,18 @@
   font-style: italic;
   opacity: 0.5;
 }
+/* TODO author notes (#3050): Inky-grade visibility — full-line amber band,
+   left bar, amber text. The `TODO` keyword itself is bolded via the
+   editor's .brink-todo-keyword mark. --bs-todo overrides per-theme; falls
+   back to the warning family. */
+.brink-studio .cm-line.brink-todo {
+  background: rgb(var(--bs-todo-rgb, var(--bs-warning-rgb)) / 13%);
+  box-shadow: inset 3px 0 0 var(--bs-todo, var(--bs-warning));
+  color: var(--bs-todo, var(--bs-warning));
+}
+.brink-studio .cm-line.brink-todo .brink-todo-keyword {
+  font-weight: 700;
+}
 .brink-studio .cm-line.brink-include,
 .brink-studio .cm-line.brink-external {
   opacity: 0.7;
