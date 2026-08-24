@@ -111,12 +111,32 @@ export class RenameQueryCache {
 /** Effect: start an inline rename at `offset` (view coords). When `offset` is
  *  omitted the cursor position is used. Raised by F2 and by the editor
  *  context-menu "Rename…" path. */
-export const startInlineRenameEffect = StateEffect.define<{ offset: number | null }>();
+export const startInlineRenameEffect = StateEffect.define<{
+  offset: number | null;
+  /** The target token's color-bearing classes (tok-*, brink-hir-*), captured
+   *  by startInlineRename BEFORE the rename-target mark is applied — once it
+   *  is, CM rebuilds the spans and the original classes are gone from the
+   *  DOM (measured: an active rename's token span holds ONLY
+   *  brink-rename-target). */
+  tokenClasses: readonly string[];
+}>();
 
 /** Dispatch the inline-rename start effect on `view` (used by the
  *  context-menu route, which has a view but enters via a command). */
 export function startInlineRename(view: EditorView, offset?: number): void {
-  view.dispatch({ effects: startInlineRenameEffect.of({ offset: offset ?? null }) });
+  const pos = offset ?? view.state.selection.main.head;
+  // Capture the token's highlight classes NOW — the DOM is still un-marked.
+  const tokenClasses: string[] = [];
+  const domAt = view.domAtPos(Math.min(pos + 1, view.state.doc.length));
+  let el: Element | null =
+    domAt.node instanceof Element ? domAt.node : (domAt.node.parentElement ?? null);
+  while (el && !el.classList.contains("cm-line")) {
+    for (const cls of el.classList) {
+      if (cls.startsWith("tok-") || cls.startsWith("brink-hir-")) tokenClasses.push(cls);
+    }
+    el = el.parentElement;
+  }
+  view.dispatch({ effects: startInlineRenameEffect.of({ offset: offset ?? null, tokenClasses }) });
 }
 
 /**
@@ -138,6 +158,8 @@ interface ActiveRename {
   from: number;
   to: number;
   name: string;
+  /** Color-bearing classes captured before the mark was applied. */
+  tokenClasses: readonly string[];
 }
 
 /** A live inline-rename session — a thin adapter binding the shared
@@ -243,19 +265,11 @@ class RenameRowWidget extends WidgetType {
       },
     );
     const inner = this.controller.render();
-    // Same highlight color as the token being renamed: copy its semantic
-    // token classes onto the input.
-    const domAt = view.domAtPos(Math.min(this.active.from + 1, this.active.to));
-    const tokEl =
-      domAt.node instanceof Element
-        ? domAt.node
-        : (domAt.node.parentElement ?? null);
-    const tokHost = tokEl?.closest('[class*="tok-"]');
+    // Same highlight color as the token being renamed — classes captured by
+    // startInlineRename before the target mark rebuilt the spans.
     const input = inner.querySelector("input");
-    if (tokHost && input) {
-      for (const cls of tokHost.classList) {
-        if (cls.startsWith("tok-")) input.classList.add(cls);
-      }
+    if (input) {
+      for (const cls of this.active.tokenClasses) input.classList.add(cls);
     }
     row.appendChild(inner);
     return row;
@@ -294,6 +308,7 @@ export function renameExtension(options: RenameOptions): Extension {
             from: range.start,
             to: range.end,
             name: source.slice(range.start, range.end),
+            tokenClasses: effect.value.tokenClasses,
           };
         }
         if (effect.is(stopInlineRenameEffect)) return null;

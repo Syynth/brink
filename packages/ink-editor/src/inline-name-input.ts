@@ -159,11 +159,9 @@ export class InlineNameInput {
     // default — which read as a line-breaking slab in the editor. The
     // editor's monospace font makes `size` an exact fit; +1 for the caret.
     const syncSize = () => {
-      input.size = Math.max(
-        input.value.length,
-        this.options.placeholder?.length ?? 0,
-        2,
-      ) + 1;
+      // Exact fit — the +1 "caret headroom" read as a trailing tinted
+      // chunk; 1px of CSS padding carries the caret at the end instead.
+      input.size = Math.max(input.value.length, this.options.placeholder?.length ?? 0, 1);
     };
     syncSize();
     input.addEventListener("input", syncSize);

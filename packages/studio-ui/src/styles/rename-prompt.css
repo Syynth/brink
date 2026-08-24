@@ -138,7 +138,9 @@
   border-radius: 2px;
   box-shadow: none;
   outline: none;
-  padding: 0;
+  /* 1px carries the end-of-text caret; a full char of headroom read as a
+     trailing tinted chunk. */
+  padding: 0 1px;
 }
 .brink-studio .brink-inline-rename-row {
   display: inline-flex;
