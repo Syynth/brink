@@ -24,6 +24,17 @@ export interface EditorTextMenuRequest {
   copy: () => void;
   paste: () => void;
   selectAll: () => void;
+  /** The clicked line's element kind (`todo`, `include`, …). */
+  lineType?: string;
+  /** Editor-side line-context items (Open File, Fold/Unfold, …). */
+  lineActions?: { label: string; run: () => void }[];
+  /** Navigate/Rename group for identity-bearing tokens (context-menu spec). */
+  identity?: {
+    name: string;
+    gotoDefinition: () => void;
+    findReferences?: () => void;
+    rename?: () => void;
+  };
 }
 
 export interface SymbolMenuRequest {

@@ -17,6 +17,11 @@ pub struct FileEdit {
 /// The result of a rename operation.
 pub struct RenameResult {
     pub edits: Vec<FileEdit>,
+    /// Set when the renamed symbol is an `EXTERNAL` (ruled 2026-08-24): the
+    /// declaration's (file, name-range) — `rename_safe` synthesizes the
+    /// always-unsafe E190 host-binding entry from it, so the rename applies
+    /// only through the Force gate.
+    pub external_binding: Option<(FileId, rowan::TextRange)>,
 }
 
 /// Check if a rename is possible at `offset` and return the renameable range.
@@ -50,19 +55,17 @@ pub fn prepare_rename(
         // generic lookup below, which would offer the receiver's range.
         let target = verdict_target?;
         let resolved = db.resolutions_index();
-        let info = resolved.index.symbols.get(&target)?;
-        if matches!(info.kind, brink_ir::SymbolKind::External) {
-            return None;
-        }
+        let _info = resolved.index.symbols.get(&target)?;
+        // Externals included (ruled 2026-08-24): renameable behind the
+        // always-unsafe Force gate — see `RenameResult::external_binding`.
         return crate::ufcs_hover::ufcs_method_range_at_offset(hir, offset);
     }
 
     let info = find_def_at_offset(analysis, file_id, offset)?;
 
-    // Builtins and externals cannot be renamed
-    if matches!(info.kind, brink_ir::SymbolKind::External) {
-        return None;
-    }
+    // Builtins cannot be renamed (they never resolve to a symbol here).
+    // Externals CAN (ruled 2026-08-24) — behind the always-unsafe Force
+    // gate; `rename_safe` synthesizes the E190 host-binding entry.
 
     // Return the range of the symbol under the cursor (reference or definition site)
     //
@@ -159,17 +162,11 @@ pub fn rename(
         Some(None) => return None,
         Some(Some(target)) => {
             let info = db.resolutions_index().index.symbols.get(&target)?.clone();
-            if matches!(info.kind, brink_ir::SymbolKind::External) {
-                return None;
-            }
             let analysis_id = analysis_identity_of(analysis, info.file, info.range)?;
             (info.file, info.range, analysis_id, target, info.kind)
         }
         None => {
             let info = find_def_at_offset(analysis, file_id, offset)?;
-            if matches!(info.kind, brink_ir::SymbolKind::External) {
-                return None;
-            }
             let db_id = db_identity_of(db, info.file, info.range)?;
             (info.file, info.range, info.id, db_id, info.kind)
         }
@@ -290,7 +287,11 @@ pub fn rename(
         }
     }
 
-    Some(RenameResult { edits })
+    Some(RenameResult {
+        edits,
+        external_binding: matches!(target_kind, brink_ir::SymbolKind::External)
+            .then_some((decl_file, decl_range)),
+    })
 }
 
 /// Compute the insertion edit that stamps `#@was(old_name)` on the
@@ -492,7 +493,35 @@ pub fn rename_safe(
     let result = rename(session.db(), analysis, file_id, offset, new_name)?;
 
     // The gate overlays every edit (primary + cross-file) and re-analyzes.
-    let introduced = gate(session, &result.edits);
+    let mut introduced = gate(session, &result.edits);
+
+    // External rename (ruled 2026-08-24): ALWAYS unsafe — the name is the
+    // story↔engine contract, so the report carries the E190 host-binding
+    // entry and the rename applies only through the Force path.
+    if let Some((decl_file, decl_range)) = result.external_binding {
+        let (path, old_name, line, col) =
+            match (session.file_path(decl_file), session.source(decl_file)) {
+                (Some(p), Some(src)) => {
+                    let idx = crate::LineIndex::new(src);
+                    let (l, c) = idx.line_col(decl_range.start());
+                    let name = src
+                        .get(usize::from(decl_range.start())..usize::from(decl_range.end()))
+                        .unwrap_or("");
+                    (p.to_owned(), name.to_owned(), l + 1, c + 1)
+                }
+                _ => (String::new(), String::new(), 1, 1),
+            };
+        introduced.push(crate::structural_result::IntroducedDiagnostic {
+            severity: brink_ir::Severity::Warning,
+            code: brink_ir::DiagnosticCode::E190,
+            message: format!(
+                "renames the host binding `{old_name}` — the engine must re-register the external under the new name"
+            ),
+            path,
+            line,
+            col,
+        });
+    }
 
     // Fold the primary file's edits into its new source; the rest are cross-file.
     let primary: Vec<&FileEdit> = result.edits.iter().filter(|e| e.file == file_id).collect();
@@ -513,6 +542,66 @@ pub fn rename_safe(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn external_rename_is_always_unsafe_with_the_e190_binding_entry() {
+        // Ruled 2026-08-24: externals rename behind the Force gate — the
+        // verdict is ALWAYS unsafe, carrying E190 naming the host binding,
+        // and the edits cover the declaration and every call site.
+        let mut s = crate::session::IdeSession::new();
+        let src = "EXTERNAL play_se(name)\n=== k ===\n~ play_se(1)\n~ play_se(2)\n";
+        let id = s.update_and_analyze("t.ink", src.to_string());
+        let call = src.rfind("play_se(").expect("call") + 1;
+        let res = rename_safe(
+            &s,
+            id,
+            TextSize::from(u32::try_from(call).expect("fits")),
+            "sfx",
+        )
+        .expect("external rename must produce a result");
+        assert!(!res.safe, "external rename is never safe");
+        assert!(
+            res.introduced
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E190 && d.message.contains("play_se")),
+            "E190 host-binding entry expected: {:?}",
+            res.introduced
+        );
+        let new_source = res.new_source.expect("primary source");
+        assert!(new_source.contains("EXTERNAL sfx(name)"), "{new_source}");
+        assert!(!new_source.contains("play_se("), "{new_source}");
+    }
+
+    #[test]
+    fn prepare_rename_accepts_function_call_sites_and_externals() {
+        // #3061 review question: call sites ARE renameable (reference-site
+        // path); externals too as of the 2026-08-24 Force-gate ruling.
+        let mut session = crate::session::IdeSession::new();
+        let src = "EXTERNAL play_se(name)\n=== function roll(x) ===\n~ return x\n=== k ===\n~ temp v = roll(3)\n~ play_se(1)\n";
+        let file_id = session.update_and_analyze("t.ink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        let call = src.find("roll(3)").expect("call site") + 1;
+        let got = prepare_rename(
+            session.db(),
+            analysis,
+            file_id,
+            rowan::TextSize::from(u32::try_from(call).expect("fits")),
+        );
+        assert!(got.is_some(), "function call site must be renameable");
+
+        let ext_call = src.rfind("play_se(").expect("ext call") + 1;
+        let got = prepare_rename(
+            session.db(),
+            analysis,
+            file_id,
+            rowan::TextSize::from(u32::try_from(ext_call).expect("fits")),
+        );
+        assert!(
+            got.is_some(),
+            "external call site IS renameable (ruled 2026-08-24 — Force gate)"
+        );
+    }
     use rowan::TextSize;
 
     use super::{declaration_offset, prepare_rename, rename, rename_safe};
@@ -884,7 +973,7 @@ fn main() {
     }
 
     #[test]
-    fn prepare_rename_on_a_ufcs_call_to_an_external_free_fn_is_not_renameable() {
+    fn prepare_rename_and_rename_agree_on_a_ufcs_call_to_an_external_free_fn() {
         // Review finding on #1539/PR #1543: `prepare_rename`'s UFCS branch
         // skipped the `SymbolKind::External` guard `rename` itself applies
         // once it resolves the same target (below) — an LSP `prepareRename`
@@ -907,13 +996,21 @@ fn main() {
         let call_pos = u32::try_from(src.find("greet(3)").expect("call")).expect("offset");
         let analysis = s.analysis().expect("analysis");
 
+        // Ruled 2026-08-24 (Force gate): both now ACCEPT — the invariant this
+        // pin protects is that prepare_rename and rename AGREE (the original
+        // #1539 finding was their disagreement producing a silent no-op).
         assert!(
-            prepare_rename(s.db(), analysis, id, TextSize::from(call_pos)).is_none(),
-            "an external free function cannot be renamed through this path"
+            prepare_rename(s.db(), analysis, id, TextSize::from(call_pos)).is_some(),
+            "external UFCS call site is renameable under the Force-gate ruling"
+        );
+        let renamed = rename(s.db(), analysis, id, TextSize::from(call_pos), "salute");
+        assert!(
+            renamed.is_some(),
+            "rename must agree with prepare_rename: both accept the external target"
         );
         assert!(
-            rename(s.db(), analysis, id, TextSize::from(call_pos), "salute").is_none(),
-            "rename must agree with prepare_rename: both refuse an external target"
+            renamed.expect("just asserted").external_binding.is_some(),
+            "the external binding must be flagged for the E190 verdict"
         );
     }
 

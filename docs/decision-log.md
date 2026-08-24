@@ -3191,3 +3191,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The studio gets a TODO feature over ink-native `TODO:` lines (AUTHOR_WARNING nodes): (1) a dedicated TODOs tool window grouped by file → containing knot/stitch, with filter/search, count badge, and click-to-navigate (open file + scroll to line; group headers navigate too); (2) prominent editor highlighting of TODO lines — Inky-grade visibility (amber full-line band + left bar + bold keyword); (3) TODO lifetime is purely existence-in-source — no persistence or done-state; a removed TODO animates out of the panel with a strikethrough; (4) TODOs also surface in the Problems panel as Info-severity diagnostics with lint code `todo`, emitted at HIR lowering (the pass that already owns per-file diagnostics), making them `[lints] todo = "allow"`-suppressible and never compile-blocking. Design canvas: `.design/todo-panel/`.
 - **WHY:** Maintainer: TODO lines are the natural authoring workflow marker in ink ("it's extremely noticeable in the inky editor" — parity there matters); grouping by file + knot/content mirrors how authors think about where work remains; existence-based lifetime avoids a second source of truth; the Problems integration was approved once the plumbing check showed it rides the existing lowering-diagnostics pipe rather than requiring new compiler plumbing.
+
+## External renames: allowed behind the always-unsafe Force gate
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui / compiler-ide
+- **SCOPE:** moderate
+- **WHAT:** EXTERNAL functions become renameable (declaration + all call sites) instead of refused outright — but the safe-rename verdict for an external is ALWAYS unsafe, with a synthesized report entry naming the host-binding consequence ("the engine must re-register under the new name"), so the rename only applies through the breakage report's Force path. Builtins remain non-renameable.
+- **WHY:** Maintainer ("let's do the force gate version"): the old refusal protected the story↔engine name contract, but "this breaks something → refuse" is exactly the case the breakage-report surface exists for — inform-and-allow is the project's established rename posture, and every current brink user controls both sides of the binding.

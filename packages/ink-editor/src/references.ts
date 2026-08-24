@@ -74,6 +74,37 @@ const referenceClearTimer = ViewPlugin.fromClass(
   },
 );
 
+/** Highlight every reference of the symbol at `pos` (3s auto-clear via the
+ *  timer plugin). Shared by the Shift-Alt-F binding and the context menu's
+ *  Find References item. */
+export function showReferencesAt(
+  view: EditorView,
+  pos: number,
+  findReferences: ReferencesOptions["findReferences"],
+): boolean {
+  const source = view.state.doc.toString();
+
+  let refs: Location[];
+  try {
+    refs = findReferences(source, pos);
+  } catch {
+    return false;
+  }
+
+  if (refs.length === 0) return false;
+
+  const decos = refs
+    .map((r) => referenceHighlight.range(r.start, r.end))
+    .sort((a, b) => a.from - b.from);
+
+  // The referenceClearTimer plugin schedules the auto-clear.
+  view.dispatch({
+    effects: setReferenceHighlights.of(Decoration.set(decos)),
+  });
+
+  return true;
+}
+
 export function referencesExtension(options: ReferencesOptions): Extension {
   return [
     referenceHighlightField,
@@ -81,30 +112,8 @@ export function referencesExtension(options: ReferencesOptions): Extension {
     keymap.of([
       {
         key: "Shift-Alt-f",
-        run(view: EditorView): boolean {
-          const pos = view.state.selection.main.head;
-          const source = view.state.doc.toString();
-
-          let refs: Location[];
-          try {
-            refs = options.findReferences(source, pos);
-          } catch {
-            return false;
-          }
-
-          if (refs.length === 0) return false;
-
-          const decos = refs
-            .map((r) => referenceHighlight.range(r.start, r.end))
-            .sort((a, b) => a.from - b.from);
-
-          // The referenceClearTimer plugin schedules the auto-clear.
-          view.dispatch({
-            effects: setReferenceHighlights.of(Decoration.set(decos)),
-          });
-
-          return true;
-        },
+        run: (view: EditorView) =>
+          showReferencesAt(view, view.state.selection.main.head, options.findReferences),
       },
     ]),
   ];

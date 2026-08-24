@@ -124,7 +124,7 @@ export { liveArgRange, openCallForm, matchHostWidget } from "./argument-widgets.
 export { setHostWidgets, getHostWidget } from "./widget-registry.js";
 
 // Types for line classification
-export { elementTypeField, ElementType, assignOptionPaths } from "./element-type.js";
+export { elementTypeField, ElementType, assignOptionPaths, classifyLine } from "./element-type.js";
 export type { LineInfo, DialectGeometry } from "./element-type.js";
 
 // Code folding (#313 G): HIR-driven fold ranges, including the leading
@@ -144,8 +144,18 @@ export type { FoldingOptions, FoldPlaceholder, FoldKind, DeclKind } from "./fold
 
 // "Play from here" (#186): hover ▶ gutter + right-click menu on knot/stitch
 // declarations. `qualifiedInkPath`/`headerName` are the pure path core.
-export { playFromHereExtension, qualifiedInkPath, headerName } from "./play-from-here.js";
-export type { PlayFromHereOptions } from "./play-from-here.js";
+export {
+  playFromHereExtension,
+  qualifiedInkPath,
+  headerName,
+  lineActionsAt,
+} from "./play-from-here.js";
+export type {
+  PlayFromHereOptions,
+  TextMenuRequest,
+  IdentityMenuSection,
+  LineMenuAction,
+} from "./play-from-here.js";
 
 // Host gutter markers (#343): host-contributed gutter affordances
 // (breakpoints, annotations) in a slot coordinated with the built-in gutters.

@@ -109,6 +109,39 @@
   display: inline-block;
   vertical-align: baseline;
 }
+/* Inserted rename row (Zed style, ruled 2026-08-24): a block widget row
+   beneath the target's line — no gutter number, lines pushed down, and the
+   input reads as INLINE TEXT: editor font inherited, the token's own tok-*
+   highlight classes copied onto it, no chrome and no focus ring. The
+   hidden spacer carries the line's actual prefix text so the input sits
+   exactly under the token, tabs and wide glyphs included. */
+.brink-studio .brink-rename-target {
+  background: rgb(var(--bs-accent-rgb) / 22%);
+  border-radius: 2px;
+}
+.brink-studio .brink-rename-row {
+  display: flex;
+  align-items: baseline;
+  /* Match .cm-line's own padding so the spacer's column math lands the
+     input EXACTLY under the token. */
+  padding: 0 2px 0 4px;
+}
+.brink-studio .brink-rename-spacer {
+  visibility: hidden;
+  white-space: pre;
+  flex-shrink: 0;
+}
+.brink-studio .brink-rename-row .brink-inline-rename-input,
+.brink-studio .brink-rename-row .brink-inline-rename-input:focus {
+  border: none;
+  background: rgb(var(--bs-accent-rgb) / 10%);
+  border-radius: 2px;
+  box-shadow: none;
+  outline: none;
+  /* 1px carries the end-of-text caret; a full char of headroom read as a
+     trailing tinted chunk. */
+  padding: 0 1px;
+}
 .brink-studio .brink-inline-rename-row {
   display: inline-flex;
   align-items: center;
@@ -121,9 +154,9 @@
   border: 1px solid var(--bs-accent, var(--bs-border));
   border-radius: 3px;
   padding: 0 4px;
-  min-width: 6ch;
-  /* Grow with content up to a sane cap so the line doesn't jump. */
-  width: auto;
+  /* Width comes from the `size` attribute, synced to the value by
+     InlineNameInput — the box hugs the token instead of the browser's
+     ~20-char default slab (which `width: auto` on an input means). */
   outline: none;
 }
 .brink-studio .brink-inline-rename-input:focus {

@@ -8,6 +8,12 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import {
+  CommandRegistry,
+  KeymapOverridesService,
+  ShellProvider,
+  ThemeService,
+} from "@brink/studio-shell";
 import { createStudioStore, type EditorTextMenuRequest } from "@brink/studio-store";
 import { EditorTextMenuHost, StoreProvider } from "@brink/studio-ui";
 
@@ -33,9 +39,16 @@ function mount() {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const commands = new CommandRegistry();
+  const themes = new ThemeService();
+  const overrides = new KeymapOverridesService();
   act(() => {
     root!.render(
-      createElement(StoreProvider, { store } as never, createElement(EditorTextMenuHost)),
+      createElement(
+        ShellProvider,
+        { commands, themes, keymapOverrides: overrides, isMac: true } as never,
+        createElement(StoreProvider, { store } as never, createElement(EditorTextMenuHost)),
+      ),
     );
   });
   return store;
@@ -117,6 +130,36 @@ describe("EditorTextMenuHost", () => {
     const store = mount();
     act(() => store.getState().openTextMenu(request(true)));
     expect(items().every((i) => !i.disabled)).toBe(true);
+  });
+
+  it("identity group renders in spec order above the text group; gaps collapse", () => {
+    const store = mount();
+    const req = request(false);
+    const gotoDef = vi.fn();
+    const rename = vi.fn();
+    act(() =>
+      store.getState().openTextMenu({
+        ...req,
+        identity: { name: "gold", gotoDefinition: gotoDef, rename },
+      }),
+    );
+    // findReferences absent -> omitted; order: Navigate, Rename, then text.
+    expect(items().map((i) => i.label)).toEqual([
+      "Go to Definition⌘Click",
+      "Rename 'gold'…F2",
+      "Cut⌘X",
+      "Copy⌘C",
+      "Paste⌘V",
+      "Select All⌘A",
+    ]);
+    const g = [...container!.querySelectorAll(".brink-context-menu-item")].find((el) =>
+      el.textContent?.startsWith("Go to Definition"),
+    )!;
+    act(() => {
+      g.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(gotoDef).toHaveBeenCalledOnce();
+    expect(container!.querySelector(".brink-text-menu")).toBeNull();
   });
 
   it("symbol menu and text menu are mutually exclusive in the store", () => {

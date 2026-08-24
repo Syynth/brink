@@ -332,6 +332,16 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
         onPlayFrom: options.onPlayFrom,
         onSymbolContextMenu: options.onSymbolContextMenu,
         onTextContextMenu: options.onTextContextMenu,
+        // The menu's Navigate/Rename identity group reuses the same
+        // callbacks the cmd-click / Shift-Alt-F / F2 surfaces use.
+        gotoDefinition: options.gotoDefinition,
+        findReferences: options.findReferences,
+        getActiveFile: options.getActiveFile,
+        onNavigateToFile: options.onNavigateToFile,
+        renameEnabled: Boolean(
+          options.prepareRename && options.renameSymbolAt && options.commitRename,
+        ),
+        prepareRename: options.prepareRename,
       }),
     );
   }

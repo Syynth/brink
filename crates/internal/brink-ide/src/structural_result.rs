@@ -19,6 +19,7 @@ use crate::session::IdeSession;
 /// A diagnostic an op *would introduce* — present after the edit but not before.
 /// Carries everything the studio's breakage report needs to render and navigate
 /// (1-based line/col, matching the CLI's `DiagEntry`).
+#[derive(Debug)]
 pub struct IntroducedDiagnostic {
     pub severity: Severity,
     pub code: DiagnosticCode,
