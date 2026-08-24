@@ -6,28 +6,21 @@ on:
     - cron: '0 0 * * 1'
   workflow_dispatch:
   # demos/compound is workspace-excluded (see its Cargo.toml) and gets zero
-  # signal from the main `ci.yml` gate (#1386). Path-filtered so it only
-  # fires on pushes/PRs that could actually affect it, keeping it off the
-  # critical path for every other PR (#1077, decision 2026-07-22 / #1237).
-  # Not in branch protection's required-checks list, so it's advisory: it
-  # goes red on a relevant PR but does not block the merge by itself.
-  # `crates/internal/**` is included alongside `crates/brink-*/**`: the demo's
-  # Cargo.lock pins several crates/internal/* packages transitively (e.g.
-  # brink-analyzer, brink-ir, brink-syntax), so a change there can stale the
-  # lockfile exactly like a change to a front-door crate (#1402 — DEMO_GATE
-  # went red only after merge because this filter missed that). Root
-  # `Cargo.toml` is included too: it holds `[workspace.package] version` and
-  # `[workspace.dependencies]`, which every brink package version and
-  # transitive dep in demos/compound/Cargo.lock resolves from, so a bump
-  # there is the same staling vector one directory up.
-  pull_request:
-    paths:
-      - 'demos/**'
-      - 'crates/bevy-brink/**'
-      - 'crates/brink-*/**'
-      - 'crates/internal/**'
-      - 'Cargo.toml'
-      - '.github/workflows/demo.yml'
+  # signal from the main `ci.yml` gate (#1386). NO `pull_request` trigger
+  # (ruled 2026-08-24): the gate is advisory (not in branch protection's
+  # required-checks list) and a cold run is a ~35-minute Bevy build, so on
+  # PRs it was pure check-list noise — a slow amber row nobody waits for.
+  # The push-to-main trigger below still catches a staled
+  # demos/compound/Cargo.lock right after merge (the same place #1402's
+  # miss actually surfaced), and the weekly schedule + workflow_dispatch
+  # remain. `crates/internal/**` is included alongside `crates/brink-*/**`:
+  # the demo's Cargo.lock pins several crates/internal/* packages
+  # transitively (e.g. brink-analyzer, brink-ir, brink-syntax), so a change
+  # there can stale the lockfile exactly like a change to a front-door
+  # crate (#1402). Root `Cargo.toml` is included too: it holds
+  # `[workspace.package] version` and `[workspace.dependencies]`, which
+  # every brink package version and transitive dep in
+  # demos/compound/Cargo.lock resolves from.
   push:
     branches: [main]
     paths:

@@ -3271,3 +3271,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** Cmd/Ctrl-clicking the file-path text of an `INCLUDE` line opens that file (same `onNavigateToFile` route as the context menu's "Open <file>" item). The clickable span is the path text only — the INCLUDE keyword stays an ordinary click.
 - **WHY:** Maintainer ("⌘click on the file in an include statement should open that file, i think"): the path is a navigable reference like any other symbol; cmd-click is the editor's universal follow-the-reference gesture, so it should not dead-end on INCLUDEs.
+
+## DEMO_GATE no longer runs on pull requests
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** ci
+- **SCOPE:** minor/local
+- **WHAT:** `demo.yml`'s `pull_request` trigger is removed. DEMO_GATE (the workspace-excluded `demos/compound` fmt/clippy/test lane) now runs only on pushes to main (same path filter), the weekly schedule, and manual dispatch.
+- **WHY:** Maintainer (pointing at a 22-minute in-progress DEMO_GATE row on a PR: "this is what i was talking about removing when i said get rid of 'demo'"): the gate is advisory — not in branch protection — and a cold run is a ~35-minute Bevy build, so on PRs it was a perpetually-amber row nobody waits for. The push-to-main trigger still catches a staled demo lockfile immediately after merge, which is where #1402's miss actually surfaced anyway.
