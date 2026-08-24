@@ -68,7 +68,35 @@
   gap: 4px;
 }
 
-.brink-studio .search-input,
+/* The query box is a shell so the references scope chip can live inside
+   it (Direction C, ruled 2026-08-24); the input itself is bare. */
+.brink-studio .search-input-shell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bs-panel-bg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+.brink-studio .search-input-shell:focus-within {
+  outline: 1px solid var(--bs-accent);
+  outline-offset: -1px;
+}
+.brink-studio .search-input {
+  flex: 1;
+  min-width: 40px;
+  font: inherit;
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--bs-fg);
+  background: none;
+  border: none;
+  padding: 0;
+  outline: none;
+}
 .brink-studio .search-replace-input {
   flex: 1;
   min-width: 0;
@@ -81,10 +109,50 @@
   border-radius: 4px;
   padding: 3px 6px;
 }
-.brink-studio .search-input:focus,
 .brink-studio .search-replace-input:focus {
   outline: 1px solid var(--bs-accent);
   outline-offset: -1px;
+}
+
+/* References scope chip (JetBrains convention): the ✕ sits on the thing
+   it clears; typing replaces the chip. */
+.brink-studio .search-refs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 85%;
+  flex-shrink: 0;
+  background: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 14%);
+  border: 1px solid rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+.brink-studio .search-refs-chip-cap {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bs-accent-secondary, #cba6f7);
+}
+.brink-studio .search-refs-chip-symbol {
+  color: var(--bs-fg);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.brink-studio .search-refs-chip-clear {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+.brink-studio .search-refs-chip-clear:hover {
+  color: var(--bs-fg);
 }
 .brink-studio .search-input::placeholder,
 .brink-studio .search-replace-input::placeholder {
@@ -311,61 +379,25 @@
 
 /* References-mode chip (baseline; the results-surface revamp is designed
    separately). */
-/* References mode header (card spec): replaces the query summary. */
-.brink-studio .search-refs-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 8px;
-  margin: 6px 10px 0;
-  padding: 3px 8px;
-  border: 1px solid var(--bs-border);
-  border-radius: 5px;
-  background: var(--bs-surface-bg);
-  font-size: 11px;
-}
-.brink-studio .search-refs-cap {
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--bs-fg-muted);
-}
-.brink-studio .search-refs-symbol {
-  color: var(--bs-accent);
-  font-family: var(--bs-mono, ui-monospace, monospace);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.brink-studio .search-refs-count {
-  color: var(--bs-fg-muted);
-  white-space: nowrap;
-}
-.brink-studio .search-refs-head .search-summary-tools {
-  flex-shrink: 0;
-}
-.brink-studio .search-mode-chip-clear {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--bs-fg-muted);
-  cursor: pointer;
-  font-size: 13px;
-  line-height: 1;
-}
-.brink-studio .search-mode-chip-clear:hover {
-  color: var(--bs-fg);
-}
+
 
 /* ── Result cards (docs/search-results-cards-spec.md, PR C) ───────── */
 
 .brink-studio .search-summary {
   display: flex;
   align-items: center;
-  padding: 4px 12px 0;
+  gap: 6px;
+  padding: 1px 12px 4px;
   font-size: 11px;
   color: var(--bs-fg-muted);
+  border-bottom: 1px solid rgb(var(--bs-border-rgb) / 55%);
+  min-width: 0;
+}
+.brink-studio .search-summary-count {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .brink-studio .search-summary-tools {
   margin-left: auto;

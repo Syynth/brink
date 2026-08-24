@@ -3255,3 +3255,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The search summary row's collapse-all/expand-all controls are the binder header's icon buttons (same `ExpandAllIcon`/`CollapseAllIcon` + `.brink-binder-tool` treatment), not bespoke glyphs.
 - **WHY:** Maintainer ("re-use the expand/collapse all buttons from the binder, please"): one icon vocabulary for the same operation across panels — new panels should reach for the existing control set before inventing controls.
+
+## Search panel top: references as a scope chip in the query box
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** The Search panel's top piece is Direction C of the search-panel-header canvas: the bordered references header is gone; references identity renders as a dismissible scope chip (`refs <symbol> ✕`) INSIDE the query box (typing replaces it — the existing exit semantic made visible), and below the form sits one flat summary strip shared by both modes: count left ("N results/references · M files"), tool cluster right (binder expand/collapse-all icons · context value `1↑2↓` · ↻). The strip never wraps; the chip symbol ellipsizes.
+- **WHY:** Maintainer ("C is great, let's do that") after rejecting the stacked bordered pill ("this is dookie"): the ✕ belongs on the thing it clears, the chip makes typing-to-exit physically obvious (JetBrains scope-chip convention), and a strip that carries no identity always fits one row at panel widths.

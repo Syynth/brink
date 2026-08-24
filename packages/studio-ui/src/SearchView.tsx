@@ -120,11 +120,9 @@ function SearchContextKnob() {
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        context{" "}
         <span className="search-context-value">
-          {contextLines.before}↑ {contextLines.after}↓
-        </span>{" "}
-        ▾
+          {contextLines.before}↑{contextLines.after}↓
+        </span>
       </button>
       {open && (
         <span className="search-context-pop" role="group" aria-label="Context lines">
@@ -280,24 +278,6 @@ function SearchViewInner() {
 
   return (
     <div className="search-view">
-      {mode.kind === "references" && (
-        <div className="search-refs-head" role="status">
-          <span className="search-refs-cap">references</span>
-          <code className="search-refs-symbol">{mode.symbol}</code>
-          <span className="search-refs-count">
-            {total} in {fileCount} {fileCount === 1 ? "file" : "files"}
-          </span>
-          <SearchSummaryTools />
-          <button
-            type="button"
-            className="search-mode-chip-clear"
-            aria-label="Clear references"
-            onClick={clearReferences}
-          >
-            ×
-          </button>
-        </div>
-      )}
       <div className="search-form">
         <div className="search-query-block">
           <button
@@ -314,15 +294,31 @@ function SearchViewInner() {
           </button>
           <div className="search-fields">
             <div className="search-input-row">
-              <input
-                ref={inputRef}
-                className="search-input"
-                value={query}
-                placeholder="Search"
-                spellCheck={false}
-                aria-label="Search query"
-                onChange={(event) => setQuery(event.target.value)}
-              />
+              <div className="search-input-shell">
+                {mode.kind === "references" && (
+                  <span className="search-refs-chip" role="status">
+                    <span className="search-refs-chip-cap">refs</span>
+                    <code className="search-refs-chip-symbol">{mode.symbol}</code>
+                    <button
+                      type="button"
+                      className="search-refs-chip-clear"
+                      aria-label="Clear references"
+                      onClick={clearReferences}
+                    >
+                      ×
+                    </button>
+                  </span>
+                )}
+                <input
+                  ref={inputRef}
+                  className="search-input"
+                  value={mode.kind === "references" ? "" : query}
+                  placeholder={mode.kind === "references" ? "" : "Search"}
+                  spellCheck={false}
+                  aria-label="Search query"
+                  onChange={(event) => setQuery(event.target.value)}
+                />
+              </div>
               <div className="search-options" role="group" aria-label="Search options">
                 {optionButton("caseSensitive", "Aa", "Match case")}
                 {optionButton("wholeWord", "ab", "Match whole word")}
@@ -384,11 +380,18 @@ function SearchViewInner() {
         )}
       </div>
 
-      {mode.kind === "query" && results !== null && total > 0 && (
+      {results !== null && total > 0 && (
         <div className="search-summary">
           <span className="search-summary-count">
-            {total} {total === 1 ? "result" : "results"} in {fileCount}{" "}
-            {fileCount === 1 ? "file" : "files"}
+            {total}{" "}
+            {mode.kind === "references"
+              ? total === 1
+                ? "reference"
+                : "references"
+              : total === 1
+                ? "result"
+                : "results"}{" "}
+            · {fileCount} {fileCount === 1 ? "file" : "files"}
           </span>
           <SearchSummaryTools />
         </div>

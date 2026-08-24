@@ -103,7 +103,7 @@ test.describe("search tool window", () => {
     expect(locs[1]).toMatch(/^toppled-temple\.ink:\d+$/);
     expect(locs[2]).toMatch(/^toppled-temple\.ink:\d+$/);
     await expect(page.locator(".search-summary-count")).toHaveText(
-      "3 results in 2 files",
+      "3 results · 2 files",
     );
   });
 
@@ -240,13 +240,16 @@ test.describe("search tool window", () => {
       .first()
       .click({ modifiers: ["ControlOrMeta"] });
 
-    await expect(page.locator(".search-refs-head")).toBeVisible();
-    await expect(page.locator(".search-refs-symbol")).toHaveText("set_tint");
+    // The scope chip renders inside the query box (Direction C, ruled
+    // 2026-08-24), and the shared summary strip counts references.
+    await expect(page.locator(".search-refs-chip")).toBeVisible();
+    await expect(page.locator(".search-refs-chip-symbol")).toHaveText("set_tint");
+    await expect(page.locator(".search-summary-count")).toContainText("references");
     await expect.poll(() => cardCount(page)).toBeGreaterThan(1);
 
-    // ✕ leaves references mode without re-running the typed query.
-    await page.locator(".search-mode-chip-clear").click();
-    await expect(page.locator(".search-refs-head")).toHaveCount(0);
+    // The chip's ✕ clears references mode.
+    await page.locator(".search-refs-chip-clear").click();
+    await expect(page.locator(".search-refs-chip")).toHaveCount(0);
   });
 });
 
