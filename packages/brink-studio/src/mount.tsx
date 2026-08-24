@@ -91,6 +91,7 @@ import {
   StorySegment,
   StoreProvider,
   StructuralOpSegment,
+  EditorTextMenuHost,
   SymbolContextMenuHost,
   SymbolRenamePrompt,
   applyComputedRename,
@@ -384,6 +385,7 @@ function Root({
             {/* Inside the .brink-studio root, or their fixed positioning
                 and tokens never apply (#3054 review — the eaten menu). */}
             <SymbolContextMenuHost />
+            <EditorTextMenuHost />
             <SymbolRenamePrompt />
           </App>
         </StudioApiProvider>
@@ -644,6 +646,10 @@ export async function mountStudio(
     // <SymbolContextMenuHost/>).
     onSymbolContextMenu: (info, x, y) =>
       store.getState().openSymbolMenu({ ...info, x, y, source: "editor" }),
+    // Everything that isn't a symbol header gets the editor text menu — the
+    // native context menu never appears inside the editor
+    // (docs/editor-context-menu-spec.md).
+    onTextContextMenu: (request) => store.getState().openTextMenu(request),
     // Inline rename (#323/#324): the editor's F2 / context-menu rename runs
     // fully in the editor — the badge computes the breakage live, and this
     // commit applies the (already-computed) edits + re-keys the symbol tab.

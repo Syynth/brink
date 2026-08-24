@@ -150,6 +150,10 @@ export interface BrinkStudioOptions {
   onPlayFrom?: (inkPath: string, label?: string) => void;
   /** Right-click a knot/stitch declaration → the shared symbol context menu. */
   onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
+  /** Right-click anywhere that isn't a symbol header: the editor-owned text
+   *  menu (docs/editor-context-menu-spec.md). When provided, the native
+   *  context menu never appears inside the editor. */
+  onTextContextMenu?: (request: import("./play-from-here.js").TextMenuRequest) => void;
   /**
    * Host gutter-marker contribution (#343): the host's markers (breakpoints,
    * per-line annotations, run/flag icons) for the inclusive 1-based line range
@@ -327,6 +331,7 @@ export function brinkStudio(options: BrinkStudioOptions): Extension {
       playFromHereExtension({
         onPlayFrom: options.onPlayFrom,
         onSymbolContextMenu: options.onSymbolContextMenu,
+        onTextContextMenu: options.onTextContextMenu,
       }),
     );
   }

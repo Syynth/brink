@@ -21,6 +21,10 @@ export interface PlayFromHereOptions {
    *  menu (play-from-here + structural refactors) at the pointer. The host
    *  fills in the file path. */
   onSymbolContextMenu?: (info: { knot: string; stitch?: string }, x: number, y: number) => void;
+  /** Right-click anywhere else: the editor-owned text menu request (position
+   *  + Cut/Copy/Paste/Select All bound to this view). When provided, the
+   *  native context menu never appears inside the editor. */
+  onTextContextMenu?: (request: TextMenuRequest) => void;
 }
 
 // ── Path computation ────────────────────────────────────────────────
@@ -28,7 +32,10 @@ export interface PlayFromHereOptions {
 /** The declared name from a header line: `=== name ===` / `= name(params)` → `name`. */
 export function headerName(text: string): string | null {
   const stripped = text.trim().replace(/^=+/, "").replace(/=+$/, "").trim();
-  const name = stripped.split("(")[0]?.trim() ?? "";
+  // `=== function name(params) ===` — the keyword is not part of the path
+  // (this bug ate every right-click on a function header, #3054 review).
+  const sansKeyword = stripped.replace(/^function\s+/, "");
+  const name = sansKeyword.split("(")[0]?.trim() ?? "";
   return name || null;
 }
 
@@ -147,6 +154,59 @@ function symbolAtLine(
 
 // ── Extension ───────────────────────────────────────────────────────
 
+/** The editor-owned half of the plain-text context menu: position, state,
+ *  and the actions bound to the right view. The studio renders the menu and
+ *  invokes these; clipboard access degrades gracefully where denied. */
+export interface TextMenuRequest {
+  x: number;
+  y: number;
+  hasSelection: boolean;
+  cut: () => void;
+  copy: () => void;
+  paste: () => void;
+  selectAll: () => void;
+}
+
+function selectionText(view: EditorView): string {
+  return view.state.sliceDoc(
+    view.state.selection.main.from,
+    view.state.selection.main.to,
+  );
+}
+
+function buildTextMenuRequest(view: EditorView, x: number, y: number): TextMenuRequest {
+  const hasSelection = !view.state.selection.main.empty;
+  return {
+    x,
+    y,
+    hasSelection,
+    copy: () => {
+      void navigator.clipboard?.writeText(selectionText(view)).catch(() => {});
+    },
+    cut: () => {
+      const text = selectionText(view);
+      void navigator.clipboard?.writeText(text).catch(() => {});
+      view.dispatch(view.state.replaceSelection(""));
+      view.focus();
+    },
+    paste: () => {
+      void navigator.clipboard
+        ?.readText()
+        .then((text) => {
+          view.dispatch(view.state.replaceSelection(text));
+          view.focus();
+        })
+        .catch(() => {});
+    },
+    selectAll: () => {
+      view.dispatch({
+        selection: { anchor: 0, head: view.state.doc.length },
+      });
+      view.focus();
+    },
+  };
+}
+
 export function playFromHereExtension(options: PlayFromHereOptions): Extension {
   const { onPlayFrom, onSymbolContextMenu } = options;
 
@@ -211,13 +271,25 @@ export function playFromHereExtension(options: PlayFromHereOptions): Extension {
 
   const contextMenu = EditorView.domEventHandlers({
     contextmenu(event, view) {
-      if (!onSymbolContextMenu) return false;
-      const lineNo = lineAtPointer(view, event.clientX, event.clientY);
-      if (lineNo == null) return false;
-      const info = symbolAtLine(view.state, lineNo);
-      if (!info) return false;
+      // The GLOBAL editor context-menu entry point (the ruled architecture,
+      // docs/editor-context-menu-spec.md): the native menu never appears
+      // inside the editor — resolve the click to the richest context we
+      // have and dispatch. Headers get the shared symbol menu; everything
+      // else gets the text menu (Cut/Copy/Paste/Select All re-provided as
+      // ours). Provider-per-token-kind grows from here, matrix row by row.
+      const { onTextContextMenu } = options;
+      if (!onSymbolContextMenu && !onTextContextMenu) return false;
       event.preventDefault();
-      onSymbolContextMenu(info, event.clientX, event.clientY);
+      const lineNo = lineAtPointer(view, event.clientX, event.clientY);
+      const info =
+        lineNo == null || !onSymbolContextMenu ? null : symbolAtLine(view.state, lineNo);
+      if (info && onSymbolContextMenu) {
+        onSymbolContextMenu(info, event.clientX, event.clientY);
+        return true;
+      }
+      if (onTextContextMenu) {
+        onTextContextMenu(buildTextMenuRequest(view, event.clientX, event.clientY));
+      }
       return true;
     },
   });

@@ -28,6 +28,19 @@
 .brink-studio .brink-context-menu-item:hover {
   background: var(--bs-list-active-bg);
 }
+.brink-studio .brink-context-menu-item.is-disabled {
+  color: var(--bs-fg-muted);
+  opacity: 0.55;
+  cursor: default;
+}
+.brink-studio .brink-context-menu-item.is-disabled:hover {
+  background: transparent;
+}
+.brink-studio .brink-context-menu-shortcut {
+  margin-left: 24px;
+  color: var(--bs-fg-muted);
+  font-size: 11px;
+}
 .brink-studio .brink-context-menu-item.disabled {
   color: var(--bs-fg-muted);
   opacity: 0.5;

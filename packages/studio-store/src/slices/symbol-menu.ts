@@ -10,6 +10,22 @@ import type { StateCreator } from "zustand";
 import type { StudioState } from "../index.js";
 
 /** A pending request to open the symbol context menu at a screen position. */
+/** The editor's plain-text context menu (docs/editor-context-menu-spec.md):
+ *  position + the text actions already bound to the raising view. The
+ *  closures come from the editor (the only layer with the `EditorView`);
+ *  the studio just renders and invokes. Structurally identical to
+ *  `@brink-lang/editor`'s `TextMenuRequest` — kept independent so the store
+ *  doesn't grow an editor dependency. */
+export interface EditorTextMenuRequest {
+  x: number;
+  y: number;
+  hasSelection: boolean;
+  cut: () => void;
+  copy: () => void;
+  paste: () => void;
+  selectAll: () => void;
+}
+
 export interface SymbolMenuRequest {
   /** Project-relative file path of the symbol's declaration. */
   path: string;
@@ -47,8 +63,12 @@ export interface SymbolRenameRequest {
 export interface SymbolMenuSlice {
   /** The open symbol context-menu request, or null when closed. */
   symbolMenu: SymbolMenuRequest | null;
+  /** Open plain-text editor context menu, or null. */
+  textMenu: EditorTextMenuRequest | null;
   /** Open the symbol context menu for a knot/stitch at a screen position. */
   openSymbolMenu(request: SymbolMenuRequest): void;
+  openTextMenu(request: EditorTextMenuRequest): void;
+  closeTextMenu(): void;
   /** Dismiss the symbol context menu. */
   closeSymbolMenu(): void;
 
@@ -108,8 +128,16 @@ export const createSymbolMenuSlice: StateCreator<StudioState, [], [], SymbolMenu
   get,
 ) => ({
   symbolMenu: null,
+  textMenu: null,
   openSymbolMenu(request) {
-    set({ symbolMenu: request });
+    // One menu at a time — a symbol menu replaces a text menu and vice versa.
+    set({ symbolMenu: request, textMenu: null });
+  },
+  openTextMenu(request) {
+    set({ textMenu: request, symbolMenu: null });
+  },
+  closeTextMenu() {
+    set({ textMenu: null });
   },
   closeSymbolMenu() {
     set({ symbolMenu: null });

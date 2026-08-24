@@ -172,7 +172,11 @@ export {
 } from "./binder-order.js";
 
 // Shared knot/stitch context-menu transport (#186 follow-up).
-export type { SymbolMenuRequest, SymbolRenameRequest } from "./slices/symbol-menu.js";
+export type {
+  EditorTextMenuRequest,
+  SymbolMenuRequest,
+  SymbolRenameRequest,
+} from "./slices/symbol-menu.js";
 
 // Output log (Output tool window, spec §4) — entries + growth cap.
 export {
