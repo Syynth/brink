@@ -2008,6 +2008,16 @@ pub enum DiagnosticCode {
     /// `STRUCT` named this way still compiles and constructs normally; only
     /// its *annotation* spelling is shadowed.
     E188,
+
+    /// An ink `TODO:` author note (issue #3050).
+    ///
+    /// Not a defect at all: `AUTHOR_WARNING` lines are the language's own
+    /// work-remains marker, and until #3050 lowering dropped them silently.
+    /// Surfacing each as an `Info`-default diagnostic (the [`Self::E157`]
+    /// tier precedent) puts TODOs in the Problems panel and gives the
+    /// studio's TODO panel a single source to consume, while never gating a
+    /// compile and staying `[lints]`-tierable like every other code.
+    E189,
 }
 
 impl DiagnosticCode {
@@ -2208,6 +2218,7 @@ impl DiagnosticCode {
         Self::E186,
         Self::E187,
         Self::E188,
+        Self::E189,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2405,6 +2416,7 @@ impl DiagnosticCode {
             Self::E186 => "E186",
             Self::E187 => "E187",
             Self::E188 => "E188",
+            Self::E189 => "E189",
         }
     }
 
@@ -2727,6 +2739,7 @@ impl DiagnosticCode {
             Self::E188 => {
                 "declared STRUCT name collides with a reserved builtin/tower type name and is unreachable in type annotations"
             }
+            Self::E189 => "ink `TODO:` author note — work the author marked as remaining",
         }
     }
 
@@ -2797,7 +2810,10 @@ impl DiagnosticCode {
             // (`brink_analyzer::strict::effective_severity` widens its
             // overridable set past `Warning`-base codes to cover this one,
             // issue #1674).
-            Self::E157 => Severity::Info,
+            // E189 (issue #3050): `TODO:` author notes are advisory by
+            // definition — the same `Info`-default posture, tierable via
+            // `[lints]` like every other code.
+            Self::E157 | Self::E189 => Severity::Info,
             _ => Severity::Error,
         }
     }
@@ -2997,6 +3013,7 @@ impl DiagnosticCode {
             "E186" => Some(Self::E186),
             "E187" => Some(Self::E187),
             "E188" => Some(Self::E188),
+            "E189" => Some(Self::E189),
             _ => None,
         }
     }

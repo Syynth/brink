@@ -102,6 +102,26 @@ impl EffectSink {
     pub fn finish(self) -> Vec<Diagnostic> {
         self.diagnostics
     }
+
+    /// Emit a diagnostic whose message carries case-specific text.
+    ///
+    /// [`LowerSink::diagnose`] always uses the code's fixed
+    /// [`DiagnosticCode::title`]; the one lowering emission that needs more
+    /// (issue #3050 — `E189` carries the `TODO:` note's own text so the
+    /// Problems panel and the TODO panel can show it) pushes through here.
+    pub fn diagnose_with_message(
+        &mut self,
+        range: TextRange,
+        message: String,
+        code: DiagnosticCode,
+    ) {
+        self.diagnostics.push(Diagnostic {
+            file: self.file_id,
+            range,
+            message,
+            code,
+        });
+    }
 }
 
 impl LowerSink for EffectSink {
