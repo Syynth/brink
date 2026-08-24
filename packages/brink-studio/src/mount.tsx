@@ -380,9 +380,12 @@ function Root({
     >
       <StoreProvider store={store}>
         <StudioApiProvider api={api}>
-          <App />
-          <SymbolContextMenuHost />
-          <SymbolRenamePrompt />
+          <App>
+            {/* Inside the .brink-studio root, or their fixed positioning
+                and tokens never apply (#3054 review — the eaten menu). */}
+            <SymbolContextMenuHost />
+            <SymbolRenamePrompt />
+          </App>
         </StudioApiProvider>
       </StoreProvider>
     </ShellProvider>
