@@ -232,6 +232,12 @@
 .brink-studio .cm-line.brink-todo .brink-todo-keyword {
   font-weight: 700;
 }
+/* The caret's active-line tint must not defeat the band (0.2.0 regression:
+   with the cursor on a TODO line, .cm-activeLine's background won and left
+   the dark ink invisible on the dark line). Highest-specificity restate. */
+.brink-studio .cm-line.brink-todo.cm-activeLine {
+  background: var(--bs-todo-band, var(--bs-warning));
+}
 .brink-studio .cm-line.brink-include,
 .brink-studio .cm-line.brink-external {
   opacity: 0.7;
