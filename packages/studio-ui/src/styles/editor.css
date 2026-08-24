@@ -316,6 +316,45 @@
 .brink-studio .brink-hir-rail-cond_branch { background: var(--bs-syn-operator); }
 .brink-studio .brink-hir-rail-seq_branch { background: var(--bs-syn-enum); }
 
+/* Rail hover tooltip (a real floating tooltip, not a title attr). The
+   position rides the fixed-position custom-property carrier pattern the
+   other popups use (#414 — no inline left/top styles). */
+.brink-rail-tooltip {
+  position: fixed;
+  left: var(--brink-popup-left, 0px);
+  top: var(--brink-popup-top, 0px);
+  z-index: 60;
+  max-width: 360px;
+  padding: 6px 10px;
+  border: 1px solid var(--bs-border);
+  border-radius: 6px;
+  background: var(--bs-surface-bg);
+  box-shadow: var(--bs-shadow);
+  font-size: 12px;
+  color: var(--bs-fg);
+  pointer-events: none;
+}
+.brink-rail-tooltip-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+}
+.brink-rail-tooltip-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.brink-rail-tooltip-meta {
+  margin-top: 2px;
+  color: var(--bs-fg-muted);
+  font-size: 11px;
+}
+
 /* CM6 lint panel overrides */
 .brink-studio .cm-panel.cm-panel-lint {
   background: var(--bs-surface-bg);

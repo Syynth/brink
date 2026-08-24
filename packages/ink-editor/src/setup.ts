@@ -82,7 +82,9 @@ const foldGutterTheme = EditorView.baseTheme({
     // Fixed slot both states share — `initialSpacer`-equivalent stability
     // comes from the marker itself never changing size.
     width: "14px",
-    height: "100%",
+    // First-ROW height, not full (possibly wrapped) line height — the
+    // chevron top-aligns with the line number beside it.
+    height: "1lh",
     color: "var(--bs-fg-muted, #888)",
   },
   ".brink-fold-marker svg": {

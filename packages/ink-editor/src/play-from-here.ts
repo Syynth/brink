@@ -238,7 +238,8 @@ const playFromHereTheme = EditorView.baseTheme({
     // Intrinsic size — `initialSpacer` measures this to reserve the column
     // width, so a percentage width here would collapse the gutter to zero.
     width: "16px",
-    height: "100%",
+    // First-row height (see the fold marker) — headers can soft-wrap.
+    height: "1lh",
     borderRadius: "3px",
     color: "var(--bs-success, #22c55e)",
     cursor: "pointer",
