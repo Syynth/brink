@@ -151,45 +151,24 @@ export const TRANSITIONS: Transition[] = [
   { element: ElementType.Choice, key: "Enter",       hasContent: false, action: "convertToBody",            hint: "body text" },
   // Shift+Enter
   { element: ElementType.Choice, key: "Shift-Enter",                    action: "newBodyLine",              hint: "body text" },
-  // Tab: choice → choice body
-  { element: ElementType.Choice, key: "Tab",                            action: "convertToIndentedNarrative", hint: "body text" },
-  // Shift+Tab: choice → gather
-  { element: ElementType.Choice, key: "Shift-Tab",                      action: "convertToGather",          hint: "gather" },
 
   // ── Choice Body ─────────────────────────────────────────────────
-  // Tab: choice body → gather
-  { element: ElementType.ChoiceBody, key: "Tab",                        action: "convertToGather",          hint: "gather" },
-  // Shift+Tab: choice body → choice
-  { element: ElementType.ChoiceBody, key: "Shift-Tab",                  action: "convertToChoice",          hint: "choice" },
 
   // ── Gather ───────────────────────────────────────────────────────
-  // Tab: gather → choice
-  { element: ElementType.Gather, key: "Tab",                            action: "convertToChoice",          hint: "choice" },
-  // Shift+Tab: gather → choice body
-  { element: ElementType.Gather, key: "Shift-Tab",                      action: "convertToBody",            hint: "choice body" },
 
   // ── Narrative ────────────────────────────────────────────────────
-  // Tab: narrative → gather (enters the cycle)
-  { element: ElementType.NarrativeText, key: "Tab",                     action: "convertToGather",          hint: "gather" },
 
   // ── Character ─────────────────────────────────────────────────
-  { element: ElementType.Character, key: "Tab",         hasContent: true,  action: "convertToParenthetical",   hint: "parenthetical" },
-  { element: ElementType.Character, key: "Tab",         hasContent: false, action: "trap",                     hint: "" },
   { element: ElementType.Character, key: "Enter",       hasContent: true,  action: "newDialogueLine",          hint: "dialogue" },
   { element: ElementType.Character, key: "Enter",       hasContent: false, action: "clearScreenplaySigils",    hint: "clear" },
-  { element: ElementType.Character, key: "Shift-Tab",                      action: "stripToNarrative",         hint: "narrative" },
 
   // ── Parenthetical ─────────────────────────────────────────────
-  { element: ElementType.Parenthetical, key: "Tab",                        action: "convertToDialogue",        hint: "dialogue" },
   { element: ElementType.Parenthetical, key: "Enter",   hasContent: true,  action: "newDialogueLine",          hint: "dialogue" },
   { element: ElementType.Parenthetical, key: "Enter",   hasContent: false, action: "convertToDialogue",        hint: "dialogue" },
-  { element: ElementType.Parenthetical, key: "Shift-Tab",                  action: "stripToNarrative",         hint: "narrative" },
 
   // ── Dialogue ──────────────────────────────────────────────────
-  { element: ElementType.Dialogue, key: "Tab",                             action: "convertToParenthetical",   hint: "parenthetical" },
   { element: ElementType.Dialogue, key: "Enter",        hasContent: true,  action: "newDialogueLine",          hint: "dialogue" },
   { element: ElementType.Dialogue, key: "Enter",        hasContent: false, action: "stripToNarrative",         hint: "narrative" },
-  { element: ElementType.Dialogue, key: "Shift-Tab",                       action: "stripToNarrative",         hint: "narrative" },
 ];
 
 // ── Matching ───────────────────────────────────────────────────────

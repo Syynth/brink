@@ -1,5 +1,6 @@
 import { type Extension, Prec } from "@codemirror/state";
 import { keymap, type EditorView } from "@codemirror/view";
+import { indentLess, indentMore } from "@codemirror/commands";
 import { elementTypeField, ElementType, dialectFacet } from "./element-type.js";
 import { documentHandleFacet } from "./document-handle.js";
 import { sigilBypass, characterName } from "./screenplay.js";
@@ -8,7 +9,11 @@ import { CONVERTIBLE_TYPES, convertLineToType } from "./convert.js";
 import { ensureStructuralStyles } from "./structural-styles.js";
 import { registerDismissible } from "./dismiss-registry.js";
 
-const HANDLED_KEYS = ["Enter", "Shift-Enter", "Tab", "Shift-Tab", "Backspace", "Delete"] as const;
+// Tab / Shift-Tab are deliberately NOT here (ruled 2026-08-24, "the line
+// conversion stuff needs to be stripped out for now"): they indent/dedent
+// like every other editor — see the indent bindings in brinkKeymap. The
+// element-conversion rows they used to drive are gone from TRANSITIONS.
+const HANDLED_KEYS = ["Enter", "Shift-Enter", "Backspace", "Delete"] as const;
 
 /**
  * Lines whose text may be absorbed into a character name (`@Name:<>`) by the
@@ -32,31 +37,7 @@ function handleKey(key: string, view: EditorView): boolean {
   const info = infos[lineIndex];
 
   if (!info) {
-    return key === "Tab" || key === "Shift-Tab";
-  }
-
-  // Tab on double-blank: insert @:<> character template. This is a
-  // dialect-provided behavior (the at-cue preset's blank-tab template), NOT
-  // a structural row — with the keymap now always mounted (#368: only the
-  // screenplay decorations are dialect-gated, the structural weave table is
-  // interpreter-owned), it must self-guard on an active dialect, unlike the
-  // Character-kind branches below (whose kinds simply never appear when no
-  // dialect is active).
-  if (
-    key === "Tab" &&
-    info.type === ElementType.Blank &&
-    line.text.trim() === "" &&
-    state.facet(dialectFacet) !== null
-  ) {
-    const prevBlank = lineIndex > 0 && infos[lineIndex - 1].type === ElementType.Blank;
-    if (prevBlank) {
-      view.dispatch({
-        changes: { from: line.from, to: line.to, insert: "@:<>" },
-        selection: { anchor: line.from + 1 }, // cursor between @ and :
-        annotations: sigilBypass.of(true),
-      });
-      return true;
-    }
+    return false;
   }
 
   // Character line special handlers
@@ -158,7 +139,7 @@ function handleKey(key: string, view: EditorView): boolean {
   const transition = findTransition(info, key, hasContent, lineCtx);
 
   if (!transition) {
-    return key === "Tab" || key === "Shift-Tab";
+    return false;
   }
 
   return executeAction(
@@ -353,6 +334,21 @@ function dismissInlineElementPicker(): void {
   }
 }
 
+/** Tab / Shift-Tab: a dialect-DECLARED transition row may claim the key —
+ *  the #395 consumer contract (a custom dialect can bind Tab conversions;
+ *  the default at-cue preset declares none). Otherwise the keys fall
+ *  through to plain indent/dedent (ruled 2026-08-24: the BUILT-IN
+ *  conversion cycle is stripped). */
+function dialectTabRow(key: "Tab" | "Shift-Tab", view: EditorView): boolean {
+  const { state } = view;
+  const infos = state.field(elementTypeField);
+  const line = state.doc.lineAt(state.selection.main.head);
+  const info = infos[line.number - 1];
+  if (!info) return false;
+  const hasContent = lineHasContent(line.text, info);
+  return tryDialectTransition(state.facet(dialectFacet), view, info, key, hasContent);
+}
+
 export function brinkKeymap(): Extension {
   return Prec.highest(
     keymap.of([
@@ -360,6 +356,14 @@ export function brinkKeymap(): Extension {
         key,
         run: (view: EditorView) => handleKey(key, view),
       })),
+      // Tab indents, Shift-Tab dedents — plain editor behavior (ruled
+      // 2026-08-24; the conversion cycle Tab used to drive is stripped).
+      // Dialect-declared rows keep first claim (#395 contract).
+      {
+        key: "Tab",
+        run: (view: EditorView) => dialectTabRow("Tab", view) || indentMore(view),
+        shift: (view: EditorView) => dialectTabRow("Shift-Tab", view) || indentLess(view),
+      },
       { key: "Home", run: handleHome },
       { key: "End", run: handleEnd },
       { key: "ArrowRight", run: handleArrowRight },
