@@ -154,6 +154,19 @@ export class InlineNameInput {
     if (this.options.placeholder !== undefined) input.placeholder = this.options.placeholder;
     input.spellcheck = false;
     input.setAttribute("aria-label", this.options.ariaLabel);
+    // The input hugs its content: `size` (an attribute, not a style) tracks
+    // the value so the box is the token's width, not the browser's ~20-char
+    // default — which read as a line-breaking slab in the editor. The
+    // editor's monospace font makes `size` an exact fit; +1 for the caret.
+    const syncSize = () => {
+      input.size = Math.max(
+        input.value.length,
+        this.options.placeholder?.length ?? 0,
+        2,
+      ) + 1;
+    };
+    syncSize();
+    input.addEventListener("input", syncSize);
     if (this.options.liveBadge === true) {
       input.addEventListener("input", () => this.scheduleQuery());
     }
