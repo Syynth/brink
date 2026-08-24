@@ -48,4 +48,4 @@ pub use content::{
 pub use block::{WeaveItem, fold_weave};
 
 // Re-export public API.
-pub use structure::{lower, lower_single_knot, lower_top_level};
+pub use structure::{lower, lower_declarations, lower_single_knot, lower_top_level};
