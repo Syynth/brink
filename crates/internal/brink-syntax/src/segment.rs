@@ -59,7 +59,20 @@ pub enum SegmentKind {
 pub struct Segment {
     pub kind: SegmentKind,
     /// The byte range this segment covers, doc-block extension included.
+    /// Ranges TILE the file (offset bookkeeping); the text a consumer
+    /// should PARSE is [`lowered_range`](Self::lowered_range).
     pub range: TextRange,
+    /// The range to parse for this segment: `range` extended through the
+    /// trailing trivia up to the NEXT segment's header token (or EOF).
+    /// The whole-file parse absorbs the trivia before a knot header —
+    /// blank lines, comments, and the next knot's `///` doc block — into
+    /// the PRECEDING knot's node, so a fragment must end at the next
+    /// header for its node ranges to match the whole-file tree
+    /// byte-for-byte. Where the next boundary carries a doc block, this
+    /// makes adjacent `lowered_range`s OVERLAP on the doc bytes: the doc
+    /// block is trailing trivia to this segment and doc attachment to the
+    /// next — both readings are what the whole-file parse does.
+    pub lowered_range: TextRange,
     /// The byte offset of the header's first `=` token — the position the
     /// whole-file parse gives the corresponding `KNOT_HEADER`/
     /// `STITCH_HEADER` node. `None` for the header segment.
@@ -139,17 +152,21 @@ pub fn segment_file(source: &str) -> Vec<Segment> {
 
     // Assemble tiling segments.
     let first_cut = boundaries.first().map_or(total, |b| b.0);
+    let first_header = boundaries.first().map_or(total, |b| b.1);
     let mut segments = Vec::with_capacity(boundaries.len() + 1);
     segments.push(Segment {
         kind: SegmentKind::Header,
         range: TextRange::new(TextSize::from(0), first_cut),
+        lowered_range: TextRange::new(TextSize::from(0), first_header),
         header_start: None,
     });
     for (idx, &(cut, header_start, kind)) in boundaries.iter().enumerate() {
         let end = boundaries.get(idx + 1).map_or(total, |b| b.0);
+        let lowered_end = boundaries.get(idx + 1).map_or(total, |b| b.1);
         segments.push(Segment {
             kind,
             range: TextRange::new(cut, end),
+            lowered_range: TextRange::new(cut, lowered_end),
             header_start: Some(header_start),
         });
     }

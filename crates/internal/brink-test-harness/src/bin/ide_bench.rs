@@ -310,8 +310,8 @@ fn bench_keystroke_large_stages(project: &BTreeMap<String, String>, runs: usize)
         let db = session.db();
 
         let start = Instant::now();
-        std::hint::black_box(db.parse(large));
-        record("1_parse", ms(start), &mut stages);
+        std::hint::black_box(db.segment_count(large));
+        record("0_segments", ms(start), &mut stages);
 
         let start = Instant::now();
         std::hint::black_box(db.hir(large));
@@ -348,10 +348,22 @@ fn bench_keystroke_large_stages(project: &BTreeMap<String, String>, runs: usize)
         let start = Instant::now();
         session.refresh_analysis();
         record("control_refresh", ms(start), &mut stages);
+
+        // Off the analysis path since the segment road (#3084): the
+        // whole-file parse is pulled only by IDE consumers (hover,
+        // semantic tokens) — priced here for visibility, after the
+        // control row so it cannot pollute the coverage check.
+        let db = session.db();
+        let start = Instant::now();
+        std::hint::black_box(db.parse(large));
+        record("z_ide_whole_parse", ms(start), &mut stages);
     }
     let details: BTreeMap<&str, &str> = [
-        ("1_parse", "reparse the edited ~8k-line file"),
-        ("2_lower", "HIR-lower the edited file (parse warm)"),
+        ("0_segments", "segmentation scan + tracked-struct minting"),
+        (
+            "2_lower",
+            "segment road: edited knot's fragment parse+lower + assembly",
+        ),
         ("3_module_map", "module map over all manifests"),
         ("4_symbol_index", "project symbol-index rebuild"),
         ("5_resolve_edited", "resolve the edited file"),
@@ -363,6 +375,10 @@ fn bench_keystroke_large_stages(project: &BTreeMap<String, String>, runs: usize)
         ("8_analysis_diags", "cross-file analysis diagnostics pass"),
         ("9_assembly", "whole-project pass + bundle assembly"),
         ("control_refresh", "must be ~0: stages covered everything"),
+        (
+            "z_ide_whole_parse",
+            "whole-file parse, IDE-only since #3084",
+        ),
     ]
     .into_iter()
     .collect();

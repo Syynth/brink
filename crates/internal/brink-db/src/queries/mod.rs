@@ -166,6 +166,7 @@ impl Default for BrinkDatabase {
                 // plus the segmentation query minting them.
                 .ingredient::<FileSegment<'_>>()
                 .ingredient::<file_segments_query>()
+                .ingredient::<segments::segment_lowered_query>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-
@@ -495,10 +496,21 @@ pub(crate) fn raw_lowered_query(db: &dyn salsa::Database, file: SourceFile) -> A
     // Decide the frontend from the path *before* touching either parser
     // (B0.10a, the native compile seam, issue #1106): this branch precedes
     // the parse call, so an `.ink` file never runs the native parser and a
-    // native file never runs the ink one. The ink arm is byte-identical to
-    // the pre-seam body, keeping the oracle invariance a tautology.
+    // native file never runs the ink one.
+    //
+    // The ink arm rides the SEGMENT road (#3084): per-knot fragment
+    // parse + lower, memoized per content-keyed segment, assembled with
+    // range rebasing — so a knot-interior edit re-lowers one knot, not
+    // the file. The retired whole-file composition (`lower_file`)
+    // remains in this module as the road's corpus-equality oracle: the
+    // assembled HIR/manifest/admission are byte-identical, diagnostics
+    // multiset-identical (see `assemble_lowered_file`'s doc and the
+    // gate tests in `segments.rs`). Note the segment road deliberately
+    // does NOT read `parse_query` — the analysis path no longer pays a
+    // whole-file parse per keystroke; IDE consumers that want the
+    // whole-file tree still pull `parse_query` themselves.
     Arc::new(match file_language(file.path(db)) {
-        Language::Ink => lower_file(file_id, parse_query(db, file)),
+        Language::Ink => segments::assemble_lowered_file(db, file),
         Language::Native => lower_native_file(file_id, parse_native_query(db, file), None),
     })
 }

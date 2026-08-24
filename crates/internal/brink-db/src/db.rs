@@ -253,6 +253,15 @@ impl ProjectDb {
         self.project.ink_root(&self.salsa).as_deref()
     }
 
+    /// The number of per-knot segments a file splits into (#3084) —
+    /// pulling this warms `file_segments_query`, so perf instrumentation
+    /// can price the segmentation toll as its own stage. `None` for an
+    /// unknown file id.
+    pub fn segment_count(&self, id: FileId) -> Option<usize> {
+        let file = *self.files.get(&id)?;
+        Some(crate::queries::file_segments_query(&self.salsa, file).len())
+    }
+
     /// Look up a file's ID by path.
     pub fn file_id(&self, path: &str) -> Option<FileId> {
         self.path_to_id.get(path).copied()
