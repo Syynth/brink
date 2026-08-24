@@ -20,7 +20,7 @@
  */
 
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, keymap, WidgetType } from "@codemirror/view";
+import { closeHoverTooltips, Decoration, EditorView, keymap, WidgetType } from "@codemirror/view";
 import type { Location, StructuralResult } from "@brink/wasm-types";
 import { InlineNameInput } from "./inline-name-input.js";
 import {
@@ -136,7 +136,15 @@ export function startInlineRename(view: EditorView, offset?: number): void {
     }
     el = el.parentElement;
   }
-  view.dispatch({ effects: startInlineRenameEffect.of({ offset: offset ?? null, tokenClasses }) });
+  view.dispatch({
+    effects: [
+      // Dismiss any open hover card up front — the hover source suppresses
+      // NEW cards while the rename row is open (hover.ts), but an
+      // already-open card persists until closed and would sit on the badge.
+      closeHoverTooltips,
+      startInlineRenameEffect.of({ offset: offset ?? null, tokenClasses }),
+    ],
+  });
 }
 
 /**

@@ -12,6 +12,14 @@ export interface HoverOptions {
 
 export function hoverExtension(options: HoverOptions): Extension {
   return hoverTooltip((view, pos): Tooltip | null => {
+    // No hover cards while an inline rename/name-input row is open: the row
+    // owns the space under the line, and a card that flips below (viewport
+    // top) lands exactly on the "⚠ breaks N" badge and intercepts its
+    // clicks — symbol-rename e2e caught it the moment the #3060-era row
+    // moved the badge beneath the token. DOM probe rather than state: the
+    // rename StateField is closure-local to renameExtension, and the row's
+    // input existing IS the active condition.
+    if (view.dom.querySelector(".brink-inline-rename-input")) return null;
     const source = view.state.doc.toString();
 
     let info: HoverInfo | null;
