@@ -20,7 +20,9 @@ import {
   ChevronIcon,
   CollapseAllIcon,
   ExpandAllIcon,
+  FilePlusIcon,
   FilesModeIcon,
+  FolderPlusIcon,
   FolderIcon,
   FunctionIcon,
   GrabHandleIcon,
@@ -597,6 +599,7 @@ function BinderInner() {
   const toggleStructureMode = useStudioStore((s) => s.toggleStructureMode);
   const setAllCollapsed = useStudioStore((s) => s.setAllCollapsed);
   const reorderBinderSiblings = useStudioStore((s) => s.reorderBinderSiblings);
+  const registerBinderFolder = useStudioStore((s) => s.registerBinderFolder);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
   const focusedKey = useStudioStore((s) => s.focusedKey);
   const openTarget = useStudioStore((s) => s.openTarget);
@@ -617,9 +620,12 @@ function BinderInner() {
   const addFile = useStudioStore((s) => s.addFile);
   const storeApi = useStudioStoreApi();
 
-  const [inputActive, setInputActive] = useState(false);
-  /** Directory prefix the New File input is pre-filled with ("New file here"). */
-  const [newFileDir, setNewFileDir] = useState("");
+  /** The one open inline-create input (#3039): which container, and
+   *  whether it creates a file or a folder. */
+  const [creating, setCreating] = useState<{ container: string; kind: "file" | "folder" } | null>(
+    null,
+  );
+  const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -712,15 +718,18 @@ function BinderInner() {
     [clearSelection, handleOpenUnpinned],
   );
 
-  // ── New file input ──────────────────────────────────────────────
+  // ── Inline creation (#3039 — CreateRow.dc.html) ─────────────────
 
-  /** Open the inline New File input, optionally pre-filled with a directory
-   *  prefix ("New file here" on a file/folder row). Cursor lands at the end. */
-  const openNewFileInput = useCallback(
-    (dir: string) => {
-      if (inputActive) return;
-      setNewFileDir(dir);
-      setInputActive(true);
+  /** Open the inline create input for one container (#3039). The caret
+   *  discipline is unchanged from the old New File input (#2571,
+   *  SELECT-INVARIANT Binder.newFileInput.cursorToEnd): the deferred
+   *  frame reads `input.value` fresh and places a zero-width caret at its
+   *  end, so text typed during the frame is never clobbered or selected. */
+  const openCreateInput = useCallback(
+    (container: string, kind: "file" | "folder") => {
+      if (creating !== null) return;
+      setCreating({ container, kind });
+      setCreateError(null);
       requestAnimationFrame(() => {
         const input = inputRef.current;
         if (!input) return;
@@ -728,34 +737,84 @@ function BinderInner() {
         const end = input.value.length;
         // SELECT-INVARIANT Binder.newFileInput.cursorToEnd: a zero-width
         // range (start === end) places the caret, it does not select any
-        // text — there is nothing typed here for it to clobber even though
-        // it runs inside this deferred frame, and `end` is read fresh from
-        // `input.value` at fire time, not a value captured before the frame.
+        // text — text typed during this deferred frame is never clobbered
+        // even though it runs after the frame, and `end` is read fresh
+        // from `input.value` at fire time, not captured before the frame.
         input.setSelectionRange(end, end);
       });
     },
-    [inputActive],
+    [creating],
   );
 
-  const handleNewClick = useCallback(() => openNewFileInput(""), [openNewFileInput]);
-
   const cancelInput = useCallback(() => {
-    setInputActive(false);
-    setNewFileDir("");
+    setCreating(null);
+    setCreateError(null);
   }, []);
+
+  /** Sibling ids already taken in `container` — files keyed by their
+   *  extension-normalized basename (celeris's `dedupName`), folders by
+   *  name. */
+  const takenIn = useCallback(
+    (container: string): Set<string> => {
+      const taken = new Set<string>();
+      for (const f of outline) {
+        const slash = f.path.lastIndexOf("/");
+        const dir = slash < 0 ? "" : f.path.slice(0, slash + 1);
+        if (dir === container) {
+          const base = f.path.slice(container.length);
+          taken.add(base);
+          taken.add(base.replace(/\.ink$/, ""));
+        }
+      }
+      for (const id of binderOrder.folders) {
+        if (id.startsWith(container) && !id.slice(container.length, -1).includes("/")) {
+          taken.add(id.slice(container.length, -1));
+        }
+      }
+      // Folders that exist through files:
+      for (const f of outline) {
+        if (f.path.startsWith(container)) {
+          const rest = f.path.slice(container.length);
+          const cut = rest.indexOf("/");
+          if (cut > 0) taken.add(rest.slice(0, cut));
+        }
+      }
+      return taken;
+    },
+    [outline, binderOrder],
+  );
 
   const confirmInput = useCallback(() => {
     const input = inputRef.current;
-    if (!input) return;
-    let name = input.value.trim();
-    setInputActive(false);
-    setNewFileDir("");
-    if (!name) return;
-    if (!name.includes(".")) {
-      name += ".ink";
+    const spec = creating;
+    if (!input || spec === null) return;
+    const raw = input.value.trim();
+    if (!raw) {
+      cancelInput();
+      return;
     }
-    void addFile(name);
-  }, [addFile]);
+    if (raw.includes("/") || raw.includes("\\")) {
+      setCreateError("must be a bare name, not a path");
+      return;
+    }
+    const taken = takenIn(spec.container);
+    if (spec.kind === "folder") {
+      if (taken.has(raw)) {
+        setCreateError(`${raw} already exists here`);
+        return;
+      }
+      registerBinderFolder(`${spec.container}${raw}/`);
+      cancelInput();
+      return;
+    }
+    const name = raw.includes(".") ? raw : `${raw}.ink`;
+    if (taken.has(name) || taken.has(name.replace(/\.ink$/, ""))) {
+      setCreateError(`a file named ${name} already exists here`);
+      return;
+    }
+    cancelInput();
+    void addFile(`${spec.container}${name}`);
+  }, [creating, cancelInput, takenIn, addFile, registerBinderFolder]);
 
   const handleInputKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -769,6 +828,59 @@ function BinderInner() {
     },
     [confirmInput, cancelInput],
   );
+
+  /** One container's create affordance (#3039 — CreateRow.dc.html): the
+   *  50/50 icon-button pair, expanding in place to a full-width name
+   *  input with inline validation. `big` is the root group at the foot. */
+  function renderCreateGroup(container: string, depth: number, big = false) {
+    const active = creating !== null && creating.container === container;
+    if (active) {
+      return (
+        <div
+          className="brink-create-editing"
+          style={{ paddingLeft: 12 + depth * 18 }}
+          data-create-container={container}
+        >
+          <input
+            ref={inputRef}
+            className="brink-create-input"
+            type="text"
+            placeholder={creating.kind === "file" ? "name (.ink implied)" : "folder name"}
+            onKeyDown={handleInputKeyDown}
+            onChange={() => setCreateError(null)}
+            onBlur={cancelInput}
+          />
+          {createError !== null && <div className="brink-create-error">{createError}</div>}
+        </div>
+      );
+    }
+    return (
+      <div
+        className={"brink-create-group" + (big ? " big" : "")}
+        style={big ? undefined : { paddingLeft: 12 + depth * 18 }}
+        data-create-container={container}
+      >
+        <button
+          type="button"
+          className="brink-create-btn"
+          title="New file"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => openCreateInput(container, "file")}
+        >
+          <FilePlusIcon />
+        </button>
+        <button
+          type="button"
+          className="brink-create-btn"
+          title="New folder"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => openCreateInput(container, "folder")}
+        >
+          <FolderPlusIcon />
+        </button>
+      </div>
+    );
+  }
 
   // ── Inline rename commit ────────────────────────────────────────
 
@@ -850,7 +962,10 @@ function BinderInner() {
       setContextMenu(null);
       switch (action.type) {
         case "newFileInFolder":
-          openNewFileInput(action.dir);
+          openCreateInput(action.dir, "file");
+          break;
+        case "newFolderInFolder":
+          openCreateInput(action.dir, "folder");
           return;
         case "renameFile":
           setRenaming({ key: action.path, isFolder: false });
@@ -876,7 +991,7 @@ function BinderInner() {
           void executeAction(action);
       }
     },
-    [executeAction, openNewFileInput, deleteFile, deleteFolder, storeApi],
+    [executeAction, openCreateInput, deleteFile, deleteFolder, storeApi],
   );
 
   // ── Keyboard handler ────────────────────────────────────────────
@@ -1442,6 +1557,7 @@ function BinderInner() {
           onDrop={(e) => folderRow && handleDrop(e, folderRow)}
         />
         {isExpanded && renderTree(folder, depth + 1)}
+        {isExpanded && renderCreateGroup(folder.key, depth + 1)}
       </div>
     );
   }
@@ -1657,23 +1773,7 @@ function BinderInner() {
           Move to project root
         </div>
       )}
-      <div className="brink-binder-row brink-binder-new" onClick={handleNewClick}>
-        + New file
-      </div>
-      {inputActive && (
-        <div className="brink-binder-input-wrapper">
-          <input
-            ref={inputRef}
-            className="brink-tab-input"
-            type="text"
-            placeholder="filename.ink"
-            defaultValue={newFileDir}
-            size={16}
-            onKeyDown={handleInputKeyDown}
-            onBlur={cancelInput}
-          />
-        </div>
-      )}
+      {renderCreateGroup("", 0, true)}
       {contextMenu && (
         <BinderContextMenu
           x={contextMenu.x}

@@ -62,6 +62,7 @@ export type ContextMenuAction =
   | { type: "deleteFile"; path: string }
   | { type: "deleteFolder"; prefix: string; paths: string[] }
   | { type: "newFileInFolder"; dir: string }
+  | { type: "newFolderInFolder"; dir: string }
   | { type: "renameFile"; path: string }
   | { type: "renameFolder"; prefix: string };
 
@@ -231,6 +232,10 @@ function buildItems(
       {
         label: "New file here",
         action: () => onAction({ type: "newFileInFolder", dir: target.prefix }),
+      },
+      {
+        label: "New folder here",
+        action: () => onAction({ type: "newFolderInFolder", dir: target.prefix }),
       },
     ];
     if (target.canRename) {

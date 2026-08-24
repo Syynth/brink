@@ -111,18 +111,6 @@
 .brink-studio .brink-binder-stitch .brink-binder-label {
   color: var(--bs-fg-muted);
 }
-.brink-studio .brink-binder-new {
-  color: var(--bs-fg-muted);
-  margin-top: 4px;
-  padding-left: 8px;
-  font-size: 12px;
-  height: var(--binder-row-height);
-  display: flex;
-  align-items: center;
-}
-.brink-studio .brink-binder-new:hover {
-  color: var(--bs-fg);
-}
 .brink-studio .brink-binder-input-wrapper {
   padding: 4px 8px;
 }
@@ -365,4 +353,61 @@
 }
 .brink-studio .brink-binder-tool:hover {
   color: var(--bs-fg);
+}
+
+/* ── Inline creation (#3039 — CreateRow.dc.html) ─────────────────── */
+
+.brink-studio .brink-create-group {
+  display: flex;
+  gap: 4px;
+  padding-right: 10px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+.brink-studio .brink-create-group.big {
+  border-top: 1px solid var(--bs-border);
+  margin-top: 8px;
+  padding: 7px 12px;
+  gap: 6px;
+}
+.brink-studio .brink-create-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--bs-border);
+  border-radius: 4px;
+  height: 20px;
+  background: transparent;
+  color: var(--bs-fg-dim, #6c7086);
+  cursor: pointer;
+  padding: 0;
+}
+.brink-studio .brink-create-group.big .brink-create-btn {
+  height: 24px;
+  border-radius: 5px;
+}
+.brink-studio .brink-create-btn:hover {
+  color: var(--bs-fg);
+  border-color: var(--bs-border-strong, var(--bs-fg-muted));
+}
+.brink-studio .brink-create-editing {
+  padding: 2px 10px 2px 0;
+}
+.brink-studio .brink-create-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--bs-accent);
+  border-radius: 4px;
+  background: var(--bs-editor-bg, #1e1e2e);
+  color: var(--bs-fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 3px 8px;
+  outline: none;
+}
+.brink-studio .brink-create-error {
+  font-size: 10.5px;
+  color: var(--bs-error, #f38ba8);
+  padding: 3px 2px 0;
 }
