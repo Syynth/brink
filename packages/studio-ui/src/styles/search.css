@@ -75,11 +75,11 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   background: var(--bs-panel-bg);
   border: 1px solid var(--bs-border);
   border-radius: 4px;
-  padding: 3px 6px;
+  padding: 5px 8px;
 }
 .brink-studio .search-input-shell:focus-within {
   outline: 1px solid var(--bs-accent);
@@ -125,8 +125,8 @@
   background: rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 14%);
   border: 1px solid rgb(var(--bs-accent-secondary-rgb, 203 166 247) / 45%);
   border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 11px;
+  padding: 2px 8px;
+  font-size: 12px;
 }
 .brink-studio .search-refs-chip-cap {
   font-size: 9px;
@@ -145,10 +145,10 @@
 .brink-studio .search-refs-chip-clear {
   background: none;
   border: none;
-  padding: 0;
+  padding: 0 0 0 2px;
   color: var(--bs-fg-muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
 }
 .brink-studio .search-refs-chip-clear:hover {
@@ -386,9 +386,9 @@
 .brink-studio .search-summary {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 1px 12px 4px;
-  font-size: 11px;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
   color: var(--bs-fg-muted);
   border-bottom: 1px solid rgb(var(--bs-border-rgb) / 55%);
   min-width: 0;
@@ -411,7 +411,7 @@
   padding: 0;
   color: var(--bs-fg-muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
 }
 .brink-studio .search-summary-tools button:hover {
