@@ -9,6 +9,7 @@ mod knot;
 mod stitch;
 
 use brink_syntax::ast::{self, AstNode};
+use brink_syntax::{SyntaxKind, SyntaxNode};
 
 use crate::symbols::project_manifest;
 use crate::{Block, DiagnosticCode, FileId, HirFile, Import, IncludeSite, Knot, SymbolManifest};
@@ -38,6 +39,7 @@ pub fn lower(
     let mut sink = EffectSink::new(file_id);
 
     let hir = lower_source_file(&mut scope, &mut sink, file);
+    emit_author_warnings(&mut sink, file.syntax(), SkipInsideKnots::No);
     let manifest = project_manifest(&hir);
     let diagnostics = sink.finish();
     (hir, manifest, diagnostics)
@@ -57,6 +59,7 @@ pub fn lower_single_knot(
     let mut sink = EffectSink::new(file_id);
 
     let result = lower_knot(&mut scope, &mut sink, knot).ok();
+    emit_author_warnings(&mut sink, knot.syntax(), SkipInsideKnots::No);
     let diagnostics = sink.finish();
     (result, diagnostics)
 }
@@ -110,8 +113,46 @@ pub fn lower_top_level(
         .collect();
 
     let root_content = lower_weave_body(file.syntax(), &scope, &mut sink);
+    emit_author_warnings(&mut sink, file.syntax(), SkipInsideKnots::Yes);
     let diagnostics = sink.finish();
     (root_content, top_level_knots, diagnostics)
+}
+
+// ─── Author warnings (`TODO:` notes, issue #3050) ───────────────────
+
+/// Whether [`emit_author_warnings`] should skip notes nested inside a
+/// `KNOT_DEF`. The db road lowers a file as [`lower_top_level`] plus one
+/// [`lower_single_knot`] per knot — top-level emission must exclude
+/// knot-nested notes or they would be diagnosed twice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SkipInsideKnots {
+    Yes,
+    No,
+}
+
+/// Surface every ink `TODO:` author note under `node` as an `E189` `Info`
+/// diagnostic (issue #3050). `AUTHOR_WARNING` produces no HIR — the note is
+/// pure author-facing signal — so this walk is the construct's entire
+/// lowering; the diagnostic's message carries the note's text for the
+/// Problems and TODO panels.
+fn emit_author_warnings(sink: &mut EffectSink, node: &SyntaxNode, skip: SkipInsideKnots) {
+    for warning in node.descendants().filter_map(ast::AuthorWarning::cast) {
+        if skip == SkipInsideKnots::Yes
+            && warning
+                .syntax()
+                .ancestors()
+                .any(|a| a.kind() == SyntaxKind::KNOT_DEF)
+        {
+            continue;
+        }
+        let text = warning.text();
+        let message = if text.is_empty() {
+            "TODO".to_owned()
+        } else {
+            format!("TODO: {text}")
+        };
+        sink.diagnose_with_message(warning.syntax().text_range(), message, DiagnosticCode::E189);
+    }
 }
 
 // ─── Source file ────────────────────────────────────────────────────

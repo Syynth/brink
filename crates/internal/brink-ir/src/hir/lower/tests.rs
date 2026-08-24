@@ -1540,3 +1540,85 @@ fn top_level_content_span_is_unchanged_by_the_arm_content_fix() {
         "top-level Content still resolves to a real CONTENT_LINE node, not a synthetic union"
     );
 }
+
+// ─── Author warnings / `TODO:` notes (E189, issue #3050) ────────────
+
+#[test]
+fn todo_lines_emit_e189_info_diagnostics() {
+    let source = "\
+TODO: tighten the opening
+Some prose.
+=== start ===
+TODO: minnie's letter needs a second pass
+The rain had not stopped.
+= letter
+TODO: voice is too old
+More prose.
+";
+    let (_manifest, diags) = lower_full(source);
+    let todos: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E189)
+        .collect();
+    assert_eq!(todos.len(), 3, "one E189 per TODO line: {todos:?}");
+    assert_eq!(todos[0].message, "TODO: tighten the opening");
+    assert_eq!(
+        todos[1].message,
+        "TODO: minnie's letter needs a second pass"
+    );
+    assert_eq!(todos[2].message, "TODO: voice is too old");
+    assert_eq!(DiagnosticCode::E189.severity(), Severity::Info);
+}
+
+#[test]
+fn bare_todo_line_emits_e189_with_plain_message() {
+    let (_manifest, diags) = lower_full("TODO:\nSome prose.\n");
+    let todos: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E189)
+        .collect();
+    assert_eq!(todos.len(), 1, "{todos:?}");
+    assert_eq!(todos[0].message, "TODO");
+}
+
+#[test]
+fn db_road_split_lowering_emits_each_e189_exactly_once() {
+    // The db road lowers a file as `lower_top_level` + one
+    // `lower_single_knot` per knot — together they must produce the same
+    // E189 set as whole-file `lower`, with no duplicates.
+    let source = "\
+TODO: top-level note
+Some prose.
+=== start ===
+TODO: knot note
+Content.
+";
+    let parsed = parse(source);
+    let tree = parsed.tree();
+
+    let (_hir, _manifest, full_diags) = crate::hir::lower(FileId(0), &tree);
+    let full: Vec<_> = full_diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E189)
+        .map(|d| d.message.clone())
+        .collect();
+
+    let (_block, _knots, top_diags) = crate::hir::lower_top_level(FileId(0), &tree);
+    let mut split: Vec<_> = top_diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E189)
+        .map(|d| d.message.clone())
+        .collect();
+    for knot in tree.knots() {
+        let (_k, knot_diags) = crate::hir::lower_single_knot(FileId(0), &knot);
+        split.extend(
+            knot_diags
+                .iter()
+                .filter(|d| d.code == DiagnosticCode::E189)
+                .map(|d| d.message.clone()),
+        );
+    }
+
+    assert_eq!(full, vec!["TODO: top-level note", "TODO: knot note"]);
+    assert_eq!(split, full, "db-road split must match whole-file lowering");
+}
