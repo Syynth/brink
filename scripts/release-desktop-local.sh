@@ -117,8 +117,9 @@ say "Fetching the tag's Linux artifacts from CI"
 run=$(run_with_timeout 120 gh run list --repo Syynth/brink --workflow=desktop-release.yml \
   --branch "$tag" --limit 5 --json databaseId --jq '.[0].databaseId // empty')
 [ -n "$run" ] || die "no CI run found for $tag — the Linux lane must have run at this tag"
-run_with_timeout 600 gh run download "$run" --repo Syynth/brink -n linux-x86_64 -D "$art" \
-  || die "linux-x86_64 artifact missing on run $run"
+# The workflow names artifacts brink-desktop-<matrix.artifact>.
+run_with_timeout 600 gh run download "$run" --repo Syynth/brink -n brink-desktop-linux-x86_64 -D "$art" \
+  || die "brink-desktop-linux-x86_64 artifact missing on run $run"
 find "$art" -mindepth 2 -type f -exec sh -c 'for f do mv -n "$f" "$1"; done' sh "$art" {} +
 find "$art" -mindepth 1 -type d -empty -delete
 
