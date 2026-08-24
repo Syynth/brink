@@ -19,7 +19,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { EditorSessionHandle, initWasm } from "@brink-lang/web";
 import { InMemoryFileProvider, ProjectSession } from "@brink-lang/editor";
-import { createStudioStore, type DocumentSessions as StoreDocs } from "@brink/studio-store";
+import {
+  DEFAULT_SEARCH_OPTIONS,
+  createStudioStore,
+  type DocumentSessions as StoreDocs,
+} from "@brink/studio-store";
 
 const MOUNTED_PATH = "std/core.brink";
 const MOUNTED_TEXT = "=== core ===\n-> DONE\n";
@@ -104,28 +108,60 @@ describe("Search-replace store actions cannot fork a mounted file (issue #2306)"
     ]);
   });
 
-  it("replaceSearchMatch on a mounted path is refused: content unchanged", async () => {
+  it("accepting a mounted-path match is refused: content unchanged, no receipt", async () => {
+    // Normal capture never includes a mounted file (runSearch filters them),
+    // so this hand-builds a snapshot naming one — the by-id route that
+    // bypasses the search-side exclusion is exactly the hole #2306 closes:
+    // `applyEdit` itself must refuse the fork.
     const { session, project } = await makeProject();
     const store = createStudioStore();
+    const notifications: unknown[] = [];
     store.setState({
       _project: project,
       _documents: stubDocuments(),
-      _notify: () => {},
-      searchQuery: "core",
+      _notify: (n) => notifications.push(n),
       searchReplace: "REPLACED",
+      searchResults: {
+        files: [
+          {
+            path: MOUNTED_PATH,
+            seenSource: MOUNTED_TEXT,
+            deleted: false,
+            matches: [
+              {
+                id: `${MOUNTED_PATH}#0`,
+                start: 4,
+                end: 8,
+                line: 1,
+                lineText: "=== core ===",
+                lineStart: 4,
+                lineEnd: 8,
+                text: "core",
+                edited: false,
+                stale: false,
+              },
+            ],
+          },
+        ],
+        totalMatches: 1,
+        capped: false,
+        origin: { kind: "query", query: "core", options: DEFAULT_SEARCH_OPTIONS },
+        anchor: null,
+      },
     });
 
-    store.getState().replaceSearchMatch(MOUNTED_PATH, {
-      start: 4,
-      end: 8,
-      line: 1,
-      lineText: "=== core ===",
-      lineStart: 4,
-      lineEnd: 8,
-      text: "core",
-    });
-
+    store.getState().acceptSearchMatch(`${MOUNTED_PATH}#0`);
     expect(session.getFileSource(MOUNTED_PATH)).toBe(MOUNTED_TEXT);
+    expect(store.getState().searchReplaced).toEqual({});
+
+    // Accept-all reports the refusal instead of silently dropping it.
+    store.getState().acceptAllSearchMatches();
+    expect(session.getFileSource(MOUNTED_PATH)).toBe(MOUNTED_TEXT);
+    expect(notifications).toEqual([
+      expect.objectContaining({
+        message: "Replaced 0 matches in 0 files (skipped 1 read-only file)",
+      }),
+    ]);
   });
 
   it(

@@ -11,9 +11,12 @@
  * ↗. The result set is a frozen snapshot — the summary row's ↻ (or a new
  * search) is what replaces it; the context knob tunes the window.
  *
- * Replace-all is gated by an inline confirmation step (the acceptance
- * criterion "replace with confirmation"): the first click arms a confirm
- * bar with the match/file counts; only the explicit Replace click commits.
+ * Replace is the preview/accept model (card spec PR D): with the replace
+ * row open and text typed, every still-matching card renders a display-only
+ * old→new preview — the previews ARE the confirmation. Per-card Accept
+ * applies one; the summary's Accept all (N) applies every pending card
+ * (skipped and edited-stale cards excluded, badged with why). The old
+ * arm/confirm flow is gone.
  *
  * Search state is transient (slice memory only) — query/options reset per
  * session; the tool window's placement persists like any other.
@@ -188,12 +191,11 @@ function SearchViewInner() {
   const toggleOption = useStudioStore((s) => s.toggleSearchOption);
   const setReplace = useStudioStore((s) => s.setSearchReplace);
   const runSearch = useStudioStore((s) => s.runSearch);
-  const replaceAll = useStudioStore((s) => s.replaceAllSearchMatches);
   const mode = useStudioStore((s) => s.searchMode);
   const clearReferences = useStudioStore((s) => s.clearReferences);
+  const replaceOpen = useStudioStore((s) => s.searchReplaceOpen);
+  const setReplaceOpen = useStudioStore((s) => s.setSearchReplaceOpen);
 
-  const [replaceOpen, setReplaceOpen] = useState(false);
-  const [confirmingAll, setConfirmingAll] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Live search, debounced while typing (also runs on mount, which simply
@@ -250,12 +252,6 @@ function SearchViewInner() {
     inputRef.current?.select();
   }, [focusSeq]);
 
-  // New results disarm a pending replace-all confirmation — the confirmed
-  // counts must match what's on screen.
-  useEffect(() => {
-    setConfirmingAll(false);
-  }, [results]);
-
   const optionButton = (
     key: "caseSensitive" | "wholeWord" | "regex",
     label: string,
@@ -276,6 +272,28 @@ function SearchViewInner() {
   const total = results?.totalMatches ?? 0;
   const fileCount = results?.files.length ?? 0;
 
+  // Replace previews (card spec PR D): active iff the row is open with
+  // text, on a query-mode snapshot. The previews are the confirmation.
+  const skipped = useStudioStore((s) => s.searchSkipped);
+  const replaced = useStudioStore((s) => s.searchReplaced);
+  const acceptAll = useStudioStore((s) => s.acceptAllSearchMatches);
+  const previewActive =
+    mode.kind === "query" && replaceOpen && replaceText !== "" && results !== null;
+  let pendingCount = 0;
+  let staleCount = 0;
+  let skippedCount = 0;
+  let replacedCount = 0;
+  if (previewActive && results !== null) {
+    for (const file of results.files) {
+      for (const match of file.matches) {
+        if (replaced[match.id]) replacedCount++;
+        else if (match.stale) staleCount++;
+        else if (skipped[match.id]) skippedCount++;
+        else pendingCount++;
+      }
+    }
+  }
+
   return (
     <div className="search-view">
       <div className="search-form">
@@ -286,7 +304,7 @@ function SearchViewInner() {
             aria-label="Toggle replace"
             aria-expanded={replaceOpen}
             title="Toggle replace"
-            onClick={() => setReplaceOpen((open) => !open)}
+            onClick={() => setReplaceOpen(!replaceOpen)}
           >
             <span className={"search-chevron" + (replaceOpen ? "" : " collapsed")}>
               {"▶"}
@@ -335,15 +353,6 @@ function SearchViewInner() {
                   aria-label="Replace text"
                   onChange={(event) => setReplace(event.target.value)}
                 />
-                <button
-                  type="button"
-                  className="search-replace-all"
-                  disabled={total === 0}
-                  title="Replace all matches"
-                  onClick={() => setConfirmingAll(true)}
-                >
-                  Replace All
-                </button>
               </div>
             )}
           </div>
@@ -353,46 +362,42 @@ function SearchViewInner() {
             {error}
           </p>
         )}
-        {confirmingAll && total > 0 && (
-          <div className="search-confirm" role="alertdialog" aria-label="Confirm replace all">
-            <span className="search-confirm-text">
-              Replace {total} {total === 1 ? "match" : "matches"} in {fileCount}{" "}
-              {fileCount === 1 ? "file" : "files"}?
-            </span>
-            <button
-              type="button"
-              className="search-confirm-yes"
-              onClick={() => {
-                setConfirmingAll(false);
-                replaceAll();
-              }}
-            >
-              Replace
-            </button>
-            <button
-              type="button"
-              className="search-confirm-no"
-              onClick={() => setConfirmingAll(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
       </div>
 
       {results !== null && total > 0 && (
         <div className="search-summary">
-          <span className="search-summary-count">
-            {total}{" "}
-            {mode.kind === "references"
-              ? total === 1
-                ? "reference"
-                : "references"
-              : total === 1
-                ? "result"
-                : "results"}{" "}
-            · {fileCount} {fileCount === 1 ? "file" : "files"}
-          </span>
+          {previewActive ? (
+            <span className="search-summary-count">
+              {total} {total === 1 ? "match" : "matches"} ·{" "}
+              <span className="search-pending-count">{pendingCount} pending</span>
+              {staleCount > 0 && <> · {staleCount} stale</>}
+              {skippedCount > 0 && <> · {skippedCount} skipped</>}
+              {replacedCount > 0 && <> · {replacedCount} replaced</>}
+            </span>
+          ) : (
+            <span className="search-summary-count">
+              {total}{" "}
+              {mode.kind === "references"
+                ? total === 1
+                  ? "reference"
+                  : "references"
+                : total === 1
+                  ? "result"
+                  : "results"}{" "}
+              · {fileCount} {fileCount === 1 ? "file" : "files"}
+            </span>
+          )}
+          {previewActive && (
+            <button
+              type="button"
+              className="search-accept-all"
+              disabled={pendingCount === 0}
+              title="Apply every pending replacement (skipped and edited cards excluded)"
+              onClick={acceptAll}
+            >
+              Accept all ({pendingCount})
+            </button>
+          )}
           <SearchSummaryTools />
         </div>
       )}

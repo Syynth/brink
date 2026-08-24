@@ -8,12 +8,13 @@
  * the live (possibly unsaved) buffers.
  *
  * Replacements reuse the binder structural-op path exactly (see
- * binder.ts:applyMoveResult): `session.updateFile` rewrites the source,
+ * binder.ts:applyMoveResult): `project.applyEdit` rewrites the source,
  * `documents.invalidateFile` refreshes every mounted CM6 view of the file,
- * and `documents.triggerCompile` refreshes outline/diagnostics. Stale
- * results (the file changed since the search ran) are detected by
- * re-checking each match's text against the live source — nothing is
- * replaced on a mismatch; the search re-runs instead.
+ * and `documents.triggerCompile` refreshes outline/diagnostics. Replace is
+ * the preview/accept model (PR D): previews are the confirmation, Accept /
+ * Accept-all apply pending matches, and a match whose live text no longer
+ * carries the original is excluded per-match (the remap badges it) — never
+ * a global abort, never a re-search.
  *
  * Results are a **frozen snapshot** (docs/search-results-cards-spec.md,
  * ruled 2026-08-24): `searchResults` holds a `SearchSnapshot` whose match
@@ -100,13 +101,35 @@ export interface SearchSlice {
   setSearchQuery(query: string): void;
   toggleSearchOption(option: keyof SearchQueryOptions): void;
   setSearchReplace(text: string): void;
+  /** Whether the replace row is open (store-held so the card list can
+   *  gate previews on it — previews are active iff the row is open AND
+   *  the replace text is non-empty, query-mode snapshots only). */
+  searchReplaceOpen: boolean;
+  setSearchReplaceOpen(open: boolean): void;
   requestSearchFocus(): void;
   /** Search the live session sources now (the view debounces calls). */
   runSearch(): void;
-  /** Replace one result (stale matches refresh the search instead). */
-  replaceSearchMatch(path: string, match: SearchMatch): void;
-  /** Replace every listed result. All-or-nothing on stale results. */
-  replaceAllSearchMatches(): void;
+
+  // ── Replace previews (docs/search-results-cards-spec.md, PR D) ────
+  //
+  // The previews ARE the confirmation — there is no arm/confirm step.
+  // Typing replace text turns every still-matching card into a display-only
+  // preview; Accept applies one, Accept all applies every pending card.
+  // Skipped and stale ("edited") cards are excluded and badged with why.
+  // Applied cards keep their row with a ✓ receipt (frozen snapshot: the
+  // compile-seam remap flags them, never removes them).
+
+  /** Matches excluded from Accept all (per-card "skip"), keyed by match
+   *  id. Cleared when a new snapshot replaces the set. */
+  searchSkipped: Readonly<Record<string, boolean>>;
+  toggleSearchSkip(id: string): void;
+  /** Matches replaced this snapshot (the "✓ replaced" receipt). */
+  searchReplaced: Readonly<Record<string, boolean>>;
+  /** Apply one pending match's replacement through the apply seam. */
+  acceptSearchMatch(id: string): void;
+  /** Apply every pending match (not skipped, not stale, not already
+   *  replaced, still verified against the live source). */
+  acceptAllSearchMatches(): void;
 
   // ── Snapshot model (docs/search-results-cards-spec.md, PR B) ──────
 
@@ -164,6 +187,72 @@ function plural(n: number, singular: string, pluralForm: string): string {
 /** The wasm session surface this slice reads (structural — test fakes
  *  implement just what they exercise). */
 type SessionLike = ReturnType<ProjectSession["getSession"]>;
+
+/**
+ * Apply the replacement for every snapshot match selected by `wanted` that
+ * is PENDING: query-mode snapshot, not stale, not skipped, not already
+ * replaced, and the live source still carries the original text at the
+ * mapped span (a failed check excludes just that match — the compile-seam
+ * remap badges it; never a global abort). Edits batch per file through the
+ * shared apply-edits seam; read-only (mounted) files are counted, not
+ * silently dropped. Returns null when there is nothing to even try.
+ */
+function applyAcceptedMatches(
+  state: StudioState,
+  wanted: (id: string) => boolean,
+): { replacedIds: string[]; filesChanged: number; readOnlySkipped: number } | null {
+  const snapshot = state.searchResults;
+  const project = state._project;
+  const documents = state._documents;
+  if (!snapshot || !project || !documents) return null;
+  if (snapshot.origin.kind !== "query") return null;
+  const built = buildSearchPattern(snapshot.origin.query, snapshot.origin.options);
+  if (!built.ok) return null;
+
+  const session = project.getSession();
+  const replacedIds: string[] = [];
+  let filesChanged = 0;
+  let readOnlySkipped = 0;
+  for (const file of snapshot.files) {
+    const pending = file.matches.filter(
+      (m) =>
+        wanted(m.id) &&
+        !m.stale &&
+        !state.searchSkipped[m.id] &&
+        !state.searchReplaced[m.id],
+    );
+    if (pending.length === 0) continue;
+    const source = session.getFileSource(file.path);
+    if (source === null) continue;
+    const edits: Array<{ start: number; end: number; text: string; id: string }> = [];
+    for (const match of pending) {
+      // Live guard: the mapped span must still hold the original text.
+      if (source.slice(match.start, match.end) !== match.text) continue;
+      edits.push({
+        start: match.start,
+        end: match.end,
+        text: replacementTextFor(
+          match,
+          built.pattern,
+          state.searchReplace,
+          snapshot.origin.options.regex,
+        ),
+        id: match.id,
+      });
+    }
+    if (edits.length === 0) continue;
+    if (!project.applyEdit(file.path, applyReplacements(source, edits))) {
+      // Mounted stdlib path (issue #2306): refused, reported, never forked.
+      readOnlySkipped += 1;
+      continue;
+    }
+    documents.invalidateFile(file.path);
+    filesChanged += 1;
+    for (const edit of edits) replacedIds.push(edit.id);
+  }
+  if (filesChanged > 0) documents.triggerCompile();
+  return { replacedIds, filesChanged, readOnlySkipped };
+}
 
 /**
  * Run a text query over the live session sources and freeze the outcome
@@ -232,6 +321,20 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     set({ searchReplace: text });
   },
 
+  searchReplaceOpen: false,
+
+  setSearchReplaceOpen(open) {
+    set({ searchReplaceOpen: open });
+  },
+
+  searchSkipped: {},
+  searchReplaced: {},
+
+  toggleSearchSkip(id) {
+    const skipped = get().searchSkipped;
+    set({ searchSkipped: { ...skipped, [id]: !skipped[id] } });
+  },
+
   requestSearchFocus() {
     set({ searchFocusSeq: get().searchFocusSeq + 1 });
   },
@@ -277,7 +380,13 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
         searchResults.origin.options,
       );
       if (snapshot !== null) {
-        set({ searchResults: snapshot, searchError: null, searchCardCollapsed: {} });
+        set({
+          searchResults: snapshot,
+          searchError: null,
+          searchCardCollapsed: {},
+          searchSkipped: {},
+          searchReplaced: {},
+        });
       }
       return;
     }
@@ -307,6 +416,8 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
         anchor,
       ),
       searchCardCollapsed: {},
+      searchSkipped: {},
+      searchReplaced: {},
     });
   },
 
@@ -315,7 +426,13 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
 
   clearReferences() {
     if (get().searchMode.kind !== "references") return;
-    set({ searchResults: null, searchMode: { kind: "query" }, searchCardCollapsed: {} });
+    set({
+      searchResults: null,
+      searchMode: { kind: "query" },
+      searchCardCollapsed: {},
+      searchSkipped: {},
+      searchReplaced: {},
+    });
   },
 
   showReferences(symbol, locations, declaration = null) {
@@ -330,6 +447,8 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       searchMode: { kind: "references", symbol },
       searchRevealSeq: get().searchRevealSeq + 1,
       searchCardCollapsed: {},
+      searchSkipped: {},
+      searchReplaced: {},
     });
   },
 
@@ -341,6 +460,8 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
         searchError: null,
         searchMode: { kind: "query" },
         searchCardCollapsed: {},
+      searchSkipped: {},
+      searchReplaced: {},
       });
       return;
     }
@@ -351,6 +472,8 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
         searchError: built.error,
         searchMode: { kind: "query" },
         searchCardCollapsed: {},
+      searchSkipped: {},
+      searchReplaced: {},
       });
       return;
     }
@@ -361,133 +484,35 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       // A new snapshot restarts card identity; per-card collapse overrides
       // die with the old ids (the all-flag survives — "spans modes").
       searchCardCollapsed: {},
+      searchSkipped: {},
+      searchReplaced: {},
     });
   },
 
-  replaceSearchMatch(path, match) {
+  acceptSearchMatch(id) {
     const state = get();
-    const project = state._project;
-    const documents = state._documents;
-    if (!project || !documents) return;
-    const built = buildSearchPattern(state.searchQuery, state.searchOptions);
-    if (!built.ok) return;
-
-    const session = project.getSession();
-    const source = session.getFileSource(path);
-    if (source === null || source.slice(match.start, match.end) !== match.text) {
-      // Stale result — the file changed underneath. Refresh, replace nothing.
-      get().runSearch();
-      return;
-    }
-
-    const text = replacementTextFor(
-      match,
-      built.pattern,
-      state.searchReplace,
-      state.searchOptions.regex,
-    );
-    // Through the shared apply-edits seam (#137): provider write-back +
-    // host egress, exactly like the binder structural-op path. `applyEdit`
-    // refuses a mounted stdlib path (issue #2306) — `listFiles`-derived
-    // results never include one today, but a caller reaching this with a
-    // by-id path outside that listing (the exact hole #2306 closes) must
-    // not silently fork the library.
-    const applied = project.applyEdit(
-      path,
-      applyReplacements(source, [{ start: match.start, end: match.end, text }]),
-    );
-    if (!applied) {
-      get()._notify?.({
-        severity: "warning",
-        source: "search",
-        message: `"${path}" is part of the read-only library and cannot be edited`,
-      });
-      return;
-    }
-    documents.invalidateFile(path);
-    documents.triggerCompile();
-    get().runSearch();
+    const applied = applyAcceptedMatches(state, (matchId) => matchId === id);
+    if (applied === null) return;
+    if (applied.replacedIds.length === 0) return;
+    set({ searchReplaced: { ...state.searchReplaced, [id]: true } });
   },
 
-  replaceAllSearchMatches() {
+  acceptAllSearchMatches() {
     const state = get();
-    const project = state._project;
-    const documents = state._documents;
-    const results = state.searchResults;
-    if (!project || !documents || results === null || results.totalMatches === 0) {
-      return;
-    }
-    const built = buildSearchPattern(state.searchQuery, state.searchOptions);
-    if (!built.ok) return;
-
-    const session = project.getSession();
-
-    // Plan every edit first — no partial replace over a stale result set.
-    const planned: Array<{ path: string; source: string; edits: ReplacementEdit[] }> =
-      [];
-    let stale = false;
-    for (const file of results.files) {
-      const source = session.getFileSource(file.path);
-      if (source === null) {
-        stale = true;
-        break;
-      }
-      const edits: ReplacementEdit[] = [];
-      for (const match of file.matches) {
-        if (source.slice(match.start, match.end) !== match.text) {
-          stale = true;
-          break;
-        }
-        edits.push({
-          start: match.start,
-          end: match.end,
-          text: replacementTextFor(
-            match,
-            built.pattern,
-            state.searchReplace,
-            state.searchOptions.regex,
-          ),
-        });
-      }
-      if (stale) break;
-      planned.push({ path: file.path, source, edits });
-    }
-
-    if (stale) {
-      get().runSearch();
-      get()._notify?.({
-        severity: "warning",
-        source: "search",
-        message:
-          "The project changed since the search ran — results refreshed, nothing replaced",
-      });
-      return;
-    }
-
-    // Shared apply-edits seam (#137): see replaceSearchMatch. `applyEdit`
-    // refuses a mounted stdlib path (issue #2306) — skipped files are
-    // reported alongside the replace count rather than silently dropped.
-    let skipped = 0;
-    let filesChanged = 0;
-    let matchesReplaced = 0;
-    for (const { path, source, edits } of planned) {
-      if (!project.applyEdit(path, applyReplacements(source, edits))) {
-        skipped += 1;
-        continue;
-      }
-      documents.invalidateFile(path);
-      filesChanged += 1;
-      matchesReplaced += edits.length;
-    }
-    documents.triggerCompile();
+    const applied = applyAcceptedMatches(state, () => true);
+    if (applied === null) return;
+    const receipts = { ...state.searchReplaced };
+    for (const matchId of applied.replacedIds) receipts[matchId] = true;
+    set({ searchReplaced: receipts });
     const skippedSuffix =
-      skipped > 0 ? ` (skipped ${plural(skipped, "read-only file", "read-only files")})` : "";
+      applied.readOnlySkipped > 0
+        ? ` (skipped ${plural(applied.readOnlySkipped, "read-only file", "read-only files")})`
+        : "";
     get()._notify?.({
       severity: "info",
       source: "search",
-      message: `Replaced ${plural(matchesReplaced, "match", "matches")} in ${plural(filesChanged, "file", "files")}${skippedSuffix}`,
+      message: `Replaced ${plural(applied.replacedIds.length, "match", "matches")} in ${plural(applied.filesChanged, "file", "files")}${skippedSuffix}`,
     });
-    get().runSearch();
   },
 
   getSearchSource(path) {

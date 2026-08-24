@@ -268,6 +268,66 @@ describe("SearchCardList", () => {
     expect(h.highlightCalls).toEqual(["a.ink"]);
   });
 
+  it("replace previews: pending cards show old→new with Accept/skip (PR D)", () => {
+    const h = mountList({ "a.ink": DOC }, (store) => {
+      seedQuery(store);
+      store.getState().setSearchReplaceOpen(true);
+      store.getState().setSearchReplace("lantern");
+    });
+    const card = cardEls()[0];
+    // Display-only preview replaces the editable buffer.
+    expect(card?.querySelector(".search-card-editor")).toBeNull();
+    expect(card?.querySelector(".search-card-del")?.textContent).toBe("torch");
+    expect(card?.querySelector(".search-card-ins")?.textContent).toBe("lantern");
+    expect(card?.querySelector(".search-card-accept")).not.toBeNull();
+    expect(card?.querySelector(".search-card-skip")).not.toBeNull();
+  });
+
+  it("per-card Accept applies through the seam and receipts the card", () => {
+    const h = mountList({ "a.ink": DOC }, (store) => {
+      seedQuery(store);
+      store.getState().setSearchReplaceOpen(true);
+      store.getState().setSearchReplace("lantern");
+    });
+    act(() => cardEls()[0]?.querySelector<HTMLButtonElement>(".search-card-accept")?.click());
+    expect(h.sources.get("a.ink")).toContain("Your lantern is lit.");
+    const card = cardEls()[0];
+    expect(card?.classList.contains("replaced")).toBe(true);
+    expect(card?.querySelector(".search-card-replaced-badge")?.textContent).toBe("✓ replaced");
+    // The second match is untouched and still pending.
+    expect(h.sources.get("a.ink")).toContain("No torch here.");
+    expect(cardEls()[1]?.querySelector(".search-card-accept")).not.toBeNull();
+  });
+
+  it("skip badges the card and undo-skip restores it", () => {
+    const h = mountList({ "a.ink": DOC }, (store) => {
+      seedQuery(store);
+      store.getState().setSearchReplaceOpen(true);
+      store.getState().setSearchReplace("lantern");
+    });
+    act(() => cardEls()[0]?.querySelector<HTMLButtonElement>(".search-card-skip")?.click());
+    const card = cardEls()[0];
+    expect(card?.classList.contains("skipped")).toBe(true);
+    expect(card?.querySelector(".search-card-badge.skipped-badge")).not.toBeNull();
+    act(() =>
+      cardEls()[0]?.querySelector<HTMLButtonElement>(".search-card-undo-skip")?.click(),
+    );
+    expect(cardEls()[0]?.querySelector(".search-card-accept")).not.toBeNull();
+  });
+
+  it("references-mode cards never preview (replace is inert there)", () => {
+    mountList({ "a.ink": DOC }, (store) => {
+      const at = DOC.indexOf("torch");
+      store.getState().showReferences("torch", [{ file: "a.ink", start: at, end: at + 5 }]);
+      store.getState().setSearchReplaceOpen(true);
+      store.getState().setSearchReplace("lantern");
+    });
+    const card = cardEls()[0];
+    expect(card?.querySelector(".search-card-del")).toBeNull();
+    expect(card?.querySelector(".search-card-accept")).toBeNull();
+    expect(card?.querySelector(".search-card-editor")).not.toBeNull();
+  });
+
   it("references snapshots render through the same cards", () => {
     mountList({ "a.ink": DOC }, (store) => {
       const at = DOC.indexOf("torch");

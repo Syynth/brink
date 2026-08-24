@@ -133,8 +133,9 @@ test.describe("file egress — search replace-all (#137)", () => {
 
     await page.locator(".search-replace-toggle").click();
     await page.locator(".search-replace-input").fill("prologue");
-    await page.locator(".search-replace-all").click();
-    await page.locator(".search-confirm-yes").click();
+    // The previews are the confirmation (card spec PR D) — Accept all
+    // applies every pending replacement directly.
+    await page.locator(".search-accept-all").click();
 
     // Both edits land inside one debounce window → one batch, both files.
     await expect.poll(() => batches(page)).not.toHaveLength(0);

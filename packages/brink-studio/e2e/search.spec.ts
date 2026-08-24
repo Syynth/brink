@@ -196,7 +196,7 @@ test.describe("search tool window", () => {
     await expect(page.locator(".search-error")).toContainText("Invalid regex");
   });
 
-  test("replace-all behind an inline confirmation rewrites multiple files", async ({
+  test("Accept all applies every pending replacement — the previews are the confirmation", async ({
     page,
   }) => {
     await openSearch(page);
@@ -204,14 +204,15 @@ test.describe("search tool window", () => {
 
     await page.locator(".search-replace-toggle").click();
     await page.locator(".search-replace-input").fill("prologue");
-    await page.locator(".search-replace-all").click();
 
-    // Nothing happens until the confirmation is accepted.
-    const confirm = page.locator(".search-confirm");
-    await expect(confirm).toContainText("Replace 3 matches in 2 files?");
+    // Typing replace text turns cards into old→new previews and arms the
+    // summary's Accept all with the pending count. No arm/confirm step.
+    await expect(page.locator(".search-accept-all")).toHaveText("Accept all (3)");
+    await expect(page.locator(".search-card-del").first()).toHaveText("intro");
+    await expect(page.locator(".search-card-ins").first()).toHaveText("prologue");
     expect(await editorDoc(page)).toContain("-> intro");
 
-    await page.locator(".search-confirm-yes").click();
+    await page.locator(".search-accept-all").click();
 
     // The open editor view reflects the edit (invalidateFile refresh)…
     await expect.poll(() => editorDoc(page)).toContain("-> prologue");
@@ -221,13 +222,33 @@ test.describe("search tool window", () => {
         .locator(".shell-notification-message")
         .filter({ hasText: "Replaced 3 matches in 2 files" }),
     ).toBeVisible();
-    // …and both rewritten files carry the replacement text.
-    await search(page, "prologue");
-    await expect
-      .poll(() =>
-        cardLocs(page).then((l) => new Set(l.map((s) => s.split(":")[0])).size),
-      )
-      .toBe(2);
+    // …and the frozen snapshot keeps every card, receipted.
+    await expect(page.locator(".search-card-replaced-badge")).toHaveCount(3);
+    await expect.poll(() => cardCount(page)).toBe(3);
+  });
+
+  test("per-card Accept applies one; skip excludes a card from Accept all", async ({
+    page,
+  }) => {
+    await openSearch(page);
+    await search(page, "intro");
+    await page.locator(".search-replace-toggle").click();
+    await page.locator(".search-replace-input").fill("prologue");
+    await expect(page.locator(".search-accept-all")).toHaveText("Accept all (3)");
+
+    // Skip the first card: badged, excluded from the pending count.
+    await page.locator(".search-card").first().locator(".search-card-skip").click();
+    await expect(page.locator(".search-card-badge.skipped-badge")).toHaveCount(1);
+    await expect(page.locator(".search-accept-all")).toHaveText("Accept all (2)");
+
+    // Accept one pending card: it gets its receipt; the rest stay pending.
+    await page.locator(".search-card-accept").first().click();
+    await expect(page.locator(".search-card-replaced-badge")).toHaveCount(1);
+    await expect(page.locator(".search-accept-all")).toHaveText("Accept all (1)");
+
+    // Undo the skip: the card returns to pending.
+    await page.locator(".search-card-undo-skip").click();
+    await expect(page.locator(".search-accept-all")).toHaveText("Accept all (2)");
   });
 
   test("cmd-clicking a definition routes Find References into the panel", async ({

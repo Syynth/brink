@@ -493,10 +493,30 @@
   cursor: pointer;
   line-height: 1;
 }
-.brink-studio .search-card-chevron {
+/* Chevron + reveal share one fixed 20px slot (the fold gutter's glyph,
+   with a real hit target): consistent size, rotation for open state. */
+.brink-studio .search-card-chevron,
+.brink-studio .search-card-reveal {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: -3px 0;
+  border-radius: 3px;
   color: var(--bs-fg-muted);
-  font-size: 10px;
   flex-shrink: 0;
+}
+.brink-studio .search-card-chevron:hover,
+.brink-studio .search-card-reveal:hover {
+  background: var(--bs-hover-bg);
+  color: var(--bs-fg);
+}
+.brink-studio .search-card-chevron svg {
+  transition: transform 120ms ease;
+}
+.brink-studio .search-card-chevron.open svg {
+  transform: rotate(90deg);
 }
 .brink-studio .search-card-loc {
   color: var(--bs-accent);
@@ -509,7 +529,13 @@
 }
 .brink-studio .search-card-container {
   color: var(--bs-accent-secondary, var(--bs-fg));
-  flex-shrink: 0;
+  /* The knot name yields first at narrow widths — the replace actions and
+     badges must never clip. */
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .brink-studio .search-card-badge {
   font-size: 10px;
@@ -536,11 +562,6 @@
 }
 .brink-studio .search-card-reveal {
   margin-left: auto;
-  color: var(--bs-fg-muted);
-  flex-shrink: 0;
-}
-.brink-studio .search-card-reveal:hover {
-  color: var(--bs-fg);
 }
 .brink-studio .search-card-preview + .search-card-reveal {
   margin-left: 0;
@@ -578,5 +599,72 @@
 }
 .brink-studio .brink-search-hit {
   background: rgb(var(--bs-accent-rgb) / 22%);
+  border-radius: 2px;
+}
+
+/* ── Replace previews (card spec PR D) ────────────────────────────── */
+
+.brink-studio .search-pending-count {
+  color: var(--bs-success, #a6e3a1);
+}
+.brink-studio .search-accept-all,
+.brink-studio .search-card-accept {
+  font-size: 11px;
+  border: 1px solid var(--bs-success, #a6e3a1);
+  color: var(--bs-success, #a6e3a1);
+  background: rgb(var(--bs-success-rgb, 166 227 161) / 10%);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.brink-studio .search-accept-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.brink-studio .search-card-replace-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.brink-studio .search-card-skip {
+  font-size: 11px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--bs-fg-muted);
+  cursor: pointer;
+}
+.brink-studio .search-card-skip:hover {
+  color: var(--bs-fg);
+}
+.brink-studio .search-card-undo-skip {
+  margin-left: auto;
+}
+.brink-studio .search-card.skipped {
+  opacity: 0.75;
+}
+.brink-studio .search-card.replaced {
+  border-color: rgb(var(--bs-success-rgb, 166 227 161) / 40%);
+}
+.brink-studio .search-card-replaced-badge {
+  font-size: 10px;
+  color: var(--bs-success, #a6e3a1);
+  flex-shrink: 0;
+}
+.brink-studio .search-card-badge.skipped-badge {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .search-card-del {
+  background: rgb(var(--bs-error-rgb, 243 139 168) / 20%);
+  color: var(--bs-error, #f38ba8);
+  text-decoration: line-through;
+  border-radius: 2px;
+}
+.brink-studio .search-card-ins {
+  background: rgb(var(--bs-success-rgb, 166 227 161) / 20%);
+  color: var(--bs-success, #a6e3a1);
   border-radius: 2px;
 }
