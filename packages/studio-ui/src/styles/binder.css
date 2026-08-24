@@ -50,13 +50,16 @@
   font-size: 10px;
   color: var(--bs-fg-muted);
   transition: transform 0.12s ease;
-  transform: rotate(90deg);
+  /* The v2 chevron SVG points DOWN natively (#3037) — expanded needs no
+     rotation; collapsed rotates to point right. (The old ▶ glyph had the
+     opposite native orientation.) */
+  transform: rotate(0deg);
 }
 .brink-studio .brink-binder-chevron:hover {
   color: var(--bs-fg);
 }
 .brink-studio .brink-binder-chevron.collapsed {
-  transform: rotate(0deg);
+  transform: rotate(-90deg);
 }
 .brink-studio .brink-binder-chevron.leaf {
   visibility: hidden;
@@ -286,3 +289,70 @@
   border-color: var(--bs-border, #45475a);
 }
 
+
+
+/* ── Binder v2 (#3036/#3037) ─────────────────────────────────────── */
+
+/* The grab handle: present for draggable rows, revealed on hover so the
+   rows stay calm (Main.dc.html's hovered-row treatment). */
+.brink-studio .brink-binder-handle {
+  width: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--bs-fg-dim, #6c7086);
+  opacity: 0;
+  cursor: grab;
+  transition: opacity 0.1s ease;
+}
+.brink-studio .brink-binder-row:hover .brink-binder-handle {
+  opacity: 0.8;
+}
+
+/* Header toolbar: the Files/Structure segmented toggle + tree tools. */
+.brink-studio .brink-binder-toolbar {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--bs-border);
+  flex-shrink: 0;
+}
+.brink-studio .brink-binder-toolbar .spacer {
+  flex-grow: 1;
+}
+.brink-studio .brink-binder-mode-toggle {
+  display: flex;
+  background: var(--bs-editor-bg, #1e1e2e);
+  border: 1px solid var(--bs-border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.brink-studio .brink-binder-mode-toggle button {
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--bs-fg-dim, #6c7086);
+  cursor: pointer;
+}
+.brink-studio .brink-binder-mode-toggle button.active {
+  background: var(--bs-border);
+  color: var(--bs-fg);
+}
+.brink-studio .brink-binder-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  padding: 4px;
+  color: var(--bs-fg-dim, #6c7086);
+  cursor: pointer;
+}
+.brink-studio .brink-binder-tool:hover {
+  color: var(--bs-fg);
+}

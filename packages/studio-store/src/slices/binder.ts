@@ -69,6 +69,12 @@ export type UndoEntry =
 
 export interface BinderSlice {
   collapsed: Set<string>;
+  /**
+   * Binder v2 (#3036): whether Structure mode is on — symbol rows
+   * (knots/stitches/functions) render only then. Files-only is the ruled
+   * default ("the noise", 2026-08-23). Session state; not persisted yet.
+   */
+  structureMode: boolean;
   selectedKeys: Set<string>;
   focusedKey: string | null;
   undoStack: UndoEntry[];
@@ -77,6 +83,11 @@ export interface BinderSlice {
   libraryExpanded: boolean;
 
   toggleCollapsed(key: string): void;
+  /** Flip Files ⇄ Structure mode (#3036). */
+  toggleStructureMode(): void;
+  /** Wholesale-replace the collapsed set — expand all (`[]`) / collapse
+   *  all (every expandable key, computed by the Binder) (#3036). */
+  setAllCollapsed(keys: string[]): void;
   toggleLibraryExpanded(): void;
   selectKey(key: string, multi: boolean): void;
   clearSelection(): void;
@@ -116,6 +127,7 @@ function areSameKindSiblings(a: string, b: string): boolean {
 
 export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> = (set, get) => ({
   collapsed: new Set<string>(),
+  structureMode: false,
   selectedKeys: new Set<string>(),
   focusedKey: null,
   undoStack: [],
@@ -133,6 +145,14 @@ export const createBinderSlice: StateCreator<StudioState, [], [], BinderSlice> =
 
   toggleLibraryExpanded() {
     set({ libraryExpanded: !get().libraryExpanded });
+  },
+
+  toggleStructureMode() {
+    set({ structureMode: !get().structureMode });
+  },
+
+  setAllCollapsed(keys) {
+    set({ collapsed: new Set(keys) });
   },
 
   selectKey(key, multi) {

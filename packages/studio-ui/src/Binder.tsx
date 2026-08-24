@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Overlay } from "@brink/studio-shell";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isOutOfScope } from "./InkFileDocument.js";
@@ -10,18 +10,23 @@ import {
 import { dispatchSymbolAction } from "./symbolMenuActions.js";
 import type { FileOutline, DocumentSymbol } from "@brink/wasm-types";
 import type { TabTarget } from "@brink/studio-store";
+import {
+  BrinkFileIcon,
+  ChevronIcon,
+  CollapseAllIcon,
+  ExpandAllIcon,
+  FilesModeIcon,
+  FolderIcon,
+  FunctionIcon,
+  GrabHandleIcon,
+  KnotIcon,
+  LibraryIcon,
+  StitchIcon,
+  StructureModeIcon,
+} from "./icons.js";
 
-// ── Icons ──────────────────────────────────────────────────────────
-
-const ICON_FILE = "\ud83d\udcc4";
-const ICON_FOLDER = "\ud83d\udcc1"; // \ud83d\udcc1
-const ICON_KNOT = "\u25c6";
-const ICON_STITCH = "\u25c7";
-const ICON_FUNCTION = "\u0192"; // \u0192 \u2014 a knot declared as a function
-/** The Binder's "Library" section (mounted `std/` files, issue #2306/#2343):
- *  a closed-book glyph, visually distinct from the project's own open-book
- *  file/folder icons. */
-const ICON_LIBRARY = "\ud83d\udcda";
+// ── Icons (#3037: currentColor SVGs from icons.tsx — the glyph
+//    characters this section used to hold are gone by ruling) ─────────
 
 /** Synthetic row key for the Library section's own collapse toggle \u2014 distinct
  *  from any real file/folder key (which never contain a NUL byte). */
@@ -33,20 +38,23 @@ function libraryFolderKey(folderKey: string): string {
   return `${LIBRARY_ROW_KEY}:${folderKey}`;
 }
 
-function iconChar(kind: string, isFunction = false): string {
+/** The v2 icon element for a row kind (#3037). Tinting stays with the
+ *  `.brink-binder-icon-*` classes ({@link iconClass}) — these render in
+ *  `currentColor`. */
+function iconElement(kind: string, isFunction = false): React.ReactElement | null {
   switch (kind) {
     case "folder":
-      return ICON_FOLDER;
+      return <FolderIcon />;
     case "file":
-      return ICON_FILE;
+      return <BrinkFileIcon />;
     case "knot":
-      return isFunction ? ICON_FUNCTION : ICON_KNOT;
+      return isFunction ? <FunctionIcon /> : <KnotIcon />;
     case "stitch":
-      return ICON_STITCH;
+      return <StitchIcon />;
     case "library":
-      return ICON_LIBRARY;
+      return <LibraryIcon />;
     default:
-      return "\u00b7";
+      return null;
   }
 }
 
@@ -314,10 +322,15 @@ export function BinderRow({
           ))}
         </div>
         <div className={chevronClass} onClick={handleChevronClick}>
-          {expandable ? "\u25b6" : ""}
+          {expandable ? <ChevronIcon /> : null}
         </div>
+        {draggable && (
+          <span className="brink-binder-handle" aria-hidden>
+            <GrabHandleIcon />
+          </span>
+        )}
         <span className={"brink-binder-icon " + iconClass(kind, isFunction)}>
-          {iconChar(kind, isFunction)}
+          {iconElement(kind, isFunction)}
         </span>
         {editing ? (
           // `key={editing.initial}` forces a fresh RenameInput instance (and
@@ -509,6 +522,9 @@ function BinderInner() {
   const projectIsInk = entryFile !== null && entryFile.endsWith(".ink");
   const activeDocKey = useStudioStore((s) => s.activeDocKey);
   const collapsed = useStudioStore((s) => s.collapsed);
+  const structureMode = useStudioStore((s) => s.structureMode);
+  const toggleStructureMode = useStudioStore((s) => s.toggleStructureMode);
+  const setAllCollapsed = useStudioStore((s) => s.setAllCollapsed);
   const selectedKeys = useStudioStore((s) => s.selectedKeys);
   const focusedKey = useStudioStore((s) => s.focusedKey);
   const openTarget = useStudioStore((s) => s.openTarget);
@@ -1193,7 +1209,10 @@ function BinderInner() {
 
   function renderFile(file: FileOutline, depth: number) {
     const knots = file.symbols.filter((s) => s.kind === "knot");
-    const hasChildren = knots.length > 0;
+    // Files mode (#3036, the ruled default): symbol rows exist only in
+    // Structure mode — a file is a leaf, and the whole knot/stitch layer
+    // (with every structural op) reveals behind the toggle.
+    const hasChildren = structureMode && knots.length > 0;
     const fileKey = file.path;
     const isExpanded = !collapsed.has(fileKey);
     const isActive = activeDocKey === fileKey;
@@ -1244,6 +1263,7 @@ function BinderInner() {
           onDrop={(e) => fileRow && handleDrop(e, fileRow)}
         />
         {isExpanded &&
+          hasChildren &&
           knots.map((k) => {
             const kRow = flatRows.find((r) => r.key === `${file.path}::${k.name}`);
             if (!kRow) return null;
@@ -1393,6 +1413,33 @@ function BinderInner() {
 
   const libraryTree = buildBinderTree(libraryFiles);
 
+  // Every expandable key, for collapse-all (#3036): folders, files with
+  // symbol children (Structure mode only), knots with stitches, and the
+  // Library's folders. Cheap to recompute per render; only used on click.
+  const collapseAllKeys = (): string[] => {
+    const keys: string[] = [];
+    const walkFolders = (level: TreeLevel, toKey: (k: string) => string): void => {
+      for (const folder of level.folders) {
+        keys.push(toKey(folder.key));
+        walkFolders(folder, toKey);
+      }
+      if (structureMode) {
+        for (const file of level.files) {
+          const knots = file.symbols.filter((sym) => sym.kind === "knot");
+          if (knots.length > 0) keys.push(toKey(file.path));
+          for (const k of knots) {
+            if (k.children.some((c) => c.kind === "stitch")) {
+              keys.push(toKey(`${file.path}::${k.name}`));
+            }
+          }
+        }
+      }
+    };
+    walkFolders(buildBinderTree(outline), (k) => k);
+    walkFolders(buildBinderTree(libraryFiles), (k) => libraryFolderKey(k));
+    return keys;
+  };
+
   return (
     <div
       ref={containerRef}
@@ -1400,6 +1447,39 @@ function BinderInner() {
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
+      <div className="brink-binder-toolbar">
+        <div className="brink-binder-mode-toggle" role="tablist" aria-label="Binder mode">
+          <button
+            title="Files"
+            className={structureMode ? "" : "active"}
+            onClick={() => structureMode && toggleStructureMode()}
+          >
+            <FilesModeIcon />
+          </button>
+          <button
+            title="Structure"
+            className={structureMode ? "active" : ""}
+            onClick={() => !structureMode && toggleStructureMode()}
+          >
+            <StructureModeIcon />
+          </button>
+        </div>
+        <div className="spacer" />
+        <button
+          className="brink-binder-tool"
+          title="Expand all"
+          onClick={() => setAllCollapsed([])}
+        >
+          <ExpandAllIcon />
+        </button>
+        <button
+          className="brink-binder-tool"
+          title="Collapse all"
+          onClick={() => setAllCollapsed(collapseAllKeys())}
+        >
+          <CollapseAllIcon />
+        </button>
+      </div>
       {renderTree(buildBinderTree(outline), 0)}
       {libraryFiles.length > 0 && !projectIsInk && (
         <div className="brink-binder-library-section">
