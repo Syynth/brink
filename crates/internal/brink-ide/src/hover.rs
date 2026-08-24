@@ -382,14 +382,17 @@ fn list_members_hover(db: &ProjectDb, info: &brink_ir::SymbolInfo) -> String {
     let Some(list) = hir.lists.iter().find(|l| l.name.text == list_name) else {
         return String::new();
     };
+    // Every member shows its numeric value, the defaulted ones included —
+    // ink's ordinal rule: count from 1, an explicit value resets the
+    // counter (`a, b = 5, c` → 1, 5, 6).
+    let mut next_ordinal: i32 = 1;
     let rendered: Vec<String> = list
         .members
         .iter()
         .map(|m| {
-            let mut t = m.name.text.clone();
-            if let Some(v) = m.value {
-                t = format!("{t} = {v}");
-            }
+            let value = m.value.unwrap_or(next_ordinal);
+            next_ordinal = value.saturating_add(1);
+            let mut t = format!("{} = {value}", m.name.text);
             if m.is_active {
                 t = format!("({t})");
             }
@@ -527,8 +530,10 @@ mod tests {
 ";
         let item = hover_at(src, "Boon.cursed");
         assert!(item.contains("**LIST** `Boon`"), "{item}");
-        assert!(item.contains("**`(cursed)`**"), "{item}");
-        assert!(item.contains("`blessed`"), "{item}");
+        // Defaulted ordinals render too — ink's rule: count from 1, an
+        // explicit value resets the counter.
+        assert!(item.contains("**`(cursed = 2)`**"), "{item}");
+        assert!(item.contains("`blessed = 1`"), "{item}");
         assert!(item.contains("`spare = 5`"), "{item}");
 
         let list = hover_at(src, "Boon =");
