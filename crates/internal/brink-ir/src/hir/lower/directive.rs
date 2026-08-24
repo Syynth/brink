@@ -479,11 +479,20 @@ pub(super) fn file_module_declaration(
 /// second occurrence — `E048` rather than a dedicated code because it's
 /// the same "repeated directive" shape `apply_scope_directives` already
 /// uses for `#@local`).
+/// The third tuple element reports whether the claimed `#@was` line ALSO
+/// attaches to a following `VAR`/`CONST`/`LIST`/`EXTERNAL` declaration
+/// (`attached_declaration`) — the placement is ambiguous at the top of a
+/// file whose first declaration directly follows the leading run, and the
+/// declaration's own `directives_before` lookback claims the same line.
+/// The module arbitration uses it to withhold the orphan diagnostic
+/// (`E049`) for a decl-owned `#@was`: the CLI/editor rename flow (#1672)
+/// stamps `#@was(old)` directly above a renamed declaration, which on a
+/// line-1 declaration is byte-identical to the file-level placement.
 pub(super) fn file_module_was(
     source_file: &SyntaxNode,
     sink: &mut impl LowerSink,
-) -> Option<(String, TextRange)> {
-    let mut found: Option<(String, TextRange)> = None;
+) -> Option<(String, TextRange, bool)> {
+    let mut found: Option<(String, TextRange, bool)> = None;
     for child in source_file.children() {
         let Some(tl) = ast::TagLine::cast(child) else {
             continue;
@@ -506,7 +515,7 @@ pub(super) fn file_module_was(
             sink.diagnose(dir.range, DiagnosticCode::E048);
             continue;
         }
-        found = Some((name.clone(), dir.range));
+        found = Some((name.clone(), dir.range, attached_declaration(&tl).is_some()));
     }
     found
 }

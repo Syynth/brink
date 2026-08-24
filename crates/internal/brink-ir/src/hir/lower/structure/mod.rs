@@ -267,10 +267,14 @@ fn assemble_hir_file(
     // the module's rename. Only meaningful alongside `#@module` — a
     // self-alias (`old_name` equals the current module name) is `E095`
     // ("nothing to migrate"); a `#@was` with no `#@module` to attach to is
-    // `E049` ("directive not supported on this target").
+    // `E049` ("directive not supported on this target") — UNLESS the same
+    // line attaches to a following declaration, whose own lookback claims
+    // it (the #1672 rename flow stamps `#@was(old)` directly above a
+    // renamed declaration; on a line-1 declaration that placement is
+    // byte-identical to the file-level one, and the declaration owns it).
     let module_was = super::directive::file_module_was(file.syntax(), sink);
     let module = match (module, module_was) {
-        (Some(mut m), Some((old_name, was_range))) => {
+        (Some(mut m), Some((old_name, was_range, _))) => {
             if old_name == m.name {
                 sink.diagnose(was_range, DiagnosticCode::E095);
             } else {
@@ -279,8 +283,10 @@ fn assemble_hir_file(
             Some(m)
         }
         (Some(m), None) => Some(m),
-        (None, Some((_, was_range))) => {
-            sink.diagnose(was_range, DiagnosticCode::E049);
+        (None, Some((_, was_range, attaches_to_decl))) => {
+            if !attaches_to_decl {
+                sink.diagnose(was_range, DiagnosticCode::E049);
+            }
             None
         }
         (None, None) => None,
