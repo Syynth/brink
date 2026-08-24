@@ -229,6 +229,16 @@ export function hirIdentityAt(
 
 // ── Rails gutter (phase 4) ──────────────────────────────────────────
 
+/** Human labels for the rail kinds (hover tooltips). */
+const RAIL_LABELS: Record<string, string> = {
+  knot: "Knot body",
+  stitch: "Stitch body",
+  choice: "Choice branch",
+  gather: "Gather continuation",
+  cond_branch: "Conditional branch",
+  seq_branch: "Sequence branch",
+};
+
 class RailMarker extends GutterMarker {
   constructor(private readonly stack: readonly { kind: string; depth: number }[]) {
     super();
@@ -250,6 +260,8 @@ class RailMarker extends GutterMarker {
       const bar = wrap.appendChild(document.createElement("span"));
       bar.className = `brink-hir-rail brink-hir-rail-${c.kind}`;
       bar.setAttribute("data-depth", String(c.depth));
+      // Hover explanation — the rails are otherwise unlabeled marks.
+      bar.title = `${RAIL_LABELS[c.kind] ?? c.kind} — structure rail, nesting depth ${c.depth}`;
     }
     return wrap;
   }
