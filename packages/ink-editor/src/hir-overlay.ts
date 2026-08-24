@@ -61,6 +61,14 @@ interface HirOverlayState {
   marks: DecorationSet;
   /** Per-line rail attributes for lines inside at least one container. */
   lineDecos: DecorationSet;
+  /**
+   * Container spans by handle, built once per projection (#3067): the rails
+   * gutter's `lineMarker` runs once per visible line per rebuild, and
+   * constructing this map inside it made scrolling pay
+   * O(spans × visible lines) — 19.7 ms per rebuild batch, ~1.5 s per full
+   * scroll pass on the perf-fixture large file (desktop-perf baseline).
+   */
+  spansByHandle: Map<number, HirSpan>;
 }
 
 const EMPTY_PROJECTION: HirProjection = { spans: [], lines: [] };
@@ -69,6 +77,7 @@ const emptyState: HirOverlayState = {
   projection: EMPTY_PROJECTION,
   marks: Decoration.none,
   lineDecos: Decoration.none,
+  spansByHandle: new Map(),
 };
 
 /**
@@ -154,10 +163,16 @@ function buildState(projection: HirProjection, doc: EditorState["doc"]): HirOver
     );
   }
 
+  const spansByHandle = new Map<number, HirSpan>();
+  for (const s of projection.spans) {
+    if (s.handle !== undefined) spansByHandle.set(s.handle, s);
+  }
+
   return {
     projection,
     marks: Decoration.set(marks, true),
     lineDecos: Decoration.set(lineDecos, true),
+    spansByHandle,
   };
 }
 
@@ -187,6 +202,8 @@ function createOverlayField(options: HirOverlayOptions) {
         projection: value.projection,
         marks: value.marks.map(tr.changes),
         lineDecos: value.lineDecos.map(tr.changes),
+        // Projection is carried unchanged, so its handle map stays valid.
+        spansByHandle: value.spansByHandle,
       };
     },
   });
@@ -437,14 +454,14 @@ export function hirOverlayExtension(options: HirOverlayOptions): Extension {
   };
 
   const buildLineMarker = (view: EditorView, line: { from: number }): RailMarker | null => {
-        const { projection } = view.state.field(field);
+        // #3067: the span-by-handle map is prebuilt on the overlay state
+        // (once per projection), not per visible line — building it here
+        // made scrolling O(spans × visible lines).
+        const { projection, spansByHandle: byHandle } = view.state.field(field);
         const doc = view.state.doc;
         const lineNo = doc.lineAt(line.from).number - 1;
         const stack = projection.lines[lineNo];
         if (!stack || stack.length === 0) return null;
-        const byHandle = new Map(
-          projection.spans.filter((sp) => sp.handle !== undefined).map((sp) => [sp.handle, sp]),
-        );
         const infos: RailInfo[] = stack.map((c) => {
           const span = byHandle.get(c.handle);
           const startLine = (span?.start_line ?? lineNo) + 1;
