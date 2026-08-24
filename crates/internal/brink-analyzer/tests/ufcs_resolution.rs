@@ -18,9 +18,53 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brink_analyzer::{AnalysisOptions, ModuleMap, ResolvedModule, UfcsVerdict};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, ModuleMap, ResolvedModule, UfcsVerdict};
 use brink_ir::hir::lower_native;
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile, Name, SymbolManifest, hir::visit};
+
+/// Local piece-function composition for the one test here that needs a
+/// hand-crafted module map + the native arm (the `analyze_with_modules`
+/// monolith retired with option A total, 2026-08-24; production analysis is
+/// `brink-db`'s salsa composition, which derives module identity from paths
+/// and cannot be handed a synthetic map — exactly what this fixture needs).
+fn analyze_with_map(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    modules: &ModuleMap,
+    opts: &AnalysisOptions,
+    is_native: bool,
+) -> AnalysisResult {
+    let manifest_inputs: Vec<(FileId, &SymbolManifest)> =
+        files.iter().map(|&(id, _hir, m)| (id, m)).collect();
+    let (index, mut diagnostics) = brink_analyzer::symbol_index_with_modules(
+        &manifest_inputs,
+        modules,
+        opts.dialect,
+        is_native,
+    );
+    let mut resolutions = brink_ir::ResolutionMap::new();
+    let mut scopes = std::collections::BTreeMap::new();
+    for &(file_id, hir, manifest) in files {
+        let declared_module = match modules.get(&file_id) {
+            Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
+            None => hir.module.as_ref().map(|m| m.name.clone()),
+        };
+        let scope = brink_analyzer::ImportScope::new(declared_module, &hir.imports);
+        let (file_map, file_diags) = brink_analyzer::resolve(file_id, manifest, &index, &scope);
+        resolutions.extend(std::sync::Arc::unwrap_or_clone(file_map));
+        diagnostics.extend(file_diags);
+        scopes.insert(file_id, scope);
+    }
+    brink_analyzer::finish_analysis(
+        files,
+        index,
+        resolutions,
+        diagnostics,
+        opts,
+        is_native,
+        None,
+        &scopes,
+    )
+}
 
 fn lower(src: &str) -> (HirFile, SymbolManifest) {
     let parse = brink_syntax_native::parse(src);
@@ -1139,7 +1183,7 @@ fn noop() {}
         (project_file, &project_hir, &project_manifest),
         (std_file, &std_hir, &std_manifest),
     ];
-    let analysis = brink_analyzer::analyze_with_modules(
+    let analysis = analyze_with_map(
         &files,
         &modules,
         &AnalysisOptions::default(),

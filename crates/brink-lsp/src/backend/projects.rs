@@ -97,6 +97,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use brink_analyzer::AnalysisOptions;
 use brink_ir::{Diagnostic, FileId, HirFile, SymbolManifest, suppressions::Suppressions};
@@ -324,21 +325,22 @@ struct ProjectEntry {
     mounted_paths: HashSet<String>,
 }
 
-/// One project's per-file analysis inputs (`root`, its members' `(FileId,
-/// HirFile, SymbolManifest)` triples, and whether it's a native project) —
-/// the same shape `db.compute_projects()` + `db.analysis_inputs_for()` +
-/// `db.is_native()` produced for one db, now one entry per project.
-pub(crate) type ProjectAnalysisInputs = (FileId, Vec<(FileId, HirFile, SymbolManifest)>, bool);
+/// One project root's finished analysis: `(root, members, result)`. Since
+/// option A total (2026-08-24) the analysis itself is computed IN the
+/// snapshot pass by each db's member-set-keyed `analysis_for_members`
+/// query — the retired shape cloned every member's `(FileId, HirFile,
+/// SymbolManifest)` out of the db so `analyze_with_modules` could run
+/// off-lock; the db query is memoized per set, so a no-change background
+/// pass costs a salsa validation instead of a re-analysis, and the input
+/// clone is gone entirely.
+pub(crate) type ProjectAnalysis = (FileId, Vec<FileId>, Arc<brink_analyzer::AnalysisResult>);
 
-/// The per-project analysis inputs [`analysis_loop`](super::analysis_loop)
-/// needs, snapshotted under one lock across every project (issue #1580 —
-/// generalizes what used to be a single-db read into a multi-project one).
-/// Merging is safe because every project's `FileId`s are disjoint
-/// ([`ID_STRIDE`]).
+/// The per-project analysis [`analysis_loop`](super::analysis_loop) needs,
+/// computed under one lock across every project (issue #1580 — generalizes
+/// what used to be a single-db read into a multi-project one). Merging is
+/// safe because every project's `FileId`s are disjoint ([`ID_STRIDE`]).
 pub(crate) struct AnalysisSnapshot {
-    pub projects: Vec<ProjectAnalysisInputs>,
-    pub modules: brink_analyzer::ModuleMap,
-    pub module_diags: Vec<Diagnostic>,
+    pub analyses: Vec<ProjectAnalysis>,
     pub file_meta: Vec<(FileId, String, String)>,
     pub per_file_diags: Vec<(FileId, Vec<Diagnostic>)>,
     pub file_suppressions: HashMap<FileId, Suppressions>,
@@ -713,12 +715,15 @@ impl NativeProjects {
         }
     }
 
-    /// Snapshot every project's analysis inputs under one lock (see
-    /// [`AnalysisSnapshot`]).
+    /// Compute every project root's analysis under one lock (see
+    /// [`AnalysisSnapshot`]). Per-root results come from each db's
+    /// member-set-keyed `analysis_for_members` query (option A total,
+    /// 2026-08-24) — memoized per set, so an unchanged root validates
+    /// instead of re-analyzing; module-map diagnostics (#1553) and per-file
+    /// nativeness are folded inside the query, retiring the loop's own
+    /// `fold_module_diagnostics` and the `is_native(root)` flag.
     pub(crate) fn snapshot_for_analysis(&mut self, opts: &AnalysisOptions) -> AnalysisSnapshot {
-        let mut projects = Vec::new();
-        let mut modules = brink_analyzer::ModuleMap::new();
-        let mut module_diags = Vec::new();
+        let mut analyses = Vec::new();
         let mut file_meta = Vec::new();
         let mut per_file_diags = Vec::new();
         let mut file_suppressions = HashMap::new();
@@ -731,10 +736,9 @@ impl NativeProjects {
             }
             let project_defs = db.compute_projects();
             for (root, members) in &project_defs {
-                projects.push((*root, db.analysis_inputs_for(members), db.is_native(*root)));
+                let result = Arc::new(db.analysis_for_members(members).clone());
+                analyses.push((*root, members.clone(), result));
             }
-            modules.extend(db.module_map().iter().map(|(k, v)| (*k, v.clone())));
-            module_diags.extend(db.module_map_diagnostics().iter().cloned());
             // Excludes mounted stdlib files (issue #2198,
             // `mounted_std_ids`): a mount still fully participates in
             // `compute_projects`/`analysis_inputs_for` above (so real
@@ -763,9 +767,7 @@ impl NativeProjects {
         }
 
         AnalysisSnapshot {
-            projects,
-            modules,
-            module_diags,
+            analyses,
             file_meta,
             per_file_diags,
             file_suppressions,
@@ -930,18 +932,27 @@ mod tests {
         };
         let snapshot = projects.snapshot_for_analysis(&opts);
 
-        let std_member = snapshot
-            .projects
+        // Option A total (2026-08-24): the snapshot carries finished
+        // per-root ANALYSES, not cloned inputs — the mount's participation
+        // is pinned by (a) membership in some root's member set (the set
+        // `analysis_for_members` analyzed) and (b) its manifest — the
+        // exact per-file memo the subset query reads — declaring the
+        // external it provides.
+        let in_members = snapshot
+            .analyses
             .iter()
-            .find_map(|(_, members, _)| members.iter().find(|(fid, _, _)| *fid == std_id));
+            .any(|(_, members, _)| members.contains(&std_id));
         assert!(
-            std_member.is_some(),
+            in_members,
             "the mounted std FileId {std_id:?} must appear among some project's \
-             analysis-input members in AnalysisSnapshot::projects — the surface \
-             analyze_with_modules actually reads — not merely be a registered \
+             members in AnalysisSnapshot::analyses — the set the subset \
+             analysis query actually reads — not merely be a registered \
              file inside its own db"
         );
-        let (_, _, manifest) = std_member.expect("checked above");
+        let manifest = projects
+            .project_for_path(&std_key)
+            .and_then(|db| db.manifest(std_id));
+        let manifest = manifest.expect("the mounted std file must have a manifest");
         assert!(
             manifest.externals.iter().any(|d| d.name == "scene_entered"),
             "the mounted std file's own SymbolManifest must declare the \

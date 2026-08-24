@@ -3018,32 +3018,30 @@ pub async fn analysis_loop(
         };
         let generation = generation.load(Ordering::Relaxed);
         let AnalysisSnapshot {
-            projects,
-            modules,
-            module_diags,
+            analyses,
             file_meta,
             per_file_diags,
             file_suppressions,
             manifests,
         } = snap;
 
-        // Run per-project analysis OUTSIDE the lock
+        // Per-root results were computed inside the locked snapshot pass
+        // (option A total, 2026-08-24): each db's member-set-keyed
+        // `analysis_for_members` query is memoized per set, so an unchanged
+        // root validated instead of re-analyzing, and the retired
+        // clone-inputs-out/`analyze_with_modules`-off-lock arrangement (and
+        // its `fold_module_diagnostics` companion) no longer exists. What
+        // remains here is pure bookkeeping over the finished results.
         let mut by_root = HashMap::new();
         let mut file_to_roots: HashMap<brink_ir::FileId, Vec<brink_ir::FileId>> = HashMap::new();
         let mut project_members = HashMap::new();
 
-        for (root, inputs, is_native) in &projects {
-            let file_refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
-            let mut result =
-                brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts, *is_native);
-            let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
-            fold_module_diagnostics(&mut result, &module_diags, &members);
-            by_root.insert(*root, Arc::new(result));
-
+        for (root, members, result) in analyses {
+            by_root.insert(root, result);
             for &member in &members {
-                file_to_roots.entry(member).or_default().push(*root);
+                file_to_roots.entry(member).or_default().push(root);
             }
-            project_members.insert(*root, members);
+            project_members.insert(root, members);
         }
 
         // Sort the root lists for deterministic primary-project selection
@@ -3082,27 +3080,6 @@ pub async fn analysis_loop(
             })
             .await;
     }
-}
-
-/// Fold the module map's own diagnostics (`E085` stem collisions) into one
-/// project's analysis result (issue #1553).
-///
-/// `brink_analyzer::analyze_with_modules` is handed the *finished* map, so it
-/// cannot re-derive them; without this a collision a db-driven compile catches
-/// never reaches the editor. `module_diags` is whole-workspace, so it is
-/// filtered to `members` — a collision in an unrelated project must not be
-/// attributed to this one.
-fn fold_module_diagnostics(
-    result: &mut AnalysisResult,
-    module_diags: &[brink_ir::Diagnostic],
-    members: &[brink_ir::FileId],
-) {
-    result.diagnostics.extend(
-        module_diags
-            .iter()
-            .filter(|d| members.contains(&d.file))
-            .cloned(),
-    );
 }
 
 /// Build a `DiagnosticRelatedInformation` pointing to a project root file.

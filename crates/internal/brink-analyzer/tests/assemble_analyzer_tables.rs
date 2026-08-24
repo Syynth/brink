@@ -76,19 +76,39 @@ fn lower(src: &str) -> (HirFile, SymbolManifest) {
     (hir, manifest)
 }
 
-/// `analyze_with_modules(is_native = true)` with a module-blind map — the
-/// exact call `compile_and_explore_from_brink_native` makes, see the module
-/// doc for why.
+/// The native-arm, module-blind piece composition — the exact composition
+/// `compile_and_explore_from_brink_native` spells out (see the module doc
+/// for why; the `analyze_with_modules` monolith retired with option A
+/// total, 2026-08-24, and that harness — like this fixture — composes the
+/// pieces by design).
 fn analyze_native(
     file_id: FileId,
     hir: &HirFile,
     manifest: &SymbolManifest,
 ) -> (Arc<SymbolIndex>, ResolutionMap, Vec<Diagnostic>) {
-    let result = brink_analyzer::analyze_with_modules(
-        &[(file_id, hir, manifest)],
-        &ModuleMap::new(),
-        &AnalysisOptions::default(),
+    let opts = AnalysisOptions::default();
+    let empty_map = ModuleMap::new();
+    let (index, mut diagnostics) = brink_analyzer::symbol_index_with_modules(
+        &[(file_id, manifest)],
+        &empty_map,
+        opts.dialect,
         true,
+    );
+    let scope =
+        brink_analyzer::ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+    let (file_map, file_diags) = brink_analyzer::resolve(file_id, manifest, &index, &scope);
+    diagnostics.extend(file_diags);
+    let mut scopes = std::collections::BTreeMap::new();
+    scopes.insert(file_id, scope);
+    let result = brink_analyzer::finish_analysis(
+        &[(file_id, hir, manifest)],
+        index,
+        std::sync::Arc::unwrap_or_clone(file_map),
+        diagnostics,
+        &opts,
+        true,
+        None,
+        &scopes,
     );
     (result.index, result.resolutions, result.diagnostics)
 }

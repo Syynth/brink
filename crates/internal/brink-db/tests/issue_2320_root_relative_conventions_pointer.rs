@@ -196,37 +196,13 @@ fn off_db_road_agrees_with_native_root_and_a_nested_lsp_cwd() {
 
     let db = lsp_shaped_db(&native_root);
 
-    // Mirror `IdeSnapshot::analyze`'s composition off the same db the
-    // db-road test uses: cloned inputs, the db's module map, the raw
-    // relative pointer.
-    let inputs = db.analysis_inputs();
-    let refs: Vec<_> = inputs
-        .iter()
-        .map(|(id, hir, manifest)| (*id, hir, manifest))
-        .collect();
-    let opts = AnalysisOptions {
-        conventions: Some("conventions.brink".to_owned()),
-        ..AnalysisOptions::default()
-    };
-    let modules = db.module_map().clone();
-    let off_db = brink_analyzer::analyze_with_modules(&refs, &modules, &opts, true);
-    assert_confinement_e169(&off_db.diagnostics);
-
-    // Both roads, same scenario, same verdict.
-    let db_road = db.analysis().diagnostics.clone();
-    let e169 = |diags: &[Diagnostic]| -> Vec<(brink_ir::FileId, String)> {
-        diags
-            .iter()
-            .filter(|d| d.code == DiagnosticCode::E169)
-            .map(|d| (d.file, d.message.clone()))
-            .collect()
-    };
-    assert_eq!(
-        e169(&db_road),
-        e169(&off_db.diagnostics),
-        "the db-direct and off-db roads must agree on the LSP-shaped \
-         relative-pointer scenario"
-    );
+    // The off-db mirror half of this test retired with option A total
+    // (2026-08-24): `IdeSnapshot::analyze` no longer exists, so there is
+    // no second road to agree with — the divergence this comparison
+    // guarded is impossible by construction. What remains pinned is the
+    // payload: the LSP-shaped db resolves the raw relative pointer and
+    // produces the confinement `E169` verdict.
+    assert_confinement_e169(&db.analysis().diagnostics);
 
     let _ = std::fs::remove_dir_all(&native_root);
 }

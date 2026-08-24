@@ -62,14 +62,17 @@ fn native_session() -> IdeSession {
     session
 }
 
-/// The same inputs the session just analyzed, re-run through the same
-/// analyzer entry point with `is_native = false` — the ink arm. The
-/// non-vacuity guard described in this module's doc.
+/// The same inputs the session just analyzed, re-composed from the
+/// analyzer's PIECE functions with `is_native = false` — the ink arm. The
+/// non-vacuity guard described in this module's doc. Since option A total
+/// (2026-08-24) deleted the `analyze_with_modules` monolith, forcing the
+/// ink arm over native inputs is unrepresentable through the db (nativeness
+/// is path-derived there — by design), so the guard composes the pieces
+/// (index → resolve → finish) directly: a test fixture over the one
+/// engine's own parts, existing precisely to hold a flag production code
+/// can no longer hold wrong.
 fn ink_arm(session: &IdeSession) -> AnalysisResult {
-    let db = session.db();
-    let inputs = db.analysis_inputs();
-    let refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
-    brink_analyzer::analyze_with_modules(&refs, db.module_map(), &session.analysis_options(), false)
+    ink_arm_from_db(session, session.db())
 }
 
 fn has(result: &AnalysisResult, code: DiagnosticCode) -> bool {
@@ -80,9 +83,36 @@ fn has(result: &AnalysisResult, code: DiagnosticCode) -> bool {
 /// (`analyze_overlay`/`analyze_projection`): that db reassigns `FileId`s, so
 /// the ink arm has to run off the same db the gate did, not the session's.
 fn ink_arm_from_db(session: &IdeSession, db: &brink_db::ProjectDb) -> AnalysisResult {
+    let opts = session.analysis_options();
+    let modules = db.module_map();
     let inputs = db.analysis_inputs();
     let refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
-    brink_analyzer::analyze_with_modules(&refs, db.module_map(), &session.analysis_options(), false)
+    let manifest_inputs: Vec<_> = refs.iter().map(|&(id, _hir, m)| (id, m)).collect();
+    let (index, mut diagnostics) =
+        brink_analyzer::symbol_index_with_modules(&manifest_inputs, modules, opts.dialect, false);
+    let mut resolutions = brink_ir::ResolutionMap::new();
+    let mut scopes = std::collections::BTreeMap::new();
+    for &(file_id, hir, manifest) in &refs {
+        let declared_module = match modules.get(&file_id) {
+            Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
+            None => hir.module.as_ref().map(|m| m.name.clone()),
+        };
+        let scope = brink_analyzer::ImportScope::new(declared_module, &hir.imports);
+        let (file_map, file_diags) = brink_analyzer::resolve(file_id, manifest, &index, &scope);
+        resolutions.extend(std::sync::Arc::unwrap_or_clone(file_map));
+        diagnostics.extend(file_diags);
+        scopes.insert(file_id, scope);
+    }
+    brink_analyzer::finish_analysis(
+        &refs,
+        index,
+        resolutions,
+        diagnostics,
+        &opts,
+        false,
+        None,
+        &scopes,
+    )
 }
 
 #[test]

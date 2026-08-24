@@ -30,6 +30,8 @@
 
 use std::collections::BTreeMap;
 
+mod analysis_fixture;
+
 use brink_analyzer::{AnalysisOptions, Dialect, ModuleMap, ResolvedModule};
 use brink_ir::{FileId, HirFile, SymbolManifest};
 
@@ -144,7 +146,7 @@ fn resolved_haggle_modules() -> BTreeMap<FileId, Option<String>> {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(), &opts, true);
 
     // Both `haggle` definitions must survive into the index — M-2d
     // coexistence. If one had been dropped as a duplicate there would be
@@ -209,7 +211,7 @@ fn a_qualified_use_licenses_the_reference_it_names() {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(), &opts, true);
 
     let offenders: Vec<_> = result
         .diagnostics
@@ -309,7 +311,7 @@ fn analyze_qualified_project(main_src: &str) -> brink_analyzer::AnalysisResult {
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    brink_analyzer::analyze_with_modules(&inputs, &qualified_module_map(), &opts, true)
+    analysis_fixture::analyze_with_map(&inputs, &qualified_module_map(), &opts, true)
 }
 
 /// Bug (a): `use story::market::barter;` must license the module-qualified

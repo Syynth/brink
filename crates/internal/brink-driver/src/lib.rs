@@ -113,30 +113,13 @@ impl Driver {
     /// same reason: the analyzer is handed the finished map and cannot
     /// re-derive them.
     pub fn analyze_project(&self, file_ids: &[FileId]) -> AnalysisResult {
-        let inputs = self.db.analysis_inputs_for(file_ids);
-        let file_refs: Vec<_> = inputs
-            .iter()
-            .map(|(id, hir, manifest)| (*id, hir, manifest))
-            .collect();
-        let mut result = brink_analyzer::analyze_with_modules(
-            &file_refs,
-            self.db.module_map(),
-            self.db.analysis_options(),
-            // `is_native` (issue #1358): a whole-*set* flag, so it is
-            // answerable for an arbitrary subset even though no single file
-            // is its root — every file native, or the ink arm. Without it
-            // this path judged native source by the ink rules: spurious
-            // `E051`/`E064`, and the B0.9 strict-only gate (`E137`) missing.
-            !file_ids.is_empty() && file_ids.iter().all(|id| self.db.is_native(*id)),
-        );
-        result.diagnostics.extend(
-            self.db
-                .module_map_diagnostics()
-                .iter()
-                .filter(|d| file_ids.contains(&d.file))
-                .cloned(),
-        );
-        result
+        // Option A total (2026-08-24): the db's member-set-keyed subset
+        // query — the retired `analyze_with_modules` composition relocated
+        // into salsa. Everything this method used to thread by hand is
+        // inside it: the db's module map (#1526), member-filtered
+        // stem-collision diagnostics (#1553), the registered options, and
+        // the all-native-set classification (#1358).
+        self.db.analysis_for_members(file_ids).clone()
     }
 
     /// Snapshot analysis inputs for a subset of files.
@@ -301,14 +284,13 @@ flow start() {
         );
 
         // The guard: the same inputs through the ink arm do provoke `E051`.
+        // `analyze_with_options` is the analyzer's module-blind, ink-arm
+        // test surface (the `analyze_with_modules` monolith retired with
+        // option A total, 2026-08-24); E051 is the per-file dialect gate,
+        // module-independent, so blindness costs the guard nothing.
         let inputs = driver.db().analysis_inputs_for(&[native]);
         let refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
-        let ink_arm = brink_analyzer::analyze_with_modules(
-            &refs,
-            driver.db().module_map(),
-            driver.db().analysis_options(),
-            false,
-        );
+        let ink_arm = brink_analyzer::analyze_with_options(&refs, driver.db().analysis_options());
         assert!(
             ink_arm
                 .diagnostics

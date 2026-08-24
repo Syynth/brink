@@ -65,6 +65,8 @@
 
 use std::collections::HashMap;
 
+mod analysis_fixture;
+
 use brink_analyzer::{AnalysisOptions, Dialect, ModuleMap, ResolvedModule};
 use brink_format::DefinitionId;
 use brink_ir::hir::lower_native;
@@ -163,7 +165,7 @@ fn analyze_and_stamp(files: Vec<(FileId, HirFile, SymbolManifest)>) -> Vec<HirFi
         dialect: Dialect::Brink,
         ..AnalysisOptions::default()
     };
-    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(&file_ids), &opts, true);
+    let result = analysis_fixture::analyze_with_map(&inputs, &module_map(&file_ids), &opts, true);
 
     let file_paths: HashMap<FileId, String> = HashMap::new();
     let mut slice: Vec<(FileId, HirFile)> = files
@@ -238,7 +240,7 @@ fn inline_conditional_labeled_choice_keeps_self_identity_when_a_coexisting_modul
             dialect: Dialect::Brink,
             ..AnalysisOptions::default()
         };
-        let result = brink_analyzer::analyze_with_modules(
+        let result = analysis_fixture::analyze_with_map(
             &inputs,
             &module_map(&[FILE_A, FILE_B]),
             &opts,

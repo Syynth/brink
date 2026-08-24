@@ -120,14 +120,14 @@ mod heap_size;
 
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
-    analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
+    MemberSet, analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
     call_site_diagnostics_query, call_site_metas_query, coalesce_types_query,
     comparator_contract_diagnostics_query, contributor_diagnostics_query,
     conventions_confinement_diagnostics_query, conventions_projection_query, diagnostics_query,
     effects_assertion_diagnostics_query, external_claim_handlers_query, external_meta_query,
     has_errors_in_closure_query, has_errors_query, import_closure_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, ufcs_resolution_query, value_meta_query,
-    whole_project_diagnostics_query,
+    per_file_diagnostics_query, resolutions_index_query, subset_analysis_query,
+    ufcs_resolution_query, value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -156,6 +156,9 @@ impl Default for BrinkDatabase {
                 .ingredient::<SourceFile>()
                 .ingredient::<ProjectInput>()
                 .ingredient::<DefKey<'_>>()
+                // Option A total (2026-08-24): the member-set key for
+                // per-root subset analysis (`subset_analysis_query`).
+                .ingredient::<MemberSet<'_>>()
                 // Layer 1.
                 .ingredient::<parse_query>()
                 // B0.10a native compile seam (issue #1106): the frontend-
@@ -232,6 +235,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<coalesce_types_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
+                // Option A total (2026-08-24): per-root subset analysis —
+                // the retired `analyze_with_modules` composition relocated
+                // into a member-set-keyed query (brink-lsp's road).
+                .ingredient::<subset_analysis_query>()
                 .ingredient::<diagnostics_query>()
                 // FG-4a (issue #791): the `has_errors` boolean projection
                 // (PR #753's seam finding #3) and the LIR-lowering split it
@@ -707,27 +714,6 @@ pub(crate) fn compilation_closure_files(
     }
 }
 
-/// Whether `project` is a native compilation unit — its entry file is a
-/// `.brink` module (the same "entry file decides the frontend" rule
-/// [`compilation_closure_files`] documents). `false` when there is no entry
-/// file at all.
-///
-/// The T1b dialect-gate decoupling (issue #1348) reads this to skip the
-/// ink-only `E064` config error (`strict::config_error`, via
-/// [`brink_analyzer::strict_diagnostics`]'s `is_native` flag) for a native
-/// project — the whole-project sibling of [`per_file_diagnostics_query`]'s
-/// own per-file `file_language(file.path(db)) == Language::Native` check.
-pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput) -> bool {
-    let Some(entry) = project.entry(db) else {
-        return false;
-    };
-    project
-        .files(db)
-        .iter()
-        .find(|f| f.file_id(db) == entry)
-        .is_some_and(|f| file_language(f.path(db)) == Language::Native)
-}
-
 /// Whether `path` names a file this db treats as compiler source at all: no
 /// extension at all, or a recognized `.ink`/`.brink` extension (compared
 /// case-insensitively). Everything else — project config (`brink.toml`),
@@ -992,20 +978,20 @@ pub(crate) fn symbol_index_query(
     // dialect must reach it here.
     let dialect = project.analysis_options(db).dialect;
     // `is_native` (issue #1562 review finding): a native project has no
-    // dialect to be wrong about — the same reasoning `project_is_native`
-    // gives `whole_project_diagnostics_query` for skipping the ink-only
-    // `E064` config error — so M-2d cross-declared-module coexistence must
-    // not depend on a client having declared `dialect: "brink"`. Every
+    // dialect to be wrong about — the same reasoning
+    // `whole_project_diagnostics_query` uses to skip the ink-only `E064`
+    // config error — so M-2d cross-declared-module coexistence must not
+    // depend on a client having declared `dialect: "brink"`. Every
     // `.brink` file's module is its path and always *declared*, so without
     // this a native workspace under the (default) `StrictInk` dialect would
     // drop one of two same-name definitions from the index instead of
     // letting them coexist.
     //
-    // `project_is_all_native`, not `project_is_native`: this `project` is
-    // `ProjectDb`'s single whole-workspace `ProjectInput`, which a
-    // long-lived LSP session never anchors to a compile `entry`
-    // (`project_is_native` always answers `false` without one) — see
-    // `project_is_all_native`'s own doc.
+    // `project_is_all_native` — the whole-file-set classification, correct
+    // for a `ProjectInput` a long-lived editor/LSP session never anchors to
+    // a compile `entry`. (The entry-derived `project_is_native` predicate
+    // this comment used to contrast with retired when the option-A landing
+    // moved its last caller, the strict pass, to this same predicate.)
     let is_native = project_is_all_native(db, project);
     let (index, mut diagnostics) =
         brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect, is_native);
