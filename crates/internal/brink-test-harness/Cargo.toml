@@ -39,6 +39,11 @@ brink-db = { workspace = true, features = ["memory-introspection"] }
 # FG-3): `AnalysisOptions`/`Dialect`/`TypePolicy` to configure `types =
 # strict` on the persistent db before the edit loop.
 brink-analyzer = { workspace = true }
+# For the ide_bench bin (measure-first ruling, 2026-08-24): drives the
+# off-db analyze road (`IdeSession::update_and_analyze`) the studio editor
+# actually pays per keystroke — the road compile_bench's ProjectDb pulls
+# never touch.
+brink-ide = { workspace = true }
 # For corpus/bench case discovery: the shared pruned directory walk (issue
 # #1433) every recursive traversal in the workspace routes through, instead
 # of each one hand-rolling a `read_dir` recursion.

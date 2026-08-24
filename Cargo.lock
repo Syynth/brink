@@ -2361,6 +2361,7 @@ dependencies = [
  "brink-driver",
  "brink-environment",
  "brink-format",
+ "brink-ide",
  "brink-ir",
  "brink-project-config",
  "brink-runtime",
