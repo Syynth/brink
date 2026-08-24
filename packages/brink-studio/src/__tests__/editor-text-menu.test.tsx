@@ -54,6 +54,29 @@ describe("EditorTextMenuHost", () => {
     expect(container!.querySelector(".brink-text-menu")).toBeNull();
   });
 
+  it("does NOT hijack Escape while closed (the four-E2E-red regression)", () => {
+    // The dismiss contract must mount WITH the menu: an always-mounted
+    // capture-phase Escape listener swallowed drag-cancel, maximize
+    // restore, and keymap defaults across the app.
+    mount();
+    const ev = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    act(() => {
+      document.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it("Escape closes an open menu", () => {
+    const store = mount();
+    act(() => store.getState().openTextMenu(request(false)));
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(store.getState().textMenu).toBeNull();
+  });
+
   it("disables Cut/Copy without a selection; click runs the action and closes", () => {
     const store = mount();
     const req = request(false);

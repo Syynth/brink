@@ -10,6 +10,7 @@
  */
 
 import { useRef, type ReactElement } from "react";
+import type { EditorTextMenuRequest } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
 import { useContextMenuDismiss } from "./BinderContextMenu.js";
 
@@ -23,11 +24,24 @@ interface TextMenuItem {
 export function EditorTextMenuHost(): ReactElement | null {
   const textMenu = useStudioStore((s) => s.textMenu);
   const closeTextMenu = useStudioStore((s) => s.closeTextMenu);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useContextMenuDismiss(menuRef, closeTextMenu);
-
+  // The dismiss contract (global capture-phase Escape included) must exist
+  // ONLY while a menu is open — hoisted into an inner component so the
+  // listeners mount with the menu. The first cut ran the hook here
+  // unconditionally and swallowed every Escape in the app (drag cancel,
+  // maximize restore, keymap defaults — four E2E reds).
   if (!textMenu) return null;
+  return <EditorTextMenu menu={textMenu} onClose={closeTextMenu} />;
+}
+
+function EditorTextMenu({
+  menu: textMenu,
+  onClose: closeTextMenu,
+}: {
+  menu: EditorTextMenuRequest;
+  onClose: () => void;
+}): ReactElement {
+  const menuRef = useRef<HTMLDivElement>(null);
+  useContextMenuDismiss(menuRef, closeTextMenu);
 
   const items: TextMenuItem[] = [
     { label: "Cut", shortcut: "⌘X", disabled: !textMenu.hasSelection, run: textMenu.cut },
