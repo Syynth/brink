@@ -78,9 +78,29 @@ export function FolderOpenIcon({ size = 13 }: IconProps) {
   );
 }
 
-/** The filled droplet — an EXPANDED file in Structure mode (the outline
- *  droplet is collapsed; the icon carries the expansion state). */
-export function BrinkFileOpenIcon({ size = 13 }: IconProps) {
+/** A filled closed folder — collapsed WITH content ("something folded
+ *  inside"; ruled 2026-08-23: filled = expandable-and-closed, outline =
+ *  expanded or leaf). */
+export function FolderFilledIcon({ size = 13 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinejoin="round"
+      aria-hidden
+      focusable={false}
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}
+
+/** The filled droplet — a collapsed file WITH knots (same fill rule). */
+export function BrinkFileFilledIcon({ size = 13 }: IconProps) {
   return (
     <svg
       width={size}
@@ -99,8 +119,8 @@ export function BrinkFileOpenIcon({ size = 13 }: IconProps) {
   );
 }
 
-/** The filled diamond — an EXPANDED knot (outline = collapsed). */
-export function KnotOpenIcon({ size = 12 }: IconProps) {
+/** The filled diamond — a collapsed knot WITH stitches (same fill rule). */
+export function KnotFilledIcon({ size = 12 }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable={false}>
       <path d="M12 3l7 9-7 9-7-9z" />

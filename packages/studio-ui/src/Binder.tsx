@@ -17,12 +17,13 @@ import {
 } from "@brink/studio-store";
 import {
   BrinkFileIcon,
-  BrinkFileOpenIcon,
+  BrinkFileFilledIcon,
   CollapseAllIcon,
   ExpandAllIcon,
   FilePlusIcon,
   FilesModeIcon,
   FolderPlusIcon,
+  FolderFilledIcon,
   FolderIcon,
   FolderOpenIcon,
   FunctionIcon,
@@ -33,8 +34,8 @@ import {
   StitchPlusIcon,
   GrabHandleIcon,
   WarningMarkIcon,
+  KnotFilledIcon,
   KnotIcon,
-  KnotOpenIcon,
   LibraryIcon,
   SearchIcon,
   StitchIcon,
@@ -56,22 +57,27 @@ function libraryFolderKey(folderKey: string): string {
 
 /** The v2 icon element for a row kind (#3037). Tinting stays with the
  *  `.brink-binder-icon-*` classes ({@link iconClass}) — these render in
- *  `currentColor`. The icon IS the expansion indicator (Zed-style,
- *  ruled 2026-08-23 — no chevrons): open vs closed folder, filled vs
- *  outline droplet/diamond. */
+ *  `currentColor`. The icon IS the expansion indicator (Zed-style, no
+ *  chevrons), and the FILL carries the state (ruled 2026-08-23):
+ *  **filled = collapsed with content inside; outline = expanded or a
+ *  leaf.** Folders additionally switch to the open-folder silhouette
+ *  when expanded. */
 function iconElement(
   kind: string,
   isFunction = false,
+  expandable = false,
   expanded = false,
 ): React.ReactElement | null {
+  const filled = expandable && !expanded;
   switch (kind) {
     case "folder":
-      return expanded ? <FolderOpenIcon /> : <FolderIcon />;
+      if (expandable && expanded) return <FolderOpenIcon />;
+      return filled ? <FolderFilledIcon /> : <FolderIcon />;
     case "file":
-      return expanded ? <BrinkFileOpenIcon /> : <BrinkFileIcon />;
+      return filled ? <BrinkFileFilledIcon /> : <BrinkFileIcon />;
     case "knot":
       if (isFunction) return <FunctionIcon />;
-      return expanded ? <KnotOpenIcon /> : <KnotIcon />;
+      return filled ? <KnotFilledIcon /> : <KnotIcon />;
     case "stitch":
       return <StitchIcon />;
     case "library":
@@ -408,7 +414,7 @@ export function BinderRow({
           }
           onClick={expandable ? handleChevronClick : undefined}
         >
-          {iconElement(kind, isFunction, expandable && isExpanded)}
+          {iconElement(kind, isFunction, expandable, isExpanded)}
         </span>
         {editing ? (
           // `key={editing.initial}` forces a fresh RenameInput instance (and
@@ -1802,7 +1808,7 @@ function BinderInner() {
           depth={depth}
           kind="folder"
           label={folder.name}
-          expandable={true}
+          expandable={folder.children.length > 0}
           isExpanded={isExpanded}
           isActive={false}
           isSelected={selectedKeys.has(folder.key)}
