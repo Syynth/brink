@@ -112,14 +112,74 @@ up in a profile.
   (cold-vs-warm identity across an edit sequence + the incremental fuzz
   suite extended to knot-interior edits).
 - **Cross-knot constructs.** Anything lowering resolves ACROSS knot
-  boundaries today (gather chains falling through knot ends, weave scope,
-  trailing-content attachment, doc-comment attachment to the next knot)
-  must be enumerated and either carried in the file-header/assembly layer
-  or force adjacent-segment coupling in the key. This enumeration is
-  implementation step zero after the measurement gate.
+  boundaries today must be enumerated and either carried in the
+  file-header/assembly layer or force adjacent-segment coupling in the
+  key. **Done — see §4a.**
 - **Diagnostics ranges** rebase with their segment; a diagnostic's
   message must never bake in absolute positions.
 - **Oracle ratchet + tier goldens are the behavioral floor**, as always.
+
+
+## 4a. Cross-knot construct enumeration (step zero — done 2026-08-24)
+
+**Headline: the production ink path already lowers per-knot.** The db
+road's `lower_file` (`brink-db/src/queries/mod.rs`) composes
+`lower_single_knot` per knot — each with a **fresh** `LowerScope` and
+`EffectSink` — plus `lower_top_level`, then assembles. Since today's
+output is the correctness baseline, the byte-identity of that
+composition *proves* knot lowering carries no cross-knot lowering state:
+`LowerScope` is `{file_id, current_knot, current_stitch}` (no counters),
+the sink is a plain `Vec<Diagnostic>`, and `DefinitionId` is a 56-bit
+hash of the qualified *name* (`brink-format/src/id.rs`) — offset-free,
+so no renumbering ever enters the picture. The spec's original worry
+list (gather fall-through, weave scope, trailing-content attachment)
+dissolves: those are knot-internal or symbolic at HIR level, and the
+firewall's step 2 wraps *existing* entry points in per-segment memos
+rather than teasing apart a whole-file recursion. What remains is the
+enumeration below — boundary rules, hoisted collections, assembly
+passes, and the parse seam.
+
+| # | Construct | Today | Per-knot classification |
+|---|---|---|---|
+| 1 | Knot/stitch bodies, weave scope, gathers, labels, diverts | `lower_single_knot`, fresh scope; diverts stay symbolic names | **Segment-local** (proven by the production composition) |
+| 2 | `///` doc blocks preceding a knot/stitch header | `collect_doc_lines` walks `prev_token()` **across the node boundary** (`lower/doc_comment.rs`) | **Segmentation boundary rule** — the one true adjacent coupling: a segment starts at the first line of the contiguous preceding `///` block (broken by a blank line, a plain `//`, or content — exactly `collect_doc_lines`' rules). Precedent: the ruled editor invariant that a doc block is structurally part of the declaration it precedes |
+| 3 | Knot directives (`#@local` / `#@private` / `#@effects` / `#@was`) | Leading tag-line run **inside** `KNOT_BODY` (`leading_body_directives`) | Segment-local |
+| 4 | Decl directives before `VAR`/`CONST`/`LIST`/`EXTERNAL` | `directives_before` backward walk (blank-line-tolerant) | Segment-local — a declaration and its directive lines always share a segment |
+| 5 | `VAR`/`CONST`/`LIST` declarations | Whole-tree `descendants()` walk — global regardless of nesting, legal inside knot bodies | **Hoisted contributions**: each segment emits its own decls; assembly concatenates in document order (segment order ⊃ document order, so ordering-sensitive diagnostics stay byte-identical) |
+| 6 | `STRUCT` / `EXTERNAL` / `INCLUDE` / `IMPORT` / top-level stitches | Direct-children scans — can only appear before the first knot header | **Header segment** (top-level stitches, promoted to knots today, get their own segments) |
+| 7 | Root content before the first knot | `lower_weave_body(file.syntax())` | Header segment |
+| 8 | Module identity (`#@module` / `#@was`) + file-wide visibility/was collections | Whole-tree walks (`directive.rs`) | Hoisted contributions + assembly merge; the `E049`/`E095` arbitration stays in assembly |
+| 9 | `TODO:` author notes (`E189`) | Whole-tree walk already dedup-partitioned by `SkipInsideKnots` | Already segment-partitioned |
+| 10 | Parse errors → `E037` | One whole-file `parse.errors()` vector | Per-segment errors, rebased at assembly |
+| 11 | `project_manifest` (B0.4), `check_anonymous_stateful` (`E157`), `validate_admission` (+ `file_len`) | Whole-file passes over the assembled `HirFile` | **Stay in assembly**, O(file) but shallow; their true share of the 24 ms is currently masked by the double-lowering defect below |
+| 12 | `Provenance { file, range }` on every HIR node; `Diagnostic.range`; `DocBlock` ranges | Absolute offsets from the whole-file tree | **The rebasing surface**: segment memos emit segment-relative ranges; assembly adds each segment's current offset (one add per range) |
+| 13 | Suppressions / `allow_scopes` | Separate `raw`-road CST scan (`suppressions_query`) | Unchanged whole-file scan (cheap); decomposable later if it ever shows in a profile |
+
+**The parse seam is where the byte-identity risk actually concentrates.**
+Today one whole-file parse feeds every knot; per-segment parsing must
+produce the same subtrees. Two verified lexer facts shape the segmenter:
+multi-line `/* … */` block comments exist, and an unterminated `/*`
+lexes to EOF as one token — so a `=== header ===` inside a comment (or
+string) must not split, and an unterminated construct must swallow the
+rest of the file in both worlds. Both hold **by construction** if
+segmentation slices the SAME lexer's token stream (one whole-file lex
+per edit — cheap, inside today's 3.8 ms parse share) at header-token
+boundaries. Rowan recovery differences at segment edges are what the §4
+cold-vs-warm identity gate and the knot-interior fuzz extension exist to
+pin.
+
+**Found in passing — the double-lowering defect (independent of this
+spec, fix first):** `lower_file` builds its knots via `lower_single_knot`
+and its top-level diagnostics via `lower_top_level`, then ALSO calls the
+whole-file `lower()` just to harvest declarations — discarding that
+call's knots, root content, manifest, and diagnostics. Net effect per
+keystroke: every knot is lowered **twice**, every declaration twice, the
+manifest projected twice, the author-warning walk run twice. A
+restructured `lower_file` that computes declarations once (no full
+`lower()` call) should cut a large slice of the 24 ms lower stage before
+any segmentation work begins, and shrinks the firewall's remaining
+target. Tracked as issue #3088; the byte-identity bar (goldens + ratchet)
+applies to it the same way.
 
 ## 5. Ruled (2026-08-24)
 
