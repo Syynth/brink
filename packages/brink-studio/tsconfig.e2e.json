@@ -25,7 +25,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["@playwright/test", "node"]
+    // "vite/client": this program reaches src/ transitively (specs import
+    // src modules), and src/mount.tsx reads `import.meta.env` (the perf
+    // probe's dev edge, 2026-08-24) — typed by vite/client, which the
+    // "types" override here would otherwise drop.
+    "types": ["@playwright/test", "node", "vite/client"]
   },
   "include": ["e2e", "playwright.config.ts"]
 }
