@@ -3,10 +3,12 @@
 pub mod ast;
 pub mod lexer;
 pub mod parser;
+pub mod segment;
 pub mod syntax_kind;
 
 pub use lexer::lex;
 pub use parser::{Parse, ParseError, parse, parse_with_cache};
+pub use segment::{Segment, SegmentKind, segment_file};
 pub use syntax_kind::{InkLanguage, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 impl Parse {
