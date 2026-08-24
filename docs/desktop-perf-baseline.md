@@ -277,3 +277,49 @@ Runs are per-machine measurements and are gitignored; judge fixes by
 running the same scenario N times before and after on the same machine and
 comparing. The compare tool marks regressions `▲` / improvements `▼`
 beyond a 10% noise threshold — informational, never a CI gate (ruled).
+
+## Option A delta (2026-08-24, same day — the db-road migration landed)
+
+Recorded runs: `perf-runs/2026-08-24T19-*` vs the `16-5*` baselines
+(measured on an idle machine — an earlier contaminated bench that ran
+concurrently with a wasm build produced a phantom 3× "regression" whose
+triage is itself a method lesson: **never bench under load**; a salsa
+event-count probe then showed the db pull executes each query exactly
+once per edit, textbook incrementality).
+
+Native (`ide_bench`, 10-run medians):
+
+| Row | Before | After |
+|---|---:|---:|
+| small-file keystroke | 2.5 ms | **1.1 ms** |
+| large-file keystroke | 32.6 ms | **30.6 ms** |
+| — snapshot clone | 29.7 ms | **deleted** |
+| — db analysis pull | — | 30.0 ms |
+| init analyze-each @50 | 81 ms | **61 ms** |
+| repeat compile (no edit) | 3.8 ms | **0.0 ms** |
+
+Browser (typing-burst / compile-cycles):
+
+| Metric | Before | After |
+|---|---:|---:|
+| keystroke-to-paint p95 (large file) | 104 ms | **96 ms** |
+| `wasm.updateDocument` p95 | 37.2 ms | 34.6 ms |
+| compile cycle p95 | 44 ms | **35 ms** |
+| `wasm.compileProject` p95 | 9.6 ms | **2.9 ms** |
+| `perfCompileProbe` | [5.7, 3.8] ms | **[0.1, 0.0] ms** |
+
+**Honest verdict on #3063:** the clone is deleted, but large-file typing
+improved only ~6–8%, not the hoped ~28 ms — the old road's "cheap
+analysis" was cheap only because the clone had already paid the big
+file's re-lowering; the db pull now carries that same irreducible
+single-file pipeline (parse + lower + resolve + per-file diagnostics +
+index rebuild over a 5.9k-line file, ~30 ms native and wasm alike).
+What the migration DID buy: the divergence class closed structurally,
+#2885 closed, the LSP's background pass memoized (unchanged roots
+validate instead of re-analyzing), compile-side costs collapsed, and
+small-file/startup improved. The keystroke budget's remaining owners are
+now sharply named: the #3064 whole-doc query stack (~60 ms) and the
+single-big-file re-analysis (~30 ms) — the latter needing per-knot
+incremental lowering or the async-architecture phase. **The 8 ms budget's
+pressure mechanism is functioning exactly as ruled: the residual is the
+architecture phase's quantified case.**
