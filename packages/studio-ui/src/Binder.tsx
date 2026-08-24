@@ -8,7 +8,7 @@ import {
   type ContextMenuTarget,
 } from "./BinderContextMenu.js";
 import { dispatchSymbolAction } from "./symbolMenuActions.js";
-import type { FileOutline, DocumentSymbol } from "@brink/wasm-types";
+import type { Diagnostic, FileOutline, DocumentSymbol } from "@brink/wasm-types";
 import type { TabTarget } from "@brink/studio-store";
 import {
   EMPTY_BINDER_ORDER,
@@ -25,7 +25,10 @@ import {
   FolderPlusIcon,
   FolderIcon,
   FunctionIcon,
+  GearIcon,
+  ErrorMarkIcon,
   GrabHandleIcon,
+  WarningMarkIcon,
   KnotIcon,
   LibraryIcon,
   StitchIcon,
@@ -178,6 +181,47 @@ interface DropTarget {
   targetKey?: string;
 }
 
+// ── Diagnostics marks (#3041) ───────────────────────────────────────
+
+export interface RowMarks {
+  errors: number;
+  warnings: number;
+}
+
+/** Per-file diagnostic counts (Error vs Warning; Info/Hint don't mark).
+ *  The file's count is the SUM over the file — the roll-up rule the
+ *  Structure artboard states. */
+export function fileMarks(diagnostics: readonly Diagnostic[]): Map<string, RowMarks> {
+  const map = new Map<string, RowMarks>();
+  for (const d of diagnostics) {
+    const file = d.file;
+    if (file === undefined) continue;
+    if (d.severity !== "Error" && d.severity !== "Warning") continue;
+    const entry = map.get(file) ?? { errors: 0, warnings: 0 };
+    if (d.severity === "Error") entry.errors += 1;
+    else entry.warnings += 1;
+    map.set(file, entry);
+  }
+  return map;
+}
+
+/** A symbol's own counts: diagnostics whose start falls inside its full
+ *  body range. */
+export function symbolMarks(
+  diagnostics: readonly Diagnostic[],
+  file: string,
+  sym: DocumentSymbol,
+): RowMarks {
+  const marks: RowMarks = { errors: 0, warnings: 0 };
+  for (const d of diagnostics) {
+    if (d.file !== file) continue;
+    if (d.start < sym.full_start || d.start >= sym.full_end) continue;
+    if (d.severity === "Error") marks.errors += 1;
+    else if (d.severity === "Warning") marks.warnings += 1;
+  }
+  return marks;
+}
+
 // ── Row component ──────────────────────────────────────────────────
 
 interface RowProps {
@@ -204,6 +248,8 @@ interface RowProps {
   /** Dim the row (a file on disk that nothing INCLUDEs — outside the
    *  compile closure). */
   dimmed?: boolean;
+  /** Diagnostics marks (#3041): error/warning counts, zero-suppressed. */
+  marks?: RowMarks;
   onChevronClick: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
@@ -239,6 +285,7 @@ export function BinderRow({
   editing,
   badge,
   dimmed = false,
+  marks,
   onChevronClick,
   onClick,
   onDoubleClick,
@@ -352,6 +399,22 @@ export function BinderRow({
           <RenameInput key={editing.initial} {...editing} />
         ) : (
           <span className="brink-binder-label">{label}</span>
+        )}
+        {marks !== undefined && !editing && (marks.errors > 0 || marks.warnings > 0) && (
+          <span className="brink-binder-marks">
+            {marks.errors > 0 && (
+              <span className="brink-mark brink-mark-error">
+                <ErrorMarkIcon />
+                {marks.errors}
+              </span>
+            )}
+            {marks.warnings > 0 && (
+              <span className="brink-mark brink-mark-warning">
+                <WarningMarkIcon />
+                {marks.warnings}
+              </span>
+            )}
+          </span>
         )}
         {badge !== undefined && !editing && (
           <span className={"brink-binder-badge brink-binder-badge-" + badge.tone}>
@@ -583,7 +646,17 @@ function BinderInner() {
   // `story_graph`), so every existing tree/drag/search/rename/delete code
   // path below keeps operating on exactly the same file set it always did —
   // the Library section (below) is the only new consumer of the mounted half.
-  const outline = useMemo(() => rawOutline.filter((f) => !f.mounted), [rawOutline]);
+  // The pinned config row (#3042) owns brink.toml — it leaves the tree.
+  const outline = useMemo(
+    () => rawOutline.filter((f) => !f.mounted && f.path !== "brink.toml"),
+    [rawOutline],
+  );
+  const hasConfig = useMemo(
+    () => rawOutline.some((f) => !f.mounted && f.path === "brink.toml"),
+    [rawOutline],
+  );
+  const diagnosticsList = useStudioStore((s) => s.diagnosticsList);
+  const marksByFile = useMemo(() => fileMarks(diagnosticsList), [diagnosticsList]);
   const libraryFiles = useMemo(() => rawOutline.filter((f) => f.mounted), [rawOutline]);
   const closureFiles = useStudioStore((s) => s.closureFiles);
   const entryFile = useStudioStore((s) => s.entryFile);
@@ -1423,6 +1496,7 @@ function BinderInner() {
           rowKey={knotKey}
           depth={depth}
           kind="knot"
+          marks={symbolMarks(diagnosticsList, path, knot)}
           isFunction={knot.detail === "function"}
           label={knot.name}
           expandable={hasStitches}
@@ -1486,6 +1560,7 @@ function BinderInner() {
                 : undefined
           }
           dimmed={notIncluded}
+          marks={marksByFile.get(file.path)}
           expandable={hasChildren}
           isExpanded={isExpanded}
           isActive={isActive}
@@ -1771,6 +1846,20 @@ function BinderInner() {
           onDrop={handleRootDrop}
         >
           Move to project root
+        </div>
+      )}
+      {hasConfig && (
+        <div className="brink-binder-config-slot">
+          <div
+            className="brink-binder-row brink-binder-config-row"
+            data-binder-row-key="brink.toml"
+            onClick={() => openTarget({ kind: "file", path: "brink.toml" }, false)}
+          >
+            <span className="brink-binder-icon brink-binder-icon-config">
+              <GearIcon />
+            </span>
+            <span className="brink-binder-config-name">brink.toml</span>
+          </div>
         </div>
       )}
       {renderCreateGroup("", 0, true)}
