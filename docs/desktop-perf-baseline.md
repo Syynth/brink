@@ -148,6 +148,26 @@ task **2.9 s**. The desktop shell adds the 2×N serial IPC read on top
 | 5 | Scroll path: rails gutter per-line maps, viewportChanged rebuilds, hover machinery | **Confirmed, led by the rails gutter**: 19.7 ms per rebuild batch, 1.5 s per full scroll pass; hover/mouse-move 32–40 ms per event | fast-scroll rows |
 | 6 | Startup O(N²): double IPC read + per-file analysis | **Confirmed shape natively** (analyze-each 81 ms vs analyze-once 33 ms at 50 files, gap superlinear); first compile 2.2 s in-browser; desktop IPC half still to be timed in the shell | `ide_init.*`; project-open |
 
+## Budgets (ruled 2026-08-24)
+
+The frame budget is **8 ms** (120 fps — ProMotion macOS is the target
+hardware). "Done" is falsifiable against these, measured on the perf
+fixture via the scenario runner; whatever the optimization wave cannot
+meet is the quantified case for the async-architecture phase (the
+standing-pressure mechanism from the optimization-first ruling):
+
+| Scenario | Budget | Baseline today |
+|---|---|---|
+| Keystroke-to-paint p95 (`input.keydown`, large file) | ≤ 8 ms | 104 ms |
+| High-speed scroll: every frame, text ahead of the scroll | no frame > 8 ms | long frames p50 33 ms, max 667 ms |
+| Compile cycle (on its new save/interaction triggers) | ≤ 100 ms | 340 ms p50, 1.1–2.2 s worst |
+| Project open → first paint | ≤ 1 s | ~3.0 s |
+
+Note the keystroke budget is ~3.5× smaller than today's snapshot clone
+alone — it is deliberately not reachable by trimming the synchronous
+pipeline, only by removing whole-document work from the keystroke path
+entirely (viewport-scoping / memoized deltas / async).
+
 ## Deep dive: the keystroke, fully attributed
 
 The typing-burst spans sum to ≈94.6 ms per keystroke against the observed
