@@ -123,6 +123,7 @@ export {
   TodosBadge,
   TODO_DIAGNOSTIC_CODE,
   collectTodoItems,
+  containerAt,
   matchesTodoFilter,
   groupTodoItems,
   todoKey,
@@ -141,6 +142,7 @@ export {
   SearchView,
   registerSearchFocusCommand,
 } from "./SearchView.js";
+export { SearchCardList } from "./SearchCardList.js";
 export { ElementDropdown } from "./ElementDropdown.js";
 export { QuickOpen, QUICK_OPEN_COMMAND_ID, buildQuickOpenItems } from "./QuickOpen.js";
 export { BinderContextMenu } from "./BinderContextMenu.js";

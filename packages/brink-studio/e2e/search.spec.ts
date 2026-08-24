@@ -1,19 +1,24 @@
 /**
- * Search tool window e2e (issue #94, spec §4; editable results buffer #322 D).
+ * Search tool window e2e (issue #94, spec §4; result cards
+ * docs/search-results-cards-spec.md, PR C).
  *
- * The read-only match tree was replaced by the editor-owned *editable* results
- * buffer (design D): a synthetic CodeMirror document — one header line per file
- * (`path (N)`) followed by a match line per match (`  <line>: <source>`).
- * Assertions therefore read the buffer's document (via the `__brinkSearchBufferView`
- * hook, since CM6 only renders the viewport into the DOM) rather than tree DOM.
+ * The editable results buffer (#322 design D) was replaced by the per-match
+ * card list: one card per match — a header row (`file:line`, containing
+ * knot, edited badge, reveal ↗) over the match's own small editable CM6
+ * buffer (match line + context window). Card headers and static bodies are
+ * plain DOM, so assertions read the DOM; a card's editable buffer is
+ * reached through the `__brinkSearchCardViews` hook (keyed by the stable
+ * match id `path#ordinal`), since CM6 only renders the viewport.
  *
- * Real-input flows: Mod-Shift-F opens the window and focuses the query input
- * (and never closes it), Mod-6 is the generated toggle, live search renders
- * results grouped by file with match counts, revealing a match navigates to the
- * exact span (asserted via __brinkView selection), case/regex toggles change
- * result counts, an invalid regex shows an inline error, editing a match row
- * rewrites the source (per-match replace), and replace-all runs behind an inline
- * confirmation and rewrites multiple files.
+ * Real-input flows: Mod-Shift-F opens the window and focuses the query
+ * input (and never closes it), Mod-6 is the generated toggle, live search
+ * renders cards grouped in sorted-file order with a count summary,
+ * revealing a card navigates to the exact span, case/regex toggles change
+ * result counts, an invalid regex shows an inline error, editing inside a
+ * card rewrites the source (write-through) while the frozen snapshot keeps
+ * every card, replace-all runs behind an inline confirmation, collapse
+ * works per card and via the summary's all-buttons, and cmd-clicking a
+ * definition routes Find References into the panel (ruled 2026-08-24).
  */
 
 import { test, expect, type Page } from "@playwright/test";
@@ -23,33 +28,19 @@ async function openSearch(page: Page): Promise<void> {
   await expect(page.locator(".search-view")).toBeVisible();
 }
 
-/** The results buffer's full synthetic document text (header + match lines).
- *  CM6 only mounts the viewport into the DOM, so full-document assertions read
- *  the view's state through the e2e hook, like editorDoc does for __brinkView. */
-function bufferDoc(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const view = (window as any).__brinkSearchBufferView;
-    return view ? (view.state.doc.toString() as string) : "";
-  });
+/** Card headers' `file:line` labels, in list order. */
+function cardLocs(page: Page): Promise<string[]> {
+  return page.locator(".search-card .search-card-loc").allTextContents();
 }
 
-/** Header lines in the buffer, one per matched file: `path (N)`. */
-async function fileHeaders(page: Page): Promise<string[]> {
-  const doc = await bufferDoc(page);
-  return doc.split("\n").filter((line) => /^\S.*\(\d+\)$/.test(line));
+function cardCount(page: Page): Promise<number> {
+  return page.locator(".search-card").count();
 }
 
-/** Match lines in the buffer: `  <line>: <source>` (two-space indent + `N: `). */
-async function matchLines(page: Page): Promise<string[]> {
-  const doc = await bufferDoc(page);
-  return doc.split("\n").filter((line) => /^ {2}\d+: /.test(line));
-}
-
-/** Type a query and wait for the debounced search to render the buffer. */
+/** Type a query and wait for the debounced search to render cards. */
 async function search(page: Page, query: string): Promise<void> {
   await page.locator(".search-input").fill(query);
-  await expect(page.locator(".search-results-buffer .cm-content")).toBeVisible();
-  await expect.poll(() => matchLines(page).then((m) => m.length)).toBeGreaterThan(0);
+  await expect(page.locator(".search-card").first()).toBeVisible();
 }
 
 /** The focused editor view's selection head (CM6, UTF-16 offsets). */
@@ -64,17 +55,13 @@ function editorDoc(page: Page): Promise<string> {
   return page.evaluate(() => (window as any).__brinkView.state.doc.toString());
 }
 
-/**
- * The buffer `.cm-line` element whose text starts with `  <line>: `. Match rows
- * are plain CM6 lines (no per-row class); we locate them by their rendered
- * text. The line must be in the viewport — the fixtures are tiny, so every row
- * is rendered.
- */
-function matchRowLocator(page: Page, index = 0) {
-  return page
-    .locator(".search-results-buffer .cm-line")
-    .filter({ hasText: /^\s*\d+:\s/ })
-    .nth(index);
+/** A visible card's own CM6 document, via the e2e hook (`path#ordinal`). */
+function cardDoc(page: Page, id: string): Promise<string> {
+  return page.evaluate(
+    (cardId) =>
+      (window as any).__brinkSearchCardViews?.[cardId]?.state.doc.toString() ?? "",
+    id,
+  );
 }
 
 test.describe("search tool window", () => {
@@ -104,25 +91,27 @@ test.describe("search tool window", () => {
     await expect(page.locator(".search-view")).toHaveCount(0);
   });
 
-  test("results are grouped by file with match counts", async ({ page }) => {
+  test("cards render in sorted-file order with the count summary", async ({ page }) => {
     await openSearch(page);
     await search(page, "intro");
 
-    // Sorted file order in the buffer: main.ink header first (1 match), the
-    // included story second (2 matches); three match lines total.
-    await expect
-      .poll(() => fileHeaders(page))
-      .toEqual(["main.ink (1)", "toppled-temple.ink (2)"]);
-    await expect.poll(() => matchLines(page).then((m) => m.length)).toBe(3);
+    // One card per match, sorted file order: main.ink's single "intro"
+    // first, then the included story's two.
+    await expect.poll(() => cardLocs(page).then((l) => l.length)).toBe(3);
+    const locs = await cardLocs(page);
+    expect(locs[0]).toMatch(/^main\.ink:\d+$/);
+    expect(locs[1]).toMatch(/^toppled-temple\.ink:\d+$/);
+    expect(locs[2]).toMatch(/^toppled-temple\.ink:\d+$/);
+    await expect(page.locator(".search-summary-count")).toHaveText(
+      "3 results in 2 files",
+    );
   });
 
-  test("revealing a result navigates to the exact span", async ({ page }) => {
+  test("revealing a card navigates to the exact span", async ({ page }) => {
     await openSearch(page);
     await search(page, "intro");
 
-    // Double-click the first match row → editor.reveal (buffer's reveal gesture,
-    // replacing the tree row's single-click).
-    await matchRowLocator(page, 0).dblclick();
+    await page.locator(".search-card-reveal").first().click();
 
     // main.ink is the focused view; the selection sits on its one "intro".
     await expect.poll(() => editorDoc(page)).toContain("-> intro");
@@ -130,15 +119,11 @@ test.describe("search tool window", () => {
     expect(await selectionHead(page)).toBe(doc.indexOf("intro"));
   });
 
-  test("Enter from a focused match row reveals it (keyboard-reachable)", async ({
-    page,
-  }) => {
+  test("reveal is keyboard-reachable (focused ↗ + Enter)", async ({ page }) => {
     await openSearch(page);
     await search(page, "intro");
 
-    // Focus the first match row and press Enter — the buffer's keyboard reveal
-    // (replacing the tree's ArrowDown-select + Enter from the query input).
-    await matchRowLocator(page, 0).click();
+    await page.locator(".search-card-reveal").first().focus();
     await page.keyboard.press("Enter");
 
     await expect.poll(() => editorDoc(page)).toContain("-> intro");
@@ -146,28 +131,65 @@ test.describe("search tool window", () => {
     expect(await selectionHead(page)).toBe(doc.indexOf("intro"));
   });
 
+  test("cards collapse to a header preview; the summary buttons hit all of them", async ({
+    page,
+  }) => {
+    await openSearch(page);
+    await search(page, "intro");
+    await expect.poll(() => cardCount(page)).toBe(3);
+
+    // Per-card collapse: buffer gone, truncated preview in the header.
+    const first = page.locator(".search-card").first();
+    await first.locator(".search-card-chevron").click();
+    await expect(first.locator(".search-card-editor")).toHaveCount(0);
+    await expect(first.locator(".search-card-preview")).toBeVisible();
+
+    // Collapse all (binder-style toolbar buttons), then expand all.
+    await page.locator(".search-collapse-all").click();
+    await expect(page.locator(".search-card-editor")).toHaveCount(0);
+    await page.locator(".search-expand-all").click();
+    await expect
+      .poll(() => page.locator(".search-card-editor").count())
+      .toBeGreaterThan(0);
+  });
+
+  test("the context knob retunes every card's window", async ({ page }) => {
+    await openSearch(page);
+    await search(page, "intro");
+
+    // Default 1↑ 2↓ → the first card shows more than the match line.
+    await expect
+      .poll(() => cardDoc(page, "main.ink#0").then((d) => d.split("\n").length))
+      .toBeGreaterThan(1);
+
+    await page.locator(".search-context-toggle").click();
+    await page.getByLabel("Context lines before").fill("0");
+    await page.getByLabel("Context lines after").fill("0");
+
+    await expect
+      .poll(() => cardDoc(page, "main.ink#0").then((d) => d.split("\n").length))
+      .toBe(1);
+    await expect.poll(() => cardDoc(page, "main.ink#0")).toContain("intro");
+  });
+
   test("case and regex toggles change result counts; invalid regex shows an inline error", async ({
     page,
   }) => {
     await openSearch(page);
     await search(page, "the");
-    const insensitive = (await matchLines(page)).length;
+    const insensitive = await cardCount(page);
 
     // Case-sensitive narrows the count (capitalized "The" drops out).
     await page.locator('.search-option[data-option="caseSensitive"]').click();
-    await expect
-      .poll(() => matchLines(page).then((m) => m.length))
-      .toBeLessThan(insensitive);
-    const sensitive = (await matchLines(page)).length;
-    expect(sensitive).toBeGreaterThan(0);
+    await expect.poll(() => cardCount(page)).toBeLessThan(insensitive);
+    expect(await cardCount(page)).toBeGreaterThan(0);
     await page.locator('.search-option[data-option="caseSensitive"]').click();
 
     // Literal "knot|gold" matches nothing; as a regex the alternation hits.
     await page.locator(".search-input").fill("knot|gold");
     await expect(page.locator(".search-empty")).toBeVisible();
     await page.locator('.search-option[data-option="regex"]').click();
-    await expect(page.locator(".search-results-buffer .cm-content")).toBeVisible();
-    await expect.poll(() => matchLines(page).then((m) => m.length)).toBeGreaterThan(0);
+    await expect.poll(() => cardCount(page)).toBeGreaterThan(0);
 
     // Invalid regex: inline error, like the Settings JSON validation.
     await page.locator(".search-input").fill("(");
@@ -192,69 +214,79 @@ test.describe("search tool window", () => {
     await page.locator(".search-confirm-yes").click();
 
     // The open editor view reflects the edit (invalidateFile refresh)…
-    await expect
-      .poll(() => editorDoc(page))
-      .toContain("-> prologue");
+    await expect.poll(() => editorDoc(page)).toContain("-> prologue");
     // …the toast reports the counts…
     await expect(
       page
         .locator(".shell-notification-message")
         .filter({ hasText: "Replaced 3 matches in 2 files" }),
     ).toBeVisible();
-    // …and both rewritten files match the replacement text (two file headers).
+    // …and both rewritten files carry the replacement text.
     await search(page, "prologue");
-    await expect.poll(() => fileHeaders(page).then((h) => h.length)).toBe(2);
+    await expect
+      .poll(() =>
+        cardLocs(page).then((l) => new Set(l.map((s) => s.split(":")[0])).size),
+      )
+      .toBe(2);
+  });
+
+  test("cmd-clicking a definition routes Find References into the panel", async ({
+    page,
+  }) => {
+    // `EXTERNAL set_tint(color)` — the definition itself. Cmd-click there
+    // must show references, not self-navigate (ruled 2026-08-24).
+    await page
+      .locator('.cm-content span:text-is("set_tint")')
+      .first()
+      .click({ modifiers: ["ControlOrMeta"] });
+
+    await expect(page.locator(".search-refs-head")).toBeVisible();
+    await expect(page.locator(".search-refs-symbol")).toHaveText("set_tint");
+    await expect.poll(() => cardCount(page)).toBeGreaterThan(1);
+
+    // ✕ leaves references mode without re-running the typed query.
+    await page.locator(".search-mode-chip-clear").click();
+    await expect(page.locator(".search-refs-head")).toHaveCount(0);
   });
 });
 
-test.describe("search replace (screenplay fixture)", () => {
+test.describe("search cards (screenplay fixture)", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/?fixture=screenplay");
     await page.waitForSelector(".cm-content", { timeout: 10000 });
   });
 
-  test("editing a match row rewrites the source (per-match replace)", async ({
+  test("editing inside a card writes through; the frozen snapshot keeps every card", async ({
     page,
   }) => {
     await openSearch(page);
     await search(page, "figure");
-
-    // The buffer has no per-row replace button anymore: a match is replaced by
-    // editing its row inline. The committed edit routes back through
-    // applySearchRowEdit → ProjectSession.applyEdit — the same source-edit seam
-    // the old per-row Replace button used. (Double-click is bound to reveal, so
-    // we drive a caret edit instead of a word double-click.)
-    const row = matchRowLocator(page, 0);
-    await expect(row).toContainText("A figure steps into the light.");
+    const before = await cardCount(page);
+    expect(before).toBeGreaterThan(0);
 
     // Baseline: the "figure" source line, unedited.
     expect(await editorDoc(page)).toContain("A figure steps into the light.");
 
-    // Single-click to focus the buffer + place the caret inside the match line's
-    // editable source region (past the read-only `N: ` prefix), then type a
-    // marker. The exact caret column within the line isn't important — the point
-    // is that a keystroke on a match row rewrites *that source line* in place
-    // (through applySearchRowEdit → ProjectSession.applyEdit) without touching
-    // any other line.
-    await row.click();
+    // Click into the first card's editable buffer at the match line and type
+    // a marker. The whole-window edit commits after the idle pause (or on
+    // blur) through applySearchRowEdit → ProjectSession.applyEdit.
+    const firstCard = page.locator(".search-card").first();
+    // Click the hit mark itself so the caret lands inside the match line
+    // (a bare content click could land on a context line).
+    await firstCard.locator(".search-card-editor .brink-search-hit").click();
     await page.keyboard.type("[EDITED]");
 
-    // Commit is debounced; clicking the query input blurs the buffer and flushes
-    // the pending write, then the mounted CM6 view of main.ink refreshes from the
-    // rewritten source. Assert via __brinkView (the full focused-editor document —
-    // the visible DOM only renders the viewport, and there are now two
-    // .cm-content: editor + buffer).
+    // Blur the card (focus the query input) to flush the pending commit.
     await page.locator(".search-input").click();
     await expect.poll(() => editorDoc(page)).toContain("[EDITED]");
 
-    // The marker landed *inside the single "figure" source line* (the buffer
-    // rejects newline insertions, so exactly one source line changed): the edited
-    // line still ends with "into the light." and every other line is untouched.
+    // Exactly one region changed; sibling lines are untouched.
     const doc = await editorDoc(page);
-    const edited = doc.split("\n").filter((l) => l.includes("[EDITED]"));
-    expect(edited).toHaveLength(1);
-    expect(edited[0]).toContain("into the light.");
-    expect(doc).toContain("The lights dim."); // sibling line untouched
-    expect(doc).toContain("-> interrogation.evidence"); // sibling line untouched
+    expect(doc.split("\n").filter((l) => l.includes("[EDITED]"))).toHaveLength(1);
+    expect(doc).toContain("The lights dim.");
+    expect(doc).toContain("-> interrogation.evidence");
+
+    // Frozen snapshot: no card vanished because of the edit.
+    await expect.poll(() => cardCount(page)).toBe(before);
   });
 });

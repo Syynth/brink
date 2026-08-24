@@ -3247,3 +3247,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** Cmd/Ctrl-clicking a symbol token that IS the definition (the clicked position sits inside the definition's own span, same file) runs Find References instead of Go to Definition. Use sites keep navigating to the definition; empty/unavailable references fall back to selecting the declaration.
 - **WHY:** Maintainer: "cmd clicking a definition should do find references by default, not go to definition, because you're already... there" — self-navigation is a dead action at the definition, and the references surface is the useful counterpart from that position (matches the VS Code/JetBrains convention).
+
+## Search panel reuses the binder's expand/collapse-all buttons
+- **WHEN:** 2026-08-24
+- **PROJECT:** brink
+- **SYSTEM:** editor-ui
+- **SCOPE:** minor/local
+- **WHAT:** The search summary row's collapse-all/expand-all controls are the binder header's icon buttons (same `ExpandAllIcon`/`CollapseAllIcon` + `.brink-binder-tool` treatment), not bespoke glyphs.
+- **WHY:** Maintainer ("re-use the expand/collapse all buttons from the binder, please"): one icon vocabulary for the same operation across panels — new panels should reach for the existing control set before inventing controls.

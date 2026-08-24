@@ -127,9 +127,9 @@ test.describe("file egress — search replace-all (#137)", () => {
 
     await page.keyboard.press("ControlOrMeta+Shift+F");
     await page.locator(".search-input").fill("intro");
-    // Results rendered in the editable buffer (design D): its CM6 content is the
-    // signal that the debounced search produced matches to replace.
-    await expect(page.locator(".search-results-buffer .cm-content")).toBeVisible();
+    // Results rendered as cards (docs/search-results-cards-spec.md): a card
+    // is the signal that the debounced search produced matches to replace.
+    await expect(page.locator(".search-card").first()).toBeVisible();
 
     await page.locator(".search-replace-toggle").click();
     await page.locator(".search-replace-input").fill("prologue");

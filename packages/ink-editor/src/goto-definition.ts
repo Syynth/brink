@@ -80,7 +80,13 @@ export function gotoOrReferencesAt(
 
 export function gotoDefinitionExtension(options: GotoDefinitionOptions): Extension {
   return EditorView.domEventHandlers({
-    click(event: MouseEvent, view: EditorView) {
+    // Handled on MOUSEDOWN, not click: CM6's own cmd/ctrl-mousedown adds a
+    // multi-cursor and preventDefaults, which suppresses the browser's
+    // `click` event entirely — a click-bound handler never fires from a
+    // real pointer. Claiming mousedown (return true) also keeps CM from
+    // adding that stray cursor.
+    mousedown(event: MouseEvent, view: EditorView) {
+      if (event.button !== 0) return false;
       if (!(event.ctrlKey || event.metaKey)) return false;
 
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });

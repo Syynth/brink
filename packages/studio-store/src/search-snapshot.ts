@@ -360,6 +360,73 @@ export function remapSnapshot(
   return { ...snapshot, files, anchor };
 }
 
+// ── Card slices ─────────────────────────────────────────────────────
+
+/** The whole-line window of source a result card displays (PR C). Offsets
+ *  are UTF-16 into the file source; `text` is `source.slice(from, to)` —
+ *  whole lines, no trailing newline. */
+export interface CardSlice {
+  from: number;
+  to: number;
+  /** 1-based file line number of the slice's first line (gutter offset). */
+  firstLine: number;
+  text: string;
+  /** The match span within the slice, clamped; null when it collapsed to
+   *  nothing (a deletion swallowed it). */
+  hit: { from: number; to: number } | null;
+}
+
+/**
+ * Compute the card window around the span `[start, end)`: the line(s) it
+ * covers plus `context.before` lines above and `context.after` below,
+ * clamped to the file. Pure — the view derives one per match against the
+ * snapshot's `seenSource` (the text the span is valid against).
+ */
+export function cardSlice(
+  source: string,
+  start: number,
+  end: number,
+  context: SearchContextLines,
+): CardSlice {
+  const clampedStart = Math.max(0, Math.min(start, source.length));
+  const clampedEnd = Math.max(clampedStart, Math.min(end, source.length));
+
+  // Start of the line containing the span start, then `before` lines back.
+  let from = source.lastIndexOf("\n", clampedStart - 1) + 1;
+  if (clampedStart === 0) from = 0;
+  for (let i = 0; i < context.before && from > 0; i++) {
+    // The newline ending the previous line sits at `from - 1`; search
+    // strictly before it (a negative fromIndex would still scan index 0).
+    const prev = from >= 2 ? source.lastIndexOf("\n", from - 2) : -1;
+    from = prev + 1;
+  }
+
+  // End of the line containing the span end (the last covered character for
+  // a non-empty span), then `after` lines forward.
+  const endAnchor = clampedEnd > clampedStart ? clampedEnd - 1 : clampedStart;
+  let to = source.indexOf("\n", endAnchor);
+  if (to === -1) to = source.length;
+  for (let i = 0; i < context.after && to < source.length; i++) {
+    const next = source.indexOf("\n", to + 1);
+    to = next === -1 ? source.length : next;
+  }
+
+  let firstLine = 1;
+  for (let i = 0; i < from; i++) {
+    if (source.charCodeAt(i) === 10) firstLine++;
+  }
+
+  const hitFrom = clampedStart - from;
+  const hitTo = clampedEnd - from;
+  return {
+    from,
+    to,
+    firstLine,
+    text: source.slice(from, to),
+    hit: hitTo > hitFrom ? { from: hitFrom, to: hitTo } : null,
+  };
+}
+
 // ── Context lines ───────────────────────────────────────────────────
 
 /** Card context window: lines shown above/below the match line

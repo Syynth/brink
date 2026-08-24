@@ -48,6 +48,7 @@ import {
   type SearchSnapshot,
   type SnapshotOrigin,
 } from "../search-snapshot.js";
+import { getTokenTypeNames, type SemanticToken } from "@brink-lang/web";
 
 // ── Slice interface ─────────────────────────────────────────────────
 
@@ -138,6 +139,14 @@ export interface SearchSlice {
   /** Live source of a file, for the results buffer's stale/skip guard. Null
    *  when no project is loaded or the file is gone. */
   getSearchSource(path: string): string | null;
+  /**
+   * Semantic tokens + type names for a file with results, for the card
+   * list's per-file highlight cache (docs/search-results-cards-spec.md:
+   * one wasm call per file, cards slice their lines from it — never
+   * per-card calls). Uncached here — the view memoizes per (path, source).
+   * Null when no project is loaded or the file cannot be opened.
+   */
+  getSearchHighlighting(path: string): { tokens: SemanticToken[]; typeNames: string[] } | null;
   /**
    * Apply an edit the user made in the editable results buffer, routed to the
    * source through the shared apply-edits seam (updateFile + invalidate +
@@ -487,6 +496,21 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
     return project.getSession().getFileSource(path);
   },
 
+  getSearchHighlighting(path) {
+    const project = get()._project;
+    if (!project) return null;
+    const session = project.getSession();
+    const doc = session.openDocument(path);
+    if (doc === null) return null;
+    try {
+      return { tokens: session.getSemanticTokensDoc(doc), typeNames: getTokenTypeNames() };
+    } catch {
+      return null;
+    } finally {
+      session.closeDocument(doc);
+    }
+  },
+
   applySearchRowEdit(path, edit) {
     const state = get();
     const project = state._project;
@@ -495,8 +519,8 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
 
     const source = project.getSession().getFileSource(path);
     if (source === null) {
-      // File vanished underneath — refresh, apply nothing.
-      get().runSearch();
+      // File vanished underneath — apply nothing; the compile-seam remap
+      // marks the file's rows stale (frozen snapshot: rows are kept).
       return;
     }
 
@@ -512,7 +536,10 @@ export const createSearchSlice: StateCreator<StudioState, [], [], SearchSlice> =
       return;
     }
     documents.invalidateFile(path);
+    // Frozen snapshot (docs/search-results-cards-spec.md): a card edit must
+    // NOT re-run the search — the compile this triggers re-maps the snapshot
+    // spans (`remapSearchSnapshot` via setCompileResult), flagging rather
+    // than removing rows.
     documents.triggerCompile();
-    get().runSearch();
   },
 });

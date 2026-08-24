@@ -4,12 +4,12 @@
  *
  * The view is a thin surface over the store's search slice: it debounces
  * live search as the user types and renders the results through the
- * editor-owned *editable* results buffer ({@link SearchResultsBufferView} —
- * the locked Zed-style design D): a synthetic CodeMirror document mirroring
- * the cross-file matches (file headers + match lines), where editing a match
- * row routes the change back to the source document through the shared
- * apply-edits seam. Double-clicking a match row dispatches `editor.reveal`
- * exactly like the old tree rows.
+ * per-match card list ({@link SearchCardList} —
+ * docs/search-results-cards-spec.md, superseding #322's results buffer):
+ * one editable card per match (match line + context window), edits routed
+ * back through the shared apply-edits seam, `editor.reveal` on the card's
+ * ↗. The result set is a frozen snapshot — the summary row's ↻ (or a new
+ * search) is what replaces it; the context knob tunes the window.
  *
  * Replace-all is gated by an inline confirmation step (the acceptance
  * criterion "replace with confirmation"): the first click arms a confirm
@@ -26,9 +26,14 @@ import {
   type CommandRegistry,
   type ShellLayoutStore,
 } from "@brink/studio-shell";
-import { SEARCH_RESULT_CAP, type StudioStore } from "@brink/studio-store";
+import {
+  MAX_SEARCH_CONTEXT_LINES,
+  SEARCH_RESULT_CAP,
+  type StudioStore,
+} from "@brink/studio-store";
 import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
-import { SearchResultsBufferView } from "./SearchResultsBufferView.js";
+import { SearchCardList } from "./SearchCardList.js";
+import { CollapseAllIcon, ExpandAllIcon } from "./icons.js";
 
 export const SEARCH_TOOL_WINDOW_ID = "search";
 export const SEARCH_FOCUS_COMMAND_ID = "search.focus";
@@ -81,6 +86,95 @@ export function SearchCommands() {
     if (revealSeq > 0) ensureToolWindowOpen(layout, SEARCH_TOOL_WINDOW_ID);
   }, [revealSeq, layout]);
   return null;
+}
+
+// ── Summary-row tools ───────────────────────────────────────────────
+
+/** The `context 1↑ 2↓ ▾` knob: click opens a two-stepper popover tuning
+ *  the card context window (store-backed, clamped 0–9). */
+function SearchContextKnob() {
+  const contextLines = useStudioStore((s) => s.searchContextLines);
+  const setContextLines = useStudioStore((s) => s.setSearchContextLines);
+  const [open, setOpen] = useState(false);
+  const stepper = (label: string, key: "before" | "after") => (
+    <label className="search-context-stepper">
+      {label}
+      <input
+        type="number"
+        min={0}
+        max={MAX_SEARCH_CONTEXT_LINES}
+        value={contextLines[key]}
+        aria-label={`Context lines ${key}`}
+        onChange={(event) =>
+          setContextLines({ ...contextLines, [key]: Number(event.target.value) })
+        }
+      />
+    </label>
+  );
+  return (
+    <span className="search-context-knob">
+      <button
+        type="button"
+        className="search-context-toggle"
+        title="Context lines shown around each match"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        context{" "}
+        <span className="search-context-value">
+          {contextLines.before}↑ {contextLines.after}↓
+        </span>{" "}
+        ▾
+      </button>
+      {open && (
+        <span className="search-context-pop" role="group" aria-label="Context lines">
+          {stepper("above", "before")}
+          {stepper("below", "after")}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Collapse-all / expand-all / context knob / ↻ — shared by the query
+ *  summary row and the references mode header. */
+function SearchSummaryTools() {
+  const setAllCollapsed = useStudioStore((s) => s.setAllSearchCardsCollapsed);
+  const refresh = useStudioStore((s) => s.refreshSearchSnapshot);
+  return (
+    <span className="search-summary-tools">
+      {/* The binder header's expand/collapse-all buttons, reused (same
+          icons + .brink-binder-tool treatment — one vocabulary). */}
+      <button
+        type="button"
+        className="brink-binder-tool search-expand-all"
+        title="Expand all cards"
+        aria-label="Expand all cards"
+        onClick={() => setAllCollapsed(false)}
+      >
+        <ExpandAllIcon />
+      </button>
+      <button
+        type="button"
+        className="brink-binder-tool search-collapse-all"
+        title="Collapse all cards"
+        aria-label="Collapse all cards"
+        onClick={() => setAllCollapsed(true)}
+      >
+        <CollapseAllIcon />
+      </button>
+      <SearchContextKnob />
+      <button
+        type="button"
+        className="search-refresh"
+        title="Re-run against current sources — the only thing that replaces the pinned snapshot"
+        aria-label="Refresh results"
+        onClick={refresh}
+      >
+        ↻
+      </button>
+    </span>
+  );
 }
 
 // ── View ────────────────────────────────────────────────────────────
@@ -187,11 +281,13 @@ function SearchViewInner() {
   return (
     <div className="search-view">
       {mode.kind === "references" && (
-        <div className="search-mode-chip" role="status">
-          <span className="search-mode-chip-label">
-            References: <code>{mode.symbol}</code> · {total} in {fileCount}{" "}
-            {fileCount === 1 ? "file" : "files"}
+        <div className="search-refs-head" role="status">
+          <span className="search-refs-cap">references</span>
+          <code className="search-refs-symbol">{mode.symbol}</code>
+          <span className="search-refs-count">
+            {total} in {fileCount} {fileCount === 1 ? "file" : "files"}
           </span>
+          <SearchSummaryTools />
           <button
             type="button"
             className="search-mode-chip-clear"
@@ -288,6 +384,15 @@ function SearchViewInner() {
         )}
       </div>
 
+      {mode.kind === "query" && results !== null && total > 0 && (
+        <div className="search-summary">
+          <span className="search-summary-count">
+            {total} {total === 1 ? "result" : "results"} in {fileCount}{" "}
+            {fileCount === 1 ? "file" : "files"}
+          </span>
+          <SearchSummaryTools />
+        </div>
+      )}
       <div className="search-results">
         {results !== null && total === 0 && (
           <p className="search-empty">No results</p>
@@ -298,12 +403,10 @@ function SearchViewInner() {
           </p>
         )}
         {results !== null && total > 0 && (
-          // Editor-owned editable results buffer (#322 Track V, design D):
-          // headers + match lines in a scrollable CM6 document; editing a
-          // match row routes back to the source. Keyed on the total so a
-          // structural change (files added/removed between searches) remounts
-          // cleanly; in-place edits keep the same view via setResult.
-          <SearchResultsBufferView key={fileCount} results={results} />
+          // Per-match card list (docs/search-results-cards-spec.md, PR C):
+          // one editable card per snapshot match, virtualized, frozen-set
+          // semantics — see SearchCardList.
+          <SearchCardList />
         )}
       </div>
     </div>
