@@ -39,11 +39,12 @@
   height: 100%;
   flex-shrink: 0;
   /* Subtle indent guides (maintainer, 2026-08-23): a hairline at each
-     depth column, echoing the editor's guides. The guide elements were
-     always emitted per depth; this just makes them faintly visible. */
+     depth column, centered under the parent level's chevron column (the
+     columns are uniform now that the grab handle lives at the row's
+     right edge). Kept faint — structure, not chrome. */
   background: linear-gradient(
     to right,
-    rgb(var(--bs-border-rgb, 69 71 90) / 45%) 1px,
+    rgb(var(--bs-border-rgb, 69 71 90) / 35%) 1px,
     transparent 1px
   );
   background-position: 8px 0;
@@ -291,14 +292,16 @@
 
 /* ── Binder v2 (#3036/#3037) ─────────────────────────────────────── */
 
-/* The grab handle: present for draggable rows, revealed on hover so the
-   rows stay calm (Main.dc.html's hovered-row treatment). */
+/* The grab handle: revealed on hover, at the row's RIGHT edge — a
+   left-side handle reserved width on draggable rows only, knocking their
+   columns out of line with everything else (maintainer, 2026-08-23). */
 .brink-studio .brink-binder-handle {
   width: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  margin-left: 4px;
   color: var(--bs-fg-dim, #6c7086);
   opacity: 0;
   cursor: grab;
@@ -365,9 +368,10 @@
   padding-bottom: 2px;
 }
 .brink-studio .brink-create-group.big {
-  border-top: 1px solid var(--bs-border);
-  margin-top: 8px;
-  padding: 7px 12px;
+  /* Connected to the tree like the root container's own tail (maintainer,
+     2026-08-23: the detached bottom slot read as an artificial division) —
+     no rule, no gap, just the next row. */
+  padding: 4px 12px 8px;
   gap: 6px;
 }
 .brink-studio .brink-create-btn {
@@ -490,5 +494,38 @@
   padding: 0 4px;
 }
 .brink-studio .brink-binder-search-clear:hover {
+  color: var(--bs-fg);
+}
+
+
+/* Hover-revealed row actions (maintainer, 2026-08-23): the ⋯ menu on
+   folder rows and the +knot/+stitch affordances in Structure mode. Same
+   reveal discipline as the grab handle — zero width reserved is wrong
+   the OTHER way here (a button needs a hit target), so they occupy the
+   right-side flexible space where nothing needs to line up. */
+.brink-studio .brink-binder-row-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  color: var(--bs-fg-dim, #6c7086);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.1s ease;
+  flex-shrink: 0;
+}
+.brink-studio .brink-binder-row:hover .brink-binder-row-action {
+  opacity: 0.85;
+}
+/* Files mode's inert slot: reserves the width, never reveals. */
+.brink-studio .brink-binder-row-action.placeholder {
+  pointer-events: none;
+}
+.brink-studio .brink-binder-row:hover .brink-binder-row-action.placeholder {
+  opacity: 0;
+}
+.brink-studio .brink-binder-row-action:hover {
   color: var(--bs-fg);
 }

@@ -104,18 +104,37 @@ describe("Binder inline creation (#3039)", () => {
     );
   });
 
-  it("a folder container's own group creates INTO that folder", () => {
+  it("a folder's context menu opens an input that creates INTO that folder", () => {
+    // The per-container idle buttons were removed after live use
+    // (maintainer: noisy) — the context menu is the folder-scoped door,
+    // and the input still renders in place inside the folder.
     const { addFile } = seeded();
     act(() => {
       container!
-        .querySelector<HTMLButtonElement>(
-          "[data-create-container='scenes/'] .brink-create-btn[title='New file']",
-        )
-        ?.click();
+        .querySelector<HTMLElement>(".brink-binder-folder-row")
+        ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     });
-    const input = container!.querySelector<HTMLInputElement>(".brink-create-input");
+    const item = [...container!.querySelectorAll(".brink-context-menu-item")].find(
+      (el) => el.textContent === "New file here",
+    );
+    if (item === undefined) throw new Error("no 'New file here' item");
+    act(() => {
+      (item as HTMLElement).click();
+    });
+    const editing = container!.querySelector<HTMLInputElement>(
+      "[data-create-container='scenes/'] .brink-create-input, .brink-create-editing[data-create-container='scenes/'] .brink-create-input",
+    );
+    const input = editing ?? container!.querySelector<HTMLInputElement>(".brink-create-input");
     if (input === null) throw new Error("folder create input did not open");
     commit(input, "docks");
     expect(addFile).toHaveBeenCalledWith("scenes/docks.ink");
+  });
+
+  it("no idle create buttons render inside folders — only the root group", () => {
+    seeded();
+    expect(
+      container!.querySelectorAll(".brink-create-group:not(.big)"),
+    ).toHaveLength(0);
+    expect(container!.querySelector(".brink-create-group.big")).not.toBeNull();
   });
 });

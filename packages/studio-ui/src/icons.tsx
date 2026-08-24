@@ -212,3 +212,35 @@ export function SearchIcon({ size = 14 }: IconProps) {
     </svg>
   );
 }
+
+/** Row-actions menu (the mockup's ⋯). */
+export function DotsIcon({ size = 13 }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable={false}>
+      <circle cx="5" cy="12" r="1.7" />
+      <circle cx="12" cy="12" r="1.7" />
+      <circle cx="19" cy="12" r="1.7" />
+    </svg>
+  );
+}
+
+/** Structure-mode creation (+knot): a smaller diamond so the plus reads
+ *  at row size (maintainer: the + was too small). */
+export function KnotPlusIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <path d="M9 9l4 5.5-4 5.5-4-5.5z" />
+      <path d="M17 4v8M13 8h8" />
+    </svg>
+  );
+}
+
+/** Structure-mode creation (+stitch). */
+export function StitchPlusIcon({ size = 13 }: IconProps) {
+  return (
+    <svg {...strokeProps(size)}>
+      <path d="M4 9v6a4 4 0 0 0 4 4h5" />
+      <path d="M17 4v8M13 8h8" />
+    </svg>
+  );
+}

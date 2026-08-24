@@ -25,8 +25,11 @@ import {
   FolderPlusIcon,
   FolderIcon,
   FunctionIcon,
+  DotsIcon,
   GearIcon,
   ErrorMarkIcon,
+  KnotPlusIcon,
+  StitchPlusIcon,
   GrabHandleIcon,
   WarningMarkIcon,
   KnotIcon,
@@ -251,6 +254,12 @@ interface RowProps {
   dimmed?: boolean;
   /** Diagnostics marks (#3041): error/warning counts, zero-suppressed. */
   marks?: RowMarks;
+  /** Hover-revealed ⋯ menu (the mockup's row-actions affordance) —
+   *  opens the same menu as right-click. */
+  onMenuClick?: (e: React.MouseEvent) => void;
+  /** Hover-revealed extra action buttons (Structure mode's +knot /
+   *  +stitch), rendered before the ⋯. */
+  extraActions?: React.ReactNode;
   onChevronClick: () => void;
   onClick: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
@@ -287,6 +296,8 @@ export function BinderRow({
   badge,
   dimmed = false,
   marks,
+  onMenuClick,
+  extraActions,
   onChevronClick,
   onClick,
   onDoubleClick,
@@ -379,11 +390,6 @@ export function BinderRow({
         <div className={chevronClass} onClick={handleChevronClick}>
           {expandable ? <ChevronIcon /> : null}
         </div>
-        {draggable && (
-          <span className="brink-binder-handle" aria-hidden>
-            <GrabHandleIcon />
-          </span>
-        )}
         <span className={"brink-binder-icon " + iconClass(kind, isFunction)}>
           {iconElement(kind, isFunction)}
         </span>
@@ -420,6 +426,25 @@ export function BinderRow({
         {badge !== undefined && !editing && (
           <span className={"brink-binder-badge brink-binder-badge-" + badge.tone}>
             {badge.text}
+          </span>
+        )}
+        {extraActions}
+        {onMenuClick !== undefined && (
+          <button
+            type="button"
+            className="brink-binder-row-action"
+            title="Actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMenuClick(e);
+            }}
+          >
+            <DotsIcon />
+          </button>
+        )}
+        {draggable && (
+          <span className="brink-binder-handle" aria-hidden>
+            <GrabHandleIcon />
           </span>
         )}
       </div>
@@ -728,9 +753,10 @@ function BinderInner() {
 
   /** The one open inline-create input (#3039): which container, and
    *  whether it creates a file or a folder. */
-  const [creating, setCreating] = useState<{ container: string; kind: "file" | "folder" } | null>(
-    null,
-  );
+  const [creating, setCreating] = useState<{
+    container: string;
+    kind: "file" | "folder" | "knot" | "stitch";
+  } | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -850,7 +876,7 @@ function BinderInner() {
    *  frame reads `input.value` fresh and places a zero-width caret at its
    *  end, so text typed during the frame is never clobbered or selected. */
   const openCreateInput = useCallback(
-    (container: string, kind: "file" | "folder") => {
+    (container: string, kind: "file" | "folder" | "knot" | "stitch") => {
       if (creating !== null) return;
       setCreating({ container, kind });
       setCreateError(null);
@@ -921,6 +947,51 @@ function BinderInner() {
       setCreateError("must be a bare name, not a path");
       return;
     }
+    // Structure-mode creation (#3043 follow-up): a knot appends to its
+    // file; a stitch appends inside its knot's body. Both are ordinary
+    // session edits — the recompile refreshes the outline.
+    if (spec.kind === "knot" || spec.kind === "stitch") {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) {
+        setCreateError("must be a plain identifier (letters, digits, _)");
+        return;
+      }
+      const project = storeApi.getState()._project;
+      const docs = storeApi.getState()._documents;
+      if (project === null) return;
+      if (spec.kind === "knot") {
+        const filePath = spec.container;
+        const file = outline.find((f) => f.path === filePath);
+        if (file?.symbols.some((sym) => sym.name === raw)) {
+          setCreateError(`a knot named ${raw} already exists in this file`);
+          return;
+        }
+        const src = project.getSession().getFileSource(filePath);
+        if (src === null) return;
+        const sep = src.endsWith("\n") ? "\n" : "\n\n";
+        project.applyEdit(filePath, `${src}${sep}=== ${raw} ===\n`);
+        docs?.refreshExternal(filePath);
+        docs?.triggerCompile();
+      } else {
+        const [filePath, knotName] = spec.container.split("::");
+        const file = outline.find((f) => f.path === filePath);
+        const knot = file?.symbols.find((sym) => sym.name === knotName);
+        if (filePath === undefined || knot === undefined) return;
+        if (knot.children.some((c) => c.name === raw)) {
+          setCreateError(`a stitch named ${raw} already exists in this knot`);
+          return;
+        }
+        const src = project.getSession().getFileSource(filePath);
+        if (src === null) return;
+        const at = Math.min(knot.full_end, src.length);
+        const before = src.slice(0, at);
+        const lead = before.endsWith("\n") ? "" : "\n";
+        project.applyEdit(filePath, `${before}${lead}= ${raw}\n${src.slice(at)}`);
+        docs?.refreshExternal(filePath);
+        docs?.triggerCompile();
+      }
+      cancelInput();
+      return;
+    }
     const taken = takenIn(spec.container);
     if (spec.kind === "folder") {
       if (taken.has(raw)) {
@@ -938,7 +1009,7 @@ function BinderInner() {
     }
     cancelInput();
     void addFile(`${spec.container}${name}`);
-  }, [creating, cancelInput, takenIn, addFile, registerBinderFolder]);
+  }, [creating, cancelInput, takenIn, addFile, registerBinderFolder, outline, storeApi]);
 
   const handleInputKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -958,6 +1029,11 @@ function BinderInner() {
    *  input with inline validation. `big` is the root group at the foot. */
   function renderCreateGroup(container: string, depth: number, big = false) {
     const active = creating !== null && creating.container === container;
+    // Per-container idle buttons were ruled OUT after live use (maintainer,
+    // 2026-08-23: "kind of obnoxious/noisy") — only the root group renders
+    // idle affordances; a folder's input opens via its context menu and
+    // renders here, in place, while active.
+    if (!active && !big) return null;
     if (active) {
       return (
         <div
@@ -969,7 +1045,15 @@ function BinderInner() {
             ref={inputRef}
             className="brink-create-input"
             type="text"
-            placeholder={creating.kind === "file" ? "name (.ink implied)" : "folder name"}
+            placeholder={
+              creating.kind === "file"
+                ? "name (.ink implied)"
+                : creating.kind === "folder"
+                  ? "folder name"
+                  : creating.kind === "knot"
+                    ? "knot name"
+                    : "stitch name"
+            }
             onKeyDown={handleInputKeyDown}
             onChange={() => setCreateError(null)}
             onBlur={cancelInput}
@@ -1548,6 +1632,19 @@ function BinderInner() {
           depth={depth}
           kind="knot"
           marks={symbolMarks(diagnosticsList, path, knot)}
+          extraActions={
+            <button
+              type="button"
+              className="brink-binder-row-action"
+              title="New stitch"
+              onClick={(e) => {
+                e.stopPropagation();
+                openCreateInput(knotKey, "stitch");
+              }}
+            >
+              <StitchPlusIcon />
+            </button>
+          }
           isFunction={knot.detail === "function"}
           label={knot.name}
           expandable={hasStitches}
@@ -1575,6 +1672,10 @@ function BinderInner() {
             if (!sRow) return null;
             return renderStitch(path, knot, s, sRow, depth + 1);
           })}
+        {creating !== null &&
+          creating.kind === "stitch" &&
+          creating.container === knotKey &&
+          renderCreateGroup(knotKey, depth + 1)}
       </div>
     );
   }
@@ -1613,6 +1714,29 @@ function BinderInner() {
           }
           dimmed={notIncluded}
           marks={marksByFile.get(file.path)}
+          onMenuClick={(e) => fileRow && handleContextMenu(e, fileRow)}
+          extraActions={
+            // Rendered in BOTH modes (inert outside Structure): a slot that
+            // appears only sometimes shifts the badge on every mode toggle —
+            // the same reserved-width disease the left-side handle had.
+            structureMode ? (
+              <button
+                type="button"
+                className="brink-binder-row-action"
+                title="New knot"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openCreateInput(file.path, "knot");
+                }}
+              >
+                <KnotPlusIcon />
+              </button>
+            ) : (
+              <span className="brink-binder-row-action placeholder" aria-hidden>
+                <KnotPlusIcon />
+              </span>
+            )
+          }
           expandable={hasChildren}
           isExpanded={isExpanded}
           isActive={isActive}
@@ -1636,6 +1760,10 @@ function BinderInner() {
           onDragOver={(e) => fileRow && handleDragOver(e, fileRow)}
           onDrop={(e) => fileRow && handleDrop(e, fileRow)}
         />
+        {creating !== null &&
+          creating.kind === "knot" &&
+          creating.container === file.path &&
+          renderCreateGroup(file.path, depth + 1)}
         {isExpanded &&
           hasChildren &&
           knots.map((k) => {
@@ -1671,6 +1799,7 @@ function BinderInner() {
               ? { initial: folder.name, onCommit: commitRename, onCancel: cancelRename }
               : undefined
           }
+          onMenuClick={(e) => folderRow && handleContextMenu(e, folderRow)}
           onChevronClick={() => toggleCollapsed(folder.key)}
           onClick={() => {
             setFocusedKey(folder.key);
@@ -1684,7 +1813,7 @@ function BinderInner() {
           onDrop={(e) => folderRow && handleDrop(e, folderRow)}
         />
         {isExpanded && renderTree(folder, depth + 1)}
-        {isExpanded && renderCreateGroup(folder.key, depth + 1)}
+        {creating !== null && creating.container === folder.key && renderCreateGroup(folder.key, depth + 1)}
       </div>
     );
   }
@@ -1845,6 +1974,7 @@ function BinderInner() {
             <StructureModeIcon />
           </button>
         </div>
+        <div className="spacer" />
         <button
           className={"brink-binder-tool" + (searchOpen ? " active" : "")}
           title="Search binder"
@@ -1857,7 +1987,6 @@ function BinderInner() {
         >
           <SearchIcon />
         </button>
-        <div className="spacer" />
         <button
           className="brink-binder-tool"
           title="Expand all"
@@ -1902,6 +2031,7 @@ function BinderInner() {
         </div>
       )}
       {renderTree(buildBinderTree(visibleOutline, treeOptions), 0)}
+      {renderCreateGroup("", 0, true)}
       {libraryFiles.length > 0 && !projectIsInk && (
         <div className="brink-binder-library-section">
           <BinderRow
@@ -1954,7 +2084,6 @@ function BinderInner() {
           </div>
         </div>
       )}
-      {renderCreateGroup("", 0, true)}
       {contextMenu && (
         <BinderContextMenu
           x={contextMenu.x}
