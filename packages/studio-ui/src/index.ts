@@ -143,3 +143,4 @@ export {
 export { ElementDropdown } from "./ElementDropdown.js";
 export { QuickOpen, QUICK_OPEN_COMMAND_ID, buildQuickOpenItems } from "./QuickOpen.js";
 export { BinderContextMenu } from "./BinderContextMenu.js";
+export { EditorTextMenuHost } from "./EditorTextMenuHost.js";
