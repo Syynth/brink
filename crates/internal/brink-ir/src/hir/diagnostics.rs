@@ -2009,6 +2009,16 @@ pub enum DiagnosticCode {
     /// its *annotation* spelling is shadowed.
     E188,
 
+    /// Renaming an `EXTERNAL` changes the host binding (ruled 2026-08-24,
+    /// "External renames: allowed behind the always-unsafe Force gate").
+    ///
+    /// Synthesized by the IDE's safe-rename gate, never emitted by
+    /// compilation: an external's name is the story↔engine contract, so the
+    /// story-side rename is always reported as breakage — the engine must
+    /// re-register the function under the new name — and applies only
+    /// through the report's Force path.
+    E190,
+
     /// An ink `TODO:` author note (issue #3050).
     ///
     /// Not a defect at all: `AUTHOR_WARNING` lines are the language's own
@@ -2219,6 +2229,7 @@ impl DiagnosticCode {
         Self::E187,
         Self::E188,
         Self::E189,
+        Self::E190,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2417,6 +2428,7 @@ impl DiagnosticCode {
             Self::E187 => "E187",
             Self::E188 => "E188",
             Self::E189 => "E189",
+            Self::E190 => "E190",
         }
     }
 
@@ -2740,6 +2752,9 @@ impl DiagnosticCode {
                 "declared STRUCT name collides with a reserved builtin/tower type name and is unreachable in type annotations"
             }
             Self::E189 => "ink `TODO:` author note — work the author marked as remaining",
+            Self::E190 => {
+                "renaming an EXTERNAL changes the host binding — the engine must re-register the new name"
+            }
         }
     }
 
@@ -2802,7 +2817,12 @@ impl DiagnosticCode {
             // surfacing so the author doesn't lose the annotation spelling
             // by accident. `resolve`'s own doc already calls this ordering
             // "deliberate", the same posture E035's shadow warning takes.
-            | Self::E188 => Severity::Warning,
+            | Self::E188
+            // E190 (external-rename host-binding breakage, ruled 2026-08-24)
+            // is Warning-tier: it is the always-unsafe verdict entry behind
+            // the rename Force gate, synthesized by the IDE, never emitted
+            // by compilation.
+            | Self::E190 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -3014,6 +3034,7 @@ impl DiagnosticCode {
             "E187" => Some(Self::E187),
             "E188" => Some(Self::E188),
             "E189" => Some(Self::E189),
+            "E190" => Some(Self::E190),
             _ => None,
         }
     }
