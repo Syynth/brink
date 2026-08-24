@@ -323,3 +323,48 @@ single-big-file re-analysis (~30 ms) — the latter needing per-knot
 incremental lowering or the async-architecture phase. **The 8 ms budget's
 pressure mechanism is functioning exactly as ruled: the residual is the
 architecture phase's quantified case.**
+
+## Per-knot segment road delta (2026-08-24, PR #3093 — #3084 v1 complete)
+
+Ink lowering rides the segment road: per-knot fragment parse+lower memoized
+on content-keyed tracked structs, assembled with range rebasing. All
+numbers below measured wired end-to-end, idle machine.
+
+**Native (`ide_bench`, 5,863-line large fixture, 7-run medians):**
+
+| row | morning baseline | post-#3088 | segment road |
+|---|---|---|---|
+| `ide_large.update_and_analyze` | 30.6 ms | 20.1 ms | **4.3 ms** |
+| `ide_large.phase.db_analysis` | 29.8 ms | 19.2 ms | **3.9 ms** |
+| `stage.0_segments` (scan + minting toll) | — | — | 0.7 ms |
+| `stage.2_lower` | 24.0 ms | 14.0 ms | **1.9 ms** |
+| whole-file parse | 3.8 ms, on path | on path | 3.8 ms, **off the analysis path** (IDE-only) |
+| small-project keystroke | 1.0 ms | 1.0 ms | 0.7 ms |
+
+**Browser (playwright scenarios, this hardware):**
+
+- `typing-burst`: `input.keydown` p50 **72 ms** / p95 **80 ms** (morning
+  ~96/~104); wasm `ide.analyze` mean **7.3 ms**, max 8.4 across 228
+  keystrokes (was ~30 ms); `ide.updateSource` mean 1.9 ms.
+- `compile-cycles` vs the same-day post-option-A run:
+  `wasm.updateDocument` p95 **35.7 → 11.6 ms (−71%)** — the spec's
+  "<10 ms" criterion met within noise; keydown p95 120 → 96 (−21%);
+  long tasks −21%; `cm.elementType.computeLineInfos` −39%.
+- Verdict vs the 8 ms frame budget: the wasm/analysis slice now fits
+  (~9 ms mean total, p95 11.6); the remaining ~60–70 ms per keystroke is
+  the JS-side whole-doc query stack — #3064 is now THE dominant term and
+  the next lever.
+
+**Memory (the tentative 2× text posture, measured — `memory-introspection`
+probe, 900-knot/40 KB fixture):** `FileSegment` heap = 39,611 bytes —
+exactly 1× source text as designed — against 1.46 MB of lowered-HIR heap:
+the text duplication is **~2.7% of the HIR's footprint**, noise. The real
+new residency is the per-segment lowered products (≈ one extra HIR-sized
+copy across `segment_lowered_query` memos), currently UNESTIMATED in
+`memory_snapshot` (no `heap_size` on that query yet) — wiring that
+estimator is the honest follow-up before calling the posture settled.
+
+**Method note:** the segmentation toll priced at 0.7 ms in place (the
+maintainer's memory-traffic concern, measured rather than argued); the
+pre-build proxy probe had estimated 1.6 ms on a differently-shaped
+fixture — proxies bound, wired runs decide.
