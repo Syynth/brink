@@ -214,9 +214,12 @@
    editor's .brink-todo-keyword mark. --bs-todo overrides per-theme; falls
    back to the warning family. */
 .brink-studio .cm-line.brink-todo {
-  background: rgb(var(--bs-todo-rgb, var(--bs-warning-rgb)) / 20%);
+  /* Inky-style inversion: a solid warm-amber band with dark ink — the
+     note is a flag, not syntax. Band + ink come from the theme's
+     --bs-todo/--bs-todo-ink (warning-family fallback). */
+  background: color-mix(in srgb, var(--bs-todo, var(--bs-warning)) 82%, var(--bs-editor-bg));
   box-shadow: inset 3px 0 0 var(--bs-todo, var(--bs-warning));
-  color: var(--bs-todo, var(--bs-warning));
+  color: var(--bs-todo-ink, #2a2130);
 }
 /* Syntax-token marks inside the note inherit the amber — the whole line
    reads as one called-out note, not syntax-colored source. (The E189

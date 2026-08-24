@@ -48,6 +48,11 @@
   /* ── Severity & story status ────────────────────────────────────── */
   --bs-error: var(--ctp-red);
   --bs-warning: var(--ctp-yellow);
+  /* TODO author notes (#3050): the band color — goldenrod, deeper and
+     more saturated than the pastel warning yellow — and the dark ink set
+     on it. */
+  --bs-todo: color-mix(in srgb, #daa520 78%, var(--ctp-yellow));
+  --bs-todo-ink: #2a2130;
   --bs-success: var(--ctp-green);
   --bs-info: var(--ctp-sky); /* neutral data accent; done/ended status */
 
