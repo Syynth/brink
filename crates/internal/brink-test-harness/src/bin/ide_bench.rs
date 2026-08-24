@@ -86,6 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // landing in the big file. The reported desktop symptom lives here.
     let large_project = add_large_file(project.clone(), 0);
     bench_keystroke_large(&large_project, runs);
+    bench_keystroke_large_stages(&large_project, runs);
     bench_compile_repeat_large(&large_project, runs)?;
 
     Ok(())
@@ -286,6 +287,92 @@ fn bench_keystroke_large(project: &BTreeMap<String, String>, runs: usize) {
         "guarded options sync + incremental analysis_query pull",
         &analyze,
     );
+}
+
+/// The per-knot spec's §1 measurement gate (#3084): split
+/// `ide_large.phase.db_analysis` across the pipeline's passes. After each
+/// big-file edit the db queries are pulled in dependency order, each pull
+/// timed — so every row is that layer's *incremental* cost with every row
+/// above it already warm (salsa memoizes; a warm pull re-pays nothing).
+/// The final `refresh_analysis` control row proves the stages covered the
+/// whole cost: it must be ~0, or a pass escaped the enumeration.
+fn bench_keystroke_large_stages(project: &BTreeMap<String, String>, runs: usize) {
+    let mut session = seeded_session(project);
+    let path = "large.ink".to_owned();
+    let mut stages: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    let record = |name: &'static str, sample: f64, stages: &mut BTreeMap<&str, Vec<f64>>| {
+        stages.entry(name).or_default().push(sample);
+    };
+    for revision in 1..=runs as u64 {
+        // Offset revisions past bench_keystroke_large's so every edit is fresh.
+        let edited = generate_large_file(2000 + revision);
+        let large = session.update_source(&path, edited);
+        let db = session.db();
+
+        let start = Instant::now();
+        std::hint::black_box(db.parse(large));
+        record("1_parse", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.hir(large));
+        record("2_lower", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.module_map());
+        record("3_module_map", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.symbol_index());
+        record("4_symbol_index", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.resolve(large));
+        record("5_resolve_edited", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.per_file_diagnostics(large));
+        record("6_per_file_diags", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.resolutions_index());
+        record("7_resolutions_index", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.diagnostics(large));
+        record("8_analysis_diags", ms(start), &mut stages);
+
+        let start = Instant::now();
+        std::hint::black_box(db.analysis());
+        record("9_assembly", ms(start), &mut stages);
+
+        let start = Instant::now();
+        session.refresh_analysis();
+        record("control_refresh", ms(start), &mut stages);
+    }
+    let details: BTreeMap<&str, &str> = [
+        ("1_parse", "reparse the edited ~8k-line file"),
+        ("2_lower", "HIR-lower the edited file (parse warm)"),
+        ("3_module_map", "module map over all manifests"),
+        ("4_symbol_index", "project symbol-index rebuild"),
+        ("5_resolve_edited", "resolve the edited file"),
+        ("6_per_file_diags", "edited file's per-file diagnostic pass"),
+        (
+            "7_resolutions_index",
+            "remaining files' resolve + index bundle",
+        ),
+        ("8_analysis_diags", "cross-file analysis diagnostics pass"),
+        ("9_assembly", "whole-project pass + bundle assembly"),
+        ("control_refresh", "must be ~0: stages covered everything"),
+    ]
+    .into_iter()
+    .collect();
+    for (name, samples) in &stages {
+        row(
+            &format!("ide_large.stage.{name}"),
+            details.get(name).copied().unwrap_or(""),
+            samples,
+        );
+    }
 }
 
 /// Compile cost with the big file in the project — first vs repeat.

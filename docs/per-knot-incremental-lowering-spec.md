@@ -1,6 +1,8 @@
 # Per-knot incremental lowering — spec draft
 
-Status: **DRAFT — open questions need rulings before implementation.**
+Status: **RULED 2026-08-24** (§5's three questions answered — see the
+decision log entry "Per-knot incremental lowering: keys, frontend order,
+sequencing"); implementation may begin at the §1 measurement gate.
 Follow-up to option A (decision log 2026-08-24); the measured motivation
 lives in `docs/desktop-perf-baseline.md` §"Option A delta".
 
@@ -30,6 +32,27 @@ parse / raw-lower / claim-injected lower / resolve / per-file-diagnostics
 phase split decides how far §3's scope must reach — committing to scope
 before that measurement repeats the #3063 half-hypothesis (the clone was
 the vehicle, not the cargo).
+
+**Gate result (2026-08-24, `ide_bench` staged-attribution rows —
+`ide_large.stage.*`, 7 runs, idle machine, stages sum 29.4 ms vs the
+unsplit 29.8 ms with a 0.0 ms control row):**
+
+| pass | median | share |
+|---|---|---|
+| HIR-lower the edited file (parse warm) | **24.0 ms** | **~80%** |
+| reparse the edited file | 3.8 ms | ~13% |
+| cross-file analysis diagnostics | 0.5 ms | ~2% |
+| symbol-index rebuild | 0.5 ms | ~2% |
+| module map + resolve + per-file diags + resolutions bundle + assembly | ~0.6 ms | ~2% |
+
+Verdict: **parse+lower own ~93% of the cost — §3 step 4 resolves to "v1
+stops at step 3"** (segmentation + per-segment parse/lower + assembly);
+resolve/diagnostics/index need no segment decomposition. Secondary
+observation, worth a look during implementation but not a scope change:
+HIR lowering costs ~6× the parse on the same bytes — if a constant-factor
+inefficiency (allocation churn, quadratic append) hides in
+`lowered_query`, fixing it is upside on top of, not instead of, the
+firewall.
 
 ## 2. Precedents
 
@@ -98,21 +121,21 @@ up in a profile.
   message must never bake in absolute positions.
 - **Oracle ratchet + tier goldens are the behavioral floor**, as always.
 
-## 5. Open questions (need rulings)
+## 5. Ruled (2026-08-24)
 
-1. Segment key: content-hash keyed (immortal interned memos, dedups
-   identical knots) vs positional `(file, index)` keyed (bounded memo
-   count, no cross-shift reuse)? The `knot_chunks` precedent and the
-   salsa-native-workspace follow-up's tracked-struct direction both lean
-   content/tracked; the interned-forever caveat from the MemberSet review
-   applies here too.
-2. Does ink's frontend join v1, or native-first? The reported symptom is
-   an ink project, which argues ink-first; native's brace nesting makes
-   its segmenter the harder half.
-3. Where does this sit relative to the async-architecture phase — before
-   it (keystroke path stays synchronous but gets cheap) or inside it
-   (async absorbs the latency, per-knot buys freshness)? The budget
-   table's residuals after #3064 should decide.
+1. **Segment keys: salsa TRACKED STRUCTS**, minted by the segmentation
+   query with identity seeded by content hash — survives offset shifts
+   AND knot insertion/reorder, garbage-collects properly (no immortal
+   interned memos; the MemberSet caveat deliberately avoided), and aligns
+   with the salsa-native workspace epic's tracked-partition direction.
+2. **Ink first.** The measured symptom is an ink project and the ink
+   segmenter is line-anchored; native follows once the assembly/rebasing
+   machinery is proven, with its lexer-driven brace-aware segmenter as
+   its own step.
+3. **Before the async phase.** Optimization-wave shaped (no API or
+   threading change, byte-identical bar); async later inherits cheap
+   analysis as freshness — the same "don't wall off slow code" logic as
+   the wave-first ruling.
 
 ## 6. Success criteria
 
